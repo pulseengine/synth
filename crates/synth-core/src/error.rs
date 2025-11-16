@@ -1,7 +1,5 @@
 //! Error types for Synth
 
-use std::fmt;
-
 /// Result type for Synth operations
 pub type Result<T> = std::result::Result<T, Error>;
 
