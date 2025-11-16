@@ -104,7 +104,7 @@ pub enum Replacement {
 }
 
 /// ARM instruction operations
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ArmOp {
     // Data processing
     Add { rd: Reg, rn: Reg, op2: Operand2 },
@@ -132,6 +132,9 @@ pub enum ArmOp {
     B { label: String },
     Bl { label: String },
     Bx { rm: Reg },
+
+    // No operation
+    Nop,
 }
 
 /// ARM register
@@ -145,7 +148,7 @@ pub enum Reg {
 }
 
 /// ARM operand 2 (flexible second operand)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Operand2 {
     /// Immediate value
     Imm(i32),
@@ -167,7 +170,7 @@ pub enum ShiftType {
 }
 
 /// Memory address
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemAddr {
     /// Base register
     pub base: Reg,
