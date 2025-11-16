@@ -1,0 +1,21 @@
+[package]
+name = "synth-cli"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "synth"
+path = "src/main.rs"
+
+[dependencies]
+synth-core = { path = "../synth-core" }
+synth-frontend = { path = "../synth-frontend" }
+
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde_json.workspace = true

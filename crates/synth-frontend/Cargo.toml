@@ -1,0 +1,19 @@
+[package]
+name = "synth-frontend"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+synth-core = { path = "../synth-core" }
+
+wasmparser.workspace = true
+wasm-encoder.workspace = true
+wit-parser.workspace = true
+wit-component.workspace = true
+
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
