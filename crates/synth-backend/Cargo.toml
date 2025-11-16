@@ -8,5 +8,6 @@ repository.workspace = true
 
 [dependencies]
 synth-core = { path = "../synth-core" }
+synth-synthesis = { path = "../synth-synthesis" }
 anyhow.workspace = true
 thiserror.workspace = true
