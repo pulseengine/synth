@@ -5,7 +5,9 @@
 
 pub mod callgraph;
 pub mod memory;
+pub mod ssa;
 
 // Stub implementations for PoC
 pub use callgraph::*;
 pub use memory::*;
+pub use ssa::*;
