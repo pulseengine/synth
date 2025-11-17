@@ -341,25 +341,93 @@ fn verify_i32_clz() {
 }
 
 #[test]
+fn test_ctz_sequence_concrete() {
+    // First, test that the CTZ sequence works correctly with concrete values
+    // This builds confidence before formal verification
+    use synth_verify::{create_z3_context, ArmSemantics, ArmState, WasmSemantics};
+    use z3::ast::Ast;
+
+    let ctx = create_z3_context();
+    let wasm_encoder = WasmSemantics::new(&ctx);
+    let arm_encoder = ArmSemantics::new(&ctx);
+
+    // Test CTZ(12) = 2
+    // Binary: 12 = 0b1100, trailing zeros = 2
+    let value = z3::ast::BV::from_i64(&ctx, 12, 32);
+
+    // WASM CTZ
+    let wasm_result = wasm_encoder.encode_op(&WasmOp::I32Ctz, &[value.clone()]);
+    assert_eq!(wasm_result.as_i64(), Some(2), "WASM CTZ(12) should be 2");
+
+    // ARM sequence: RBIT R1, R0; CLZ R0, R1
+    let mut state = ArmState::new_symbolic(&ctx);
+    state.set_reg(&Reg::R0, value);
+
+    arm_encoder.encode_op(&ArmOp::Rbit { rd: Reg::R1, rm: Reg::R0 }, &mut state);
+    arm_encoder.encode_op(&ArmOp::Clz { rd: Reg::R0, rm: Reg::R1 }, &mut state);
+
+    let arm_result = state.get_reg(&Reg::R0);
+    assert_eq!(arm_result.as_i64(), Some(2), "ARM CTZ(12) should be 2");
+
+    // Test CTZ(8) = 3
+    // Binary: 8 = 0b1000, trailing zeros = 3
+    let value2 = z3::ast::BV::from_i64(&ctx, 8, 32);
+
+    let wasm_result2 = wasm_encoder.encode_op(&WasmOp::I32Ctz, &[value2.clone()]);
+    assert_eq!(wasm_result2.as_i64(), Some(3), "WASM CTZ(8) should be 3");
+
+    let mut state2 = ArmState::new_symbolic(&ctx);
+    state2.set_reg(&Reg::R0, value2);
+    arm_encoder.encode_op(&ArmOp::Rbit { rd: Reg::R1, rm: Reg::R0 }, &mut state2);
+    arm_encoder.encode_op(&ArmOp::Clz { rd: Reg::R0, rm: Reg::R1 }, &mut state2);
+
+    let arm_result2 = state2.get_reg(&Reg::R0);
+    assert_eq!(arm_result2.as_i64(), Some(3), "ARM CTZ(8) should be 3");
+
+    println!("✓ CTZ sequence concrete tests passed");
+}
+
+#[test]
 fn verify_i32_ctz() {
+    // This test verifies the complete CTZ implementation using ARM instruction sequence
+    // CTZ(x) = CLZ(RBIT(x))
+    //
+    // Sequence:
+    //   RBIT R1, R0   ; Reverse bits of R0 into R1
+    //   CLZ R0, R1    ; Count leading zeros of R1 into R0
+    //
+    // This proves that the two-instruction sequence is semantically equivalent
+    // to WASM's I32Ctz operation for ALL possible inputs.
+
     let ctx = create_z3_context();
     let validator = TranslationValidator::new(&ctx);
 
-    // ARM implements CTZ via RBIT + CLZ
-    // RBIT reverses bits, then CLZ counts from the other end
-    let rule = create_rule(
-        "i32.ctz",
-        WasmOp::I32Ctz,
-        ArmOp::Rbit {
-            rd: Reg::R0,
-            rm: Reg::R0,
+    let rule = SynthesisRule {
+        name: "i32.ctz".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32Ctz),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Rbit {
+                rd: Reg::R1,
+                rm: Reg::R0,
+            },
+            ArmOp::Clz {
+                rd: Reg::R0,
+                rm: Reg::R1,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 2,
         },
-    );
+    };
 
-    // This is partial - needs RBIT + CLZ sequence
     match validator.verify_rule(&rule) {
-        Ok(ValidationResult::Invalid { .. }) => {} // RBIT alone != CTZ
-        _ => {}
+        Ok(ValidationResult::Verified) => {
+            println!("✓ CTZ sequence verified: I32Ctz ≡ [RBIT + CLZ]");
+        }
+        other => panic!("Expected Verified for CTZ sequence, got {:?}", other),
     }
 }
 
