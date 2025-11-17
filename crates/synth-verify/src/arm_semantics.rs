@@ -244,6 +244,14 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // No operation - state unchanged
             }
 
+            ArmOp::SetCond { rd, cond } => {
+                // SetCond evaluates a condition based on NZCV flags and sets rd to 0 or 1
+                // This is a pseudo-instruction for verification purposes
+                let cond_result = self.evaluate_condition(cond, &state.flags);
+                let result = self.bool_to_bv32(&cond_result);
+                state.set_reg(rd, result);
+            }
+
             // Memory operations simplified for now
             ArmOp::Ldr { rd, addr } => {
                 // Load from memory
@@ -493,6 +501,72 @@ impl<'ctx> ArmSemantics<'ctx> {
         let signs_same = a_sign._eq(&b_sign); // a and b have same sign
         let result_sign_wrong = a_sign._eq(&r_sign).not(); // result sign differs
         state.flags.v = signs_same.and(&[&result_sign_wrong]);
+    }
+
+    /// Evaluate an ARM condition code based on NZCV flags
+    ///
+    /// This implements the standard ARM condition code logic:
+    /// - EQ: Z == 1
+    /// - NE: Z == 0
+    /// - LT: N != V (signed less than)
+    /// - LE: Z == 1 || N != V (signed less or equal)
+    /// - GT: Z == 0 && N == V (signed greater than)
+    /// - GE: N == V (signed greater or equal)
+    /// - LO: C == 0 (unsigned less than)
+    /// - LS: C == 0 || Z == 1 (unsigned less or equal)
+    /// - HI: C == 1 && Z == 0 (unsigned greater than)
+    /// - HS: C == 1 (unsigned greater or equal)
+    fn evaluate_condition(&self, cond: &synth_synthesis::Condition, flags: &ConditionFlags<'ctx>) -> Bool<'ctx> {
+        use synth_synthesis::Condition;
+
+        match cond {
+            Condition::EQ => flags.z.clone(),
+            Condition::NE => flags.z.not(),
+            Condition::LT => {
+                // N != V: negative flag differs from overflow flag
+                flags.n._eq(&flags.v).not()
+            }
+            Condition::LE => {
+                // Z == 1 || N != V
+                let n_ne_v = flags.n._eq(&flags.v).not();
+                flags.z.or(&[&n_ne_v])
+            }
+            Condition::GT => {
+                // Z == 0 && N == V
+                let z_zero = flags.z.not();
+                let n_eq_v = flags.n._eq(&flags.v);
+                z_zero.and(&[&n_eq_v])
+            }
+            Condition::GE => {
+                // N == V
+                flags.n._eq(&flags.v)
+            }
+            Condition::LO => {
+                // C == 0 (no carry = less than unsigned)
+                flags.c.not()
+            }
+            Condition::LS => {
+                // C == 0 || Z == 1
+                let c_zero = flags.c.not();
+                flags.z.or(&[&c_zero])
+            }
+            Condition::HI => {
+                // C == 1 && Z == 0
+                let z_zero = flags.z.not();
+                flags.c.and(&[&z_zero])
+            }
+            Condition::HS => {
+                // C == 1 (carry = greater or equal unsigned)
+                flags.c.clone()
+            }
+        }
+    }
+
+    /// Convert a boolean to a 32-bit bitvector (0 or 1)
+    fn bool_to_bv32(&self, cond: &Bool<'ctx>) -> BV<'ctx> {
+        let zero = BV::from_i64(self.ctx, 0, 32);
+        let one = BV::from_i64(self.ctx, 1, 32);
+        cond.ite(&one, &zero)
     }
 }
 
@@ -947,5 +1021,180 @@ mod tests {
         let n = state.flags.n.as_bool().unwrap();
         let v = state.flags.v.as_bool().unwrap();
         assert_eq!(n != v, true, "-5 < 10 signed (N != V)");
+    }
+
+    #[test]
+    fn test_arm_setcond_eq() {
+        let ctx = create_z3_context();
+        let encoder = ArmSemantics::new(&ctx);
+        let mut state = ArmState::new_symbolic(&ctx);
+
+        // Test EQ condition: 10 == 10
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+
+        // CMP R0, R1 (sets Z=1 since equal)
+        let cmp_op = ArmOp::Cmp {
+            rn: Reg::R0,
+            op2: Operand2::Reg(Reg::R1),
+        };
+        encoder.encode_op(&cmp_op, &mut state);
+
+        // SetCond R0, EQ (should set R0 = 1)
+        let setcond_op = ArmOp::SetCond {
+            rd: Reg::R0,
+            cond: synth_synthesis::Condition::EQ,
+        };
+        encoder.encode_op(&setcond_op, &mut state);
+
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "EQ condition (10 == 10) should return 1");
+
+        // Test NE condition: 10 != 5
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 5, 32));
+
+        encoder.encode_op(&cmp_op, &mut state);
+
+        let setcond_ne = ArmOp::SetCond {
+            rd: Reg::R0,
+            cond: synth_synthesis::Condition::NE,
+        };
+        encoder.encode_op(&setcond_ne, &mut state);
+
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "NE condition (10 != 5) should return 1");
+    }
+
+    #[test]
+    fn test_arm_setcond_signed() {
+        let ctx = create_z3_context();
+        let encoder = ArmSemantics::new(&ctx);
+        let mut state = ArmState::new_symbolic(&ctx);
+
+        // Test LT signed: 5 < 10
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+
+        let cmp_op = ArmOp::Cmp {
+            rn: Reg::R0,
+            op2: Operand2::Reg(Reg::R1),
+        };
+        encoder.encode_op(&cmp_op, &mut state);
+
+        let setcond_lt = ArmOp::SetCond {
+            rd: Reg::R0,
+            cond: synth_synthesis::Condition::LT,
+        };
+        encoder.encode_op(&setcond_lt, &mut state);
+
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "LT signed (5 < 10) should return 1");
+
+        // Test GE signed: 10 >= 5
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 5, 32));
+
+        encoder.encode_op(&cmp_op, &mut state);
+
+        let setcond_ge = ArmOp::SetCond {
+            rd: Reg::R0,
+            cond: synth_synthesis::Condition::GE,
+        };
+        encoder.encode_op(&setcond_ge, &mut state);
+
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "GE signed (10 >= 5) should return 1");
+
+        // Test GT signed: 10 > 5
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 5, 32));
+
+        encoder.encode_op(&cmp_op, &mut state);
+
+        let setcond_gt = ArmOp::SetCond {
+            rd: Reg::R0,
+            cond: synth_synthesis::Condition::GT,
+        };
+        encoder.encode_op(&setcond_gt, &mut state);
+
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "GT signed (10 > 5) should return 1");
+
+        // Test LE signed: 5 <= 10
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+
+        encoder.encode_op(&cmp_op, &mut state);
+
+        let setcond_le = ArmOp::SetCond {
+            rd: Reg::R0,
+            cond: synth_synthesis::Condition::LE,
+        };
+        encoder.encode_op(&setcond_le, &mut state);
+
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "LE signed (5 <= 10) should return 1");
+    }
+
+    #[test]
+    fn test_arm_setcond_unsigned() {
+        let ctx = create_z3_context();
+        let encoder = ArmSemantics::new(&ctx);
+        let mut state = ArmState::new_symbolic(&ctx);
+
+        // Test LO unsigned: 5 < 10
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+
+        let cmp_op = ArmOp::Cmp {
+            rn: Reg::R0,
+            op2: Operand2::Reg(Reg::R1),
+        };
+        encoder.encode_op(&cmp_op, &mut state);
+
+        let setcond_lo = ArmOp::SetCond {
+            rd: Reg::R0,
+            cond: synth_synthesis::Condition::LO,
+        };
+        encoder.encode_op(&setcond_lo, &mut state);
+
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "LO unsigned (5 < 10) should return 1");
+
+        // Test HS unsigned: 10 >= 5
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 5, 32));
+
+        encoder.encode_op(&cmp_op, &mut state);
+
+        let setcond_hs = ArmOp::SetCond {
+            rd: Reg::R0,
+            cond: synth_synthesis::Condition::HS,
+        };
+        encoder.encode_op(&setcond_hs, &mut state);
+
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "HS unsigned (10 >= 5) should return 1");
+
+        // Test HI unsigned: 10 > 5
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 5, 32));
+
+        encoder.encode_op(&cmp_op, &mut state);
+
+        let setcond_hi = ArmOp::SetCond {
+            rd: Reg::R0,
+            cond: synth_synthesis::Condition::HI,
+        };
+        encoder.encode_op(&setcond_hi, &mut state);
+
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "HI unsigned (10 > 5) should return 1");
+
+        // Test LS unsigned: 5 <= 10
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+
+        encoder.encode_op(&cmp_op, &mut state);
+
+        let setcond_ls = ArmOp::SetCond {
+            rd: Reg::R0,
+            cond: synth_synthesis::Condition::LS,
+        };
+        encoder.encode_op(&setcond_ls, &mut state);
+
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "LS unsigned (5 <= 10) should return 1");
     }
 }

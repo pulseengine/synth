@@ -697,23 +697,340 @@ fn verify_i32_eq() {
     let ctx = create_z3_context();
     let validator = TranslationValidator::new(&ctx);
 
-    // Comparisons in ARM use CMP + conditional
-    // For SMT verification, we test the comparison semantics
-    let rule = create_rule(
-        "i32.eq",
-        WasmOp::I32Eq,
-        ArmOp::Cmp {
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
+    // i32.eq uses CMP + SetCond EQ
+    // Sequence: CMP R0, R1; SetCond R0, EQ
+    let rule = SynthesisRule {
+        name: "i32.eq".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32Eq),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+            ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::EQ,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 2,
         },
-    );
+    };
 
-    // CMP sets flags but doesn't return value
-    // Full verification requires modeling conditional execution
     match validator.verify_rule(&rule) {
-        Ok(ValidationResult::Invalid { .. }) => {} // CMP alone != EQ
-        Ok(ValidationResult::Unknown { .. }) => {}
-        _ => {}
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32Eq verified (CMP + SetCond EQ)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_i32_ne() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let rule = SynthesisRule {
+        name: "i32.ne".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32Ne),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+            ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::NE,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 2,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32Ne verified (CMP + SetCond NE)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_i32_lt_s() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let rule = SynthesisRule {
+        name: "i32.lt_s".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32LtS),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+            ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::LT,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 2,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32LtS verified (CMP + SetCond LT)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_i32_le_s() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let rule = SynthesisRule {
+        name: "i32.le_s".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32LeS),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+            ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::LE,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 2,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32LeS verified (CMP + SetCond LE)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_i32_gt_s() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let rule = SynthesisRule {
+        name: "i32.gt_s".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32GtS),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+            ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::GT,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 2,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32GtS verified (CMP + SetCond GT)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_i32_ge_s() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let rule = SynthesisRule {
+        name: "i32.ge_s".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32GeS),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+            ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::GE,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 2,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32GeS verified (CMP + SetCond GE)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_i32_lt_u() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let rule = SynthesisRule {
+        name: "i32.lt_u".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32LtU),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+            ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::LO,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 2,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32LtU verified (CMP + SetCond LO)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_i32_le_u() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let rule = SynthesisRule {
+        name: "i32.le_u".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32LeU),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+            ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::LS,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 2,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32LeU verified (CMP + SetCond LS)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_i32_gt_u() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let rule = SynthesisRule {
+        name: "i32.gt_u".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32GtU),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+            ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::HI,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 2,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32GtU verified (CMP + SetCond HI)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_i32_ge_u() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let rule = SynthesisRule {
+        name: "i32.ge_u".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32GeU),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+            ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::HS,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 2,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32GeU verified (CMP + SetCond HS)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
     }
 }
 
