@@ -530,6 +530,45 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // 3. Handle carries properly
             }
 
+            // ========================================================================
+            // i64 Division and Remainder
+            // ========================================================================
+            // Note: Full 64-bit division on ARM32 requires library calls or
+            // very complex multi-instruction sequences. For verification, we model
+            // the results symbolically.
+
+            ArmOp::I64DivS { rdlo, rdhi, .. } => {
+                // Signed 64-bit division
+                // Real implementation would require __aeabi_ldivmod or equivalent
+                // For verification, return symbolic values
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_divs_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_divs_hi", 32));
+            }
+
+            ArmOp::I64DivU { rdlo, rdhi, .. } => {
+                // Unsigned 64-bit division
+                // Real implementation would require __aeabi_uldivmod or equivalent
+                // For verification, return symbolic values
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_divu_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_divu_hi", 32));
+            }
+
+            ArmOp::I64RemS { rdlo, rdhi, .. } => {
+                // Signed 64-bit remainder (modulo)
+                // Real implementation would require __aeabi_ldivmod or equivalent
+                // For verification, return symbolic values
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_rems_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_rems_hi", 32));
+            }
+
+            ArmOp::I64RemU { rdlo, rdhi, .. } => {
+                // Unsigned 64-bit remainder (modulo)
+                // Real implementation would require __aeabi_uldivmod or equivalent
+                // For verification, return symbolic values
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_remu_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_remu_hi", 32));
+            }
+
             ArmOp::I64And { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
                 let n_low = state.get_reg(rnlo).clone();
                 let m_low = state.get_reg(rmlo).clone();
@@ -878,15 +917,100 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, result_hi);
             }
 
-            // Rotation and bit manipulation - stubs for now
-            ArmOp::I64Rotl { rdlo, rdhi, .. } => {
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_rotl_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_rotl_hi", 32));
+            // ========================================================================
+            // i64 Rotation Operations
+            // ========================================================================
+
+            ArmOp::I64Rotl { rdlo, rdhi, rnlo, rnhi, shift } => {
+                // 64-bit rotate left: rotl(hi:lo, shift)
+                // Result = (value << shift) | (value >> (64 - shift))
+                let n_lo = state.get_reg(rnlo).clone();
+                let n_hi = state.get_reg(rnhi).clone();
+                let shift_amt = state.get_reg(shift).clone();
+
+                // Normalize shift to 0-63 range
+                let shift_mod = shift_amt.bvand(&BV::from_i64(self.ctx, 63, 32));
+                let shift_32 = BV::from_i64(self.ctx, 32, 32);
+                let is_large = shift_mod.bvuge(&shift_32); // shift >= 32
+
+                // For shift < 32:
+                // result_lo = (n_lo << shift) | (n_hi >> (32 - shift))
+                // result_hi = (n_hi << shift) | (n_lo >> (32 - shift))
+                let shift_complement = shift_32.bvsub(&shift_mod);
+
+                let lo_shifted_left = n_lo.bvshl(&shift_mod);
+                let hi_bits_to_lo = n_hi.bvlshr(&shift_complement);
+                let result_lo_small = lo_shifted_left.bvor(&hi_bits_to_lo);
+
+                let hi_shifted_left = n_hi.bvshl(&shift_mod);
+                let lo_bits_to_hi = n_lo.bvlshr(&shift_complement);
+                let result_hi_small = hi_shifted_left.bvor(&lo_bits_to_hi);
+
+                // For shift >= 32:
+                // Swap and rotate by (shift - 32)
+                let shift_minus_32 = shift_mod.bvsub(&shift_32);
+                let complement_large = shift_32.bvsub(&shift_minus_32);
+
+                let hi_shifted_left_large = n_hi.bvshl(&shift_minus_32);
+                let lo_bits_to_hi_large = n_lo.bvlshr(&complement_large);
+                let result_lo_large = hi_shifted_left_large.bvor(&lo_bits_to_hi_large);
+
+                let lo_shifted_left_large = n_lo.bvshl(&shift_minus_32);
+                let hi_bits_to_lo_large = n_hi.bvlshr(&complement_large);
+                let result_hi_large = lo_shifted_left_large.bvor(&hi_bits_to_lo_large);
+
+                // Select based on shift size
+                let result_lo = is_large.ite(&result_lo_large, &result_lo_small);
+                let result_hi = is_large.ite(&result_hi_large, &result_hi_small);
+
+                state.set_reg(rdlo, result_lo);
+                state.set_reg(rdhi, result_hi);
             }
 
-            ArmOp::I64Rotr { rdlo, rdhi, .. } => {
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_rotr_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_rotr_hi", 32));
+            ArmOp::I64Rotr { rdlo, rdhi, rnlo, rnhi, shift } => {
+                // 64-bit rotate right: rotr(hi:lo, shift)
+                // Result = (value >> shift) | (value << (64 - shift))
+                let n_lo = state.get_reg(rnlo).clone();
+                let n_hi = state.get_reg(rnhi).clone();
+                let shift_amt = state.get_reg(shift).clone();
+
+                // Normalize shift to 0-63 range
+                let shift_mod = shift_amt.bvand(&BV::from_i64(self.ctx, 63, 32));
+                let shift_32 = BV::from_i64(self.ctx, 32, 32);
+                let is_large = shift_mod.bvuge(&shift_32); // shift >= 32
+
+                // For shift < 32:
+                // result_lo = (n_lo >> shift) | (n_hi << (32 - shift))
+                // result_hi = (n_hi >> shift) | (n_lo << (32 - shift))
+                let shift_complement = shift_32.bvsub(&shift_mod);
+
+                let lo_shifted_right = n_lo.bvlshr(&shift_mod);
+                let hi_bits_to_lo = n_hi.bvshl(&shift_complement);
+                let result_lo_small = lo_shifted_right.bvor(&hi_bits_to_lo);
+
+                let hi_shifted_right = n_hi.bvlshr(&shift_mod);
+                let lo_bits_to_hi = n_lo.bvshl(&shift_complement);
+                let result_hi_small = hi_shifted_right.bvor(&lo_bits_to_hi);
+
+                // For shift >= 32:
+                // Swap and rotate by (shift - 32)
+                let shift_minus_32 = shift_mod.bvsub(&shift_32);
+                let complement_large = shift_32.bvsub(&shift_minus_32);
+
+                let hi_shifted_right_large = n_hi.bvlshr(&shift_minus_32);
+                let lo_bits_to_hi_large = n_lo.bvshl(&complement_large);
+                let result_lo_large = hi_shifted_right_large.bvor(&lo_bits_to_hi_large);
+
+                let lo_shifted_right_large = n_lo.bvlshr(&shift_minus_32);
+                let hi_bits_to_lo_large = n_hi.bvshl(&complement_large);
+                let result_hi_large = lo_shifted_right_large.bvor(&hi_bits_to_lo_large);
+
+                // Select based on shift size
+                let result_lo = is_large.ite(&result_lo_large, &result_lo_small);
+                let result_hi = is_large.ite(&result_hi_large, &result_hi_small);
+
+                state.set_reg(rdlo, result_lo);
+                state.set_reg(rdhi, result_hi);
             }
 
             ArmOp::I64Clz { rd, rnlo, rnhi } => {
