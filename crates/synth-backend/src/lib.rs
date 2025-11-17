@@ -3,6 +3,7 @@
 pub mod arm_encoder;
 pub mod arm_startup;
 pub mod elf_builder;
+pub mod linker_script;
 pub mod memory_layout;
 pub mod mpu;
 pub mod mpu_allocator;
@@ -16,6 +17,7 @@ pub use elf_builder::{
     ElfBuilder, ElfClass, ElfData, ElfMachine, ElfType, Section, SectionFlags,
     SectionType as ElfSectionType, Symbol, SymbolBinding, SymbolType,
 };
+pub use linker_script::{LinkerScriptGenerator, MemoryRegion};
 pub use memory_layout::{MemoryLayout, MemoryLayoutAnalyzer, MemorySection, SectionType};
 pub use mpu::{MPUAttributes, MPUPermissions, MPURegion, MPUSize};
 pub use mpu_allocator::{MPUAllocationRequest, MPUAllocator};
