@@ -15,7 +15,7 @@
 //! - Common Subexpression Elimination (CSE)
 //! - Loop-Invariant Code Motion (LICM)
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use synth_cfg::{Cfg, BlockId};
 
 /// Optimization pass trait
@@ -74,6 +74,8 @@ pub struct Instruction {
 pub enum Opcode {
     Nop,
     Add { dest: Reg, src1: Reg, src2: Reg },
+    Sub { dest: Reg, src1: Reg, src2: Reg },
+    Mul { dest: Reg, src1: Reg, src2: Reg },
     Load { dest: Reg, addr: u32 },
     Store { src: Reg, addr: u32 },
     Branch { target: BlockId },
@@ -181,11 +183,85 @@ impl ConstantFolding {
         self
     }
 
-    /// Fold constant additions
-    fn fold_constants(&self, _instructions: &mut Vec<Instruction>) -> OptResult {
-        // Placeholder - would do actual constant folding
-        // For now, just return no change
-        OptResult::no_change()
+    /// Fold constant operations
+    fn fold_constants(&mut self, instructions: &mut Vec<Instruction>) -> OptResult {
+        // Build a map of registers to their constant values
+        let mut const_values: HashMap<Reg, i32> = HashMap::new();
+        let mut modified = 0;
+
+        for inst in instructions.iter_mut() {
+            if inst.is_dead {
+                continue;
+            }
+
+            // Clone the opcode to avoid borrow checker issues
+            let opcode = inst.opcode.clone();
+
+            match opcode {
+                // Track constant definitions
+                Opcode::Const { dest, value } => {
+                    const_values.insert(dest, value);
+                }
+
+                // Fold Add if both operands are constant
+                Opcode::Add { dest, src1, src2 } => {
+                    if let (Some(&val1), Some(&val2)) = (const_values.get(&src1), const_values.get(&src2)) {
+                        let result = val1.wrapping_add(val2);
+                        inst.opcode = Opcode::Const { dest, value: result };
+                        const_values.insert(dest, result);
+                        modified += 1;
+
+                        if self.verbose {
+                            eprintln!("Folded: add {} = {} + {} -> const {} = {}",
+                                dest.0, val1, val2, dest.0, result);
+                        }
+                    }
+                }
+
+                // Fold Sub if both operands are constant
+                Opcode::Sub { dest, src1, src2 } => {
+                    if let (Some(&val1), Some(&val2)) = (const_values.get(&src1), const_values.get(&src2)) {
+                        let result = val1.wrapping_sub(val2);
+                        inst.opcode = Opcode::Const { dest, value: result };
+                        const_values.insert(dest, result);
+                        modified += 1;
+
+                        if self.verbose {
+                            eprintln!("Folded: sub {} = {} - {} -> const {} = {}",
+                                dest.0, val1, val2, dest.0, result);
+                        }
+                    }
+                }
+
+                // Fold Mul if both operands are constant
+                Opcode::Mul { dest, src1, src2 } => {
+                    if let (Some(&val1), Some(&val2)) = (const_values.get(&src1), const_values.get(&src2)) {
+                        let result = val1.wrapping_mul(val2);
+                        inst.opcode = Opcode::Const { dest, value: result };
+                        const_values.insert(dest, result);
+                        modified += 1;
+
+                        if self.verbose {
+                            eprintln!("Folded: mul {} = {} * {} -> const {} = {}",
+                                dest.0, val1, val2, dest.0, result);
+                        }
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
+        if self.verbose && modified > 0 {
+            eprintln!("Constant folding: {} operations folded", modified);
+        }
+
+        OptResult {
+            changed: modified > 0,
+            removed_count: 0,
+            added_count: 0,
+            modified_count: modified,
+        }
     }
 }
 
@@ -408,5 +484,199 @@ mod tests {
         assert_eq!(result1.removed_count, 6);
         assert_eq!(result1.added_count, 3);
         assert_eq!(result1.modified_count, 5);
+    }
+
+    #[test]
+    fn test_constant_folding_add() {
+        let mut builder = CfgBuilder::new();
+        builder.add_instruction();
+        builder.add_instruction();
+        builder.add_instruction();
+
+        let mut cfg = builder.build();
+
+        // Create: r0 = const 10, r1 = const 20, r2 = r0 + r1
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const { dest: Reg(0), value: 10 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Const { dest: Reg(1), value: 20 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 2,
+                opcode: Opcode::Add {
+                    dest: Reg(2),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut folder = ConstantFolding::new();
+        let result = folder.run(&mut cfg, &mut instructions);
+
+        // Should fold add to const 30
+        assert!(result.changed);
+        assert_eq!(result.modified_count, 1);
+        assert_eq!(instructions[2].opcode, Opcode::Const { dest: Reg(2), value: 30 });
+    }
+
+    #[test]
+    fn test_constant_folding_multiple_ops() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..6 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r0 = 5, r1 = 3, r2 = r0 + r1, r3 = r0 - r1, r4 = r0 * r1
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const { dest: Reg(0), value: 5 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Const { dest: Reg(1), value: 3 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 2,
+                opcode: Opcode::Add {
+                    dest: Reg(2),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 3,
+                opcode: Opcode::Sub {
+                    dest: Reg(3),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 4,
+                opcode: Opcode::Mul {
+                    dest: Reg(4),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut folder = ConstantFolding::new();
+        let result = folder.run(&mut cfg, &mut instructions);
+
+        // Should fold all three operations
+        assert!(result.changed);
+        assert_eq!(result.modified_count, 3);
+        assert_eq!(instructions[2].opcode, Opcode::Const { dest: Reg(2), value: 8 });  // 5 + 3
+        assert_eq!(instructions[3].opcode, Opcode::Const { dest: Reg(3), value: 2 });  // 5 - 3
+        assert_eq!(instructions[4].opcode, Opcode::Const { dest: Reg(4), value: 15 }); // 5 * 3
+    }
+
+    #[test]
+    fn test_constant_folding_chained() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..4 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r0 = 2, r1 = 3, r2 = r0 + r1, r3 = r2 * r0
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const { dest: Reg(0), value: 2 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Const { dest: Reg(1), value: 3 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 2,
+                opcode: Opcode::Add {
+                    dest: Reg(2),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 3,
+                opcode: Opcode::Mul {
+                    dest: Reg(3),
+                    src1: Reg(2),
+                    src2: Reg(0),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut folder = ConstantFolding::new();
+        let result = folder.run(&mut cfg, &mut instructions);
+
+        // First pass should fold r2 = 5
+        assert!(result.changed);
+        assert_eq!(result.modified_count, 2); // Both add and mul should fold
+        assert_eq!(instructions[2].opcode, Opcode::Const { dest: Reg(2), value: 5 });  // 2 + 3
+        assert_eq!(instructions[3].opcode, Opcode::Const { dest: Reg(3), value: 10 }); // 5 * 2
+    }
+
+    #[test]
+    fn test_constant_folding_no_change() {
+        let mut builder = CfgBuilder::new();
+        builder.add_instruction();
+
+        let mut cfg = builder.build();
+
+        // Create: r2 = r0 + r1 (no constants defined)
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Add {
+                    dest: Reg(2),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut folder = ConstantFolding::new();
+        let result = folder.run(&mut cfg, &mut instructions);
+
+        // Should not change anything
+        assert!(!result.changed);
+        assert_eq!(result.modified_count, 0);
     }
 }
