@@ -185,6 +185,12 @@ pub enum ArmOp {
     LocalTee { rd: Reg, rs: Reg, index: u32 },
     GlobalGet { rd: Reg, index: u32 },
     GlobalSet { rs: Reg, index: u32 },
+
+    // Control flow operations (pseudo-instructions for verification)
+    // These model WASM control flow semantics for verification purposes
+    BrTable { rd: Reg, index_reg: Reg, targets: Vec<u32>, default: u32 },
+    Call { rd: Reg, func_idx: u32 },
+    CallIndirect { rd: Reg, type_idx: u32, table_index_reg: Reg },
 }
 
 /// ARM condition codes (based on NZCV flags)
