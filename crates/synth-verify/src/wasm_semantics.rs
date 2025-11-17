@@ -125,16 +125,6 @@ impl<'ctx> WasmSemantics<'ctx> {
                 inputs[0].bvrotr(&shift_mod)
             }
 
-            WasmOp::I32RemS => {
-                assert_eq!(inputs.len(), 2, "I32RemS requires 2 inputs");
-                inputs[0].bvsrem(&inputs[1])
-            }
-
-            WasmOp::I32RemU => {
-                assert_eq!(inputs.len(), 2, "I32RemU requires 2 inputs");
-                inputs[0].bvurem(&inputs[1])
-            }
-
             WasmOp::I32Clz => {
                 assert_eq!(inputs.len(), 1, "I32Clz requires 1 input");
                 // Count leading zeros - use bit tricks
