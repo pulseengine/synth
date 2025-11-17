@@ -559,7 +559,8 @@ impl Parser {
         let item = if self.current().kind == TokenKind::Interface {
             WorldImportItem::Interface(self.parse_interface()?)
         } else if self.current().kind == TokenKind::Func {
-            let func = self.parse_function()?;
+            // Parse function signature without the "name:" prefix
+            let func = self.parse_function_signature(name.clone(), location)?;
             WorldImportItem::Function(func)
         } else {
             return Err(ParseError {
@@ -585,7 +586,8 @@ impl Parser {
         let item = if self.current().kind == TokenKind::Interface {
             WorldExportItem::Interface(self.parse_interface()?)
         } else if self.current().kind == TokenKind::Func {
-            let func = self.parse_function()?;
+            // Parse function signature without the "name:" prefix
+            let func = self.parse_function_signature(name.clone(), location)?;
             WorldExportItem::Function(func)
         } else {
             return Err(ParseError {
@@ -597,6 +599,48 @@ impl Parser {
         Ok(WorldExport {
             name,
             item,
+            location,
+        })
+    }
+
+    /// Parse function signature starting from "func(...)"
+    /// Used when the function name has already been consumed
+    fn parse_function_signature(&mut self, name: String, location: Location) -> Result<Function, ParseError> {
+        self.expect(TokenKind::Func)?;
+        self.expect(TokenKind::LParen)?;
+
+        let mut params = Vec::new();
+
+        if self.current().kind != TokenKind::RParen {
+            loop {
+                let param_name = self.expect_identifier()?;
+                self.expect(TokenKind::Colon)?;
+                let param_type = self.parse_type()?;
+                params.push((param_name, param_type));
+
+                if self.current().kind == TokenKind::Comma {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        self.expect(TokenKind::RParen)?;
+
+        let results = if self.current().kind == TokenKind::Arrow {
+            self.advance();
+            vec![self.parse_type()?]
+        } else {
+            Vec::new()
+        };
+
+        self.expect(TokenKind::Semicolon)?;
+
+        Ok(Function {
+            name,
+            params,
+            results,
             location,
         })
     }
@@ -643,9 +687,9 @@ mod tests {
     fn test_parse_variant() {
         let source = r#"
             interface types {
-                variant option {
-                    some(u32),
-                    none,
+                variant status {
+                    success(u32),
+                    failure(string),
                 }
             }
         "#;
