@@ -942,6 +942,27 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
+            // ========================================================================
+            // i64 Memory Operations
+            // ========================================================================
+
+            ArmOp::I64Ldr { rdlo, rdhi, addr } => {
+                // Load 64-bit value from memory
+                // Simplified: return symbolic values for both registers
+                // Real implementation would load from memory at [addr] and [addr+4]
+                let result_lo = BV::new_const(self.ctx, format!("i64load_lo_{:?}", addr), 32);
+                let result_hi = BV::new_const(self.ctx, format!("i64load_hi_{:?}", addr), 32);
+                state.set_reg(rdlo, result_lo);
+                state.set_reg(rdhi, result_hi);
+            }
+
+            ArmOp::I64Str { rdlo, rdhi, addr } => {
+                // Store 64-bit value to memory
+                // Simplified: memory updates not fully modeled yet
+                // Real implementation would store rdlo to [addr] and rdhi to [addr+4]
+                // No register changes - store operation has no output
+            }
+
             _ => {
                 // Unsupported operations - no state change
             }
