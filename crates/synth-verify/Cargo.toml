@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = []
+default = ["z3-solver"]
 z3-solver = ["z3"]
 
 [dependencies]
@@ -18,9 +18,9 @@ synth-cfg = { path = "../synth-cfg" }
 synth-opt = { path = "../synth-opt" }
 
 # SMT solver for formal verification
-# Made optional to allow compilation without Z3 headers installed
-# Enable with: cargo build --features z3-solver
-z3 = { version = "0.12", optional = true }
+# Uses static linking to bundle Z3, avoiding system dependency issues
+# This will download and build Z3 from source automatically
+z3 = { version = "0.12", features = ["static-link-z3"], optional = true }
 
 # Error handling
 anyhow.workspace = true

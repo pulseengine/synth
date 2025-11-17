@@ -4,7 +4,7 @@
 //! Each ARM operation is translated to a mathematical formula that precisely
 //! captures its behavior, including register updates and condition flags.
 
-use synth_synthesis::{ArmOp, Operand2, Reg, VfpReg};
+use synth_synthesis::rules::{ArmOp, Operand2, Reg, VfpReg};
 use z3::ast::{Ast, Bool, BV};
 use z3::Context;
 
@@ -515,7 +515,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let zero = BV::from_i64(self.ctx, 0, 32);
                 let low_zero = state.get_reg(rnlo)._eq(&zero);
                 let high_zero = state.get_reg(rnhi)._eq(&zero);
-                let both_zero = low_zero.and(&[&high_zero]);
+                let both_zero = Bool::and(self.ctx, &[&low_zero, &high_zero]);
                 let result = self.bool_to_bv32(&both_zero);
                 state.set_reg(rd, result);
             }
@@ -692,7 +692,7 @@ impl<'ctx> ArmSemantics<'ctx> {
 
                 let low_eq = n_low._eq(&m_low);
                 let high_eq = n_high._eq(&m_high);
-                let both_eq = low_eq.and(&[&high_eq]);
+                let both_eq = Bool::and(self.ctx, &[&low_eq, &high_eq]);
                 let result = self.bool_to_bv32(&both_eq);
                 state.set_reg(rd, result);
             }
@@ -713,8 +713,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let low_lt = n_low.bvult(&m_low);
 
                 // Result: high_lt OR (high_eq AND low_lt)
-                let eq_and_low = high_eq.and(&[&low_lt]);
-                let result_bool = high_lt.or(&[&eq_and_low]);
+                let eq_and_low = Bool::and(self.ctx, &[&high_eq, &low_lt]);
+                let result_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_low]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -735,8 +735,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let low_lt = n_low.bvult(&m_low);
 
                 // Result: high_lt OR (high_eq AND low_lt)
-                let eq_and_low = high_eq.and(&[&low_lt]);
-                let result_bool = high_lt.or(&[&eq_and_low]);
+                let eq_and_low = Bool::and(self.ctx, &[&high_eq, &low_lt]);
+                let result_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_low]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -750,7 +750,7 @@ impl<'ctx> ArmSemantics<'ctx> {
 
                 let low_eq = n_low._eq(&m_low);
                 let high_eq = n_high._eq(&m_high);
-                let both_eq = low_eq.and(&[&high_eq]);
+                let both_eq = Bool::and(self.ctx, &[&low_eq, &high_eq]);
                 let not_eq = both_eq.not();
                 let result = self.bool_to_bv32(&not_eq);
                 state.set_reg(rd, result);
@@ -768,8 +768,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let high_eq = n_high._eq(&m_high);
                 let low_le = n_low.bvule(&m_low); // Low parts unsigned LE
 
-                let eq_and_le = high_eq.and(&[&low_le]);
-                let result_bool = high_lt.or(&[&eq_and_le]);
+                let eq_and_le = Bool::and(self.ctx, &[&high_eq, &low_le]);
+                let result_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_le]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -785,8 +785,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let high_eq = n_high._eq(&m_high);
                 let low_le = n_low.bvule(&m_low);
 
-                let eq_and_le = high_eq.and(&[&low_le]);
-                let result_bool = high_lt.or(&[&eq_and_le]);
+                let eq_and_le = Bool::and(self.ctx, &[&high_eq, &low_le]);
+                let result_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_le]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -803,8 +803,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let high_eq = n_high._eq(&m_high);
                 let low_gt = n_low.bvugt(&m_low); // Low parts unsigned GT
 
-                let eq_and_gt = high_eq.and(&[&low_gt]);
-                let result_bool = high_gt.or(&[&eq_and_gt]);
+                let eq_and_gt = Bool::and(self.ctx, &[&high_eq, &low_gt]);
+                let result_bool = Bool::or(self.ctx, &[&high_gt, &eq_and_gt]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -820,8 +820,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let high_eq = n_high._eq(&m_high);
                 let low_gt = n_low.bvugt(&m_low);
 
-                let eq_and_gt = high_eq.and(&[&low_gt]);
-                let result_bool = high_gt.or(&[&eq_and_gt]);
+                let eq_and_gt = Bool::and(self.ctx, &[&high_eq, &low_gt]);
+                let result_bool = Bool::or(self.ctx, &[&high_gt, &eq_and_gt]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -838,8 +838,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let high_eq = n_high._eq(&m_high);
                 let low_lt = n_low.bvult(&m_low);
 
-                let eq_and_lt = high_eq.and(&[&low_lt]);
-                let lt_bool = high_lt.or(&[&eq_and_lt]);
+                let eq_and_lt = Bool::and(self.ctx, &[&high_eq, &low_lt]);
+                let lt_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_lt]);
                 let result_bool = lt_bool.not(); // GE is !(LT)
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
@@ -857,8 +857,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let high_eq = n_high._eq(&m_high);
                 let low_lt = n_low.bvult(&m_low);
 
-                let eq_and_lt = high_eq.and(&[&low_lt]);
-                let lt_bool = high_lt.or(&[&eq_and_lt]);
+                let eq_and_lt = Bool::and(self.ctx, &[&high_eq, &low_lt]);
+                let lt_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_lt]);
                 let result_bool = lt_bool.not(); // GE is !(LT)
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
@@ -1344,6 +1344,17 @@ impl<'ctx> ArmSemantics<'ctx> {
         all_zero.ite(&result_if_zero, &count)
     }
 
+    /// Encode CTZ (Count Trailing Zeros) instruction
+    ///
+    /// Counts the number of trailing (low-order) zero bits.
+    /// Implemented as: ctz(x) = clz(rbit(x))
+    /// Returns 32 if input is 0.
+    fn encode_ctz(&self, input: &BV<'ctx>) -> BV<'ctx> {
+        // CTZ can be implemented by reversing bits and then counting leading zeros
+        let reversed = self.encode_rbit(input);
+        self.encode_clz(&reversed)
+    }
+
     /// Encode ARM RBIT (Reverse Bits) instruction
     ///
     /// Reverses the bit order in a 32-bit value.
@@ -1427,7 +1438,7 @@ impl<'ctx> ArmSemantics<'ctx> {
 
         let signs_differ = a_sign._eq(&b_sign).not(); // a and b have different signs
         let result_sign_wrong = a_sign._eq(&r_sign).not(); // result sign differs from a
-        state.flags.v = signs_differ.and(&[&result_sign_wrong]);
+        state.flags.v = Bool::and(self.ctx, &[&signs_differ, &result_sign_wrong]);
     }
 
     /// Update condition flags for addition
@@ -1462,7 +1473,7 @@ impl<'ctx> ArmSemantics<'ctx> {
 
         let signs_same = a_sign._eq(&b_sign); // a and b have same sign
         let result_sign_wrong = a_sign._eq(&r_sign).not(); // result sign differs
-        state.flags.v = signs_same.and(&[&result_sign_wrong]);
+        state.flags.v = Bool::and(self.ctx, &[&signs_same, &result_sign_wrong]);
     }
 
     /// Evaluate an ARM condition code based on NZCV flags
@@ -1478,8 +1489,8 @@ impl<'ctx> ArmSemantics<'ctx> {
     /// - LS: C == 0 || Z == 1 (unsigned less or equal)
     /// - HI: C == 1 && Z == 0 (unsigned greater than)
     /// - HS: C == 1 (unsigned greater or equal)
-    fn evaluate_condition(&self, cond: &synth_synthesis::Condition, flags: &ConditionFlags<'ctx>) -> Bool<'ctx> {
-        use synth_synthesis::Condition;
+    fn evaluate_condition(&self, cond: &synth_synthesis::rules::Condition, flags: &ConditionFlags<'ctx>) -> Bool<'ctx> {
+        use synth_synthesis::rules::Condition;
 
         match cond {
             Condition::EQ => flags.z.clone(),
@@ -1491,13 +1502,13 @@ impl<'ctx> ArmSemantics<'ctx> {
             Condition::LE => {
                 // Z == 1 || N != V
                 let n_ne_v = flags.n._eq(&flags.v).not();
-                flags.z.or(&[&n_ne_v])
+                Bool::or(self.ctx, &[&flags.z, &n_ne_v])
             }
             Condition::GT => {
                 // Z == 0 && N == V
                 let z_zero = flags.z.not();
                 let n_eq_v = flags.n._eq(&flags.v);
-                z_zero.and(&[&n_eq_v])
+                Bool::and(self.ctx, &[&z_zero, &n_eq_v])
             }
             Condition::GE => {
                 // N == V
@@ -1510,12 +1521,12 @@ impl<'ctx> ArmSemantics<'ctx> {
             Condition::LS => {
                 // C == 0 || Z == 1
                 let c_zero = flags.c.not();
-                flags.z.or(&[&c_zero])
+                Bool::or(self.ctx, &[&flags.z, &c_zero])
             }
             Condition::HI => {
                 // C == 1 && Z == 0
                 let z_zero = flags.z.not();
-                flags.c.and(&[&z_zero])
+                Bool::and(self.ctx, &[&flags.c, &z_zero])
             }
             Condition::HS => {
                 // C == 1 (carry = greater or equal unsigned)
