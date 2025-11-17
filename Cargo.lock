@@ -419,6 +419,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "synth-opt"
+version = "0.1.0"
+dependencies = [
+ "synth-cfg",
+]
+
+[[package]]
 name = "synth-qemu"
 version = "0.1.0"
 
