@@ -225,8 +225,22 @@ impl<'ctx> TranslationValidator<'ctx> {
             // Constants
             I32Const(_) => 0,
 
-            // Other operations - conservative estimate
-            _ => 2,
+            // Memory operations
+            I32Load { .. } => 1, // address
+            I32Store { .. } => 2, // address + value
+
+            // Control flow
+            LocalGet(_) | GlobalGet(_) => 0,
+            LocalSet(_) | GlobalSet(_) | LocalTee(_) => 1,
+            Br(_) | BrIf(_) | Return => 0,
+
+            // Other operations
+            Drop => 1,
+            Select => 3, // condition + two values
+            Nop | Unreachable | Block | Loop | If | Else | End => 0,
+
+            // Default for unknown
+            _ => 0,
         }
     }
 

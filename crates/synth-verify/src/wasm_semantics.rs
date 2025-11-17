@@ -79,27 +79,47 @@ impl<'ctx> WasmSemantics<'ctx> {
 
             WasmOp::I32Shl => {
                 assert_eq!(inputs.len(), 2, "I32Shl requires 2 inputs");
-                inputs[0].bvshl(&inputs[1])
+                // WASM spec: shift amount is modulo 32
+                let shift_mod = inputs[1].bvurem(&BV::from_i64(self.ctx, 32, 32));
+                inputs[0].bvshl(&shift_mod)
             }
 
             WasmOp::I32ShrS => {
                 assert_eq!(inputs.len(), 2, "I32ShrS requires 2 inputs");
-                inputs[0].bvashr(&inputs[1])
+                // WASM spec: shift amount is modulo 32
+                let shift_mod = inputs[1].bvurem(&BV::from_i64(self.ctx, 32, 32));
+                inputs[0].bvashr(&shift_mod)
             }
 
             WasmOp::I32ShrU => {
                 assert_eq!(inputs.len(), 2, "I32ShrU requires 2 inputs");
-                inputs[0].bvlshr(&inputs[1])
+                // WASM spec: shift amount is modulo 32
+                let shift_mod = inputs[1].bvurem(&BV::from_i64(self.ctx, 32, 32));
+                inputs[0].bvlshr(&shift_mod)
             }
 
             WasmOp::I32Rotl => {
                 assert_eq!(inputs.len(), 2, "I32Rotl requires 2 inputs");
-                inputs[0].bvrotl(&inputs[1])
+                // WASM spec: rotation amount is modulo 32
+                let shift_mod = inputs[1].bvurem(&BV::from_i64(self.ctx, 32, 32));
+                inputs[0].bvrotl(&shift_mod)
             }
 
             WasmOp::I32Rotr => {
                 assert_eq!(inputs.len(), 2, "I32Rotr requires 2 inputs");
-                inputs[0].bvrotr(&inputs[1])
+                // WASM spec: rotation amount is modulo 32
+                let shift_mod = inputs[1].bvurem(&BV::from_i64(self.ctx, 32, 32));
+                inputs[0].bvrotr(&shift_mod)
+            }
+
+            WasmOp::I32RemS => {
+                assert_eq!(inputs.len(), 2, "I32RemS requires 2 inputs");
+                inputs[0].bvsrem(&inputs[1])
+            }
+
+            WasmOp::I32RemU => {
+                assert_eq!(inputs.len(), 2, "I32RemU requires 2 inputs");
+                inputs[0].bvurem(&inputs[1])
             }
 
             WasmOp::I32Clz => {
@@ -350,5 +370,53 @@ mod tests {
         // Test logical right shift: 8 >> 2 = 2
         let shr_result = encoder.encode_op(&WasmOp::I32ShrU, &[value, shift]);
         assert_eq!(shr_result.as_i64(), Some(2));
+    }
+
+    #[test]
+    fn test_wasm_shift_modulo() {
+        let ctx = create_z3_context();
+        let encoder = WasmSemantics::new(&ctx);
+
+        let value = BV::from_i64(&ctx, 0xFF, 32);
+        // Shift by 33 should be same as shift by 1 (modulo 32)
+        let shift = BV::from_i64(&ctx, 33, 32);
+
+        let shl_result = encoder.encode_op(&WasmOp::I32Shl, &[value.clone(), shift.clone()]);
+        // 0xFF << 33 = 0xFF << 1 = 0x1FE
+        assert_eq!(shl_result.as_i64(), Some(0x1FE));
+    }
+
+    #[test]
+    fn test_wasm_rem_ops() {
+        let ctx = create_z3_context();
+        let encoder = WasmSemantics::new(&ctx);
+
+        let a = BV::from_i64(&ctx, 17, 32);
+        let b = BV::from_i64(&ctx, 5, 32);
+
+        // Test signed remainder: 17 % 5 = 2
+        let rem_s = encoder.encode_op(&WasmOp::I32RemS, &[a.clone(), b.clone()]);
+        assert_eq!(rem_s.as_i64(), Some(2));
+
+        // Test unsigned remainder
+        let rem_u = encoder.encode_op(&WasmOp::I32RemU, &[a, b]);
+        assert_eq!(rem_u.as_i64(), Some(2));
+    }
+
+    #[test]
+    fn test_wasm_rotation_ops() {
+        let ctx = create_z3_context();
+        let encoder = WasmSemantics::new(&ctx);
+
+        let value = BV::from_i64(&ctx, 0x12345678, 32);
+        let rotate = BV::from_i64(&ctx, 8, 32);
+
+        // Test rotate right
+        let rotr_result = encoder.encode_op(&WasmOp::I32Rotr, &[value.clone(), rotate.clone()]);
+        assert_eq!(rotr_result.as_i64(), Some(0x78123456));
+
+        // Test rotate left
+        let rotl_result = encoder.encode_op(&WasmOp::I32Rotl, &[value, rotate]);
+        assert_eq!(rotl_result.as_i64(), Some(0x34567812));
     }
 }

@@ -29,6 +29,9 @@ serde_json.workspace = true
 # Property-based testing
 proptest.workspace = true
 
+# For examples and reporting
+chrono = "0.4"
+
 [dev-dependencies]
 # Additional test utilities
 criterion = "0.5"
