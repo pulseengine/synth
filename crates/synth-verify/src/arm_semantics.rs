@@ -382,6 +382,140 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
+            // ================================================================
+            // i64 Operations (Phase 2) - Simplified implementation
+            // ================================================================
+            // These use register pairs on ARM32 but simplified to single
+            // registers for initial implementation
+
+            ArmOp::I64Const { rdlo, rdhi, value } => {
+                // Load 64-bit constant into register pair
+                let low32 = (*value as u32) as i64;
+                let high32 = (*value >> 32) as i64;
+                state.set_reg(rdlo, BV::from_i64(self.ctx, low32, 32));
+                state.set_reg(rdhi, BV::from_i64(self.ctx, high32, 32));
+            }
+
+            ArmOp::I64Add { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+                // 64-bit addition with register pairs
+                // Simplified: just add low parts for now
+                // TODO: Implement full 64-bit addition with carry
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let result_low = n_low.bvadd(&m_low);
+                state.set_reg(rdlo, result_low);
+
+                // High part (simplified - should handle carry)
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+                let result_high = n_high.bvadd(&m_high);
+                state.set_reg(rdhi, result_high);
+            }
+
+            ArmOp::I64Eqz { rd, rnlo, rnhi } => {
+                // Check if 64-bit value is zero
+                // True if both low and high parts are zero
+                let zero = BV::from_i64(self.ctx, 0, 32);
+                let low_zero = state.get_reg(rnlo)._eq(&zero);
+                let high_zero = state.get_reg(rnhi)._eq(&zero);
+                let both_zero = low_zero.and(&[&high_zero]);
+                let result = self.bool_to_bv32(&both_zero);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I32WrapI64 { rd, rnlo } => {
+                // Wrap 64-bit to 32-bit (take low 32 bits)
+                let low_val = state.get_reg(rnlo).clone();
+                state.set_reg(rd, low_val);
+            }
+
+            ArmOp::I64ExtendI32S { rdlo, rdhi, rn } => {
+                // Sign-extend 32-bit to 64-bit
+                let value = state.get_reg(rn).clone();
+                state.set_reg(rdlo, value.clone());
+
+                // High part is sign extension (all 0s or all 1s based on sign bit)
+                let sign_bit = value.extract(31, 31); // Extract bit 31
+                let all_ones = BV::from_i64(self.ctx, -1, 32);
+                let zero = BV::from_i64(self.ctx, 0, 32);
+                // If sign bit is 1, high = 0xFFFFFFFF, else high = 0
+                let high_val = sign_bit._eq(&BV::from_i64(self.ctx, 1, 1))
+                    .ite(&all_ones, &zero);
+                state.set_reg(rdhi, high_val);
+            }
+
+            ArmOp::I64ExtendI32U { rdlo, rdhi, rn } => {
+                // Zero-extend 32-bit to 64-bit
+                let value = state.get_reg(rn).clone();
+                state.set_reg(rdlo, value);
+                // High part is always zero for unsigned extend
+                state.set_reg(rdhi, BV::from_i64(self.ctx, 0, 32));
+            }
+
+            // Other i64 operations - stub for now
+            ArmOp::I64Sub { rdlo, rdhi, .. } => {
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_sub_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_sub_hi", 32));
+            }
+
+            ArmOp::I64Mul { rdlo, rdhi, .. } => {
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_mul_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_mul_hi", 32));
+            }
+
+            ArmOp::I64And { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                state.set_reg(rdlo, n_low.bvand(&m_low));
+
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+                state.set_reg(rdhi, n_high.bvand(&m_high));
+            }
+
+            ArmOp::I64Or { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                state.set_reg(rdlo, n_low.bvor(&m_low));
+
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+                state.set_reg(rdhi, n_high.bvor(&m_high));
+            }
+
+            ArmOp::I64Xor { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                state.set_reg(rdlo, n_low.bvxor(&m_low));
+
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+                state.set_reg(rdhi, n_high.bvxor(&m_high));
+            }
+
+            ArmOp::I64Eq { rd, rnlo, rnhi, rmlo, rmhi } => {
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+
+                let low_eq = n_low._eq(&m_low);
+                let high_eq = n_high._eq(&m_high);
+                let both_eq = low_eq.and(&[&high_eq]);
+                let result = self.bool_to_bv32(&both_eq);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I64LtS { rd, .. } => {
+                // Signed comparison - stub for now
+                state.set_reg(rd, BV::new_const(self.ctx, "i64_lt_s", 32));
+            }
+
+            ArmOp::I64LtU { rd, .. } => {
+                // Unsigned comparison - stub for now
+                state.set_reg(rd, BV::new_const(self.ctx, "i64_lt_u", 32));
+            }
+
             _ => {
                 // Unsupported operations - no state change
             }

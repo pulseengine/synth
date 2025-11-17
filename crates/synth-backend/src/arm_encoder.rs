@@ -315,6 +315,23 @@ impl ArmEncoder {
                 // Not a real ARM instruction, would be expanded to indirect branch
                 0xE1A00000 // NOP for now
             }
+
+            // i64 pseudo-instructions (Phase 2) - encode as NOP for now
+            // Real compiler would expand these to multi-instruction sequences
+            ArmOp::I64Add { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64Sub { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64Mul { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64And { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64Or { .. } => 0xE1A00000,   // NOP
+            ArmOp::I64Xor { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64Eqz { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64Eq { .. } => 0xE1A00000,   // NOP
+            ArmOp::I64LtS { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64LtU { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64Const { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64ExtendI32S { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64ExtendI32U { .. } => 0xE1A00000,  // NOP
+            ArmOp::I32WrapI64 { .. } => 0xE1A00000,  // NOP
         };
 
         // ARM32 instructions are little-endian

@@ -107,6 +107,55 @@ pub enum WasmOp {
     End,
     Unreachable,
     Nop,
+
+    // ========================================================================
+    // i64 Operations (Phase 2)
+    // ========================================================================
+
+    // i64 Arithmetic
+    I64Add,
+    I64Sub,
+    I64Mul,
+    I64DivS,
+    I64DivU,
+    I64RemS,
+    I64RemU,
+
+    // i64 Bitwise
+    I64And,
+    I64Or,
+    I64Xor,
+    I64Shl,
+    I64ShrS,
+    I64ShrU,
+    I64Rotl,
+    I64Rotr,
+    I64Clz,
+    I64Ctz,
+    I64Popcnt,
+
+    // i64 Comparison
+    I64Eqz,
+    I64Eq,
+    I64Ne,
+    I64LtS,
+    I64LtU,
+    I64LeS,
+    I64LeU,
+    I64GtS,
+    I64GtU,
+    I64GeS,
+    I64GeU,
+
+    // i64 Constants and Memory
+    I64Const(i64),
+    I64Load { offset: u32, align: u32 },
+    I64Store { offset: u32, align: u32 },
+
+    // Conversion operations
+    I64ExtendI32S,  // Sign-extend i32 to i64
+    I64ExtendI32U,  // Zero-extend i32 to i64
+    I32WrapI64,     // Wrap i64 to i32 (truncate)
 }
 
 /// Replacement/transformation
@@ -191,6 +240,37 @@ pub enum ArmOp {
     BrTable { rd: Reg, index_reg: Reg, targets: Vec<u32>, default: u32 },
     Call { rd: Reg, func_idx: u32 },
     CallIndirect { rd: Reg, type_idx: u32, table_index_reg: Reg },
+
+    // ========================================================================
+    // i64 Operations (Phase 2) - Pseudo-instructions for verification
+    // ========================================================================
+    // 64-bit operations on ARM32 use register pairs (low:high)
+    // These pseudo-instructions abstract multi-register operations
+    // Actual compiler would expand these to instruction sequences
+
+    // i64 Arithmetic (register pairs)
+    I64Add { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64Sub { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64Mul { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+
+    // i64 Bitwise (register pairs)
+    I64And { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64Or { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64Xor { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+
+    // i64 Comparison (register pairs, result in single register)
+    I64Eqz { rd: Reg, rnlo: Reg, rnhi: Reg },
+    I64Eq { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64LtS { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64LtU { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+
+    // i64 Constants (load 64-bit immediate into register pair)
+    I64Const { rdlo: Reg, rdhi: Reg, value: i64 },
+
+    // i64 Conversion operations
+    I64ExtendI32S { rdlo: Reg, rdhi: Reg, rn: Reg },  // Sign-extend i32 to i64
+    I64ExtendI32U { rdlo: Reg, rdhi: Reg, rn: Reg },  // Zero-extend i32 to i64
+    I32WrapI64 { rd: Reg, rnlo: Reg },                // Wrap i64 to i32 (take low 32 bits)
 }
 
 /// ARM condition codes (based on NZCV flags)
