@@ -240,6 +240,14 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
+            ArmOp::Popcnt { rd, rm } => {
+                // Population count - count number of 1 bits
+                // This is a pseudo-instruction for verification
+                let input = state.get_reg(rm).clone();
+                let result = self.encode_popcnt(&input);
+                state.set_reg(rd, result);
+            }
+
             ArmOp::Nop => {
                 // No operation - state unchanged
             }
@@ -567,6 +575,42 @@ impl<'ctx> ArmSemantics<'ctx> {
         let zero = BV::from_i64(self.ctx, 0, 32);
         let one = BV::from_i64(self.ctx, 1, 32);
         cond.ite(&one, &zero)
+    }
+
+    /// Encode ARM POPCNT (population count)
+    ///
+    /// Uses the Hamming weight algorithm (same as WASM implementation).
+    /// This is a pseudo-instruction that would be expanded into actual ARM code.
+    fn encode_popcnt(&self, input: &BV<'ctx>) -> BV<'ctx> {
+        let mut x = input.clone();
+
+        // Step 1: Count bits in pairs
+        let mask1 = BV::from_u64(self.ctx, 0x55555555, 32);
+        let masked = x.bvand(&mask1);
+        let shifted = x.bvlshr(&BV::from_i64(self.ctx, 1, 32));
+        let shifted_masked = shifted.bvand(&mask1);
+        x = masked.bvadd(&shifted_masked);
+
+        // Step 2: Count pairs in nibbles
+        let mask2 = BV::from_u64(self.ctx, 0x33333333, 32);
+        let masked = x.bvand(&mask2);
+        let shifted = x.bvlshr(&BV::from_i64(self.ctx, 2, 32));
+        let shifted_masked = shifted.bvand(&mask2);
+        x = masked.bvadd(&shifted_masked);
+
+        // Step 3: Count nibbles in bytes
+        let mask3 = BV::from_u64(self.ctx, 0x0F0F0F0F, 32);
+        let masked = x.bvand(&mask3);
+        let shifted = x.bvlshr(&BV::from_i64(self.ctx, 4, 32));
+        let shifted_masked = shifted.bvand(&mask3);
+        x = masked.bvadd(&shifted_masked);
+
+        // Step 4: Sum all bytes
+        let multiplier = BV::from_u64(self.ctx, 0x01010101, 32);
+        x = x.bvmul(&multiplier);
+        x = x.bvlshr(&BV::from_i64(self.ctx, 24, 32));
+
+        x
     }
 }
 

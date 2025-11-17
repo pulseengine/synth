@@ -311,7 +311,7 @@ impl<'ctx> TranslationValidator<'ctx> {
             | I32LtU | I32LeS | I32LeU | I32GtS | I32GtU | I32GeS | I32GeU => 2,
 
             // Unary operations
-            I32Clz | I32Ctz | I32Popcnt => 1,
+            I32Clz | I32Ctz | I32Popcnt | I32Eqz => 1,
 
             // Constants
             I32Const(_) => 0,

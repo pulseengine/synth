@@ -1034,6 +1034,66 @@ fn verify_i32_ge_u() {
     }
 }
 
+#[test]
+fn verify_i32_eqz() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // i32.eqz uses CMP with immediate #0 + SetCond EQ
+    // Sequence: CMP R0, #0; SetCond R0, EQ
+    let rule = SynthesisRule {
+        name: "i32.eqz".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32Eqz),
+        replacement: Replacement::ArmSequence(vec![
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            },
+            ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::EQ,
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 1,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32Eqz verified (CMP #0 + SetCond EQ)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_i32_popcnt() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // i32.popcnt uses ARM Popcnt pseudo-instruction
+    // Both use identical Hamming weight algorithm
+    let rule = create_rule(
+        "i32.popcnt",
+        WasmOp::I32Popcnt,
+        ArmOp::Popcnt {
+            rd: Reg::R0,
+            rm: Reg::R0,
+        },
+    );
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32Popcnt verified (Hamming weight algorithm)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
 // ============================================================================
 // BATCH VERIFICATION
 // ============================================================================
