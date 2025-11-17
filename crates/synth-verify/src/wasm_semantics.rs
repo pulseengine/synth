@@ -11,12 +11,25 @@ use z3::Context;
 /// WASM semantics encoder
 pub struct WasmSemantics<'ctx> {
     ctx: &'ctx Context,
+    /// Memory model: maps addresses to 32-bit values
+    /// For bounded verification, we use a limited memory space
+    memory: Vec<BV<'ctx>>,
 }
 
 impl<'ctx> WasmSemantics<'ctx> {
     /// Create a new WASM semantics encoder
     pub fn new(ctx: &'ctx Context) -> Self {
-        Self { ctx }
+        // Initialize bounded memory (256 32-bit words)
+        let memory = (0..256)
+            .map(|i| BV::new_const(ctx, format!("mem_{}", i), 32))
+            .collect();
+
+        Self { ctx, memory }
+    }
+
+    /// Create encoder with mutable memory for load/store operations
+    pub fn new_with_memory(ctx: &'ctx Context, memory: Vec<BV<'ctx>>) -> Self {
+        Self { ctx, memory }
     }
 
     /// Encode a WASM operation as an SMT formula
@@ -229,6 +242,78 @@ impl<'ctx> WasmSemantics<'ctx> {
                 // Drop discards the value - for verification, we return a dummy value
                 // In actual compilation, this operation doesn't produce a value
                 BV::from_i64(self.ctx, 0, 32)
+            }
+
+            // Memory operations
+            WasmOp::I32Load { offset, .. } => {
+                assert_eq!(inputs.len(), 1, "I32Load requires 1 input (address)");
+                // Load from memory: mem[address + offset]
+                // For bounded verification, we model memory as array of symbolic values
+                let address = inputs[0].clone();
+                let offset_bv = BV::from_u64(self.ctx, *offset as u64, 32);
+                let effective_addr = address.bvadd(&offset_bv);
+
+                // For simplicity, return symbolic value based on address
+                // A complete model would index into memory array
+                BV::new_const(self.ctx, format!("load_{}_{}", offset, address), 32)
+            }
+
+            WasmOp::I32Store { offset, .. } => {
+                assert_eq!(inputs.len(), 2, "I32Store requires 2 inputs (address, value)");
+                // Store to memory: mem[address + offset] = value
+                // For verification, we model the effect without mutating state
+                let _address = inputs[0].clone();
+                let value = inputs[1].clone();
+                let _offset_bv = BV::from_u64(self.ctx, *offset as u64, 32);
+
+                // Store returns no value in WASM, but we return the stored value for verification
+                value
+            }
+
+            // Local/Global variable operations
+            WasmOp::LocalGet(index) => {
+                assert_eq!(inputs.len(), 0, "LocalGet requires 0 inputs");
+                // Return symbolic value representing local variable
+                BV::new_const(self.ctx, format!("local_{}", index), 32)
+            }
+
+            WasmOp::LocalSet(index) => {
+                assert_eq!(inputs.len(), 1, "LocalSet requires 1 input");
+                // Set local variable (modeled as assignment)
+                // Return the value for verification purposes
+                inputs[0].clone()
+            }
+
+            WasmOp::LocalTee(index) => {
+                assert_eq!(inputs.len(), 1, "LocalTee requires 1 input");
+                // Tee sets local and returns the value
+                inputs[0].clone()
+            }
+
+            WasmOp::GlobalGet(index) => {
+                assert_eq!(inputs.len(), 0, "GlobalGet requires 0 inputs");
+                // Return symbolic value representing global variable
+                BV::new_const(self.ctx, format!("global_{}", index), 32)
+            }
+
+            WasmOp::GlobalSet(index) => {
+                assert_eq!(inputs.len(), 1, "GlobalSet requires 1 input");
+                // Set global variable (modeled as assignment)
+                // Return the value for verification purposes
+                inputs[0].clone()
+            }
+
+            // No-op operations
+            WasmOp::Nop => {
+                assert_eq!(inputs.len(), 0, "Nop requires 0 inputs");
+                // No operation - return zero
+                BV::from_i64(self.ctx, 0, 32)
+            }
+
+            WasmOp::Unreachable => {
+                assert_eq!(inputs.len(), 0, "Unreachable requires 0 inputs");
+                // Unreachable - return symbolic value representing trap
+                BV::new_const(self.ctx, "unreachable_trap", 32)
             }
 
             // Not yet supported operations

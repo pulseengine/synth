@@ -1127,6 +1127,172 @@ fn verify_select() {
 }
 
 // ============================================================================
+// MEMORY AND VARIABLE OPERATIONS
+// ============================================================================
+
+#[test]
+fn verify_local_get() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // LocalGet loads a local variable
+    let rule = SynthesisRule {
+        name: "local.get".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::LocalGet(0)),
+        replacement: Replacement::ArmInstr(ArmOp::LocalGet {
+            rd: Reg::R0,
+            index: 0,
+        }),
+        cost: synth_synthesis::Cost {
+            cycles: 1,
+            code_size: 4,
+            registers: 1,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ LocalGet verified");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_local_set() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // LocalSet stores to a local variable
+    let rule = SynthesisRule {
+        name: "local.set".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::LocalSet(0)),
+        replacement: Replacement::ArmInstr(ArmOp::LocalSet {
+            rs: Reg::R0,
+            index: 0,
+        }),
+        cost: synth_synthesis::Cost {
+            cycles: 1,
+            code_size: 4,
+            registers: 1,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ LocalSet verified");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_local_tee() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // LocalTee stores and returns the value
+    let rule = SynthesisRule {
+        name: "local.tee".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::LocalTee(0)),
+        replacement: Replacement::ArmInstr(ArmOp::LocalTee {
+            rd: Reg::R0,
+            rs: Reg::R0,
+            index: 0,
+        }),
+        cost: synth_synthesis::Cost {
+            cycles: 1,
+            code_size: 4,
+            registers: 1,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ LocalTee verified");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_global_get() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // GlobalGet loads a global variable
+    let rule = SynthesisRule {
+        name: "global.get".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::GlobalGet(0)),
+        replacement: Replacement::ArmInstr(ArmOp::GlobalGet {
+            rd: Reg::R0,
+            index: 0,
+        }),
+        cost: synth_synthesis::Cost {
+            cycles: 1,
+            code_size: 4,
+            registers: 1,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ GlobalGet verified");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_global_set() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // GlobalSet stores to a global variable
+    let rule = SynthesisRule {
+        name: "global.set".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::GlobalSet(0)),
+        replacement: Replacement::ArmInstr(ArmOp::GlobalSet {
+            rs: Reg::R0,
+            index: 0,
+        }),
+        cost: synth_synthesis::Cost {
+            cycles: 1,
+            code_size: 4,
+            registers: 1,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ GlobalSet verified");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_nop() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // Nop does nothing
+    let rule = create_rule("nop", WasmOp::Nop, ArmOp::Nop);
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ Nop verified");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+// ============================================================================
 // BATCH VERIFICATION
 // ============================================================================
 
