@@ -8,3 +8,10 @@ repository.workspace = true
 
 [dependencies]
 synth-cfg = { path = "../synth-cfg" }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "optimization_bench"
+harness = false
