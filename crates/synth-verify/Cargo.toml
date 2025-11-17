@@ -1,0 +1,34 @@
+[package]
+name = "synth-verify"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Core dependencies
+synth-core = { path = "../synth-core" }
+synth-synthesis = { path = "../synth-synthesis" }
+synth-cfg = { path = "../synth-cfg" }
+synth-opt = { path = "../synth-opt" }
+
+# SMT solver for formal verification
+# Note: Z3 static linking can have issues in some environments
+# For development, we skip tests and rely on CI/specialized environments
+z3 = "0.12"
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Serialization for test cases
+serde.workspace = true
+serde_json.workspace = true
+
+# Property-based testing
+proptest.workspace = true
+
+[dev-dependencies]
+# Additional test utilities
+criterion = "0.5"
