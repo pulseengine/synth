@@ -238,6 +238,106 @@ fn verify_i32_xor() {
 }
 
 // ============================================================================
+// SHIFT OPERATIONS
+// ============================================================================
+
+#[test]
+fn verify_i32_shl_parameterized() {
+    // Verify WASM I32Shl with all constant shift amounts (0-31)
+    // For each n in 0..32: ∀x. WASM_SHL(x, n) ≡ ARM_LSL(x, n)
+
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let result = validator.verify_parameterized_range(
+        &WasmOp::I32Shl,
+        |shift_amount| {
+            vec![ArmOp::Lsl {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                shift: shift_amount as u32,
+            }]
+        },
+        1, // Parameter index 1 is the shift amount
+        0..32,
+    );
+
+    match result {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32Shl verified for all shift amounts 0-31");
+        }
+        other => panic!(
+            "Expected Verified for all SHL constant shifts, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn verify_i32_shr_u_parameterized() {
+    // Verify WASM I32ShrU (logical shift right) with all constant shift amounts
+    // For each n in 0..32: ∀x. WASM_SHR_U(x, n) ≡ ARM_LSR(x, n)
+
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let result = validator.verify_parameterized_range(
+        &WasmOp::I32ShrU,
+        |shift_amount| {
+            vec![ArmOp::Lsr {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                shift: shift_amount as u32,
+            }]
+        },
+        1, // Parameter index 1 is the shift amount
+        0..32,
+    );
+
+    match result {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32ShrU verified for all shift amounts 0-31");
+        }
+        other => panic!(
+            "Expected Verified for all SHR_U constant shifts, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn verify_i32_shr_s_parameterized() {
+    // Verify WASM I32ShrS (arithmetic shift right) with all constant shift amounts
+    // For each n in 0..32: ∀x. WASM_SHR_S(x, n) ≡ ARM_ASR(x, n)
+
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let result = validator.verify_parameterized_range(
+        &WasmOp::I32ShrS,
+        |shift_amount| {
+            vec![ArmOp::Asr {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                shift: shift_amount as u32,
+            }]
+        },
+        1, // Parameter index 1 is the shift amount
+        0..32,
+    );
+
+    match result {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32ShrS verified for all shift amounts 0-31");
+        }
+        other => panic!(
+            "Expected Verified for all SHR_S constant shifts, got {:?}",
+            other
+        ),
+    }
+}
+
+// ============================================================================
 // ROTATION OPERATIONS
 // ============================================================================
 //
@@ -294,23 +394,69 @@ fn test_arm_ror_semantics() {
 }
 
 #[test]
-#[ignore] // Requires parameterized verification framework
-fn verify_i32_rotl_constant() {
-    // TODO: Implement parameterized verification
-    // For each constant n in 0..32:
-    //   Verify: WASM I32Rotl(x, n) ≡ ARM ROR(x, 32-n)
-    //
-    // This requires extending TranslationValidator to support
-    // parameterized rules where shift amounts are concrete but
-    // input values remain symbolic.
+fn verify_i32_rotr_parameterized() {
+    // Verify WASM I32Rotr with all constant shift amounts (0-31)
+    // For each n in 0..32: ∀x. WASM_ROTR(x, n) ≡ ARM_ROR(x, n)
+
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let result = validator.verify_parameterized_range(
+        &WasmOp::I32Rotr,
+        |shift_amount| {
+            vec![ArmOp::Ror {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                shift: shift_amount as u32,
+            }]
+        },
+        1, // Parameter index 1 is the shift amount
+        0..32,
+    );
+
+    match result {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32Rotr verified for all shift amounts 0-31");
+        }
+        other => panic!(
+            "Expected Verified for all ROTR constant shifts, got {:?}",
+            other
+        ),
+    }
 }
 
 #[test]
-#[ignore] // Requires parameterized verification framework
-fn verify_i32_rotr_constant() {
-    // TODO: Implement parameterized verification
-    // For each constant n in 0..32:
-    //   Verify: WASM I32Rotr(x, n) ≡ ARM ROR(x, n)
+fn verify_i32_rotl_transformation() {
+    // Verify WASM I32Rotl(x, n) ≡ ARM ROR(x, 32-n) for all n in 0..32
+    // This proves the transformation is correct
+
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    let result = validator.verify_parameterized_range(
+        &WasmOp::I32Rotl,
+        |shift_amount| {
+            // ROTL(x, n) = ROR(x, 32-n)
+            let ror_amount = (32 - shift_amount) % 32;
+            vec![ArmOp::Ror {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                shift: ror_amount as u32,
+            }]
+        },
+        1, // Parameter index 1 is the shift amount
+        0..32,
+    );
+
+    match result {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32Rotl transformation verified: ROTL(x,n) = ROR(x, 32-n) for all n");
+        }
+        other => panic!(
+            "Expected Verified for ROTL transformation, got {:?}",
+            other
+        ),
+    }
 }
 
 // ============================================================================
