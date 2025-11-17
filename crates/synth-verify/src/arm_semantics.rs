@@ -138,6 +138,17 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
+            ArmOp::Mls { rd, rn, rm, ra } => {
+                // MLS (Multiply and Subtract): Rd = Ra - Rn * Rm
+                // Used for remainder operations: a % b = a - (a/b) * b
+                let rn_val = state.get_reg(rn).clone();
+                let rm_val = state.get_reg(rm).clone();
+                let ra_val = state.get_reg(ra).clone();
+                let product = rn_val.bvmul(&rm_val);
+                let result = ra_val.bvsub(&product);
+                state.set_reg(rd, result);
+            }
+
             ArmOp::And { rd, rn, op2 } => {
                 let rn_val = state.get_reg(rn).clone();
                 let op2_val = self.evaluate_operand2(op2, state);
@@ -518,6 +529,58 @@ mod tests {
         };
         encoder.encode_op(&eor_op, &mut state);
         assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0b0110));
+    }
+
+    #[test]
+    fn test_arm_mls() {
+        // Test MLS (Multiply and Subtract): Rd = Ra - Rn * Rm
+        // This is used for remainder: a % b = a - (a/b) * b
+        let ctx = create_z3_context();
+        let encoder = ArmSemantics::new(&ctx);
+        let mut state = ArmState::new_symbolic(&ctx);
+
+        // Test: 17 % 5 = 17 - (17/5) * 5 = 17 - 3*5 = 17 - 15 = 2
+        // Ra = 17, Rn = 3 (quotient), Rm = 5 (divisor)
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 17, 32)); // Ra (dividend)
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 3, 32));  // Rn (quotient)
+        state.set_reg(&Reg::R2, BV::from_i64(&ctx, 5, 32));  // Rm (divisor)
+
+        let mls_op = ArmOp::Mls {
+            rd: Reg::R3,
+            rn: Reg::R1,
+            rm: Reg::R2,
+            ra: Reg::R0,
+        };
+        encoder.encode_op(&mls_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R3).as_i64(), Some(2), "MLS: 17 - 3*5 = 2");
+
+        // Test: 100 - 7 * 3 = 100 - 21 = 79
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 100, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 7, 32));
+        state.set_reg(&Reg::R2, BV::from_i64(&ctx, 3, 32));
+
+        let mls_op2 = ArmOp::Mls {
+            rd: Reg::R3,
+            rn: Reg::R1,
+            rm: Reg::R2,
+            ra: Reg::R0,
+        };
+        encoder.encode_op(&mls_op2, &mut state);
+        assert_eq!(state.get_reg(&Reg::R3).as_i64(), Some(79), "MLS: 100 - 7*3 = 79");
+
+        // Test with negative numbers: (-17) - 3 * 5 = -17 - 15 = -32
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, -17, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 3, 32));
+        state.set_reg(&Reg::R2, BV::from_i64(&ctx, 5, 32));
+
+        let mls_op3 = ArmOp::Mls {
+            rd: Reg::R3,
+            rn: Reg::R1,
+            rm: Reg::R2,
+            ra: Reg::R0,
+        };
+        encoder.encode_op(&mls_op3, &mut state);
+        assert_eq!(state.get_reg(&Reg::R3).as_i64(), Some(-32), "MLS: -17 - 3*5 = -32");
     }
 
     #[test]
