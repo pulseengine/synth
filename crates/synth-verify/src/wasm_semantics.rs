@@ -526,6 +526,42 @@ impl<'ctx> WasmSemantics<'ctx> {
                 BV::new_const(self.ctx, "f32_sqrt_result", 32)
             }
 
+            WasmOp::F32Min => {
+                assert_eq!(inputs.len(), 2, "F32Min requires 2 inputs");
+                // f32 minimum with IEEE 754 semantics
+                BV::new_const(self.ctx, "f32_min_result", 32)
+            }
+
+            WasmOp::F32Max => {
+                assert_eq!(inputs.len(), 2, "F32Max requires 2 inputs");
+                // f32 maximum with IEEE 754 semantics
+                BV::new_const(self.ctx, "f32_max_result", 32)
+            }
+
+            WasmOp::F32Copysign => {
+                assert_eq!(inputs.len(), 2, "F32Copysign requires 2 inputs");
+                // f32 copysign: |input[0]| with sign of input[1]
+                let val_n = inputs[0].clone();
+                let val_m = inputs[1].clone();
+
+                // Extract magnitude from first input
+                let mag_mask = BV::from_u64(self.ctx, 0x7FFFFFFF, 32);
+                let magnitude = val_n.bvand(&mag_mask);
+
+                // Extract sign from second input
+                let sign_mask = BV::from_u64(self.ctx, 0x80000000, 32);
+                let sign = val_m.bvand(&sign_mask);
+
+                // Combine magnitude and sign
+                magnitude.bvor(&sign)
+            }
+
+            WasmOp::F32Load { offset: _, align: _ } => {
+                assert_eq!(inputs.len(), 1, "F32Load requires 1 input (address)");
+                // f32 load from memory (symbolic)
+                BV::new_const(self.ctx, "f32_load_result", 32)
+            }
+
             // Not yet supported operations
             _ => {
                 // For unsupported operations, return a symbolic constant
