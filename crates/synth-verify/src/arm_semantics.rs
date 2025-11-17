@@ -16,6 +16,10 @@ pub struct ArmState<'ctx> {
     pub flags: ConditionFlags<'ctx>,
     /// Memory model (simplified for bounded verification)
     pub memory: Vec<BV<'ctx>>,
+    /// Local variables (for WASM verification)
+    pub locals: Vec<BV<'ctx>>,
+    /// Global variables (for WASM verification)
+    pub globals: Vec<BV<'ctx>>,
 }
 
 /// ARM condition flags
@@ -45,10 +49,22 @@ impl<'ctx> ArmState<'ctx> {
             .map(|i| BV::new_const(ctx, format!("mem_{}", i), 32))
             .collect();
 
+        // Local variables (symbolic values)
+        let locals = (0..32)
+            .map(|i| BV::new_const(ctx, format!("local_{}", i), 32))
+            .collect();
+
+        // Global variables (symbolic values)
+        let globals = (0..16)
+            .map(|i| BV::new_const(ctx, format!("global_{}", i), 32))
+            .collect();
+
         Self {
             registers,
             flags,
             memory,
+            locals,
+            globals,
         }
     }
 
@@ -297,6 +313,48 @@ impl<'ctx> ArmSemantics<'ctx> {
 
             ArmOp::Bx { rm } => {
                 // Branch and exchange - would update PC
+            }
+
+            // Local/Global variable access (pseudo-instructions for verification)
+            ArmOp::LocalGet { rd, index } => {
+                // Load local variable into register
+                let value = state.locals.get(*index as usize)
+                    .cloned()
+                    .unwrap_or_else(|| BV::new_const(self.ctx, format!("local_{}", index), 32));
+                state.set_reg(rd, value);
+            }
+
+            ArmOp::LocalSet { rs, index } => {
+                // Store register into local variable
+                let value = state.get_reg(rs).clone();
+                if let Some(local) = state.locals.get_mut(*index as usize) {
+                    *local = value;
+                }
+            }
+
+            ArmOp::LocalTee { rd, rs, index } => {
+                // Store register into local variable and also copy to destination
+                let value = state.get_reg(rs).clone();
+                if let Some(local) = state.locals.get_mut(*index as usize) {
+                    *local = value.clone();
+                }
+                state.set_reg(rd, value);
+            }
+
+            ArmOp::GlobalGet { rd, index } => {
+                // Load global variable into register
+                let value = state.globals.get(*index as usize)
+                    .cloned()
+                    .unwrap_or_else(|| BV::new_const(self.ctx, format!("global_{}", index), 32));
+                state.set_reg(rd, value);
+            }
+
+            ArmOp::GlobalSet { rs, index } => {
+                // Store register into global variable
+                let value = state.get_reg(rs).clone();
+                if let Some(global) = state.globals.get_mut(*index as usize) {
+                    *global = value;
+                }
             }
 
             _ => {

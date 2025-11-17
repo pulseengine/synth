@@ -178,6 +178,13 @@ pub enum ArmOp {
     // Selects between two values based on condition
     // If rcond != 0, select rval1, else select rval2
     Select { rd: Reg, rval1: Reg, rval2: Reg, rcond: Reg },
+
+    // Local/Global variable access (pseudo-instructions for verification)
+    LocalGet { rd: Reg, index: u32 },
+    LocalSet { rs: Reg, index: u32 },
+    LocalTee { rd: Reg, rs: Reg, index: u32 },
+    GlobalGet { rd: Reg, index: u32 },
+    GlobalSet { rs: Reg, index: u32 },
 }
 
 /// ARM condition codes (based on NZCV flags)
