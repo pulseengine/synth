@@ -266,6 +266,86 @@ pub fn lift_result<M: Memory>(
     }
 }
 
+/// Lift an enum value
+pub fn lift_enum(discriminant: u32, cases: &[String]) -> AbiResult<ComponentValue> {
+    if (discriminant as usize) < cases.len() {
+        Ok(ComponentValue::Enum(cases[discriminant as usize].clone()))
+    } else {
+        Err(AbiError::InvalidEnumCase {
+            value: discriminant,
+            max: cases.len() as u32 - 1,
+        })
+    }
+}
+
+/// Lift a flags value (bitset)
+pub fn lift_flags(bits: u32, flag_names: &[String]) -> AbiResult<ComponentValue> {
+    let mut flags = Vec::new();
+
+    for (i, flag_name) in flag_names.iter().enumerate() {
+        if i >= 32 {
+            break;
+        }
+        if (bits & (1 << i)) != 0 {
+            flags.push(flag_name.clone());
+        }
+    }
+
+    Ok(ComponentValue::Flags(flags))
+}
+
+/// Lift a variant value (general sum type)
+pub fn lift_variant<M: Memory>(
+    mem: &M,
+    data: &[u8],
+    cases: &[(String, Option<synth_wit::ast::Type>)],
+    opts: &AbiOptions,
+) -> AbiResult<ComponentValue> {
+    use synth_wit::ast::Type;
+
+    if data.len() < 4 {
+        return Err(AbiError::Other("Variant data too short".to_string()));
+    }
+
+    // Read discriminant
+    let discriminant = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+
+    if (discriminant as usize) >= cases.len() {
+        return Err(AbiError::InvalidDiscriminant { value: discriminant });
+    }
+
+    let (case_name, case_type) = &cases[discriminant as usize];
+
+    // Read payload if present
+    let payload = if let Some(ty) = case_type {
+        let value = match ty {
+            Type::String => {
+                let ptr = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                let len = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+                let s = lift_string(mem, ptr, len, opts)?;
+                ComponentValue::String(s)
+            }
+            Type::U32 => {
+                let v = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                ComponentValue::U32(v)
+            }
+            Type::S32 => {
+                let v = i32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                ComponentValue::S32(v)
+            }
+            _ => return Err(AbiError::Other("Unsupported variant payload type".to_string())),
+        };
+        Some(Box::new(value))
+    } else {
+        None
+    };
+
+    Ok(ComponentValue::Variant {
+        case: case_name.clone(),
+        value: payload,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,5 +489,91 @@ mod tests {
         let lifted = lift_result(&mem, &data, &ok_ty, &err_ty, &opts).unwrap();
         assert!(lifted.is_err());
         assert_eq!(lifted.unwrap_err(), Some(Box::new(ComponentValue::U32(404))));
+    }
+
+    #[test]
+    fn test_roundtrip_enum() {
+        use crate::lower::lower_enum;
+
+        let cases = vec![
+            "red".to_string(),
+            "green".to_string(),
+            "blue".to_string(),
+        ];
+
+        // Lower
+        let value = ComponentValue::Enum("blue".to_string());
+        let discriminant = lower_enum(&value, &cases).unwrap();
+        assert_eq!(discriminant, 2);
+
+        // Lift
+        let lifted = lift_enum(discriminant, &cases).unwrap();
+        assert_eq!(lifted, value);
+    }
+
+    #[test]
+    fn test_roundtrip_flags() {
+        use crate::lower::lower_flags;
+
+        let flag_names = vec![
+            "read".to_string(),
+            "write".to_string(),
+            "execute".to_string(),
+        ];
+
+        // Lower
+        let value = ComponentValue::Flags(vec!["read".to_string(), "execute".to_string()]);
+        let bits = lower_flags(&value, &flag_names).unwrap();
+
+        // Lift
+        let lifted = lift_flags(bits, &flag_names).unwrap();
+        assert_eq!(lifted, value);
+    }
+
+    #[test]
+    fn test_roundtrip_variant() {
+        use crate::lower::lower_variant;
+
+        let mut mem = SimpleMemory::new(1024);
+        let opts = AbiOptions::default();
+
+        let cases = vec![
+            ("none".to_string(), None),
+            ("some".to_string(), Some(synth_wit::ast::Type::U32)),
+        ];
+
+        // Test variant with payload
+        let value = ComponentValue::Variant {
+            case: "some".to_string(),
+            value: Some(Box::new(ComponentValue::U32(123))),
+        };
+
+        let data = lower_variant(&mut mem, &value, &cases, &opts).unwrap();
+        let lifted = lift_variant(&mem, &data, &cases, &opts).unwrap();
+
+        match lifted {
+            ComponentValue::Variant { case, value: payload } => {
+                assert_eq!(case, "some");
+                assert_eq!(*payload.unwrap(), ComponentValue::U32(123));
+            }
+            _ => panic!("Expected variant"),
+        }
+
+        // Test variant without payload
+        let value = ComponentValue::Variant {
+            case: "none".to_string(),
+            value: None,
+        };
+
+        let data = lower_variant(&mut mem, &value, &cases, &opts).unwrap();
+        let lifted = lift_variant(&mem, &data, &cases, &opts).unwrap();
+
+        match lifted {
+            ComponentValue::Variant { case, value: payload } => {
+                assert_eq!(case, "none");
+                assert!(payload.is_none());
+            }
+            _ => panic!("Expected variant"),
+        }
     }
 }
