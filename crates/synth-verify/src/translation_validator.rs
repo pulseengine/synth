@@ -126,13 +126,50 @@ impl<'ctx> TranslationValidator<'ctx> {
         wasm_op: &WasmOp,
         arm_ops: &[ArmOp],
     ) -> Result<ValidationResult, VerificationError> {
+        self.verify_equivalence_parameterized(wasm_op, arm_ops, &[])
+    }
+
+    /// Verify equivalence with concrete parameter values
+    ///
+    /// This enables verification of operations where some inputs are concrete
+    /// (like shift amounts) while others remain symbolic.
+    ///
+    /// # Arguments
+    /// * `wasm_op` - The WASM operation to verify
+    /// * `arm_ops` - The ARM operation sequence
+    /// * `concrete_params` - Pairs of (input_index, concrete_value)
+    ///
+    /// # Example
+    /// ```ignore
+    /// // Verify SHL with concrete shift amount 5
+    /// validator.verify_equivalence_parameterized(
+    ///     &WasmOp::I32Shl,
+    ///     &[ArmOp::Lsl { rd: R0, rn: R0, shift: 5 }],
+    ///     &[(1, 5)] // Input 1 (shift amount) is concrete value 5
+    /// )
+    /// ```
+    pub fn verify_equivalence_parameterized(
+        &self,
+        wasm_op: &WasmOp,
+        arm_ops: &[ArmOp],
+        concrete_params: &[(usize, i64)],
+    ) -> Result<ValidationResult, VerificationError> {
         let solver = Solver::new(self.ctx);
 
-        // Create symbolic inputs
+        // Create inputs - some symbolic, some concrete
         let num_inputs = self.get_num_inputs(wasm_op);
-        let inputs: Vec<BV> = (0..num_inputs)
-            .map(|i| BV::new_const(self.ctx, format!("input_{}", i), 32))
-            .collect();
+        let mut inputs: Vec<BV> = Vec::new();
+
+        for i in 0..num_inputs {
+            let input = if let Some((_, value)) = concrete_params.iter().find(|(idx, _)| *idx == i) {
+                // Concrete value
+                BV::from_i64(self.ctx, *value, 32)
+            } else {
+                // Symbolic value
+                BV::new_const(self.ctx, format!("input_{}", i), 32)
+            };
+            inputs.push(input);
+        }
 
         // Encode WASM semantics
         let wasm_result = self.wasm_encoder.encode_op(wasm_op, &inputs);
@@ -208,6 +245,60 @@ impl<'ctx> TranslationValidator<'ctx> {
 
         // Extract result from R0 (ARM calling convention)
         Ok(self.arm_encoder.extract_result(&state, &Reg::R0))
+    }
+
+    /// Verify operation for all parameter values in a range
+    ///
+    /// This is useful for verifying shift/rotation operations with all possible
+    /// concrete shift amounts (e.g., 0-31).
+    ///
+    /// # Arguments
+    /// * `wasm_op` - The WASM operation
+    /// * `create_arm_ops` - Function to create ARM operations for a given parameter value
+    /// * `param_index` - Which input parameter to make concrete (usually 1 for binary ops)
+    /// * `range` - Range of values to test (e.g., 0..32 for shifts)
+    ///
+    /// # Returns
+    /// * `Ok(ValidationResult::Verified)` - All values in range verified
+    /// * `Ok(ValidationResult::Invalid)` - At least one value failed
+    /// * `Err` - Verification error
+    pub fn verify_parameterized_range<F>(
+        &self,
+        wasm_op: &WasmOp,
+        create_arm_ops: F,
+        param_index: usize,
+        range: std::ops::Range<i64>,
+    ) -> Result<ValidationResult, VerificationError>
+    where
+        F: Fn(i64) -> Vec<ArmOp>,
+    {
+        for value in range {
+            let arm_ops = create_arm_ops(value);
+            let result = self.verify_equivalence_parameterized(
+                wasm_op,
+                &arm_ops,
+                &[(param_index, value)],
+            )?;
+
+            match result {
+                ValidationResult::Verified => continue,
+                ValidationResult::Invalid { counterexample } => {
+                    return Ok(ValidationResult::Invalid {
+                        counterexample: counterexample
+                            .into_iter()
+                            .map(|(k, v)| (format!("{} (param={})", k, value), v))
+                            .collect(),
+                    });
+                }
+                ValidationResult::Unknown { reason } => {
+                    return Ok(ValidationResult::Unknown {
+                        reason: format!("Failed at param={}: {}", value, reason),
+                    });
+                }
+            }
+        }
+
+        Ok(ValidationResult::Verified)
     }
 
     /// Get number of inputs required for a WASM operation
