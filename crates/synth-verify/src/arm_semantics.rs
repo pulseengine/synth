@@ -4,7 +4,7 @@
 //! Each ARM operation is translated to a mathematical formula that precisely
 //! captures its behavior, including register updates and condition flags.
 
-use synth_synthesis::{ArmOp, Operand2, Reg};
+use synth_synthesis::{ArmOp, Operand2, Reg, VfpReg};
 use z3::ast::{Ast, Bool, BV};
 use z3::Context;
 
@@ -14,6 +14,10 @@ pub struct ArmState<'ctx> {
     pub registers: Vec<BV<'ctx>>,
     /// Condition flags (N, Z, C, V)
     pub flags: ConditionFlags<'ctx>,
+    /// VFP (floating-point) registers
+    /// S0-S31 (32 single-precision) + D0-D15 (16 double-precision)
+    /// Modeled as 32-bit bitvectors (can represent f32 or parts of f64)
+    pub vfp_registers: Vec<BV<'ctx>>,
     /// Memory model (simplified for bounded verification)
     pub memory: Vec<BV<'ctx>>,
     /// Local variables (for WASM verification)
@@ -59,9 +63,20 @@ impl<'ctx> ArmState<'ctx> {
             .map(|i| BV::new_const(ctx, format!("global_{}", i), 32))
             .collect();
 
+        // VFP registers (S0-S31 single-precision + D0-D15 double-precision)
+        // We model all as 32-bit bitvectors:
+        // - S registers (32): Direct 32-bit f32 representation
+        // - D registers (16): Each D register uses two consecutive S registers
+        //   D0 = S0:S1, D1 = S2:S3, etc.
+        // Total: 48 VFP register slots (32 S + 16 D conceptually, but we store 48 for simplicity)
+        let vfp_registers = (0..48)
+            .map(|i| BV::new_const(ctx, format!("vfp_{}", i), 32))
+            .collect();
+
         Self {
             registers,
             flags,
+            vfp_registers,
             memory,
             locals,
             globals,
@@ -78,6 +93,18 @@ impl<'ctx> ArmState<'ctx> {
     pub fn set_reg(&mut self, reg: &Reg, value: BV<'ctx>) {
         let index = reg_to_index(reg);
         self.registers[index] = value;
+    }
+
+    /// Get VFP register value
+    pub fn get_vfp_reg(&self, reg: &VfpReg) -> &BV<'ctx> {
+        let index = vfp_reg_to_index(reg);
+        &self.vfp_registers[index]
+    }
+
+    /// Set VFP register value
+    pub fn set_vfp_reg(&mut self, reg: &VfpReg, value: BV<'ctx>) {
+        let index = vfp_reg_to_index(reg);
+        self.vfp_registers[index] = value;
     }
 }
 
@@ -100,6 +127,64 @@ fn reg_to_index(reg: &Reg) -> usize {
         Reg::SP => 13,
         Reg::LR => 14,
         Reg::PC => 15,
+    }
+}
+
+/// Convert VFP register enum to index
+fn vfp_reg_to_index(reg: &VfpReg) -> usize {
+    match reg {
+        // Single-precision registers S0-S31 (indices 0-31)
+        VfpReg::S0 => 0,
+        VfpReg::S1 => 1,
+        VfpReg::S2 => 2,
+        VfpReg::S3 => 3,
+        VfpReg::S4 => 4,
+        VfpReg::S5 => 5,
+        VfpReg::S6 => 6,
+        VfpReg::S7 => 7,
+        VfpReg::S8 => 8,
+        VfpReg::S9 => 9,
+        VfpReg::S10 => 10,
+        VfpReg::S11 => 11,
+        VfpReg::S12 => 12,
+        VfpReg::S13 => 13,
+        VfpReg::S14 => 14,
+        VfpReg::S15 => 15,
+        VfpReg::S16 => 16,
+        VfpReg::S17 => 17,
+        VfpReg::S18 => 18,
+        VfpReg::S19 => 19,
+        VfpReg::S20 => 20,
+        VfpReg::S21 => 21,
+        VfpReg::S22 => 22,
+        VfpReg::S23 => 23,
+        VfpReg::S24 => 24,
+        VfpReg::S25 => 25,
+        VfpReg::S26 => 26,
+        VfpReg::S27 => 27,
+        VfpReg::S28 => 28,
+        VfpReg::S29 => 29,
+        VfpReg::S30 => 30,
+        VfpReg::S31 => 31,
+        // Double-precision registers D0-D15 (indices 32-47)
+        // Note: D0 = S0:S1, D1 = S2:S3, etc.
+        // We store the "low" part of each D register
+        VfpReg::D0 => 32,
+        VfpReg::D1 => 33,
+        VfpReg::D2 => 34,
+        VfpReg::D3 => 35,
+        VfpReg::D4 => 36,
+        VfpReg::D5 => 37,
+        VfpReg::D6 => 38,
+        VfpReg::D7 => 39,
+        VfpReg::D8 => 40,
+        VfpReg::D9 => 41,
+        VfpReg::D10 => 42,
+        VfpReg::D11 => 43,
+        VfpReg::D12 => 44,
+        VfpReg::D13 => 45,
+        VfpReg::D14 => 46,
+        VfpReg::D15 => 47,
     }
 }
 
@@ -1085,6 +1170,75 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Simplified: memory updates not fully modeled yet
                 // Real implementation would store rdlo to [addr] and rdhi to [addr+4]
                 // No register changes - store operation has no output
+            }
+
+            // ========================================================================
+            // f32 Operations (Phase 2 - Floating Point)
+            // ========================================================================
+            // Note: f32 values are represented as 32-bit bitvectors (IEEE 754 format)
+            // For verification, we use symbolic bitvector operations
+            // A complete implementation would use Z3's FloatingPoint sort
+
+            // f32 Constants
+            ArmOp::F32Const { sd, value } => {
+                // Load f32 constant (represented as 32-bit bitvector)
+                // Convert f32 to its IEEE 754 bit representation
+                let bits = value.to_bits() as i64;
+                let bv_val = BV::from_i64(self.ctx, bits, 32);
+                state.set_vfp_reg(sd, bv_val);
+            }
+
+            // f32 Arithmetic (symbolic for verification)
+            ArmOp::F32Add { sd, sn, sm } => {
+                // f32 addition: sd = sn + sm
+                // For verification, return symbolic value
+                // Full implementation would use Z3 FloatingPoint operations
+                let result = BV::new_const(self.ctx, format!("f32_add_{:?}_{:?}", sn, sm), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32Sub { sd, sn, sm } => {
+                // f32 subtraction: sd = sn - sm
+                let result = BV::new_const(self.ctx, format!("f32_sub_{:?}_{:?}", sn, sm), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32Mul { sd, sn, sm } => {
+                // f32 multiplication: sd = sn * sm
+                let result = BV::new_const(self.ctx, format!("f32_mul_{:?}_{:?}", sn, sm), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32Div { sd, sn, sm } => {
+                // f32 division: sd = sn / sm
+                let result = BV::new_const(self.ctx, format!("f32_div_{:?}_{:?}", sn, sm), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            // f32 Simple Math
+            ArmOp::F32Abs { sd, sm } => {
+                // f32 absolute value: sd = |sm|
+                // Clear the sign bit (bit 31)
+                let val = state.get_vfp_reg(sm).clone();
+                let mask = BV::from_u64(self.ctx, 0x7FFFFFFF, 32); // Clear sign bit
+                let result = val.bvand(&mask);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32Neg { sd, sm } => {
+                // f32 negation: sd = -sm
+                // Flip the sign bit (bit 31)
+                let val = state.get_vfp_reg(sm).clone();
+                let mask = BV::from_u64(self.ctx, 0x80000000, 32); // Sign bit
+                let result = val.bvxor(&mask);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32Sqrt { sd, sm } => {
+                // f32 square root: sd = sqrt(sm)
+                // Symbolic representation for verification
+                let result = BV::new_const(self.ctx, format!("f32_sqrt_{:?}", sm), 32);
+                state.set_vfp_reg(sd, result);
             }
 
             _ => {
