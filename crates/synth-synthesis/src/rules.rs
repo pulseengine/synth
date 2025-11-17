@@ -65,6 +65,7 @@ pub enum WasmOp {
     I32Popcnt,    // Population count (count 1 bits)
 
     // Comparison
+    I32Eqz,       // Equal to zero (unary)
     I32Eq,
     I32Ne,
     I32LtS,
@@ -148,6 +149,7 @@ pub enum ArmOp {
     // Bit manipulation (ARMv6T2+)
     Clz { rd: Reg, rm: Reg },              // Count leading zeros
     Rbit { rd: Reg, rm: Reg },             // Reverse bits (for CTZ)
+    Popcnt { rd: Reg, rm: Reg },           // Population count (pseudo-instruction for verification)
 
     // Move
     Mov { rd: Reg, op2: Operand2 },

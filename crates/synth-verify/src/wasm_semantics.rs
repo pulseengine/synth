@@ -147,6 +147,13 @@ impl<'ctx> WasmSemantics<'ctx> {
             }
 
             // Comparison operations (return i32: 0 or 1)
+            WasmOp::I32Eqz => {
+                assert_eq!(inputs.len(), 1, "I32Eqz requires 1 input");
+                let zero = BV::from_i64(self.ctx, 0, 32);
+                let cond = inputs[0]._eq(&zero);
+                self.bool_to_bv32(&cond)
+            }
+
             WasmOp::I32Eq => {
                 assert_eq!(inputs.len(), 2, "I32Eq requires 2 inputs");
                 let cond = inputs[0]._eq(&inputs[1]);
@@ -399,12 +406,53 @@ impl<'ctx> WasmSemantics<'ctx> {
     }
 
     /// Encode population count (count number of 1 bits)
-    fn encode_popcnt(&self, _input: &BV<'ctx>) -> BV<'ctx> {
-        // Population count - count the number of 1 bits
-        // This requires iterating through all bits
-        // For now, return a symbolic value
-        // A complete implementation would sum individual bit checks
-        BV::new_const(self.ctx, "popcnt_result", 32)
+    ///
+    /// Uses the Hamming weight algorithm (parallel bit counting).
+    /// This is efficient for SMT solving compared to bit-by-bit iteration.
+    ///
+    /// Algorithm:
+    /// 1. Count bits in pairs: each 2-bit group contains count of its 1 bits
+    /// 2. Count pairs in nibbles: each 4-bit group contains count
+    /// 3. Count nibbles in bytes: each 8-bit group contains count
+    /// 4. Sum all bytes to get final count
+    fn encode_popcnt(&self, input: &BV<'ctx>) -> BV<'ctx> {
+        let mut x = input.clone();
+
+        // Step 1: Count bits in pairs
+        // x = (x & 0x55555555) + ((x >> 1) & 0x55555555)
+        // Pattern: 01010101... (alternating bits)
+        let mask1 = BV::from_u64(self.ctx, 0x55555555, 32);
+        let masked = x.bvand(&mask1);
+        let shifted = x.bvlshr(&BV::from_i64(self.ctx, 1, 32));
+        let shifted_masked = shifted.bvand(&mask1);
+        x = masked.bvadd(&shifted_masked);
+
+        // Step 2: Count pairs in nibbles
+        // x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
+        // Pattern: 00110011... (pairs of bits)
+        let mask2 = BV::from_u64(self.ctx, 0x33333333, 32);
+        let masked = x.bvand(&mask2);
+        let shifted = x.bvlshr(&BV::from_i64(self.ctx, 2, 32));
+        let shifted_masked = shifted.bvand(&mask2);
+        x = masked.bvadd(&shifted_masked);
+
+        // Step 3: Count nibbles in bytes
+        // x = (x & 0x0F0F0F0F) + ((x >> 4) & 0x0F0F0F0F)
+        // Pattern: 00001111... (nibbles)
+        let mask3 = BV::from_u64(self.ctx, 0x0F0F0F0F, 32);
+        let masked = x.bvand(&mask3);
+        let shifted = x.bvlshr(&BV::from_i64(self.ctx, 4, 32));
+        let shifted_masked = shifted.bvand(&mask3);
+        x = masked.bvadd(&shifted_masked);
+
+        // Step 4: Sum all bytes
+        // x = (x * 0x01010101) >> 24
+        // Multiply effectively sums all bytes, then we extract top byte
+        let multiplier = BV::from_u64(self.ctx, 0x01010101, 32);
+        x = x.bvmul(&multiplier);
+        x = x.bvlshr(&BV::from_i64(self.ctx, 24, 32));
+
+        x
     }
 }
 
@@ -639,5 +687,41 @@ mod tests {
         let twelve = BV::from_i64(&ctx, 12, 32);
         let ctz_twelve = encoder.encode_op(&WasmOp::I32Ctz, &[twelve]);
         assert_eq!(ctz_twelve.as_i64(), Some(2), "CTZ(12) should be 2");
+    }
+
+    #[test]
+    fn test_wasm_popcnt() {
+        let ctx = create_z3_context();
+        let encoder = WasmSemantics::new(&ctx);
+
+        // Test POPCNT(0) = 0
+        let zero = BV::from_i64(&ctx, 0, 32);
+        let popcnt_zero = encoder.encode_op(&WasmOp::I32Popcnt, &[zero]);
+        assert_eq!(popcnt_zero.as_i64(), Some(0), "POPCNT(0) should be 0");
+
+        // Test POPCNT(1) = 1
+        let one = BV::from_i64(&ctx, 1, 32);
+        let popcnt_one = encoder.encode_op(&WasmOp::I32Popcnt, &[one]);
+        assert_eq!(popcnt_one.as_i64(), Some(1), "POPCNT(1) should be 1");
+
+        // Test POPCNT(0xFFFFFFFF) = 32
+        let all_ones = BV::from_u64(&ctx, 0xFFFFFFFF, 32);
+        let popcnt_all = encoder.encode_op(&WasmOp::I32Popcnt, &[all_ones]);
+        assert_eq!(popcnt_all.as_i64(), Some(32), "POPCNT(0xFFFFFFFF) should be 32");
+
+        // Test POPCNT(0x0F0F0F0F) = 16 (half the bits set)
+        let half = BV::from_u64(&ctx, 0x0F0F0F0F, 32);
+        let popcnt_half = encoder.encode_op(&WasmOp::I32Popcnt, &[half]);
+        assert_eq!(popcnt_half.as_i64(), Some(16), "POPCNT(0x0F0F0F0F) should be 16");
+
+        // Test POPCNT(7) = 3 (binary: 0111)
+        let seven = BV::from_i64(&ctx, 7, 32);
+        let popcnt_seven = encoder.encode_op(&WasmOp::I32Popcnt, &[seven]);
+        assert_eq!(popcnt_seven.as_i64(), Some(3), "POPCNT(7) should be 3");
+
+        // Test POPCNT(0xAAAAAAAA) = 16 (alternating bits)
+        let alternating = BV::from_u64(&ctx, 0xAAAAAAAA, 32);
+        let popcnt_alt = encoder.encode_op(&WasmOp::I32Popcnt, &[alternating]);
+        assert_eq!(popcnt_alt.as_i64(), Some(16), "POPCNT(0xAAAAAAAA) should be 16");
     }
 }
