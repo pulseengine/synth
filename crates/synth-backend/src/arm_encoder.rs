@@ -66,6 +66,37 @@ impl ArmEncoder {
                 0xE0000090 | (rd_bits << 16) | (rn_bits << 8) | rm_bits
             }
 
+            ArmOp::Sdiv { rd, rn, rm } => {
+                let rd_bits = reg_to_bits(rd);
+                let rn_bits = reg_to_bits(rn);
+                let rm_bits = reg_to_bits(rm);
+
+                // SDIV encoding: cond(4) | 01110001 | Rd(4) | 1111 | Rm(4) | 0001 | Rn(4)
+                // ARMv7-M and above
+                0xE710F010 | (rd_bits << 16) | (rm_bits << 8) | rn_bits
+            }
+
+            ArmOp::Udiv { rd, rn, rm } => {
+                let rd_bits = reg_to_bits(rd);
+                let rn_bits = reg_to_bits(rn);
+                let rm_bits = reg_to_bits(rm);
+
+                // UDIV encoding: cond(4) | 01110011 | Rd(4) | 1111 | Rm(4) | 0001 | Rn(4)
+                // ARMv7-M and above
+                0xE730F010 | (rd_bits << 16) | (rm_bits << 8) | rn_bits
+            }
+
+            ArmOp::Mls { rd, rn, rm, ra } => {
+                let rd_bits = reg_to_bits(rd);
+                let rn_bits = reg_to_bits(rn);
+                let rm_bits = reg_to_bits(rm);
+                let ra_bits = reg_to_bits(ra);
+
+                // MLS encoding: cond(4) | 00000110 | Rd(4) | Ra(4) | Rm(4) | 1001 | Rn(4)
+                // Rd = Ra - (Rn * Rm)
+                0xE0600090 | (rd_bits << 16) | (ra_bits << 12) | (rm_bits << 8) | rn_bits
+            }
+
             ArmOp::And { rd, rn, op2 } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);

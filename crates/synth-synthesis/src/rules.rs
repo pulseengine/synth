@@ -134,6 +134,9 @@ pub enum ArmOp {
     Add { rd: Reg, rn: Reg, op2: Operand2 },
     Sub { rd: Reg, rn: Reg, op2: Operand2 },
     Mul { rd: Reg, rn: Reg, rm: Reg },
+    Sdiv { rd: Reg, rn: Reg, rm: Reg },    // Signed division (ARMv7-M+)
+    Udiv { rd: Reg, rn: Reg, rm: Reg },    // Unsigned division (ARMv7-M+)
+    Mls { rd: Reg, rn: Reg, rm: Reg, ra: Reg },  // Multiply and subtract (for modulo)
     And { rd: Reg, rn: Reg, op2: Operand2 },
     Orr { rd: Reg, rn: Reg, op2: Operand2 },
     Eor { rd: Reg, rn: Reg, op2: Operand2 },
