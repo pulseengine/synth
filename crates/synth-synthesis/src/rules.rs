@@ -58,6 +58,11 @@ pub enum WasmOp {
     I32Shl,
     I32ShrS,
     I32ShrU,
+    I32Rotl,      // Rotate left
+    I32Rotr,      // Rotate right
+    I32Clz,       // Count leading zeros
+    I32Ctz,       // Count trailing zeros
+    I32Popcnt,    // Population count (count 1 bits)
 
     // Comparison
     I32Eq,
@@ -135,6 +140,11 @@ pub enum ArmOp {
     Lsl { rd: Reg, rn: Reg, shift: u32 },
     Lsr { rd: Reg, rn: Reg, shift: u32 },
     Asr { rd: Reg, rn: Reg, shift: u32 },
+    Ror { rd: Reg, rn: Reg, shift: u32 },  // Rotate right
+
+    // Bit manipulation (ARMv6T2+)
+    Clz { rd: Reg, rm: Reg },              // Count leading zeros
+    Rbit { rd: Reg, rm: Reg },             // Reverse bits (for CTZ)
 
     // Move
     Mov { rd: Reg, op2: Operand2 },

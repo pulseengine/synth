@@ -121,6 +121,34 @@ impl ArmEncoder {
                 0xE1A00040 | (rd_bits << 12) | (shift_bits << 7) | rn_bits
             }
 
+            ArmOp::Ror { rd, rn, shift } => {
+                let rd_bits = reg_to_bits(rd);
+                let rn_bits = reg_to_bits(rn);
+                let shift_bits = (*shift as u32) & 0x1F;
+
+                // ROR encoding: MOV with ROR shift
+                0xE1A00060 | (rd_bits << 12) | (shift_bits << 7) | rn_bits
+            }
+
+            // Bit manipulation instructions
+            ArmOp::Clz { rd, rm } => {
+                let rd_bits = reg_to_bits(rd);
+                let rm_bits = reg_to_bits(rm);
+
+                // CLZ encoding: cond(4) | 00010110 | 1111 | Rd(4) | 1111 | 0001 | Rm(4)
+                // ARMv5T and above
+                0xE16F0F10 | (rd_bits << 12) | rm_bits
+            }
+
+            ArmOp::Rbit { rd, rm } => {
+                let rd_bits = reg_to_bits(rd);
+                let rm_bits = reg_to_bits(rm);
+
+                // RBIT encoding: cond(4) | 01101111 | 1111 | Rd(4) | 1111 | 0011 | Rm(4)
+                // ARMv6T2 and above
+                0xE6FF0F30 | (rd_bits << 12) | rm_bits
+            }
+
             // Move instructions
             ArmOp::Mov { rd, op2 } => {
                 let rd_bits = reg_to_bits(rd);
