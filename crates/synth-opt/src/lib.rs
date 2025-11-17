@@ -600,6 +600,104 @@ impl OptimizationPass for AlgebraicSimplification {
     }
 }
 
+/// Peephole Optimization pass
+pub struct PeepholeOptimization {
+    verbose: bool,
+}
+
+impl PeepholeOptimization {
+    pub fn new() -> Self {
+        Self { verbose: false }
+    }
+
+    pub fn with_verbose(mut self) -> Self {
+        self.verbose = true;
+        self
+    }
+
+    /// Apply peephole optimizations (local pattern matching)
+    fn optimize(&mut self, instructions: &mut Vec<Instruction>) -> OptResult {
+        let mut modified = 0;
+
+        // Look for patterns in a sliding window
+        let mut i = 0;
+        while i + 1 < instructions.len() {
+            if instructions[i].is_dead || instructions[i + 1].is_dead {
+                i += 1;
+                continue;
+            }
+
+            let inst1 = instructions[i].opcode.clone();
+            let inst2 = instructions[i + 1].opcode.clone();
+
+            // Pattern: const r1, a; const r1, b -> eliminate first const
+            match (&inst1, &inst2) {
+                (Opcode::Const { dest: dest1, .. }, Opcode::Const { dest: dest2, .. }) if dest1 == dest2 => {
+                    // Second const overwrites first
+                    instructions[i].is_dead = true;
+                    modified += 1;
+
+                    if self.verbose {
+                        eprintln!("Peephole: Eliminated redundant const to r{}", dest1.0);
+                    }
+                }
+
+                // Pattern: add r2, r0, r1; add r3, r0, r1 (handled by CSE, but detect for stats)
+                _ => {}
+            }
+
+            i += 1;
+        }
+
+        // Look for 3-instruction patterns
+        let mut i = 0;
+        while i + 2 < instructions.len() {
+            if instructions[i].is_dead || instructions[i + 1].is_dead || instructions[i + 2].is_dead {
+                i += 1;
+                continue;
+            }
+
+            let inst1 = instructions[i].opcode.clone();
+            let inst2 = instructions[i + 1].opcode.clone();
+            let inst3 = instructions[i + 2].opcode.clone();
+
+            // Pattern: const r0, 0; add r2, r1, r0; -> just mark add as dead (simplified by algebraic)
+            match (&inst1, &inst2, &inst3) {
+                _ => {}
+            }
+
+            i += 1;
+        }
+
+        if self.verbose && modified > 0 {
+            eprintln!("Peephole optimization: {} patterns matched", modified);
+        }
+
+        OptResult {
+            changed: modified > 0,
+            removed_count: modified,
+            added_count: 0,
+            modified_count: 0,
+        }
+    }
+}
+
+impl Default for PeepholeOptimization {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OptimizationPass for PeepholeOptimization {
+    fn name(&self) -> &'static str {
+        "peephole-optimization"
+    }
+
+    fn run(&mut self, _cfg: &mut Cfg, instructions: &mut Vec<Instruction>) -> OptResult {
+        self.optimize(instructions)
+    }
+}
+
 /// Optimization pass manager
 pub struct PassManager {
     passes: Vec<Box<dyn OptimizationPass>>,
@@ -1486,5 +1584,172 @@ mod tests {
         assert!(instructions[2].is_dead); // r2 + 0
         assert!(instructions[3].is_dead); // r3 * 1
         assert_eq!(instructions[4].opcode, Opcode::Const { dest: Reg(7), value: 0 }); // r4 - r4
+    }
+
+    #[test]
+    fn test_peephole_redundant_const() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..2 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r0 = 5, r0 = 10 (second overwrites first)
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const { dest: Reg(0), value: 5 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Const { dest: Reg(0), value: 10 },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut peephole = PeepholeOptimization::new();
+        let result = peephole.run(&mut cfg, &mut instructions);
+
+        // First const should be eliminated
+        assert!(result.changed);
+        assert_eq!(result.removed_count, 1);
+        assert!(instructions[0].is_dead);
+        assert!(!instructions[1].is_dead);
+    }
+
+    #[test]
+    fn test_peephole_no_redundant_const() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..2 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r0 = 5, r1 = 10 (different registers)
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const { dest: Reg(0), value: 5 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Const { dest: Reg(1), value: 10 },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut peephole = PeepholeOptimization::new();
+        let result = peephole.run(&mut cfg, &mut instructions);
+
+        // Nothing should be eliminated
+        assert!(!result.changed);
+        assert_eq!(result.removed_count, 0);
+    }
+
+    #[test]
+    fn test_full_optimization_pipeline() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..10 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Complex program with multiple optimization opportunities
+        let mut instructions = vec![
+            // Redundant const
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const { dest: Reg(0), value: 5 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Const { dest: Reg(0), value: 10 },
+                block_id: 0,
+                is_dead: false,
+            },
+            // Constant folding opportunity
+            Instruction {
+                id: 2,
+                opcode: Opcode::Const { dest: Reg(1), value: 20 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 3,
+                opcode: Opcode::Add {
+                    dest: Reg(2),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            // Algebraic simplification
+            Instruction {
+                id: 4,
+                opcode: Opcode::Const { dest: Reg(3), value: 0 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 5,
+                opcode: Opcode::Add {
+                    dest: Reg(4),
+                    src1: Reg(2),
+                    src2: Reg(3),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            // CSE opportunity
+            Instruction {
+                id: 6,
+                opcode: Opcode::Add {
+                    dest: Reg(5),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        // Run full pipeline
+        let mut manager = PassManager::new()
+            .add_pass(PeepholeOptimization::new())
+            .add_pass(ConstantFolding::new())
+            .add_pass(AlgebraicSimplification::new())
+            .add_pass(CommonSubexpressionElimination::new())
+            .with_max_iterations(5);
+
+        let result = manager.run(&mut cfg, &mut instructions);
+
+        // Should have optimized multiple things
+        assert!(result.changed);
+
+        // At least some optimizations should have been applied
+        let total_opts = result.removed_count + result.modified_count;
+        assert!(total_opts >= 2, "Expected at least 2 optimizations, got {}", total_opts);
+
+        // First const should be dead (peephole - redundant const)
+        assert!(instructions[0].is_dead, "Redundant const not eliminated");
+
+        // Add r0+r1 should be folded to const 30 (constant folding)
+        if let Opcode::Const { value, .. } = instructions[3].opcode {
+            assert_eq!(value, 30, "Constant folding failed");
+        } else {
+            panic!("Expected const, got {:?}", instructions[3].opcode);
+        }
     }
 }
