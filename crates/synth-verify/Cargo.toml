@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = []
+z3-solver = ["z3"]
+
 [dependencies]
 # Core dependencies
 synth-core = { path = "../synth-core" }
@@ -14,9 +18,9 @@ synth-cfg = { path = "../synth-cfg" }
 synth-opt = { path = "../synth-opt" }
 
 # SMT solver for formal verification
-# Note: Z3 static linking can have issues in some environments
-# For development, we skip tests and rely on CI/specialized environments
-z3 = "0.12"
+# Made optional to allow compilation without Z3 headers installed
+# Enable with: cargo build --features z3-solver
+z3 = { version = "0.12", optional = true }
 
 # Error handling
 anyhow.workspace = true
