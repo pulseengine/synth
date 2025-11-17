@@ -73,14 +73,40 @@ pub struct Instruction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Opcode {
     Nop,
+    // Arithmetic
     Add { dest: Reg, src1: Reg, src2: Reg },
     Sub { dest: Reg, src1: Reg, src2: Reg },
     Mul { dest: Reg, src1: Reg, src2: Reg },
+    DivS { dest: Reg, src1: Reg, src2: Reg },  // Signed division
+    DivU { dest: Reg, src1: Reg, src2: Reg },  // Unsigned division
+    RemS { dest: Reg, src1: Reg, src2: Reg },  // Signed remainder
+    RemU { dest: Reg, src1: Reg, src2: Reg },  // Unsigned remainder
+    // Bitwise
+    And { dest: Reg, src1: Reg, src2: Reg },
+    Or { dest: Reg, src1: Reg, src2: Reg },
+    Xor { dest: Reg, src1: Reg, src2: Reg },
+    Shl { dest: Reg, src1: Reg, src2: Reg },   // Shift left
+    ShrS { dest: Reg, src1: Reg, src2: Reg },  // Shift right signed
+    ShrU { dest: Reg, src1: Reg, src2: Reg },  // Shift right unsigned
+    // Comparison (result is 0 or 1)
+    Eq { dest: Reg, src1: Reg, src2: Reg },
+    Ne { dest: Reg, src1: Reg, src2: Reg },
+    LtS { dest: Reg, src1: Reg, src2: Reg },   // Less than signed
+    LtU { dest: Reg, src1: Reg, src2: Reg },   // Less than unsigned
+    LeS { dest: Reg, src1: Reg, src2: Reg },   // Less or equal signed
+    LeU { dest: Reg, src1: Reg, src2: Reg },   // Less or equal unsigned
+    GtS { dest: Reg, src1: Reg, src2: Reg },   // Greater than signed
+    GtU { dest: Reg, src1: Reg, src2: Reg },   // Greater than unsigned
+    GeS { dest: Reg, src1: Reg, src2: Reg },   // Greater or equal signed
+    GeU { dest: Reg, src1: Reg, src2: Reg },   // Greater or equal unsigned
+    // Memory
     Load { dest: Reg, addr: u32 },
     Store { src: Reg, addr: u32 },
+    // Control flow
     Branch { target: BlockId },
     CondBranch { cond: Reg, target: BlockId },
     Return { value: Option<Reg> },
+    // Constants
     Const { dest: Reg, value: i32 },
 }
 

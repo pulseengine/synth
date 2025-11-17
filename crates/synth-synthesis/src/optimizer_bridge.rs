@@ -122,6 +122,8 @@ impl OptimizerBridge {
                     dest: OptReg(inst_id as u32),
                     value: *val,
                 },
+
+                // Arithmetic operations
                 WasmOp::I32Add => Opcode::Add {
                     dest: OptReg(inst_id as u32),
                     src1: OptReg(inst_id.saturating_sub(2) as u32),
@@ -137,15 +139,123 @@ impl OptimizerBridge {
                     src1: OptReg(inst_id.saturating_sub(2) as u32),
                     src2: OptReg(inst_id.saturating_sub(1) as u32),
                 },
+                WasmOp::I32DivS => Opcode::DivS {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32DivU => Opcode::DivU {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32RemS => Opcode::RemS {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32RemU => Opcode::RemU {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+
+                // Bitwise operations
+                WasmOp::I32And => Opcode::And {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32Or => Opcode::Or {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32Xor => Opcode::Xor {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32Shl => Opcode::Shl {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32ShrS => Opcode::ShrS {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32ShrU => Opcode::ShrU {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+
+                // Comparison operations
+                WasmOp::I32Eq => Opcode::Eq {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32Ne => Opcode::Ne {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32LtS => Opcode::LtS {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32LtU => Opcode::LtU {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32LeS => Opcode::LeS {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32LeU => Opcode::LeU {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32GtS => Opcode::GtS {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32GtU => Opcode::GtU {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32GeS => Opcode::GeS {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+                WasmOp::I32GeU => Opcode::GeU {
+                    dest: OptReg(inst_id as u32),
+                    src1: OptReg(inst_id.saturating_sub(2) as u32),
+                    src2: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+
+                // Memory and locals
                 WasmOp::LocalGet(idx) => Opcode::Load {
                     dest: OptReg(inst_id as u32),
-                    addr: *idx as u32,
+                    addr: *idx,
                 },
                 WasmOp::LocalSet(idx) => Opcode::Store {
                     src: OptReg(inst_id.saturating_sub(1) as u32),
-                    addr: *idx as u32,
+                    addr: *idx,
                 },
-                _ => Opcode::Nop, // Fallback for unsupported ops
+
+                // Fallback for unsupported ops
+                _ => Opcode::Nop,
             };
 
             instructions.push(Instruction {
@@ -306,5 +416,91 @@ mod tests {
         assert_eq!(stats.removed, 0);
         assert_eq!(stats.modified, 0);
         assert_eq!(stats.added, 0);
+    }
+
+    #[test]
+    fn test_wasm_division() {
+        let bridge = OptimizerBridge::new();
+        let wasm_ops = vec![
+            WasmOp::I32Const(20),
+            WasmOp::I32Const(4),
+            WasmOp::I32DivS,
+        ];
+
+        let stats = bridge.optimize(&wasm_ops).unwrap();
+
+        // Should have run optimizations
+        assert!(stats.passes_run > 0);
+    }
+
+    #[test]
+    fn test_wasm_bitwise() {
+        let bridge = OptimizerBridge::new();
+        let wasm_ops = vec![
+            WasmOp::I32Const(15),
+            WasmOp::I32Const(7),
+            WasmOp::I32And,
+            WasmOp::I32Const(8),
+            WasmOp::I32Or,
+        ];
+
+        let stats = bridge.optimize(&wasm_ops).unwrap();
+
+        // Should have run optimizations
+        assert!(stats.passes_run > 0);
+    }
+
+    #[test]
+    fn test_wasm_shifts() {
+        let bridge = OptimizerBridge::new();
+        let wasm_ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::I32Const(3),
+            WasmOp::I32Shl, // 1 << 3 = 8
+        ];
+
+        let stats = bridge.optimize(&wasm_ops).unwrap();
+
+        // Should have run optimizations
+        assert!(stats.passes_run > 0);
+    }
+
+    #[test]
+    fn test_wasm_comparison() {
+        let bridge = OptimizerBridge::new();
+        let wasm_ops = vec![
+            WasmOp::I32Const(10),
+            WasmOp::I32Const(5),
+            WasmOp::I32LtS,  // 10 < 5 = 0
+            WasmOp::I32Const(3),
+            WasmOp::I32Const(7),
+            WasmOp::I32GtU,  // 3 > 7 = 0
+        ];
+
+        let stats = bridge.optimize(&wasm_ops).unwrap();
+
+        // Should have run optimizations
+        assert!(stats.passes_run > 0);
+    }
+
+    #[test]
+    fn test_wasm_complex_program() {
+        let bridge = OptimizerBridge::with_config(OptimizationConfig::all());
+        let wasm_ops = vec![
+            // Compute (a & b) | (c << 2)
+            WasmOp::LocalGet(0),    // a
+            WasmOp::LocalGet(1),    // b
+            WasmOp::I32And,         // a & b
+            WasmOp::LocalGet(2),    // c
+            WasmOp::I32Const(2),
+            WasmOp::I32Shl,         // c << 2
+            WasmOp::I32Or,          // (a & b) | (c << 2)
+            WasmOp::LocalSet(3),    // store result
+        ];
+
+        let stats = bridge.optimize(&wasm_ops).unwrap();
+
+        // Should have run all passes
+        assert_eq!(stats.passes_run, 5);
     }
 }
