@@ -252,11 +252,27 @@ pub enum ArmOp {
     I64Add { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
     I64Sub { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
     I64Mul { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64DivS { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64DivU { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64RemS { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64RemU { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
 
     // i64 Bitwise (register pairs)
     I64And { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
     I64Or { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
     I64Xor { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+
+    // i64 Shift operations (register pairs, shift amount in single register)
+    I64Shl { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, shift: Reg },
+    I64ShrS { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, shift: Reg },
+    I64ShrU { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, shift: Reg },
+    I64Rotl { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, shift: Reg },
+    I64Rotr { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, shift: Reg },
+
+    // i64 Bit manipulation (register pairs)
+    I64Clz { rd: Reg, rnlo: Reg, rnhi: Reg },    // Count leading zeros (result is 32-bit)
+    I64Ctz { rd: Reg, rnlo: Reg, rnhi: Reg },    // Count trailing zeros
+    I64Popcnt { rd: Reg, rnlo: Reg, rnhi: Reg }, // Population count
 
     // i64 Comparison (register pairs, result in single register)
     I64Eqz { rd: Reg, rnlo: Reg, rnhi: Reg },

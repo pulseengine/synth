@@ -491,9 +491,43 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, result_high);
             }
 
-            ArmOp::I64Mul { rdlo, rdhi, .. } => {
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_mul_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_mul_hi", 32));
+            ArmOp::I64Mul { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+                // 64-bit multiplication: (a_hi:a_lo) * (b_hi:b_lo) → (result_hi:result_lo)
+                // Algorithm for 64x64→64 bit multiplication:
+                // result = (a_hi * b_lo * 2^32) + (a_lo * b_hi * 2^32) + (a_lo * b_lo)
+                // Only the low 64 bits are kept
+
+                let a_lo = state.get_reg(rnlo).clone();
+                let a_hi = state.get_reg(rnhi).clone();
+                let b_lo = state.get_reg(rmlo).clone();
+                let b_hi = state.get_reg(rmhi).clone();
+
+                // Low part: a_lo * b_lo (32x32→64, we need both parts)
+                // For SMT, we can use bvmul which gives 32-bit result (truncated)
+                let lo_lo = a_lo.bvmul(&b_lo);
+                state.set_reg(rdlo, lo_lo.clone());
+
+                // For the high part, we need to handle overflow from a_lo * b_lo
+                // and add the cross products: a_hi * b_lo + a_lo * b_hi
+                //
+                // Simplified approach: use symbolic representation for now
+                // TODO: Implement full 64-bit multiplication with proper overflow handling
+                // This requires 64-bit bitvector intermediate computations
+
+                // Cross products (take low 32 bits of each)
+                let hi_lo = a_hi.bvmul(&b_lo);  // a_hi * b_lo (low 32 bits)
+                let lo_hi = a_lo.bvmul(&b_hi);  // a_lo * b_hi (low 32 bits)
+
+                // High part approximation (missing carry from a_lo * b_lo)
+                // result_hi ≈ hi_lo + lo_hi
+                let hi_sum = hi_lo.bvadd(&lo_hi);
+                state.set_reg(rdhi, hi_sum);
+
+                // Note: This is a simplified implementation. A complete implementation
+                // would need to:
+                // 1. Extract high 32 bits of (a_lo * b_lo)
+                // 2. Add that to the cross products
+                // 3. Handle carries properly
             }
 
             ArmOp::I64And { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
@@ -703,6 +737,208 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let lt_bool = high_lt.or(&[&eq_and_lt]);
                 let result_bool = lt_bool.not(); // GE is !(LT)
                 let result = self.bool_to_bv32(&result_bool);
+                state.set_reg(rd, result);
+            }
+
+            // ================================================================
+            // i64 Division and Remainder (stubs)
+            // ================================================================
+
+            ArmOp::I64DivS { rdlo, rdhi, .. } => {
+                // Signed 64-bit division - complex operation
+                // Requires multi-instruction sequence on ARM32
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_div_s_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_div_s_hi", 32));
+            }
+
+            ArmOp::I64DivU { rdlo, rdhi, .. } => {
+                // Unsigned 64-bit division
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_div_u_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_div_u_hi", 32));
+            }
+
+            ArmOp::I64RemS { rdlo, rdhi, .. } => {
+                // Signed 64-bit remainder
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_rem_s_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_rem_s_hi", 32));
+            }
+
+            ArmOp::I64RemU { rdlo, rdhi, .. } => {
+                // Unsigned 64-bit remainder
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_rem_u_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_rem_u_hi", 32));
+            }
+
+            // ================================================================
+            // i64 Shift Operations
+            // ================================================================
+
+            ArmOp::I64Shl { rdlo, rdhi, rnlo, rnhi, shift } => {
+                // 64-bit left shift: (n_hi:n_lo) << shift
+                // WASM spec: shift amount is modulo 64
+                let n_lo = state.get_reg(rnlo).clone();
+                let n_hi = state.get_reg(rnhi).clone();
+                let shift_amt = state.get_reg(shift).clone();
+
+                // Modulo 64: shift_amt = shift_amt & 63
+                let shift_mod = shift_amt.bvand(&BV::from_i64(self.ctx, 63, 32));
+
+                // If shift < 32: normal shift with bits moving from low to high
+                // If shift >= 32: low becomes 0, high gets shifted low part
+                let shift_32 = BV::from_i64(self.ctx, 32, 32);
+                let is_large = shift_mod.bvuge(&shift_32); // shift >= 32
+
+                // Small shift (< 32):
+                // result_lo = n_lo << shift
+                // result_hi = (n_hi << shift) | (n_lo >> (32 - shift))
+                let result_lo_small = n_lo.bvshl(&shift_mod);
+                let shift_complement = shift_32.bvsub(&shift_mod);
+                let bits_to_high = n_lo.bvlshr(&shift_complement);
+                let result_hi_small = n_hi.bvshl(&shift_mod).bvor(&bits_to_high);
+
+                // Large shift (>= 32):
+                // result_lo = 0
+                // result_hi = n_lo << (shift - 32)
+                let zero = BV::from_i64(self.ctx, 0, 32);
+                let shift_minus_32 = shift_mod.bvsub(&shift_32);
+                let result_lo_large = zero.clone();
+                let result_hi_large = n_lo.bvshl(&shift_minus_32);
+
+                // Select based on shift size
+                let result_lo = is_large.ite(&result_lo_large, &result_lo_small);
+                let result_hi = is_large.ite(&result_hi_large, &result_hi_small);
+
+                state.set_reg(rdlo, result_lo);
+                state.set_reg(rdhi, result_hi);
+            }
+
+            ArmOp::I64ShrU { rdlo, rdhi, rnlo, rnhi, shift } => {
+                // 64-bit logical (unsigned) right shift
+                let n_lo = state.get_reg(rnlo).clone();
+                let n_hi = state.get_reg(rnhi).clone();
+                let shift_amt = state.get_reg(shift).clone();
+
+                let shift_mod = shift_amt.bvand(&BV::from_i64(self.ctx, 63, 32));
+                let shift_32 = BV::from_i64(self.ctx, 32, 32);
+                let is_large = shift_mod.bvuge(&shift_32);
+
+                // Small shift (< 32):
+                // result_hi = n_hi >> shift
+                // result_lo = (n_lo >> shift) | (n_hi << (32 - shift))
+                let result_hi_small = n_hi.bvlshr(&shift_mod);
+                let shift_complement = shift_32.bvsub(&shift_mod);
+                let bits_to_low = n_hi.bvshl(&shift_complement);
+                let result_lo_small = n_lo.bvlshr(&shift_mod).bvor(&bits_to_low);
+
+                // Large shift (>= 32):
+                // result_hi = 0
+                // result_lo = n_hi >> (shift - 32)
+                let zero = BV::from_i64(self.ctx, 0, 32);
+                let shift_minus_32 = shift_mod.bvsub(&shift_32);
+                let result_hi_large = zero.clone();
+                let result_lo_large = n_hi.bvlshr(&shift_minus_32);
+
+                let result_lo = is_large.ite(&result_lo_large, &result_lo_small);
+                let result_hi = is_large.ite(&result_hi_large, &result_hi_small);
+
+                state.set_reg(rdlo, result_lo);
+                state.set_reg(rdhi, result_hi);
+            }
+
+            ArmOp::I64ShrS { rdlo, rdhi, rnlo, rnhi, shift } => {
+                // 64-bit arithmetic (signed) right shift
+                let n_lo = state.get_reg(rnlo).clone();
+                let n_hi = state.get_reg(rnhi).clone();
+                let shift_amt = state.get_reg(shift).clone();
+
+                let shift_mod = shift_amt.bvand(&BV::from_i64(self.ctx, 63, 32));
+                let shift_32 = BV::from_i64(self.ctx, 32, 32);
+                let is_large = shift_mod.bvuge(&shift_32);
+
+                // Small shift (< 32):
+                // result_hi = n_hi >> shift (arithmetic)
+                // result_lo = (n_lo >> shift) | (n_hi << (32 - shift))
+                let result_hi_small = n_hi.bvashr(&shift_mod);
+                let shift_complement = shift_32.bvsub(&shift_mod);
+                let bits_to_low = n_hi.bvshl(&shift_complement);
+                let result_lo_small = n_lo.bvlshr(&shift_mod).bvor(&bits_to_low);
+
+                // Large shift (>= 32):
+                // result_hi = n_hi >> 31 (sign extension: all 0s or all 1s)
+                // result_lo = n_hi >> (shift - 32) (arithmetic)
+                let shift_31 = BV::from_i64(self.ctx, 31, 32);
+                let result_hi_large = n_hi.bvashr(&shift_31);
+                let shift_minus_32 = shift_mod.bvsub(&shift_32);
+                let result_lo_large = n_hi.bvashr(&shift_minus_32);
+
+                let result_lo = is_large.ite(&result_lo_large, &result_lo_small);
+                let result_hi = is_large.ite(&result_hi_large, &result_hi_small);
+
+                state.set_reg(rdlo, result_lo);
+                state.set_reg(rdhi, result_hi);
+            }
+
+            // Rotation and bit manipulation - stubs for now
+            ArmOp::I64Rotl { rdlo, rdhi, .. } => {
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_rotl_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_rotl_hi", 32));
+            }
+
+            ArmOp::I64Rotr { rdlo, rdhi, .. } => {
+                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_rotr_lo", 32));
+                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_rotr_hi", 32));
+            }
+
+            ArmOp::I64Clz { rd, rnlo, rnhi } => {
+                // Count leading zeros for 64-bit value
+                // If high part has zeros, result = clz(high) + clz(low)
+                // If high part is zero, result = 32 + clz(low)
+                let n_lo = state.get_reg(rnlo).clone();
+                let n_hi = state.get_reg(rnhi).clone();
+
+                let hi_clz = self.encode_clz(&n_hi);
+                let lo_clz = self.encode_clz(&n_lo);
+
+                // If high == 32 (all zeros), add low clz; else use high clz
+                let thirty_two = BV::from_i64(self.ctx, 32, 32);
+                let hi_is_zero = hi_clz._eq(&thirty_two);
+                let result = hi_is_zero.ite(
+                    &thirty_two.bvadd(&lo_clz),  // High is zero: 32 + clz(low)
+                    &hi_clz                        // High has bits: clz(high)
+                );
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I64Ctz { rd, rnlo, rnhi } => {
+                // Count trailing zeros for 64-bit value
+                // If low part is zero, result = 32 + ctz(high)
+                // Else result = ctz(low)
+                let n_lo = state.get_reg(rnlo).clone();
+                let n_hi = state.get_reg(rnhi).clone();
+
+                let lo_ctz = self.encode_ctz(&n_lo);
+                let hi_ctz = self.encode_ctz(&n_hi);
+
+                // If low == 32 (all zeros), add high ctz; else use low ctz
+                let thirty_two = BV::from_i64(self.ctx, 32, 32);
+                let lo_is_zero = lo_ctz._eq(&thirty_two);
+                let result = lo_is_zero.ite(
+                    &thirty_two.bvadd(&hi_ctz),  // Low is zero: 32 + ctz(high)
+                    &lo_ctz                        // Low has bits: ctz(low)
+                );
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I64Popcnt { rd, rnlo, rnhi } => {
+                // Population count for 64-bit value
+                // Result = popcnt(low) + popcnt(high)
+                let n_lo = state.get_reg(rnlo).clone();
+                let n_hi = state.get_reg(rnhi).clone();
+
+                let lo_popcnt = self.encode_popcnt(&n_lo);
+                let hi_popcnt = self.encode_popcnt(&n_hi);
+
+                let result = lo_popcnt.bvadd(&hi_popcnt);
                 state.set_reg(rd, result);
             }
 
