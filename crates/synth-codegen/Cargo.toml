@@ -1,0 +1,12 @@
+[package]
+name = "synth-codegen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+synth-cfg = { path = "../synth-cfg" }
+synth-opt = { path = "../synth-opt" }
+synth-regalloc = { path = "../synth-regalloc" }
