@@ -287,6 +287,120 @@ pub fn lower_result<M: Memory>(
     }
 }
 
+/// Lower an enum value
+pub fn lower_enum(value: &ComponentValue, cases: &[String]) -> AbiResult<u32> {
+    match value {
+        ComponentValue::Enum(case_name) => {
+            // Find the case index
+            for (i, case) in cases.iter().enumerate() {
+                if case == case_name {
+                    return Ok(i as u32);
+                }
+            }
+            Err(AbiError::Other(format!("Unknown enum case: {}", case_name)))
+        }
+        _ => Err(AbiError::Other("Expected enum value".to_string())),
+    }
+}
+
+/// Lower a flags value (bitset)
+pub fn lower_flags(value: &ComponentValue, flag_names: &[String]) -> AbiResult<u32> {
+    match value {
+        ComponentValue::Flags(flags) => {
+            let mut bits = 0u32;
+
+            for flag in flags {
+                // Find the flag index
+                let mut found = false;
+                for (i, flag_name) in flag_names.iter().enumerate() {
+                    if flag_name == flag {
+                        if i >= 32 {
+                            return Err(AbiError::InvalidFlags {
+                                value: bits,
+                                max_bits: 32,
+                            });
+                        }
+                        bits |= 1 << i;
+                        found = true;
+                        break;
+                    }
+                }
+
+                if !found {
+                    return Err(AbiError::Other(format!("Unknown flag: {}", flag)));
+                }
+            }
+
+            Ok(bits)
+        }
+        _ => Err(AbiError::Other("Expected flags value".to_string())),
+    }
+}
+
+/// Lower a variant value (general sum type)
+pub fn lower_variant<M: Memory>(
+    mem: &mut M,
+    value: &ComponentValue,
+    cases: &[(String, Option<Type>)],
+    opts: &AbiOptions,
+) -> AbiResult<Vec<u8>> {
+    use crate::{alignment_of, size_of};
+
+    match value {
+        ComponentValue::Variant { case, value: payload } => {
+            // Find the case index
+            let mut case_index = None;
+            let mut case_type = None;
+
+            for (i, (case_name, ty)) in cases.iter().enumerate() {
+                if case_name == case {
+                    case_index = Some(i);
+                    case_type = ty.clone();
+                    break;
+                }
+            }
+
+            let case_index = case_index.ok_or_else(|| {
+                AbiError::Other(format!("Unknown variant case: {}", case))
+            })?;
+
+            // Calculate max payload size
+            let max_payload_size = cases
+                .iter()
+                .map(|(_, ty)| ty.as_ref().map(size_of).unwrap_or(0))
+                .max()
+                .unwrap_or(0);
+
+            // Discriminant (4 bytes) + max payload size
+            let total_size = 4 + max_payload_size;
+            let mut result = vec![0u8; total_size];
+
+            // Write discriminant
+            result[0..4].copy_from_slice(&(case_index as u32).to_le_bytes());
+
+            // Write payload if present
+            if let (Some(payload_value), Some(ty)) = (payload, case_type) {
+                match (payload_value.as_ref(), &ty) {
+                    (ComponentValue::String(s), Type::String) => {
+                        let (ptr, len) = lower_string(mem, s, opts)?;
+                        result[4..8].copy_from_slice(&ptr.to_le_bytes());
+                        result[8..12].copy_from_slice(&len.to_le_bytes());
+                    }
+                    _ => {
+                        let core_vals = lower_primitive(payload_value, &ty)?;
+                        if let Some(CoreValue::I32(v)) = core_vals.first() {
+                            result[4..8].copy_from_slice(&v.to_le_bytes());
+                        }
+                    }
+                }
+            }
+
+            Ok(result)
+        }
+        _ => Err(AbiError::Other("Expected variant value".to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -462,5 +576,101 @@ mod tests {
         // Value at offset 4
         let v = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
         assert_eq!(v, 404);
+    }
+
+    #[test]
+    fn test_lower_enum() {
+        let cases = vec![
+            "red".to_string(),
+            "green".to_string(),
+            "blue".to_string(),
+        ];
+
+        let value = ComponentValue::Enum("green".to_string());
+        let discriminant = lower_enum(&value, &cases).unwrap();
+
+        assert_eq!(discriminant, 1); // green is index 1
+    }
+
+    #[test]
+    fn test_lower_enum_unknown_case() {
+        let cases = vec!["red".to_string(), "green".to_string()];
+        let value = ComponentValue::Enum("purple".to_string());
+        let result = lower_enum(&value, &cases);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_lower_flags() {
+        let flag_names = vec![
+            "read".to_string(),
+            "write".to_string(),
+            "execute".to_string(),
+        ];
+
+        // Set read and execute flags
+        let value = ComponentValue::Flags(vec!["read".to_string(), "execute".to_string()]);
+        let bits = lower_flags(&value, &flag_names).unwrap();
+
+        // Bits 0 and 2 should be set
+        assert_eq!(bits, 0b101); // 5
+    }
+
+    #[test]
+    fn test_lower_flags_empty() {
+        let flag_names = vec!["read".to_string(), "write".to_string()];
+        let value = ComponentValue::Flags(vec![]);
+        let bits = lower_flags(&value, &flag_names).unwrap();
+
+        assert_eq!(bits, 0);
+    }
+
+    #[test]
+    fn test_lower_variant_without_payload() {
+        let mut mem = SimpleMemory::new(1024);
+        let opts = AbiOptions::default();
+
+        let cases = vec![
+            ("none".to_string(), None),
+            ("some".to_string(), Some(Type::U32)),
+        ];
+
+        let value = ComponentValue::Variant {
+            case: "none".to_string(),
+            value: None,
+        };
+
+        let data = lower_variant(&mut mem, &value, &cases, &opts).unwrap();
+
+        // Discriminant should be 0 (first case)
+        let discriminant = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        assert_eq!(discriminant, 0);
+    }
+
+    #[test]
+    fn test_lower_variant_with_payload() {
+        let mut mem = SimpleMemory::new(1024);
+        let opts = AbiOptions::default();
+
+        let cases = vec![
+            ("none".to_string(), None),
+            ("some".to_string(), Some(Type::U32)),
+        ];
+
+        let value = ComponentValue::Variant {
+            case: "some".to_string(),
+            value: Some(Box::new(ComponentValue::U32(42))),
+        };
+
+        let data = lower_variant(&mut mem, &value, &cases, &opts).unwrap();
+
+        // Discriminant should be 1 (second case)
+        let discriminant = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        assert_eq!(discriminant, 1);
+
+        // Payload at offset 4
+        let payload = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        assert_eq!(payload, 42);
     }
 }
