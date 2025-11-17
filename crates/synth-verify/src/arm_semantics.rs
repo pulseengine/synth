@@ -180,6 +180,15 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
+            ArmOp::Ror { rd, rn, shift } => {
+                // Rotate right - ARM ROR instruction
+                // ROR(x, n) rotates x right by n positions
+                let rn_val = state.get_reg(rn).clone();
+                let shift_val = BV::from_i64(self.ctx, *shift as i64, 32);
+                let result = rn_val.bvrotr(&shift_val);
+                state.set_reg(rd, result);
+            }
+
             ArmOp::Mov { rd, op2 } => {
                 let op2_val = self.evaluate_operand2(op2, state);
                 state.set_reg(rd, op2_val);
@@ -536,6 +545,75 @@ mod tests {
         };
         encoder.encode_op(&lsr_op, &mut state);
         assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(2));
+    }
+
+    #[test]
+    fn test_arm_ror_comprehensive() {
+        let ctx = create_z3_context();
+        let encoder = ArmSemantics::new(&ctx);
+        let mut state = ArmState::new_symbolic(&ctx);
+
+        // Test ROR with 0x12345678
+        // ROR by 8 should rotate right by 8 bits
+        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x12345678, 32));
+        let ror_op = ArmOp::Ror {
+            rd: Reg::R0,
+            rn: Reg::R1,
+            shift: 8,
+        };
+        encoder.encode_op(&ror_op, &mut state);
+        // 0x12345678 ROR 8 = 0x78123456
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x78123456), "ROR by 8");
+
+        // Test ROR by 16 (swap halves)
+        let ror_op_16 = ArmOp::Ror {
+            rd: Reg::R0,
+            rn: Reg::R1,
+            shift: 16,
+        };
+        encoder.encode_op(&ror_op_16, &mut state);
+        // 0x12345678 ROR 16 = 0x56781234
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x56781234), "ROR by 16");
+
+        // Test ROR by 0 (no change)
+        let ror_op_0 = ArmOp::Ror {
+            rd: Reg::R0,
+            rn: Reg::R1,
+            shift: 0,
+        };
+        encoder.encode_op(&ror_op_0, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x12345678), "ROR by 0");
+
+        // Test ROR by 32 (full rotation, back to original)
+        let ror_op_32 = ArmOp::Ror {
+            rd: Reg::R0,
+            rn: Reg::R1,
+            shift: 32,
+        };
+        encoder.encode_op(&ror_op_32, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x12345678), "ROR by 32");
+
+        // Test ROR by 4 (nibble rotation)
+        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xABCDEF01, 32));
+        let ror_op_4 = ArmOp::Ror {
+            rd: Reg::R0,
+            rn: Reg::R1,
+            shift: 4,
+        };
+        encoder.encode_op(&ror_op_4, &mut state);
+        // 0xABCDEF01 ROR 4 = 0x1ABCDEF0
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x1ABCDEF0), "ROR by 4");
+
+        // Test ROR with 1-bit rotation
+        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x80000001, 32));
+        let ror_op_1 = ArmOp::Ror {
+            rd: Reg::R0,
+            rn: Reg::R1,
+            shift: 1,
+        };
+        encoder.encode_op(&ror_op_1, &mut state);
+        // 0x80000001 ROR 1 = 0xC0000000
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0xC0000000_u32 as i32 as i64), "ROR by 1");
     }
 
     #[test]
