@@ -167,6 +167,25 @@ pub enum ArmOp {
 
     // No operation
     Nop,
+
+    // Conditional execution (for verification)
+    // SetCond evaluates a condition based on NZCV flags and sets register to 0 or 1
+    SetCond { rd: Reg, cond: Condition },
+}
+
+/// ARM condition codes (based on NZCV flags)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Condition {
+    EQ,  // Equal (Z == 1)
+    NE,  // Not equal (Z == 0)
+    LT,  // Less than signed (N != V)
+    LE,  // Less than or equal signed (Z == 1 || N != V)
+    GT,  // Greater than signed (Z == 0 && N == V)
+    GE,  // Greater than or equal signed (N == V)
+    LO,  // Less than unsigned (C == 0)
+    LS,  // Less than or equal unsigned (C == 0 || Z == 1)
+    HI,  // Greater than unsigned (C == 1 && Z == 0)
+    HS,  // Greater than or equal unsigned (C == 1)
 }
 
 /// ARM register
