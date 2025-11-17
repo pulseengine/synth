@@ -1241,6 +1241,48 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_vfp_reg(sd, result);
             }
 
+            ArmOp::F32Min { sd, sn, sm } => {
+                // f32 minimum: sd = min(sn, sm)
+                // IEEE 754 semantics: NaN propagation, -0.0 < +0.0
+                // Symbolic representation for verification
+                let result = BV::new_const(self.ctx, format!("f32_min_{:?}_{:?}", sn, sm), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32Max { sd, sn, sm } => {
+                // f32 maximum: sd = max(sn, sm)
+                // IEEE 754 semantics: NaN propagation, +0.0 > -0.0
+                // Symbolic representation for verification
+                let result = BV::new_const(self.ctx, format!("f32_max_{:?}_{:?}", sn, sm), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32Copysign { sd, sn, sm } => {
+                // f32 copysign: sd = |sn| with sign of sm
+                // Take magnitude of sn and sign bit from sm
+                let val_n = state.get_vfp_reg(sn).clone();
+                let val_m = state.get_vfp_reg(sm).clone();
+
+                // Extract magnitude from sn (clear sign bit)
+                let mag_mask = BV::from_u64(self.ctx, 0x7FFFFFFF, 32);
+                let magnitude = val_n.bvand(&mag_mask);
+
+                // Extract sign from sm (bit 31 only)
+                let sign_mask = BV::from_u64(self.ctx, 0x80000000, 32);
+                let sign = val_m.bvand(&sign_mask);
+
+                // Combine: magnitude | sign
+                let result = magnitude.bvor(&sign);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32Load { sd, addr } => {
+                // f32 load: sd = memory[addr]
+                // Symbolic memory access for verification
+                let result = BV::new_const(self.ctx, format!("f32_load_{:?}", addr), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
             _ => {
                 // Unsupported operations - no state change
             }
