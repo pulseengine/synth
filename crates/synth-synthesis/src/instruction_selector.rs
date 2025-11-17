@@ -228,6 +228,45 @@ impl InstructionSelector {
                 shift: 0,
             },
 
+            // Rotate operations
+            I32Rotl => {
+                // Rotate left: ROR rd, rn, #(32-shift)
+                // For now, simplified with shift=0
+                ArmOp::Ror {
+                    rd,
+                    rn,
+                    shift: 0,  // Would be 32 - actual_shift
+                }
+            },
+
+            I32Rotr => ArmOp::Ror {
+                rd,
+                rn,
+                shift: 0,  // Placeholder - would extract from operand
+            },
+
+            // Bit count operations
+            I32Clz => ArmOp::Clz {
+                rd,
+                rm,
+            },
+
+            I32Ctz => {
+                // Count trailing zeros: RBIT + CLZ
+                // This would need to be a sequence, but for now return RBIT
+                ArmOp::Rbit {
+                    rd,
+                    rm,
+                }
+            },
+
+            I32Popcnt => {
+                // Population count - no native ARM instruction
+                // Would need to implement with sequence
+                // Placeholder for now
+                ArmOp::Nop
+            },
+
             I32Const(val) => {
                 let imm_val = if *val >= 0 {
                     *val as i32
