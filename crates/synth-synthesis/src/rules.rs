@@ -173,6 +173,11 @@ pub enum ArmOp {
     // Conditional execution (for verification)
     // SetCond evaluates a condition based on NZCV flags and sets register to 0 or 1
     SetCond { rd: Reg, cond: Condition },
+
+    // Select operation (for verification)
+    // Selects between two values based on condition
+    // If rcond != 0, select rval1, else select rval2
+    Select { rd: Reg, rval1: Reg, rval2: Reg, rcond: Reg },
 }
 
 /// ARM condition codes (based on NZCV flags)

@@ -214,6 +214,23 @@ impl<'ctx> WasmSemantics<'ctx> {
                 self.bool_to_bv32(&cond)
             }
 
+            // Control flow operations
+            WasmOp::Select => {
+                assert_eq!(inputs.len(), 3, "Select requires 3 inputs");
+                // Select returns inputs[0] if inputs[2] != 0, else inputs[1]
+                // WASM spec: select(val1, val2, cond) = cond ? val1 : val2
+                let zero = BV::from_i64(self.ctx, 0, 32);
+                let cond = inputs[2]._eq(&zero).not(); // cond != 0
+                cond.ite(&inputs[0], &inputs[1])
+            }
+
+            WasmOp::Drop => {
+                assert_eq!(inputs.len(), 1, "Drop requires 1 input");
+                // Drop discards the value - for verification, we return a dummy value
+                // In actual compilation, this operation doesn't produce a value
+                BV::from_i64(self.ctx, 0, 32)
+            }
+
             // Not yet supported operations
             _ => {
                 // For unsupported operations, return a symbolic constant
@@ -723,5 +740,30 @@ mod tests {
         let alternating = BV::from_u64(&ctx, 0xAAAAAAAA, 32);
         let popcnt_alt = encoder.encode_op(&WasmOp::I32Popcnt, &[alternating]);
         assert_eq!(popcnt_alt.as_i64(), Some(16), "POPCNT(0xAAAAAAAA) should be 16");
+    }
+
+    #[test]
+    fn test_wasm_select() {
+        let ctx = create_z3_context();
+        let encoder = WasmSemantics::new(&ctx);
+
+        // Test select(10, 20, 1) = 10 (cond != 0, so select first value)
+        let val1 = BV::from_i64(&ctx, 10, 32);
+        let val2 = BV::from_i64(&ctx, 20, 32);
+        let cond_true = BV::from_i64(&ctx, 1, 32);
+        let result = encoder.encode_op(&WasmOp::Select, &[val1.clone(), val2.clone(), cond_true]);
+        assert_eq!(result.as_i64(), Some(10), "select(10, 20, 1) should return 10");
+
+        // Test select(10, 20, 0) = 20 (cond == 0, so select second value)
+        let cond_false = BV::from_i64(&ctx, 0, 32);
+        let result = encoder.encode_op(&WasmOp::Select, &[val1.clone(), val2.clone(), cond_false]);
+        assert_eq!(result.as_i64(), Some(20), "select(10, 20, 0) should return 20");
+
+        // Test select(42, 99, -1) = 42 (negative != 0, so select first value)
+        let val3 = BV::from_i64(&ctx, 42, 32);
+        let val4 = BV::from_i64(&ctx, 99, 32);
+        let cond_neg = BV::from_i64(&ctx, -1, 32);
+        let result = encoder.encode_op(&WasmOp::Select, &[val3, val4, cond_neg]);
+        assert_eq!(result.as_i64(), Some(42), "select(42, 99, -1) should return 42");
     }
 }

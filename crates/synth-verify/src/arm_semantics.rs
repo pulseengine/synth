@@ -260,6 +260,18 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
+            ArmOp::Select { rd, rval1, rval2, rcond } => {
+                // Select operation: if rcond != 0, select rval1, else rval2
+                // This is a pseudo-instruction for verification purposes
+                let val1 = state.get_reg(rval1).clone();
+                let val2 = state.get_reg(rval2).clone();
+                let cond = state.get_reg(rcond).clone();
+                let zero = BV::from_i64(self.ctx, 0, 32);
+                let cond_bool = cond._eq(&zero).not(); // cond != 0
+                let result = cond_bool.ite(&val1, &val2);
+                state.set_reg(rd, result);
+            }
+
             // Memory operations simplified for now
             ArmOp::Ldr { rd, addr } => {
                 // Load from memory

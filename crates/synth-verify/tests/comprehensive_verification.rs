@@ -1094,6 +1094,38 @@ fn verify_i32_popcnt() {
     }
 }
 
+#[test]
+fn verify_select() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // Select operation: select(val1, val2, cond) = cond ? val1 : val2
+    // ARM implementation uses conditional selection
+    let rule = SynthesisRule {
+        name: "select".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::Select),
+        replacement: Replacement::ArmInstr(ArmOp::Select {
+            rd: Reg::R0,
+            rval1: Reg::R0,
+            rval2: Reg::R1,
+            rcond: Reg::R2,
+        }),
+        cost: synth_synthesis::Cost {
+            cycles: 1,
+            code_size: 4,
+            registers: 3,
+        },
+    };
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ Select verified (conditional selection)");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
 // ============================================================================
 // BATCH VERIFICATION
 // ============================================================================
