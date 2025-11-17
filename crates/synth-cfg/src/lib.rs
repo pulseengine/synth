@@ -180,7 +180,7 @@ impl Cfg {
         // Find back edges (edges where target dominates source)
         for (block_id, block) in &self.blocks {
             for &succ in &block.successors {
-                if let Some(&idom) = doms.get(block_id) {
+                if doms.contains_key(block_id) {
                     if self.dominates(succ, *block_id, &doms) {
                         // Back edge found: block_id -> succ is a back edge
                         // succ is the loop header
@@ -246,6 +246,181 @@ impl Cfg {
         }
 
         body
+    }
+
+    /// Find all blocks reachable from entry (helper for optimization)
+    pub fn reachable_blocks(&self) -> HashSet<BlockId> {
+        let mut reachable = HashSet::new();
+        let mut worklist = VecDeque::new();
+        worklist.push_back(self.entry);
+
+        while let Some(block_id) = worklist.pop_front() {
+            if reachable.contains(&block_id) {
+                continue;
+            }
+            reachable.insert(block_id);
+
+            if let Some(block) = self.blocks.get(&block_id) {
+                for &succ in &block.successors {
+                    worklist.push_back(succ);
+                }
+            }
+        }
+
+        reachable
+    }
+
+    /// Merge basic blocks (CFG optimization)
+    /// Merge block B into block A if:
+    /// - A has only one successor (B)
+    /// - B has only one predecessor (A)
+    /// - B is not the entry block
+    /// Returns the number of blocks merged
+    pub fn merge_blocks(&mut self) -> usize {
+        let mut merged_count = 0;
+        let mut changed = true;
+
+        while changed {
+            changed = false;
+            let blocks: Vec<BlockId> = self.blocks.keys().copied().collect();
+
+            for block_a_id in blocks {
+                let can_merge = {
+                    let block_a = match self.blocks.get(&block_a_id) {
+                        Some(b) => b,
+                        None => continue,
+                    };
+
+                    if block_a.successors.len() != 1 {
+                        continue;
+                    }
+
+                    let block_b_id = block_a.successors[0];
+                    if block_b_id == self.entry {
+                        continue;
+                    }
+
+                    let block_b = match self.blocks.get(&block_b_id) {
+                        Some(b) => b,
+                        None => continue,
+                    };
+
+                    if block_b.predecessors.len() != 1 {
+                        continue;
+                    }
+
+                    Some((block_a_id, block_b_id, block_b.successors.clone()))
+                };
+
+                if let Some((a_id, b_id, b_successors)) = can_merge {
+                    // Get the end position from block B before borrowing A mutably
+                    let b_end = self.blocks.get(&b_id).unwrap().end;
+
+                    // Merge B into A
+                    if let Some(block_a) = self.blocks.get_mut(&a_id) {
+                        block_a.end = b_end;
+                        block_a.successors = b_successors.clone();
+                    }
+
+                    // Update successors' predecessors
+                    for succ_id in &b_successors {
+                        if let Some(succ) = self.blocks.get_mut(succ_id) {
+                            succ.predecessors.retain(|&p| p != b_id);
+                            if !succ.predecessors.contains(&a_id) {
+                                succ.predecessors.push(a_id);
+                            }
+                        }
+                    }
+
+                    // Remove block B
+                    self.blocks.remove(&b_id);
+                    merged_count += 1;
+                    changed = true;
+                    break; // Restart to avoid concurrent modification issues
+                }
+            }
+        }
+
+        merged_count
+    }
+
+    /// Eliminate unreachable blocks (CFG optimization)
+    /// Removes blocks that cannot be reached from the entry block
+    /// Returns the number of blocks eliminated
+    pub fn eliminate_unreachable(&mut self) -> usize {
+        let reachable = self.reachable_blocks();
+        let all_blocks: Vec<BlockId> = self.blocks.keys().copied().collect();
+
+        let mut removed_count = 0;
+        for block_id in all_blocks {
+            if !reachable.contains(&block_id) {
+                // Remove unreachable block
+                if let Some(block) = self.blocks.remove(&block_id) {
+                    // Clean up references from other blocks
+                    for succ_id in &block.successors {
+                        if let Some(succ) = self.blocks.get_mut(succ_id) {
+                            succ.predecessors.retain(|&p| p != block_id);
+                        }
+                    }
+                    for pred_id in &block.predecessors {
+                        if let Some(pred) = self.blocks.get_mut(pred_id) {
+                            pred.successors.retain(|&s| s != block_id);
+                        }
+                    }
+                    removed_count += 1;
+                }
+            }
+        }
+
+        removed_count
+    }
+
+    /// Simplify branches (CFG optimization)
+    /// Simplifies control flow by:
+    /// - Removing branches to the immediate next block (fall-through)
+    /// - Collapsing chains of unconditional branches
+    /// Returns the number of branches simplified
+    pub fn simplify_branches(&mut self) -> usize {
+        let mut simplified_count = 0;
+        let blocks: Vec<BlockId> = self.blocks.keys().copied().collect();
+
+        for block_id in blocks {
+            let block = match self.blocks.get(&block_id) {
+                Some(b) => b,
+                None => continue,
+            };
+
+            // Check if this block has a single successor that is just a trampoline
+            if block.successors.len() == 1 {
+                let succ_id = block.successors[0];
+                let succ = match self.blocks.get(&succ_id) {
+                    Some(b) => b,
+                    None => continue,
+                };
+
+                // If successor is an empty trampoline with one successor, bypass it
+                if succ.start == succ.end && succ.successors.len() == 1 && succ_id != self.entry {
+                    let final_target = succ.successors[0];
+
+                    // Update current block to point to final target
+                    if let Some(block_mut) = self.blocks.get_mut(&block_id) {
+                        block_mut.successors = vec![final_target];
+                    }
+
+                    // Update final target's predecessors
+                    if let Some(final_block) = self.blocks.get_mut(&final_target) {
+                        if !final_block.predecessors.contains(&block_id) {
+                            final_block.predecessors.push(block_id);
+                        }
+                        final_block.predecessors.retain(|&p| p != succ_id);
+                    }
+
+                    simplified_count += 1;
+                }
+            }
+        }
+
+        simplified_count
     }
 }
 
@@ -482,5 +657,165 @@ mod tests {
 
         // b1 dominates b2
         assert_eq!(doms[&b2], b1);
+    }
+
+    #[test]
+    fn test_merge_blocks() {
+        let mut builder = CfgBuilder::new();
+        builder.add_instruction();
+
+        // Create a chain: entry -> b1 -> b2
+        let b1 = builder.start_block();
+        builder.add_instruction();
+
+        let b2 = builder.start_block();
+        builder.add_instruction();
+
+        builder.current_block = Some(0);
+        builder.add_branch(b1);
+
+        builder.current_block = Some(b1);
+        builder.add_branch(b2);
+
+        let mut cfg = builder.build();
+        assert_eq!(cfg.blocks.len(), 3);
+
+        // Merge blocks
+        let merged = cfg.merge_blocks();
+        assert_eq!(merged, 2); // b1 and b2 should be merged into entry
+        assert_eq!(cfg.blocks.len(), 1);
+    }
+
+    #[test]
+    fn test_eliminate_unreachable() {
+        let mut builder = CfgBuilder::new();
+        builder.add_instruction();
+
+        // Create reachable blocks
+        let b1 = builder.start_block();
+        builder.add_instruction();
+
+        // Create unreachable block
+        let b2 = builder.start_block();
+        builder.add_instruction();
+
+        // Only connect entry to b1 (b2 is unreachable)
+        builder.current_block = Some(0);
+        builder.add_branch(b1);
+
+        let mut cfg = builder.build();
+        assert_eq!(cfg.blocks.len(), 3);
+
+        // Eliminate unreachable blocks
+        let removed = cfg.eliminate_unreachable();
+        assert_eq!(removed, 1); // b2 should be removed
+        assert_eq!(cfg.blocks.len(), 2);
+        assert!(cfg.blocks.contains_key(&0));
+        assert!(cfg.blocks.contains_key(&b1));
+        assert!(!cfg.blocks.contains_key(&b2));
+    }
+
+    #[test]
+    fn test_simplify_branches() {
+        let mut builder = CfgBuilder::new();
+        builder.add_instruction();
+
+        // Create entry -> trampoline -> target
+        let trampoline = builder.start_block();
+        // Empty trampoline (no instructions)
+
+        let target = builder.start_block();
+        builder.add_instruction();
+
+        builder.current_block = Some(0);
+        builder.add_branch(trampoline);
+
+        builder.current_block = Some(trampoline);
+        builder.add_branch(target);
+
+        let mut cfg = builder.build();
+
+        // Simplify branches
+        let simplified = cfg.simplify_branches();
+        assert_eq!(simplified, 1);
+
+        // Entry should now point directly to target
+        assert_eq!(cfg.block(0).unwrap().successors, vec![target]);
+    }
+
+    #[test]
+    fn test_reachable_blocks() {
+        let mut builder = CfgBuilder::new();
+        builder.add_instruction();
+
+        let b1 = builder.start_block();
+        builder.add_instruction();
+
+        let b2 = builder.start_block();
+        builder.add_instruction();
+
+        let b3 = builder.start_block();
+        builder.add_instruction();
+
+        // Connect: entry -> b1 -> b2 (b3 unreachable)
+        builder.current_block = Some(0);
+        builder.add_branch(b1);
+
+        builder.current_block = Some(b1);
+        builder.add_branch(b2);
+
+        let cfg = builder.build();
+        let reachable = cfg.reachable_blocks();
+
+        assert_eq!(reachable.len(), 3);
+        assert!(reachable.contains(&0));
+        assert!(reachable.contains(&b1));
+        assert!(reachable.contains(&b2));
+        assert!(!reachable.contains(&b3));
+    }
+
+    #[test]
+    fn test_optimization_pipeline() {
+        let mut builder = CfgBuilder::new();
+        builder.add_instruction();
+
+        // Create a complex CFG with optimization opportunities
+        let b1 = builder.start_block();
+        builder.add_instruction();
+
+        let b2 = builder.start_block();
+        builder.add_instruction();
+
+        let _unreachable = builder.start_block();
+        builder.add_instruction();
+
+        let trampoline = builder.start_block();
+        // Empty trampoline
+
+        let target = builder.start_block();
+        builder.add_instruction();
+
+        builder.current_block = Some(0);
+        builder.add_branch(b1);
+
+        builder.current_block = Some(b1);
+        builder.add_branch(b2);
+
+        builder.current_block = Some(b2);
+        builder.add_branch(trampoline);
+
+        builder.current_block = Some(trampoline);
+        builder.add_branch(target);
+
+        let mut cfg = builder.build();
+        let initial_blocks = cfg.blocks.len();
+
+        // Run optimization pipeline
+        let eliminated = cfg.eliminate_unreachable();
+        let simplified = cfg.simplify_branches();
+        let merged = cfg.merge_blocks();
+
+        assert!(eliminated > 0 || simplified > 0 || merged > 0);
+        assert!(cfg.blocks.len() < initial_blocks);
     }
 }
