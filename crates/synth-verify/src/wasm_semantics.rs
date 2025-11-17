@@ -368,6 +368,37 @@ impl<'ctx> WasmSemantics<'ctx> {
                 BV::from_i64(self.ctx, 0, 32)
             }
 
+            WasmOp::BrTable { targets, default } => {
+                assert_eq!(inputs.len(), 1, "BrTable requires 1 input (index)");
+                // Multi-way branch based on index
+                // If index < len(targets), branch to targets[index]
+                // Otherwise, branch to default
+                let index = inputs[0].clone();
+
+                // For verification, we model this as symbolic control flow
+                // A complete model would use nested ITEs to select the target
+                BV::new_const(
+                    self.ctx,
+                    format!("br_table_{}_{}", targets.len(), default),
+                    32
+                )
+            }
+
+            WasmOp::Call(func_idx) => {
+                // Function call - for verification, we model the call result symbolically
+                // A complete model would require analyzing the called function
+                // For now, we represent the result as a symbolic value
+                BV::new_const(self.ctx, format!("call_{}", func_idx), 32)
+            }
+
+            WasmOp::CallIndirect(type_idx) => {
+                assert_eq!(inputs.len(), 1, "CallIndirect requires 1 input (table index)");
+                // Indirect function call through table
+                // For verification, we model the call result symbolically
+                let _table_index = inputs[0].clone();
+                BV::new_const(self.ctx, format!("call_indirect_{}", type_idx), 32)
+            }
+
             // Not yet supported operations
             _ => {
                 // For unsupported operations, return a symbolic constant

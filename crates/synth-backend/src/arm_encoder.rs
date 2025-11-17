@@ -247,6 +247,74 @@ impl ArmEncoder {
                 // NOP encoding: MOV R0, R0
                 0xE1A00000
             }
+
+            // Pseudo-instructions for verification - encode as NOP
+            // These are used in formal verification but not actual code generation
+            ArmOp::Popcnt { .. } => {
+                // Population count pseudo-instruction
+                // Not a real ARM instruction, would be expanded to actual code
+                0xE1A00000 // NOP for now
+            }
+
+            ArmOp::SetCond { .. } => {
+                // Condition evaluation pseudo-instruction
+                // Not a real ARM instruction, would be expanded to actual code
+                0xE1A00000 // NOP for now
+            }
+
+            ArmOp::Select { .. } => {
+                // Select pseudo-instruction
+                // Not a real ARM instruction, would be expanded to conditional moves
+                0xE1A00000 // NOP for now
+            }
+
+            ArmOp::LocalGet { .. } => {
+                // Local variable get pseudo-instruction
+                // Not a real ARM instruction, would be expanded to memory access
+                0xE1A00000 // NOP for now
+            }
+
+            ArmOp::LocalSet { .. } => {
+                // Local variable set pseudo-instruction
+                // Not a real ARM instruction, would be expanded to memory access
+                0xE1A00000 // NOP for now
+            }
+
+            ArmOp::LocalTee { .. } => {
+                // Local variable tee pseudo-instruction
+                // Not a real ARM instruction, would be expanded to memory access
+                0xE1A00000 // NOP for now
+            }
+
+            ArmOp::GlobalGet { .. } => {
+                // Global variable get pseudo-instruction
+                // Not a real ARM instruction, would be expanded to memory access
+                0xE1A00000 // NOP for now
+            }
+
+            ArmOp::GlobalSet { .. } => {
+                // Global variable set pseudo-instruction
+                // Not a real ARM instruction, would be expanded to memory access
+                0xE1A00000 // NOP for now
+            }
+
+            ArmOp::BrTable { .. } => {
+                // Branch table pseudo-instruction
+                // Not a real ARM instruction, would be expanded to jump table
+                0xE1A00000 // NOP for now
+            }
+
+            ArmOp::Call { .. } => {
+                // Function call pseudo-instruction
+                // Not a real ARM instruction, would be expanded to BL
+                0xE1A00000 // NOP for now
+            }
+
+            ArmOp::CallIndirect { .. } => {
+                // Indirect function call pseudo-instruction
+                // Not a real ARM instruction, would be expanded to indirect branch
+                0xE1A00000 // NOP for now
+            }
         };
 
         // ARM32 instructions are little-endian

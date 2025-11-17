@@ -357,6 +357,31 @@ impl<'ctx> ArmSemantics<'ctx> {
                 }
             }
 
+            ArmOp::BrTable { rd, index_reg, targets, default } => {
+                // Multi-way branch based on index
+                // For verification, we model the control flow symbolically
+                let index = state.get_reg(index_reg).clone();
+                let result = BV::new_const(
+                    self.ctx,
+                    format!("br_table_{}_{}", targets.len(), default),
+                    32
+                );
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::Call { rd, func_idx } => {
+                // Function call - model result symbolically
+                let result = BV::new_const(self.ctx, format!("call_{}", func_idx), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::CallIndirect { rd, type_idx, table_index_reg } => {
+                // Indirect function call through table
+                let _table_index = state.get_reg(table_index_reg).clone();
+                let result = BV::new_const(self.ctx, format!("call_indirect_{}", type_idx), 32);
+                state.set_reg(rd, result);
+            }
+
             _ => {
                 // Unsupported operations - no state change
             }

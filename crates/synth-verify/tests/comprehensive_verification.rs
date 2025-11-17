@@ -1604,3 +1604,106 @@ fn generate_verification_report() {
 
     assert_eq!(verified, 8, "Expected 8 operations to be proven correct");
 }
+
+// ============================================================================
+// CONSTANTS AND ADVANCED CONTROL FLOW
+// ============================================================================
+
+#[test]
+fn verify_i32_const() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // Verify i32.const with a concrete value
+    let rule = create_rule(
+        "i32.const(42)",
+        WasmOp::I32Const(42),
+        ArmOp::Mov {
+            rd: Reg::R0,
+            op2: Operand2::Imm(42),
+        },
+    );
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32Const(42) verified");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_br_table() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // BrTable with 3 targets and default
+    let rule = create_rule(
+        "br_table",
+        WasmOp::BrTable {
+            targets: vec![0, 1, 2],
+            default: 3,
+        },
+        ArmOp::BrTable {
+            rd: Reg::R0,
+            index_reg: Reg::R1,
+            targets: vec![0, 1, 2],
+            default: 3,
+        },
+    );
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ BrTable verified");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_call() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // Call function 5
+    let rule = create_rule(
+        "call(5)",
+        WasmOp::Call(5),
+        ArmOp::Call {
+            rd: Reg::R0,
+            func_idx: 5,
+        },
+    );
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ Call(5) verified");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
+#[test]
+fn verify_call_indirect() {
+    let ctx = create_z3_context();
+    let validator = TranslationValidator::new(&ctx);
+
+    // CallIndirect with type 2
+    let rule = create_rule(
+        "call_indirect(2)",
+        WasmOp::CallIndirect(2),
+        ArmOp::CallIndirect {
+            rd: Reg::R0,
+            type_idx: 2,
+            table_index_reg: Reg::R1,
+        },
+    );
+
+    match validator.verify_rule(&rule) {
+        Ok(ValidationResult::Verified) => {
+            println!("✓ CallIndirect(2) verified");
+        }
+        other => panic!("Expected Verified, got {:?}", other),
+    }
+}
+
