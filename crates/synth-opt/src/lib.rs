@@ -281,6 +281,175 @@ impl OptimizationPass for ConstantFolding {
     }
 }
 
+/// Expression key for CSE
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ExprKey {
+    Add(Reg, Reg),
+    Sub(Reg, Reg),
+    Mul(Reg, Reg),
+    Load(u32),
+}
+
+/// Common Subexpression Elimination pass
+pub struct CommonSubexpressionElimination {
+    verbose: bool,
+}
+
+impl CommonSubexpressionElimination {
+    pub fn new() -> Self {
+        Self { verbose: false }
+    }
+
+    pub fn with_verbose(mut self) -> Self {
+        self.verbose = true;
+        self
+    }
+
+    /// Eliminate common subexpressions
+    fn eliminate_cse(&mut self, instructions: &mut Vec<Instruction>) -> OptResult {
+        // Map from expression to the register holding its result
+        let mut expr_map: HashMap<ExprKey, Reg> = HashMap::new();
+
+        // Map from register to register (for copy propagation after CSE)
+        let mut reg_map: HashMap<Reg, Reg> = HashMap::new();
+
+        let mut modified = 0;
+
+        for inst in instructions.iter_mut() {
+            if inst.is_dead {
+                continue;
+            }
+
+            // Clone opcode to avoid borrow issues
+            let opcode = inst.opcode.clone();
+
+            // Resolve register mappings
+            let resolve = |r: Reg| -> Reg {
+                reg_map.get(&r).copied().unwrap_or(r)
+            };
+
+            match opcode {
+                Opcode::Add { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    let key = ExprKey::Add(src1, src2);
+
+                    if let Some(&existing) = expr_map.get(&key) {
+                        // Found duplicate expression - replace with const/copy
+                        inst.opcode = Opcode::Const { dest, value: 0 }; // Placeholder
+                        inst.is_dead = true; // Mark for removal
+                        reg_map.insert(dest, existing);
+                        modified += 1;
+
+                        if self.verbose {
+                            eprintln!("CSE: Eliminated add r{} = r{} + r{}, reuse r{}",
+                                dest.0, src1.0, src2.0, existing.0);
+                        }
+                    } else {
+                        expr_map.insert(key, dest);
+                        // Update instruction with resolved registers
+                        inst.opcode = Opcode::Add { dest, src1, src2 };
+                    }
+                }
+
+                Opcode::Sub { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    let key = ExprKey::Sub(src1, src2);
+
+                    if let Some(&existing) = expr_map.get(&key) {
+                        inst.opcode = Opcode::Const { dest, value: 0 };
+                        inst.is_dead = true;
+                        reg_map.insert(dest, existing);
+                        modified += 1;
+
+                        if self.verbose {
+                            eprintln!("CSE: Eliminated sub r{} = r{} - r{}, reuse r{}",
+                                dest.0, src1.0, src2.0, existing.0);
+                        }
+                    } else {
+                        expr_map.insert(key, dest);
+                        inst.opcode = Opcode::Sub { dest, src1, src2 };
+                    }
+                }
+
+                Opcode::Mul { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    let key = ExprKey::Mul(src1, src2);
+
+                    if let Some(&existing) = expr_map.get(&key) {
+                        inst.opcode = Opcode::Const { dest, value: 0 };
+                        inst.is_dead = true;
+                        reg_map.insert(dest, existing);
+                        modified += 1;
+
+                        if self.verbose {
+                            eprintln!("CSE: Eliminated mul r{} = r{} * r{}, reuse r{}",
+                                dest.0, src1.0, src2.0, existing.0);
+                        }
+                    } else {
+                        expr_map.insert(key, dest);
+                        inst.opcode = Opcode::Mul { dest, src1, src2 };
+                    }
+                }
+
+                Opcode::Load { dest, addr } => {
+                    let key = ExprKey::Load(addr);
+
+                    if let Some(&existing) = expr_map.get(&key) {
+                        inst.opcode = Opcode::Const { dest, value: 0 };
+                        inst.is_dead = true;
+                        reg_map.insert(dest, existing);
+                        modified += 1;
+
+                        if self.verbose {
+                            eprintln!("CSE: Eliminated load r{} = [0x{:x}], reuse r{}",
+                                dest.0, addr, existing.0);
+                        }
+                    } else {
+                        expr_map.insert(key, dest);
+                    }
+                }
+
+                // Store invalidates loads from same address
+                Opcode::Store { addr, .. } => {
+                    expr_map.remove(&ExprKey::Load(addr));
+                }
+
+                _ => {}
+            }
+        }
+
+        if self.verbose && modified > 0 {
+            eprintln!("CSE: {} subexpressions eliminated", modified);
+        }
+
+        OptResult {
+            changed: modified > 0,
+            removed_count: modified, // Marked as dead
+            added_count: 0,
+            modified_count: 0,
+        }
+    }
+}
+
+impl Default for CommonSubexpressionElimination {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OptimizationPass for CommonSubexpressionElimination {
+    fn name(&self) -> &'static str {
+        "common-subexpression-elimination"
+    }
+
+    fn run(&mut self, _cfg: &mut Cfg, instructions: &mut Vec<Instruction>) -> OptResult {
+        self.eliminate_cse(instructions)
+    }
+}
+
 /// Optimization pass manager
 pub struct PassManager {
     passes: Vec<Box<dyn OptimizationPass>>,
@@ -678,5 +847,246 @@ mod tests {
         // Should not change anything
         assert!(!result.changed);
         assert_eq!(result.modified_count, 0);
+    }
+
+    #[test]
+    fn test_cse_simple() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..3 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r2 = r0 + r1, r3 = r0 + r1 (duplicate)
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Add {
+                    dest: Reg(2),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Add {
+                    dest: Reg(3),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut cse = CommonSubexpressionElimination::new();
+        let result = cse.run(&mut cfg, &mut instructions);
+
+        // Second add should be eliminated
+        assert!(result.changed);
+        assert_eq!(result.removed_count, 1);
+        assert!(instructions[1].is_dead);
+        assert!(!instructions[0].is_dead);
+    }
+
+    #[test]
+    fn test_cse_multiple_ops() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..6 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create duplicates: r4 = r0 + r1, r5 = r0 + r1, r6 = r2 - r3, r7 = r2 - r3
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Add {
+                    dest: Reg(4),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Add {
+                    dest: Reg(5),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 2,
+                opcode: Opcode::Sub {
+                    dest: Reg(6),
+                    src1: Reg(2),
+                    src2: Reg(3),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 3,
+                opcode: Opcode::Sub {
+                    dest: Reg(7),
+                    src1: Reg(2),
+                    src2: Reg(3),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut cse = CommonSubexpressionElimination::new();
+        let result = cse.run(&mut cfg, &mut instructions);
+
+        // Both duplicates should be eliminated
+        assert!(result.changed);
+        assert_eq!(result.removed_count, 2);
+        assert!(instructions[1].is_dead); // Duplicate add
+        assert!(instructions[3].is_dead); // Duplicate sub
+        assert!(!instructions[0].is_dead);
+        assert!(!instructions[2].is_dead);
+    }
+
+    #[test]
+    fn test_cse_load() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..2 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r0 = load [0x100], r1 = load [0x100] (duplicate)
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Load {
+                    dest: Reg(0),
+                    addr: 0x100,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Load {
+                    dest: Reg(1),
+                    addr: 0x100,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut cse = CommonSubexpressionElimination::new();
+        let result = cse.run(&mut cfg, &mut instructions);
+
+        // Second load should be eliminated
+        assert!(result.changed);
+        assert_eq!(result.removed_count, 1);
+        assert!(instructions[1].is_dead);
+        assert!(!instructions[0].is_dead);
+    }
+
+    #[test]
+    fn test_cse_store_invalidates_load() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..3 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r0 = load [0x100], store r2 -> [0x100], r1 = load [0x100]
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Load {
+                    dest: Reg(0),
+                    addr: 0x100,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Store {
+                    src: Reg(2),
+                    addr: 0x100,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 2,
+                opcode: Opcode::Load {
+                    dest: Reg(1),
+                    addr: 0x100,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut cse = CommonSubexpressionElimination::new();
+        let result = cse.run(&mut cfg, &mut instructions);
+
+        // Second load should NOT be eliminated (store invalidated it)
+        assert!(!result.changed);
+        assert_eq!(result.removed_count, 0);
+        assert!(!instructions[0].is_dead);
+        assert!(!instructions[1].is_dead);
+        assert!(!instructions[2].is_dead);
+    }
+
+    #[test]
+    fn test_cse_no_duplicates() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..2 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r2 = r0 + r1, r3 = r0 - r1 (different operations)
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Add {
+                    dest: Reg(2),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Sub {
+                    dest: Reg(3),
+                    src1: Reg(0),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut cse = CommonSubexpressionElimination::new();
+        let result = cse.run(&mut cfg, &mut instructions);
+
+        // Nothing should be eliminated
+        assert!(!result.changed);
+        assert_eq!(result.removed_count, 0);
     }
 }
