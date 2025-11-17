@@ -352,6 +352,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "synth-abi"
+version = "0.1.0"
+dependencies = [
+ "synth-wit",
+]
+
+[[package]]
 name = "synth-analysis"
 version = "0.1.0"
 dependencies = [
