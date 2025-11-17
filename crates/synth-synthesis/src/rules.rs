@@ -79,9 +79,28 @@ pub enum WasmOp {
     I32Store { offset: u32, align: u32 },
 
     // Control flow
+    Block,
+    Loop,
+    Br(u32),      // Branch to label
+    BrIf(u32),    // Conditional branch
+    BrTable { targets: Vec<u32>, default: u32 },
+    Return,
     Call(u32),
+    CallIndirect(u32),
     LocalGet(u32),
     LocalSet(u32),
+    LocalTee(u32),
+    GlobalGet(u32),
+    GlobalSet(u32),
+
+    // More ops
+    Drop,
+    Select,
+    If,
+    Else,
+    End,
+    Unreachable,
+    Nop,
 }
 
 /// Replacement/transformation
