@@ -116,6 +116,177 @@ pub enum ComponentValue {
     Flags(Vec<String>),
 }
 
+/// Lower a record to memory
+pub fn lower_record<M: Memory>(
+    mem: &mut M,
+    fields: &[(String, ComponentValue)],
+    field_types: &[(String, Type)],
+    opts: &AbiOptions,
+) -> AbiResult<Vec<u8>> {
+    use crate::{alignment_of, align_to, size_of};
+
+    // Calculate total size needed
+    let mut offset = 0;
+    let mut max_align = 1;
+
+    for (_, ty) in field_types {
+        let align = alignment_of(ty);
+        max_align = max_align.max(align);
+        offset = align_to(offset, align);
+        offset += size_of(ty);
+    }
+
+    // Round up to overall alignment
+    let total_size = align_to(offset, max_align);
+    let mut result = vec![0u8; total_size];
+
+    // Lower each field
+    offset = 0;
+    for (i, (name, value)) in fields.iter().enumerate() {
+        let (_, ty) = &field_types[i];
+        let align = alignment_of(ty);
+        offset = align_to(offset, align);
+
+        // Lower the field value based on type
+        match (value, ty) {
+            (ComponentValue::String(s), Type::String) => {
+                let (ptr, len) = lower_string(mem, s, opts)?;
+                // Write (ptr, len) tuple
+                result[offset..offset + 4].copy_from_slice(&ptr.to_le_bytes());
+                result[offset + 4..offset + 8].copy_from_slice(&len.to_le_bytes());
+            }
+            _ => {
+                // For primitives, lower and write
+                let core_vals = lower_primitive(value, ty)?;
+                if let Some(CoreValue::I32(v)) = core_vals.first() {
+                    result[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
+                }
+            }
+        }
+
+        offset += size_of(ty);
+    }
+
+    Ok(result)
+}
+
+/// Lower an option value
+pub fn lower_option<M: Memory>(
+    mem: &mut M,
+    value: &Option<Box<ComponentValue>>,
+    inner_ty: &Type,
+    opts: &AbiOptions,
+) -> AbiResult<Vec<u8>> {
+    use crate::{alignment_of, size_of};
+
+    match value {
+        None => {
+            // Discriminant = 0, no payload
+            let size = 1 + size_of(inner_ty);
+            let mut result = vec![0u8; size];
+            result[0] = 0; // None
+            Ok(result)
+        }
+        Some(val) => {
+            // Discriminant = 1, followed by value
+            let align = alignment_of(inner_ty);
+            let value_size = size_of(inner_ty);
+            let total_size = align + value_size;
+            let mut result = vec![0u8; total_size];
+            result[0] = 1; // Some
+
+            // Lower the inner value
+            match (val.as_ref(), inner_ty) {
+                (ComponentValue::String(s), Type::String) => {
+                    let (ptr, len) = lower_string(mem, s, opts)?;
+                    result[align..align + 4].copy_from_slice(&ptr.to_le_bytes());
+                    result[align + 4..align + 8].copy_from_slice(&len.to_le_bytes());
+                }
+                _ => {
+                    let core_vals = lower_primitive(val, inner_ty)?;
+                    if let Some(CoreValue::I32(v)) = core_vals.first() {
+                        result[align..align + 4].copy_from_slice(&v.to_le_bytes());
+                    }
+                }
+            }
+
+            Ok(result)
+        }
+    }
+}
+
+/// Lower a result value
+pub fn lower_result<M: Memory>(
+    mem: &mut M,
+    value: &Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>>,
+    ok_ty: &Option<Box<Type>>,
+    err_ty: &Option<Box<Type>>,
+    opts: &AbiOptions,
+) -> AbiResult<Vec<u8>> {
+    use crate::{alignment_of, size_of};
+
+    match value {
+        Ok(ok_val) => {
+            // Discriminant = 0 for Ok
+            let ok_size = ok_ty.as_ref().map(|t| size_of(t)).unwrap_or(0);
+            let err_size = err_ty.as_ref().map(|t| size_of(t)).unwrap_or(0);
+            let payload_size = ok_size.max(err_size);
+            let total_size = 4 + payload_size; // 4 bytes for discriminant
+
+            let mut result = vec![0u8; total_size];
+            result[0] = 0; // Ok variant
+
+            // Lower ok value if present
+            if let (Some(val), Some(ty)) = (ok_val, ok_ty) {
+                match (val.as_ref(), ty.as_ref()) {
+                    (ComponentValue::String(s), Type::String) => {
+                        let (ptr, len) = lower_string(mem, s, opts)?;
+                        result[4..8].copy_from_slice(&ptr.to_le_bytes());
+                        result[8..12].copy_from_slice(&len.to_le_bytes());
+                    }
+                    _ => {
+                        let core_vals = lower_primitive(val, ty)?;
+                        if let Some(CoreValue::I32(v)) = core_vals.first() {
+                            result[4..8].copy_from_slice(&v.to_le_bytes());
+                        }
+                    }
+                }
+            }
+
+            Ok(result)
+        }
+        Err(err_val) => {
+            // Discriminant = 1 for Err
+            let ok_size = ok_ty.as_ref().map(|t| size_of(t)).unwrap_or(0);
+            let err_size = err_ty.as_ref().map(|t| size_of(t)).unwrap_or(0);
+            let payload_size = ok_size.max(err_size);
+            let total_size = 4 + payload_size;
+
+            let mut result = vec![0u8; total_size];
+            result[0] = 1; // Err variant
+
+            // Lower err value if present
+            if let (Some(val), Some(ty)) = (err_val, err_ty) {
+                match (val.as_ref(), ty.as_ref()) {
+                    (ComponentValue::String(s), Type::String) => {
+                        let (ptr, len) = lower_string(mem, s, opts)?;
+                        result[4..8].copy_from_slice(&ptr.to_le_bytes());
+                        result[8..12].copy_from_slice(&len.to_le_bytes());
+                    }
+                    _ => {
+                        let core_vals = lower_primitive(val, ty)?;
+                        if let Some(CoreValue::I32(v)) = core_vals.first() {
+                            result[4..8].copy_from_slice(&v.to_le_bytes());
+                        }
+                    }
+                }
+            }
+
+            Ok(result)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,5 +364,103 @@ mod tests {
         assert_eq!(val1, 1);
         assert_eq!(val2, 2);
         assert_eq!(val3, 3);
+    }
+
+    #[test]
+    fn test_lower_record() {
+        let mut mem = SimpleMemory::new(1024);
+        let opts = AbiOptions::default();
+
+        // Create a simple record with two fields: x: u32, y: u32
+        let fields = vec![
+            ("x".to_string(), ComponentValue::U32(10)),
+            ("y".to_string(), ComponentValue::U32(20)),
+        ];
+        let field_types = vec![
+            ("x".to_string(), Type::U32),
+            ("y".to_string(), Type::U32),
+        ];
+
+        let data = lower_record(&mut mem, &fields, &field_types, &opts).unwrap();
+
+        // Should be 8 bytes: 4 for x, 4 for y
+        assert_eq!(data.len(), 8);
+
+        // Check values (little-endian)
+        let x = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
+        let y = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+
+        assert_eq!(x, 10);
+        assert_eq!(y, 20);
+    }
+
+    #[test]
+    fn test_lower_option_none() {
+        let mut mem = SimpleMemory::new(1024);
+        let opts = AbiOptions::default();
+
+        let value: Option<Box<ComponentValue>> = None;
+        let data = lower_option(&mut mem, &value, &Type::U32, &opts).unwrap();
+
+        // Discriminant = 0 for None
+        assert_eq!(data[0], 0);
+    }
+
+    #[test]
+    fn test_lower_option_some() {
+        let mut mem = SimpleMemory::new(1024);
+        let opts = AbiOptions::default();
+
+        let value = Some(Box::new(ComponentValue::U32(42)));
+        let data = lower_option(&mut mem, &value, &Type::U32, &opts).unwrap();
+
+        // Discriminant = 1 for Some
+        assert_eq!(data[0], 1);
+
+        // Value should be at offset 4 (aligned)
+        let v = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        assert_eq!(v, 42);
+    }
+
+    #[test]
+    fn test_lower_result_ok() {
+        let mut mem = SimpleMemory::new(1024);
+        let opts = AbiOptions::default();
+
+        let value: Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>> =
+            Ok(Some(Box::new(ComponentValue::U32(100))));
+
+        let ok_ty = Some(Box::new(Type::U32));
+        let err_ty = Some(Box::new(Type::String));
+
+        let data = lower_result(&mut mem, &value, &ok_ty, &err_ty, &opts).unwrap();
+
+        // Discriminant = 0 for Ok
+        assert_eq!(data[0], 0);
+
+        // Value at offset 4
+        let v = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        assert_eq!(v, 100);
+    }
+
+    #[test]
+    fn test_lower_result_err() {
+        let mut mem = SimpleMemory::new(1024);
+        let opts = AbiOptions::default();
+
+        let value: Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>> =
+            Err(Some(Box::new(ComponentValue::U32(404))));
+
+        let ok_ty = Some(Box::new(Type::U32));
+        let err_ty = Some(Box::new(Type::U32));
+
+        let data = lower_result(&mut mem, &value, &ok_ty, &err_ty, &opts).unwrap();
+
+        // Discriminant = 1 for Err
+        assert_eq!(data[0], 1);
+
+        // Value at offset 4
+        let v = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+        assert_eq!(v, 404);
     }
 }
