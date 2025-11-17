@@ -478,6 +478,64 @@ impl<'ctx> WasmSemantics<'ctx> {
                 value
             }
 
+            // ========================================================================
+            // f32 Operations (Phase 2 - Floating Point)
+            // ========================================================================
+            // Note: f32 values represented as 32-bit bitvectors (IEEE 754 format)
+
+            WasmOp::F32Const(value) => {
+                // f32 constant value
+                // Convert f32 to IEEE 754 bit representation
+                let bits = value.to_bits() as i64;
+                BV::from_i64(self.ctx, bits, 32)
+            }
+
+            WasmOp::F32Add => {
+                assert_eq!(inputs.len(), 2, "F32Add requires 2 inputs");
+                // f32 addition (symbolic for verification)
+                BV::new_const(self.ctx, "f32_add_result", 32)
+            }
+
+            WasmOp::F32Sub => {
+                assert_eq!(inputs.len(), 2, "F32Sub requires 2 inputs");
+                // f32 subtraction (symbolic for verification)
+                BV::new_const(self.ctx, "f32_sub_result", 32)
+            }
+
+            WasmOp::F32Mul => {
+                assert_eq!(inputs.len(), 2, "F32Mul requires 2 inputs");
+                // f32 multiplication (symbolic for verification)
+                BV::new_const(self.ctx, "f32_mul_result", 32)
+            }
+
+            WasmOp::F32Div => {
+                assert_eq!(inputs.len(), 2, "F32Div requires 2 inputs");
+                // f32 division (symbolic for verification)
+                BV::new_const(self.ctx, "f32_div_result", 32)
+            }
+
+            WasmOp::F32Abs => {
+                assert_eq!(inputs.len(), 1, "F32Abs requires 1 input");
+                // f32 absolute value: clear sign bit
+                let val = inputs[0].clone();
+                let mask = BV::from_u64(self.ctx, 0x7FFFFFFF, 32);
+                val.bvand(&mask)
+            }
+
+            WasmOp::F32Neg => {
+                assert_eq!(inputs.len(), 1, "F32Neg requires 1 input");
+                // f32 negation: flip sign bit
+                let val = inputs[0].clone();
+                let mask = BV::from_u64(self.ctx, 0x80000000, 32);
+                val.bvxor(&mask)
+            }
+
+            WasmOp::F32Sqrt => {
+                assert_eq!(inputs.len(), 1, "F32Sqrt requires 1 input");
+                // f32 square root (symbolic for verification)
+                BV::new_const(self.ctx, "f32_sqrt_result", 32)
+            }
+
             // Not yet supported operations
             _ => {
                 // For unsupported operations, return a symbolic constant
