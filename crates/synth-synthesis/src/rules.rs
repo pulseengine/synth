@@ -40,7 +40,8 @@ pub enum Pattern {
 }
 
 /// WebAssembly operation patterns
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Note: Cannot derive Eq because f32/f64 don't implement Eq (NaN != NaN)
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WasmOp {
     // Arithmetic
     I32Add,
@@ -156,6 +157,52 @@ pub enum WasmOp {
     I64ExtendI32S,  // Sign-extend i32 to i64
     I64ExtendI32U,  // Zero-extend i32 to i64
     I32WrapI64,     // Wrap i64 to i32 (truncate)
+
+    // ========================================================================
+    // f32 Operations (Phase 2 - Floating Point)
+    // ========================================================================
+
+    // f32 Arithmetic
+    F32Add,
+    F32Sub,
+    F32Mul,
+    F32Div,
+
+    // f32 Comparisons
+    F32Eq,
+    F32Ne,
+    F32Lt,
+    F32Le,
+    F32Gt,
+    F32Ge,
+
+    // f32 Math Functions
+    F32Abs,
+    F32Neg,
+    F32Ceil,
+    F32Floor,
+    F32Trunc,
+    F32Nearest,
+    F32Sqrt,
+    F32Min,
+    F32Max,
+    F32Copysign,
+
+    // f32 Constants and Memory
+    F32Const(f32),
+    F32Load { offset: u32, align: u32 },
+    F32Store { offset: u32, align: u32 },
+
+    // f32 Conversions
+    F32ConvertI32S,  // Convert signed i32 to f32
+    F32ConvertI32U,  // Convert unsigned i32 to f32
+    F32ConvertI64S,  // Convert signed i64 to f32
+    F32ConvertI64U,  // Convert unsigned i64 to f32
+    F32DemoteF64,    // Convert f64 to f32
+    F32ReinterpretI32,  // Reinterpret i32 bits as f32
+    I32ReinterpretF32,  // Reinterpret f32 bits as i32
+    I32TruncF32S,    // Truncate f32 to signed i32
+    I32TruncF32U,    // Truncate f32 to unsigned i32
 }
 
 /// Replacement/transformation
@@ -298,6 +345,53 @@ pub enum ArmOp {
     I64ExtendI32S { rdlo: Reg, rdhi: Reg, rn: Reg },  // Sign-extend i32 to i64
     I64ExtendI32U { rdlo: Reg, rdhi: Reg, rn: Reg },  // Zero-extend i32 to i64
     I32WrapI64 { rd: Reg, rnlo: Reg },                // Wrap i64 to i32 (take low 32 bits)
+
+    // ========================================================================
+    // f32 Operations (Phase 2 - Floating Point)
+    // ========================================================================
+    // VFP (Vector Floating Point) instructions for 32-bit float operations
+    // ARM uses separate floating-point register file (S0-S31 for single precision)
+
+    // f32 Arithmetic
+    F32Add { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // VADD.F32 Sd, Sn, Sm
+    F32Sub { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // VSUB.F32 Sd, Sn, Sm
+    F32Mul { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // VMUL.F32 Sd, Sn, Sm
+    F32Div { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // VDIV.F32 Sd, Sn, Sm
+
+    // f32 Math Functions
+    F32Abs { sd: VfpReg, sm: VfpReg },              // VABS.F32 Sd, Sm
+    F32Neg { sd: VfpReg, sm: VfpReg },              // VNEG.F32 Sd, Sm
+    F32Sqrt { sd: VfpReg, sm: VfpReg },             // VSQRT.F32 Sd, Sm
+    F32Ceil { sd: VfpReg, sm: VfpReg },             // Pseudo (rounding mode change + VRINTP)
+    F32Floor { sd: VfpReg, sm: VfpReg },            // Pseudo (rounding mode change + VRINTM)
+    F32Trunc { sd: VfpReg, sm: VfpReg },            // Pseudo (rounding mode change + VRINTZ)
+    F32Nearest { sd: VfpReg, sm: VfpReg },          // Pseudo (rounding mode change + VRINTN)
+    F32Min { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // Pseudo (compare + select)
+    F32Max { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // Pseudo (compare + select)
+    F32Copysign { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // Pseudo (bitwise operations)
+
+    // f32 Comparisons (result in integer register)
+    F32Eq { rd: Reg, sn: VfpReg, sm: VfpReg },      // VCMP.F32 + VMRS + condition check
+    F32Ne { rd: Reg, sn: VfpReg, sm: VfpReg },
+    F32Lt { rd: Reg, sn: VfpReg, sm: VfpReg },
+    F32Le { rd: Reg, sn: VfpReg, sm: VfpReg },
+    F32Gt { rd: Reg, sn: VfpReg, sm: VfpReg },
+    F32Ge { rd: Reg, sn: VfpReg, sm: VfpReg },
+
+    // f32 Constants and Memory
+    F32Const { sd: VfpReg, value: f32 },            // VMOV.F32 Sd, #imm (or literal pool)
+    F32Load { sd: VfpReg, addr: MemAddr },          // VLDR.32 Sd, [Rn, #offset]
+    F32Store { sd: VfpReg, addr: MemAddr },         // VSTR.32 Sd, [Rn, #offset]
+
+    // f32 Conversions
+    F32ConvertI32S { sd: VfpReg, rm: Reg },         // VMOV Sd, Rm + VCVT.F32.S32 Sd, Sd
+    F32ConvertI32U { sd: VfpReg, rm: Reg },         // VMOV Sd, Rm + VCVT.F32.U32 Sd, Sd
+    F32ConvertI64S { sd: VfpReg, rmlo: Reg, rmhi: Reg },  // Complex (requires library or multi-step)
+    F32ConvertI64U { sd: VfpReg, rmlo: Reg, rmhi: Reg },  // Complex (requires library or multi-step)
+    F32ReinterpretI32 { sd: VfpReg, rm: Reg },      // VMOV Sd, Rm (bitcast)
+    I32ReinterpretF32 { rd: Reg, sm: VfpReg },      // VMOV Rd, Sm (bitcast)
+    I32TruncF32S { rd: Reg, sm: VfpReg },           // VCVT.S32.F32 Sd, Sm + VMOV Rd, Sd
+    I32TruncF32U { rd: Reg, sm: VfpReg },           // VCVT.U32.F32 Sd, Sm + VMOV Rd, Sd
 }
 
 /// ARM condition codes (based on NZCV flags)
@@ -323,6 +417,21 @@ pub enum Reg {
     SP,  // Stack pointer (R13)
     LR,  // Link register (R14)
     PC,  // Program counter (R15)
+}
+
+/// ARM VFP (Vector Floating Point) register
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum VfpReg {
+    // Single-precision registers (32-bit)
+    S0, S1, S2, S3, S4, S5, S6, S7,
+    S8, S9, S10, S11, S12, S13, S14, S15,
+    S16, S17, S18, S19, S20, S21, S22, S23,
+    S24, S25, S26, S27, S28, S29, S30, S31,
+
+    // Double-precision registers (64-bit)
+    // Note: D0 = S0:S1, D1 = S2:S3, etc.
+    D0, D1, D2, D3, D4, D5, D6, D7,
+    D8, D9, D10, D11, D12, D13, D14, D15,
 }
 
 /// ARM operand 2 (flexible second operand)

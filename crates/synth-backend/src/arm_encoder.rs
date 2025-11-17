@@ -353,6 +353,40 @@ impl ArmEncoder {
             ArmOp::I64ExtendI32S { .. } => 0xE1A00000,  // NOP
             ArmOp::I64ExtendI32U { .. } => 0xE1A00000,  // NOP
             ArmOp::I32WrapI64 { .. } => 0xE1A00000,  // NOP
+
+            // f32 pseudo-instructions (Phase 2) - encode as NOP for now
+            // Real compiler would expand to VFP instructions
+            ArmOp::F32Add { .. } => 0xE1A00000,  // NOP (real: VADD.F32)
+            ArmOp::F32Sub { .. } => 0xE1A00000,  // NOP (real: VSUB.F32)
+            ArmOp::F32Mul { .. } => 0xE1A00000,  // NOP (real: VMUL.F32)
+            ArmOp::F32Div { .. } => 0xE1A00000,  // NOP (real: VDIV.F32)
+            ArmOp::F32Abs { .. } => 0xE1A00000,  // NOP (real: VABS.F32)
+            ArmOp::F32Neg { .. } => 0xE1A00000,  // NOP (real: VNEG.F32)
+            ArmOp::F32Sqrt { .. } => 0xE1A00000,  // NOP (real: VSQRT.F32)
+            ArmOp::F32Ceil { .. } => 0xE1A00000,  // NOP (pseudo)
+            ArmOp::F32Floor { .. } => 0xE1A00000,  // NOP (pseudo)
+            ArmOp::F32Trunc { .. } => 0xE1A00000,  // NOP (pseudo)
+            ArmOp::F32Nearest { .. } => 0xE1A00000,  // NOP (pseudo)
+            ArmOp::F32Min { .. } => 0xE1A00000,  // NOP (pseudo)
+            ArmOp::F32Max { .. } => 0xE1A00000,  // NOP (pseudo)
+            ArmOp::F32Copysign { .. } => 0xE1A00000,  // NOP (pseudo)
+            ArmOp::F32Eq { .. } => 0xE1A00000,  // NOP (real: VCMP.F32 + VMRS)
+            ArmOp::F32Ne { .. } => 0xE1A00000,  // NOP
+            ArmOp::F32Lt { .. } => 0xE1A00000,  // NOP
+            ArmOp::F32Le { .. } => 0xE1A00000,  // NOP
+            ArmOp::F32Gt { .. } => 0xE1A00000,  // NOP
+            ArmOp::F32Ge { .. } => 0xE1A00000,  // NOP
+            ArmOp::F32Const { .. } => 0xE1A00000,  // NOP (real: VMOV.F32 or literal pool)
+            ArmOp::F32Load { .. } => 0xE1A00000,  // NOP (real: VLDR.32)
+            ArmOp::F32Store { .. } => 0xE1A00000,  // NOP (real: VSTR.32)
+            ArmOp::F32ConvertI32S { .. } => 0xE1A00000,  // NOP (real: VMOV + VCVT.F32.S32)
+            ArmOp::F32ConvertI32U { .. } => 0xE1A00000,  // NOP (real: VMOV + VCVT.F32.U32)
+            ArmOp::F32ConvertI64S { .. } => 0xE1A00000,  // NOP (complex)
+            ArmOp::F32ConvertI64U { .. } => 0xE1A00000,  // NOP (complex)
+            ArmOp::F32ReinterpretI32 { .. } => 0xE1A00000,  // NOP (real: VMOV Sd, Rm)
+            ArmOp::I32ReinterpretF32 { .. } => 0xE1A00000,  // NOP (real: VMOV Rd, Sm)
+            ArmOp::I32TruncF32S { .. } => 0xE1A00000,  // NOP (real: VCVT.S32.F32 + VMOV)
+            ArmOp::I32TruncF32U { .. } => 0xE1A00000,  // NOP (real: VCVT.U32.F32 + VMOV)
         };
 
         // ARM32 instructions are little-endian
