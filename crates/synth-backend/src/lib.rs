@@ -6,6 +6,8 @@ pub mod elf_builder;
 pub mod memory_layout;
 pub mod mpu;
 pub mod mpu_allocator;
+pub mod reset_handler;
+pub mod vector_table;
 pub mod w2c2_wrapper;
 
 pub use arm_encoder::ArmEncoder;
@@ -17,6 +19,8 @@ pub use elf_builder::{
 pub use memory_layout::{MemoryLayout, MemoryLayoutAnalyzer, MemorySection, SectionType};
 pub use mpu::{MPUAttributes, MPUPermissions, MPURegion, MPUSize};
 pub use mpu_allocator::{MPUAllocationRequest, MPUAllocator};
+pub use reset_handler::ResetHandlerGenerator;
+pub use vector_table::{VectorEntry, VectorTable};
 pub use w2c2_wrapper::{TranspileOptions, TranspileResult, W2C2Transpiler};
 
 // Stub for PoC

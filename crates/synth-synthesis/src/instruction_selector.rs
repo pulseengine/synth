@@ -276,7 +276,63 @@ impl InstructionSelector {
                 label: "func".to_string(),  // Simplified - would use proper target
             },
 
-            _ => ArmOp::Nop,  // Unsupported operations
+            // Control flow (simplified - structural control flow)
+            Block => ArmOp::Nop,  // Block is a label
+            Loop => ArmOp::Nop,   // Loop is a label
+            Br(_label) => ArmOp::B {
+                label: "br_target".to_string(),
+            },
+            BrIf(_label) => {
+                // Conditional branch - would pop condition from stack
+                // For now, placeholder
+                ArmOp::B { label: "br_if_target".to_string() }
+            },
+            Return => ArmOp::Bx { rm: Reg::LR },  // Return via link register
+
+            // Locals
+            LocalTee(_index) => {
+                // Tee is like set but keeps value on stack
+                ArmOp::Str {
+                    rd,
+                    addr: MemAddr {
+                        base: Reg::SP,
+                        offset: 0,
+                    },
+                }
+            },
+
+            // Comparisons
+            I32Eq => {
+                ArmOp::Cmp {
+                    rn,
+                    op2: Operand2::Reg(rm),
+                }
+            },
+            I32Ne => {
+                ArmOp::Cmp {
+                    rn,
+                    op2: Operand2::Reg(rm),
+                }
+            },
+            I32LtS | I32LtU | I32LeS | I32LeU | I32GtS | I32GtU | I32GeS | I32GeU => {
+                ArmOp::Cmp {
+                    rn,
+                    op2: Operand2::Reg(rm),
+                }
+            },
+
+            // Division and remainder
+            I32DivS | I32DivU => {
+                // ARM Cortex-M3/M4 has hardware divide
+                // Would use SDIV/UDIV instructions
+                ArmOp::Nop  // Placeholder
+            },
+            I32RemS | I32RemU => {
+                // Remainder requires div + mul + sub
+                ArmOp::Nop  // Placeholder
+            },
+
+            _ => ArmOp::Nop,  // Other unsupported operations
         })
     }
 
