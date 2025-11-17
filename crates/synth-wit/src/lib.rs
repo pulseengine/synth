@@ -90,9 +90,7 @@ mod tests {
     fn test_parse_world() {
         let source = r#"
             world app {
-                import console: interface {
-                    log: func(msg: string);
-                }
+                import log: func(msg: string);
                 export run: func();
             }
         "#;
@@ -120,9 +118,9 @@ mod tests {
     fn test_parse_variant() {
         let source = r#"
             interface types {
-                variant option<T> {
-                    some(T),
-                    none,
+                variant response {
+                    ok(u32),
+                    err(string),
                 }
             }
         "#;
