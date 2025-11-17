@@ -240,51 +240,77 @@ fn verify_i32_xor() {
 // ============================================================================
 // ROTATION OPERATIONS
 // ============================================================================
+//
+// LIMITATION: WASM rotation operations (I32Rotl, I32Rotr) take dynamic shift
+// amounts (2 inputs: value + amount), while ARM ROR has a constant shift.
+//
+// Verification strategies:
+// 1. Constant rotations: When compiler detects constant shift, use ARM ROR
+// 2. Dynamic rotations: Requires instruction sequence (not yet verified)
+//
+// Current status: ARM ROR semantics implemented and tested with concrete values.
+// Full verification requires:
+// - Parameterized verification (testing all shift amounts 0-31)
+// - Or sequence verification for dynamic shifts
+//
+// This is tracked as Phase 1A task: "Parameterized shift verification"
+// ============================================================================
 
 #[test]
-fn verify_i32_rotl() {
+fn test_arm_ror_semantics() {
+    // This test verifies that ARM ROR semantics are correctly implemented
+    // by testing concrete values. Full symbolic verification requires
+    // parameterized testing framework (Phase 1A).
+
+    use synth_verify::{create_z3_context, ArmSemantics, ArmState};
+    use z3::ast::Ast;
+
     let ctx = create_z3_context();
-    let validator = TranslationValidator::new(&ctx);
+    let encoder = ArmSemantics::new(&ctx);
+    let mut state = ArmState::new_symbolic(&ctx);
 
-    // Note: ARM doesn't have ROTL, only ROTR
-    // ROTL(x, n) = ROTR(x, 32-n)
-    // This requires runtime computation, so we test symbolic equivalence
-    let rule = create_rule(
-        "i32.rotl",
-        WasmOp::I32Rotl,
-        ArmOp::Nop, // Placeholder - needs special handling
-    );
+    // Test that ROR(0x12345678, 8) = 0x78123456
+    state.set_reg(&Reg::R1, z3::ast::BV::from_u64(&ctx, 0x12345678, 32));
+    let ror_op = ArmOp::Ror {
+        rd: Reg::R0,
+        rn: Reg::R1,
+        shift: 8,
+    };
+    encoder.encode_op(&ror_op, &mut state);
+    assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x78123456));
 
-    // Should not verify directly
-    match validator.verify_rule(&rule) {
-        Ok(ValidationResult::Verified) => panic!("ROTL needs special implementation"),
-        _ => {}
-    }
+    // Test that ROTL(x, n) = ROR(x, 32-n) transformation holds
+    // For example: ROTL(0x12345678, 8) = ROR(0x12345678, 24)
+    state.set_reg(&Reg::R1, z3::ast::BV::from_u64(&ctx, 0x12345678, 32));
+    let ror_24 = ArmOp::Ror {
+        rd: Reg::R0,
+        rn: Reg::R1,
+        shift: 24, // 32 - 8 = 24
+    };
+    encoder.encode_op(&ror_24, &mut state);
+    // ROTL(0x12345678, 8) = 0x34567812
+    // ROR(0x12345678, 24) = 0x34567812 ✓
+    assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x34567812));
 }
 
 #[test]
-fn verify_i32_rotr() {
-    let ctx = create_z3_context();
-    let validator = TranslationValidator::new(&ctx);
+#[ignore] // Requires parameterized verification framework
+fn verify_i32_rotl_constant() {
+    // TODO: Implement parameterized verification
+    // For each constant n in 0..32:
+    //   Verify: WASM I32Rotl(x, n) ≡ ARM ROR(x, 32-n)
+    //
+    // This requires extending TranslationValidator to support
+    // parameterized rules where shift amounts are concrete but
+    // input values remain symbolic.
+}
 
-    // ARM has ROR instruction with immediate
-    // For verification, we'd need to test with concrete shift amounts
-    let rule = create_rule(
-        "i32.rotr",
-        WasmOp::I32Rotr,
-        ArmOp::Ror {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            shift: 0, // Would need to be parameterized
-        },
-    );
-
-    // Rotation with dynamic amount is complex for SMT
-    match validator.verify_rule(&rule) {
-        Ok(ValidationResult::Unknown { .. }) => {}
-        Ok(ValidationResult::Invalid { .. }) => {}
-        _ => {}
-    }
+#[test]
+#[ignore] // Requires parameterized verification framework
+fn verify_i32_rotr_constant() {
+    // TODO: Implement parameterized verification
+    // For each constant n in 0..32:
+    //   Verify: WASM I32Rotr(x, n) ≡ ARM ROR(x, n)
 }
 
 // ============================================================================
