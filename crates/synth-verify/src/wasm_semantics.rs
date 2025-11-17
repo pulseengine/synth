@@ -452,6 +452,32 @@ impl<'ctx> WasmSemantics<'ctx> {
                 inputs[0].clone()
             }
 
+            // i64 Memory operations
+            WasmOp::I64Load { offset, .. } => {
+                assert_eq!(inputs.len(), 1, "I64Load requires 1 input (address)");
+                // Load 64-bit value from memory: mem[address + offset]
+                // In our simplified 32-bit model, return symbolic 32-bit value (low part)
+                // Full implementation would return 64-bit value
+                let address = inputs[0].clone();
+                let offset_bv = BV::from_u64(self.ctx, *offset as u64, 32);
+                let effective_addr = address.bvadd(&offset_bv);
+
+                // Return symbolic value representing the low 32 bits of the loaded i64
+                BV::new_const(self.ctx, format!("i64load_{}_{}", offset, address), 32)
+            }
+
+            WasmOp::I64Store { offset, .. } => {
+                assert_eq!(inputs.len(), 2, "I64Store requires 2 inputs (address, value)");
+                // Store 64-bit value to memory: mem[address + offset] = value
+                // In our simplified 32-bit model, store the 32-bit value
+                let _address = inputs[0].clone();
+                let value = inputs[1].clone();
+                let _offset_bv = BV::from_u64(self.ctx, *offset as u64, 32);
+
+                // Store returns no value in WASM, but we return the stored value for verification
+                value
+            }
+
             // Not yet supported operations
             _ => {
                 // For unsupported operations, return a symbolic constant

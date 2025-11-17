@@ -290,6 +290,10 @@ pub enum ArmOp {
     // i64 Constants (load 64-bit immediate into register pair)
     I64Const { rdlo: Reg, rdhi: Reg, value: i64 },
 
+    // i64 Memory operations (load/store with register pairs)
+    I64Ldr { rdlo: Reg, rdhi: Reg, addr: MemAddr },
+    I64Str { rdlo: Reg, rdhi: Reg, addr: MemAddr },
+
     // i64 Conversion operations
     I64ExtendI32S { rdlo: Reg, rdhi: Reg, rn: Reg },  // Sign-extend i32 to i64
     I64ExtendI32U { rdlo: Reg, rdhi: Reg, rn: Reg },  // Zero-extend i32 to i64

@@ -348,6 +348,8 @@ impl ArmEncoder {
             ArmOp::I64GeS { .. } => 0xE1A00000,  // NOP
             ArmOp::I64GeU { .. } => 0xE1A00000,  // NOP
             ArmOp::I64Const { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64Ldr { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64Str { .. } => 0xE1A00000,  // NOP
             ArmOp::I64ExtendI32S { .. } => 0xE1A00000,  // NOP
             ArmOp::I64ExtendI32U { .. } => 0xE1A00000,  // NOP
             ArmOp::I32WrapI64 { .. } => 0xE1A00000,  // NOP
