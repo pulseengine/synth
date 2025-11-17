@@ -212,18 +212,18 @@ impl<'ctx> ArmSemantics<'ctx> {
             }
 
             ArmOp::Clz { rd, rm } => {
-                // Count leading zeros
-                let rm_val = state.get_reg(rm).clone();
-                // This is a simplified CLZ - proper implementation would use bit manipulation
-                let result = BV::new_const(self.ctx, "clz_result", 32);
+                // Count leading zeros - ARM CLZ instruction
+                // Uses binary search algorithm matching WASM i32.clz semantics
+                let input = state.get_reg(rm).clone();
+                let result = self.encode_clz(&input);
                 state.set_reg(rd, result);
             }
 
             ArmOp::Rbit { rd, rm } => {
-                // Reverse bits - reverse bit order in 32-bit value
-                let rm_val = state.get_reg(rm).clone();
-                // Simplified: use symbolic value for now
-                let result = BV::new_const(self.ctx, "rbit_result", 32);
+                // Reverse bits - ARM RBIT instruction
+                // Reverses the bit order in a 32-bit value
+                let input = state.get_reg(rm).clone();
+                let result = self.encode_rbit(&input);
                 state.set_reg(rd, result);
             }
 
@@ -286,6 +286,124 @@ impl<'ctx> ArmSemantics<'ctx> {
     /// Extract the result value from a register after execution
     pub fn extract_result(&self, state: &ArmState<'ctx>, reg: &Reg) -> BV<'ctx> {
         state.get_reg(reg).clone()
+    }
+
+    /// Encode ARM CLZ (Count Leading Zeros) instruction
+    ///
+    /// Implements the same algorithm as WASM i32.clz for equivalence verification.
+    /// Uses binary search through bit positions.
+    fn encode_clz(&self, input: &BV<'ctx>) -> BV<'ctx> {
+        let zero = BV::from_i64(self.ctx, 0, 32);
+
+        // Special case: if input is 0, return 32
+        let all_zero = input._eq(&zero);
+        let result_if_zero = BV::from_i64(self.ctx, 32, 32);
+
+        // Binary search approach
+        let mut count = BV::from_i64(self.ctx, 0, 32);
+        let mut remaining = input.clone();
+
+        // Check top 16 bits
+        let mask_16 = BV::from_u64(self.ctx, 0xFFFF0000, 32);
+        let top_16 = remaining.bvand(&mask_16);
+        let top_16_zero = top_16._eq(&zero);
+
+        count = top_16_zero.ite(
+            &count.bvadd(&BV::from_i64(self.ctx, 16, 32)),
+            &count,
+        );
+        remaining = top_16_zero.ite(
+            &remaining.bvshl(&BV::from_i64(self.ctx, 16, 32)),
+            &remaining,
+        );
+
+        // Check top 8 bits
+        let mask_8 = BV::from_u64(self.ctx, 0xFF000000, 32);
+        let top_8 = remaining.bvand(&mask_8);
+        let top_8_zero = top_8._eq(&zero);
+
+        count = top_8_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 8, 32)), &count);
+        remaining = top_8_zero.ite(
+            &remaining.bvshl(&BV::from_i64(self.ctx, 8, 32)),
+            &remaining,
+        );
+
+        // Check top 4 bits
+        let mask_4 = BV::from_u64(self.ctx, 0xF0000000, 32);
+        let top_4 = remaining.bvand(&mask_4);
+        let top_4_zero = top_4._eq(&zero);
+
+        count = top_4_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 4, 32)), &count);
+        remaining = top_4_zero.ite(
+            &remaining.bvshl(&BV::from_i64(self.ctx, 4, 32)),
+            &remaining,
+        );
+
+        // Check top 2 bits
+        let mask_2 = BV::from_u64(self.ctx, 0xC0000000, 32);
+        let top_2 = remaining.bvand(&mask_2);
+        let top_2_zero = top_2._eq(&zero);
+
+        count = top_2_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 2, 32)), &count);
+        remaining = top_2_zero.ite(
+            &remaining.bvshl(&BV::from_i64(self.ctx, 2, 32)),
+            &remaining,
+        );
+
+        // Check top bit
+        let mask_1 = BV::from_u64(self.ctx, 0x80000000, 32);
+        let top_1 = remaining.bvand(&mask_1);
+        let top_1_zero = top_1._eq(&zero);
+
+        count = top_1_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 1, 32)), &count);
+
+        // Return 32 if all zeros, otherwise return count
+        all_zero.ite(&result_if_zero, &count)
+    }
+
+    /// Encode ARM RBIT (Reverse Bits) instruction
+    ///
+    /// Reverses the bit order in a 32-bit value.
+    /// Used in combination with CLZ to implement CTZ.
+    fn encode_rbit(&self, input: &BV<'ctx>) -> BV<'ctx> {
+        // Reverse bits by swapping progressively smaller chunks
+        let mut result = input.clone();
+
+        // Swap 16-bit halves
+        let mask_16 = BV::from_u64(self.ctx, 0xFFFF0000, 32);
+        let top_16 = result.bvand(&mask_16).bvlshr(&BV::from_i64(self.ctx, 16, 32));
+        let bottom_16 = result.bvshl(&BV::from_i64(self.ctx, 16, 32));
+        result = top_16.bvor(&bottom_16);
+
+        // Swap 8-bit chunks
+        let mask_8_top = BV::from_u64(self.ctx, 0xFF00FF00, 32);
+        let mask_8_bottom = BV::from_u64(self.ctx, 0x00FF00FF, 32);
+        let top_8 = result.bvand(&mask_8_top).bvlshr(&BV::from_i64(self.ctx, 8, 32));
+        let bottom_8 = result.bvand(&mask_8_bottom).bvshl(&BV::from_i64(self.ctx, 8, 32));
+        result = top_8.bvor(&bottom_8);
+
+        // Swap 4-bit chunks
+        let mask_4_top = BV::from_u64(self.ctx, 0xF0F0F0F0, 32);
+        let mask_4_bottom = BV::from_u64(self.ctx, 0x0F0F0F0F, 32);
+        let top_4 = result.bvand(&mask_4_top).bvlshr(&BV::from_i64(self.ctx, 4, 32));
+        let bottom_4 = result.bvand(&mask_4_bottom).bvshl(&BV::from_i64(self.ctx, 4, 32));
+        result = top_4.bvor(&bottom_4);
+
+        // Swap 2-bit chunks
+        let mask_2_top = BV::from_u64(self.ctx, 0xCCCCCCCC, 32);
+        let mask_2_bottom = BV::from_u64(self.ctx, 0x33333333, 32);
+        let top_2 = result.bvand(&mask_2_top).bvlshr(&BV::from_i64(self.ctx, 2, 32));
+        let bottom_2 = result.bvand(&mask_2_bottom).bvshl(&BV::from_i64(self.ctx, 2, 32));
+        result = top_2.bvor(&bottom_2);
+
+        // Swap 1-bit chunks (individual bits)
+        let mask_1_top = BV::from_u64(self.ctx, 0xAAAAAAAA, 32);
+        let mask_1_bottom = BV::from_u64(self.ctx, 0x55555555, 32);
+        let top_1 = result.bvand(&mask_1_top).bvlshr(&BV::from_i64(self.ctx, 1, 32));
+        let bottom_1 = result.bvand(&mask_1_bottom).bvshl(&BV::from_i64(self.ctx, 1, 32));
+        result = top_1.bvor(&bottom_1);
+
+        result
     }
 }
 
@@ -418,5 +536,89 @@ mod tests {
         };
         encoder.encode_op(&lsr_op, &mut state);
         assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(2));
+    }
+
+    #[test]
+    fn test_arm_clz_comprehensive() {
+        let ctx = create_z3_context();
+        let encoder = ArmSemantics::new(&ctx);
+        let mut state = ArmState::new_symbolic(&ctx);
+
+        // Test CLZ(0) = 32
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 0, 32));
+        let clz_op = ArmOp::Clz {
+            rd: Reg::R0,
+            rm: Reg::R1,
+        };
+        encoder.encode_op(&clz_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(32), "CLZ(0) should be 32");
+
+        // Test CLZ(1) = 31
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 1, 32));
+        encoder.encode_op(&clz_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(31), "CLZ(1) should be 31");
+
+        // Test CLZ(0x80000000) = 0
+        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x80000000, 32));
+        encoder.encode_op(&clz_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0), "CLZ(0x80000000) should be 0");
+
+        // Test CLZ(0x00FF0000) = 8
+        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x00FF0000, 32));
+        encoder.encode_op(&clz_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(8), "CLZ(0x00FF0000) should be 8");
+
+        // Test CLZ(0x00001000) = 19
+        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x00001000, 32));
+        encoder.encode_op(&clz_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(19), "CLZ(0x00001000) should be 19");
+
+        // Test CLZ(0xFFFFFFFF) = 0
+        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFFFFFFFF, 32));
+        encoder.encode_op(&clz_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0), "CLZ(0xFFFFFFFF) should be 0");
+    }
+
+    #[test]
+    fn test_arm_rbit_comprehensive() {
+        let ctx = create_z3_context();
+        let encoder = ArmSemantics::new(&ctx);
+        let mut state = ArmState::new_symbolic(&ctx);
+
+        let rbit_op = ArmOp::Rbit {
+            rd: Reg::R0,
+            rm: Reg::R1,
+        };
+
+        // Test RBIT(0) = 0
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 0, 32));
+        encoder.encode_op(&rbit_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0), "RBIT(0) should be 0");
+
+        // Test RBIT(1) = 0x80000000 (bit 0 → bit 31)
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 1, 32));
+        encoder.encode_op(&rbit_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_u64(), Some(0x80000000), "RBIT(1) should be 0x80000000");
+
+        // Test RBIT(0x80000000) = 1 (bit 31 → bit 0)
+        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x80000000, 32));
+        encoder.encode_op(&rbit_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "RBIT(0x80000000) should be 1");
+
+        // Test RBIT(0xFF000000) = 0x000000FF (top byte → bottom byte)
+        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFF000000, 32));
+        encoder.encode_op(&rbit_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_u64(), Some(0x000000FF), "RBIT(0xFF000000) should be 0x000000FF");
+
+        // Test RBIT(0x12345678) - specific pattern
+        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x12345678, 32));
+        encoder.encode_op(&rbit_op, &mut state);
+        // 0x12345678 reversed = 0x1E6A2C48
+        assert_eq!(state.get_reg(&Reg::R0).as_u64(), Some(0x1E6A2C48), "RBIT(0x12345678) should be 0x1E6A2C48");
+
+        // Test RBIT(0xFFFFFFFF) = 0xFFFFFFFF (all bits stay)
+        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFFFFFFFF, 32));
+        encoder.encode_op(&rbit_op, &mut state);
+        assert_eq!(state.get_reg(&Reg::R0).as_u64(), Some(0xFFFFFFFF), "RBIT(0xFFFFFFFF) should be 0xFFFFFFFF");
     }
 }
