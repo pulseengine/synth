@@ -316,6 +316,58 @@ impl<'ctx> WasmSemantics<'ctx> {
                 BV::new_const(self.ctx, "unreachable_trap", 32)
             }
 
+            // Control flow operations
+            WasmOp::Block => {
+                assert_eq!(inputs.len(), 0, "Block requires 0 inputs");
+                // Block is a structure marker - return zero
+                BV::from_i64(self.ctx, 0, 32)
+            }
+
+            WasmOp::Loop => {
+                assert_eq!(inputs.len(), 0, "Loop requires 0 inputs");
+                // Loop is a structure marker - return zero
+                BV::from_i64(self.ctx, 0, 32)
+            }
+
+            WasmOp::End => {
+                assert_eq!(inputs.len(), 0, "End requires 0 inputs");
+                // End is a structure marker - return zero
+                BV::from_i64(self.ctx, 0, 32)
+            }
+
+            WasmOp::Br(label) => {
+                assert_eq!(inputs.len(), 0, "Br requires 0 inputs");
+                // Branch to label - return symbolic control flow value
+                BV::new_const(self.ctx, format!("br_{}", label), 32)
+            }
+
+            WasmOp::BrIf(label) => {
+                assert_eq!(inputs.len(), 1, "BrIf requires 1 input (condition)");
+                // Conditional branch - return symbolic control flow value
+                // The condition determines whether branch is taken
+                let _cond = inputs[0].clone();
+                BV::new_const(self.ctx, format!("br_if_{}", label), 32)
+            }
+
+            WasmOp::Return => {
+                assert_eq!(inputs.len(), 0, "Return requires 0 inputs");
+                // Return from function - return symbolic control flow value
+                BV::new_const(self.ctx, "return", 32)
+            }
+
+            WasmOp::If => {
+                assert_eq!(inputs.len(), 1, "If requires 1 input (condition)");
+                // If is a structure marker with condition check
+                let _cond = inputs[0].clone();
+                BV::from_i64(self.ctx, 0, 32)
+            }
+
+            WasmOp::Else => {
+                assert_eq!(inputs.len(), 0, "Else requires 0 inputs");
+                // Else is a structure marker
+                BV::from_i64(self.ctx, 0, 32)
+            }
+
             // Not yet supported operations
             _ => {
                 // For unsupported operations, return a symbolic constant
