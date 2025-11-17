@@ -399,6 +399,59 @@ impl<'ctx> WasmSemantics<'ctx> {
                 BV::new_const(self.ctx, format!("call_indirect_{}", type_idx), 32)
             }
 
+            // ================================================================
+            // i64 Operations (Phase 2) - Basic implementation
+            // ================================================================
+            // Note: These return 64-bit bitvectors, but current architecture
+            // expects 32-bit. For now, we truncate to 32-bit for compatibility.
+            // Full 64-bit support requires architectural changes.
+
+            WasmOp::I64Const(value) => {
+                assert_eq!(inputs.len(), 0, "I64Const requires 0 inputs");
+                // For now, truncate to 32-bit (low part)
+                // TODO: Full 64-bit support with register pairs
+                let low32 = (*value as i32) as i64;
+                BV::from_i64(self.ctx, low32, 32)
+            }
+
+            WasmOp::I64Add => {
+                assert_eq!(inputs.len(), 2, "I64Add requires 2 inputs");
+                // Simplified: treat as 32-bit for now
+                // TODO: Implement full 64-bit addition with carry
+                inputs[0].bvadd(&inputs[1])
+            }
+
+            WasmOp::I64Eqz => {
+                assert_eq!(inputs.len(), 1, "I64Eqz requires 1 input");
+                // Check if value is zero
+                // Simplified: 32-bit check for now
+                let zero = BV::from_i64(self.ctx, 0, 32);
+                let cond = inputs[0]._eq(&zero);
+                self.bool_to_bv32(&cond)
+            }
+
+            WasmOp::I32WrapI64 => {
+                assert_eq!(inputs.len(), 1, "I32WrapI64 requires 1 input");
+                // Wrap 64-bit to 32-bit (truncate)
+                // Already 32-bit in our simplified model
+                inputs[0].clone()
+            }
+
+            WasmOp::I64ExtendI32S => {
+                assert_eq!(inputs.len(), 1, "I64ExtendI32S requires 1 input");
+                // Sign-extend 32-bit to 64-bit
+                // In our simplified model, already 32-bit
+                // Full implementation would sign-extend to 64-bit
+                inputs[0].clone()
+            }
+
+            WasmOp::I64ExtendI32U => {
+                assert_eq!(inputs.len(), 1, "I64ExtendI32U requires 1 input");
+                // Zero-extend 32-bit to 64-bit
+                // In our simplified model, already 32-bit
+                inputs[0].clone()
+            }
+
             // Not yet supported operations
             _ => {
                 // For unsupported operations, return a symbolic constant
