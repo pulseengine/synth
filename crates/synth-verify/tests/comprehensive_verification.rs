@@ -130,43 +130,154 @@ fn verify_i32_div_u() {
 }
 
 #[test]
+fn test_remainder_sequences_concrete() {
+    // Test remainder sequences with concrete values before formal verification
+    use synth_verify::{create_z3_context, ArmSemantics, ArmState, WasmSemantics};
+    use z3::ast::Ast;
+
+    let ctx = create_z3_context();
+    let wasm_encoder = WasmSemantics::new(&ctx);
+    let arm_encoder = ArmSemantics::new(&ctx);
+
+    // Test unsigned remainder: 17 % 5 = 2
+    let dividend = z3::ast::BV::from_i64(&ctx, 17, 32);
+    let divisor = z3::ast::BV::from_i64(&ctx, 5, 32);
+
+    // WASM: rem_u(17, 5) = 2
+    let wasm_result = wasm_encoder.encode_op(&WasmOp::I32RemU, &[dividend.clone(), divisor.clone()]);
+    assert_eq!(wasm_result.as_i64(), Some(2), "WASM rem_u(17, 5) = 2");
+
+    // ARM sequence: UDIV + MLS
+    let mut state = ArmState::new_symbolic(&ctx);
+    state.set_reg(&Reg::R0, dividend.clone());
+    state.set_reg(&Reg::R1, divisor.clone());
+
+    // UDIV R2, R0, R1 -> R2 = 17/5 = 3
+    arm_encoder.encode_op(&ArmOp::Udiv { rd: Reg::R2, rn: Reg::R0, rm: Reg::R1 }, &mut state);
+    assert_eq!(state.get_reg(&Reg::R2).as_i64(), Some(3), "Quotient = 3");
+
+    // MLS R0, R2, R1, R0 -> R0 = 17 - 3*5 = 2
+    arm_encoder.encode_op(&ArmOp::Mls { rd: Reg::R0, rn: Reg::R2, rm: Reg::R1, ra: Reg::R0 }, &mut state);
+    let arm_result = state.get_reg(&Reg::R0);
+    assert_eq!(arm_result.as_i64(), Some(2), "ARM rem_u(17, 5) = 2");
+
+    // Test signed remainder: (-17) % 5 = -2 (in most languages, sign follows dividend)
+    let neg_dividend = z3::ast::BV::from_i64(&ctx, -17, 32);
+    let pos_divisor = z3::ast::BV::from_i64(&ctx, 5, 32);
+
+    let wasm_result_signed = wasm_encoder.encode_op(&WasmOp::I32RemS, &[neg_dividend.clone(), pos_divisor.clone()]);
+
+    // ARM signed sequence
+    let mut state2 = ArmState::new_symbolic(&ctx);
+    state2.set_reg(&Reg::R0, neg_dividend);
+    state2.set_reg(&Reg::R1, pos_divisor);
+
+    // SDIV R2, R0, R1 -> R2 = -17/5 = -3
+    arm_encoder.encode_op(&ArmOp::Sdiv { rd: Reg::R2, rn: Reg::R0, rm: Reg::R1 }, &mut state2);
+
+    // MLS R0, R2, R1, R0 -> R0 = -17 - (-3)*5 = -17 + 15 = -2
+    arm_encoder.encode_op(&ArmOp::Mls { rd: Reg::R0, rn: Reg::R2, rm: Reg::R1, ra: Reg::R0 }, &mut state2);
+    let arm_result_signed = state2.get_reg(&Reg::R0);
+
+    // Both should match
+    assert_eq!(wasm_result_signed.as_i64(), arm_result_signed.as_i64(), "Signed remainder matches");
+
+    println!("✓ Remainder sequences work correctly with concrete values");
+}
+
+#[test]
 fn verify_i32_rem_s() {
+    // Verify signed remainder using ARM sequence: SDIV + MLS
+    // Algorithm: rem_s(a, b) = a - (a / b) * b
+    //
+    // Sequence:
+    //   SDIV R2, R0, R1   ; R2 = quotient (signed division)
+    //   MLS R0, R2, R1, R0 ; R0 = R0 - R2 * R1 (remainder)
+    //
+    // This proves ∀a,b. WASM_REM_S(a, b) = a - (a/b) * b
+
     let ctx = create_z3_context();
     let validator = TranslationValidator::new(&ctx);
 
-    // ARM doesn't have REM instruction, but we can test MLS approach
-    // rem = a - (a/b)*b, which requires sequence
-    // For now, we'll test if the semantics match when implemented
-    let rule = create_rule(
-        "i32.rem_s",
-        WasmOp::I32RemS,
-        ArmOp::Nop, // Placeholder - actual implementation uses sequence
-    );
+    let rule = SynthesisRule {
+        name: "i32.rem_s".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32RemS),
+        replacement: Replacement::ArmSequence(vec![
+            // Step 1: Compute quotient
+            ArmOp::Sdiv {
+                rd: Reg::R2,  // quotient destination
+                rn: Reg::R0,  // dividend
+                rm: Reg::R1,  // divisor
+            },
+            // Step 2: Compute remainder using MLS
+            ArmOp::Mls {
+                rd: Reg::R0,  // remainder destination
+                rn: Reg::R2,  // quotient
+                rm: Reg::R1,  // divisor
+                ra: Reg::R0,  // dividend
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 3,
+        },
+    };
 
-    // This should be Unknown since Nop doesn't implement rem semantics
     match validator.verify_rule(&rule) {
-        Ok(ValidationResult::Verified) => panic!("NOP should not verify as REM"),
-        Ok(ValidationResult::Invalid { .. }) => {}
-        Ok(ValidationResult::Unknown { .. }) => {}
-        Err(_) => {}
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32RemS sequence verified: rem_s(a,b) = a - (a/b)*b");
+        }
+        other => panic!("Expected Verified for REM_S sequence, got {:?}", other),
     }
 }
 
 #[test]
 fn verify_i32_rem_u() {
+    // Verify unsigned remainder using ARM sequence: UDIV + MLS
+    // Algorithm: rem_u(a, b) = a - (a / b) * b
+    //
+    // Sequence:
+    //   UDIV R2, R0, R1   ; R2 = quotient (unsigned division)
+    //   MLS R0, R2, R1, R0 ; R0 = R0 - R2 * R1 (remainder)
+    //
+    // This proves ∀a,b. WASM_REM_U(a, b) = a - (a/b) * b
+
     let ctx = create_z3_context();
     let validator = TranslationValidator::new(&ctx);
 
-    let rule = create_rule(
-        "i32.rem_u",
-        WasmOp::I32RemU,
-        ArmOp::Nop, // Placeholder
-    );
+    let rule = SynthesisRule {
+        name: "i32.rem_u".to_string(),
+        priority: 0,
+        pattern: Pattern::WasmInstr(WasmOp::I32RemU),
+        replacement: Replacement::ArmSequence(vec![
+            // Step 1: Compute quotient
+            ArmOp::Udiv {
+                rd: Reg::R2,  // quotient destination
+                rn: Reg::R0,  // dividend
+                rm: Reg::R1,  // divisor
+            },
+            // Step 2: Compute remainder using MLS
+            ArmOp::Mls {
+                rd: Reg::R0,  // remainder destination
+                rn: Reg::R2,  // quotient
+                rm: Reg::R1,  // divisor
+                ra: Reg::R0,  // dividend
+            },
+        ]),
+        cost: synth_synthesis::Cost {
+            cycles: 2,
+            code_size: 8,
+            registers: 3,
+        },
+    };
 
-    // Should not verify
     match validator.verify_rule(&rule) {
-        Ok(ValidationResult::Verified) => panic!("NOP should not verify as REM"),
-        _ => {}
+        Ok(ValidationResult::Verified) => {
+            println!("✓ I32RemU sequence verified: rem_u(a,b) = a - (a/b)*b");
+        }
+        other => panic!("Expected Verified for REM_U sequence, got {:?}", other),
     }
 }
 
