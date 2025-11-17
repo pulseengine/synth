@@ -450,6 +450,156 @@ impl OptimizationPass for CommonSubexpressionElimination {
     }
 }
 
+/// Algebraic Simplification pass
+pub struct AlgebraicSimplification {
+    verbose: bool,
+}
+
+impl AlgebraicSimplification {
+    pub fn new() -> Self {
+        Self { verbose: false }
+    }
+
+    pub fn with_verbose(mut self) -> Self {
+        self.verbose = true;
+        self
+    }
+
+    /// Apply algebraic simplifications
+    fn simplify(&mut self, instructions: &mut Vec<Instruction>) -> OptResult {
+        // Track constant values
+        let mut const_values: HashMap<Reg, i32> = HashMap::new();
+        let mut modified = 0;
+
+        for inst in instructions.iter_mut() {
+            if inst.is_dead {
+                continue;
+            }
+
+            let opcode = inst.opcode.clone();
+
+            match opcode {
+                // Track constants
+                Opcode::Const { dest, value } => {
+                    const_values.insert(dest, value);
+                }
+
+                // Simplify: x + 0 = x, 0 + x = x
+                Opcode::Add { dest, src1, src2 } => {
+                    let val1 = const_values.get(&src1);
+                    let val2 = const_values.get(&src2);
+
+                    match (val1, val2) {
+                        (Some(&0), _) => {
+                            // 0 + x = x (mark as dead, would need copy propagation)
+                            inst.is_dead = true;
+                            modified += 1;
+                            if self.verbose {
+                                eprintln!("Simplified: 0 + r{} -> r{}", src2.0, src2.0);
+                            }
+                        }
+                        (_, Some(&0)) => {
+                            // x + 0 = x
+                            inst.is_dead = true;
+                            modified += 1;
+                            if self.verbose {
+                                eprintln!("Simplified: r{} + 0 -> r{}", src1.0, src1.0);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Simplify: x - 0 = x, x - x = 0
+                Opcode::Sub { dest, src1, src2 } => {
+                    let val2 = const_values.get(&src2);
+
+                    if let Some(&0) = val2 {
+                        // x - 0 = x
+                        inst.is_dead = true;
+                        modified += 1;
+                        if self.verbose {
+                            eprintln!("Simplified: r{} - 0 -> r{}", src1.0, src1.0);
+                        }
+                    } else if src1 == src2 {
+                        // x - x = 0
+                        inst.opcode = Opcode::Const { dest, value: 0 };
+                        const_values.insert(dest, 0);
+                        modified += 1;
+                        if self.verbose {
+                            eprintln!("Simplified: r{} - r{} -> 0", src1.0, src2.0);
+                        }
+                    }
+                }
+
+                // Simplify: x * 0 = 0, 0 * x = 0, x * 1 = x, 1 * x = x
+                Opcode::Mul { dest, src1, src2 } => {
+                    let val1 = const_values.get(&src1);
+                    let val2 = const_values.get(&src2);
+
+                    match (val1, val2) {
+                        (Some(&0), _) | (_, Some(&0)) => {
+                            // x * 0 = 0 or 0 * x = 0
+                            inst.opcode = Opcode::Const { dest, value: 0 };
+                            const_values.insert(dest, 0);
+                            modified += 1;
+                            if self.verbose {
+                                eprintln!("Simplified: mul with 0 -> 0");
+                            }
+                        }
+                        (Some(&1), _) => {
+                            // 1 * x = x
+                            inst.is_dead = true;
+                            modified += 1;
+                            if self.verbose {
+                                eprintln!("Simplified: 1 * r{} -> r{}", src2.0, src2.0);
+                            }
+                        }
+                        (_, Some(&1)) => {
+                            // x * 1 = x
+                            inst.is_dead = true;
+                            modified += 1;
+                            if self.verbose {
+                                eprintln!("Simplified: r{} * 1 -> r{}", src1.0, src1.0);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                _ => {}
+            }
+        }
+
+        if self.verbose && modified > 0 {
+            eprintln!("Algebraic simplification: {} operations simplified", modified);
+        }
+
+        OptResult {
+            changed: modified > 0,
+            removed_count: 0,
+            added_count: 0,
+            modified_count: modified,
+        }
+    }
+}
+
+impl Default for AlgebraicSimplification {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OptimizationPass for AlgebraicSimplification {
+    fn name(&self) -> &'static str {
+        "algebraic-simplification"
+    }
+
+    fn run(&mut self, _cfg: &mut Cfg, instructions: &mut Vec<Instruction>) -> OptResult {
+        self.simplify(instructions)
+    }
+}
+
 /// Optimization pass manager
 pub struct PassManager {
     passes: Vec<Box<dyn OptimizationPass>>,
@@ -1088,5 +1238,253 @@ mod tests {
         // Nothing should be eliminated
         assert!(!result.changed);
         assert_eq!(result.removed_count, 0);
+    }
+
+    #[test]
+    fn test_algebraic_add_zero() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..3 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r0 = 0, r2 = r1 + r0 (r1 + 0)
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const { dest: Reg(0), value: 0 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Add {
+                    dest: Reg(2),
+                    src1: Reg(1),
+                    src2: Reg(0),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut simplify = AlgebraicSimplification::new();
+        let result = simplify.run(&mut cfg, &mut instructions);
+
+        // r1 + 0 should be simplified (marked dead)
+        assert!(result.changed);
+        assert_eq!(result.modified_count, 1);
+        assert!(instructions[1].is_dead);
+    }
+
+    #[test]
+    fn test_algebraic_sub_zero() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..2 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r0 = 0, r2 = r1 - r0 (r1 - 0)
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const { dest: Reg(0), value: 0 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Sub {
+                    dest: Reg(2),
+                    src1: Reg(1),
+                    src2: Reg(0),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut simplify = AlgebraicSimplification::new();
+        let result = simplify.run(&mut cfg, &mut instructions);
+
+        // r1 - 0 should be simplified
+        assert!(result.changed);
+        assert_eq!(result.modified_count, 1);
+        assert!(instructions[1].is_dead);
+    }
+
+    #[test]
+    fn test_algebraic_sub_self() {
+        let mut builder = CfgBuilder::new();
+        builder.add_instruction();
+
+        let mut cfg = builder.build();
+
+        // Create: r2 = r1 - r1 (self subtraction)
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Sub {
+                    dest: Reg(2),
+                    src1: Reg(1),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut simplify = AlgebraicSimplification::new();
+        let result = simplify.run(&mut cfg, &mut instructions);
+
+        // r1 - r1 should become const 0
+        assert!(result.changed);
+        assert_eq!(result.modified_count, 1);
+        assert_eq!(instructions[0].opcode, Opcode::Const { dest: Reg(2), value: 0 });
+    }
+
+    #[test]
+    fn test_algebraic_mul_zero() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..2 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r0 = 0, r2 = r1 * r0
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const { dest: Reg(0), value: 0 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Mul {
+                    dest: Reg(2),
+                    src1: Reg(1),
+                    src2: Reg(0),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut simplify = AlgebraicSimplification::new();
+        let result = simplify.run(&mut cfg, &mut instructions);
+
+        // r1 * 0 should become const 0
+        assert!(result.changed);
+        assert_eq!(result.modified_count, 1);
+        assert_eq!(instructions[1].opcode, Opcode::Const { dest: Reg(2), value: 0 });
+    }
+
+    #[test]
+    fn test_algebraic_mul_one() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..2 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create: r0 = 1, r2 = r1 * r0
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const { dest: Reg(0), value: 1 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Mul {
+                    dest: Reg(2),
+                    src1: Reg(1),
+                    src2: Reg(0),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut simplify = AlgebraicSimplification::new();
+        let result = simplify.run(&mut cfg, &mut instructions);
+
+        // r1 * 1 should be simplified
+        assert!(result.changed);
+        assert_eq!(result.modified_count, 1);
+        assert!(instructions[1].is_dead);
+    }
+
+    #[test]
+    fn test_algebraic_multiple() {
+        let mut builder = CfgBuilder::new();
+        for _ in 0..5 {
+            builder.add_instruction();
+        }
+
+        let mut cfg = builder.build();
+
+        // Create multiple simplifiable operations
+        let mut instructions = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const { dest: Reg(0), value: 0 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Const { dest: Reg(1), value: 1 },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 2,
+                opcode: Opcode::Add {
+                    dest: Reg(5),
+                    src1: Reg(2),
+                    src2: Reg(0),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 3,
+                opcode: Opcode::Mul {
+                    dest: Reg(6),
+                    src1: Reg(3),
+                    src2: Reg(1),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 4,
+                opcode: Opcode::Sub {
+                    dest: Reg(7),
+                    src1: Reg(4),
+                    src2: Reg(4),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let mut simplify = AlgebraicSimplification::new();
+        let result = simplify.run(&mut cfg, &mut instructions);
+
+        // All three should be simplified
+        assert!(result.changed);
+        assert_eq!(result.modified_count, 3);
+        assert!(instructions[2].is_dead); // r2 + 0
+        assert!(instructions[3].is_dead); // r3 * 1
+        assert_eq!(instructions[4].opcode, Opcode::Const { dest: Reg(7), value: 0 }); // r4 - r4
     }
 }
