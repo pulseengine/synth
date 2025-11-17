@@ -8,6 +8,8 @@ repository.workspace = true
 
 [dependencies]
 synth-core = { path = "../synth-core" }
+synth-cfg = { path = "../synth-cfg" }
+synth-opt = { path = "../synth-opt" }
 serde.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
