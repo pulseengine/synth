@@ -31,19 +31,27 @@
 //! - Control flow correctness
 //! - Optimization semantic preservation
 
+#[cfg(feature = "z3-solver")]
 pub mod arm_semantics;
 pub mod properties;
+#[cfg(feature = "z3-solver")]
 pub mod translation_validator;
+#[cfg(feature = "z3-solver")]
 pub mod wasm_semantics;
 
 pub use properties::CompilerProperties;
+#[cfg(feature = "z3-solver")]
 pub use translation_validator::{TranslationValidator, ValidationResult, VerificationError};
 
+#[cfg(feature = "z3-solver")]
 use synth_synthesis::{ArmOp, WasmOp};
+#[cfg(feature = "z3-solver")]
 use z3::ast::{Ast, BV};
+#[cfg(feature = "z3-solver")]
 use z3::{Config, Context, Solver};
 
 /// Create a Z3 context for verification
+#[cfg(feature = "z3-solver")]
 pub fn create_z3_context() -> Context {
     let mut cfg = Config::new();
     cfg.set_timeout_msec(30000); // 30 second timeout
@@ -52,11 +60,12 @@ pub fn create_z3_context() -> Context {
 }
 
 /// Create a Z3 solver with default configuration
+#[cfg(feature = "z3-solver")]
 pub fn create_solver(ctx: &Context) -> Solver {
     Solver::new(ctx)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "z3-solver"))]
 mod tests {
     use super::*;
 
