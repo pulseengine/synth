@@ -330,6 +330,11 @@ impl CfgBuilder {
         }
     }
 
+    /// Set the current block (for test purposes)
+    pub fn set_current_block(&mut self, block_id: BlockId) {
+        self.current_block = Some(block_id);
+    }
+
     /// Mark current block as ending with a terminator
     pub fn terminate_block(&mut self) {
         self.current_block = None;
