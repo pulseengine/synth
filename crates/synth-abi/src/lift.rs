@@ -114,6 +114,158 @@ pub fn lift_primitive(values: &[CoreValue], ty: &synth_wit::ast::Type) -> AbiRes
     }
 }
 
+/// Lift a record from memory
+pub fn lift_record<M: Memory>(
+    mem: &M,
+    data: &[u8],
+    field_types: &[(String, synth_wit::ast::Type)],
+    opts: &AbiOptions,
+) -> AbiResult<Vec<(String, ComponentValue)>> {
+    use crate::{alignment_of, align_to, size_of};
+    use synth_wit::ast::Type;
+
+    let mut result = Vec::new();
+    let mut offset = 0;
+
+    for (name, ty) in field_types {
+        let align = alignment_of(ty);
+        offset = align_to(offset, align);
+
+        let value = match ty {
+            Type::String => {
+                // Read (ptr, len) tuple
+                let ptr = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+                let len = u32::from_le_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]);
+                let s = lift_string(mem, ptr, len, opts)?;
+                ComponentValue::String(s)
+            }
+            Type::U32 => {
+                let v = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+                ComponentValue::U32(v)
+            }
+            Type::S32 => {
+                let v = i32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+                ComponentValue::S32(v)
+            }
+            _ => return Err(AbiError::Other(format!("Unsupported field type: {:?}", ty))),
+        };
+
+        result.push((name.clone(), value));
+        offset += size_of(ty);
+    }
+
+    Ok(result)
+}
+
+/// Lift an option value from memory
+pub fn lift_option<M: Memory>(
+    mem: &M,
+    data: &[u8],
+    inner_ty: &synth_wit::ast::Type,
+    opts: &AbiOptions,
+) -> AbiResult<Option<Box<ComponentValue>>> {
+    use crate::alignment_of;
+    use synth_wit::ast::Type;
+
+    let discriminant = data[0];
+
+    match discriminant {
+        0 => Ok(None), // None variant
+        1 => {
+            // Some variant
+            let align = alignment_of(inner_ty);
+
+            let value = match inner_ty {
+                Type::String => {
+                    let ptr = u32::from_le_bytes([data[align], data[align + 1], data[align + 2], data[align + 3]]);
+                    let len = u32::from_le_bytes([data[align + 4], data[align + 5], data[align + 6], data[align + 7]]);
+                    let s = lift_string(mem, ptr, len, opts)?;
+                    ComponentValue::String(s)
+                }
+                Type::U32 => {
+                    let v = u32::from_le_bytes([data[align], data[align + 1], data[align + 2], data[align + 3]]);
+                    ComponentValue::U32(v)
+                }
+                Type::S32 => {
+                    let v = i32::from_le_bytes([data[align], data[align + 1], data[align + 2], data[align + 3]]);
+                    ComponentValue::S32(v)
+                }
+                _ => return Err(AbiError::Other(format!("Unsupported option type: {:?}", inner_ty))),
+            };
+
+            Ok(Some(Box::new(value)))
+        }
+        _ => Err(AbiError::InvalidDiscriminant { value: discriminant as u32 }),
+    }
+}
+
+/// Lift a result value from memory
+pub fn lift_result<M: Memory>(
+    mem: &M,
+    data: &[u8],
+    ok_ty: &Option<Box<synth_wit::ast::Type>>,
+    err_ty: &Option<Box<synth_wit::ast::Type>>,
+    opts: &AbiOptions,
+) -> AbiResult<Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>>> {
+    use synth_wit::ast::Type;
+
+    let discriminant = data[0];
+
+    match discriminant {
+        0 => {
+            // Ok variant
+            if let Some(ty) = ok_ty {
+                let value = match ty.as_ref() {
+                    Type::String => {
+                        let ptr = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                        let len = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+                        let s = lift_string(mem, ptr, len, opts)?;
+                        Some(Box::new(ComponentValue::String(s)))
+                    }
+                    Type::U32 => {
+                        let v = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                        Some(Box::new(ComponentValue::U32(v)))
+                    }
+                    Type::S32 => {
+                        let v = i32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                        Some(Box::new(ComponentValue::S32(v)))
+                    }
+                    _ => return Err(AbiError::Other("Unsupported ok type".to_string())),
+                };
+                Ok(Ok(value))
+            } else {
+                Ok(Ok(None))
+            }
+        }
+        1 => {
+            // Err variant
+            if let Some(ty) = err_ty {
+                let value = match ty.as_ref() {
+                    Type::String => {
+                        let ptr = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                        let len = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
+                        let s = lift_string(mem, ptr, len, opts)?;
+                        Some(Box::new(ComponentValue::String(s)))
+                    }
+                    Type::U32 => {
+                        let v = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                        Some(Box::new(ComponentValue::U32(v)))
+                    }
+                    Type::S32 => {
+                        let v = i32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                        Some(Box::new(ComponentValue::S32(v)))
+                    }
+                    _ => return Err(AbiError::Other("Unsupported err type".to_string())),
+                };
+                Ok(Err(value))
+            } else {
+                Ok(Err(None))
+            }
+        }
+        _ => Err(AbiError::InvalidDiscriminant { value: discriminant as u32 }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +333,81 @@ mod tests {
         let core_vals = lower_primitive(&original, &synth_wit::ast::Type::F32).unwrap();
         let lifted = lift_primitive(&core_vals, &synth_wit::ast::Type::F32).unwrap();
         assert_eq!(original, lifted);
+    }
+
+    #[test]
+    fn test_roundtrip_record() {
+        use crate::lower::lower_record;
+
+        let mut mem = SimpleMemory::new(1024);
+        let opts = AbiOptions::default();
+
+        // Lower a record
+        let fields = vec![
+            ("x".to_string(), ComponentValue::U32(42)),
+            ("y".to_string(), ComponentValue::U32(99)),
+        ];
+        let field_types = vec![
+            ("x".to_string(), synth_wit::ast::Type::U32),
+            ("y".to_string(), synth_wit::ast::Type::U32),
+        ];
+
+        let data = lower_record(&mut mem, &fields, &field_types, &opts).unwrap();
+
+        // Lift it back
+        let lifted = lift_record(&mem, &data, &field_types, &opts).unwrap();
+
+        assert_eq!(lifted.len(), 2);
+        assert_eq!(lifted[0].0, "x");
+        assert_eq!(lifted[0].1, ComponentValue::U32(42));
+        assert_eq!(lifted[1].0, "y");
+        assert_eq!(lifted[1].1, ComponentValue::U32(99));
+    }
+
+    #[test]
+    fn test_roundtrip_option() {
+        use crate::lower::lower_option;
+
+        let mut mem = SimpleMemory::new(1024);
+        let opts = AbiOptions::default();
+
+        // Test None
+        let value: Option<Box<ComponentValue>> = None;
+        let data = lower_option(&mut mem, &value, &synth_wit::ast::Type::U32, &opts).unwrap();
+        let lifted = lift_option(&mem, &data, &synth_wit::ast::Type::U32, &opts).unwrap();
+        assert_eq!(lifted, None);
+
+        // Test Some
+        let value = Some(Box::new(ComponentValue::U32(123)));
+        let data = lower_option(&mut mem, &value, &synth_wit::ast::Type::U32, &opts).unwrap();
+        let lifted = lift_option(&mem, &data, &synth_wit::ast::Type::U32, &opts).unwrap();
+        assert_eq!(lifted, Some(Box::new(ComponentValue::U32(123))));
+    }
+
+    #[test]
+    fn test_roundtrip_result() {
+        use crate::lower::lower_result;
+
+        let mut mem = SimpleMemory::new(1024);
+        let opts = AbiOptions::default();
+
+        let ok_ty = Some(Box::new(synth_wit::ast::Type::U32));
+        let err_ty = Some(Box::new(synth_wit::ast::Type::U32));
+
+        // Test Ok
+        let value: Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>> =
+            Ok(Some(Box::new(ComponentValue::U32(200))));
+        let data = lower_result(&mut mem, &value, &ok_ty, &err_ty, &opts).unwrap();
+        let lifted = lift_result(&mem, &data, &ok_ty, &err_ty, &opts).unwrap();
+        assert!(lifted.is_ok());
+        assert_eq!(lifted.unwrap(), Some(Box::new(ComponentValue::U32(200))));
+
+        // Test Err
+        let value: Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>> =
+            Err(Some(Box::new(ComponentValue::U32(404))));
+        let data = lower_result(&mut mem, &value, &ok_ty, &err_ty, &opts).unwrap();
+        let lifted = lift_result(&mem, &data, &ok_ty, &err_ty, &opts).unwrap();
+        assert!(lifted.is_err());
+        assert_eq!(lifted.unwrap_err(), Some(Box::new(ComponentValue::U32(404))));
     }
 }
