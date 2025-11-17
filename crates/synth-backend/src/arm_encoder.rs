@@ -326,8 +326,15 @@ impl ArmEncoder {
             ArmOp::I64Xor { .. } => 0xE1A00000,  // NOP
             ArmOp::I64Eqz { .. } => 0xE1A00000,  // NOP
             ArmOp::I64Eq { .. } => 0xE1A00000,   // NOP
+            ArmOp::I64Ne { .. } => 0xE1A00000,   // NOP
             ArmOp::I64LtS { .. } => 0xE1A00000,  // NOP
             ArmOp::I64LtU { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64LeS { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64LeU { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64GtS { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64GtU { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64GeS { .. } => 0xE1A00000,  // NOP
+            ArmOp::I64GeU { .. } => 0xE1A00000,  // NOP
             ArmOp::I64Const { .. } => 0xE1A00000,  // NOP
             ArmOp::I64ExtendI32S { .. } => 0xE1A00000,  // NOP
             ArmOp::I64ExtendI32U { .. } => 0xE1A00000,  // NOP

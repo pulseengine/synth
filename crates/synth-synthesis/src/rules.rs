@@ -261,8 +261,15 @@ pub enum ArmOp {
     // i64 Comparison (register pairs, result in single register)
     I64Eqz { rd: Reg, rnlo: Reg, rnhi: Reg },
     I64Eq { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64Ne { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
     I64LtS { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
     I64LtU { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64LeS { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64LeU { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64GtS { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64GtU { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64GeS { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64GeU { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
 
     // i64 Constants (load 64-bit immediate into register pair)
     I64Const { rdlo: Reg, rdhi: Reg, value: i64 },

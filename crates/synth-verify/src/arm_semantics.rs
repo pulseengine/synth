@@ -397,18 +397,30 @@ impl<'ctx> ArmSemantics<'ctx> {
             }
 
             ArmOp::I64Add { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
-                // 64-bit addition with register pairs
-                // Simplified: just add low parts for now
-                // TODO: Implement full 64-bit addition with carry
+                // 64-bit addition with register pairs and carry propagation
+                // ARM: ADDS rdlo, rnlo, rmlo  ; Add low parts, set carry
+                //      ADC  rdhi, rnhi, rmhi  ; Add high parts with carry
+
                 let n_low = state.get_reg(rnlo).clone();
                 let m_low = state.get_reg(rmlo).clone();
-                let result_low = n_low.bvadd(&m_low);
-                state.set_reg(rdlo, result_low);
-
-                // High part (simplified - should handle carry)
                 let n_high = state.get_reg(rnhi).clone();
                 let m_high = state.get_reg(rmhi).clone();
-                let result_high = n_high.bvadd(&m_high);
+
+                // Low part: simple addition
+                let result_low = n_low.bvadd(&m_low);
+                state.set_reg(rdlo, result_low.clone());
+
+                // Detect carry: overflow occurred if result < either operand
+                // For unsigned: carry = (result_low < n_low)
+                let carry = result_low.bvult(&n_low);
+                let carry_bv = carry.ite(
+                    &BV::from_i64(self.ctx, 1, 32),
+                    &BV::from_i64(self.ctx, 0, 32)
+                );
+
+                // High part: add with carry
+                let high_sum = n_high.bvadd(&m_high);
+                let result_high = high_sum.bvadd(&carry_bv);
                 state.set_reg(rdhi, result_high);
             }
 
@@ -452,10 +464,31 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, BV::from_i64(self.ctx, 0, 32));
             }
 
-            // Other i64 operations - stub for now
-            ArmOp::I64Sub { rdlo, rdhi, .. } => {
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_sub_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_sub_hi", 32));
+            ArmOp::I64Sub { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+                // 64-bit subtraction with register pairs and borrow propagation
+                // ARM: SUBS rdlo, rnlo, rmlo  ; Subtract low parts, set borrow
+                //      SBC  rdhi, rnhi, rmhi  ; Subtract high parts with borrow
+
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+
+                // Low part: simple subtraction
+                let result_low = n_low.bvsub(&m_low);
+                state.set_reg(rdlo, result_low.clone());
+
+                // Detect borrow: borrow occurred if n_low < m_low (unsigned)
+                let borrow = n_low.bvult(&m_low);
+                let borrow_bv = borrow.ite(
+                    &BV::from_i64(self.ctx, 1, 32),
+                    &BV::from_i64(self.ctx, 0, 32)
+                );
+
+                // High part: subtract with borrow
+                let high_diff = n_high.bvsub(&m_high);
+                let result_high = high_diff.bvsub(&borrow_bv);
+                state.set_reg(rdhi, result_high);
             }
 
             ArmOp::I64Mul { rdlo, rdhi, .. } => {
@@ -506,14 +539,171 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::I64LtS { rd, .. } => {
-                // Signed comparison - stub for now
-                state.set_reg(rd, BV::new_const(self.ctx, "i64_lt_s", 32));
+            ArmOp::I64LtS { rd, rnlo, rnhi, rmlo, rmhi } => {
+                // Signed less than: n < m
+                // Compare high parts first (signed), tiebreak with low parts (unsigned)
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+
+                // High parts comparison (signed)
+                let high_lt = n_high.bvslt(&m_high);
+                let high_eq = n_high._eq(&m_high);
+
+                // Low parts comparison (unsigned)
+                let low_lt = n_low.bvult(&m_low);
+
+                // Result: high_lt OR (high_eq AND low_lt)
+                let eq_and_low = high_eq.and(&[&low_lt]);
+                let result_bool = high_lt.or(&[&eq_and_low]);
+                let result = self.bool_to_bv32(&result_bool);
+                state.set_reg(rd, result);
             }
 
-            ArmOp::I64LtU { rd, .. } => {
-                // Unsigned comparison - stub for now
-                state.set_reg(rd, BV::new_const(self.ctx, "i64_lt_u", 32));
+            ArmOp::I64LtU { rd, rnlo, rnhi, rmlo, rmhi } => {
+                // Unsigned less than: n < m
+                // Compare high parts first (unsigned), tiebreak with low parts (unsigned)
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+
+                // High parts comparison (unsigned)
+                let high_lt = n_high.bvult(&m_high);
+                let high_eq = n_high._eq(&m_high);
+
+                // Low parts comparison (unsigned)
+                let low_lt = n_low.bvult(&m_low);
+
+                // Result: high_lt OR (high_eq AND low_lt)
+                let eq_and_low = high_eq.and(&[&low_lt]);
+                let result_bool = high_lt.or(&[&eq_and_low]);
+                let result = self.bool_to_bv32(&result_bool);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I64Ne { rd, rnlo, rnhi, rmlo, rmhi } => {
+                // Not equal: !(n == m)
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+
+                let low_eq = n_low._eq(&m_low);
+                let high_eq = n_high._eq(&m_high);
+                let both_eq = low_eq.and(&[&high_eq]);
+                let not_eq = both_eq.not();
+                let result = self.bool_to_bv32(&not_eq);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I64LeS { rd, rnlo, rnhi, rmlo, rmhi } => {
+                // Signed less than or equal: n <= m
+                // Equivalent to: n < m OR n == m
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+
+                let high_lt = n_high.bvslt(&m_high);
+                let high_eq = n_high._eq(&m_high);
+                let low_le = n_low.bvule(&m_low); // Low parts unsigned LE
+
+                let eq_and_le = high_eq.and(&[&low_le]);
+                let result_bool = high_lt.or(&[&eq_and_le]);
+                let result = self.bool_to_bv32(&result_bool);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I64LeU { rd, rnlo, rnhi, rmlo, rmhi } => {
+                // Unsigned less than or equal: n <= m
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+
+                let high_lt = n_high.bvult(&m_high);
+                let high_eq = n_high._eq(&m_high);
+                let low_le = n_low.bvule(&m_low);
+
+                let eq_and_le = high_eq.and(&[&low_le]);
+                let result_bool = high_lt.or(&[&eq_and_le]);
+                let result = self.bool_to_bv32(&result_bool);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I64GtS { rd, rnlo, rnhi, rmlo, rmhi } => {
+                // Signed greater than: n > m
+                // Equivalent to: m < n
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+
+                let high_gt = n_high.bvsgt(&m_high);
+                let high_eq = n_high._eq(&m_high);
+                let low_gt = n_low.bvugt(&m_low); // Low parts unsigned GT
+
+                let eq_and_gt = high_eq.and(&[&low_gt]);
+                let result_bool = high_gt.or(&[&eq_and_gt]);
+                let result = self.bool_to_bv32(&result_bool);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I64GtU { rd, rnlo, rnhi, rmlo, rmhi } => {
+                // Unsigned greater than: n > m
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+
+                let high_gt = n_high.bvugt(&m_high);
+                let high_eq = n_high._eq(&m_high);
+                let low_gt = n_low.bvugt(&m_low);
+
+                let eq_and_gt = high_eq.and(&[&low_gt]);
+                let result_bool = high_gt.or(&[&eq_and_gt]);
+                let result = self.bool_to_bv32(&result_bool);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I64GeS { rd, rnlo, rnhi, rmlo, rmhi } => {
+                // Signed greater than or equal: n >= m
+                // Equivalent to: !(n < m)
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+
+                let high_lt = n_high.bvslt(&m_high);
+                let high_eq = n_high._eq(&m_high);
+                let low_lt = n_low.bvult(&m_low);
+
+                let eq_and_lt = high_eq.and(&[&low_lt]);
+                let lt_bool = high_lt.or(&[&eq_and_lt]);
+                let result_bool = lt_bool.not(); // GE is !(LT)
+                let result = self.bool_to_bv32(&result_bool);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I64GeU { rd, rnlo, rnhi, rmlo, rmhi } => {
+                // Unsigned greater than or equal: n >= m
+                // Equivalent to: !(n < m)
+                let n_low = state.get_reg(rnlo).clone();
+                let m_low = state.get_reg(rmlo).clone();
+                let n_high = state.get_reg(rnhi).clone();
+                let m_high = state.get_reg(rmhi).clone();
+
+                let high_lt = n_high.bvult(&m_high);
+                let high_eq = n_high._eq(&m_high);
+                let low_lt = n_low.bvult(&m_low);
+
+                let eq_and_lt = high_eq.and(&[&low_lt]);
+                let lt_bool = high_lt.or(&[&eq_and_lt]);
+                let result_bool = lt_bool.not(); // GE is !(LT)
+                let result = self.bool_to_bv32(&result_bool);
+                state.set_reg(rd, result);
             }
 
             _ => {
