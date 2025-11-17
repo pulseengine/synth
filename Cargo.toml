@@ -5,7 +5,7 @@ members = [
     "crates/synth-frontend",
     "crates/synth-analysis",
     "crates/synth-synthesis",
-    "crates/synth-backend", "crates/synth-wit", "crates/synth-qemu", "crates/synth-abi",
+    "crates/synth-backend", "crates/synth-wit", "crates/synth-qemu", "crates/synth-abi", "crates/synth-cfg",
 ]
 resolver = "2"
 
