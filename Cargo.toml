@@ -13,6 +13,7 @@ members = [
     "crates/synth-opt",
     "crates/synth-regalloc",
     "crates/synth-codegen",
+    "crates/synth-verify",
 ]
 resolver = "2"
 
