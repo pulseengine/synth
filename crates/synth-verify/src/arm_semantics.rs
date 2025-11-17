@@ -213,22 +213,15 @@ impl<'ctx> ArmSemantics<'ctx> {
 
             ArmOp::Cmp { rn, op2 } => {
                 // Compare sets flags but doesn't write to a register
-                let rn_val = state.get_reg(rn);
+                // CMP performs: Rn - Op2 and updates all condition flags
+                let rn_val = state.get_reg(rn).clone();
                 let op2_val = self.evaluate_operand2(op2, state);
 
-                // Update condition flags based on rn - op2
+                // Compute result of subtraction
                 let result = rn_val.bvsub(&op2_val);
 
-                // Zero flag: result == 0
-                let zero = BV::from_i64(self.ctx, 0, 32);
-                state.flags.z = result._eq(&zero);
-
-                // Negative flag: result < 0 (sign bit set)
-                let sign_bit = result.extract(31, 31);
-                let one_bit = BV::from_i64(self.ctx, 1, 1);
-                state.flags.n = sign_bit._eq(&one_bit);
-
-                // Carry and overflow flags would require more complex logic
+                // Update all condition flags
+                self.update_flags_sub(state, &rn_val, &op2_val, &result);
             }
 
             ArmOp::Clz { rd, rm } => {
@@ -424,6 +417,82 @@ impl<'ctx> ArmSemantics<'ctx> {
         result = top_1.bvor(&bottom_1);
 
         result
+    }
+
+    /// Update condition flags for subtraction (used by CMP, SUB, etc.)
+    ///
+    /// Computes all four ARM condition flags based on a subtraction:
+    /// - N (Negative): Result is negative (bit 31 set)
+    /// - Z (Zero): Result is zero
+    /// - C (Carry): No borrow occurred (unsigned: a >= b)
+    /// - V (Overflow): Signed overflow occurred
+    ///
+    /// For subtraction result = a - b:
+    /// - C = 1 if a >= b (unsigned), 0 if borrow
+    /// - V = 1 if signs of a and b differ AND sign of result differs from a
+    fn update_flags_sub(&self, state: &mut ArmState<'ctx>, a: &BV<'ctx>, b: &BV<'ctx>, result: &BV<'ctx>) {
+        let zero = BV::from_i64(self.ctx, 0, 32);
+
+        // N flag: bit 31 of result (negative if set)
+        let sign_bit = result.extract(31, 31);
+        let one_bit = BV::from_i64(self.ctx, 1, 1);
+        state.flags.n = sign_bit._eq(&one_bit);
+
+        // Z flag: result == 0
+        state.flags.z = result._eq(&zero);
+
+        // C flag: carry/borrow flag for subtraction
+        // For SUB: C = 1 if no borrow (i.e., a >= b unsigned)
+        // This is equivalent to: a >= b in unsigned arithmetic
+        state.flags.c = a.bvuge(b);
+
+        // V flag: signed overflow
+        // Overflow occurs when:
+        // - Subtracting a positive from a negative gives positive
+        // - Subtracting a negative from a positive gives negative
+        // Formula: (a[31] != b[31]) && (a[31] != result[31])
+        let a_sign = a.extract(31, 31);
+        let b_sign = b.extract(31, 31);
+        let r_sign = result.extract(31, 31);
+
+        let signs_differ = a_sign._eq(&b_sign).not(); // a and b have different signs
+        let result_sign_wrong = a_sign._eq(&r_sign).not(); // result sign differs from a
+        state.flags.v = signs_differ.and(&[&result_sign_wrong]);
+    }
+
+    /// Update condition flags for addition
+    ///
+    /// Similar to subtraction but with different carry logic:
+    /// - C = 1 if unsigned overflow (result < a or result < b)
+    /// - V = 1 if signed overflow
+    fn update_flags_add(&self, state: &mut ArmState<'ctx>, a: &BV<'ctx>, b: &BV<'ctx>, result: &BV<'ctx>) {
+        let zero = BV::from_i64(self.ctx, 0, 32);
+
+        // N flag: bit 31 of result
+        let sign_bit = result.extract(31, 31);
+        let one_bit = BV::from_i64(self.ctx, 1, 1);
+        state.flags.n = sign_bit._eq(&one_bit);
+
+        // Z flag: result == 0
+        state.flags.z = result._eq(&zero);
+
+        // C flag: unsigned overflow
+        // For ADD: C = 1 if carry out (unsigned overflow)
+        // This occurs if result < a (wrapping occurred)
+        state.flags.c = result.bvult(a);
+
+        // V flag: signed overflow
+        // Overflow occurs when:
+        // - Adding two positives gives negative
+        // - Adding two negatives gives positive
+        // Formula: (a[31] == b[31]) && (a[31] != result[31])
+        let a_sign = a.extract(31, 31);
+        let b_sign = b.extract(31, 31);
+        let r_sign = result.extract(31, 31);
+
+        let signs_same = a_sign._eq(&b_sign); // a and b have same sign
+        let result_sign_wrong = a_sign._eq(&r_sign).not(); // result sign differs
+        state.flags.v = signs_same.and(&[&result_sign_wrong]);
     }
 }
 
@@ -761,5 +830,122 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFFFFFFFF, 32));
         encoder.encode_op(&rbit_op, &mut state);
         assert_eq!(state.get_reg(&Reg::R0).as_u64(), Some(0xFFFFFFFF), "RBIT(0xFFFFFFFF) should be 0xFFFFFFFF");
+    }
+
+    #[test]
+    fn test_arm_cmp_flags() {
+        // Test CMP instruction and condition flag updates
+        use z3::ast::Ast;
+
+        let ctx = create_z3_context();
+        let encoder = ArmSemantics::new(&ctx);
+        let mut state = ArmState::new_symbolic(&ctx);
+
+        // Test 1: CMP with equal values (10 - 10 = 0)
+        // Should set: Z=1, N=0, C=1 (no borrow), V=0
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+
+        let cmp_op = ArmOp::Cmp {
+            rn: Reg::R0,
+            op2: Operand2::Reg(Reg::R1),
+        };
+        encoder.encode_op(&cmp_op, &mut state);
+
+        assert_eq!(state.flags.z.as_bool(), Some(true), "Z flag should be set (equal)");
+        assert_eq!(state.flags.n.as_bool(), Some(false), "N flag should be clear (non-negative)");
+        assert_eq!(state.flags.c.as_bool(), Some(true), "C flag should be set (no borrow)");
+        assert_eq!(state.flags.v.as_bool(), Some(false), "V flag should be clear (no overflow)");
+
+        // Test 2: CMP with first > second (20 - 10 = 10)
+        // Should set: Z=0, N=0, C=1 (no borrow), V=0
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 20, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+        encoder.encode_op(&cmp_op, &mut state);
+
+        assert_eq!(state.flags.z.as_bool(), Some(false), "Z flag should be clear (not equal)");
+        assert_eq!(state.flags.n.as_bool(), Some(false), "N flag should be clear (positive result)");
+        assert_eq!(state.flags.c.as_bool(), Some(true), "C flag should be set (no borrow)");
+        assert_eq!(state.flags.v.as_bool(), Some(false), "V flag should be clear (no overflow)");
+
+        // Test 3: CMP with first < second (unsigned: will wrap)
+        // 10 - 20 = -10 (0xFFFFFFF6 in two's complement)
+        // Should set: Z=0, N=1 (negative), C=0 (borrow), V=0
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 20, 32));
+        encoder.encode_op(&cmp_op, &mut state);
+
+        assert_eq!(state.flags.z.as_bool(), Some(false), "Z flag should be clear");
+        assert_eq!(state.flags.n.as_bool(), Some(true), "N flag should be set (negative result)");
+        assert_eq!(state.flags.c.as_bool(), Some(false), "C flag should be clear (borrow occurred)");
+        assert_eq!(state.flags.v.as_bool(), Some(false), "V flag should be clear");
+
+        // Test 4: Signed overflow case
+        // Subtracting large negative from positive should overflow
+        // 0x7FFFFFFF (max positive) - 0x80000000 (min negative)
+        // Result wraps to negative, but mathematically should be huge positive
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 0x7FFFFFFF, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, -2147483648i64, 32)); // 0x80000000
+        encoder.encode_op(&cmp_op, &mut state);
+
+        assert_eq!(state.flags.z.as_bool(), Some(false), "Z flag should be clear");
+        assert_eq!(state.flags.n.as_bool(), Some(true), "N flag should be set (wrapped result)");
+        assert_eq!(state.flags.c.as_bool(), Some(false), "C flag should be clear");
+        assert_eq!(state.flags.v.as_bool(), Some(true), "V flag should be set (overflow)");
+
+        // Test 5: Zero comparison
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 0, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 0, 32));
+        encoder.encode_op(&cmp_op, &mut state);
+
+        assert_eq!(state.flags.z.as_bool(), Some(true), "Z flag should be set (0 - 0 = 0)");
+        assert_eq!(state.flags.n.as_bool(), Some(false), "N flag should be clear");
+        assert_eq!(state.flags.c.as_bool(), Some(true), "C flag should be set");
+        assert_eq!(state.flags.v.as_bool(), Some(false), "V flag should be clear");
+    }
+
+    #[test]
+    fn test_arm_flags_all_combinations() {
+        // Test that flags correctly distinguish all comparison outcomes
+        use z3::ast::Ast;
+
+        let ctx = create_z3_context();
+        let encoder = ArmSemantics::new(&ctx);
+        let mut state = ArmState::new_symbolic(&ctx);
+
+        let cmp_op = ArmOp::Cmp {
+            rn: Reg::R0,
+            op2: Operand2::Reg(Reg::R1),
+        };
+
+        // Test signed comparisons using flags
+        // For signed comparison A vs B (after CMP A, B):
+        // - EQ (equal): Z=1
+        // - NE (not equal): Z=0
+        // - LT (less than): N != V
+        // - LE (less or equal): Z=1 OR (N != V)
+        // - GT (greater than): Z=0 AND (N == V)
+        // - GE (greater or equal): N == V
+
+        // Case: 5 compared to 10 (5 < 10)
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+        encoder.encode_op(&cmp_op, &mut state);
+
+        let n = state.flags.n.as_bool().unwrap();
+        let z = state.flags.z.as_bool().unwrap();
+        let v = state.flags.v.as_bool().unwrap();
+
+        assert_eq!(z, false, "Not equal");
+        assert_eq!(n != v, true, "5 < 10 signed (N != V)");
+
+        // Case: -5 compared to 10 (-5 < 10)
+        state.set_reg(&Reg::R0, BV::from_i64(&ctx, -5, 32));
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+        encoder.encode_op(&cmp_op, &mut state);
+
+        let n = state.flags.n.as_bool().unwrap();
+        let v = state.flags.v.as_bool().unwrap();
+        assert_eq!(n != v, true, "-5 < 10 signed (N != V)");
     }
 }
