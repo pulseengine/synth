@@ -225,48 +225,177 @@ impl<'ctx> WasmSemantics<'ctx> {
 
     /// Encode count leading zeros (CLZ)
     ///
-    /// Uses a binary search approach to count leading zeros efficiently.
+    /// Implements full binary search algorithm for counting leading zeros.
+    /// This provides precise semantics that can be verified against ARM's CLZ instruction.
+    ///
+    /// Algorithm: Binary search through bit positions
+    /// - Check top 16 bits, then 8, 4, 2, 1
+    /// - O(log n) complexity for n-bit integers
     fn encode_clz(&self, input: &BV<'ctx>) -> BV<'ctx> {
-        // CLZ implementation using bit manipulation
-        // For a 32-bit value, we can use a decision tree approach
-
-        let mut count = BV::from_i64(self.ctx, 0, 32);
         let zero = BV::from_i64(self.ctx, 0, 32);
 
-        // Check if all bits are zero
+        // Special case: if input is 0, return 32
         let all_zero = input._eq(&zero);
         let result_if_zero = BV::from_i64(self.ctx, 32, 32);
 
-        // For non-zero values, we need to count leading zeros
-        // This is a simplified implementation - a full implementation
-        // would use a more sophisticated algorithm
+        // Binary search approach
+        let mut count = BV::from_i64(self.ctx, 0, 32);
+        let mut remaining = input.clone();
 
         // Check top 16 bits
-        let top_16 = input.bvlshr(&BV::from_i64(self.ctx, 16, 32));
+        let mask_16 = BV::from_u64(self.ctx, 0xFFFF0000, 32);
+        let top_16 = remaining.bvand(&mask_16);
         let top_16_zero = top_16._eq(&zero);
 
-        // If top 16 bits are zero, add 16 to count and check bottom 16
-        // Otherwise, check top 16 bits
-        count = top_16_zero.ite(&BV::from_i64(self.ctx, 16, 32), &count);
+        // If top 16 are zero, add 16 to count and shift focus to bottom 16
+        count = top_16_zero.ite(
+            &count.bvadd(&BV::from_i64(self.ctx, 16, 32)),
+            &count
+        );
+        remaining = top_16_zero.ite(
+            &remaining.bvshl(&BV::from_i64(self.ctx, 16, 32)),
+            &remaining
+        );
 
-        // This is a simplified CLZ - a full implementation would continue
-        // the binary search down to individual bits
+        // Check top 8 bits (of the 16 we're examining)
+        let mask_8 = BV::from_u64(self.ctx, 0xFF000000, 32);
+        let top_8 = remaining.bvand(&mask_8);
+        let top_8_zero = top_8._eq(&zero);
+
+        count = top_8_zero.ite(
+            &count.bvadd(&BV::from_i64(self.ctx, 8, 32)),
+            &count
+        );
+        remaining = top_8_zero.ite(
+            &remaining.bvshl(&BV::from_i64(self.ctx, 8, 32)),
+            &remaining
+        );
+
+        // Check top 4 bits
+        let mask_4 = BV::from_u64(self.ctx, 0xF0000000, 32);
+        let top_4 = remaining.bvand(&mask_4);
+        let top_4_zero = top_4._eq(&zero);
+
+        count = top_4_zero.ite(
+            &count.bvadd(&BV::from_i64(self.ctx, 4, 32)),
+            &count
+        );
+        remaining = top_4_zero.ite(
+            &remaining.bvshl(&BV::from_i64(self.ctx, 4, 32)),
+            &remaining
+        );
+
+        // Check top 2 bits
+        let mask_2 = BV::from_u64(self.ctx, 0xC0000000, 32);
+        let top_2 = remaining.bvand(&mask_2);
+        let top_2_zero = top_2._eq(&zero);
+
+        count = top_2_zero.ite(
+            &count.bvadd(&BV::from_i64(self.ctx, 2, 32)),
+            &count
+        );
+        remaining = top_2_zero.ite(
+            &remaining.bvshl(&BV::from_i64(self.ctx, 2, 32)),
+            &remaining
+        );
+
+        // Check top bit
+        let mask_1 = BV::from_u64(self.ctx, 0x80000000, 32);
+        let top_1 = remaining.bvand(&mask_1);
+        let top_1_zero = top_1._eq(&zero);
+
+        count = top_1_zero.ite(
+            &count.bvadd(&BV::from_i64(self.ctx, 1, 32)),
+            &count
+        );
+
+        // Return 32 if all zeros, otherwise return count
         all_zero.ite(&result_if_zero, &count)
     }
 
     /// Encode count trailing zeros (CTZ)
+    ///
+    /// Implements binary search from the low end.
+    /// CTZ counts zeros from the least significant bit up.
     fn encode_ctz(&self, input: &BV<'ctx>) -> BV<'ctx> {
-        // CTZ can be implemented using CLZ on the reversed bit pattern
-        // Simplified implementation for now
         let zero = BV::from_i64(self.ctx, 0, 32);
+
+        // Special case: if input is 0, return 32
         let all_zero = input._eq(&zero);
         let result_if_zero = BV::from_i64(self.ctx, 32, 32);
 
-        // For non-zero, we'd need to find the position of the least significant 1 bit
-        // Simplified: return a symbolic value
-        let result = BV::new_const(self.ctx, "ctz_result", 32);
+        // Binary search approach from low end
+        let mut count = BV::from_i64(self.ctx, 0, 32);
+        let mut remaining = input.clone();
 
-        all_zero.ite(&result_if_zero, &result)
+        // Check bottom 16 bits
+        let mask_16 = BV::from_u64(self.ctx, 0x0000FFFF, 32);
+        let bottom_16 = remaining.bvand(&mask_16);
+        let bottom_16_zero = bottom_16._eq(&zero);
+
+        count = bottom_16_zero.ite(
+            &count.bvadd(&BV::from_i64(self.ctx, 16, 32)),
+            &count
+        );
+        remaining = bottom_16_zero.ite(
+            &remaining.bvlshr(&BV::from_i64(self.ctx, 16, 32)),
+            &remaining
+        );
+
+        // Check bottom 8 bits
+        let mask_8 = BV::from_u64(self.ctx, 0x000000FF, 32);
+        let bottom_8 = remaining.bvand(&mask_8);
+        let bottom_8_zero = bottom_8._eq(&zero);
+
+        count = bottom_8_zero.ite(
+            &count.bvadd(&BV::from_i64(self.ctx, 8, 32)),
+            &count
+        );
+        remaining = bottom_8_zero.ite(
+            &remaining.bvlshr(&BV::from_i64(self.ctx, 8, 32)),
+            &remaining
+        );
+
+        // Check bottom 4 bits
+        let mask_4 = BV::from_u64(self.ctx, 0x0000000F, 32);
+        let bottom_4 = remaining.bvand(&mask_4);
+        let bottom_4_zero = bottom_4._eq(&zero);
+
+        count = bottom_4_zero.ite(
+            &count.bvadd(&BV::from_i64(self.ctx, 4, 32)),
+            &count
+        );
+        remaining = bottom_4_zero.ite(
+            &remaining.bvlshr(&BV::from_i64(self.ctx, 4, 32)),
+            &remaining
+        );
+
+        // Check bottom 2 bits
+        let mask_2 = BV::from_u64(self.ctx, 0x00000003, 32);
+        let bottom_2 = remaining.bvand(&mask_2);
+        let bottom_2_zero = bottom_2._eq(&zero);
+
+        count = bottom_2_zero.ite(
+            &count.bvadd(&BV::from_i64(self.ctx, 2, 32)),
+            &count
+        );
+        remaining = bottom_2_zero.ite(
+            &remaining.bvlshr(&BV::from_i64(self.ctx, 2, 32)),
+            &remaining
+        );
+
+        // Check bottom bit
+        let mask_1 = BV::from_u64(self.ctx, 0x00000001, 32);
+        let bottom_1 = remaining.bvand(&mask_1);
+        let bottom_1_zero = bottom_1._eq(&zero);
+
+        count = bottom_1_zero.ite(
+            &count.bvadd(&BV::from_i64(self.ctx, 1, 32)),
+            &count
+        );
+
+        // Return 32 if all zeros, otherwise return count
+        all_zero.ite(&result_if_zero, &count)
     }
 
     /// Encode population count (count number of 1 bits)
@@ -418,5 +547,97 @@ mod tests {
         // Test rotate left
         let rotl_result = encoder.encode_op(&WasmOp::I32Rotl, &[value, rotate]);
         assert_eq!(rotl_result.as_i64(), Some(0x34567812));
+    }
+
+    #[test]
+    fn test_wasm_clz_comprehensive() {
+        let ctx = create_z3_context();
+        let encoder = WasmSemantics::new(&ctx);
+
+        // Test CLZ(0) = 32
+        let zero = BV::from_i64(&ctx, 0, 32);
+        let clz_zero = encoder.encode_op(&WasmOp::I32Clz, &[zero]);
+        assert_eq!(clz_zero.as_i64(), Some(32), "CLZ(0) should be 32");
+
+        // Test CLZ(1) = 31 (binary: 0000...0001)
+        let one = BV::from_i64(&ctx, 1, 32);
+        let clz_one = encoder.encode_op(&WasmOp::I32Clz, &[one]);
+        assert_eq!(clz_one.as_i64(), Some(31), "CLZ(1) should be 31");
+
+        // Test CLZ(0x80000000) = 0 (binary: 1000...0000)
+        let msb_set = BV::from_u64(&ctx, 0x80000000, 32);
+        let clz_msb = encoder.encode_op(&WasmOp::I32Clz, &[msb_set]);
+        assert_eq!(clz_msb.as_i64(), Some(0), "CLZ(0x80000000) should be 0");
+
+        // Test CLZ(0x00FF0000) = 8
+        let val1 = BV::from_u64(&ctx, 0x00FF0000, 32);
+        let clz1 = encoder.encode_op(&WasmOp::I32Clz, &[val1]);
+        assert_eq!(clz1.as_i64(), Some(8), "CLZ(0x00FF0000) should be 8");
+
+        // Test CLZ(0x00001000) = 19
+        let val2 = BV::from_u64(&ctx, 0x00001000, 32);
+        let clz2 = encoder.encode_op(&WasmOp::I32Clz, &[val2]);
+        assert_eq!(clz2.as_i64(), Some(19), "CLZ(0x00001000) should be 19");
+
+        // Test CLZ(0xFFFFFFFF) = 0 (all bits set)
+        let all_ones = BV::from_u64(&ctx, 0xFFFFFFFF, 32);
+        let clz_all = encoder.encode_op(&WasmOp::I32Clz, &[all_ones]);
+        assert_eq!(clz_all.as_i64(), Some(0), "CLZ(0xFFFFFFFF) should be 0");
+
+        // Test CLZ(0x00000100) = 23
+        let val3 = BV::from_u64(&ctx, 0x00000100, 32);
+        let clz3 = encoder.encode_op(&WasmOp::I32Clz, &[val3]);
+        assert_eq!(clz3.as_i64(), Some(23), "CLZ(0x00000100) should be 23");
+    }
+
+    #[test]
+    fn test_wasm_ctz_comprehensive() {
+        let ctx = create_z3_context();
+        let encoder = WasmSemantics::new(&ctx);
+
+        // Test CTZ(0) = 32
+        let zero = BV::from_i64(&ctx, 0, 32);
+        let ctz_zero = encoder.encode_op(&WasmOp::I32Ctz, &[zero]);
+        assert_eq!(ctz_zero.as_i64(), Some(32), "CTZ(0) should be 32");
+
+        // Test CTZ(1) = 0 (binary: ...0001)
+        let one = BV::from_i64(&ctx, 1, 32);
+        let ctz_one = encoder.encode_op(&WasmOp::I32Ctz, &[one]);
+        assert_eq!(ctz_one.as_i64(), Some(0), "CTZ(1) should be 0");
+
+        // Test CTZ(2) = 1 (binary: ...0010)
+        let two = BV::from_i64(&ctx, 2, 32);
+        let ctz_two = encoder.encode_op(&WasmOp::I32Ctz, &[two]);
+        assert_eq!(ctz_two.as_i64(), Some(1), "CTZ(2) should be 1");
+
+        // Test CTZ(0x80000000) = 31 (binary: 1000...0000)
+        let msb_set = BV::from_u64(&ctx, 0x80000000, 32);
+        let ctz_msb = encoder.encode_op(&WasmOp::I32Ctz, &[msb_set]);
+        assert_eq!(ctz_msb.as_i64(), Some(31), "CTZ(0x80000000) should be 31");
+
+        // Test CTZ(0x00FF0000) = 16
+        let val1 = BV::from_u64(&ctx, 0x00FF0000, 32);
+        let ctz1 = encoder.encode_op(&WasmOp::I32Ctz, &[val1]);
+        assert_eq!(ctz1.as_i64(), Some(16), "CTZ(0x00FF0000) should be 16");
+
+        // Test CTZ(0x00001000) = 12
+        let val2 = BV::from_u64(&ctx, 0x00001000, 32);
+        let ctz2 = encoder.encode_op(&WasmOp::I32Ctz, &[val2]);
+        assert_eq!(ctz2.as_i64(), Some(12), "CTZ(0x00001000) should be 12");
+
+        // Test CTZ(0xFFFFFFFF) = 0 (all bits set, lowest is bit 0)
+        let all_ones = BV::from_u64(&ctx, 0xFFFFFFFF, 32);
+        let ctz_all = encoder.encode_op(&WasmOp::I32Ctz, &[all_ones]);
+        assert_eq!(ctz_all.as_i64(), Some(0), "CTZ(0xFFFFFFFF) should be 0");
+
+        // Test CTZ(0x00000100) = 8
+        let val3 = BV::from_u64(&ctx, 0x00000100, 32);
+        let ctz3 = encoder.encode_op(&WasmOp::I32Ctz, &[val3]);
+        assert_eq!(ctz3.as_i64(), Some(8), "CTZ(0x00000100) should be 8");
+
+        // Test CTZ(12) = 2 (binary: ...1100, lowest 1 is at bit 2)
+        let twelve = BV::from_i64(&ctx, 12, 32);
+        let ctz_twelve = encoder.encode_op(&WasmOp::I32Ctz, &[twelve]);
+        assert_eq!(ctz_twelve.as_i64(), Some(2), "CTZ(12) should be 2");
     }
 }
