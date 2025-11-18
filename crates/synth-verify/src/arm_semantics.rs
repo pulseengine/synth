@@ -1283,6 +1283,76 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_vfp_reg(sd, result);
             }
 
+            // f32 Comparisons (result stored in integer register)
+            ArmOp::F32Eq { rd, sn, sm } => {
+                // f32 equal: rd = (sn == sm) ? 1 : 0
+                // IEEE 754: NaN != NaN, so symbolic comparison needed
+                let result = BV::new_const(self.ctx, format!("f32_eq_{:?}_{:?}", sn, sm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::F32Ne { rd, sn, sm } => {
+                // f32 not equal: rd = (sn != sm) ? 1 : 0
+                let result = BV::new_const(self.ctx, format!("f32_ne_{:?}_{:?}", sn, sm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::F32Lt { rd, sn, sm } => {
+                // f32 less than: rd = (sn < sm) ? 1 : 0
+                let result = BV::new_const(self.ctx, format!("f32_lt_{:?}_{:?}", sn, sm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::F32Le { rd, sn, sm } => {
+                // f32 less than or equal: rd = (sn <= sm) ? 1 : 0
+                let result = BV::new_const(self.ctx, format!("f32_le_{:?}_{:?}", sn, sm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::F32Gt { rd, sn, sm } => {
+                // f32 greater than: rd = (sn > sm) ? 1 : 0
+                let result = BV::new_const(self.ctx, format!("f32_gt_{:?}_{:?}", sn, sm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::F32Ge { rd, sn, sm } => {
+                // f32 greater than or equal: rd = (sn >= sm) ? 1 : 0
+                let result = BV::new_const(self.ctx, format!("f32_ge_{:?}_{:?}", sn, sm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::F32Store { sd, addr } => {
+                // f32 store: memory[addr] = sd
+                // Memory write - modeled symbolically for verification
+                // In a full implementation, would update memory state
+                // For now, this is a no-op as we model memory symbolically
+                let _val = state.get_vfp_reg(sd);
+                let _addr_str = format!("{:?}", addr);
+                // TODO: Add memory state tracking when implementing full memory model
+            }
+
+            // f32 Advanced Math Operations
+            ArmOp::F32Ceil { sd, sm } => {
+                // f32 ceil: sd = ceil(sm) - round toward +infinity
+                // Symbolic representation for IEEE 754 rounding
+                let result = BV::new_const(self.ctx, format!("f32_ceil_{:?}", sm), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32Floor { sd, sm } => {
+                // f32 floor: sd = floor(sm) - round toward -infinity
+                // Symbolic representation for IEEE 754 rounding
+                let result = BV::new_const(self.ctx, format!("f32_floor_{:?}", sm), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32Trunc { sd, sm } => {
+                // f32 trunc: sd = trunc(sm) - round toward zero
+                // Symbolic representation for IEEE 754 rounding
+                let result = BV::new_const(self.ctx, format!("f32_trunc_{:?}", sm), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
             _ => {
                 // Unsupported operations - no state change
             }
