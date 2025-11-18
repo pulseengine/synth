@@ -195,10 +195,7 @@ pub enum WITType {
     Variant(Vec<(String, Option<WITType>)>),
     Enum(Vec<String>),
     Option(Box<WITType>),
-    Result {
-        ok: Box<WITType>,
-        err: Box<WITType>,
-    },
+    Result { ok: Box<WITType>, err: Box<WITType> },
 }
 
 /// Import declaration

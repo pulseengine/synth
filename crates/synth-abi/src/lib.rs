@@ -26,13 +26,13 @@
 //! - [Component Model Canonical ABI](https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md)
 //! - [WIT Specification](https://github.com/WebAssembly/component-model/blob/main/design/mvp/WIT.md)
 
-pub mod lower;
 pub mod lift;
+pub mod lower;
 pub mod memory;
 pub mod options;
 
-pub use lower::*;
 pub use lift::*;
+pub use lower::*;
 pub use memory::*;
 pub use options::*;
 
@@ -79,7 +79,11 @@ impl std::fmt::Display for AbiError {
             AbiError::InvalidUtf8 => write!(f, "Invalid UTF-8 sequence"),
             AbiError::InvalidUtf16 => write!(f, "Invalid UTF-16 sequence"),
             AbiError::InvalidAlignment { expected, actual } => {
-                write!(f, "Invalid alignment: expected {}, got {}", expected, actual)
+                write!(
+                    f,
+                    "Invalid alignment: expected {}, got {}",
+                    expected, actual
+                )
             }
             AbiError::InvalidDiscriminant { value } => {
                 write!(f, "Invalid discriminant value: {}", value)
@@ -158,9 +162,7 @@ pub fn alignment_of(ty: &Type) -> usize {
             let err_align = err.as_ref().map(|t| alignment_of(t)).unwrap_or(1);
             ok_align.max(err_align).max(1)
         }
-        Type::Tuple(types) => {
-            types.iter().map(alignment_of).max().unwrap_or(1)
-        }
+        Type::Tuple(types) => types.iter().map(alignment_of).max().unwrap_or(1),
         Type::Named(_) | Type::Generic(_) => 4, // Default to word alignment
     }
 }

@@ -31,9 +31,16 @@ pub enum TokenKind {
     Static,
 
     // Primitive types
-    U8, U16, U32, U64,
-    S8, S16, S32, S64,
-    F32, F64,
+    U8,
+    U16,
+    U32,
+    U64,
+    S8,
+    S16,
+    S32,
+    S64,
+    F32,
+    F64,
     Char,
     Bool,
     String,
@@ -45,18 +52,18 @@ pub enum TokenKind {
     Tuple,
 
     // Symbols
-    Colon,          // :
-    Semicolon,      // ;
-    Comma,          // ,
-    Dot,            // .
-    Arrow,          // ->
-    LBrace,         // {
-    RBrace,         // }
-    LParen,         // (
-    RParen,         // )
-    LAngle,         // <
-    RAngle,         // >
-    Underscore,     // _
+    Colon,      // :
+    Semicolon,  // ;
+    Comma,      // ,
+    Dot,        // .
+    Arrow,      // ->
+    LBrace,     // {
+    RBrace,     // }
+    LParen,     // (
+    RParen,     // )
+    LAngle,     // <
+    RAngle,     // >
+    Underscore, // _
 
     // Identifiers and literals
     Identifier(String),
@@ -206,8 +213,9 @@ impl Lexer {
             self.skip_whitespace();
 
             // Skip comments
-            if self.current() == Some('/') &&
-               (self.peek(1) == Some('/') || self.peek(1) == Some('*')) {
+            if self.current() == Some('/')
+                && (self.peek(1) == Some('/') || self.peek(1) == Some('*'))
+            {
                 self.skip_comment();
                 continue;
             }
@@ -219,11 +227,13 @@ impl Lexer {
 
         let ch = match self.current() {
             Some(c) => c,
-            None => return Ok(Token {
-                kind: TokenKind::Eof,
-                text: String::new(),
-                location,
-            }),
+            None => {
+                return Ok(Token {
+                    kind: TokenKind::Eof,
+                    text: String::new(),
+                    location,
+                })
+            }
         };
 
         // Single-character tokens
@@ -301,7 +311,11 @@ impl Lexer {
             _ => String::new(),
         };
 
-        Ok(Token { kind, text, location })
+        Ok(Token {
+            kind,
+            text,
+            location,
+        })
     }
 
     /// Tokenize entire source

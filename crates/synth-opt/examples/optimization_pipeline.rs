@@ -3,10 +3,10 @@
 //! This example demonstrates how to use the Synth optimization framework
 //! to optimize IR code through multiple passes.
 
-use synth_cfg::{CfgBuilder};
+use synth_cfg::CfgBuilder;
 use synth_opt::{
-    AlgebraicSimplification, CommonSubexpressionElimination, ConstantFolding,
-    DeadCodeElimination, Instruction, Opcode, PassManager, PeepholeOptimization, Reg,
+    AlgebraicSimplification, CommonSubexpressionElimination, ConstantFolding, DeadCodeElimination,
+    Instruction, Opcode, PassManager, PeepholeOptimization, Reg,
 };
 
 fn main() {

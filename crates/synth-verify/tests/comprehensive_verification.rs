@@ -2,8 +2,8 @@
 //!
 //! This module systematically verifies all WASM→ARM synthesis rules.
 
-use synth_verify::{create_z3_context, TranslationValidator, ValidationResult};
 use synth_synthesis::{ArmOp, Operand2, Pattern, Reg, Replacement, SynthesisRule, WasmOp};
+use synth_verify::{create_z3_context, TranslationValidator, ValidationResult};
 
 /// Helper to create a test synthesis rule
 fn create_rule(name: &str, wasm_op: WasmOp, arm_op: ArmOp) -> SynthesisRule {
@@ -144,7 +144,8 @@ fn test_remainder_sequences_concrete() {
     let divisor = z3::ast::BV::from_i64(&ctx, 5, 32);
 
     // WASM: rem_u(17, 5) = 2
-    let wasm_result = wasm_encoder.encode_op(&WasmOp::I32RemU, &[dividend.clone(), divisor.clone()]);
+    let wasm_result =
+        wasm_encoder.encode_op(&WasmOp::I32RemU, &[dividend.clone(), divisor.clone()]);
     assert_eq!(wasm_result.as_i64(), Some(2), "WASM rem_u(17, 5) = 2");
 
     // ARM sequence: UDIV + MLS
@@ -153,11 +154,26 @@ fn test_remainder_sequences_concrete() {
     state.set_reg(&Reg::R1, divisor.clone());
 
     // UDIV R2, R0, R1 -> R2 = 17/5 = 3
-    arm_encoder.encode_op(&ArmOp::Udiv { rd: Reg::R2, rn: Reg::R0, rm: Reg::R1 }, &mut state);
+    arm_encoder.encode_op(
+        &ArmOp::Udiv {
+            rd: Reg::R2,
+            rn: Reg::R0,
+            rm: Reg::R1,
+        },
+        &mut state,
+    );
     assert_eq!(state.get_reg(&Reg::R2).as_i64(), Some(3), "Quotient = 3");
 
     // MLS R0, R2, R1, R0 -> R0 = 17 - 3*5 = 2
-    arm_encoder.encode_op(&ArmOp::Mls { rd: Reg::R0, rn: Reg::R2, rm: Reg::R1, ra: Reg::R0 }, &mut state);
+    arm_encoder.encode_op(
+        &ArmOp::Mls {
+            rd: Reg::R0,
+            rn: Reg::R2,
+            rm: Reg::R1,
+            ra: Reg::R0,
+        },
+        &mut state,
+    );
     let arm_result = state.get_reg(&Reg::R0);
     assert_eq!(arm_result.as_i64(), Some(2), "ARM rem_u(17, 5) = 2");
 
@@ -165,7 +181,10 @@ fn test_remainder_sequences_concrete() {
     let neg_dividend = z3::ast::BV::from_i64(&ctx, -17, 32);
     let pos_divisor = z3::ast::BV::from_i64(&ctx, 5, 32);
 
-    let wasm_result_signed = wasm_encoder.encode_op(&WasmOp::I32RemS, &[neg_dividend.clone(), pos_divisor.clone()]);
+    let wasm_result_signed = wasm_encoder.encode_op(
+        &WasmOp::I32RemS,
+        &[neg_dividend.clone(), pos_divisor.clone()],
+    );
 
     // ARM signed sequence
     let mut state2 = ArmState::new_symbolic(&ctx);
@@ -173,14 +192,33 @@ fn test_remainder_sequences_concrete() {
     state2.set_reg(&Reg::R1, pos_divisor);
 
     // SDIV R2, R0, R1 -> R2 = -17/5 = -3
-    arm_encoder.encode_op(&ArmOp::Sdiv { rd: Reg::R2, rn: Reg::R0, rm: Reg::R1 }, &mut state2);
+    arm_encoder.encode_op(
+        &ArmOp::Sdiv {
+            rd: Reg::R2,
+            rn: Reg::R0,
+            rm: Reg::R1,
+        },
+        &mut state2,
+    );
 
     // MLS R0, R2, R1, R0 -> R0 = -17 - (-3)*5 = -17 + 15 = -2
-    arm_encoder.encode_op(&ArmOp::Mls { rd: Reg::R0, rn: Reg::R2, rm: Reg::R1, ra: Reg::R0 }, &mut state2);
+    arm_encoder.encode_op(
+        &ArmOp::Mls {
+            rd: Reg::R0,
+            rn: Reg::R2,
+            rm: Reg::R1,
+            ra: Reg::R0,
+        },
+        &mut state2,
+    );
     let arm_result_signed = state2.get_reg(&Reg::R0);
 
     // Both should match
-    assert_eq!(wasm_result_signed.as_i64(), arm_result_signed.as_i64(), "Signed remainder matches");
+    assert_eq!(
+        wasm_result_signed.as_i64(),
+        arm_result_signed.as_i64(),
+        "Signed remainder matches"
+    );
 
     println!("✓ Remainder sequences work correctly with concrete values");
 }
@@ -206,16 +244,16 @@ fn verify_i32_rem_s() {
         replacement: Replacement::ArmSequence(vec![
             // Step 1: Compute quotient
             ArmOp::Sdiv {
-                rd: Reg::R2,  // quotient destination
-                rn: Reg::R0,  // dividend
-                rm: Reg::R1,  // divisor
+                rd: Reg::R2, // quotient destination
+                rn: Reg::R0, // dividend
+                rm: Reg::R1, // divisor
             },
             // Step 2: Compute remainder using MLS
             ArmOp::Mls {
-                rd: Reg::R0,  // remainder destination
-                rn: Reg::R2,  // quotient
-                rm: Reg::R1,  // divisor
-                ra: Reg::R0,  // dividend
+                rd: Reg::R0, // remainder destination
+                rn: Reg::R2, // quotient
+                rm: Reg::R1, // divisor
+                ra: Reg::R0, // dividend
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -254,16 +292,16 @@ fn verify_i32_rem_u() {
         replacement: Replacement::ArmSequence(vec![
             // Step 1: Compute quotient
             ArmOp::Udiv {
-                rd: Reg::R2,  // quotient destination
-                rn: Reg::R0,  // dividend
-                rm: Reg::R1,  // divisor
+                rd: Reg::R2, // quotient destination
+                rn: Reg::R0, // dividend
+                rm: Reg::R1, // divisor
             },
             // Step 2: Compute remainder using MLS
             ArmOp::Mls {
-                rd: Reg::R0,  // remainder destination
-                rn: Reg::R2,  // quotient
-                rm: Reg::R1,  // divisor
-                ra: Reg::R0,  // dividend
+                rd: Reg::R0, // remainder destination
+                rn: Reg::R2, // quotient
+                rm: Reg::R1, // divisor
+                ra: Reg::R0, // dividend
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -563,10 +601,7 @@ fn verify_i32_rotl_transformation() {
         Ok(ValidationResult::Verified) => {
             println!("✓ I32Rotl transformation verified: ROTL(x,n) = ROR(x, 32-n) for all n");
         }
-        other => panic!(
-            "Expected Verified for ROTL transformation, got {:?}",
-            other
-        ),
+        other => panic!("Expected Verified for ROTL transformation, got {:?}", other),
     }
 }
 
@@ -620,8 +655,20 @@ fn test_ctz_sequence_concrete() {
     let mut state = ArmState::new_symbolic(&ctx);
     state.set_reg(&Reg::R0, value);
 
-    arm_encoder.encode_op(&ArmOp::Rbit { rd: Reg::R1, rm: Reg::R0 }, &mut state);
-    arm_encoder.encode_op(&ArmOp::Clz { rd: Reg::R0, rm: Reg::R1 }, &mut state);
+    arm_encoder.encode_op(
+        &ArmOp::Rbit {
+            rd: Reg::R1,
+            rm: Reg::R0,
+        },
+        &mut state,
+    );
+    arm_encoder.encode_op(
+        &ArmOp::Clz {
+            rd: Reg::R0,
+            rm: Reg::R1,
+        },
+        &mut state,
+    );
 
     let arm_result = state.get_reg(&Reg::R0);
     assert_eq!(arm_result.as_i64(), Some(2), "ARM CTZ(12) should be 2");
@@ -635,8 +682,20 @@ fn test_ctz_sequence_concrete() {
 
     let mut state2 = ArmState::new_symbolic(&ctx);
     state2.set_reg(&Reg::R0, value2);
-    arm_encoder.encode_op(&ArmOp::Rbit { rd: Reg::R1, rm: Reg::R0 }, &mut state2);
-    arm_encoder.encode_op(&ArmOp::Clz { rd: Reg::R0, rm: Reg::R1 }, &mut state2);
+    arm_encoder.encode_op(
+        &ArmOp::Rbit {
+            rd: Reg::R1,
+            rm: Reg::R0,
+        },
+        &mut state2,
+    );
+    arm_encoder.encode_op(
+        &ArmOp::Clz {
+            rd: Reg::R0,
+            rm: Reg::R1,
+        },
+        &mut state2,
+    );
 
     let arm_result2 = state2.get_reg(&Reg::R0);
     assert_eq!(arm_result2.as_i64(), Some(3), "ARM CTZ(8) should be 3");
@@ -710,7 +769,7 @@ fn verify_i32_eq() {
             },
             ArmOp::SetCond {
                 rd: Reg::R0,
-                cond: synth_synthesis::Condition::EQ,
+                cond: synth_synthesis::rules::Condition::EQ,
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -744,7 +803,7 @@ fn verify_i32_ne() {
             },
             ArmOp::SetCond {
                 rd: Reg::R0,
-                cond: synth_synthesis::Condition::NE,
+                cond: synth_synthesis::rules::Condition::NE,
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -778,7 +837,7 @@ fn verify_i32_lt_s() {
             },
             ArmOp::SetCond {
                 rd: Reg::R0,
-                cond: synth_synthesis::Condition::LT,
+                cond: synth_synthesis::rules::Condition::LT,
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -812,7 +871,7 @@ fn verify_i32_le_s() {
             },
             ArmOp::SetCond {
                 rd: Reg::R0,
-                cond: synth_synthesis::Condition::LE,
+                cond: synth_synthesis::rules::Condition::LE,
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -846,7 +905,7 @@ fn verify_i32_gt_s() {
             },
             ArmOp::SetCond {
                 rd: Reg::R0,
-                cond: synth_synthesis::Condition::GT,
+                cond: synth_synthesis::rules::Condition::GT,
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -880,7 +939,7 @@ fn verify_i32_ge_s() {
             },
             ArmOp::SetCond {
                 rd: Reg::R0,
-                cond: synth_synthesis::Condition::GE,
+                cond: synth_synthesis::rules::Condition::GE,
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -914,7 +973,7 @@ fn verify_i32_lt_u() {
             },
             ArmOp::SetCond {
                 rd: Reg::R0,
-                cond: synth_synthesis::Condition::LO,
+                cond: synth_synthesis::rules::Condition::LO,
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -948,7 +1007,7 @@ fn verify_i32_le_u() {
             },
             ArmOp::SetCond {
                 rd: Reg::R0,
-                cond: synth_synthesis::Condition::LS,
+                cond: synth_synthesis::rules::Condition::LS,
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -982,7 +1041,7 @@ fn verify_i32_gt_u() {
             },
             ArmOp::SetCond {
                 rd: Reg::R0,
-                cond: synth_synthesis::Condition::HI,
+                cond: synth_synthesis::rules::Condition::HI,
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -1016,7 +1075,7 @@ fn verify_i32_ge_u() {
             },
             ArmOp::SetCond {
                 rd: Reg::R0,
-                cond: synth_synthesis::Condition::HS,
+                cond: synth_synthesis::rules::Condition::HS,
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -1052,7 +1111,7 @@ fn verify_i32_eqz() {
             },
             ArmOp::SetCond {
                 rd: Reg::R0,
-                cond: synth_synthesis::Condition::EQ,
+                cond: synth_synthesis::rules::Condition::EQ,
             },
         ]),
         cost: synth_synthesis::Cost {
@@ -1517,46 +1576,78 @@ fn generate_verification_report() {
 
     // Test all directly mappable operations
     let test_cases = vec![
-        ("i32.add → ADD", WasmOp::I32Add, ArmOp::Add {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        }),
-        ("i32.sub → SUB", WasmOp::I32Sub, ArmOp::Sub {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        }),
-        ("i32.mul → MUL", WasmOp::I32Mul, ArmOp::Mul {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            rm: Reg::R1,
-        }),
-        ("i32.div_s → SDIV", WasmOp::I32DivS, ArmOp::Sdiv {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            rm: Reg::R1,
-        }),
-        ("i32.div_u → UDIV", WasmOp::I32DivU, ArmOp::Udiv {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            rm: Reg::R1,
-        }),
-        ("i32.and → AND", WasmOp::I32And, ArmOp::And {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        }),
-        ("i32.or → ORR", WasmOp::I32Or, ArmOp::Orr {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        }),
-        ("i32.xor → EOR", WasmOp::I32Xor, ArmOp::Eor {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        }),
+        (
+            "i32.add → ADD",
+            WasmOp::I32Add,
+            ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+        ),
+        (
+            "i32.sub → SUB",
+            WasmOp::I32Sub,
+            ArmOp::Sub {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+        ),
+        (
+            "i32.mul → MUL",
+            WasmOp::I32Mul,
+            ArmOp::Mul {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            },
+        ),
+        (
+            "i32.div_s → SDIV",
+            WasmOp::I32DivS,
+            ArmOp::Sdiv {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            },
+        ),
+        (
+            "i32.div_u → UDIV",
+            WasmOp::I32DivU,
+            ArmOp::Udiv {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            },
+        ),
+        (
+            "i32.and → AND",
+            WasmOp::I32And,
+            ArmOp::And {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+        ),
+        (
+            "i32.or → ORR",
+            WasmOp::I32Or,
+            ArmOp::Orr {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+        ),
+        (
+            "i32.xor → EOR",
+            WasmOp::I32Xor,
+            ArmOp::Eor {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+        ),
     ];
 
     println!("\n╔══════════════════════════════════════════════════════════════════════╗");
@@ -1644,7 +1735,10 @@ fn verify_i32_const() {
             Ok(ValidationResult::Verified) => {
                 println!("✓ I32Const({}) verified ({})", value, name);
             }
-            other => panic!("Expected Verified for i32.const({}), got {:?}", value, other),
+            other => panic!(
+                "Expected Verified for i32.const({}), got {:?}",
+                value, other
+            ),
         }
     }
 }
@@ -1766,7 +1860,10 @@ fn verify_call_indirect() {
             Ok(ValidationResult::Verified) => {
                 println!("✓ CallIndirect({}) verified", type_idx);
             }
-            other => panic!("Expected Verified for call_indirect({}), got {:?}", type_idx, other),
+            other => panic!(
+                "Expected Verified for call_indirect({}), got {:?}",
+                type_idx, other
+            ),
         }
     }
 }
@@ -1799,4 +1896,3 @@ fn verify_unreachable() {
         }
     }
 }
-

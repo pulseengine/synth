@@ -59,14 +59,14 @@ pub enum WasmOp {
     I32Shl,
     I32ShrS,
     I32ShrU,
-    I32Rotl,      // Rotate left
-    I32Rotr,      // Rotate right
-    I32Clz,       // Count leading zeros
-    I32Ctz,       // Count trailing zeros
-    I32Popcnt,    // Population count (count 1 bits)
+    I32Rotl,   // Rotate left
+    I32Rotr,   // Rotate right
+    I32Clz,    // Count leading zeros
+    I32Ctz,    // Count trailing zeros
+    I32Popcnt, // Population count (count 1 bits)
 
     // Comparison
-    I32Eqz,       // Equal to zero (unary)
+    I32Eqz, // Equal to zero (unary)
     I32Eq,
     I32Ne,
     I32LtS,
@@ -88,8 +88,8 @@ pub enum WasmOp {
     // Control flow
     Block,
     Loop,
-    Br(u32),      // Branch to label
-    BrIf(u32),    // Conditional branch
+    Br(u32),   // Branch to label
+    BrIf(u32), // Conditional branch
     BrTable { targets: Vec<u32>, default: u32 },
     Return,
     Call(u32),
@@ -154,9 +154,9 @@ pub enum WasmOp {
     I64Store { offset: u32, align: u32 },
 
     // Conversion operations
-    I64ExtendI32S,  // Sign-extend i32 to i64
-    I64ExtendI32U,  // Zero-extend i32 to i64
-    I32WrapI64,     // Wrap i64 to i32 (truncate)
+    I64ExtendI32S, // Sign-extend i32 to i64
+    I64ExtendI32U, // Zero-extend i32 to i64
+    I32WrapI64,    // Wrap i64 to i32 (truncate)
 
     // ========================================================================
     // f32 Operations (Phase 2 - Floating Point)
@@ -194,15 +194,15 @@ pub enum WasmOp {
     F32Store { offset: u32, align: u32 },
 
     // f32 Conversions
-    F32ConvertI32S,  // Convert signed i32 to f32
-    F32ConvertI32U,  // Convert unsigned i32 to f32
-    F32ConvertI64S,  // Convert signed i64 to f32
-    F32ConvertI64U,  // Convert unsigned i64 to f32
-    F32DemoteF64,    // Convert f64 to f32
-    F32ReinterpretI32,  // Reinterpret i32 bits as f32
-    I32ReinterpretF32,  // Reinterpret f32 bits as i32
-    I32TruncF32S,    // Truncate f32 to signed i32
-    I32TruncF32U,    // Truncate f32 to unsigned i32
+    F32ConvertI32S,    // Convert signed i32 to f32
+    F32ConvertI32U,    // Convert unsigned i32 to f32
+    F32ConvertI64S,    // Convert signed i64 to f32
+    F32ConvertI64U,    // Convert unsigned i64 to f32
+    F32DemoteF64,      // Convert f64 to f32
+    F32ReinterpretI32, // Reinterpret i32 bits as f32
+    I32ReinterpretF32, // Reinterpret f32 bits as i32
+    I32TruncF32S,      // Truncate f32 to signed i32
+    I32TruncF32U,      // Truncate f32 to unsigned i32
 }
 
 /// Replacement/transformation
@@ -228,65 +228,184 @@ pub enum Replacement {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ArmOp {
     // Data processing
-    Add { rd: Reg, rn: Reg, op2: Operand2 },
-    Sub { rd: Reg, rn: Reg, op2: Operand2 },
-    Mul { rd: Reg, rn: Reg, rm: Reg },
-    Sdiv { rd: Reg, rn: Reg, rm: Reg },    // Signed division (ARMv7-M+)
-    Udiv { rd: Reg, rn: Reg, rm: Reg },    // Unsigned division (ARMv7-M+)
-    Mls { rd: Reg, rn: Reg, rm: Reg, ra: Reg },  // Multiply and subtract (for modulo)
-    And { rd: Reg, rn: Reg, op2: Operand2 },
-    Orr { rd: Reg, rn: Reg, op2: Operand2 },
-    Eor { rd: Reg, rn: Reg, op2: Operand2 },
-    Lsl { rd: Reg, rn: Reg, shift: u32 },
-    Lsr { rd: Reg, rn: Reg, shift: u32 },
-    Asr { rd: Reg, rn: Reg, shift: u32 },
-    Ror { rd: Reg, rn: Reg, shift: u32 },  // Rotate right
+    Add {
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
+    Sub {
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
+    Mul {
+        rd: Reg,
+        rn: Reg,
+        rm: Reg,
+    },
+    Sdiv {
+        rd: Reg,
+        rn: Reg,
+        rm: Reg,
+    }, // Signed division (ARMv7-M+)
+    Udiv {
+        rd: Reg,
+        rn: Reg,
+        rm: Reg,
+    }, // Unsigned division (ARMv7-M+)
+    Mls {
+        rd: Reg,
+        rn: Reg,
+        rm: Reg,
+        ra: Reg,
+    }, // Multiply and subtract (for modulo)
+    And {
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
+    Orr {
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
+    Eor {
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
+    Lsl {
+        rd: Reg,
+        rn: Reg,
+        shift: u32,
+    },
+    Lsr {
+        rd: Reg,
+        rn: Reg,
+        shift: u32,
+    },
+    Asr {
+        rd: Reg,
+        rn: Reg,
+        shift: u32,
+    },
+    Ror {
+        rd: Reg,
+        rn: Reg,
+        shift: u32,
+    }, // Rotate right
 
     // Bit manipulation (ARMv6T2+)
-    Clz { rd: Reg, rm: Reg },              // Count leading zeros
-    Rbit { rd: Reg, rm: Reg },             // Reverse bits (for CTZ)
-    Popcnt { rd: Reg, rm: Reg },           // Population count (pseudo-instruction for verification)
+    Clz {
+        rd: Reg,
+        rm: Reg,
+    }, // Count leading zeros
+    Rbit {
+        rd: Reg,
+        rm: Reg,
+    }, // Reverse bits (for CTZ)
+    Popcnt {
+        rd: Reg,
+        rm: Reg,
+    }, // Population count (pseudo-instruction for verification)
 
     // Move
-    Mov { rd: Reg, op2: Operand2 },
-    Mvn { rd: Reg, op2: Operand2 },
+    Mov {
+        rd: Reg,
+        op2: Operand2,
+    },
+    Mvn {
+        rd: Reg,
+        op2: Operand2,
+    },
 
     // Compare
-    Cmp { rn: Reg, op2: Operand2 },
+    Cmp {
+        rn: Reg,
+        op2: Operand2,
+    },
 
     // Load/Store
-    Ldr { rd: Reg, addr: MemAddr },
-    Str { rd: Reg, addr: MemAddr },
+    Ldr {
+        rd: Reg,
+        addr: MemAddr,
+    },
+    Str {
+        rd: Reg,
+        addr: MemAddr,
+    },
 
     // Branch
-    B { label: String },
-    Bl { label: String },
-    Bx { rm: Reg },
+    B {
+        label: String,
+    },
+    Bl {
+        label: String,
+    },
+    Bx {
+        rm: Reg,
+    },
 
     // No operation
     Nop,
 
     // Conditional execution (for verification)
     // SetCond evaluates a condition based on NZCV flags and sets register to 0 or 1
-    SetCond { rd: Reg, cond: Condition },
+    SetCond {
+        rd: Reg,
+        cond: Condition,
+    },
 
     // Select operation (for verification)
     // Selects between two values based on condition
     // If rcond != 0, select rval1, else select rval2
-    Select { rd: Reg, rval1: Reg, rval2: Reg, rcond: Reg },
+    Select {
+        rd: Reg,
+        rval1: Reg,
+        rval2: Reg,
+        rcond: Reg,
+    },
 
     // Local/Global variable access (pseudo-instructions for verification)
-    LocalGet { rd: Reg, index: u32 },
-    LocalSet { rs: Reg, index: u32 },
-    LocalTee { rd: Reg, rs: Reg, index: u32 },
-    GlobalGet { rd: Reg, index: u32 },
-    GlobalSet { rs: Reg, index: u32 },
+    LocalGet {
+        rd: Reg,
+        index: u32,
+    },
+    LocalSet {
+        rs: Reg,
+        index: u32,
+    },
+    LocalTee {
+        rd: Reg,
+        rs: Reg,
+        index: u32,
+    },
+    GlobalGet {
+        rd: Reg,
+        index: u32,
+    },
+    GlobalSet {
+        rs: Reg,
+        index: u32,
+    },
 
     // Control flow operations (pseudo-instructions for verification)
     // These model WASM control flow semantics for verification purposes
-    BrTable { rd: Reg, index_reg: Reg, targets: Vec<u32>, default: u32 },
-    Call { rd: Reg, func_idx: u32 },
-    CallIndirect { rd: Reg, type_idx: u32, table_index_reg: Reg },
+    BrTable {
+        rd: Reg,
+        index_reg: Reg,
+        targets: Vec<u32>,
+        default: u32,
+    },
+    Call {
+        rd: Reg,
+        func_idx: u32,
+    },
+    CallIndirect {
+        rd: Reg,
+        type_idx: u32,
+        table_index_reg: Reg,
+    },
 
     // ========================================================================
     // i64 Operations (Phase 2) - Pseudo-instructions for verification
@@ -296,55 +415,254 @@ pub enum ArmOp {
     // Actual compiler would expand these to instruction sequences
 
     // i64 Arithmetic (register pairs)
-    I64Add { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64Sub { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64Mul { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64DivS { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64DivU { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64RemS { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64RemU { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64Add {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64Sub {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64Mul {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64DivS {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64DivU {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64RemS {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64RemU {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
 
     // i64 Bitwise (register pairs)
-    I64And { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64Or { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64Xor { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64And {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64Or {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64Xor {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
 
     // i64 Shift operations (register pairs, shift amount in single register)
-    I64Shl { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, shift: Reg },
-    I64ShrS { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, shift: Reg },
-    I64ShrU { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, shift: Reg },
-    I64Rotl { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, shift: Reg },
-    I64Rotr { rdlo: Reg, rdhi: Reg, rnlo: Reg, rnhi: Reg, shift: Reg },
+    I64Shl {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        shift: Reg,
+    },
+    I64ShrS {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        shift: Reg,
+    },
+    I64ShrU {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        shift: Reg,
+    },
+    I64Rotl {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        shift: Reg,
+    },
+    I64Rotr {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        shift: Reg,
+    },
 
     // i64 Bit manipulation (register pairs)
-    I64Clz { rd: Reg, rnlo: Reg, rnhi: Reg },    // Count leading zeros (result is 32-bit)
-    I64Ctz { rd: Reg, rnlo: Reg, rnhi: Reg },    // Count trailing zeros
-    I64Popcnt { rd: Reg, rnlo: Reg, rnhi: Reg }, // Population count
+    I64Clz {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+    }, // Count leading zeros (result is 32-bit)
+    I64Ctz {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+    }, // Count trailing zeros
+    I64Popcnt {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+    }, // Population count
 
     // i64 Comparison (register pairs, result in single register)
-    I64Eqz { rd: Reg, rnlo: Reg, rnhi: Reg },
-    I64Eq { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64Ne { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64LtS { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64LtU { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64LeS { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64LeU { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64GtS { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64GtU { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64GeS { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
-    I64GeU { rd: Reg, rnlo: Reg, rnhi: Reg, rmlo: Reg, rmhi: Reg },
+    I64Eqz {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+    },
+    I64Eq {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64Ne {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64LtS {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64LtU {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64LeS {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64LeU {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64GtS {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64GtU {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64GeS {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
+    I64GeU {
+        rd: Reg,
+        rnlo: Reg,
+        rnhi: Reg,
+        rmlo: Reg,
+        rmhi: Reg,
+    },
 
     // i64 Constants (load 64-bit immediate into register pair)
-    I64Const { rdlo: Reg, rdhi: Reg, value: i64 },
+    I64Const {
+        rdlo: Reg,
+        rdhi: Reg,
+        value: i64,
+    },
 
     // i64 Memory operations (load/store with register pairs)
-    I64Ldr { rdlo: Reg, rdhi: Reg, addr: MemAddr },
-    I64Str { rdlo: Reg, rdhi: Reg, addr: MemAddr },
+    I64Ldr {
+        rdlo: Reg,
+        rdhi: Reg,
+        addr: MemAddr,
+    },
+    I64Str {
+        rdlo: Reg,
+        rdhi: Reg,
+        addr: MemAddr,
+    },
 
     // i64 Conversion operations
-    I64ExtendI32S { rdlo: Reg, rdhi: Reg, rn: Reg },  // Sign-extend i32 to i64
-    I64ExtendI32U { rdlo: Reg, rdhi: Reg, rn: Reg },  // Zero-extend i32 to i64
-    I32WrapI64 { rd: Reg, rnlo: Reg },                // Wrap i64 to i32 (take low 32 bits)
+    I64ExtendI32S {
+        rdlo: Reg,
+        rdhi: Reg,
+        rn: Reg,
+    }, // Sign-extend i32 to i64
+    I64ExtendI32U {
+        rdlo: Reg,
+        rdhi: Reg,
+        rn: Reg,
+    }, // Zero-extend i32 to i64
+    I32WrapI64 {
+        rd: Reg,
+        rnlo: Reg,
+    }, // Wrap i64 to i32 (take low 32 bits)
 
     // ========================================================================
     // f32 Operations (Phase 2 - Floating Point)
@@ -353,85 +671,246 @@ pub enum ArmOp {
     // ARM uses separate floating-point register file (S0-S31 for single precision)
 
     // f32 Arithmetic
-    F32Add { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // VADD.F32 Sd, Sn, Sm
-    F32Sub { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // VSUB.F32 Sd, Sn, Sm
-    F32Mul { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // VMUL.F32 Sd, Sn, Sm
-    F32Div { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // VDIV.F32 Sd, Sn, Sm
+    F32Add {
+        sd: VfpReg,
+        sn: VfpReg,
+        sm: VfpReg,
+    }, // VADD.F32 Sd, Sn, Sm
+    F32Sub {
+        sd: VfpReg,
+        sn: VfpReg,
+        sm: VfpReg,
+    }, // VSUB.F32 Sd, Sn, Sm
+    F32Mul {
+        sd: VfpReg,
+        sn: VfpReg,
+        sm: VfpReg,
+    }, // VMUL.F32 Sd, Sn, Sm
+    F32Div {
+        sd: VfpReg,
+        sn: VfpReg,
+        sm: VfpReg,
+    }, // VDIV.F32 Sd, Sn, Sm
 
     // f32 Math Functions
-    F32Abs { sd: VfpReg, sm: VfpReg },              // VABS.F32 Sd, Sm
-    F32Neg { sd: VfpReg, sm: VfpReg },              // VNEG.F32 Sd, Sm
-    F32Sqrt { sd: VfpReg, sm: VfpReg },             // VSQRT.F32 Sd, Sm
-    F32Ceil { sd: VfpReg, sm: VfpReg },             // Pseudo (rounding mode change + VRINTP)
-    F32Floor { sd: VfpReg, sm: VfpReg },            // Pseudo (rounding mode change + VRINTM)
-    F32Trunc { sd: VfpReg, sm: VfpReg },            // Pseudo (rounding mode change + VRINTZ)
-    F32Nearest { sd: VfpReg, sm: VfpReg },          // Pseudo (rounding mode change + VRINTN)
-    F32Min { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // Pseudo (compare + select)
-    F32Max { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // Pseudo (compare + select)
-    F32Copysign { sd: VfpReg, sn: VfpReg, sm: VfpReg },  // Pseudo (bitwise operations)
+    F32Abs {
+        sd: VfpReg,
+        sm: VfpReg,
+    }, // VABS.F32 Sd, Sm
+    F32Neg {
+        sd: VfpReg,
+        sm: VfpReg,
+    }, // VNEG.F32 Sd, Sm
+    F32Sqrt {
+        sd: VfpReg,
+        sm: VfpReg,
+    }, // VSQRT.F32 Sd, Sm
+    F32Ceil {
+        sd: VfpReg,
+        sm: VfpReg,
+    }, // Pseudo (rounding mode change + VRINTP)
+    F32Floor {
+        sd: VfpReg,
+        sm: VfpReg,
+    }, // Pseudo (rounding mode change + VRINTM)
+    F32Trunc {
+        sd: VfpReg,
+        sm: VfpReg,
+    }, // Pseudo (rounding mode change + VRINTZ)
+    F32Nearest {
+        sd: VfpReg,
+        sm: VfpReg,
+    }, // Pseudo (rounding mode change + VRINTN)
+    F32Min {
+        sd: VfpReg,
+        sn: VfpReg,
+        sm: VfpReg,
+    }, // Pseudo (compare + select)
+    F32Max {
+        sd: VfpReg,
+        sn: VfpReg,
+        sm: VfpReg,
+    }, // Pseudo (compare + select)
+    F32Copysign {
+        sd: VfpReg,
+        sn: VfpReg,
+        sm: VfpReg,
+    }, // Pseudo (bitwise operations)
 
     // f32 Comparisons (result in integer register)
-    F32Eq { rd: Reg, sn: VfpReg, sm: VfpReg },      // VCMP.F32 + VMRS + condition check
-    F32Ne { rd: Reg, sn: VfpReg, sm: VfpReg },
-    F32Lt { rd: Reg, sn: VfpReg, sm: VfpReg },
-    F32Le { rd: Reg, sn: VfpReg, sm: VfpReg },
-    F32Gt { rd: Reg, sn: VfpReg, sm: VfpReg },
-    F32Ge { rd: Reg, sn: VfpReg, sm: VfpReg },
+    F32Eq {
+        rd: Reg,
+        sn: VfpReg,
+        sm: VfpReg,
+    }, // VCMP.F32 + VMRS + condition check
+    F32Ne {
+        rd: Reg,
+        sn: VfpReg,
+        sm: VfpReg,
+    },
+    F32Lt {
+        rd: Reg,
+        sn: VfpReg,
+        sm: VfpReg,
+    },
+    F32Le {
+        rd: Reg,
+        sn: VfpReg,
+        sm: VfpReg,
+    },
+    F32Gt {
+        rd: Reg,
+        sn: VfpReg,
+        sm: VfpReg,
+    },
+    F32Ge {
+        rd: Reg,
+        sn: VfpReg,
+        sm: VfpReg,
+    },
 
     // f32 Constants and Memory
-    F32Const { sd: VfpReg, value: f32 },            // VMOV.F32 Sd, #imm (or literal pool)
-    F32Load { sd: VfpReg, addr: MemAddr },          // VLDR.32 Sd, [Rn, #offset]
-    F32Store { sd: VfpReg, addr: MemAddr },         // VSTR.32 Sd, [Rn, #offset]
+    F32Const {
+        sd: VfpReg,
+        value: f32,
+    }, // VMOV.F32 Sd, #imm (or literal pool)
+    F32Load {
+        sd: VfpReg,
+        addr: MemAddr,
+    }, // VLDR.32 Sd, [Rn, #offset]
+    F32Store {
+        sd: VfpReg,
+        addr: MemAddr,
+    }, // VSTR.32 Sd, [Rn, #offset]
 
     // f32 Conversions
-    F32ConvertI32S { sd: VfpReg, rm: Reg },         // VMOV Sd, Rm + VCVT.F32.S32 Sd, Sd
-    F32ConvertI32U { sd: VfpReg, rm: Reg },         // VMOV Sd, Rm + VCVT.F32.U32 Sd, Sd
-    F32ConvertI64S { sd: VfpReg, rmlo: Reg, rmhi: Reg },  // Complex (requires library or multi-step)
-    F32ConvertI64U { sd: VfpReg, rmlo: Reg, rmhi: Reg },  // Complex (requires library or multi-step)
-    F32ReinterpretI32 { sd: VfpReg, rm: Reg },      // VMOV Sd, Rm (bitcast)
-    I32ReinterpretF32 { rd: Reg, sm: VfpReg },      // VMOV Rd, Sm (bitcast)
-    I32TruncF32S { rd: Reg, sm: VfpReg },           // VCVT.S32.F32 Sd, Sm + VMOV Rd, Sd
-    I32TruncF32U { rd: Reg, sm: VfpReg },           // VCVT.U32.F32 Sd, Sm + VMOV Rd, Sd
+    F32ConvertI32S {
+        sd: VfpReg,
+        rm: Reg,
+    }, // VMOV Sd, Rm + VCVT.F32.S32 Sd, Sd
+    F32ConvertI32U {
+        sd: VfpReg,
+        rm: Reg,
+    }, // VMOV Sd, Rm + VCVT.F32.U32 Sd, Sd
+    F32ConvertI64S {
+        sd: VfpReg,
+        rmlo: Reg,
+        rmhi: Reg,
+    }, // Complex (requires library or multi-step)
+    F32ConvertI64U {
+        sd: VfpReg,
+        rmlo: Reg,
+        rmhi: Reg,
+    }, // Complex (requires library or multi-step)
+    F32ReinterpretI32 {
+        sd: VfpReg,
+        rm: Reg,
+    }, // VMOV Sd, Rm (bitcast)
+    I32ReinterpretF32 {
+        rd: Reg,
+        sm: VfpReg,
+    }, // VMOV Rd, Sm (bitcast)
+    I32TruncF32S {
+        rd: Reg,
+        sm: VfpReg,
+    }, // VCVT.S32.F32 Sd, Sm + VMOV Rd, Sd
+    I32TruncF32U {
+        rd: Reg,
+        sm: VfpReg,
+    }, // VCVT.U32.F32 Sd, Sm + VMOV Rd, Sd
 }
 
 /// ARM condition codes (based on NZCV flags)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Condition {
-    EQ,  // Equal (Z == 1)
-    NE,  // Not equal (Z == 0)
-    LT,  // Less than signed (N != V)
-    LE,  // Less than or equal signed (Z == 1 || N != V)
-    GT,  // Greater than signed (Z == 0 && N == V)
-    GE,  // Greater than or equal signed (N == V)
-    LO,  // Less than unsigned (C == 0)
-    LS,  // Less than or equal unsigned (C == 0 || Z == 1)
-    HI,  // Greater than unsigned (C == 1 && Z == 0)
-    HS,  // Greater than or equal unsigned (C == 1)
+    EQ, // Equal (Z == 1)
+    NE, // Not equal (Z == 0)
+    LT, // Less than signed (N != V)
+    LE, // Less than or equal signed (Z == 1 || N != V)
+    GT, // Greater than signed (Z == 0 && N == V)
+    GE, // Greater than or equal signed (N == V)
+    LO, // Less than unsigned (C == 0)
+    LS, // Less than or equal unsigned (C == 0 || Z == 1)
+    HI, // Greater than unsigned (C == 1 && Z == 0)
+    HS, // Greater than or equal unsigned (C == 1)
 }
 
 /// ARM register
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Reg {
-    R0, R1, R2, R3, R4, R5, R6, R7,
-    R8, R9, R10, R11, R12,
-    SP,  // Stack pointer (R13)
-    LR,  // Link register (R14)
-    PC,  // Program counter (R15)
+    R0,
+    R1,
+    R2,
+    R3,
+    R4,
+    R5,
+    R6,
+    R7,
+    R8,
+    R9,
+    R10,
+    R11,
+    R12,
+    SP, // Stack pointer (R13)
+    LR, // Link register (R14)
+    PC, // Program counter (R15)
 }
 
 /// ARM VFP (Vector Floating Point) register
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum VfpReg {
     // Single-precision registers (32-bit)
-    S0, S1, S2, S3, S4, S5, S6, S7,
-    S8, S9, S10, S11, S12, S13, S14, S15,
-    S16, S17, S18, S19, S20, S21, S22, S23,
-    S24, S25, S26, S27, S28, S29, S30, S31,
+    S0,
+    S1,
+    S2,
+    S3,
+    S4,
+    S5,
+    S6,
+    S7,
+    S8,
+    S9,
+    S10,
+    S11,
+    S12,
+    S13,
+    S14,
+    S15,
+    S16,
+    S17,
+    S18,
+    S19,
+    S20,
+    S21,
+    S22,
+    S23,
+    S24,
+    S25,
+    S26,
+    S27,
+    S28,
+    S29,
+    S30,
+    S31,
 
     // Double-precision registers (64-bit)
     // Note: D0 = S0:S1, D1 = S2:S3, etc.
-    D0, D1, D2, D3, D4, D5, D6, D7,
-    D8, D9, D10, D11, D12, D13, D14, D15,
+    D0,
+    D1,
+    D2,
+    D3,
+    D4,
+    D5,
+    D6,
+    D7,
+    D8,
+    D9,
+    D10,
+    D11,
+    D12,
+    D13,
+    D14,
+    D15,
 }
 
 /// ARM operand 2 (flexible second operand)
@@ -444,7 +923,11 @@ pub enum Operand2 {
     Reg(Reg),
 
     /// Register with shift
-    RegShift { rm: Reg, shift: ShiftType, amount: u32 },
+    RegShift {
+        rm: Reg,
+        shift: ShiftType,
+        amount: u32,
+    },
 }
 
 /// ARM shift types
@@ -627,7 +1110,11 @@ mod tests {
             priority: 10,
             pattern: Pattern::Any,
             replacement: Replacement::Identity,
-            cost: Cost { cycles: 1, code_size: 1, registers: 1 },
+            cost: Cost {
+                cycles: 1,
+                code_size: 1,
+                registers: 1,
+            },
         });
 
         db.add_rule(SynthesisRule {
@@ -635,7 +1122,11 @@ mod tests {
             priority: 100,
             pattern: Pattern::Any,
             replacement: Replacement::Identity,
-            cost: Cost { cycles: 1, code_size: 1, registers: 1 },
+            cost: Cost {
+                cycles: 1,
+                code_size: 1,
+                registers: 1,
+            },
         });
 
         // High priority rule should come first

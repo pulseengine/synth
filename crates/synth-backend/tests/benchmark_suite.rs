@@ -27,8 +27,14 @@ impl BenchmarkResult {
         println!("  ARM instructions:       {}", self.arm_instructions);
         println!("  After optimization:     {}", self.optimized_instructions);
         println!("  Generated code size:    {} bytes", self.code_bytes);
-        println!("  Native estimate:        {} bytes", self.native_estimate_bytes);
-        println!("  Optimization reduction: {:.1}%", self.optimization_reduction);
+        println!(
+            "  Native estimate:        {} bytes",
+            self.native_estimate_bytes
+        );
+        println!(
+            "  Optimization reduction: {:.1}%",
+            self.optimization_reduction
+        );
         println!("  Size ratio (gen/native):{:.2}x", self.size_ratio);
         println!("{}", "=".repeat(70));
     }
@@ -44,7 +50,9 @@ fn benchmark(name: &str, wasm_ops: Vec<WasmOp>, native_estimate_bytes: usize) ->
     let (optimized_ops, _) = optimizer.optimize_with_stats(&ops);
 
     let encoder = ArmEncoder::new_arm32();
-    let code = encoder.encode_sequence(&optimized_ops).expect("Encoding failed");
+    let code = encoder
+        .encode_sequence(&optimized_ops)
+        .expect("Encoding failed");
 
     let optimization_reduction = if arm_instrs.len() > 0 {
         ((arm_instrs.len() - optimized_ops.len()) as f64 / arm_instrs.len() as f64) * 100.0
@@ -206,11 +214,17 @@ fn benchmark_memory_operations() {
     // Memory: load, modify, store
     let wasm_ops = vec![
         WasmOp::I32Const(0x20000000),
-        WasmOp::I32Load { offset: 0, align: 4 },
+        WasmOp::I32Load {
+            offset: 0,
+            align: 4,
+        },
         WasmOp::I32Const(1),
         WasmOp::I32Add,
         WasmOp::I32Const(0x20000000),
-        WasmOp::I32Store { offset: 0, align: 4 },
+        WasmOp::I32Store {
+            offset: 0,
+            align: 4,
+        },
     ];
 
     // Native: ~6 instructions (MOV + LDR + MOV + ADD + MOV + STR) = ~24 bytes
@@ -248,12 +262,18 @@ fn benchmark_loop_construct() {
 fn benchmark_embedded_gpio_pattern() {
     // Common embedded pattern: read-modify-write GPIO
     let wasm_ops = vec![
-        WasmOp::I32Const(0x40020000),  // GPIO base
-        WasmOp::I32Load { offset: 0, align: 4 },  // Read current value
-        WasmOp::I32Const(0x20),        // Bit mask
-        WasmOp::I32Or,                 // Set bit
-        WasmOp::I32Const(0x40020000),  // GPIO base
-        WasmOp::I32Store { offset: 0, align: 4 },  // Write back
+        WasmOp::I32Const(0x40020000), // GPIO base
+        WasmOp::I32Load {
+            offset: 0,
+            align: 4,
+        }, // Read current value
+        WasmOp::I32Const(0x20),       // Bit mask
+        WasmOp::I32Or,                // Set bit
+        WasmOp::I32Const(0x40020000), // GPIO base
+        WasmOp::I32Store {
+            offset: 0,
+            align: 4,
+        }, // Write back
     ];
 
     // Native: ~6 instructions = ~24 bytes
@@ -267,11 +287,11 @@ fn benchmark_embedded_gpio_pattern() {
 fn benchmark_fixed_point_math() {
     // Fixed-point: (a * b) >> 16 (Q16.16 multiplication)
     let wasm_ops = vec![
-        WasmOp::I32Const(65536),   // 1.0 in Q16.16
-        WasmOp::I32Const(131072),  // 2.0 in Q16.16
+        WasmOp::I32Const(65536),  // 1.0 in Q16.16
+        WasmOp::I32Const(131072), // 2.0 in Q16.16
         WasmOp::I32Mul,
         WasmOp::I32Const(16),
-        WasmOp::I32ShrS,           // Shift to normalize
+        WasmOp::I32ShrS, // Shift to normalize
     ];
 
     // Native: ~5 instructions = ~20 bytes
@@ -288,22 +308,41 @@ fn benchmark_summary() {
     println!("{}", "=".repeat(70));
 
     let benchmarks = vec![
-        ("Arithmetic", vec![
-            WasmOp::I32Const(10), WasmOp::I32Const(20), WasmOp::I32Add,
-        ], 12),
-        ("Bitwise", vec![
-            WasmOp::I32Const(0xFF), WasmOp::I32Const(0xAA), WasmOp::I32And,
-        ], 12),
-        ("Division", vec![
-            WasmOp::I32Const(100), WasmOp::I32Const(7), WasmOp::I32DivU,
-        ], 12),
-        ("Bit Manipulation", vec![
-            WasmOp::I32Const(0x1000), WasmOp::I32Clz,
-        ], 8),
-        ("Memory", vec![
-            WasmOp::I32Const(0x20000000),
-            WasmOp::I32Load { offset: 0, align: 4 },
-        ], 8),
+        (
+            "Arithmetic",
+            vec![WasmOp::I32Const(10), WasmOp::I32Const(20), WasmOp::I32Add],
+            12,
+        ),
+        (
+            "Bitwise",
+            vec![
+                WasmOp::I32Const(0xFF),
+                WasmOp::I32Const(0xAA),
+                WasmOp::I32And,
+            ],
+            12,
+        ),
+        (
+            "Division",
+            vec![WasmOp::I32Const(100), WasmOp::I32Const(7), WasmOp::I32DivU],
+            12,
+        ),
+        (
+            "Bit Manipulation",
+            vec![WasmOp::I32Const(0x1000), WasmOp::I32Clz],
+            8,
+        ),
+        (
+            "Memory",
+            vec![
+                WasmOp::I32Const(0x20000000),
+                WasmOp::I32Load {
+                    offset: 0,
+                    align: 4,
+                },
+            ],
+            8,
+        ),
     ];
 
     let mut total_code = 0;
@@ -315,9 +354,13 @@ fn benchmark_summary() {
         total_code += result.code_bytes;
         total_native += result.native_estimate_bytes;
         total_reduction += result.optimization_reduction;
-        println!("  {:20} {:3} bytes  (native ~{:3} bytes, {:.1}% opt)",
-            result.name, result.code_bytes, result.native_estimate_bytes,
-            result.optimization_reduction);
+        println!(
+            "  {:20} {:3} bytes  (native ~{:3} bytes, {:.1}% opt)",
+            result.name,
+            result.code_bytes,
+            result.native_estimate_bytes,
+            result.optimization_reduction
+        );
     }
 
     let avg_reduction = total_reduction / 5.0;
@@ -332,21 +375,36 @@ fn benchmark_summary() {
 
     // Quality assertions
     assert!(overall_ratio < 5.0, "Code should be within 5x of native");
-    assert!(avg_reduction >= 0.0, "Optimization should not make code worse");
+    assert!(
+        avg_reduction >= 0.0,
+        "Optimization should not make code worse"
+    );
 }
 
 #[test]
 fn benchmark_code_density() {
     // Measure code density: operations per byte
     let test_cases = vec![
-        ("Dense arithmetic", vec![
-            WasmOp::I32Const(1), WasmOp::I32Const(2), WasmOp::I32Add,
-            WasmOp::I32Const(3), WasmOp::I32Mul,
-        ]),
-        ("Dense bitwise", vec![
-            WasmOp::I32Const(0xFF), WasmOp::I32Const(0xAA), WasmOp::I32And,
-            WasmOp::I32Const(0x55), WasmOp::I32Or,
-        ]),
+        (
+            "Dense arithmetic",
+            vec![
+                WasmOp::I32Const(1),
+                WasmOp::I32Const(2),
+                WasmOp::I32Add,
+                WasmOp::I32Const(3),
+                WasmOp::I32Mul,
+            ],
+        ),
+        (
+            "Dense bitwise",
+            vec![
+                WasmOp::I32Const(0xFF),
+                WasmOp::I32Const(0xAA),
+                WasmOp::I32And,
+                WasmOp::I32Const(0x55),
+                WasmOp::I32Or,
+            ],
+        ),
     ];
 
     println!("\n{}", "=".repeat(70));
@@ -356,8 +414,13 @@ fn benchmark_code_density() {
     for (name, ops) in test_cases {
         let result = benchmark(name, ops.clone(), 0);
         let density = ops.len() as f64 / result.code_bytes as f64;
-        println!("  {:20} {:.3} ops/byte ({} ops, {} bytes)",
-            name, density, ops.len(), result.code_bytes);
+        println!(
+            "  {:20} {:.3} ops/byte ({} ops, {} bytes)",
+            name,
+            density,
+            ops.len(),
+            result.code_bytes
+        );
 
         assert!(density > 0.01, "Code density should be reasonable");
     }

@@ -134,12 +134,12 @@ impl TargetArch {
                 CortexMVariant::M55 => "thumbv8.1m.main-none-eabi",
             },
             TargetArch::RISCV(variant) => match variant {
-                RISCVVariant::RV32I
-                | RISCVVariant::RV32IMAC
-                | RISCVVariant::RV32GC => "riscv32imac-unknown-none-elf",
-                RISCVVariant::RV64I
-                | RISCVVariant::RV64IMAC
-                | RISCVVariant::RV64GC => "riscv64gc-unknown-none-elf",
+                RISCVVariant::RV32I | RISCVVariant::RV32IMAC | RISCVVariant::RV32GC => {
+                    "riscv32imac-unknown-none-elf"
+                }
+                RISCVVariant::RV64I | RISCVVariant::RV64IMAC | RISCVVariant::RV64GC => {
+                    "riscv64gc-unknown-none-elf"
+                }
             },
         }
     }
@@ -168,12 +168,14 @@ impl TargetArch {
         match self {
             TargetArch::ARMCortexM(variant) => matches!(
                 variant,
-                CortexMVariant::M4F | CortexMVariant::M7 | CortexMVariant::M7DP | CortexMVariant::M55
+                CortexMVariant::M4F
+                    | CortexMVariant::M7
+                    | CortexMVariant::M7DP
+                    | CortexMVariant::M55
             ),
-            TargetArch::RISCV(variant) => matches!(
-                variant,
-                RISCVVariant::RV32GC | RISCVVariant::RV64GC
-            ),
+            TargetArch::RISCV(variant) => {
+                matches!(variant, RISCVVariant::RV32GC | RISCVVariant::RV64GC)
+            }
         }
     }
 }
@@ -192,8 +194,8 @@ impl HardwareCapabilities {
             has_simd: false,
             simd_level: None,
             xip_capable: true,
-            flash_size: 1024 * 1024,   // 1MB
-            ram_size: 192 * 1024,      // 192KB
+            flash_size: 1024 * 1024, // 1MB
+            ram_size: 192 * 1024,    // 192KB
         }
     }
 
@@ -210,8 +212,8 @@ impl HardwareCapabilities {
             has_simd: false,
             simd_level: None,
             xip_capable: true,
-            flash_size: 1024 * 1024,   // 1MB
-            ram_size: 256 * 1024,      // 256KB
+            flash_size: 1024 * 1024, // 1MB
+            ram_size: 256 * 1024,    // 256KB
         }
     }
 
@@ -228,8 +230,8 @@ impl HardwareCapabilities {
             has_simd: false,
             simd_level: None,
             xip_capable: true,
-            flash_size: 1024 * 1024,   // 1MB
-            ram_size: 192 * 1024,      // 192KB (128KB + 64KB CCM)
+            flash_size: 1024 * 1024, // 1MB
+            ram_size: 192 * 1024,    // 192KB (128KB + 64KB CCM)
         }
     }
 }

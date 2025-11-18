@@ -162,7 +162,10 @@ impl VectorTable {
         for handler in &self.handlers {
             if handler.weak && handler.name != "Reserved" {
                 asm.push_str(&format!("    .weak {}\n", handler.name));
-                asm.push_str(&format!("    .thumb_set {},Default_Handler\n", handler.name));
+                asm.push_str(&format!(
+                    "    .thumb_set {},Default_Handler\n",
+                    handler.name
+                ));
             }
         }
 

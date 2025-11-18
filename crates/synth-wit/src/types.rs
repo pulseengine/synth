@@ -38,9 +38,7 @@ impl TypeContext {
                 ok: ok.as_ref().map(|t| Box::new(self.resolve(t))),
                 err: err.as_ref().map(|t| Box::new(self.resolve(t))),
             },
-            Type::Tuple(types) => {
-                Type::Tuple(types.iter().map(|t| self.resolve(t)).collect())
-            }
+            Type::Tuple(types) => Type::Tuple(types.iter().map(|t| self.resolve(t)).collect()),
             _ => ty.clone(),
         }
     }

@@ -62,7 +62,7 @@ fn test_stm32f1_linker_script() {
         .expect("Failed to generate");
 
     assert!(script.contains("LENGTH = 0x10000")); // 64KB
-    assert!(script.contains("LENGTH = 0x5000"));  // 20KB
+    assert!(script.contains("LENGTH = 0x5000")); // 20KB
     assert!(script.contains("_stack_size = 0x800")); // 2KB stack
 }
 
@@ -73,7 +73,7 @@ fn test_rp2040_linker_script() {
 
     generator.add_region(MemoryRegion {
         name: "FLASH".to_string(),
-        origin: 0x10000000,  // RP2040 XIP Flash
+        origin: 0x10000000, // RP2040 XIP Flash
         length: 2 * 1024 * 1024,
         attributes: "rx".to_string(),
     });
@@ -104,7 +104,7 @@ fn test_nordic_nrf52_linker_script() {
 
     generator.add_region(MemoryRegion {
         name: "FLASH".to_string(),
-        origin: 0x00000000,  // nRF52 Flash at 0x0
+        origin: 0x00000000, // nRF52 Flash at 0x0
         length: 512 * 1024,
         attributes: "rx".to_string(),
     });
@@ -119,7 +119,7 @@ fn test_nordic_nrf52_linker_script() {
     let script = generator.generate().expect("Failed to generate");
 
     assert!(script.contains("0x00000000")); // Flash at 0x0
-    assert!(script.contains("0x80000"));    // 512KB
+    assert!(script.contains("0x80000")); // 512KB
 }
 
 #[test]
@@ -128,7 +128,9 @@ fn test_linker_script_file_generation() {
     let generator = LinkerScriptGenerator::new_stm32();
 
     let temp_file = "/tmp/test_linker.ld";
-    generator.generate_to_file(temp_file).expect("Failed to write");
+    generator
+        .generate_to_file(temp_file)
+        .expect("Failed to write");
 
     // Verify file exists and contains expected content
     let contents = std::fs::read_to_string(temp_file).expect("Failed to read");
@@ -179,9 +181,9 @@ fn test_startup_symbols() {
     let script = generator.generate().expect("Failed to generate");
 
     // Data initialization symbols (used by reset handler)
-    assert!(script.contains("_sidata"));  // Load address
-    assert!(script.contains("_sdata"));   // Start in RAM
-    assert!(script.contains("_edata"));   // End in RAM
+    assert!(script.contains("_sidata")); // Load address
+    assert!(script.contains("_sdata")); // Start in RAM
+    assert!(script.contains("_edata")); // End in RAM
 
     // BSS symbols (used by reset handler)
     assert!(script.contains("_sbss"));

@@ -2,7 +2,7 @@
 //!
 //! Uses pattern matching to select optimal ARM instruction sequences
 
-use crate::rules::{ArmOp, MemAddr, Operand2, Replacement, Reg, SynthesisRule, WasmOp};
+use crate::rules::{ArmOp, MemAddr, Operand2, Reg, Replacement, SynthesisRule, WasmOp};
 use crate::{Bindings, PatternMatcher};
 use std::collections::HashMap;
 use synth_core::Result;
@@ -18,7 +18,8 @@ pub struct ArmInstruction {
 
 /// Convert register index to Reg enum
 fn index_to_reg(index: u8) -> Reg {
-    match index % 13 {  // R0-R12 only, avoid SP/LR/PC
+    match index % 13 {
+        // R0-R12 only, avoid SP/LR/PC
         0 => Reg::R0,
         1 => Reg::R1,
         2 => Reg::R2,
@@ -112,7 +113,8 @@ impl InstructionSelector {
 
             if let Some(best_match) = matches.first() {
                 // Apply the rule to generate ARM instructions
-                let arm_ops = self.apply_replacement(&best_match.rule.replacement, &best_match.bindings)?;
+                let arm_ops =
+                    self.apply_replacement(&best_match.rule.replacement, &best_match.bindings)?;
 
                 for op in arm_ops {
                     arm_instructions.push(ArmInstruction {
@@ -137,7 +139,11 @@ impl InstructionSelector {
     }
 
     /// Apply a replacement pattern to generate ARM instructions
-    fn apply_replacement(&mut self, replacement: &Replacement, _bindings: &Bindings) -> Result<Vec<ArmOp>> {
+    fn apply_replacement(
+        &mut self,
+        replacement: &Replacement,
+        _bindings: &Bindings,
+    ) -> Result<Vec<ArmOp>> {
         match replacement {
             Replacement::Identity => {
                 // For identity replacement, generate a default instruction
@@ -159,12 +165,12 @@ impl InstructionSelector {
 
             Replacement::Var(_var_name) => {
                 // Use variable from pattern - would substitute from bindings
-                Ok(vec![ArmOp::Nop])  // Placeholder
+                Ok(vec![ArmOp::Nop]) // Placeholder
             }
 
             Replacement::Inline => {
                 // Inline function call - would inline the function body
-                Ok(vec![ArmOp::Nop])  // Placeholder
+                Ok(vec![ArmOp::Nop]) // Placeholder
             }
         }
     }
@@ -213,20 +219,12 @@ impl InstructionSelector {
             I32Shl => ArmOp::Lsl {
                 rd,
                 rn,
-                shift: 0,  // Placeholder - would extract from operand
+                shift: 0, // Placeholder - would extract from operand
             },
 
-            I32ShrS => ArmOp::Asr {
-                rd,
-                rn,
-                shift: 0,
-            },
+            I32ShrS => ArmOp::Asr { rd, rn, shift: 0 },
 
-            I32ShrU => ArmOp::Lsr {
-                rd,
-                rn,
-                shift: 0,
-            },
+            I32ShrU => ArmOp::Lsr { rd, rn, shift: 0 },
 
             // Rotate operations
             I32Rotl => {
@@ -235,44 +233,34 @@ impl InstructionSelector {
                 ArmOp::Ror {
                     rd,
                     rn,
-                    shift: 0,  // Would be 32 - actual_shift
+                    shift: 0, // Would be 32 - actual_shift
                 }
-            },
+            }
 
             I32Rotr => ArmOp::Ror {
                 rd,
                 rn,
-                shift: 0,  // Placeholder - would extract from operand
+                shift: 0, // Placeholder - would extract from operand
             },
 
             // Bit count operations
-            I32Clz => ArmOp::Clz {
-                rd,
-                rm,
-            },
+            I32Clz => ArmOp::Clz { rd, rm },
 
             I32Ctz => {
                 // Count trailing zeros: RBIT + CLZ
                 // This would need to be a sequence, but for now return RBIT
-                ArmOp::Rbit {
-                    rd,
-                    rm,
-                }
-            },
+                ArmOp::Rbit { rd, rm }
+            }
 
             I32Popcnt => {
                 // Population count - no native ARM instruction
                 // Would need to implement with sequence
                 // Placeholder for now
                 ArmOp::Nop
-            },
+            }
 
             I32Const(val) => {
-                let imm_val = if *val >= 0 {
-                    *val as i32
-                } else {
-                    *val
-                };
+                let imm_val = if *val >= 0 { *val as i32 } else { *val };
                 ArmOp::Mov {
                     rd,
                     op2: Operand2::Imm(imm_val),
@@ -299,7 +287,7 @@ impl InstructionSelector {
                 rd,
                 addr: MemAddr {
                     base: Reg::SP,
-                    offset: 0,  // Simplified - would use proper frame offset
+                    offset: 0, // Simplified - would use proper frame offset
                 },
             },
 
@@ -312,21 +300,23 @@ impl InstructionSelector {
             },
 
             Call(_func_idx) => ArmOp::Bl {
-                label: "func".to_string(),  // Simplified - would use proper target
+                label: "func".to_string(), // Simplified - would use proper target
             },
 
             // Control flow (simplified - structural control flow)
-            Block => ArmOp::Nop,  // Block is a label
-            Loop => ArmOp::Nop,   // Loop is a label
+            Block => ArmOp::Nop, // Block is a label
+            Loop => ArmOp::Nop,  // Loop is a label
             Br(_label) => ArmOp::B {
                 label: "br_target".to_string(),
             },
             BrIf(_label) => {
                 // Conditional branch - would pop condition from stack
                 // For now, placeholder
-                ArmOp::B { label: "br_if_target".to_string() }
-            },
-            Return => ArmOp::Bx { rm: Reg::LR },  // Return via link register
+                ArmOp::B {
+                    label: "br_if_target".to_string(),
+                }
+            }
+            Return => ArmOp::Bx { rm: Reg::LR }, // Return via link register
 
             // Locals
             LocalTee(_index) => {
@@ -338,51 +328,45 @@ impl InstructionSelector {
                         offset: 0,
                     },
                 }
-            },
+            }
 
             // Comparisons
-            I32Eq => {
-                ArmOp::Cmp {
-                    rn,
-                    op2: Operand2::Reg(rm),
-                }
+            I32Eq => ArmOp::Cmp {
+                rn,
+                op2: Operand2::Reg(rm),
             },
-            I32Ne => {
-                ArmOp::Cmp {
-                    rn,
-                    op2: Operand2::Reg(rm),
-                }
+            I32Ne => ArmOp::Cmp {
+                rn,
+                op2: Operand2::Reg(rm),
             },
-            I32LtS | I32LtU | I32LeS | I32LeU | I32GtS | I32GtU | I32GeS | I32GeU => {
-                ArmOp::Cmp {
-                    rn,
-                    op2: Operand2::Reg(rm),
-                }
+            I32LtS | I32LtU | I32LeS | I32LeU | I32GtS | I32GtU | I32GeS | I32GeU => ArmOp::Cmp {
+                rn,
+                op2: Operand2::Reg(rm),
             },
 
             // Division and remainder (ARMv7-M+)
             I32DivS => {
                 // Signed division: SDIV Rd, Rn, Rm
                 ArmOp::Sdiv { rd, rn, rm }
-            },
+            }
             I32DivU => {
                 // Unsigned division: UDIV Rd, Rn, Rm
                 ArmOp::Udiv { rd, rn, rm }
-            },
+            }
             I32RemS => {
                 // Signed remainder: quotient = SDIV Rn, Rm
                 // remainder = Rn - (quotient * Rm)
                 // For now, simplified to SDIV (would need sequence)
                 ArmOp::Sdiv { rd, rn, rm }
-            },
+            }
             I32RemU => {
                 // Unsigned remainder: quotient = UDIV Rn, Rm
                 // remainder = Rn - (quotient * Rm)
                 // For now, simplified to UDIV (would need sequence)
                 ArmOp::Udiv { rd, rn, rm }
-            },
+            }
 
-            _ => ArmOp::Nop,  // Other unsupported operations
+            _ => ArmOp::Nop, // Other unsupported operations
         })
     }
 
@@ -433,10 +417,10 @@ mod tests {
 
         let r1 = regs.get_or_alloc("x");
         let r2 = regs.get_or_alloc("y");
-        let r3 = regs.get_or_alloc("x");  // Should reuse same register
+        let r3 = regs.get_or_alloc("x"); // Should reuse same register
 
-        assert_eq!(r1, r3);  // Same variable gets same register
-        assert_ne!(r1, r2);  // Different variables get different registers
+        assert_eq!(r1, r3); // Same variable gets same register
+        assert_ne!(r1, r2); // Different variables get different registers
     }
 
     #[test]
@@ -600,6 +584,6 @@ mod tests {
         assert_eq!(index_to_reg(0), Reg::R0);
         assert_eq!(index_to_reg(1), Reg::R1);
         assert_eq!(index_to_reg(12), Reg::R12);
-        assert_eq!(index_to_reg(13), Reg::R0);  // Wraps around
+        assert_eq!(index_to_reg(13), Reg::R0); // Wraps around
     }
 }

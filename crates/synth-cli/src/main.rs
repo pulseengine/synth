@@ -47,7 +47,12 @@ enum Commands {
         output: PathBuf,
 
         /// Target architecture
-        #[arg(short, long, value_name = "TARGET", default_value = "thumbv7em-none-eabihf")]
+        #[arg(
+            short,
+            long,
+            value_name = "TARGET",
+            default_value = "thumbv7em-none-eabihf"
+        )]
         target: String,
 
         /// Hardware config (nrf52840, stm32f407, or custom)
@@ -117,25 +122,29 @@ fn parse_command(input: PathBuf, output: Option<PathBuf>) -> Result<()> {
     info!("Parsing WebAssembly component: {}", input.display());
 
     // Parse the component
-    let component = synth_frontend::parse_component_file(&input)
-        .context("Failed to parse component")?;
+    let component =
+        synth_frontend::parse_component_file(&input).context("Failed to parse component")?;
 
     // Validate the component
-    synth_frontend::validate_component(&component)
-        .context("Component validation failed")?;
+    synth_frontend::validate_component(&component).context("Component validation failed")?;
 
     info!("Component parsed successfully");
     info!("  Name: {}", component.name);
     info!("  Modules: {}", component.modules.len());
     info!("  Total memories: {}", component.total_memories());
-    info!("  Total memory size: {} bytes", component.total_memory_size());
+    info!(
+        "  Total memory size: {} bytes",
+        component.total_memory_size()
+    );
 
     // Output JSON if requested
     if let Some(output_path) = output {
-        let json = serde_json::to_string_pretty(&component)
-            .context("Failed to serialize component")?;
-        std::fs::write(&output_path, json)
-            .context(format!("Failed to write output to {}", output_path.display()))?;
+        let json =
+            serde_json::to_string_pretty(&component).context("Failed to serialize component")?;
+        std::fs::write(&output_path, json).context(format!(
+            "Failed to write output to {}",
+            output_path.display()
+        ))?;
         info!("Component JSON written to: {}", output_path.display());
     }
 
@@ -159,18 +168,20 @@ fn synthesize_command(
     info!("  Verification: {}", verify);
 
     // Parse the component
-    let component = synth_frontend::parse_component_file(&input)
-        .context("Failed to parse component")?;
+    let component =
+        synth_frontend::parse_component_file(&input).context("Failed to parse component")?;
 
-    synth_frontend::validate_component(&component)
-        .context("Component validation failed")?;
+    synth_frontend::validate_component(&component).context("Component validation failed")?;
 
     // Get hardware capabilities
     let hw_caps = match hardware.as_str() {
         "nrf52840" => HardwareCapabilities::nrf52840(),
         "stm32f407" => HardwareCapabilities::stm32f407(),
         _ => {
-            anyhow::bail!("Unsupported hardware: {}. Use nrf52840 or stm32f407", hardware);
+            anyhow::bail!(
+                "Unsupported hardware: {}. Use nrf52840 or stm32f407",
+                hardware
+            );
         }
     };
 
@@ -229,6 +240,10 @@ fn print_hardware_info(caps: &HardwareCapabilities) {
         println!("    Level: {:?}", level);
     }
     println!("  XIP capable: {}", caps.xip_capable);
-    println!("  Flash: {} KB ({} MB)", caps.flash_size / 1024, caps.flash_size / (1024 * 1024));
+    println!(
+        "  Flash: {} KB ({} MB)",
+        caps.flash_size / 1024,
+        caps.flash_size / (1024 * 1024)
+    );
     println!("  RAM: {} KB", caps.ram_size / 1024);
 }

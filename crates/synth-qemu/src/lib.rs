@@ -81,15 +81,21 @@ impl QemuRunner {
         let start = std::time::Instant::now();
 
         let mut cmd = Command::new(&self.qemu_path);
-        cmd.arg("-M").arg(self.board.machine_name())
+        cmd.arg("-M")
+            .arg(self.board.machine_name())
             .arg("-nographic")
-            .arg("-kernel").arg(binary_path)
-            .arg("-serial").arg("stdio")
-            .arg("-monitor").arg("none")
+            .arg("-kernel")
+            .arg(binary_path)
+            .arg("-serial")
+            .arg("stdio")
+            .arg("-monitor")
+            .arg("none")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let output = cmd.output().map_err(|e| QemuError::ExecutionFailed(e.to_string()))?;
+        let output = cmd
+            .output()
+            .map_err(|e| QemuError::ExecutionFailed(e.to_string()))?;
 
         let duration = start.elapsed();
         let timed_out = duration >= self.timeout;
@@ -114,15 +120,21 @@ impl QemuRunner {
         let start = std::time::Instant::now();
 
         let mut cmd = Command::new(&self.qemu_path);
-        cmd.arg("-M").arg(self.board.machine_name())
+        cmd.arg("-M")
+            .arg(self.board.machine_name())
             .arg("-nographic")
-            .arg("-kernel").arg(binary_path)
-            .arg("-d").arg("in_asm,exec") // Enable instruction trace
-            .arg("-D").arg("/tmp/qemu-trace.log") // Save trace to file
+            .arg("-kernel")
+            .arg(binary_path)
+            .arg("-d")
+            .arg("in_asm,exec") // Enable instruction trace
+            .arg("-D")
+            .arg("/tmp/qemu-trace.log") // Save trace to file
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let output = cmd.output().map_err(|e| QemuError::ExecutionFailed(e.to_string()))?;
+        let output = cmd
+            .output()
+            .map_err(|e| QemuError::ExecutionFailed(e.to_string()))?;
 
         let duration = start.elapsed();
 
@@ -212,7 +224,10 @@ mod tests {
     fn test_qemu_board_names() {
         assert_eq!(QemuBoard::Netduino2.machine_name(), "netduino2");
         assert_eq!(QemuBoard::Stm32P103.machine_name(), "stm32-p103");
-        assert_eq!(QemuBoard::Stm32F4Discovery.machine_name(), "stm32f4-discovery");
+        assert_eq!(
+            QemuBoard::Stm32F4Discovery.machine_name(),
+            "stm32f4-discovery"
+        );
     }
 
     #[test]

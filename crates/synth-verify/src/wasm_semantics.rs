@@ -249,7 +249,11 @@ impl<'ctx> WasmSemantics<'ctx> {
             }
 
             WasmOp::I32Store { offset, .. } => {
-                assert_eq!(inputs.len(), 2, "I32Store requires 2 inputs (address, value)");
+                assert_eq!(
+                    inputs.len(),
+                    2,
+                    "I32Store requires 2 inputs (address, value)"
+                );
                 // Store to memory: mem[address + offset] = value
                 // For verification, we model the effect without mutating state
                 let _address = inputs[0].clone();
@@ -370,7 +374,7 @@ impl<'ctx> WasmSemantics<'ctx> {
                 BV::new_const(
                     self.ctx,
                     format!("br_table_{}_{}", targets.len(), default),
-                    32
+                    32,
                 )
             }
 
@@ -382,7 +386,11 @@ impl<'ctx> WasmSemantics<'ctx> {
             }
 
             WasmOp::CallIndirect(type_idx) => {
-                assert_eq!(inputs.len(), 1, "CallIndirect requires 1 input (table index)");
+                assert_eq!(
+                    inputs.len(),
+                    1,
+                    "CallIndirect requires 1 input (table index)"
+                );
                 // Indirect function call through table
                 // For verification, we model the call result symbolically
                 let _table_index = inputs[0].clone();
@@ -395,7 +403,6 @@ impl<'ctx> WasmSemantics<'ctx> {
             // Note: These return 64-bit bitvectors, but current architecture
             // expects 32-bit. For now, we truncate to 32-bit for compatibility.
             // Full 64-bit support requires architectural changes.
-
             WasmOp::I64Const(value) => {
                 assert_eq!(inputs.len(), 0, "I64Const requires 0 inputs");
                 // For now, truncate to 32-bit (low part)
@@ -457,7 +464,11 @@ impl<'ctx> WasmSemantics<'ctx> {
             }
 
             WasmOp::I64Store { offset, .. } => {
-                assert_eq!(inputs.len(), 2, "I64Store requires 2 inputs (address, value)");
+                assert_eq!(
+                    inputs.len(),
+                    2,
+                    "I64Store requires 2 inputs (address, value)"
+                );
                 // Store 64-bit value to memory: mem[address + offset] = value
                 // In our simplified 32-bit model, store the 32-bit value
                 let _address = inputs[0].clone();
@@ -472,7 +483,6 @@ impl<'ctx> WasmSemantics<'ctx> {
             // f32 Operations (Phase 2 - Floating Point)
             // ========================================================================
             // Note: f32 values represented as 32-bit bitvectors (IEEE 754 format)
-
             WasmOp::F32Const(value) => {
                 // f32 constant value
                 // Convert f32 to IEEE 754 bit representation
@@ -556,7 +566,10 @@ impl<'ctx> WasmSemantics<'ctx> {
                 magnitude.bvor(&sign)
             }
 
-            WasmOp::F32Load { offset: _, align: _ } => {
+            WasmOp::F32Load {
+                offset: _,
+                align: _,
+            } => {
                 assert_eq!(inputs.len(), 1, "F32Load requires 1 input (address)");
                 // f32 load from memory (symbolic)
                 BV::new_const(self.ctx, "f32_load_result", 32)
@@ -599,8 +612,15 @@ impl<'ctx> WasmSemantics<'ctx> {
                 BV::new_const(self.ctx, "f32_ge_result", 32)
             }
 
-            WasmOp::F32Store { offset: _, align: _ } => {
-                assert_eq!(inputs.len(), 2, "F32Store requires 2 inputs (address, value)");
+            WasmOp::F32Store {
+                offset: _,
+                align: _,
+            } => {
+                assert_eq!(
+                    inputs.len(),
+                    2,
+                    "F32Store requires 2 inputs (address, value)"
+                );
                 // f32 store to memory - returns void (modeled as zero)
                 // In verification, memory effects are tracked symbolically
                 BV::from_i64(self.ctx, 0, 32)
@@ -666,13 +686,10 @@ impl<'ctx> WasmSemantics<'ctx> {
         let top_16_zero = top_16._eq(&zero);
 
         // If top 16 are zero, add 16 to count and shift focus to bottom 16
-        count = top_16_zero.ite(
-            &count.bvadd(&BV::from_i64(self.ctx, 16, 32)),
-            &count
-        );
+        count = top_16_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 16, 32)), &count);
         remaining = top_16_zero.ite(
             &remaining.bvshl(&BV::from_i64(self.ctx, 16, 32)),
-            &remaining
+            &remaining,
         );
 
         // Check top 8 bits (of the 16 we're examining)
@@ -680,52 +697,31 @@ impl<'ctx> WasmSemantics<'ctx> {
         let top_8 = remaining.bvand(&mask_8);
         let top_8_zero = top_8._eq(&zero);
 
-        count = top_8_zero.ite(
-            &count.bvadd(&BV::from_i64(self.ctx, 8, 32)),
-            &count
-        );
-        remaining = top_8_zero.ite(
-            &remaining.bvshl(&BV::from_i64(self.ctx, 8, 32)),
-            &remaining
-        );
+        count = top_8_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 8, 32)), &count);
+        remaining = top_8_zero.ite(&remaining.bvshl(&BV::from_i64(self.ctx, 8, 32)), &remaining);
 
         // Check top 4 bits
         let mask_4 = BV::from_u64(self.ctx, 0xF0000000, 32);
         let top_4 = remaining.bvand(&mask_4);
         let top_4_zero = top_4._eq(&zero);
 
-        count = top_4_zero.ite(
-            &count.bvadd(&BV::from_i64(self.ctx, 4, 32)),
-            &count
-        );
-        remaining = top_4_zero.ite(
-            &remaining.bvshl(&BV::from_i64(self.ctx, 4, 32)),
-            &remaining
-        );
+        count = top_4_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 4, 32)), &count);
+        remaining = top_4_zero.ite(&remaining.bvshl(&BV::from_i64(self.ctx, 4, 32)), &remaining);
 
         // Check top 2 bits
         let mask_2 = BV::from_u64(self.ctx, 0xC0000000, 32);
         let top_2 = remaining.bvand(&mask_2);
         let top_2_zero = top_2._eq(&zero);
 
-        count = top_2_zero.ite(
-            &count.bvadd(&BV::from_i64(self.ctx, 2, 32)),
-            &count
-        );
-        remaining = top_2_zero.ite(
-            &remaining.bvshl(&BV::from_i64(self.ctx, 2, 32)),
-            &remaining
-        );
+        count = top_2_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 2, 32)), &count);
+        remaining = top_2_zero.ite(&remaining.bvshl(&BV::from_i64(self.ctx, 2, 32)), &remaining);
 
         // Check top bit
         let mask_1 = BV::from_u64(self.ctx, 0x80000000, 32);
         let top_1 = remaining.bvand(&mask_1);
         let top_1_zero = top_1._eq(&zero);
 
-        count = top_1_zero.ite(
-            &count.bvadd(&BV::from_i64(self.ctx, 1, 32)),
-            &count
-        );
+        count = top_1_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 1, 32)), &count);
 
         // Return 32 if all zeros, otherwise return count
         all_zero.ite(&result_if_zero, &count)
@@ -751,13 +747,10 @@ impl<'ctx> WasmSemantics<'ctx> {
         let bottom_16 = remaining.bvand(&mask_16);
         let bottom_16_zero = bottom_16._eq(&zero);
 
-        count = bottom_16_zero.ite(
-            &count.bvadd(&BV::from_i64(self.ctx, 16, 32)),
-            &count
-        );
+        count = bottom_16_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 16, 32)), &count);
         remaining = bottom_16_zero.ite(
             &remaining.bvlshr(&BV::from_i64(self.ctx, 16, 32)),
-            &remaining
+            &remaining,
         );
 
         // Check bottom 8 bits
@@ -765,13 +758,10 @@ impl<'ctx> WasmSemantics<'ctx> {
         let bottom_8 = remaining.bvand(&mask_8);
         let bottom_8_zero = bottom_8._eq(&zero);
 
-        count = bottom_8_zero.ite(
-            &count.bvadd(&BV::from_i64(self.ctx, 8, 32)),
-            &count
-        );
+        count = bottom_8_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 8, 32)), &count);
         remaining = bottom_8_zero.ite(
             &remaining.bvlshr(&BV::from_i64(self.ctx, 8, 32)),
-            &remaining
+            &remaining,
         );
 
         // Check bottom 4 bits
@@ -779,13 +769,10 @@ impl<'ctx> WasmSemantics<'ctx> {
         let bottom_4 = remaining.bvand(&mask_4);
         let bottom_4_zero = bottom_4._eq(&zero);
 
-        count = bottom_4_zero.ite(
-            &count.bvadd(&BV::from_i64(self.ctx, 4, 32)),
-            &count
-        );
+        count = bottom_4_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 4, 32)), &count);
         remaining = bottom_4_zero.ite(
             &remaining.bvlshr(&BV::from_i64(self.ctx, 4, 32)),
-            &remaining
+            &remaining,
         );
 
         // Check bottom 2 bits
@@ -793,13 +780,10 @@ impl<'ctx> WasmSemantics<'ctx> {
         let bottom_2 = remaining.bvand(&mask_2);
         let bottom_2_zero = bottom_2._eq(&zero);
 
-        count = bottom_2_zero.ite(
-            &count.bvadd(&BV::from_i64(self.ctx, 2, 32)),
-            &count
-        );
+        count = bottom_2_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 2, 32)), &count);
         remaining = bottom_2_zero.ite(
             &remaining.bvlshr(&BV::from_i64(self.ctx, 2, 32)),
-            &remaining
+            &remaining,
         );
 
         // Check bottom bit
@@ -807,10 +791,7 @@ impl<'ctx> WasmSemantics<'ctx> {
         let bottom_1 = remaining.bvand(&mask_1);
         let bottom_1_zero = bottom_1._eq(&zero);
 
-        count = bottom_1_zero.ite(
-            &count.bvadd(&BV::from_i64(self.ctx, 1, 32)),
-            &count
-        );
+        count = bottom_1_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 1, 32)), &count);
 
         // Return 32 if all zeros, otherwise return count
         all_zero.ite(&result_if_zero, &count)
@@ -1118,12 +1099,20 @@ mod tests {
         // Test POPCNT(0xFFFFFFFF) = 32
         let all_ones = BV::from_u64(&ctx, 0xFFFFFFFF, 32);
         let popcnt_all = encoder.encode_op(&WasmOp::I32Popcnt, &[all_ones]);
-        assert_eq!(popcnt_all.as_i64(), Some(32), "POPCNT(0xFFFFFFFF) should be 32");
+        assert_eq!(
+            popcnt_all.as_i64(),
+            Some(32),
+            "POPCNT(0xFFFFFFFF) should be 32"
+        );
 
         // Test POPCNT(0x0F0F0F0F) = 16 (half the bits set)
         let half = BV::from_u64(&ctx, 0x0F0F0F0F, 32);
         let popcnt_half = encoder.encode_op(&WasmOp::I32Popcnt, &[half]);
-        assert_eq!(popcnt_half.as_i64(), Some(16), "POPCNT(0x0F0F0F0F) should be 16");
+        assert_eq!(
+            popcnt_half.as_i64(),
+            Some(16),
+            "POPCNT(0x0F0F0F0F) should be 16"
+        );
 
         // Test POPCNT(7) = 3 (binary: 0111)
         let seven = BV::from_i64(&ctx, 7, 32);
@@ -1133,7 +1122,11 @@ mod tests {
         // Test POPCNT(0xAAAAAAAA) = 16 (alternating bits)
         let alternating = BV::from_u64(&ctx, 0xAAAAAAAA, 32);
         let popcnt_alt = encoder.encode_op(&WasmOp::I32Popcnt, &[alternating]);
-        assert_eq!(popcnt_alt.as_i64(), Some(16), "POPCNT(0xAAAAAAAA) should be 16");
+        assert_eq!(
+            popcnt_alt.as_i64(),
+            Some(16),
+            "POPCNT(0xAAAAAAAA) should be 16"
+        );
     }
 
     #[test]
@@ -1146,18 +1139,30 @@ mod tests {
         let val2 = BV::from_i64(&ctx, 20, 32);
         let cond_true = BV::from_i64(&ctx, 1, 32);
         let result = encoder.encode_op(&WasmOp::Select, &[val1.clone(), val2.clone(), cond_true]);
-        assert_eq!(result.as_i64(), Some(10), "select(10, 20, 1) should return 10");
+        assert_eq!(
+            result.as_i64(),
+            Some(10),
+            "select(10, 20, 1) should return 10"
+        );
 
         // Test select(10, 20, 0) = 20 (cond == 0, so select second value)
         let cond_false = BV::from_i64(&ctx, 0, 32);
         let result = encoder.encode_op(&WasmOp::Select, &[val1.clone(), val2.clone(), cond_false]);
-        assert_eq!(result.as_i64(), Some(20), "select(10, 20, 0) should return 20");
+        assert_eq!(
+            result.as_i64(),
+            Some(20),
+            "select(10, 20, 0) should return 20"
+        );
 
         // Test select(42, 99, -1) = 42 (negative != 0, so select first value)
         let val3 = BV::from_i64(&ctx, 42, 32);
         let val4 = BV::from_i64(&ctx, 99, 32);
         let cond_neg = BV::from_i64(&ctx, -1, 32);
         let result = encoder.encode_op(&WasmOp::Select, &[val3, val4, cond_neg]);
-        assert_eq!(result.as_i64(), Some(42), "select(42, 99, -1) should return 42");
+        assert_eq!(
+            result.as_i64(),
+            Some(42),
+            "select(42, 99, -1) should return 42"
+        );
     }
 }

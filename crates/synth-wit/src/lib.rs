@@ -38,7 +38,11 @@ pub struct ParseError {
 impl std::fmt::Display for ParseError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(loc) = &self.location {
-            write!(f, "Parse error at {}:{}: {}", loc.line, loc.column, self.message)
+            write!(
+                f,
+                "Parse error at {}:{}: {}",
+                loc.line, loc.column, self.message
+            )
         } else {
             write!(f, "Parse error: {}", self.message)
         }
@@ -66,7 +70,11 @@ pub struct Location {
 
 impl Location {
     pub fn new(line: usize, column: usize, offset: usize) -> Self {
-        Self { line, column, offset }
+        Self {
+            line,
+            column,
+            offset,
+        }
     }
 }
 

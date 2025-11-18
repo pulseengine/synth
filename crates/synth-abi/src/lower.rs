@@ -1,14 +1,10 @@
 //! Lowering: Converting Component Model values to core WASM values
 
-use crate::{AbiError, AbiResult, AbiOptions, CoreValue, Memory, StringEncoding};
+use crate::{AbiError, AbiOptions, AbiResult, CoreValue, Memory, StringEncoding};
 use synth_wit::ast::Type;
 
 /// Lower a string to memory
-pub fn lower_string<M: Memory>(
-    mem: &mut M,
-    s: &str,
-    opts: &AbiOptions,
-) -> AbiResult<(u32, u32)> {
+pub fn lower_string<M: Memory>(mem: &mut M, s: &str, opts: &AbiOptions) -> AbiResult<(u32, u32)> {
     let (data, byte_len) = match opts.string_encoding {
         StringEncoding::Utf8 => {
             let bytes = s.as_bytes();
@@ -16,10 +12,7 @@ pub fn lower_string<M: Memory>(
         }
         StringEncoding::Utf16 => {
             let utf16: Vec<u16> = s.encode_utf16().collect();
-            let bytes: Vec<u8> = utf16
-                .iter()
-                .flat_map(|&c| c.to_le_bytes())
-                .collect();
+            let bytes: Vec<u8> = utf16.iter().flat_map(|&c| c.to_le_bytes()).collect();
             let len = bytes.len();
             (bytes, len)
         }
@@ -109,7 +102,10 @@ pub enum ComponentValue {
     String(String),
     List(Vec<ComponentValue>),
     Record(Vec<(String, ComponentValue)>),
-    Variant { case: String, value: Option<Box<ComponentValue>> },
+    Variant {
+        case: String,
+        value: Option<Box<ComponentValue>>,
+    },
     Enum(String),
     Option(Option<Box<ComponentValue>>),
     Result(Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>>),
@@ -123,7 +119,7 @@ pub fn lower_record<M: Memory>(
     field_types: &[(String, Type)],
     opts: &AbiOptions,
 ) -> AbiResult<Vec<u8>> {
-    use crate::{alignment_of, align_to, size_of};
+    use crate::{align_to, alignment_of, size_of};
 
     // Calculate total size needed
     let mut offset = 0;
@@ -347,7 +343,10 @@ pub fn lower_variant<M: Memory>(
     use crate::{alignment_of, size_of};
 
     match value {
-        ComponentValue::Variant { case, value: payload } => {
+        ComponentValue::Variant {
+            case,
+            value: payload,
+        } => {
             // Find the case index
             let mut case_index = None;
             let mut case_type = None;
@@ -360,9 +359,8 @@ pub fn lower_variant<M: Memory>(
                 }
             }
 
-            let case_index = case_index.ok_or_else(|| {
-                AbiError::Other(format!("Unknown variant case: {}", case))
-            })?;
+            let case_index = case_index
+                .ok_or_else(|| AbiError::Other(format!("Unknown variant case: {}", case)))?;
 
             // Calculate max payload size
             let max_payload_size = cases
@@ -461,9 +459,9 @@ mod tests {
 
         // Lower a list of 3 u32 values
         let elements = vec![
-            vec![1, 0, 0, 0],  // 1 as little-endian u32
-            vec![2, 0, 0, 0],  // 2
-            vec![3, 0, 0, 0],  // 3
+            vec![1, 0, 0, 0], // 1 as little-endian u32
+            vec![2, 0, 0, 0], // 2
+            vec![3, 0, 0, 0], // 3
         ];
 
         let (ptr, len) = lower_list(&mut mem, &elements, 4, 4).unwrap();
@@ -490,10 +488,7 @@ mod tests {
             ("x".to_string(), ComponentValue::U32(10)),
             ("y".to_string(), ComponentValue::U32(20)),
         ];
-        let field_types = vec![
-            ("x".to_string(), Type::U32),
-            ("y".to_string(), Type::U32),
-        ];
+        let field_types = vec![("x".to_string(), Type::U32), ("y".to_string(), Type::U32)];
 
         let data = lower_record(&mut mem, &fields, &field_types, &opts).unwrap();
 
@@ -580,11 +575,7 @@ mod tests {
 
     #[test]
     fn test_lower_enum() {
-        let cases = vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ];
+        let cases = vec!["red".to_string(), "green".to_string(), "blue".to_string()];
 
         let value = ComponentValue::Enum("green".to_string());
         let discriminant = lower_enum(&value, &cases).unwrap();

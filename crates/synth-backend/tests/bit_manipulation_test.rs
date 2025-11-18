@@ -3,7 +3,7 @@
 //! Tests rotate, count leading zeros, count trailing zeros, and population count
 
 use synth_backend::ArmEncoder;
-use synth_synthesis::{ArmOp, InstructionSelector, RuleDatabase, WasmOp, Reg};
+use synth_synthesis::{ArmOp, InstructionSelector, Reg, RuleDatabase, WasmOp};
 
 #[test]
 fn test_rotate_left() {
@@ -79,7 +79,9 @@ fn test_count_trailing_zeros() {
     assert!(!arm_instrs.is_empty());
 
     // Should contain RBIT instruction (CTZ = RBIT + CLZ)
-    let has_rbit = arm_instrs.iter().any(|i| matches!(i.op, ArmOp::Rbit { .. }));
+    let has_rbit = arm_instrs
+        .iter()
+        .any(|i| matches!(i.op, ArmOp::Rbit { .. }));
     assert!(has_rbit);
 }
 
@@ -163,7 +165,7 @@ fn test_bit_ops_in_real_code() {
     // Algorithm: CTZ (count trailing zeros)
     let wasm_ops = vec![
         WasmOp::I32Const(0x00100000), // Bit 20 is set
-        WasmOp::I32Ctz,                // Should return 20
+        WasmOp::I32Ctz,               // Should return 20
     ];
 
     let db = RuleDatabase::with_standard_rules();
@@ -184,10 +186,10 @@ fn test_bit_ops_embedded_use_case() {
     // Algorithm: (x != 0) && ((x & (x-1)) == 0)
     // Equivalent: popcnt(x) == 1
     let wasm_ops = vec![
-        WasmOp::I32Const(16),  // Power of 2
-        WasmOp::I32Popcnt,     // Should return 1
+        WasmOp::I32Const(16), // Power of 2
+        WasmOp::I32Popcnt,    // Should return 1
         WasmOp::I32Const(1),
-        WasmOp::I32Eq,         // Compare with 1
+        WasmOp::I32Eq, // Compare with 1
     ];
 
     let db = RuleDatabase::with_standard_rules();
