@@ -1551,6 +1551,274 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, bits);
             }
 
+            // ===================================================================
+            // f64 Operations (Phase 2c - Double-Precision Floating Point)
+            // ===================================================================
+
+            // f64 Arithmetic (symbolic for verification)
+            ArmOp::F64Add { dd, dn, dm } => {
+                // f64 addition: dd = dn + dm
+                // For verification, return symbolic value
+                // Full implementation would use Z3 FloatingPoint operations
+                let result = BV::new_const(self.ctx, format!("f64_add_{:?}_{:?}", dn, dm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Sub { dd, dn, dm } => {
+                // f64 subtraction: dd = dn - dm
+                let result = BV::new_const(self.ctx, format!("f64_sub_{:?}_{:?}", dn, dm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Mul { dd, dn, dm } => {
+                // f64 multiplication: dd = dn * dm
+                let result = BV::new_const(self.ctx, format!("f64_mul_{:?}_{:?}", dn, dm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Div { dd, dn, dm } => {
+                // f64 division: dd = dn / dm
+                let result = BV::new_const(self.ctx, format!("f64_div_{:?}_{:?}", dn, dm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            // f64 Simple Math
+            ArmOp::F64Abs { dd, dm } => {
+                // f64 absolute value: dd = |dm|
+                // Clear the sign bit (bit 63)
+                let val = state.get_vfp_reg(dm).clone();
+                let mask = BV::from_u64(self.ctx, 0x7FFFFFFFFFFFFFFF, 64); // Clear sign bit
+                let result = val.bvand(&mask);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Neg { dd, dm } => {
+                // f64 negation: dd = -dm
+                // Flip the sign bit (bit 63)
+                let val = state.get_vfp_reg(dm).clone();
+                let mask = BV::from_u64(self.ctx, 0x8000000000000000, 64); // Sign bit
+                let result = val.bvxor(&mask);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Sqrt { dd, dm } => {
+                // f64 square root: dd = sqrt(dm)
+                // Symbolic representation for verification
+                let result = BV::new_const(self.ctx, format!("f64_sqrt_{:?}", dm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Min { dd, dn, dm } => {
+                // f64 minimum: dd = min(dn, dm)
+                // IEEE 754 semantics: NaN propagation, -0.0 < +0.0
+                // Symbolic representation for verification
+                let result = BV::new_const(self.ctx, format!("f64_min_{:?}_{:?}", dn, dm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Max { dd, dn, dm } => {
+                // f64 maximum: dd = max(dn, dm)
+                // IEEE 754 semantics: NaN propagation, +0.0 > -0.0
+                // Symbolic representation for verification
+                let result = BV::new_const(self.ctx, format!("f64_max_{:?}_{:?}", dn, dm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Copysign { dd, dn, dm } => {
+                // f64 copysign: dd = |dn| with sign of dm
+                // Take magnitude of dn and sign bit from dm
+                let val_n = state.get_vfp_reg(dn).clone();
+                let val_m = state.get_vfp_reg(dm).clone();
+
+                // Extract magnitude from dn (clear sign bit)
+                let mag_mask = BV::from_u64(self.ctx, 0x7FFFFFFFFFFFFFFF, 64);
+                let magnitude = val_n.bvand(&mag_mask);
+
+                // Extract sign from dm (bit 63 only)
+                let sign_mask = BV::from_u64(self.ctx, 0x8000000000000000, 64);
+                let sign = val_m.bvand(&sign_mask);
+
+                // Combine: magnitude | sign
+                let result = magnitude.bvor(&sign);
+                state.set_vfp_reg(dd, result);
+            }
+
+            // f64 Rounding Operations (symbolic for verification)
+            ArmOp::F64Ceil { dd, dm } => {
+                // f64 ceil: dd = ceil(dm) - round toward +infinity
+                let result = BV::new_const(self.ctx, format!("f64_ceil_{:?}", dm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Floor { dd, dm } => {
+                // f64 floor: dd = floor(dm) - round toward -infinity
+                let result = BV::new_const(self.ctx, format!("f64_floor_{:?}", dm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Trunc { dd, dm } => {
+                // f64 trunc: dd = trunc(dm) - round toward zero
+                let result = BV::new_const(self.ctx, format!("f64_trunc_{:?}", dm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Nearest { dd, dm } => {
+                // f64 nearest: dd = round(dm) - round to nearest, ties to even
+                let result = BV::new_const(self.ctx, format!("f64_nearest_{:?}", dm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            // f64 Memory Operations
+            ArmOp::F64Load { dd, addr } => {
+                // f64 load: dd = memory[addr]
+                // Symbolic memory access for verification
+                let result = BV::new_const(self.ctx, format!("f64_load_{:?}", addr), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64Store { dd: _, addr: _ } => {
+                // f64 store: memory[addr] = dd
+                // Store operations don't produce register values
+                // No state change for symbolic execution
+            }
+
+            ArmOp::F64Const { dd, value } => {
+                // f64 constant: dd = value
+                let bits = value.to_bits() as i64;
+                let result = BV::from_i64(self.ctx, bits, 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            // f64 Comparisons (result stored in integer register)
+            ArmOp::F64Eq { rd, dn, dm } => {
+                // f64 equal: rd = (dn == dm) ? 1 : 0
+                // IEEE 754: NaN != NaN, so symbolic comparison needed
+                let result = BV::new_const(self.ctx, format!("f64_eq_{:?}_{:?}", dn, dm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::F64Ne { rd, dn, dm } => {
+                // f64 not equal: rd = (dn != dm) ? 1 : 0
+                let result = BV::new_const(self.ctx, format!("f64_ne_{:?}_{:?}", dn, dm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::F64Lt { rd, dn, dm } => {
+                // f64 less than: rd = (dn < dm) ? 1 : 0
+                let result = BV::new_const(self.ctx, format!("f64_lt_{:?}_{:?}", dn, dm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::F64Le { rd, dn, dm } => {
+                // f64 less than or equal: rd = (dn <= dm) ? 1 : 0
+                let result = BV::new_const(self.ctx, format!("f64_le_{:?}_{:?}", dn, dm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::F64Gt { rd, dn, dm } => {
+                // f64 greater than: rd = (dn > dm) ? 1 : 0
+                let result = BV::new_const(self.ctx, format!("f64_gt_{:?}_{:?}", dn, dm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::F64Ge { rd, dn, dm } => {
+                // f64 greater than or equal: rd = (dn >= dm) ? 1 : 0
+                let result = BV::new_const(self.ctx, format!("f64_ge_{:?}_{:?}", dn, dm), 32);
+                state.set_reg(rd, result);
+            }
+
+            // f64 Conversions
+            ArmOp::F64ConvertI32S { dd, rm } => {
+                // f64 convert i32 signed: dd = (f64)rm
+                // Symbolic conversion
+                let result = BV::new_const(self.ctx, format!("f64_convert_i32s_{:?}", rm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64ConvertI32U { dd, rm } => {
+                // f64 convert i32 unsigned: dd = (f64)(unsigned)rm
+                // Symbolic conversion
+                let result = BV::new_const(self.ctx, format!("f64_convert_i32u_{:?}", rm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64ConvertI64S { dd, rmlo: _, rmhi: _ } => {
+                // f64 convert i64 signed: dd = (f64)(rmhi:rmlo)
+                // Symbolic conversion (complex operation)
+                let result = BV::new_const(self.ctx, "f64_convert_i64s_result", 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64ConvertI64U { dd, rmlo: _, rmhi: _ } => {
+                // f64 convert i64 unsigned: dd = (f64)(unsigned)(rmhi:rmlo)
+                // Symbolic conversion (complex operation)
+                let result = BV::new_const(self.ctx, "f64_convert_i64u_result", 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64PromoteF32 { dd, sm } => {
+                // f64 promote f32: dd = (f64)sm
+                // Promote from 32-bit to 64-bit (symbolic for verification)
+                let result = BV::new_const(self.ctx, format!("f64_promote_f32_{:?}", sm), 64);
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::F64ReinterpretI64 { dd, rmlo, rmhi } => {
+                // f64 reinterpret i64: dd = reinterpret_cast<f64>(rmhi:rmlo)
+                // Bitwise copy without conversion - combine two 32-bit registers
+                let lo = state.get_reg(rmlo).clone();
+                let hi = state.get_reg(rmhi).clone();
+
+                // Extend to 64 bits and combine: (hi << 32) | lo
+                let lo_64 = lo.zero_ext(32); // Extend to 64 bits
+                let hi_64 = hi.zero_ext(32);
+                let shift_32 = BV::from_u64(self.ctx, 32, 64);
+                let hi_shifted = hi_64.bvshl(&shift_32);
+                let result = hi_shifted.bvor(&lo_64);
+
+                state.set_vfp_reg(dd, result);
+            }
+
+            ArmOp::I64ReinterpretF64 { rdlo, rdhi, dm } => {
+                // i64 reinterpret f64: (rdhi:rdlo) = reinterpret_cast<i64>(dm)
+                // Bitwise copy without conversion - split 64-bit into two 32-bit registers
+                let bits = state.get_vfp_reg(dm).clone();
+
+                // Extract low 32 bits
+                let lo = bits.extract(31, 0);
+                state.set_reg(rdlo, lo);
+
+                // Extract high 32 bits
+                let hi = bits.extract(63, 32);
+                state.set_reg(rdhi, hi);
+            }
+
+            ArmOp::I64TruncF64S { rdlo: _, rdhi: _, dm: _ } => {
+                // i64 trunc f64 signed: (rdhi:rdlo) = (i64)dm
+                // Symbolic conversion (complex operation)
+                // Would require proper truncation with saturation
+            }
+
+            ArmOp::I64TruncF64U { rdlo: _, rdhi: _, dm: _ } => {
+                // i64 trunc f64 unsigned: (rdhi:rdlo) = (unsigned i64)dm
+                // Symbolic conversion (complex operation)
+                // Would require proper truncation with saturation
+            }
+
+            ArmOp::I32TruncF64S { rd, dm } => {
+                // i32 trunc f64 signed: rd = (i32)dm
+                // Symbolic conversion
+                let result = BV::new_const(self.ctx, format!("i32_trunc_f64s_{:?}", dm), 32);
+                state.set_reg(rd, result);
+            }
+
+            ArmOp::I32TruncF64U { rd, dm } => {
+                // i32 trunc f64 unsigned: rd = (unsigned i32)dm
+                // Symbolic conversion
+                let result = BV::new_const(self.ctx, format!("i32_trunc_f64u_{:?}", dm), 32);
+                state.set_reg(rd, result);
+            }
+
             _ => {
                 // Unsupported operations - no state change
             }
