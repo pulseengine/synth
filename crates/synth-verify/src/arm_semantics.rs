@@ -2204,7 +2204,7 @@ mod tests {
         encoder.encode_op(&op, &mut state);
 
         // Check result: R0 should be 30
-        let result = state.get_reg(&Reg::R0);
+        let result = state.get_reg(&Reg::R0).simplify();
         assert_eq!(result.as_i64(), Some(30));
     }
 
@@ -2226,7 +2226,7 @@ mod tests {
         encoder.encode_op(&op, &mut state);
 
         let result = state.get_reg(&Reg::R0);
-        assert_eq!(result.as_i64(), Some(30));
+        assert_eq!(result.simplify().as_i64(), Some(30));
     }
 
     #[test]
@@ -2243,7 +2243,7 @@ mod tests {
         encoder.encode_op(&op, &mut state);
 
         let result = state.get_reg(&Reg::R0);
-        assert_eq!(result.as_i64(), Some(42));
+        assert_eq!(result.simplify().as_i64(), Some(42));
     }
 
     #[test]
@@ -2262,7 +2262,7 @@ mod tests {
             op2: Operand2::Reg(Reg::R2),
         };
         encoder.encode_op(&and_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0b1000));
+        assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(0b1000));
 
         // Test ORR
         let orr_op = ArmOp::Orr {
@@ -2271,7 +2271,7 @@ mod tests {
             op2: Operand2::Reg(Reg::R2),
         };
         encoder.encode_op(&orr_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0b1110));
+        assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(0b1110));
 
         // Test EOR (XOR)
         let eor_op = ArmOp::Eor {
@@ -2280,7 +2280,7 @@ mod tests {
             op2: Operand2::Reg(Reg::R2),
         };
         encoder.encode_op(&eor_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0b0110));
+        assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(0b0110));
     }
 
     #[test]
@@ -2305,7 +2305,7 @@ mod tests {
         };
         encoder.encode_op(&mls_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R3).as_i64(),
+            state.get_reg(&Reg::R3).simplify().as_i64(),
             Some(2),
             "MLS: 17 - 3*5 = 2"
         );
@@ -2323,7 +2323,7 @@ mod tests {
         };
         encoder.encode_op(&mls_op2, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R3).as_i64(),
+            state.get_reg(&Reg::R3).simplify().as_i64(),
             Some(79),
             "MLS: 100 - 7*3 = 79"
         );
@@ -2340,8 +2340,11 @@ mod tests {
             ra: Reg::R0,
         };
         encoder.encode_op(&mls_op3, &mut state);
+        // Result is -32, but as_i64() returns unsigned, so we need to convert
+        let result = state.get_reg(&Reg::R3).simplify().as_i64();
+        let signed_result = result.map(|v| (v as i32) as i64);
         assert_eq!(
-            state.get_reg(&Reg::R3).as_i64(),
+            signed_result,
             Some(-32),
             "MLS: -17 - 3*5 = -32"
         );
@@ -2362,7 +2365,7 @@ mod tests {
             shift: 2,
         };
         encoder.encode_op(&lsl_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(32));
+        assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(32));
 
         // Test LSR (logical shift right) with immediate
         let lsr_op = ArmOp::Lsr {
@@ -2371,7 +2374,7 @@ mod tests {
             shift: 2,
         };
         encoder.encode_op(&lsr_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(2));
+        assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(2));
     }
 
     #[test]
@@ -2391,7 +2394,7 @@ mod tests {
         encoder.encode_op(&ror_op, &mut state);
         // 0x12345678 ROR 8 = 0x78123456
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(0x78123456),
             "ROR by 8"
         );
@@ -2405,7 +2408,7 @@ mod tests {
         encoder.encode_op(&ror_op_16, &mut state);
         // 0x12345678 ROR 16 = 0x56781234
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(0x56781234),
             "ROR by 16"
         );
@@ -2418,7 +2421,7 @@ mod tests {
         };
         encoder.encode_op(&ror_op_0, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(0x12345678),
             "ROR by 0"
         );
@@ -2431,7 +2434,7 @@ mod tests {
         };
         encoder.encode_op(&ror_op_32, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(0x12345678),
             "ROR by 32"
         );
@@ -2446,7 +2449,7 @@ mod tests {
         encoder.encode_op(&ror_op_4, &mut state);
         // 0xABCDEF01 ROR 4 = 0x1ABCDEF0
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(0x1ABCDEF0),
             "ROR by 4"
         );
@@ -2460,8 +2463,10 @@ mod tests {
         };
         encoder.encode_op(&ror_op_1, &mut state);
         // 0x80000001 ROR 1 = 0xC0000000
+        let result = state.get_reg(&Reg::R0).simplify().as_i64();
+        let signed_result = result.map(|v| (v as i32) as i64);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            signed_result,
             Some(0xC0000000_u32 as i32 as i64),
             "ROR by 1"
         );
@@ -2481,7 +2486,7 @@ mod tests {
         };
         encoder.encode_op(&clz_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(32),
             "CLZ(0) should be 32"
         );
@@ -2490,7 +2495,7 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, 1, 32));
         encoder.encode_op(&clz_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(31),
             "CLZ(1) should be 31"
         );
@@ -2499,7 +2504,7 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x80000000, 32));
         encoder.encode_op(&clz_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(0),
             "CLZ(0x80000000) should be 0"
         );
@@ -2508,7 +2513,7 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x00FF0000, 32));
         encoder.encode_op(&clz_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(8),
             "CLZ(0x00FF0000) should be 8"
         );
@@ -2517,7 +2522,7 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x00001000, 32));
         encoder.encode_op(&clz_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(19),
             "CLZ(0x00001000) should be 19"
         );
@@ -2526,7 +2531,7 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFFFFFFFF, 32));
         encoder.encode_op(&clz_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(0),
             "CLZ(0xFFFFFFFF) should be 0"
         );
@@ -2547,7 +2552,7 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, 0, 32));
         encoder.encode_op(&rbit_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(0),
             "RBIT(0) should be 0"
         );
@@ -2556,7 +2561,7 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, 1, 32));
         encoder.encode_op(&rbit_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_u64(),
+            state.get_reg(&Reg::R0).simplify().as_u64(),
             Some(0x80000000),
             "RBIT(1) should be 0x80000000"
         );
@@ -2565,7 +2570,7 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x80000000, 32));
         encoder.encode_op(&rbit_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(1),
             "RBIT(0x80000000) should be 1"
         );
@@ -2574,7 +2579,7 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFF000000, 32));
         encoder.encode_op(&rbit_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_u64(),
+            state.get_reg(&Reg::R0).simplify().as_u64(),
             Some(0x000000FF),
             "RBIT(0xFF000000) should be 0x000000FF"
         );
@@ -2584,7 +2589,7 @@ mod tests {
         encoder.encode_op(&rbit_op, &mut state);
         // 0x12345678 reversed = 0x1E6A2C48
         assert_eq!(
-            state.get_reg(&Reg::R0).as_u64(),
+            state.get_reg(&Reg::R0).simplify().as_u64(),
             Some(0x1E6A2C48),
             "RBIT(0x12345678) should be 0x1E6A2C48"
         );
@@ -2593,7 +2598,7 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFFFFFFFF, 32));
         encoder.encode_op(&rbit_op, &mut state);
         assert_eq!(
-            state.get_reg(&Reg::R0).as_u64(),
+            state.get_reg(&Reg::R0).simplify().as_u64(),
             Some(0xFFFFFFFF),
             "RBIT(0xFFFFFFFF) should be 0xFFFFFFFF"
         );
@@ -2620,22 +2625,22 @@ mod tests {
         encoder.encode_op(&cmp_op, &mut state);
 
         assert_eq!(
-            state.flags.z.as_bool(),
+            state.flags.z.simplify().as_bool(),
             Some(true),
             "Z flag should be set (equal)"
         );
         assert_eq!(
-            state.flags.n.as_bool(),
+            state.flags.n.simplify().as_bool(),
             Some(false),
             "N flag should be clear (non-negative)"
         );
         assert_eq!(
-            state.flags.c.as_bool(),
+            state.flags.c.simplify().as_bool(),
             Some(true),
             "C flag should be set (no borrow)"
         );
         assert_eq!(
-            state.flags.v.as_bool(),
+            state.flags.v.simplify().as_bool(),
             Some(false),
             "V flag should be clear (no overflow)"
         );
@@ -2647,22 +2652,22 @@ mod tests {
         encoder.encode_op(&cmp_op, &mut state);
 
         assert_eq!(
-            state.flags.z.as_bool(),
+            state.flags.z.simplify().as_bool(),
             Some(false),
             "Z flag should be clear (not equal)"
         );
         assert_eq!(
-            state.flags.n.as_bool(),
+            state.flags.n.simplify().as_bool(),
             Some(false),
             "N flag should be clear (positive result)"
         );
         assert_eq!(
-            state.flags.c.as_bool(),
+            state.flags.c.simplify().as_bool(),
             Some(true),
             "C flag should be set (no borrow)"
         );
         assert_eq!(
-            state.flags.v.as_bool(),
+            state.flags.v.simplify().as_bool(),
             Some(false),
             "V flag should be clear (no overflow)"
         );
@@ -2675,22 +2680,22 @@ mod tests {
         encoder.encode_op(&cmp_op, &mut state);
 
         assert_eq!(
-            state.flags.z.as_bool(),
+            state.flags.z.simplify().as_bool(),
             Some(false),
             "Z flag should be clear"
         );
         assert_eq!(
-            state.flags.n.as_bool(),
+            state.flags.n.simplify().as_bool(),
             Some(true),
             "N flag should be set (negative result)"
         );
         assert_eq!(
-            state.flags.c.as_bool(),
+            state.flags.c.simplify().as_bool(),
             Some(false),
             "C flag should be clear (borrow occurred)"
         );
         assert_eq!(
-            state.flags.v.as_bool(),
+            state.flags.v.simplify().as_bool(),
             Some(false),
             "V flag should be clear"
         );
@@ -2704,22 +2709,22 @@ mod tests {
         encoder.encode_op(&cmp_op, &mut state);
 
         assert_eq!(
-            state.flags.z.as_bool(),
+            state.flags.z.simplify().as_bool(),
             Some(false),
             "Z flag should be clear"
         );
         assert_eq!(
-            state.flags.n.as_bool(),
+            state.flags.n.simplify().as_bool(),
             Some(true),
             "N flag should be set (wrapped result)"
         );
         assert_eq!(
-            state.flags.c.as_bool(),
+            state.flags.c.simplify().as_bool(),
             Some(false),
             "C flag should be clear"
         );
         assert_eq!(
-            state.flags.v.as_bool(),
+            state.flags.v.simplify().as_bool(),
             Some(true),
             "V flag should be set (overflow)"
         );
@@ -2730,18 +2735,18 @@ mod tests {
         encoder.encode_op(&cmp_op, &mut state);
 
         assert_eq!(
-            state.flags.z.as_bool(),
+            state.flags.z.simplify().as_bool(),
             Some(true),
             "Z flag should be set (0 - 0 = 0)"
         );
         assert_eq!(
-            state.flags.n.as_bool(),
+            state.flags.n.simplify().as_bool(),
             Some(false),
             "N flag should be clear"
         );
-        assert_eq!(state.flags.c.as_bool(), Some(true), "C flag should be set");
+        assert_eq!(state.flags.c.simplify().as_bool(), Some(true), "C flag should be set");
         assert_eq!(
-            state.flags.v.as_bool(),
+            state.flags.v.simplify().as_bool(),
             Some(false),
             "V flag should be clear"
         );
@@ -2775,9 +2780,9 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
         encoder.encode_op(&cmp_op, &mut state);
 
-        let n = state.flags.n.as_bool().unwrap();
-        let z = state.flags.z.as_bool().unwrap();
-        let v = state.flags.v.as_bool().unwrap();
+        let n = state.flags.n.simplify().as_bool().unwrap();
+        let z = state.flags.z.simplify().as_bool().unwrap();
+        let v = state.flags.v.simplify().as_bool().unwrap();
 
         assert_eq!(z, false, "Not equal");
         assert_eq!(n != v, true, "5 < 10 signed (N != V)");
@@ -2787,8 +2792,8 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
         encoder.encode_op(&cmp_op, &mut state);
 
-        let n = state.flags.n.as_bool().unwrap();
-        let v = state.flags.v.as_bool().unwrap();
+        let n = state.flags.n.simplify().as_bool().unwrap();
+        let v = state.flags.v.simplify().as_bool().unwrap();
         assert_eq!(n != v, true, "-5 < 10 signed (N != V)");
     }
 
@@ -2817,7 +2822,7 @@ mod tests {
         encoder.encode_op(&setcond_op, &mut state);
 
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(1),
             "EQ condition (10 == 10) should return 1"
         );
@@ -2835,7 +2840,7 @@ mod tests {
         encoder.encode_op(&setcond_ne, &mut state);
 
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(1),
             "NE condition (10 != 5) should return 1"
         );
@@ -2864,7 +2869,7 @@ mod tests {
         encoder.encode_op(&setcond_lt, &mut state);
 
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(1),
             "LT signed (5 < 10) should return 1"
         );
@@ -2882,7 +2887,7 @@ mod tests {
         encoder.encode_op(&setcond_ge, &mut state);
 
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(1),
             "GE signed (10 >= 5) should return 1"
         );
@@ -2900,7 +2905,7 @@ mod tests {
         encoder.encode_op(&setcond_gt, &mut state);
 
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(1),
             "GT signed (10 > 5) should return 1"
         );
@@ -2918,7 +2923,7 @@ mod tests {
         encoder.encode_op(&setcond_le, &mut state);
 
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(1),
             "LE signed (5 <= 10) should return 1"
         );
@@ -2947,7 +2952,7 @@ mod tests {
         encoder.encode_op(&setcond_lo, &mut state);
 
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(1),
             "LO unsigned (5 < 10) should return 1"
         );
@@ -2965,7 +2970,7 @@ mod tests {
         encoder.encode_op(&setcond_hs, &mut state);
 
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(1),
             "HS unsigned (10 >= 5) should return 1"
         );
@@ -2983,7 +2988,7 @@ mod tests {
         encoder.encode_op(&setcond_hi, &mut state);
 
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(1),
             "HI unsigned (10 > 5) should return 1"
         );
@@ -3001,7 +3006,7 @@ mod tests {
         encoder.encode_op(&setcond_ls, &mut state);
 
         assert_eq!(
-            state.get_reg(&Reg::R0).as_i64(),
+            state.get_reg(&Reg::R0).simplify().as_i64(),
             Some(1),
             "LS unsigned (5 <= 10) should return 1"
         );
