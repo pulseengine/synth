@@ -1498,6 +1498,59 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_vfp_reg(sd, result);
             }
 
+            ArmOp::F32Nearest { sd, sm } => {
+                // f32 nearest: sd = nearest(sm) - round to nearest, ties to even
+                // Symbolic representation for IEEE 754 rounding
+                let result = BV::new_const(self.ctx, format!("f32_nearest_{:?}", sm), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            // f32 Conversions from Integers
+            ArmOp::F32ConvertI32S { sd, rm } => {
+                // f32 convert from signed i32: sd = (f32)rm
+                let int_val = state.get_reg(rm);
+                let result = BV::new_const(self.ctx, format!("f32_convert_i32s_{:?}", int_val), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32ConvertI32U { sd, rm } => {
+                // f32 convert from unsigned i32: sd = (f32)(unsigned)rm
+                let int_val = state.get_reg(rm);
+                let result = BV::new_const(self.ctx, format!("f32_convert_i32u_{:?}", int_val), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32ConvertI64S { sd, rmlo, rmhi } => {
+                // f32 convert from signed i64: sd = (f32)r64
+                let lo = state.get_reg(rmlo);
+                let hi = state.get_reg(rmhi);
+                let result = BV::new_const(self.ctx, format!("f32_convert_i64s_{:?}_{:?}", lo, hi), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            ArmOp::F32ConvertI64U { sd, rmlo, rmhi } => {
+                // f32 convert from unsigned i64: sd = (f32)(unsigned)r64
+                let lo = state.get_reg(rmlo);
+                let hi = state.get_reg(rmhi);
+                let result = BV::new_const(self.ctx, format!("f32_convert_i64u_{:?}_{:?}", lo, hi), 32);
+                state.set_vfp_reg(sd, result);
+            }
+
+            // f32 Reinterpretations
+            ArmOp::F32ReinterpretI32 { sd, rm } => {
+                // f32 reinterpret i32: sd = reinterpret_cast<f32>(rm)
+                // Bitwise copy without conversion
+                let bits = state.get_reg(rm).clone();
+                state.set_vfp_reg(sd, bits);
+            }
+
+            ArmOp::I32ReinterpretF32 { rd, sm } => {
+                // i32 reinterpret f32: rd = reinterpret_cast<i32>(sm)
+                // Bitwise copy without conversion
+                let bits = state.get_vfp_reg(sm).clone();
+                state.set_reg(rd, bits);
+            }
+
             _ => {
                 // Unsupported operations - no state change
             }
