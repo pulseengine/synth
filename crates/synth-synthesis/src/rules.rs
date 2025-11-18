@@ -203,6 +203,54 @@ pub enum WasmOp {
     I32ReinterpretF32, // Reinterpret f32 bits as i32
     I32TruncF32S,      // Truncate f32 to signed i32
     I32TruncF32U,      // Truncate f32 to unsigned i32
+
+    // ========================================================================
+    // f64 Operations (Phase 2c - Double-Precision Floating Point)
+    // ========================================================================
+
+    // f64 Arithmetic
+    F64Add,
+    F64Sub,
+    F64Mul,
+    F64Div,
+
+    // f64 Comparisons
+    F64Eq,
+    F64Ne,
+    F64Lt,
+    F64Le,
+    F64Gt,
+    F64Ge,
+
+    // f64 Math Functions
+    F64Abs,
+    F64Neg,
+    F64Ceil,
+    F64Floor,
+    F64Trunc,
+    F64Nearest,
+    F64Sqrt,
+    F64Min,
+    F64Max,
+    F64Copysign,
+
+    // f64 Constants and Memory
+    F64Const(f64),
+    F64Load { offset: u32, align: u32 },
+    F64Store { offset: u32, align: u32 },
+
+    // f64 Conversions
+    F64ConvertI32S,    // Convert signed i32 to f64
+    F64ConvertI32U,    // Convert unsigned i32 to f64
+    F64ConvertI64S,    // Convert signed i64 to f64
+    F64ConvertI64U,    // Convert unsigned i64 to f64
+    F64PromoteF32,     // Convert f32 to f64
+    F64ReinterpretI64, // Reinterpret i64 bits as f64
+    I64ReinterpretF64, // Reinterpret f64 bits as i64
+    I64TruncF64S,      // Truncate f64 to signed i64
+    I64TruncF64U,      // Truncate f64 to unsigned i64
+    I32TruncF64S,      // Truncate f64 to signed i32
+    I32TruncF64U,      // Truncate f64 to unsigned i32
 }
 
 /// Replacement/transformation
@@ -818,6 +866,175 @@ pub enum ArmOp {
         rd: Reg,
         sm: VfpReg,
     }, // VCVT.U32.F32 Sd, Sm + VMOV Rd, Sd
+
+    // ========================================================================
+    // f64 Operations (Phase 2c - Double-Precision Floating Point)
+    // ========================================================================
+
+    // f64 Arithmetic
+    F64Add {
+        dd: VfpReg,
+        dn: VfpReg,
+        dm: VfpReg,
+    }, // VADD.F64 Dd, Dn, Dm
+    F64Sub {
+        dd: VfpReg,
+        dn: VfpReg,
+        dm: VfpReg,
+    }, // VSUB.F64 Dd, Dn, Dm
+    F64Mul {
+        dd: VfpReg,
+        dn: VfpReg,
+        dm: VfpReg,
+    }, // VMUL.F64 Dd, Dn, Dm
+    F64Div {
+        dd: VfpReg,
+        dn: VfpReg,
+        dm: VfpReg,
+    }, // VDIV.F64 Dd, Dn, Dm
+
+    // f64 Math Functions
+    F64Abs {
+        dd: VfpReg,
+        dm: VfpReg,
+    }, // VABS.F64 Dd, Dm
+    F64Neg {
+        dd: VfpReg,
+        dm: VfpReg,
+    }, // VNEG.F64 Dd, Dm
+    F64Sqrt {
+        dd: VfpReg,
+        dm: VfpReg,
+    }, // VSQRT.F64 Dd, Dm
+    F64Ceil {
+        dd: VfpReg,
+        dm: VfpReg,
+    }, // Pseudo (rounding mode change + VRINTP)
+    F64Floor {
+        dd: VfpReg,
+        dm: VfpReg,
+    }, // Pseudo (rounding mode change + VRINTM)
+    F64Trunc {
+        dd: VfpReg,
+        dm: VfpReg,
+    }, // Pseudo (rounding mode change + VRINTZ)
+    F64Nearest {
+        dd: VfpReg,
+        dm: VfpReg,
+    }, // Pseudo (rounding mode change + VRINTN)
+    F64Min {
+        dd: VfpReg,
+        dn: VfpReg,
+        dm: VfpReg,
+    }, // Pseudo (compare + select)
+    F64Max {
+        dd: VfpReg,
+        dn: VfpReg,
+        dm: VfpReg,
+    }, // Pseudo (compare + select)
+    F64Copysign {
+        dd: VfpReg,
+        dn: VfpReg,
+        dm: VfpReg,
+    }, // Pseudo (bitwise operations)
+
+    // f64 Comparisons (result in integer register)
+    F64Eq {
+        rd: Reg,
+        dn: VfpReg,
+        dm: VfpReg,
+    }, // VCMP.F64 + VMRS + condition check
+    F64Ne {
+        rd: Reg,
+        dn: VfpReg,
+        dm: VfpReg,
+    },
+    F64Lt {
+        rd: Reg,
+        dn: VfpReg,
+        dm: VfpReg,
+    },
+    F64Le {
+        rd: Reg,
+        dn: VfpReg,
+        dm: VfpReg,
+    },
+    F64Gt {
+        rd: Reg,
+        dn: VfpReg,
+        dm: VfpReg,
+    },
+    F64Ge {
+        rd: Reg,
+        dn: VfpReg,
+        dm: VfpReg,
+    },
+
+    // f64 Constants and Memory
+    F64Const {
+        dd: VfpReg,
+        value: f64,
+    }, // VMOV.F64 Dd, #imm (or literal pool)
+    F64Load {
+        dd: VfpReg,
+        addr: MemAddr,
+    }, // VLDR.64 Dd, [Rn, #offset]
+    F64Store {
+        dd: VfpReg,
+        addr: MemAddr,
+    }, // VSTR.64 Dd, [Rn, #offset]
+
+    // f64 Conversions
+    F64ConvertI32S {
+        dd: VfpReg,
+        rm: Reg,
+    }, // VMOV Sd, Rm + VCVT.F64.S32 Dd, Sd
+    F64ConvertI32U {
+        dd: VfpReg,
+        rm: Reg,
+    }, // VMOV Sd, Rm + VCVT.F64.U32 Dd, Sd
+    F64ConvertI64S {
+        dd: VfpReg,
+        rmlo: Reg,
+        rmhi: Reg,
+    }, // Complex (requires library or multi-step)
+    F64ConvertI64U {
+        dd: VfpReg,
+        rmlo: Reg,
+        rmhi: Reg,
+    }, // Complex (requires library or multi-step)
+    F64PromoteF32 {
+        dd: VfpReg,
+        sm: VfpReg,
+    }, // VCVT.F64.F32 Dd, Sm
+    F64ReinterpretI64 {
+        dd: VfpReg,
+        rmlo: Reg,
+        rmhi: Reg,
+    }, // VMOV Dd, Rmlo, Rmhi (bitcast)
+    I64ReinterpretF64 {
+        rdlo: Reg,
+        rdhi: Reg,
+        dm: VfpReg,
+    }, // VMOV Rdlo, Rdhi, Dm (bitcast)
+    I64TruncF64S {
+        rdlo: Reg,
+        rdhi: Reg,
+        dm: VfpReg,
+    }, // Complex (requires library or multi-step)
+    I64TruncF64U {
+        rdlo: Reg,
+        rdhi: Reg,
+        dm: VfpReg,
+    }, // Complex (requires library or multi-step)
+    I32TruncF64S {
+        rd: Reg,
+        dm: VfpReg,
+    }, // VCVT.S32.F64 Sd, Dm + VMOV Rd, Sd
+    I32TruncF64U {
+        rd: Reg,
+        dm: VfpReg,
+    }, // VCVT.U32.F64 Sd, Dm + VMOV Rd, Sd
 }
 
 /// ARM condition codes (based on NZCV flags)

@@ -696,6 +696,240 @@ impl<'ctx> WasmSemantics<'ctx> {
                 inputs[0].clone()
             }
 
+            // ===================================================================
+            // f64 Operations (Phase 2c - Double-Precision Floating Point)
+            // ===================================================================
+
+            WasmOp::F64Const(value) => {
+                // f64 constant value (64-bit)
+                // For verification, we model as 64-bit bitvector
+                let bits = value.to_bits() as i64;
+                BV::from_i64(self.ctx, bits, 64)
+            }
+
+            WasmOp::F64Add => {
+                assert_eq!(inputs.len(), 2, "F64Add requires 2 inputs");
+                // f64 addition (symbolic for verification)
+                BV::new_const(self.ctx, "f64_add_result", 64)
+            }
+
+            WasmOp::F64Sub => {
+                assert_eq!(inputs.len(), 2, "F64Sub requires 2 inputs");
+                // f64 subtraction (symbolic for verification)
+                BV::new_const(self.ctx, "f64_sub_result", 64)
+            }
+
+            WasmOp::F64Mul => {
+                assert_eq!(inputs.len(), 2, "F64Mul requires 2 inputs");
+                // f64 multiplication (symbolic for verification)
+                BV::new_const(self.ctx, "f64_mul_result", 64)
+            }
+
+            WasmOp::F64Div => {
+                assert_eq!(inputs.len(), 2, "F64Div requires 2 inputs");
+                // f64 division (symbolic for verification)
+                BV::new_const(self.ctx, "f64_div_result", 64)
+            }
+
+            WasmOp::F64Abs => {
+                assert_eq!(inputs.len(), 1, "F64Abs requires 1 input");
+                // f64 absolute value: clear sign bit
+                let val = inputs[0].clone();
+                let sign_mask = BV::from_u64(self.ctx, 0x7FFF_FFFF_FFFF_FFFF, 64);
+                val.bvand(&sign_mask)
+            }
+
+            WasmOp::F64Neg => {
+                assert_eq!(inputs.len(), 1, "F64Neg requires 1 input");
+                // f64 negation: flip sign bit
+                let val = inputs[0].clone();
+                let sign_bit = BV::from_u64(self.ctx, 0x8000_0000_0000_0000, 64);
+                val.bvxor(&sign_bit)
+            }
+
+            WasmOp::F64Sqrt => {
+                assert_eq!(inputs.len(), 1, "F64Sqrt requires 1 input");
+                // f64 square root (symbolic for verification)
+                BV::new_const(self.ctx, "f64_sqrt_result", 64)
+            }
+
+            WasmOp::F64Min => {
+                assert_eq!(inputs.len(), 2, "F64Min requires 2 inputs");
+                // f64 minimum with IEEE 754 semantics
+                BV::new_const(self.ctx, "f64_min_result", 64)
+            }
+
+            WasmOp::F64Max => {
+                assert_eq!(inputs.len(), 2, "F64Max requires 2 inputs");
+                // f64 maximum with IEEE 754 semantics
+                BV::new_const(self.ctx, "f64_max_result", 64)
+            }
+
+            WasmOp::F64Copysign => {
+                assert_eq!(inputs.len(), 2, "F64Copysign requires 2 inputs");
+                // f64 copysign: |input[0]| with sign of input[1]
+                let val_n = inputs[0].clone();
+                let val_m = inputs[1].clone();
+
+                // Clear sign bit from input[0]
+                let magnitude_mask = BV::from_u64(self.ctx, 0x7FFF_FFFF_FFFF_FFFF, 64);
+                let magnitude = val_n.bvand(&magnitude_mask);
+
+                // Extract sign bit from input[1]
+                let sign_mask = BV::from_u64(self.ctx, 0x8000_0000_0000_0000, 64);
+                let sign = val_m.bvand(&sign_mask);
+
+                // Combine magnitude with sign
+                magnitude.bvor(&sign)
+            }
+
+            WasmOp::F64Load {
+                offset: _,
+                align: _,
+            } => {
+                // f64 load from memory (symbolic for verification)
+                assert_eq!(inputs.len(), 1, "F64Load requires 1 input (address)");
+                BV::new_const(self.ctx, "f64_load_result", 64)
+            }
+
+            WasmOp::F64Eq => {
+                assert_eq!(inputs.len(), 2, "F64Eq requires 2 inputs");
+                // f64 equal: IEEE 754 semantics (NaN != NaN)
+                BV::new_const(self.ctx, "f64_eq_result", 32)
+            }
+
+            WasmOp::F64Ne => {
+                assert_eq!(inputs.len(), 2, "F64Ne requires 2 inputs");
+                // f64 not equal
+                BV::new_const(self.ctx, "f64_ne_result", 32)
+            }
+
+            WasmOp::F64Lt => {
+                assert_eq!(inputs.len(), 2, "F64Lt requires 2 inputs");
+                // f64 less than
+                BV::new_const(self.ctx, "f64_lt_result", 32)
+            }
+
+            WasmOp::F64Le => {
+                assert_eq!(inputs.len(), 2, "F64Le requires 2 inputs");
+                // f64 less than or equal
+                BV::new_const(self.ctx, "f64_le_result", 32)
+            }
+
+            WasmOp::F64Gt => {
+                assert_eq!(inputs.len(), 2, "F64Gt requires 2 inputs");
+                // f64 greater than
+                BV::new_const(self.ctx, "f64_gt_result", 32)
+            }
+
+            WasmOp::F64Ge => {
+                assert_eq!(inputs.len(), 2, "F64Ge requires 2 inputs");
+                // f64 greater than or equal
+                BV::new_const(self.ctx, "f64_ge_result", 32)
+            }
+
+            WasmOp::F64Store {
+                offset: _,
+                align: _,
+            } => {
+                // f64 store to memory (symbolic for verification)
+                assert_eq!(inputs.len(), 2, "F64Store requires 2 inputs (value, address)");
+                // Store operations don't produce a value
+                BV::from_i64(self.ctx, 0, 32)
+            }
+
+            WasmOp::F64Ceil => {
+                assert_eq!(inputs.len(), 1, "F64Ceil requires 1 input");
+                // f64 ceil: round toward +infinity
+                BV::new_const(self.ctx, "f64_ceil_result", 64)
+            }
+
+            WasmOp::F64Floor => {
+                assert_eq!(inputs.len(), 1, "F64Floor requires 1 input");
+                // f64 floor: round toward -infinity
+                BV::new_const(self.ctx, "f64_floor_result", 64)
+            }
+
+            WasmOp::F64Trunc => {
+                assert_eq!(inputs.len(), 1, "F64Trunc requires 1 input");
+                // f64 trunc: round toward zero
+                BV::new_const(self.ctx, "f64_trunc_result", 64)
+            }
+
+            WasmOp::F64Nearest => {
+                assert_eq!(inputs.len(), 1, "F64Nearest requires 1 input");
+                // f64 nearest: round to nearest, ties to even
+                BV::new_const(self.ctx, "f64_nearest_result", 64)
+            }
+
+            // f64 Conversions
+            WasmOp::F64ConvertI32S => {
+                assert_eq!(inputs.len(), 1, "F64ConvertI32S requires 1 input");
+                // Convert signed i32 to f64
+                BV::new_const(self.ctx, "f64_convert_i32s_result", 64)
+            }
+
+            WasmOp::F64ConvertI32U => {
+                assert_eq!(inputs.len(), 1, "F64ConvertI32U requires 1 input");
+                // Convert unsigned i32 to f64
+                BV::new_const(self.ctx, "f64_convert_i32u_result", 64)
+            }
+
+            WasmOp::F64ConvertI64S => {
+                assert_eq!(inputs.len(), 1, "F64ConvertI64S requires 1 input");
+                // Convert signed i64 to f64
+                BV::new_const(self.ctx, "f64_convert_i64s_result", 64)
+            }
+
+            WasmOp::F64ConvertI64U => {
+                assert_eq!(inputs.len(), 1, "F64ConvertI64U requires 1 input");
+                // Convert unsigned i64 to f64
+                BV::new_const(self.ctx, "f64_convert_i64u_result", 64)
+            }
+
+            WasmOp::F64PromoteF32 => {
+                assert_eq!(inputs.len(), 1, "F64PromoteF32 requires 1 input");
+                // Convert f32 to f64 (gain precision)
+                // For now, symbolic - proper implementation would zero-extend
+                BV::new_const(self.ctx, "f64_promote_f32_result", 64)
+            }
+
+            WasmOp::F64ReinterpretI64 => {
+                assert_eq!(inputs.len(), 1, "F64ReinterpretI64 requires 1 input");
+                // Reinterpret i64 bits as f64 (bitcast)
+                inputs[0].clone()
+            }
+
+            WasmOp::I64ReinterpretF64 => {
+                assert_eq!(inputs.len(), 1, "I64ReinterpretF64 requires 1 input");
+                // Reinterpret f64 bits as i64 (bitcast)
+                inputs[0].clone()
+            }
+
+            WasmOp::I64TruncF64S => {
+                assert_eq!(inputs.len(), 1, "I64TruncF64S requires 1 input");
+                // Truncate f64 to signed i64
+                BV::new_const(self.ctx, "i64_trunc_f64s_result", 64)
+            }
+
+            WasmOp::I64TruncF64U => {
+                assert_eq!(inputs.len(), 1, "I64TruncF64U requires 1 input");
+                // Truncate f64 to unsigned i64
+                BV::new_const(self.ctx, "i64_trunc_f64u_result", 64)
+            }
+
+            WasmOp::I32TruncF64S => {
+                assert_eq!(inputs.len(), 1, "I32TruncF64S requires 1 input");
+                // Truncate f64 to signed i32
+                BV::new_const(self.ctx, "i32_trunc_f64s_result", 32)
+            }
+
+            WasmOp::I32TruncF64U => {
+                assert_eq!(inputs.len(), 1, "I32TruncF64U requires 1 input");
+                // Truncate f64 to unsigned i32
+                BV::new_const(self.ctx, "i32_trunc_f64u_result", 32)
+            }
+
             // Not yet supported operations
             _ => {
                 // For unsupported operations, return a symbolic constant
