@@ -1,8 +1,8 @@
 //! WebAssembly Component Parser
 
 use synth_core::{
-    Component, CoreModule, Error, Export, ExportKind, Function, FunctionSignature, Global,
-    Import, ImportKind, Memory, Result, Table, ValueType,
+    Component, CoreModule, Error, Export, ExportKind, Function, FunctionSignature, Global, Import,
+    ImportKind, Memory, Result, Table, ValueType,
 };
 use wasmparser::{Parser, Payload};
 
@@ -24,9 +24,8 @@ impl ComponentParser {
         let mut component = Component::new("main".to_string());
 
         for payload in parser.parse_all(bytes) {
-            let payload = payload.map_err(|e| {
-                Error::parse(format!("WebAssembly parse error: {}", e))
-            })?;
+            let payload =
+                payload.map_err(|e| Error::parse(format!("WebAssembly parse error: {}", e)))?;
 
             match payload {
                 Payload::Version { .. } => {
@@ -39,9 +38,8 @@ impl ComponentParser {
                 Payload::TypeSection(reader) => {
                     // Parse type section (function signatures)
                     for ty in reader {
-                        let _ty = ty.map_err(|e| {
-                            Error::parse(format!("Failed to parse type: {}", e))
-                        })?;
+                        let _ty =
+                            ty.map_err(|e| Error::parse(format!("Failed to parse type: {}", e)))?;
                         // Store types for later use
                     }
                 }
@@ -58,9 +56,8 @@ impl ComponentParser {
                     // Parse linear memories
                     let mut memories = Vec::new();
                     for (index, memory) in reader.into_iter().enumerate() {
-                        let mem = memory.map_err(|e| {
-                            Error::parse(format!("Failed to parse memory: {}", e))
-                        })?;
+                        let mem = memory
+                            .map_err(|e| Error::parse(format!("Failed to parse memory: {}", e)))?;
 
                         memories.push(Memory {
                             index: index as u32,
@@ -89,23 +86,14 @@ impl ComponentParser {
                 Payload::ExportSection(reader) => {
                     // Parse exports
                     for export in reader {
-                        let export = export.map_err(|e| {
-                            Error::parse(format!("Failed to parse export: {}", e))
-                        })?;
+                        let export = export
+                            .map_err(|e| Error::parse(format!("Failed to parse export: {}", e)))?;
 
                         let kind = match export.kind {
-                            wasmparser::ExternalKind::Func => {
-                                ExportKind::Function(export.index)
-                            }
-                            wasmparser::ExternalKind::Memory => {
-                                ExportKind::Memory(export.index)
-                            }
-                            wasmparser::ExternalKind::Table => {
-                                ExportKind::Table(export.index)
-                            }
-                            wasmparser::ExternalKind::Global => {
-                                ExportKind::Global(export.index)
-                            }
+                            wasmparser::ExternalKind::Func => ExportKind::Function(export.index),
+                            wasmparser::ExternalKind::Memory => ExportKind::Memory(export.index),
+                            wasmparser::ExternalKind::Table => ExportKind::Table(export.index),
+                            wasmparser::ExternalKind::Global => ExportKind::Global(export.index),
                             _ => continue,
                         };
 
@@ -118,9 +106,9 @@ impl ComponentParser {
                 Payload::CodeSectionEntry(body) => {
                     // Parse function bodies
                     // For PoC, we'll skip detailed parsing
-                    let _locals = body.get_locals_reader().map_err(|e| {
-                        Error::parse(format!("Failed to parse locals: {}", e))
-                    })?;
+                    let _locals = body
+                        .get_locals_reader()
+                        .map_err(|e| Error::parse(format!("Failed to parse locals: {}", e)))?;
                 }
                 _ => {
                     // Handle other sections as needed

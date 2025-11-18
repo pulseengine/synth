@@ -101,7 +101,12 @@ impl Cfg {
         post_order
     }
 
-    fn dfs_post_order(&self, block_id: BlockId, visited: &mut HashSet<BlockId>, post_order: &mut Vec<BlockId>) {
+    fn dfs_post_order(
+        &self,
+        block_id: BlockId,
+        visited: &mut HashSet<BlockId>,
+        post_order: &mut Vec<BlockId>,
+    ) {
         if visited.contains(&block_id) {
             return;
         }
@@ -157,8 +162,15 @@ impl Cfg {
         doms
     }
 
-    fn intersect(&self, mut b1: BlockId, mut b2: BlockId, doms: &HashMap<BlockId, BlockId>, rpo: &[BlockId]) -> BlockId {
-        let rpo_map: HashMap<BlockId, usize> = rpo.iter().enumerate().map(|(i, &b)| (b, i)).collect();
+    fn intersect(
+        &self,
+        mut b1: BlockId,
+        mut b2: BlockId,
+        doms: &HashMap<BlockId, BlockId>,
+        rpo: &[BlockId],
+    ) -> BlockId {
+        let rpo_map: HashMap<BlockId, usize> =
+            rpo.iter().enumerate().map(|(i, &b)| (b, i)).collect();
 
         while b1 != b2 {
             while rpo_map[&b1] > rpo_map[&b2] {
@@ -180,17 +192,15 @@ impl Cfg {
         // Find back edges (edges where target dominates source)
         for (block_id, block) in &self.blocks {
             for &succ in &block.successors {
-                if doms.contains_key(block_id) {
-                    if self.dominates(succ, *block_id, &doms) {
-                        // Back edge found: block_id -> succ is a back edge
-                        // succ is the loop header
-                        let body = self.find_loop_body(succ, *block_id);
-                        loops.push(Loop {
-                            header: succ,
-                            body,
-                            depth: 0, // Will be computed later
-                        });
-                    }
+                if doms.contains_key(block_id) && self.dominates(succ, *block_id, &doms) {
+                    // Back edge found: block_id -> succ is a back edge
+                    // succ is the loop header
+                    let body = self.find_loop_body(succ, *block_id);
+                    loops.push(Loop {
+                        header: succ,
+                        body,
+                        depth: 0, // Will be computed later
+                    });
                 }
             }
         }
@@ -209,7 +219,12 @@ impl Cfg {
         self.loops = loops;
     }
 
-    fn dominates(&self, dominator: BlockId, block: BlockId, doms: &HashMap<BlockId, BlockId>) -> bool {
+    fn dominates(
+        &self,
+        dominator: BlockId,
+        block: BlockId,
+        doms: &HashMap<BlockId, BlockId>,
+    ) -> bool {
         let mut current = block;
         loop {
             if current == dominator {
@@ -275,6 +290,7 @@ impl Cfg {
     /// - A has only one successor (B)
     /// - B has only one predecessor (A)
     /// - B is not the entry block
+    ///
     /// Returns the number of blocks merged
     pub fn merge_blocks(&mut self) -> usize {
         let mut merged_count = 0;
@@ -379,6 +395,7 @@ impl Cfg {
     /// Simplifies control flow by:
     /// - Removing branches to the immediate next block (fall-through)
     /// - Collapsing chains of unconditional branches
+    ///
     /// Returns the number of branches simplified
     pub fn simplify_branches(&mut self) -> usize {
         let mut simplified_count = 0;
@@ -431,7 +448,7 @@ pub struct CfgBuilder {
     next_block_id: BlockId,
     instruction_count: usize,
     block_starts: HashMap<usize, BlockId>,
-    pending_branches: Vec<(BlockId, usize)>, // (source block, target instruction)
+    _pending_branches: Vec<(BlockId, usize)>, // (source block, target instruction)
 }
 
 impl CfgBuilder {
@@ -452,7 +469,7 @@ impl CfgBuilder {
             next_block_id: 1,
             instruction_count: 0,
             block_starts: HashMap::from([(0, 0)]),
-            pending_branches: Vec::new(),
+            _pending_branches: Vec::new(),
         }
     }
 
@@ -517,7 +534,8 @@ impl CfgBuilder {
 
     /// Build the final CFG
     pub fn build(self) -> Cfg {
-        let blocks: HashMap<BlockId, BasicBlock> = self.blocks.into_iter().map(|b| (b.id, b)).collect();
+        let blocks: HashMap<BlockId, BasicBlock> =
+            self.blocks.into_iter().map(|b| (b.id, b)).collect();
 
         let mut cfg = Cfg {
             blocks,

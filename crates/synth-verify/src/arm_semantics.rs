@@ -361,7 +361,12 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::Select { rd, rval1, rval2, rcond } => {
+            ArmOp::Select {
+                rd,
+                rval1,
+                rval2,
+                rcond,
+            } => {
                 // Select operation: if rcond != 0, select rval1, else rval2
                 // This is a pseudo-instruction for verification purposes
                 let val1 = state.get_reg(rval1).clone();
@@ -403,7 +408,9 @@ impl<'ctx> ArmSemantics<'ctx> {
             // Local/Global variable access (pseudo-instructions for verification)
             ArmOp::LocalGet { rd, index } => {
                 // Load local variable into register
-                let value = state.locals.get(*index as usize)
+                let value = state
+                    .locals
+                    .get(*index as usize)
                     .cloned()
                     .unwrap_or_else(|| BV::new_const(self.ctx, format!("local_{}", index), 32));
                 state.set_reg(rd, value);
@@ -428,7 +435,9 @@ impl<'ctx> ArmSemantics<'ctx> {
 
             ArmOp::GlobalGet { rd, index } => {
                 // Load global variable into register
-                let value = state.globals.get(*index as usize)
+                let value = state
+                    .globals
+                    .get(*index as usize)
                     .cloned()
                     .unwrap_or_else(|| BV::new_const(self.ctx, format!("global_{}", index), 32));
                 state.set_reg(rd, value);
@@ -442,14 +451,19 @@ impl<'ctx> ArmSemantics<'ctx> {
                 }
             }
 
-            ArmOp::BrTable { rd, index_reg, targets, default } => {
+            ArmOp::BrTable {
+                rd,
+                index_reg,
+                targets,
+                default,
+            } => {
                 // Multi-way branch based on index
                 // For verification, we model the control flow symbolically
                 let index = state.get_reg(index_reg).clone();
                 let result = BV::new_const(
                     self.ctx,
                     format!("br_table_{}_{}", targets.len(), default),
-                    32
+                    32,
                 );
                 state.set_reg(rd, result);
             }
@@ -460,7 +474,11 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::CallIndirect { rd, type_idx, table_index_reg } => {
+            ArmOp::CallIndirect {
+                rd,
+                type_idx,
+                table_index_reg,
+            } => {
                 // Indirect function call through table
                 let _table_index = state.get_reg(table_index_reg).clone();
                 let result = BV::new_const(self.ctx, format!("call_indirect_{}", type_idx), 32);
@@ -472,16 +490,22 @@ impl<'ctx> ArmSemantics<'ctx> {
             // ================================================================
             // These use register pairs on ARM32 but simplified to single
             // registers for initial implementation
-
             ArmOp::I64Const { rdlo, rdhi, value } => {
                 // Load 64-bit constant into register pair
                 let low32 = (*value as u32) as i64;
-                let high32 = (*value >> 32) as i64;
+                let high32 = (*value >> 32);
                 state.set_reg(rdlo, BV::from_i64(self.ctx, low32, 32));
                 state.set_reg(rdhi, BV::from_i64(self.ctx, high32, 32));
             }
 
-            ArmOp::I64Add { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64Add {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // 64-bit addition with register pairs and carry propagation
                 // ARM: ADDS rdlo, rnlo, rmlo  ; Add low parts, set carry
                 //      ADC  rdhi, rnhi, rmhi  ; Add high parts with carry
@@ -500,7 +524,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let carry = result_low.bvult(&n_low);
                 let carry_bv = carry.ite(
                     &BV::from_i64(self.ctx, 1, 32),
-                    &BV::from_i64(self.ctx, 0, 32)
+                    &BV::from_i64(self.ctx, 0, 32),
                 );
 
                 // High part: add with carry
@@ -536,7 +560,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let all_ones = BV::from_i64(self.ctx, -1, 32);
                 let zero = BV::from_i64(self.ctx, 0, 32);
                 // If sign bit is 1, high = 0xFFFFFFFF, else high = 0
-                let high_val = sign_bit._eq(&BV::from_i64(self.ctx, 1, 1))
+                let high_val = sign_bit
+                    ._eq(&BV::from_i64(self.ctx, 1, 1))
                     .ite(&all_ones, &zero);
                 state.set_reg(rdhi, high_val);
             }
@@ -549,7 +574,14 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, BV::from_i64(self.ctx, 0, 32));
             }
 
-            ArmOp::I64Sub { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64Sub {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // 64-bit subtraction with register pairs and borrow propagation
                 // ARM: SUBS rdlo, rnlo, rmlo  ; Subtract low parts, set borrow
                 //      SBC  rdhi, rnhi, rmhi  ; Subtract high parts with borrow
@@ -567,7 +599,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let borrow = n_low.bvult(&m_low);
                 let borrow_bv = borrow.ite(
                     &BV::from_i64(self.ctx, 1, 32),
-                    &BV::from_i64(self.ctx, 0, 32)
+                    &BV::from_i64(self.ctx, 0, 32),
                 );
 
                 // High part: subtract with borrow
@@ -576,7 +608,14 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, result_high);
             }
 
-            ArmOp::I64Mul { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64Mul {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // 64-bit multiplication: (a_hi:a_lo) * (b_hi:b_lo) → (result_hi:result_lo)
                 // Algorithm for 64x64→64 bit multiplication:
                 // result = (a_hi * b_lo * 2^32) + (a_lo * b_hi * 2^32) + (a_lo * b_lo)
@@ -600,8 +639,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // This requires 64-bit bitvector intermediate computations
 
                 // Cross products (take low 32 bits of each)
-                let hi_lo = a_hi.bvmul(&b_lo);  // a_hi * b_lo (low 32 bits)
-                let lo_hi = a_lo.bvmul(&b_hi);  // a_lo * b_hi (low 32 bits)
+                let hi_lo = a_hi.bvmul(&b_lo); // a_hi * b_lo (low 32 bits)
+                let lo_hi = a_lo.bvmul(&b_hi); // a_lo * b_hi (low 32 bits)
 
                 // High part approximation (missing carry from a_lo * b_lo)
                 // result_hi ≈ hi_lo + lo_hi
@@ -621,7 +660,6 @@ impl<'ctx> ArmSemantics<'ctx> {
             // Note: Full 64-bit division on ARM32 requires library calls or
             // very complex multi-instruction sequences. For verification, we model
             // the results symbolically.
-
             ArmOp::I64DivS { rdlo, rdhi, .. } => {
                 // Signed 64-bit division
                 // Real implementation would require __aeabi_ldivmod or equivalent
@@ -654,7 +692,14 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, BV::new_const(self.ctx, "i64_remu_hi", 32));
             }
 
-            ArmOp::I64And { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64And {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 let n_low = state.get_reg(rnlo).clone();
                 let m_low = state.get_reg(rmlo).clone();
                 state.set_reg(rdlo, n_low.bvand(&m_low));
@@ -664,7 +709,14 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, n_high.bvand(&m_high));
             }
 
-            ArmOp::I64Or { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64Or {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 let n_low = state.get_reg(rnlo).clone();
                 let m_low = state.get_reg(rmlo).clone();
                 state.set_reg(rdlo, n_low.bvor(&m_low));
@@ -674,7 +726,14 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, n_high.bvor(&m_high));
             }
 
-            ArmOp::I64Xor { rdlo, rdhi, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64Xor {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 let n_low = state.get_reg(rnlo).clone();
                 let m_low = state.get_reg(rmlo).clone();
                 state.set_reg(rdlo, n_low.bvxor(&m_low));
@@ -684,7 +743,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, n_high.bvxor(&m_high));
             }
 
-            ArmOp::I64Eq { rd, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64Eq {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 let n_low = state.get_reg(rnlo).clone();
                 let m_low = state.get_reg(rmlo).clone();
                 let n_high = state.get_reg(rnhi).clone();
@@ -697,7 +762,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::I64LtS { rd, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64LtS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // Signed less than: n < m
                 // Compare high parts first (signed), tiebreak with low parts (unsigned)
                 let n_low = state.get_reg(rnlo).clone();
@@ -719,7 +790,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::I64LtU { rd, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64LtU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // Unsigned less than: n < m
                 // Compare high parts first (unsigned), tiebreak with low parts (unsigned)
                 let n_low = state.get_reg(rnlo).clone();
@@ -741,7 +818,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::I64Ne { rd, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64Ne {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // Not equal: !(n == m)
                 let n_low = state.get_reg(rnlo).clone();
                 let m_low = state.get_reg(rmlo).clone();
@@ -756,7 +839,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::I64LeS { rd, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64LeS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // Signed less than or equal: n <= m
                 // Equivalent to: n < m OR n == m
                 let n_low = state.get_reg(rnlo).clone();
@@ -774,7 +863,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::I64LeU { rd, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64LeU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // Unsigned less than or equal: n <= m
                 let n_low = state.get_reg(rnlo).clone();
                 let m_low = state.get_reg(rmlo).clone();
@@ -791,7 +886,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::I64GtS { rd, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64GtS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // Signed greater than: n > m
                 // Equivalent to: m < n
                 let n_low = state.get_reg(rnlo).clone();
@@ -809,7 +910,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::I64GtU { rd, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64GtU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // Unsigned greater than: n > m
                 let n_low = state.get_reg(rnlo).clone();
                 let m_low = state.get_reg(rmlo).clone();
@@ -826,7 +933,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::I64GeS { rd, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64GeS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // Signed greater than or equal: n >= m
                 // Equivalent to: !(n < m)
                 let n_low = state.get_reg(rnlo).clone();
@@ -845,7 +958,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rd, result);
             }
 
-            ArmOp::I64GeU { rd, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64GeU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 // Unsigned greater than or equal: n >= m
                 // Equivalent to: !(n < m)
                 let n_low = state.get_reg(rnlo).clone();
@@ -867,7 +986,6 @@ impl<'ctx> ArmSemantics<'ctx> {
             // ================================================================
             // i64 Division and Remainder (stubs)
             // ================================================================
-
             ArmOp::I64DivS { rdlo, rdhi, .. } => {
                 // Signed 64-bit division - complex operation
                 // Requires multi-instruction sequence on ARM32
@@ -896,8 +1014,13 @@ impl<'ctx> ArmSemantics<'ctx> {
             // ================================================================
             // i64 Shift Operations
             // ================================================================
-
-            ArmOp::I64Shl { rdlo, rdhi, rnlo, rnhi, shift } => {
+            ArmOp::I64Shl {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                shift,
+            } => {
                 // 64-bit left shift: (n_hi:n_lo) << shift
                 // WASM spec: shift amount is modulo 64
                 let n_lo = state.get_reg(rnlo).clone();
@@ -936,7 +1059,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, result_hi);
             }
 
-            ArmOp::I64ShrU { rdlo, rdhi, rnlo, rnhi, shift } => {
+            ArmOp::I64ShrU {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                shift,
+            } => {
                 // 64-bit logical (unsigned) right shift
                 let n_lo = state.get_reg(rnlo).clone();
                 let n_hi = state.get_reg(rnhi).clone();
@@ -969,7 +1098,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, result_hi);
             }
 
-            ArmOp::I64ShrS { rdlo, rdhi, rnlo, rnhi, shift } => {
+            ArmOp::I64ShrS {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                shift,
+            } => {
                 // 64-bit arithmetic (signed) right shift
                 let n_lo = state.get_reg(rnlo).clone();
                 let n_hi = state.get_reg(rnhi).clone();
@@ -1005,8 +1140,13 @@ impl<'ctx> ArmSemantics<'ctx> {
             // ========================================================================
             // i64 Rotation Operations
             // ========================================================================
-
-            ArmOp::I64Rotl { rdlo, rdhi, rnlo, rnhi, shift } => {
+            ArmOp::I64Rotl {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                shift,
+            } => {
                 // 64-bit rotate left: rotl(hi:lo, shift)
                 // Result = (value << shift) | (value >> (64 - shift))
                 let n_lo = state.get_reg(rnlo).clone();
@@ -1052,7 +1192,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, result_hi);
             }
 
-            ArmOp::I64Rotr { rdlo, rdhi, rnlo, rnhi, shift } => {
+            ArmOp::I64Rotr {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                shift,
+            } => {
                 // 64-bit rotate right: rotr(hi:lo, shift)
                 // Result = (value >> shift) | (value << (64 - shift))
                 let n_lo = state.get_reg(rnlo).clone();
@@ -1112,8 +1258,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let thirty_two = BV::from_i64(self.ctx, 32, 32);
                 let hi_is_zero = hi_clz._eq(&thirty_two);
                 let result = hi_is_zero.ite(
-                    &thirty_two.bvadd(&lo_clz),  // High is zero: 32 + clz(low)
-                    &hi_clz                        // High has bits: clz(high)
+                    &thirty_two.bvadd(&lo_clz), // High is zero: 32 + clz(low)
+                    &hi_clz,                    // High has bits: clz(high)
                 );
                 state.set_reg(rd, result);
             }
@@ -1132,8 +1278,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let thirty_two = BV::from_i64(self.ctx, 32, 32);
                 let lo_is_zero = lo_ctz._eq(&thirty_two);
                 let result = lo_is_zero.ite(
-                    &thirty_two.bvadd(&hi_ctz),  // Low is zero: 32 + ctz(high)
-                    &lo_ctz                        // Low has bits: ctz(low)
+                    &thirty_two.bvadd(&hi_ctz), // Low is zero: 32 + ctz(high)
+                    &lo_ctz,                    // Low has bits: ctz(low)
                 );
                 state.set_reg(rd, result);
             }
@@ -1154,7 +1300,6 @@ impl<'ctx> ArmSemantics<'ctx> {
             // ========================================================================
             // i64 Memory Operations
             // ========================================================================
-
             ArmOp::I64Ldr { rdlo, rdhi, addr } => {
                 // Load 64-bit value from memory
                 // Simplified: return symbolic values for both registers
@@ -1403,10 +1548,7 @@ impl<'ctx> ArmSemantics<'ctx> {
         let top_16 = remaining.bvand(&mask_16);
         let top_16_zero = top_16._eq(&zero);
 
-        count = top_16_zero.ite(
-            &count.bvadd(&BV::from_i64(self.ctx, 16, 32)),
-            &count,
-        );
+        count = top_16_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 16, 32)), &count);
         remaining = top_16_zero.ite(
             &remaining.bvshl(&BV::from_i64(self.ctx, 16, 32)),
             &remaining,
@@ -1418,10 +1560,7 @@ impl<'ctx> ArmSemantics<'ctx> {
         let top_8_zero = top_8._eq(&zero);
 
         count = top_8_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 8, 32)), &count);
-        remaining = top_8_zero.ite(
-            &remaining.bvshl(&BV::from_i64(self.ctx, 8, 32)),
-            &remaining,
-        );
+        remaining = top_8_zero.ite(&remaining.bvshl(&BV::from_i64(self.ctx, 8, 32)), &remaining);
 
         // Check top 4 bits
         let mask_4 = BV::from_u64(self.ctx, 0xF0000000, 32);
@@ -1429,10 +1568,7 @@ impl<'ctx> ArmSemantics<'ctx> {
         let top_4_zero = top_4._eq(&zero);
 
         count = top_4_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 4, 32)), &count);
-        remaining = top_4_zero.ite(
-            &remaining.bvshl(&BV::from_i64(self.ctx, 4, 32)),
-            &remaining,
-        );
+        remaining = top_4_zero.ite(&remaining.bvshl(&BV::from_i64(self.ctx, 4, 32)), &remaining);
 
         // Check top 2 bits
         let mask_2 = BV::from_u64(self.ctx, 0xC0000000, 32);
@@ -1440,10 +1576,7 @@ impl<'ctx> ArmSemantics<'ctx> {
         let top_2_zero = top_2._eq(&zero);
 
         count = top_2_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 2, 32)), &count);
-        remaining = top_2_zero.ite(
-            &remaining.bvshl(&BV::from_i64(self.ctx, 2, 32)),
-            &remaining,
-        );
+        remaining = top_2_zero.ite(&remaining.bvshl(&BV::from_i64(self.ctx, 2, 32)), &remaining);
 
         // Check top bit
         let mask_1 = BV::from_u64(self.ctx, 0x80000000, 32);
@@ -1477,36 +1610,54 @@ impl<'ctx> ArmSemantics<'ctx> {
 
         // Swap 16-bit halves
         let mask_16 = BV::from_u64(self.ctx, 0xFFFF0000, 32);
-        let top_16 = result.bvand(&mask_16).bvlshr(&BV::from_i64(self.ctx, 16, 32));
+        let top_16 = result
+            .bvand(&mask_16)
+            .bvlshr(&BV::from_i64(self.ctx, 16, 32));
         let bottom_16 = result.bvshl(&BV::from_i64(self.ctx, 16, 32));
         result = top_16.bvor(&bottom_16);
 
         // Swap 8-bit chunks
         let mask_8_top = BV::from_u64(self.ctx, 0xFF00FF00, 32);
         let mask_8_bottom = BV::from_u64(self.ctx, 0x00FF00FF, 32);
-        let top_8 = result.bvand(&mask_8_top).bvlshr(&BV::from_i64(self.ctx, 8, 32));
-        let bottom_8 = result.bvand(&mask_8_bottom).bvshl(&BV::from_i64(self.ctx, 8, 32));
+        let top_8 = result
+            .bvand(&mask_8_top)
+            .bvlshr(&BV::from_i64(self.ctx, 8, 32));
+        let bottom_8 = result
+            .bvand(&mask_8_bottom)
+            .bvshl(&BV::from_i64(self.ctx, 8, 32));
         result = top_8.bvor(&bottom_8);
 
         // Swap 4-bit chunks
         let mask_4_top = BV::from_u64(self.ctx, 0xF0F0F0F0, 32);
         let mask_4_bottom = BV::from_u64(self.ctx, 0x0F0F0F0F, 32);
-        let top_4 = result.bvand(&mask_4_top).bvlshr(&BV::from_i64(self.ctx, 4, 32));
-        let bottom_4 = result.bvand(&mask_4_bottom).bvshl(&BV::from_i64(self.ctx, 4, 32));
+        let top_4 = result
+            .bvand(&mask_4_top)
+            .bvlshr(&BV::from_i64(self.ctx, 4, 32));
+        let bottom_4 = result
+            .bvand(&mask_4_bottom)
+            .bvshl(&BV::from_i64(self.ctx, 4, 32));
         result = top_4.bvor(&bottom_4);
 
         // Swap 2-bit chunks
         let mask_2_top = BV::from_u64(self.ctx, 0xCCCCCCCC, 32);
         let mask_2_bottom = BV::from_u64(self.ctx, 0x33333333, 32);
-        let top_2 = result.bvand(&mask_2_top).bvlshr(&BV::from_i64(self.ctx, 2, 32));
-        let bottom_2 = result.bvand(&mask_2_bottom).bvshl(&BV::from_i64(self.ctx, 2, 32));
+        let top_2 = result
+            .bvand(&mask_2_top)
+            .bvlshr(&BV::from_i64(self.ctx, 2, 32));
+        let bottom_2 = result
+            .bvand(&mask_2_bottom)
+            .bvshl(&BV::from_i64(self.ctx, 2, 32));
         result = top_2.bvor(&bottom_2);
 
         // Swap 1-bit chunks (individual bits)
         let mask_1_top = BV::from_u64(self.ctx, 0xAAAAAAAA, 32);
         let mask_1_bottom = BV::from_u64(self.ctx, 0x55555555, 32);
-        let top_1 = result.bvand(&mask_1_top).bvlshr(&BV::from_i64(self.ctx, 1, 32));
-        let bottom_1 = result.bvand(&mask_1_bottom).bvshl(&BV::from_i64(self.ctx, 1, 32));
+        let top_1 = result
+            .bvand(&mask_1_top)
+            .bvlshr(&BV::from_i64(self.ctx, 1, 32));
+        let bottom_1 = result
+            .bvand(&mask_1_bottom)
+            .bvshl(&BV::from_i64(self.ctx, 1, 32));
         result = top_1.bvor(&bottom_1);
 
         result
@@ -1523,7 +1674,13 @@ impl<'ctx> ArmSemantics<'ctx> {
     /// For subtraction result = a - b:
     /// - C = 1 if a >= b (unsigned), 0 if borrow
     /// - V = 1 if signs of a and b differ AND sign of result differs from a
-    fn update_flags_sub(&self, state: &mut ArmState<'ctx>, a: &BV<'ctx>, b: &BV<'ctx>, result: &BV<'ctx>) {
+    fn update_flags_sub(
+        &self,
+        state: &mut ArmState<'ctx>,
+        a: &BV<'ctx>,
+        b: &BV<'ctx>,
+        result: &BV<'ctx>,
+    ) {
         let zero = BV::from_i64(self.ctx, 0, 32);
 
         // N flag: bit 31 of result (negative if set)
@@ -1558,7 +1715,13 @@ impl<'ctx> ArmSemantics<'ctx> {
     /// Similar to subtraction but with different carry logic:
     /// - C = 1 if unsigned overflow (result < a or result < b)
     /// - V = 1 if signed overflow
-    fn update_flags_add(&self, state: &mut ArmState<'ctx>, a: &BV<'ctx>, b: &BV<'ctx>, result: &BV<'ctx>) {
+    fn update_flags_add(
+        &self,
+        state: &mut ArmState<'ctx>,
+        a: &BV<'ctx>,
+        b: &BV<'ctx>,
+        result: &BV<'ctx>,
+    ) {
         let zero = BV::from_i64(self.ctx, 0, 32);
 
         // N flag: bit 31 of result
@@ -1601,7 +1764,11 @@ impl<'ctx> ArmSemantics<'ctx> {
     /// - LS: C == 0 || Z == 1 (unsigned less or equal)
     /// - HI: C == 1 && Z == 0 (unsigned greater than)
     /// - HS: C == 1 (unsigned greater or equal)
-    fn evaluate_condition(&self, cond: &synth_synthesis::rules::Condition, flags: &ConditionFlags<'ctx>) -> Bool<'ctx> {
+    fn evaluate_condition(
+        &self,
+        cond: &synth_synthesis::rules::Condition,
+        flags: &ConditionFlags<'ctx>,
+    ) -> Bool<'ctx> {
         use synth_synthesis::rules::Condition;
 
         match cond {
@@ -1806,8 +1973,8 @@ mod tests {
         // Test: 17 % 5 = 17 - (17/5) * 5 = 17 - 3*5 = 17 - 15 = 2
         // Ra = 17, Rn = 3 (quotient), Rm = 5 (divisor)
         state.set_reg(&Reg::R0, BV::from_i64(&ctx, 17, 32)); // Ra (dividend)
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 3, 32));  // Rn (quotient)
-        state.set_reg(&Reg::R2, BV::from_i64(&ctx, 5, 32));  // Rm (divisor)
+        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 3, 32)); // Rn (quotient)
+        state.set_reg(&Reg::R2, BV::from_i64(&ctx, 5, 32)); // Rm (divisor)
 
         let mls_op = ArmOp::Mls {
             rd: Reg::R3,
@@ -1816,7 +1983,11 @@ mod tests {
             ra: Reg::R0,
         };
         encoder.encode_op(&mls_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R3).as_i64(), Some(2), "MLS: 17 - 3*5 = 2");
+        assert_eq!(
+            state.get_reg(&Reg::R3).as_i64(),
+            Some(2),
+            "MLS: 17 - 3*5 = 2"
+        );
 
         // Test: 100 - 7 * 3 = 100 - 21 = 79
         state.set_reg(&Reg::R0, BV::from_i64(&ctx, 100, 32));
@@ -1830,7 +2001,11 @@ mod tests {
             ra: Reg::R0,
         };
         encoder.encode_op(&mls_op2, &mut state);
-        assert_eq!(state.get_reg(&Reg::R3).as_i64(), Some(79), "MLS: 100 - 7*3 = 79");
+        assert_eq!(
+            state.get_reg(&Reg::R3).as_i64(),
+            Some(79),
+            "MLS: 100 - 7*3 = 79"
+        );
 
         // Test with negative numbers: (-17) - 3 * 5 = -17 - 15 = -32
         state.set_reg(&Reg::R0, BV::from_i64(&ctx, -17, 32));
@@ -1844,7 +2019,11 @@ mod tests {
             ra: Reg::R0,
         };
         encoder.encode_op(&mls_op3, &mut state);
-        assert_eq!(state.get_reg(&Reg::R3).as_i64(), Some(-32), "MLS: -17 - 3*5 = -32");
+        assert_eq!(
+            state.get_reg(&Reg::R3).as_i64(),
+            Some(-32),
+            "MLS: -17 - 3*5 = -32"
+        );
     }
 
     #[test]
@@ -1890,7 +2069,11 @@ mod tests {
         };
         encoder.encode_op(&ror_op, &mut state);
         // 0x12345678 ROR 8 = 0x78123456
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x78123456), "ROR by 8");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(0x78123456),
+            "ROR by 8"
+        );
 
         // Test ROR by 16 (swap halves)
         let ror_op_16 = ArmOp::Ror {
@@ -1900,7 +2083,11 @@ mod tests {
         };
         encoder.encode_op(&ror_op_16, &mut state);
         // 0x12345678 ROR 16 = 0x56781234
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x56781234), "ROR by 16");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(0x56781234),
+            "ROR by 16"
+        );
 
         // Test ROR by 0 (no change)
         let ror_op_0 = ArmOp::Ror {
@@ -1909,7 +2096,11 @@ mod tests {
             shift: 0,
         };
         encoder.encode_op(&ror_op_0, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x12345678), "ROR by 0");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(0x12345678),
+            "ROR by 0"
+        );
 
         // Test ROR by 32 (full rotation, back to original)
         let ror_op_32 = ArmOp::Ror {
@@ -1918,7 +2109,11 @@ mod tests {
             shift: 32,
         };
         encoder.encode_op(&ror_op_32, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x12345678), "ROR by 32");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(0x12345678),
+            "ROR by 32"
+        );
 
         // Test ROR by 4 (nibble rotation)
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xABCDEF01, 32));
@@ -1929,7 +2124,11 @@ mod tests {
         };
         encoder.encode_op(&ror_op_4, &mut state);
         // 0xABCDEF01 ROR 4 = 0x1ABCDEF0
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x1ABCDEF0), "ROR by 4");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(0x1ABCDEF0),
+            "ROR by 4"
+        );
 
         // Test ROR with 1-bit rotation
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x80000001, 32));
@@ -1940,7 +2139,11 @@ mod tests {
         };
         encoder.encode_op(&ror_op_1, &mut state);
         // 0x80000001 ROR 1 = 0xC0000000
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0xC0000000_u32 as i32 as i64), "ROR by 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(0xC0000000_u32 as i32 as i64),
+            "ROR by 1"
+        );
     }
 
     #[test]
@@ -1956,32 +2159,56 @@ mod tests {
             rm: Reg::R1,
         };
         encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(32), "CLZ(0) should be 32");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(32),
+            "CLZ(0) should be 32"
+        );
 
         // Test CLZ(1) = 31
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, 1, 32));
         encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(31), "CLZ(1) should be 31");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(31),
+            "CLZ(1) should be 31"
+        );
 
         // Test CLZ(0x80000000) = 0
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x80000000, 32));
         encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0), "CLZ(0x80000000) should be 0");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(0),
+            "CLZ(0x80000000) should be 0"
+        );
 
         // Test CLZ(0x00FF0000) = 8
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x00FF0000, 32));
         encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(8), "CLZ(0x00FF0000) should be 8");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(8),
+            "CLZ(0x00FF0000) should be 8"
+        );
 
         // Test CLZ(0x00001000) = 19
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x00001000, 32));
         encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(19), "CLZ(0x00001000) should be 19");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(19),
+            "CLZ(0x00001000) should be 19"
+        );
 
         // Test CLZ(0xFFFFFFFF) = 0
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFFFFFFFF, 32));
         encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0), "CLZ(0xFFFFFFFF) should be 0");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(0),
+            "CLZ(0xFFFFFFFF) should be 0"
+        );
     }
 
     #[test]
@@ -1998,33 +2225,57 @@ mod tests {
         // Test RBIT(0) = 0
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, 0, 32));
         encoder.encode_op(&rbit_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0), "RBIT(0) should be 0");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(0),
+            "RBIT(0) should be 0"
+        );
 
         // Test RBIT(1) = 0x80000000 (bit 0 → bit 31)
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, 1, 32));
         encoder.encode_op(&rbit_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_u64(), Some(0x80000000), "RBIT(1) should be 0x80000000");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_u64(),
+            Some(0x80000000),
+            "RBIT(1) should be 0x80000000"
+        );
 
         // Test RBIT(0x80000000) = 1 (bit 31 → bit 0)
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x80000000, 32));
         encoder.encode_op(&rbit_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "RBIT(0x80000000) should be 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(1),
+            "RBIT(0x80000000) should be 1"
+        );
 
         // Test RBIT(0xFF000000) = 0x000000FF (top byte → bottom byte)
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFF000000, 32));
         encoder.encode_op(&rbit_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_u64(), Some(0x000000FF), "RBIT(0xFF000000) should be 0x000000FF");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_u64(),
+            Some(0x000000FF),
+            "RBIT(0xFF000000) should be 0x000000FF"
+        );
 
         // Test RBIT(0x12345678) - specific pattern
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x12345678, 32));
         encoder.encode_op(&rbit_op, &mut state);
         // 0x12345678 reversed = 0x1E6A2C48
-        assert_eq!(state.get_reg(&Reg::R0).as_u64(), Some(0x1E6A2C48), "RBIT(0x12345678) should be 0x1E6A2C48");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_u64(),
+            Some(0x1E6A2C48),
+            "RBIT(0x12345678) should be 0x1E6A2C48"
+        );
 
         // Test RBIT(0xFFFFFFFF) = 0xFFFFFFFF (all bits stay)
         state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFFFFFFFF, 32));
         encoder.encode_op(&rbit_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).as_u64(), Some(0xFFFFFFFF), "RBIT(0xFFFFFFFF) should be 0xFFFFFFFF");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_u64(),
+            Some(0xFFFFFFFF),
+            "RBIT(0xFFFFFFFF) should be 0xFFFFFFFF"
+        );
     }
 
     #[test]
@@ -2047,10 +2298,26 @@ mod tests {
         };
         encoder.encode_op(&cmp_op, &mut state);
 
-        assert_eq!(state.flags.z.as_bool(), Some(true), "Z flag should be set (equal)");
-        assert_eq!(state.flags.n.as_bool(), Some(false), "N flag should be clear (non-negative)");
-        assert_eq!(state.flags.c.as_bool(), Some(true), "C flag should be set (no borrow)");
-        assert_eq!(state.flags.v.as_bool(), Some(false), "V flag should be clear (no overflow)");
+        assert_eq!(
+            state.flags.z.as_bool(),
+            Some(true),
+            "Z flag should be set (equal)"
+        );
+        assert_eq!(
+            state.flags.n.as_bool(),
+            Some(false),
+            "N flag should be clear (non-negative)"
+        );
+        assert_eq!(
+            state.flags.c.as_bool(),
+            Some(true),
+            "C flag should be set (no borrow)"
+        );
+        assert_eq!(
+            state.flags.v.as_bool(),
+            Some(false),
+            "V flag should be clear (no overflow)"
+        );
 
         // Test 2: CMP with first > second (20 - 10 = 10)
         // Should set: Z=0, N=0, C=1 (no borrow), V=0
@@ -2058,10 +2325,26 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
         encoder.encode_op(&cmp_op, &mut state);
 
-        assert_eq!(state.flags.z.as_bool(), Some(false), "Z flag should be clear (not equal)");
-        assert_eq!(state.flags.n.as_bool(), Some(false), "N flag should be clear (positive result)");
-        assert_eq!(state.flags.c.as_bool(), Some(true), "C flag should be set (no borrow)");
-        assert_eq!(state.flags.v.as_bool(), Some(false), "V flag should be clear (no overflow)");
+        assert_eq!(
+            state.flags.z.as_bool(),
+            Some(false),
+            "Z flag should be clear (not equal)"
+        );
+        assert_eq!(
+            state.flags.n.as_bool(),
+            Some(false),
+            "N flag should be clear (positive result)"
+        );
+        assert_eq!(
+            state.flags.c.as_bool(),
+            Some(true),
+            "C flag should be set (no borrow)"
+        );
+        assert_eq!(
+            state.flags.v.as_bool(),
+            Some(false),
+            "V flag should be clear (no overflow)"
+        );
 
         // Test 3: CMP with first < second (unsigned: will wrap)
         // 10 - 20 = -10 (0xFFFFFFF6 in two's complement)
@@ -2070,10 +2353,26 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, 20, 32));
         encoder.encode_op(&cmp_op, &mut state);
 
-        assert_eq!(state.flags.z.as_bool(), Some(false), "Z flag should be clear");
-        assert_eq!(state.flags.n.as_bool(), Some(true), "N flag should be set (negative result)");
-        assert_eq!(state.flags.c.as_bool(), Some(false), "C flag should be clear (borrow occurred)");
-        assert_eq!(state.flags.v.as_bool(), Some(false), "V flag should be clear");
+        assert_eq!(
+            state.flags.z.as_bool(),
+            Some(false),
+            "Z flag should be clear"
+        );
+        assert_eq!(
+            state.flags.n.as_bool(),
+            Some(true),
+            "N flag should be set (negative result)"
+        );
+        assert_eq!(
+            state.flags.c.as_bool(),
+            Some(false),
+            "C flag should be clear (borrow occurred)"
+        );
+        assert_eq!(
+            state.flags.v.as_bool(),
+            Some(false),
+            "V flag should be clear"
+        );
 
         // Test 4: Signed overflow case
         // Subtracting large negative from positive should overflow
@@ -2083,20 +2382,48 @@ mod tests {
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, -2147483648i64, 32)); // 0x80000000
         encoder.encode_op(&cmp_op, &mut state);
 
-        assert_eq!(state.flags.z.as_bool(), Some(false), "Z flag should be clear");
-        assert_eq!(state.flags.n.as_bool(), Some(true), "N flag should be set (wrapped result)");
-        assert_eq!(state.flags.c.as_bool(), Some(false), "C flag should be clear");
-        assert_eq!(state.flags.v.as_bool(), Some(true), "V flag should be set (overflow)");
+        assert_eq!(
+            state.flags.z.as_bool(),
+            Some(false),
+            "Z flag should be clear"
+        );
+        assert_eq!(
+            state.flags.n.as_bool(),
+            Some(true),
+            "N flag should be set (wrapped result)"
+        );
+        assert_eq!(
+            state.flags.c.as_bool(),
+            Some(false),
+            "C flag should be clear"
+        );
+        assert_eq!(
+            state.flags.v.as_bool(),
+            Some(true),
+            "V flag should be set (overflow)"
+        );
 
         // Test 5: Zero comparison
         state.set_reg(&Reg::R0, BV::from_i64(&ctx, 0, 32));
         state.set_reg(&Reg::R1, BV::from_i64(&ctx, 0, 32));
         encoder.encode_op(&cmp_op, &mut state);
 
-        assert_eq!(state.flags.z.as_bool(), Some(true), "Z flag should be set (0 - 0 = 0)");
-        assert_eq!(state.flags.n.as_bool(), Some(false), "N flag should be clear");
+        assert_eq!(
+            state.flags.z.as_bool(),
+            Some(true),
+            "Z flag should be set (0 - 0 = 0)"
+        );
+        assert_eq!(
+            state.flags.n.as_bool(),
+            Some(false),
+            "N flag should be clear"
+        );
         assert_eq!(state.flags.c.as_bool(), Some(true), "C flag should be set");
-        assert_eq!(state.flags.v.as_bool(), Some(false), "V flag should be clear");
+        assert_eq!(
+            state.flags.v.as_bool(),
+            Some(false),
+            "V flag should be clear"
+        );
     }
 
     #[test]
@@ -2168,7 +2495,11 @@ mod tests {
         };
         encoder.encode_op(&setcond_op, &mut state);
 
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "EQ condition (10 == 10) should return 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(1),
+            "EQ condition (10 == 10) should return 1"
+        );
 
         // Test NE condition: 10 != 5
         state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
@@ -2182,7 +2513,11 @@ mod tests {
         };
         encoder.encode_op(&setcond_ne, &mut state);
 
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "NE condition (10 != 5) should return 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(1),
+            "NE condition (10 != 5) should return 1"
+        );
     }
 
     #[test]
@@ -2207,7 +2542,11 @@ mod tests {
         };
         encoder.encode_op(&setcond_lt, &mut state);
 
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "LT signed (5 < 10) should return 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(1),
+            "LT signed (5 < 10) should return 1"
+        );
 
         // Test GE signed: 10 >= 5
         state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
@@ -2221,7 +2560,11 @@ mod tests {
         };
         encoder.encode_op(&setcond_ge, &mut state);
 
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "GE signed (10 >= 5) should return 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(1),
+            "GE signed (10 >= 5) should return 1"
+        );
 
         // Test GT signed: 10 > 5
         state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
@@ -2235,7 +2578,11 @@ mod tests {
         };
         encoder.encode_op(&setcond_gt, &mut state);
 
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "GT signed (10 > 5) should return 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(1),
+            "GT signed (10 > 5) should return 1"
+        );
 
         // Test LE signed: 5 <= 10
         state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
@@ -2249,7 +2596,11 @@ mod tests {
         };
         encoder.encode_op(&setcond_le, &mut state);
 
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "LE signed (5 <= 10) should return 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(1),
+            "LE signed (5 <= 10) should return 1"
+        );
     }
 
     #[test]
@@ -2274,7 +2625,11 @@ mod tests {
         };
         encoder.encode_op(&setcond_lo, &mut state);
 
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "LO unsigned (5 < 10) should return 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(1),
+            "LO unsigned (5 < 10) should return 1"
+        );
 
         // Test HS unsigned: 10 >= 5
         state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
@@ -2288,7 +2643,11 @@ mod tests {
         };
         encoder.encode_op(&setcond_hs, &mut state);
 
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "HS unsigned (10 >= 5) should return 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(1),
+            "HS unsigned (10 >= 5) should return 1"
+        );
 
         // Test HI unsigned: 10 > 5
         state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
@@ -2302,7 +2661,11 @@ mod tests {
         };
         encoder.encode_op(&setcond_hi, &mut state);
 
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "HI unsigned (10 > 5) should return 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(1),
+            "HI unsigned (10 > 5) should return 1"
+        );
 
         // Test LS unsigned: 5 <= 10
         state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
@@ -2316,6 +2679,10 @@ mod tests {
         };
         encoder.encode_op(&setcond_ls, &mut state);
 
-        assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(1), "LS unsigned (5 <= 10) should return 1");
+        assert_eq!(
+            state.get_reg(&Reg::R0).as_i64(),
+            Some(1),
+            "LS unsigned (5 <= 10) should return 1"
+        );
     }
 }

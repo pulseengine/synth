@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use synth_cfg::CfgBuilder;
 use synth_opt::*;
 
@@ -144,13 +144,19 @@ fn bench_strength_reduction(c: &mut Criterion) {
             let mut instructions = vec![
                 Instruction {
                     id: 0,
-                    opcode: Opcode::Const { dest: Reg(0), value: 8 },
+                    opcode: Opcode::Const {
+                        dest: Reg(0),
+                        value: 8,
+                    },
                     block_id: 0,
                     is_dead: false,
                 },
                 Instruction {
                     id: 1,
-                    opcode: Opcode::Const { dest: Reg(1), value: 16 },
+                    opcode: Opcode::Const {
+                        dest: Reg(1),
+                        value: 16,
+                    },
                     block_id: 0,
                     is_dead: false,
                 },

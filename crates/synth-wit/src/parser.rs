@@ -1,7 +1,9 @@
 //! WIT Parser - Parses tokenized WIT source into AST
 
 use crate::{
-    ast::*, lexer::{Lexer, Token, TokenKind}, Location, ParseError
+    ast::*,
+    lexer::{Lexer, Token, TokenKind},
+    Location, ParseError,
 };
 
 pub struct Parser {
@@ -18,7 +20,11 @@ impl Parser {
             text: String::new(),
             location: Location::new(0, 0, 0),
         };
-        Self { tokens, position: 0, eof_token }
+        Self {
+            tokens,
+            position: 0,
+            eof_token,
+        }
     }
 
     fn current(&self) -> &Token {
@@ -26,7 +32,9 @@ impl Parser {
     }
 
     fn peek(&self, offset: usize) -> &Token {
-        self.tokens.get(self.position + offset).unwrap_or(&self.eof_token)
+        self.tokens
+            .get(self.position + offset)
+            .unwrap_or(&self.eof_token)
     }
 
     fn advance(&mut self) -> &Token {
@@ -168,9 +176,11 @@ impl Parser {
 
     fn parse_interface_item(&mut self) -> Result<InterfaceItem, ParseError> {
         match &self.current().kind {
-            TokenKind::Type | TokenKind::Record | TokenKind::Variant | TokenKind::Enum | TokenKind::Flags => {
-                Ok(InterfaceItem::TypeDef(self.parse_typedef()?))
-            }
+            TokenKind::Type
+            | TokenKind::Record
+            | TokenKind::Variant
+            | TokenKind::Enum
+            | TokenKind::Flags => Ok(InterfaceItem::TypeDef(self.parse_typedef()?)),
             TokenKind::Resource => Ok(InterfaceItem::Resource(self.parse_resource()?)),
             TokenKind::Identifier(_) => Ok(InterfaceItem::Function(self.parse_function()?)),
             _ => Err(ParseError {
@@ -539,9 +549,11 @@ impl Parser {
             TokenKind::Import => Ok(WorldItem::Import(self.parse_world_import()?)),
             TokenKind::Export => Ok(WorldItem::Export(self.parse_world_export()?)),
             TokenKind::Use => Ok(WorldItem::Use(self.parse_use()?)),
-            TokenKind::Type | TokenKind::Record | TokenKind::Variant | TokenKind::Enum | TokenKind::Flags => {
-                Ok(WorldItem::TypeDef(self.parse_typedef()?))
-            }
+            TokenKind::Type
+            | TokenKind::Record
+            | TokenKind::Variant
+            | TokenKind::Enum
+            | TokenKind::Flags => Ok(WorldItem::TypeDef(self.parse_typedef()?)),
             _ => Err(ParseError {
                 message: format!("Unexpected token in world: {:?}", self.current().kind),
                 location: Some(self.current().location),
@@ -564,7 +576,10 @@ impl Parser {
             WorldImportItem::Function(func)
         } else {
             return Err(ParseError {
-                message: format!("Expected interface or func, found {:?}", self.current().kind),
+                message: format!(
+                    "Expected interface or func, found {:?}",
+                    self.current().kind
+                ),
                 location: Some(self.current().location),
             });
         };
@@ -591,7 +606,10 @@ impl Parser {
             WorldExportItem::Function(func)
         } else {
             return Err(ParseError {
-                message: format!("Expected interface or func, found {:?}", self.current().kind),
+                message: format!(
+                    "Expected interface or func, found {:?}",
+                    self.current().kind
+                ),
                 location: Some(self.current().location),
             });
         };
@@ -605,7 +623,11 @@ impl Parser {
 
     /// Parse function signature starting from "func(...)"
     /// Used when the function name has already been consumed
-    fn parse_function_signature(&mut self, name: String, location: Location) -> Result<Function, ParseError> {
+    fn parse_function_signature(
+        &mut self,
+        name: String,
+        location: Location,
+    ) -> Result<Function, ParseError> {
         self.expect(TokenKind::Func)?;
         self.expect(TokenKind::LParen)?;
 

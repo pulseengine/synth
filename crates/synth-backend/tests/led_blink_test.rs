@@ -3,8 +3,8 @@
 //! Tests the entire pipeline with a realistic embedded example
 
 use synth_backend::{
-    ArmEncoder, ElfBuilder, ElfSectionType, ElfType, ResetHandlerGenerator, Section, SectionFlags, Symbol,
-    SymbolBinding, SymbolType, VectorTable,
+    ArmEncoder, ElfBuilder, ElfSectionType, ElfType, ResetHandlerGenerator, Section, SectionFlags,
+    Symbol, SymbolBinding, SymbolType, VectorTable,
 };
 use synth_synthesis::{InstructionSelector, PeepholeOptimizer, RuleDatabase, WasmOp};
 
@@ -15,13 +15,15 @@ fn test_led_blink_complete_pipeline() {
         // GPIO initialization (simplified)
         WasmOp::I32Const(0x40020000), // GPIOA base
         WasmOp::LocalSet(0),
-
         // Main loop
         WasmOp::Loop,
         // Turn LED on
         WasmOp::LocalGet(0),
         WasmOp::I32Const(0x20), // Pin 5
-        WasmOp::I32Store { offset: 0x18, align: 4 }, // BSRR
+        WasmOp::I32Store {
+            offset: 0x18,
+            align: 4,
+        }, // BSRR
         // Delay
         WasmOp::I32Const(500000),
         WasmOp::LocalSet(1),
@@ -39,7 +41,10 @@ fn test_led_blink_complete_pipeline() {
         // Turn LED off
         WasmOp::LocalGet(0),
         WasmOp::I32Const(0x200000), // Pin 5 reset
-        WasmOp::I32Store { offset: 0x18, align: 4 },
+        WasmOp::I32Store {
+            offset: 0x18,
+            align: 4,
+        },
         // Loop back
         WasmOp::Br(0),
         WasmOp::End,
@@ -48,7 +53,9 @@ fn test_led_blink_complete_pipeline() {
     // Step 1: Instruction Selection
     let db = RuleDatabase::with_standard_rules();
     let mut selector = InstructionSelector::new(db.rules().to_vec());
-    let arm_instrs = selector.select(&wasm_ops).expect("Failed to select instructions");
+    let arm_instrs = selector
+        .select(&wasm_ops)
+        .expect("Failed to select instructions");
 
     println!("Selected {} ARM instructions", arm_instrs.len());
     assert!(!arm_instrs.is_empty());
@@ -58,10 +65,12 @@ fn test_led_blink_complete_pipeline() {
     let ops: Vec<_> = arm_instrs.iter().map(|i| i.op.clone()).collect();
     let (optimized_ops, opt_stats) = optimizer.optimize_with_stats(&ops);
 
-    println!("Optimization reduced {} → {} instructions ({:.1}% reduction)",
+    println!(
+        "Optimization reduced {} → {} instructions ({:.1}% reduction)",
         opt_stats.original_instructions,
         opt_stats.optimized_instructions,
-        opt_stats.reduction_percentage());
+        opt_stats.reduction_percentage()
+    );
 
     // Step 3: ARM Encoding
     let encoder = ArmEncoder::new_arm32();
@@ -78,13 +87,17 @@ fn test_led_blink_complete_pipeline() {
     // Step 4: Create Vector Table
     let mut vector_table = VectorTable::new_cortex_m(0x20010000);
     vector_table.reset_handler = 0x08000100; // After vector table
-    let vt_binary = vector_table.generate_binary().expect("Failed to generate vector table");
+    let vt_binary = vector_table
+        .generate_binary()
+        .expect("Failed to generate vector table");
 
     println!("Vector table: {} bytes", vt_binary.len());
 
     // Step 5: Create Reset Handler
     let reset_gen = ResetHandlerGenerator::new();
-    let reset_code = reset_gen.generate_binary().expect("Failed to generate reset handler");
+    let reset_code = reset_gen
+        .generate_binary()
+        .expect("Failed to generate reset handler");
 
     println!("Reset handler: {} bytes", reset_code.len());
 
@@ -181,13 +194,19 @@ fn test_gpio_peripheral_operations() {
     let wasm_ops = vec![
         // Read GPIO register
         WasmOp::I32Const(0x40020000),
-        WasmOp::I32Load { offset: 0, align: 4 },
+        WasmOp::I32Load {
+            offset: 0,
+            align: 4,
+        },
         // Modify bit
         WasmOp::I32Const(0x20),
         WasmOp::I32Or,
         // Write back
         WasmOp::I32Const(0x40020000),
-        WasmOp::I32Store { offset: 0, align: 4 },
+        WasmOp::I32Store {
+            offset: 0,
+            align: 4,
+        },
     ];
 
     let db = RuleDatabase::with_standard_rules();

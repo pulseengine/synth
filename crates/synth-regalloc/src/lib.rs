@@ -22,9 +22,9 @@ pub enum PhysicalReg {
     R10,
     R11,
     R12,
-    SP,  // Stack Pointer (R13) - reserved
-    LR,  // Link Register (R14) - reserved
-    PC,  // Program Counter (R15) - reserved
+    SP, // Stack Pointer (R13) - reserved
+    LR, // Link Register (R14) - reserved
+    PC, // Program Counter (R15) - reserved
 }
 
 impl PhysicalReg {
@@ -127,11 +127,17 @@ impl InterferenceGraph {
         }
 
         // Add edge vreg1 -> vreg2
-        self.edges.entry(vreg1).or_insert_with(HashSet::new).insert(vreg2);
+        self.edges
+            .entry(vreg1)
+            .or_insert_with(HashSet::new)
+            .insert(vreg2);
         *self.degree.entry(vreg1).or_insert(0) += 1;
 
         // Add edge vreg2 -> vreg1 (undirected graph)
-        self.edges.entry(vreg2).or_insert_with(HashSet::new).insert(vreg1);
+        self.edges
+            .entry(vreg2)
+            .or_insert_with(HashSet::new)
+            .insert(vreg1);
         *self.degree.entry(vreg2).or_insert(0) += 1;
     }
 

@@ -2,22 +2,23 @@
 //!
 //! Tests the complete pipeline: WASM → ARM → ELF
 
-use synth_backend::{ArmEncoder, ElfBuilder, ElfSectionType, Section, SectionFlags, Symbol, SymbolBinding, SymbolType};
+use synth_backend::{
+    ArmEncoder, ElfBuilder, ElfSectionType, Section, SectionFlags, Symbol, SymbolBinding,
+    SymbolType,
+};
 use synth_synthesis::{InstructionSelector, RuleDatabase, WasmOp};
 
 #[test]
 fn test_end_to_end_pipeline() {
     // Step 1: Create simple WASM operations
-    let wasm_ops = vec![
-        WasmOp::I32Const(42),
-        WasmOp::I32Const(10),
-        WasmOp::I32Add,
-    ];
+    let wasm_ops = vec![WasmOp::I32Const(42), WasmOp::I32Const(10), WasmOp::I32Add];
 
     // Step 2: Select ARM instructions
     let db = RuleDatabase::with_standard_rules();
     let mut selector = InstructionSelector::new(db.rules().to_vec());
-    let arm_instrs = selector.select(&wasm_ops).expect("Failed to select instructions");
+    let arm_instrs = selector
+        .select(&wasm_ops)
+        .expect("Failed to select instructions");
 
     // Should have generated some ARM instructions
     assert!(!arm_instrs.is_empty());
@@ -27,7 +28,9 @@ fn test_end_to_end_pipeline() {
     let mut code = Vec::new();
 
     for arm_instr in &arm_instrs {
-        let encoded = encoder.encode(&arm_instr.op).expect("Failed to encode instruction");
+        let encoded = encoder
+            .encode(&arm_instr.op)
+            .expect("Failed to encode instruction");
         code.extend_from_slice(&encoded);
     }
 
@@ -37,8 +40,7 @@ fn test_end_to_end_pipeline() {
     assert_eq!(code.len() % 4, 0);
 
     // Step 4: Package into ELF file
-    let mut elf_builder = ElfBuilder::new_arm32()
-        .with_entry(0x8000);
+    let mut elf_builder = ElfBuilder::new_arm32().with_entry(0x8000);
 
     // Add .text section with code
     let text_section = Section::new(".text", ElfSectionType::ProgBits)
@@ -70,7 +72,12 @@ fn test_end_to_end_pipeline() {
 
     // Verify entry point
     let entry_bytes = &elf_data[24..28];
-    let entry = u32::from_le_bytes([entry_bytes[0], entry_bytes[1], entry_bytes[2], entry_bytes[3]]);
+    let entry = u32::from_le_bytes([
+        entry_bytes[0],
+        entry_bytes[1],
+        entry_bytes[2],
+        entry_bytes[3],
+    ]);
     assert_eq!(entry, 0x8000);
 
     println!("✓ End-to-end pipeline test passed!");
@@ -122,8 +129,14 @@ fn test_wasm_arithmetic_to_elf() {
 fn test_wasm_memory_operations_to_elf() {
     let wasm_ops = vec![
         WasmOp::I32Const(100),
-        WasmOp::I32Store { offset: 0, align: 4 },
-        WasmOp::I32Load { offset: 0, align: 4 },
+        WasmOp::I32Store {
+            offset: 0,
+            align: 4,
+        },
+        WasmOp::I32Load {
+            offset: 0,
+            align: 4,
+        },
     ];
 
     let db = RuleDatabase::with_standard_rules();
@@ -176,7 +189,7 @@ fn test_complete_function_to_elf() {
         WasmOp::LocalGet(0), // Load param a
         WasmOp::LocalGet(1), // Load param b
         WasmOp::I32Add,      // Add them
-        // Return is implicit
+                             // Return is implicit
     ];
 
     let db = RuleDatabase::with_standard_rules();

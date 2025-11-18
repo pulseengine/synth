@@ -3,7 +3,7 @@
 //! Tests hardware division support for ARM Cortex-M3/M4/M7
 
 use synth_backend::ArmEncoder;
-use synth_synthesis::{ArmOp, InstructionSelector, RuleDatabase, WasmOp, Reg};
+use synth_synthesis::{ArmOp, InstructionSelector, Reg, RuleDatabase, WasmOp};
 
 #[test]
 fn test_signed_division() {
@@ -11,7 +11,7 @@ fn test_signed_division() {
     let wasm_ops = vec![
         WasmOp::I32Const(100),
         WasmOp::I32Const(7),
-        WasmOp::I32DivS,  // 100 / 7 = 14 (signed)
+        WasmOp::I32DivS, // 100 / 7 = 14 (signed)
     ];
 
     let db = RuleDatabase::with_standard_rules();
@@ -21,7 +21,9 @@ fn test_signed_division() {
     assert!(!arm_instrs.is_empty());
 
     // Should contain SDIV instruction
-    let has_sdiv = arm_instrs.iter().any(|i| matches!(i.op, ArmOp::Sdiv { .. }));
+    let has_sdiv = arm_instrs
+        .iter()
+        .any(|i| matches!(i.op, ArmOp::Sdiv { .. }));
     assert!(has_sdiv, "Should generate SDIV instruction");
 }
 
@@ -31,7 +33,7 @@ fn test_unsigned_division() {
     let wasm_ops = vec![
         WasmOp::I32Const(100),
         WasmOp::I32Const(7),
-        WasmOp::I32DivU,  // 100 / 7 = 14 (unsigned)
+        WasmOp::I32DivU, // 100 / 7 = 14 (unsigned)
     ];
 
     let db = RuleDatabase::with_standard_rules();
@@ -41,7 +43,9 @@ fn test_unsigned_division() {
     assert!(!arm_instrs.is_empty());
 
     // Should contain UDIV instruction
-    let has_udiv = arm_instrs.iter().any(|i| matches!(i.op, ArmOp::Udiv { .. }));
+    let has_udiv = arm_instrs
+        .iter()
+        .any(|i| matches!(i.op, ArmOp::Udiv { .. }));
     assert!(has_udiv, "Should generate UDIV instruction");
 }
 
@@ -51,7 +55,7 @@ fn test_signed_remainder() {
     let wasm_ops = vec![
         WasmOp::I32Const(100),
         WasmOp::I32Const(7),
-        WasmOp::I32RemS,  // 100 % 7 = 2 (signed)
+        WasmOp::I32RemS, // 100 % 7 = 2 (signed)
     ];
 
     let db = RuleDatabase::with_standard_rules();
@@ -68,7 +72,7 @@ fn test_unsigned_remainder() {
     let wasm_ops = vec![
         WasmOp::I32Const(100),
         WasmOp::I32Const(7),
-        WasmOp::I32RemU,  // 100 % 7 = 2 (unsigned)
+        WasmOp::I32RemU, // 100 % 7 = 2 (unsigned)
     ];
 
     let db = RuleDatabase::with_standard_rules();
@@ -147,8 +151,8 @@ fn test_division_by_constant() {
     // Test division by constant (could be optimized to shift if power of 2)
     let wasm_ops = vec![
         WasmOp::I32Const(1000),
-        WasmOp::I32Const(8),  // Power of 2
-        WasmOp::I32DivU,      // Could be optimized to shift right by 3
+        WasmOp::I32Const(8), // Power of 2
+        WasmOp::I32DivU,     // Could be optimized to shift right by 3
     ];
 
     let db = RuleDatabase::with_standard_rules();
@@ -169,9 +173,9 @@ fn test_division_embedded_use_case() {
         WasmOp::I32Const(30),
         WasmOp::I32Add,
         WasmOp::I32Const(40),
-        WasmOp::I32Add,       // Sum = 100
+        WasmOp::I32Add, // Sum = 100
         WasmOp::I32Const(4),
-        WasmOp::I32DivU,      // Average = 25
+        WasmOp::I32DivU, // Average = 25
     ];
 
     let db = RuleDatabase::with_standard_rules();
@@ -191,11 +195,11 @@ fn test_modulo_embedded_use_case() {
     // Realistic embedded use case: circular buffer index wrapping
     // next_index = (current_index + 1) % buffer_size
     let wasm_ops = vec![
-        WasmOp::I32Const(15),  // current index
+        WasmOp::I32Const(15), // current index
         WasmOp::I32Const(1),
-        WasmOp::I32Add,        // increment
-        WasmOp::I32Const(16),  // buffer size
-        WasmOp::I32RemU,       // wrap around
+        WasmOp::I32Add,       // increment
+        WasmOp::I32Const(16), // buffer size
+        WasmOp::I32RemU,      // wrap around
     ];
 
     let db = RuleDatabase::with_standard_rules();
@@ -216,7 +220,7 @@ fn test_negative_division() {
     let wasm_ops = vec![
         WasmOp::I32Const(-100),
         WasmOp::I32Const(7),
-        WasmOp::I32DivS,  // -100 / 7 = -14 (signed)
+        WasmOp::I32DivS, // -100 / 7 = -14 (signed)
     ];
 
     let db = RuleDatabase::with_standard_rules();
@@ -224,6 +228,8 @@ fn test_negative_division() {
     let arm_instrs = selector.select(&wasm_ops).expect("Failed to select");
 
     // Should use SDIV for signed division
-    let has_sdiv = arm_instrs.iter().any(|i| matches!(i.op, ArmOp::Sdiv { .. }));
+    let has_sdiv = arm_instrs
+        .iter()
+        .any(|i| matches!(i.op, ArmOp::Sdiv { .. }));
     assert!(has_sdiv);
 }

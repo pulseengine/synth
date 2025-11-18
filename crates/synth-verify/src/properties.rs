@@ -81,29 +81,40 @@ impl CompilerProperties {
 
     /// Generate arbitrary ARM operations for testing
     fn arbitrary_arm_op() -> impl Strategy<Value = ArmOp> {
-        let reg_strategy = prop_oneof![
-            Just(Reg::R0),
-            Just(Reg::R1),
-            Just(Reg::R2),
-            Just(Reg::R3),
-        ];
+        let reg_strategy = prop_oneof![Just(Reg::R0), Just(Reg::R1), Just(Reg::R2), Just(Reg::R3),];
 
         prop_oneof![
-            (reg_strategy.clone(), reg_strategy.clone(), reg_strategy.clone())
+            (
+                reg_strategy.clone(),
+                reg_strategy.clone(),
+                reg_strategy.clone()
+            )
                 .prop_map(|(rd, rn, rm)| ArmOp::Add {
                     rd,
                     rn,
                     op2: Operand2::Reg(rm),
                 }),
-            (reg_strategy.clone(), reg_strategy.clone(), reg_strategy.clone())
+            (
+                reg_strategy.clone(),
+                reg_strategy.clone(),
+                reg_strategy.clone()
+            )
                 .prop_map(|(rd, rn, rm)| ArmOp::Sub {
                     rd,
                     rn,
                     op2: Operand2::Reg(rm),
                 }),
-            (reg_strategy.clone(), reg_strategy.clone(), reg_strategy.clone())
+            (
+                reg_strategy.clone(),
+                reg_strategy.clone(),
+                reg_strategy.clone()
+            )
                 .prop_map(|(rd, rn, rm)| ArmOp::Mul { rd, rn, rm }),
-            (reg_strategy.clone(), reg_strategy.clone(), reg_strategy.clone())
+            (
+                reg_strategy.clone(),
+                reg_strategy.clone(),
+                reg_strategy.clone()
+            )
                 .prop_map(|(rd, rn, rm)| ArmOp::And {
                     rd,
                     rn,

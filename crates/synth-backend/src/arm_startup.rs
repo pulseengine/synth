@@ -39,15 +39,33 @@ impl ARMStartupGenerator {
 
         // Exception handlers
         code.push_str("/* Cortex-M exception handlers */\n");
-        code.push_str("void NMI_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n");
-        code.push_str("void HardFault_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n");
-        code.push_str("void MemManage_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n");
-        code.push_str("void BusFault_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n");
-        code.push_str("void UsageFault_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n");
-        code.push_str("void SVC_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n");
-        code.push_str("void DebugMon_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n");
-        code.push_str("void PendSV_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n");
-        code.push_str("void SysTick_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n\n");
+        code.push_str(
+            "void NMI_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n",
+        );
+        code.push_str(
+            "void HardFault_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n",
+        );
+        code.push_str(
+            "void MemManage_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n",
+        );
+        code.push_str(
+            "void BusFault_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n",
+        );
+        code.push_str(
+            "void UsageFault_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n",
+        );
+        code.push_str(
+            "void SVC_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n",
+        );
+        code.push_str(
+            "void DebugMon_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n",
+        );
+        code.push_str(
+            "void PendSV_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n",
+        );
+        code.push_str(
+            "void SysTick_Handler(void) __attribute__((weak, alias(\"Default_Handler\")));\n\n",
+        );
 
         // Device-specific interrupt handlers
         let num_irqs = self.get_irq_count();
@@ -115,7 +133,9 @@ impl ARMStartupGenerator {
         if self.has_fpu() {
             code.push_str("    /* Enable FPU */\n");
             code.push_str("    #define SCB_CPACR (*((volatile uint32_t*)0xE000ED88))\n");
-            code.push_str("    SCB_CPACR |= (0xF << 20);  /* Enable CP10 and CP11 coprocessors */\n");
+            code.push_str(
+                "    SCB_CPACR |= (0xF << 20);  /* Enable CP10 and CP11 coprocessors */\n",
+            );
             code.push_str("    __asm volatile(\"dsb\\n\\tisb\");\n\n");
         }
 
@@ -174,7 +194,10 @@ mod tests {
 
         // Print for inspection
         println!("\nGenerated Startup Code (excerpt):");
-        println!("{}", startup_code.lines().take(50).collect::<Vec<_>>().join("\n"));
+        println!(
+            "{}",
+            startup_code.lines().take(50).collect::<Vec<_>>().join("\n")
+        );
 
         // Verify key elements
         assert!(startup_code.contains("Reset_Handler"));
@@ -202,7 +225,7 @@ mod tests {
             mpu_regions: 8,
             has_pmp: false,
             pmp_entries: 0,
-            has_fpu: false,  // M3 has no FPU
+            has_fpu: false, // M3 has no FPU
             fpu_precision: None,
             has_simd: false,
             simd_level: None,

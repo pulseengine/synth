@@ -59,12 +59,7 @@ impl PatternMatcher {
     }
 
     /// Match a single pattern against operations starting at index
-    fn match_pattern(
-        &self,
-        pattern: &Pattern,
-        ops: &[WasmOp],
-        index: usize,
-    ) -> Option<Bindings> {
+    fn match_pattern(&self, pattern: &Pattern, ops: &[WasmOp], index: usize) -> Option<Bindings> {
         if index >= ops.len() {
             return None;
         }

@@ -27,11 +27,11 @@ impl ResetHandlerGenerator {
     pub fn new() -> Self {
         Self {
             stack_top: 0x20010000,      // 64KB RAM top
-            data_start: 0x20000000,      // RAM start
-            data_end: 0x20000100,        // 256 bytes data
-            data_load_addr: 0x08001000,   // Flash location
-            bss_start: 0x20000100,       // After data
-            bss_end: 0x20001000,         // 3.75KB BSS
+            data_start: 0x20000000,     // RAM start
+            data_end: 0x20000100,       // 256 bytes data
+            data_load_addr: 0x08001000, // Flash location
+            bss_start: 0x20000100,      // After data
+            bss_end: 0x20001000,        // 3.75KB BSS
         }
     }
 
@@ -136,9 +136,15 @@ impl ResetHandlerGenerator {
 
         // Copy .data section
         asm.push_str("    /* Copy data section from Flash to RAM */\n");
-        asm.push_str(&format!("    ldr r0, =_sidata      /* start of .data in Flash */\n"));
-        asm.push_str(&format!("    ldr r1, =_sdata       /* start of .data in RAM */\n"));
-        asm.push_str(&format!("    ldr r2, =_edata       /* end of .data in RAM */\n"));
+        asm.push_str(&format!(
+            "    ldr r0, =_sidata      /* start of .data in Flash */\n"
+        ));
+        asm.push_str(&format!(
+            "    ldr r1, =_sdata       /* start of .data in RAM */\n"
+        ));
+        asm.push_str(&format!(
+            "    ldr r2, =_edata       /* end of .data in RAM */\n"
+        ));
         asm.push_str("    movs r3, #0\n");
         asm.push_str("    b LoopCopyDataInit\n\n");
 
@@ -247,15 +253,10 @@ mod tests {
 
     #[test]
     fn test_custom_memory_layout() {
-        let handler = ResetHandlerGenerator::new()
-            .with_memory_layout(
-                0x20020000,  // 128KB RAM
-                0x20000000,
-                0x20000200,
-                0x08002000,
-                0x20000200,
-                0x20002000,
-            );
+        let handler = ResetHandlerGenerator::new().with_memory_layout(
+            0x20020000, // 128KB RAM
+            0x20000000, 0x20000200, 0x08002000, 0x20000200, 0x20002000,
+        );
 
         assert_eq!(handler.stack_top, 0x20020000);
         assert_eq!(handler.data_start, 0x20000000);

@@ -1,21 +1,14 @@
 //! Lifting: Converting core WASM values to Component Model values
 
-use crate::{AbiError, AbiResult, AbiOptions, CoreValue, Memory, StringEncoding};
 use crate::lower::ComponentValue;
+use crate::{AbiError, AbiOptions, AbiResult, CoreValue, Memory, StringEncoding};
 
 /// Lift a string from memory
-pub fn lift_string<M: Memory>(
-    mem: &M,
-    ptr: u32,
-    len: u32,
-    opts: &AbiOptions,
-) -> AbiResult<String> {
+pub fn lift_string<M: Memory>(mem: &M, ptr: u32, len: u32, opts: &AbiOptions) -> AbiResult<String> {
     let data = mem.read(ptr, len as usize)?;
 
     match opts.string_encoding {
-        StringEncoding::Utf8 => {
-            String::from_utf8(data).map_err(|_| AbiError::InvalidUtf8)
-        }
+        StringEncoding::Utf8 => String::from_utf8(data).map_err(|_| AbiError::InvalidUtf8),
         StringEncoding::Utf16 => {
             if data.len() % 2 != 0 {
                 return Err(AbiError::InvalidUtf16);
@@ -58,7 +51,10 @@ where
 }
 
 /// Lift a primitive value
-pub fn lift_primitive(values: &[CoreValue], ty: &synth_wit::ast::Type) -> AbiResult<ComponentValue> {
+pub fn lift_primitive(
+    values: &[CoreValue],
+    ty: &synth_wit::ast::Type,
+) -> AbiResult<ComponentValue> {
     use synth_wit::ast::Type;
 
     if values.is_empty() {
@@ -67,47 +63,69 @@ pub fn lift_primitive(values: &[CoreValue], ty: &synth_wit::ast::Type) -> AbiRes
 
     match ty {
         Type::Bool => {
-            let v = values[0].as_i32().ok_or(AbiError::Other("Expected i32".to_string()))?;
+            let v = values[0]
+                .as_i32()
+                .ok_or(AbiError::Other("Expected i32".to_string()))?;
             Ok(ComponentValue::Bool(v != 0))
         }
         Type::S8 => {
-            let v = values[0].as_i32().ok_or(AbiError::Other("Expected i32".to_string()))?;
+            let v = values[0]
+                .as_i32()
+                .ok_or(AbiError::Other("Expected i32".to_string()))?;
             Ok(ComponentValue::S8(v as i8))
         }
         Type::U8 => {
-            let v = values[0].as_i32().ok_or(AbiError::Other("Expected i32".to_string()))?;
+            let v = values[0]
+                .as_i32()
+                .ok_or(AbiError::Other("Expected i32".to_string()))?;
             Ok(ComponentValue::U8(v as u8))
         }
         Type::S16 => {
-            let v = values[0].as_i32().ok_or(AbiError::Other("Expected i32".to_string()))?;
+            let v = values[0]
+                .as_i32()
+                .ok_or(AbiError::Other("Expected i32".to_string()))?;
             Ok(ComponentValue::S16(v as i16))
         }
         Type::U16 => {
-            let v = values[0].as_i32().ok_or(AbiError::Other("Expected i32".to_string()))?;
+            let v = values[0]
+                .as_i32()
+                .ok_or(AbiError::Other("Expected i32".to_string()))?;
             Ok(ComponentValue::U16(v as u16))
         }
         Type::S32 => {
-            let v = values[0].as_i32().ok_or(AbiError::Other("Expected i32".to_string()))?;
+            let v = values[0]
+                .as_i32()
+                .ok_or(AbiError::Other("Expected i32".to_string()))?;
             Ok(ComponentValue::S32(v))
         }
         Type::U32 => {
-            let v = values[0].as_u32().ok_or(AbiError::Other("Expected i32".to_string()))?;
+            let v = values[0]
+                .as_u32()
+                .ok_or(AbiError::Other("Expected i32".to_string()))?;
             Ok(ComponentValue::U32(v))
         }
         Type::S64 => {
-            let v = values[0].as_i64().ok_or(AbiError::Other("Expected i64".to_string()))?;
+            let v = values[0]
+                .as_i64()
+                .ok_or(AbiError::Other("Expected i64".to_string()))?;
             Ok(ComponentValue::S64(v))
         }
         Type::U64 => {
-            let v = values[0].as_i64().ok_or(AbiError::Other("Expected i64".to_string()))?;
+            let v = values[0]
+                .as_i64()
+                .ok_or(AbiError::Other("Expected i64".to_string()))?;
             Ok(ComponentValue::U64(v as u64))
         }
         Type::F32 => {
-            let v = values[0].as_f32().ok_or(AbiError::Other("Expected f32".to_string()))?;
+            let v = values[0]
+                .as_f32()
+                .ok_or(AbiError::Other("Expected f32".to_string()))?;
             Ok(ComponentValue::F32(v))
         }
         Type::F64 => {
-            let v = values[0].as_f64().ok_or(AbiError::Other("Expected f64".to_string()))?;
+            let v = values[0]
+                .as_f64()
+                .ok_or(AbiError::Other("Expected f64".to_string()))?;
             Ok(ComponentValue::F64(v))
         }
         _ => Err(AbiError::Other(format!("Unsupported type: {:?}", ty))),
@@ -121,7 +139,7 @@ pub fn lift_record<M: Memory>(
     field_types: &[(String, synth_wit::ast::Type)],
     opts: &AbiOptions,
 ) -> AbiResult<Vec<(String, ComponentValue)>> {
-    use crate::{alignment_of, align_to, size_of};
+    use crate::{align_to, alignment_of, size_of};
     use synth_wit::ast::Type;
 
     let mut result = Vec::new();
@@ -134,17 +152,37 @@ pub fn lift_record<M: Memory>(
         let value = match ty {
             Type::String => {
                 // Read (ptr, len) tuple
-                let ptr = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
-                let len = u32::from_le_bytes([data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7]]);
+                let ptr = u32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]);
+                let len = u32::from_le_bytes([
+                    data[offset + 4],
+                    data[offset + 5],
+                    data[offset + 6],
+                    data[offset + 7],
+                ]);
                 let s = lift_string(mem, ptr, len, opts)?;
                 ComponentValue::String(s)
             }
             Type::U32 => {
-                let v = u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+                let v = u32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]);
                 ComponentValue::U32(v)
             }
             Type::S32 => {
-                let v = i32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]]);
+                let v = i32::from_le_bytes([
+                    data[offset],
+                    data[offset + 1],
+                    data[offset + 2],
+                    data[offset + 3],
+                ]);
                 ComponentValue::S32(v)
             }
             _ => return Err(AbiError::Other(format!("Unsupported field type: {:?}", ty))),
@@ -177,25 +215,52 @@ pub fn lift_option<M: Memory>(
 
             let value = match inner_ty {
                 Type::String => {
-                    let ptr = u32::from_le_bytes([data[align], data[align + 1], data[align + 2], data[align + 3]]);
-                    let len = u32::from_le_bytes([data[align + 4], data[align + 5], data[align + 6], data[align + 7]]);
+                    let ptr = u32::from_le_bytes([
+                        data[align],
+                        data[align + 1],
+                        data[align + 2],
+                        data[align + 3],
+                    ]);
+                    let len = u32::from_le_bytes([
+                        data[align + 4],
+                        data[align + 5],
+                        data[align + 6],
+                        data[align + 7],
+                    ]);
                     let s = lift_string(mem, ptr, len, opts)?;
                     ComponentValue::String(s)
                 }
                 Type::U32 => {
-                    let v = u32::from_le_bytes([data[align], data[align + 1], data[align + 2], data[align + 3]]);
+                    let v = u32::from_le_bytes([
+                        data[align],
+                        data[align + 1],
+                        data[align + 2],
+                        data[align + 3],
+                    ]);
                     ComponentValue::U32(v)
                 }
                 Type::S32 => {
-                    let v = i32::from_le_bytes([data[align], data[align + 1], data[align + 2], data[align + 3]]);
+                    let v = i32::from_le_bytes([
+                        data[align],
+                        data[align + 1],
+                        data[align + 2],
+                        data[align + 3],
+                    ]);
                     ComponentValue::S32(v)
                 }
-                _ => return Err(AbiError::Other(format!("Unsupported option type: {:?}", inner_ty))),
+                _ => {
+                    return Err(AbiError::Other(format!(
+                        "Unsupported option type: {:?}",
+                        inner_ty
+                    )))
+                }
             };
 
             Ok(Some(Box::new(value)))
         }
-        _ => Err(AbiError::InvalidDiscriminant { value: discriminant as u32 }),
+        _ => Err(AbiError::InvalidDiscriminant {
+            value: discriminant as u32,
+        }),
     }
 }
 
@@ -262,7 +327,9 @@ pub fn lift_result<M: Memory>(
                 Ok(Err(None))
             }
         }
-        _ => Err(AbiError::InvalidDiscriminant { value: discriminant as u32 }),
+        _ => Err(AbiError::InvalidDiscriminant {
+            value: discriminant as u32,
+        }),
     }
 }
 
@@ -311,7 +378,9 @@ pub fn lift_variant<M: Memory>(
     let discriminant = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
 
     if (discriminant as usize) >= cases.len() {
-        return Err(AbiError::InvalidDiscriminant { value: discriminant });
+        return Err(AbiError::InvalidDiscriminant {
+            value: discriminant,
+        });
     }
 
     let (case_name, case_type) = &cases[discriminant as usize];
@@ -333,7 +402,11 @@ pub fn lift_variant<M: Memory>(
                 let v = i32::from_le_bytes([data[4], data[5], data[6], data[7]]);
                 ComponentValue::S32(v)
             }
-            _ => return Err(AbiError::Other("Unsupported variant payload type".to_string())),
+            _ => {
+                return Err(AbiError::Other(
+                    "Unsupported variant payload type".to_string(),
+                ))
+            }
         };
         Some(Box::new(value))
     } else {
@@ -349,8 +422,8 @@ pub fn lift_variant<M: Memory>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::SimpleMemory;
     use crate::lower::lower_string;
+    use crate::memory::SimpleMemory;
 
     #[test]
     fn test_lift_string_utf8() {
@@ -488,18 +561,17 @@ mod tests {
         let data = lower_result(&mut mem, &value, &ok_ty, &err_ty, &opts).unwrap();
         let lifted = lift_result(&mem, &data, &ok_ty, &err_ty, &opts).unwrap();
         assert!(lifted.is_err());
-        assert_eq!(lifted.unwrap_err(), Some(Box::new(ComponentValue::U32(404))));
+        assert_eq!(
+            lifted.unwrap_err(),
+            Some(Box::new(ComponentValue::U32(404)))
+        );
     }
 
     #[test]
     fn test_roundtrip_enum() {
         use crate::lower::lower_enum;
 
-        let cases = vec![
-            "red".to_string(),
-            "green".to_string(),
-            "blue".to_string(),
-        ];
+        let cases = vec!["red".to_string(), "green".to_string(), "blue".to_string()];
 
         // Lower
         let value = ComponentValue::Enum("blue".to_string());
@@ -552,7 +624,10 @@ mod tests {
         let lifted = lift_variant(&mem, &data, &cases, &opts).unwrap();
 
         match lifted {
-            ComponentValue::Variant { case, value: payload } => {
+            ComponentValue::Variant {
+                case,
+                value: payload,
+            } => {
                 assert_eq!(case, "some");
                 assert_eq!(*payload.unwrap(), ComponentValue::U32(123));
             }
@@ -569,7 +644,10 @@ mod tests {
         let lifted = lift_variant(&mem, &data, &cases, &opts).unwrap();
 
         match lifted {
-            ComponentValue::Variant { case, value: payload } => {
+            ComponentValue::Variant {
+                case,
+                value: payload,
+            } => {
                 assert_eq!(case, "none");
                 assert!(payload.is_none());
             }

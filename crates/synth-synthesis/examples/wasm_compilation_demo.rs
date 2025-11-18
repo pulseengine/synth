@@ -3,7 +3,7 @@
 //! This example demonstrates a complete end-to-end WASM compilation pipeline
 //! with optimization, showing realistic use cases and performance improvements.
 
-use synth_synthesis::optimizer_bridge::{OptimizerBridge, OptimizationConfig};
+use synth_synthesis::optimizer_bridge::{OptimizationConfig, OptimizerBridge};
 use synth_synthesis::rules::WasmOp;
 
 /// Example 1: Fibonacci sequence generator
@@ -16,22 +16,20 @@ fn fibonacci_example() {
     // WASM program to compute fib(n) = fib(n-1) + fib(n-2)
     // With some inefficiencies that can be optimized
     let wasm_ops = vec![
-        WasmOp::LocalGet(0),      // n
+        WasmOp::LocalGet(0), // n
         WasmOp::I32Const(0),
-        WasmOp::I32Eq,            // n == 0
-        WasmOp::LocalGet(0),      // n
+        WasmOp::I32Eq,       // n == 0
+        WasmOp::LocalGet(0), // n
         WasmOp::I32Const(1),
-        WasmOp::I32Eq,            // n == 1
-        WasmOp::I32Or,            // (n == 0) || (n == 1)
-
+        WasmOp::I32Eq, // n == 1
+        WasmOp::I32Or, // (n == 0) || (n == 1)
         // Base case result (inefficient: computes 0+0)
         WasmOp::I32Const(0),
         WasmOp::I32Const(0),
-        WasmOp::I32Add,           // 0 + 0 (can be folded to 0)
-
+        WasmOp::I32Add, // 0 + 0 (can be folded to 0)
         // Another inefficient computation: x * 1
         WasmOp::I32Const(1),
-        WasmOp::I32Mul,           // result * 1 (can be eliminated)
+        WasmOp::I32Mul, // result * 1 (can be eliminated)
     ];
 
     println!("Original WASM operations: {} instructions", wasm_ops.len());
@@ -66,21 +64,18 @@ fn bitfield_example() {
 
     // WASM program for flag operations: (flags & mask) | (value << shift)
     let wasm_ops = vec![
-        WasmOp::LocalGet(0),      // flags
-        WasmOp::LocalGet(1),      // mask
-        WasmOp::I32And,           // flags & mask
-
-        WasmOp::LocalGet(2),      // value
-        WasmOp::I32Const(4),      // shift amount (multiply by 16 = 2^4)
-        WasmOp::I32Shl,           // value << 4
-
+        WasmOp::LocalGet(0), // flags
+        WasmOp::LocalGet(1), // mask
+        WasmOp::I32And,      // flags & mask
+        WasmOp::LocalGet(2), // value
+        WasmOp::I32Const(4), // shift amount (multiply by 16 = 2^4)
+        WasmOp::I32Shl,      // value << 4
         // Inefficient: multiply by 8 (power of 2)
-        WasmOp::LocalGet(3),      // another value
-        WasmOp::I32Const(8),      // 2^3
-        WasmOp::I32Mul,           // value * 8 (strength reduction opportunity)
-
-        WasmOp::I32Or,            // Combine with OR
-        WasmOp::I32Or,            // Final result
+        WasmOp::LocalGet(3), // another value
+        WasmOp::I32Const(8), // 2^3
+        WasmOp::I32Mul,      // value * 8 (strength reduction opportunity)
+        WasmOp::I32Or,       // Combine with OR
+        WasmOp::I32Or,       // Final result
     ];
 
     println!("Original WASM operations: {} instructions", wasm_ops.len());
@@ -109,31 +104,26 @@ fn array_sum_example() {
     let wasm_ops = vec![
         // Initialize sum = 0
         WasmOp::I32Const(0),
-        WasmOp::LocalSet(1),      // sum = 0
-
+        WasmOp::LocalSet(1), // sum = 0
         // Loop iteration (simplified - just body)
-        WasmOp::LocalGet(1),      // sum
-        WasmOp::LocalGet(2),      // array[i]
-        WasmOp::I32Add,           // sum + array[i]
-
+        WasmOp::LocalGet(1), // sum
+        WasmOp::LocalGet(2), // array[i]
+        WasmOp::I32Add,      // sum + array[i]
         // Inefficient: add 0 (no-op)
         WasmOp::I32Const(0),
-        WasmOp::I32Add,           // + 0 (algebraic simplification opportunity)
-
-        WasmOp::LocalSet(1),      // sum = result
-
+        WasmOp::I32Add, // + 0 (algebraic simplification opportunity)
+        WasmOp::LocalSet(1), // sum = result
         // Index increment
-        WasmOp::LocalGet(3),      // i
+        WasmOp::LocalGet(3), // i
         WasmOp::I32Const(1),
-        WasmOp::I32Add,           // i + 1
-        WasmOp::LocalSet(3),      // i = i + 1
-
+        WasmOp::I32Add,      // i + 1
+        WasmOp::LocalSet(3), // i = i + 1
         // Comparison (inefficient: i < (count * 1))
-        WasmOp::LocalGet(3),      // i
-        WasmOp::LocalGet(4),      // count
+        WasmOp::LocalGet(3), // i
+        WasmOp::LocalGet(4), // count
         WasmOp::I32Const(1),
-        WasmOp::I32Mul,           // count * 1 (can be eliminated)
-        WasmOp::I32LtS,           // i < count
+        WasmOp::I32Mul, // count * 1 (can be eliminated)
+        WasmOp::I32LtS, // i < count
     ];
 
     println!("Original WASM operations: {} instructions", wasm_ops.len());
@@ -164,45 +154,37 @@ fn comprehensive_example() {
         // Constant folding: 10 + 20
         WasmOp::I32Const(10),
         WasmOp::I32Const(20),
-        WasmOp::I32Add,           // Fold to 30
+        WasmOp::I32Add, // Fold to 30
         WasmOp::LocalSet(0),
-
         // Algebraic simplification: x + 0
         WasmOp::LocalGet(0),
         WasmOp::I32Const(0),
-        WasmOp::I32Add,           // Eliminate
-
+        WasmOp::I32Add, // Eliminate
         // Strength reduction: x * 16
         WasmOp::I32Const(16),
-        WasmOp::I32Mul,           // Replace with shift
+        WasmOp::I32Mul, // Replace with shift
         WasmOp::LocalSet(1),
-
         // Common subexpression: a & b
         WasmOp::LocalGet(2),
         WasmOp::LocalGet(3),
         WasmOp::I32And,
         WasmOp::LocalSet(4),
-
         WasmOp::LocalGet(2),
         WasmOp::LocalGet(3),
-        WasmOp::I32And,           // CSE opportunity
+        WasmOp::I32And, // CSE opportunity
         WasmOp::LocalSet(5),
-
         // Division by constant
         WasmOp::LocalGet(1),
         WasmOp::I32Const(4),
-        WasmOp::I32DivU,          // Potential strength reduction
-
+        WasmOp::I32DivU, // Potential strength reduction
         // Comparison chain
         WasmOp::LocalGet(0),
         WasmOp::LocalGet(1),
         WasmOp::I32LtS,
-
         WasmOp::LocalGet(4),
         WasmOp::LocalGet(5),
         WasmOp::I32Eq,
-
-        WasmOp::I32And,           // Combine conditions
+        WasmOp::I32And, // Combine conditions
     ];
 
     println!("Original WASM operations: {} instructions", wasm_ops.len());
@@ -269,11 +251,17 @@ fn performance_comparison() {
 
     println!("Configuration: None");
     println!("  - Passes: {}", stats_none.passes_run);
-    println!("  - Changes: {}\n", stats_none.removed + stats_none.modified);
+    println!(
+        "  - Changes: {}\n",
+        stats_none.removed + stats_none.modified
+    );
 
     println!("Configuration: Fast");
     println!("  - Passes: {}", stats_fast.passes_run);
-    println!("  - Changes: {}\n", stats_fast.removed + stats_fast.modified);
+    println!(
+        "  - Changes: {}\n",
+        stats_fast.removed + stats_fast.modified
+    );
 
     println!("Configuration: All");
     println!("  - Passes: {}", stats_all.passes_run);

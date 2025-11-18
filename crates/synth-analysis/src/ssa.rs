@@ -37,10 +37,7 @@ pub enum SSAInstr {
     },
 
     /// Assignment: result = value
-    Assign {
-        result: SSAVar,
-        value: SSAValue,
-    },
+    Assign { result: SSAVar, value: SSAValue },
 
     /// Binary operation: result = left op right
     BinOp {
@@ -79,9 +76,7 @@ pub enum SSAInstr {
     },
 
     /// Return from function
-    Return {
-        value: Option<SSAValue>,
-    },
+    Return { value: Option<SSAValue> },
 
     /// Branch: if cond goto target else fallthrough
     Branch {
@@ -91,18 +86,33 @@ pub enum SSAInstr {
     },
 
     /// Unconditional jump
-    Jump {
-        target: u32,
-    },
+    Jump { target: u32 },
 }
 
 /// Binary operation
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
-    Add, Sub, Mul, DivS, DivU,
-    And, Or, Xor,
-    Shl, ShrS, ShrU,
-    Eq, Ne, LtS, LtU, LeS, LeU, GtS, GtU, GeS, GeU,
+    Add,
+    Sub,
+    Mul,
+    DivS,
+    DivU,
+    And,
+    Or,
+    Xor,
+    Shl,
+    ShrS,
+    ShrU,
+    Eq,
+    Ne,
+    LtS,
+    LtU,
+    LeS,
+    LeU,
+    GtS,
+    GtU,
+    GeS,
+    GeU,
 }
 
 /// Unary operation
@@ -245,7 +255,12 @@ impl ConstantPropagation {
         for block in &mut func.blocks {
             for instr in &mut block.instrs {
                 match instr {
-                    SSAInstr::BinOp { left, right, result, op } => {
+                    SSAInstr::BinOp {
+                        left,
+                        right,
+                        result,
+                        op,
+                    } => {
                         // Try to fold constant binary operations
                         if let (SSAValue::I32(l), SSAValue::I32(r)) = (left, right) {
                             if let Some(folded) = Self::fold_binop(*op, *l, *r) {
@@ -274,10 +289,34 @@ impl ConstantPropagation {
             BinOp::Shl => left.wrapping_shl(right as u32),
             BinOp::ShrS => left.wrapping_shr(right as u32),
             BinOp::ShrU => ((left as u32).wrapping_shr(right as u32)) as i32,
-            BinOp::Eq => if left == right { 1 } else { 0 },
-            BinOp::Ne => if left != right { 1 } else { 0 },
-            BinOp::LtS => if left < right { 1 } else { 0 },
-            BinOp::GtS => if left > right { 1 } else { 0 },
+            BinOp::Eq => {
+                if left == right {
+                    1
+                } else {
+                    0
+                }
+            }
+            BinOp::Ne => {
+                if left != right {
+                    1
+                } else {
+                    0
+                }
+            }
+            BinOp::LtS => {
+                if left < right {
+                    1
+                } else {
+                    0
+                }
+            }
+            BinOp::GtS => {
+                if left > right {
+                    1
+                } else {
+                    0
+                }
+            }
             _ => return None,
         })
     }
@@ -296,10 +335,10 @@ impl DeadCodeElimination {
         for block in &mut func.blocks {
             block.instrs.retain(|instr| {
                 match instr {
-                    SSAInstr::Assign { result, .. } |
-                    SSAInstr::BinOp { result, .. } |
-                    SSAInstr::UnaryOp { result, .. } |
-                    SSAInstr::Load { result, .. } => {
+                    SSAInstr::Assign { result, .. }
+                    | SSAInstr::BinOp { result, .. }
+                    | SSAInstr::UnaryOp { result, .. }
+                    | SSAInstr::Load { result, .. } => {
                         if !used_vars.contains(result) {
                             removed += 1;
                             return false;
@@ -344,13 +383,21 @@ impl DeadCodeElimination {
                     live.insert(v.clone());
                 }
             }
-            SSAInstr::Return { value: Some(SSAValue::Var(v)) } => {
+            SSAInstr::Return {
+                value: Some(SSAValue::Var(v)),
+            } => {
                 live.insert(v.clone());
             }
-            SSAInstr::Branch { cond: SSAValue::Var(v), .. } => {
+            SSAInstr::Branch {
+                cond: SSAValue::Var(v),
+                ..
+            } => {
                 live.insert(v.clone());
             }
-            SSAInstr::Store { value: SSAValue::Var(v), .. } => {
+            SSAInstr::Store {
+                value: SSAValue::Var(v),
+                ..
+            } => {
                 live.insert(v.clone());
             }
             _ => {}
@@ -389,8 +436,14 @@ mod tests {
     fn test_constant_folding() {
         assert_eq!(ConstantPropagation::fold_binop(BinOp::Add, 2, 3), Some(5));
         assert_eq!(ConstantPropagation::fold_binop(BinOp::Mul, 4, 5), Some(20));
-        assert_eq!(ConstantPropagation::fold_binop(BinOp::And, 0xF0, 0x0F), Some(0));
-        assert_eq!(ConstantPropagation::fold_binop(BinOp::Or, 0xF0, 0x0F), Some(0xFF));
+        assert_eq!(
+            ConstantPropagation::fold_binop(BinOp::And, 0xF0, 0x0F),
+            Some(0)
+        );
+        assert_eq!(
+            ConstantPropagation::fold_binop(BinOp::Or, 0xF0, 0x0F),
+            Some(0xFF)
+        );
     }
 
     #[test]

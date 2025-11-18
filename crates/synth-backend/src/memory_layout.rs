@@ -92,8 +92,7 @@ impl MemoryLayout {
             if section.overlaps(existing) {
                 return Err(Error::MemoryLayoutError(format!(
                     "Section '{}' at 0x{:08X} overlaps with '{}' at 0x{:08X}",
-                    section.name, section.base_address,
-                    existing.name, existing.base_address
+                    section.name, section.base_address, existing.name, existing.base_address
                 )));
             }
         }
@@ -147,7 +146,9 @@ impl MemoryLayout {
 
     /// Get section by type
     pub fn get_section(&self, section_type: SectionType) -> Option<&MemorySection> {
-        self.sections.iter().find(|s| s.section_type == section_type)
+        self.sections
+            .iter()
+            .find(|s| s.section_type == section_type)
     }
 
     /// Generate GNU LD linker script for ARM Cortex-M
@@ -424,16 +425,14 @@ impl MemoryLayoutAnalyzer {
     /// Estimate stack size
     fn estimate_stack_size(&self, component: &Component) -> u32 {
         // Conservative estimate based on recursion depth
-        let max_functions = component.modules.iter()
+        let max_functions = component
+            .modules
+            .iter()
             .map(|m| m.functions.len())
             .sum::<usize>();
 
         // Assume 256 bytes per stack frame, max depth of 16
-        let stack_size = if max_functions > 0 {
-            256 * 16
-        } else {
-            4096
-        };
+        let stack_size = if max_functions > 0 { 256 * 16 } else { 4096 };
 
         align_up(stack_size, 8)
     }
@@ -454,8 +453,8 @@ fn align_up(value: u32, alignment: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synth_core::{CoreModule, Function, FunctionSignature, Global, Memory, ValueType};
     use std::collections::HashMap;
+    use synth_core::{CoreModule, Function, FunctionSignature, Global, Memory, ValueType};
 
     fn test_component() -> Component {
         Component {
@@ -559,11 +558,20 @@ mod tests {
 
         // Print layout for inspection
         println!("\nMemory Layout:");
-        println!("Flash usage: {} / {} bytes", layout.flash_usage(), layout.flash_usage);
-        println!("RAM usage: {} / {} bytes", layout.ram_usage(), layout.ram_usage);
+        println!(
+            "Flash usage: {} / {} bytes",
+            layout.flash_usage(),
+            layout.flash_usage
+        );
+        println!(
+            "RAM usage: {} / {} bytes",
+            layout.ram_usage(),
+            layout.ram_usage
+        );
         println!("\nSections:");
         for section in layout.sections() {
-            println!("  {} ({:?}): 0x{:08X} - 0x{:08X} ({} bytes, {})",
+            println!(
+                "  {} ({:?}): 0x{:08X} - 0x{:08X} ({} bytes, {})",
                 section.name,
                 section.section_type,
                 section.base_address,

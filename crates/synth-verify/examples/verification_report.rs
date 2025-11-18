@@ -3,8 +3,8 @@
 //! This example generates a comprehensive report of all verified synthesis rules,
 //! showing which WASM→ARM transformations have been formally proven correct.
 
-use synth_verify::{create_z3_context, TranslationValidator, ValidationResult};
 use synth_synthesis::{ArmOp, Operand2, Pattern, Reg, Replacement, SynthesisRule, WasmOp};
+use synth_verify::{create_z3_context, TranslationValidator, ValidationResult};
 
 fn create_rule(name: &str, wasm_op: WasmOp, arm_op: ArmOp) -> SynthesisRule {
     SynthesisRule {
@@ -33,48 +33,79 @@ fn main() {
     // Define all directly-mappable synthesis rules
     let test_cases = vec![
         // === ARITHMETIC OPERATIONS ===
-        ("i32.add → ADD", WasmOp::I32Add, ArmOp::Add {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        }),
-        ("i32.sub → SUB", WasmOp::I32Sub, ArmOp::Sub {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        }),
-        ("i32.mul → MUL", WasmOp::I32Mul, ArmOp::Mul {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            rm: Reg::R1,
-        }),
-        ("i32.div_s → SDIV", WasmOp::I32DivS, ArmOp::Sdiv {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            rm: Reg::R1,
-        }),
-        ("i32.div_u → UDIV", WasmOp::I32DivU, ArmOp::Udiv {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            rm: Reg::R1,
-        }),
-
+        (
+            "i32.add → ADD",
+            WasmOp::I32Add,
+            ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+        ),
+        (
+            "i32.sub → SUB",
+            WasmOp::I32Sub,
+            ArmOp::Sub {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+        ),
+        (
+            "i32.mul → MUL",
+            WasmOp::I32Mul,
+            ArmOp::Mul {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            },
+        ),
+        (
+            "i32.div_s → SDIV",
+            WasmOp::I32DivS,
+            ArmOp::Sdiv {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            },
+        ),
+        (
+            "i32.div_u → UDIV",
+            WasmOp::I32DivU,
+            ArmOp::Udiv {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            },
+        ),
         // === BITWISE OPERATIONS ===
-        ("i32.and → AND", WasmOp::I32And, ArmOp::And {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        }),
-        ("i32.or → ORR", WasmOp::I32Or, ArmOp::Orr {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        }),
-        ("i32.xor → EOR", WasmOp::I32Xor, ArmOp::Eor {
-            rd: Reg::R0,
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        }),
+        (
+            "i32.and → AND",
+            WasmOp::I32And,
+            ArmOp::And {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+        ),
+        (
+            "i32.or → ORR",
+            WasmOp::I32Or,
+            ArmOp::Orr {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+        ),
+        (
+            "i32.xor → EOR",
+            WasmOp::I32Xor,
+            ArmOp::Eor {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            },
+        ),
     ];
 
     println!("═══════════════════════════════════════════════════════════════════════════\n");
@@ -134,10 +165,26 @@ fn main() {
     println!("═══════════════════════════════════════════════════════════════════════════\n");
 
     println!("  Total Rules Tested:     {}", total);
-    println!("  ✓ Proven Correct:       {} ({:.1}%)", verified, (verified as f64 / total as f64) * 100.0);
-    println!("  ✗ Found Incorrect:      {} ({:.1}%)", invalid, (invalid as f64 / total as f64) * 100.0);
-    println!("  ? Inconclusive:         {} ({:.1}%)", unknown, (unknown as f64 / total as f64) * 100.0);
-    println!("  ⚠ Errors:               {} ({:.1}%)", errors, (errors as f64 / total as f64) * 100.0);
+    println!(
+        "  ✓ Proven Correct:       {} ({:.1}%)",
+        verified,
+        (verified as f64 / total as f64) * 100.0
+    );
+    println!(
+        "  ✗ Found Incorrect:      {} ({:.1}%)",
+        invalid,
+        (invalid as f64 / total as f64) * 100.0
+    );
+    println!(
+        "  ? Inconclusive:         {} ({:.1}%)",
+        unknown,
+        (unknown as f64 / total as f64) * 100.0
+    );
+    println!(
+        "  ⚠ Errors:               {} ({:.1}%)",
+        errors,
+        (errors as f64 / total as f64) * 100.0
+    );
 
     println!("\n═══════════════════════════════════════════════════════════════════════════\n");
     println!("  FORMAL GUARANTEES\n");
@@ -177,7 +224,8 @@ fn main() {
     let progress_bar_length = 50;
     let filled = ((verified as f64 / 51.0) * progress_bar_length as f64) as usize;
     let empty = progress_bar_length - filled;
-    println!("  Progress: [{}{}] {:.1}%",
+    println!(
+        "  Progress: [{}{}] {:.1}%",
         "█".repeat(filled),
         "░".repeat(empty),
         coverage_pct
@@ -219,6 +267,9 @@ fn main() {
         println!();
     }
 
-    println!("Report generated: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"));
+    println!(
+        "Report generated: {}",
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
+    );
     println!();
 }

@@ -42,11 +42,11 @@ pub mod wasm_semantics;
 pub use properties::CompilerProperties;
 #[cfg(feature = "z3-solver")]
 pub use translation_validator::{TranslationValidator, ValidationResult, VerificationError};
+#[cfg(feature = "z3-solver")]
+pub use arm_semantics::{ArmSemantics, ArmState};
+#[cfg(feature = "z3-solver")]
+pub use wasm_semantics::WasmSemantics;
 
-#[cfg(feature = "z3-solver")]
-use synth_synthesis::{ArmOp, WasmOp};
-#[cfg(feature = "z3-solver")]
-use z3::ast::{Ast, BV};
 #[cfg(feature = "z3-solver")]
 use z3::{Config, Context, Solver};
 
@@ -61,7 +61,7 @@ pub fn create_z3_context() -> Context {
 
 /// Create a Z3 solver with default configuration
 #[cfg(feature = "z3-solver")]
-pub fn create_solver(ctx: &Context) -> Solver {
+pub fn create_solver(ctx: &Context) -> Solver<'_> {
     Solver::new(ctx)
 }
 

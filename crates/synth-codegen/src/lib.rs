@@ -10,45 +10,128 @@ use synth_regalloc::PhysicalReg;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ArmInstruction {
     // Data processing
-    Mov { rd: PhysicalReg, op: ArmOperand },
-    Mvn { rd: PhysicalReg, op: ArmOperand },
-    Add { rd: PhysicalReg, rn: PhysicalReg, op: ArmOperand },
-    Sub { rd: PhysicalReg, rn: PhysicalReg, op: ArmOperand },
-    Mul { rd: PhysicalReg, rn: PhysicalReg, rm: PhysicalReg },
-    Sdiv { rd: PhysicalReg, rn: PhysicalReg, rm: PhysicalReg },
-    Udiv { rd: PhysicalReg, rn: PhysicalReg, rm: PhysicalReg },
+    Mov {
+        rd: PhysicalReg,
+        op: ArmOperand,
+    },
+    Mvn {
+        rd: PhysicalReg,
+        op: ArmOperand,
+    },
+    Add {
+        rd: PhysicalReg,
+        rn: PhysicalReg,
+        op: ArmOperand,
+    },
+    Sub {
+        rd: PhysicalReg,
+        rn: PhysicalReg,
+        op: ArmOperand,
+    },
+    Mul {
+        rd: PhysicalReg,
+        rn: PhysicalReg,
+        rm: PhysicalReg,
+    },
+    Sdiv {
+        rd: PhysicalReg,
+        rn: PhysicalReg,
+        rm: PhysicalReg,
+    },
+    Udiv {
+        rd: PhysicalReg,
+        rn: PhysicalReg,
+        rm: PhysicalReg,
+    },
 
     // Bitwise
-    And { rd: PhysicalReg, rn: PhysicalReg, op: ArmOperand },
-    Orr { rd: PhysicalReg, rn: PhysicalReg, op: ArmOperand },
-    Eor { rd: PhysicalReg, rn: PhysicalReg, op: ArmOperand },
-    Lsl { rd: PhysicalReg, rn: PhysicalReg, op: ArmOperand },
-    Lsr { rd: PhysicalReg, rn: PhysicalReg, op: ArmOperand },
-    Asr { rd: PhysicalReg, rn: PhysicalReg, op: ArmOperand },
+    And {
+        rd: PhysicalReg,
+        rn: PhysicalReg,
+        op: ArmOperand,
+    },
+    Orr {
+        rd: PhysicalReg,
+        rn: PhysicalReg,
+        op: ArmOperand,
+    },
+    Eor {
+        rd: PhysicalReg,
+        rn: PhysicalReg,
+        op: ArmOperand,
+    },
+    Lsl {
+        rd: PhysicalReg,
+        rn: PhysicalReg,
+        op: ArmOperand,
+    },
+    Lsr {
+        rd: PhysicalReg,
+        rn: PhysicalReg,
+        op: ArmOperand,
+    },
+    Asr {
+        rd: PhysicalReg,
+        rn: PhysicalReg,
+        op: ArmOperand,
+    },
 
     // Comparison
-    Cmp { rn: PhysicalReg, op: ArmOperand },
+    Cmp {
+        rn: PhysicalReg,
+        op: ArmOperand,
+    },
 
     // Memory
-    Ldr { rd: PhysicalReg, addr: MemoryAddress },
-    Str { rd: PhysicalReg, addr: MemoryAddress },
-    Push { regs: Vec<PhysicalReg> },
-    Pop { regs: Vec<PhysicalReg> },
+    Ldr {
+        rd: PhysicalReg,
+        addr: MemoryAddress,
+    },
+    Str {
+        rd: PhysicalReg,
+        addr: MemoryAddress,
+    },
+    Push {
+        regs: Vec<PhysicalReg>,
+    },
+    Pop {
+        regs: Vec<PhysicalReg>,
+    },
 
     // Control flow
-    B { label: String },
-    Beq { label: String },
-    Bne { label: String },
-    Blt { label: String },
-    Ble { label: String },
-    Bgt { label: String },
-    Bge { label: String },
-    Bl { function: String },
-    Bx { rm: PhysicalReg },
+    B {
+        label: String,
+    },
+    Beq {
+        label: String,
+    },
+    Bne {
+        label: String,
+    },
+    Blt {
+        label: String,
+    },
+    Ble {
+        label: String,
+    },
+    Bgt {
+        label: String,
+    },
+    Bge {
+        label: String,
+    },
+    Bl {
+        function: String,
+    },
+    Bx {
+        rm: PhysicalReg,
+    },
 
     // Special
     Nop,
-    Label { name: String },
+    Label {
+        name: String,
+    },
 }
 
 /// ARM operand (register or immediate)
@@ -83,13 +166,31 @@ impl fmt::Display for ArmInstruction {
                 write!(f, "    sub {}, {}, {}", rd.to_str(), rn.to_str(), op)
             }
             ArmInstruction::Mul { rd, rn, rm } => {
-                write!(f, "    mul {}, {}, {}", rd.to_str(), rn.to_str(), rm.to_str())
+                write!(
+                    f,
+                    "    mul {}, {}, {}",
+                    rd.to_str(),
+                    rn.to_str(),
+                    rm.to_str()
+                )
             }
             ArmInstruction::Sdiv { rd, rn, rm } => {
-                write!(f, "    sdiv {}, {}, {}", rd.to_str(), rn.to_str(), rm.to_str())
+                write!(
+                    f,
+                    "    sdiv {}, {}, {}",
+                    rd.to_str(),
+                    rn.to_str(),
+                    rm.to_str()
+                )
             }
             ArmInstruction::Udiv { rd, rn, rm } => {
-                write!(f, "    udiv {}, {}, {}", rd.to_str(), rn.to_str(), rm.to_str())
+                write!(
+                    f,
+                    "    udiv {}, {}, {}",
+                    rd.to_str(),
+                    rn.to_str(),
+                    rm.to_str()
+                )
             }
             ArmInstruction::And { rd, rn, op } => {
                 write!(f, "    and {}, {}, {}", rd.to_str(), rn.to_str(), op)
@@ -119,14 +220,16 @@ impl fmt::Display for ArmInstruction {
                 write!(f, "    str {}, {}", rd.to_str(), addr)
             }
             ArmInstruction::Push { regs } => {
-                let reg_list = regs.iter()
+                let reg_list = regs
+                    .iter()
                     .map(|r| r.to_str())
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(f, "    push {{{}}}", reg_list)
             }
             ArmInstruction::Pop { regs } => {
-                let reg_list = regs.iter()
+                let reg_list = regs
+                    .iter()
                     .map(|r| r.to_str())
                     .collect::<Vec<_>>()
                     .join(", ");
@@ -368,7 +471,9 @@ impl CodeGenerator {
                 let rd = self.get_physical_reg(dest, allocation)?;
                 self.emit(ArmInstruction::Ldr {
                     rd,
-                    addr: MemoryAddress::StackOffset { offset: *addr as i32 },
+                    addr: MemoryAddress::StackOffset {
+                        offset: *addr as i32,
+                    },
                 });
             }
 
@@ -376,7 +481,9 @@ impl CodeGenerator {
                 let rs = self.get_physical_reg(src, allocation)?;
                 self.emit(ArmInstruction::Str {
                     rd: rs,
-                    addr: MemoryAddress::StackOffset { offset: *addr as i32 },
+                    addr: MemoryAddress::StackOffset {
+                        offset: *addr as i32,
+                    },
                 });
             }
 
@@ -391,7 +498,9 @@ impl CodeGenerator {
                         });
                     }
                 }
-                self.emit(ArmInstruction::Bx { rm: PhysicalReg::LR });
+                self.emit(ArmInstruction::Bx {
+                    rm: PhysicalReg::LR,
+                });
             }
 
             Opcode::Nop => {

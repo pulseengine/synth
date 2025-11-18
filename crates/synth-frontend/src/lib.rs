@@ -8,14 +8,13 @@ pub mod validator;
 pub use parser::ComponentParser;
 pub use validator::ComponentValidator;
 
-use synth_core::{Component, Error, Result};
 use std::path::Path;
+use synth_core::{Component, Error, Result};
 
 /// Parse a WebAssembly component from a file
 pub fn parse_component_file(path: &Path) -> Result<Component> {
-    let bytes = std::fs::read(path).map_err(|e| {
-        Error::parse(format!("Failed to read file {}: {}", path.display(), e))
-    })?;
+    let bytes = std::fs::read(path)
+        .map_err(|e| Error::parse(format!("Failed to read file {}: {}", path.display(), e)))?;
 
     parse_component(&bytes)
 }

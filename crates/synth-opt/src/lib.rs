@@ -16,7 +16,7 @@
 //! - Loop-Invariant Code Motion (LICM)
 
 use std::collections::{HashMap, HashSet};
-use synth_cfg::{Cfg, BlockId};
+use synth_cfg::{BlockId, Cfg};
 
 /// Optimization pass trait
 pub trait OptimizationPass {
@@ -77,28 +77,28 @@ pub enum Opcode {
     Add { dest: Reg, src1: Reg, src2: Reg },
     Sub { dest: Reg, src1: Reg, src2: Reg },
     Mul { dest: Reg, src1: Reg, src2: Reg },
-    DivS { dest: Reg, src1: Reg, src2: Reg },  // Signed division
-    DivU { dest: Reg, src1: Reg, src2: Reg },  // Unsigned division
-    RemS { dest: Reg, src1: Reg, src2: Reg },  // Signed remainder
-    RemU { dest: Reg, src1: Reg, src2: Reg },  // Unsigned remainder
+    DivS { dest: Reg, src1: Reg, src2: Reg }, // Signed division
+    DivU { dest: Reg, src1: Reg, src2: Reg }, // Unsigned division
+    RemS { dest: Reg, src1: Reg, src2: Reg }, // Signed remainder
+    RemU { dest: Reg, src1: Reg, src2: Reg }, // Unsigned remainder
     // Bitwise
     And { dest: Reg, src1: Reg, src2: Reg },
     Or { dest: Reg, src1: Reg, src2: Reg },
     Xor { dest: Reg, src1: Reg, src2: Reg },
-    Shl { dest: Reg, src1: Reg, src2: Reg },   // Shift left
-    ShrS { dest: Reg, src1: Reg, src2: Reg },  // Shift right signed
-    ShrU { dest: Reg, src1: Reg, src2: Reg },  // Shift right unsigned
+    Shl { dest: Reg, src1: Reg, src2: Reg },  // Shift left
+    ShrS { dest: Reg, src1: Reg, src2: Reg }, // Shift right signed
+    ShrU { dest: Reg, src1: Reg, src2: Reg }, // Shift right unsigned
     // Comparison (result is 0 or 1)
     Eq { dest: Reg, src1: Reg, src2: Reg },
     Ne { dest: Reg, src1: Reg, src2: Reg },
-    LtS { dest: Reg, src1: Reg, src2: Reg },   // Less than signed
-    LtU { dest: Reg, src1: Reg, src2: Reg },   // Less than unsigned
-    LeS { dest: Reg, src1: Reg, src2: Reg },   // Less or equal signed
-    LeU { dest: Reg, src1: Reg, src2: Reg },   // Less or equal unsigned
-    GtS { dest: Reg, src1: Reg, src2: Reg },   // Greater than signed
-    GtU { dest: Reg, src1: Reg, src2: Reg },   // Greater than unsigned
-    GeS { dest: Reg, src1: Reg, src2: Reg },   // Greater or equal signed
-    GeU { dest: Reg, src1: Reg, src2: Reg },   // Greater or equal unsigned
+    LtS { dest: Reg, src1: Reg, src2: Reg }, // Less than signed
+    LtU { dest: Reg, src1: Reg, src2: Reg }, // Less than unsigned
+    LeS { dest: Reg, src1: Reg, src2: Reg }, // Less or equal signed
+    LeU { dest: Reg, src1: Reg, src2: Reg }, // Less or equal unsigned
+    GtS { dest: Reg, src1: Reg, src2: Reg }, // Greater than signed
+    GtU { dest: Reg, src1: Reg, src2: Reg }, // Greater than unsigned
+    GeS { dest: Reg, src1: Reg, src2: Reg }, // Greater or equal signed
+    GeU { dest: Reg, src1: Reg, src2: Reg }, // Greater or equal unsigned
     // Memory
     Load { dest: Reg, addr: u32 },
     Store { src: Reg, addr: u32 },
@@ -231,45 +231,66 @@ impl ConstantFolding {
 
                 // Fold Add if both operands are constant
                 Opcode::Add { dest, src1, src2 } => {
-                    if let (Some(&val1), Some(&val2)) = (const_values.get(&src1), const_values.get(&src2)) {
+                    if let (Some(&val1), Some(&val2)) =
+                        (const_values.get(&src1), const_values.get(&src2))
+                    {
                         let result = val1.wrapping_add(val2);
-                        inst.opcode = Opcode::Const { dest, value: result };
+                        inst.opcode = Opcode::Const {
+                            dest,
+                            value: result,
+                        };
                         const_values.insert(dest, result);
                         modified += 1;
 
                         if self.verbose {
-                            eprintln!("Folded: add {} = {} + {} -> const {} = {}",
-                                dest.0, val1, val2, dest.0, result);
+                            eprintln!(
+                                "Folded: add {} = {} + {} -> const {} = {}",
+                                dest.0, val1, val2, dest.0, result
+                            );
                         }
                     }
                 }
 
                 // Fold Sub if both operands are constant
                 Opcode::Sub { dest, src1, src2 } => {
-                    if let (Some(&val1), Some(&val2)) = (const_values.get(&src1), const_values.get(&src2)) {
+                    if let (Some(&val1), Some(&val2)) =
+                        (const_values.get(&src1), const_values.get(&src2))
+                    {
                         let result = val1.wrapping_sub(val2);
-                        inst.opcode = Opcode::Const { dest, value: result };
+                        inst.opcode = Opcode::Const {
+                            dest,
+                            value: result,
+                        };
                         const_values.insert(dest, result);
                         modified += 1;
 
                         if self.verbose {
-                            eprintln!("Folded: sub {} = {} - {} -> const {} = {}",
-                                dest.0, val1, val2, dest.0, result);
+                            eprintln!(
+                                "Folded: sub {} = {} - {} -> const {} = {}",
+                                dest.0, val1, val2, dest.0, result
+                            );
                         }
                     }
                 }
 
                 // Fold Mul if both operands are constant
                 Opcode::Mul { dest, src1, src2 } => {
-                    if let (Some(&val1), Some(&val2)) = (const_values.get(&src1), const_values.get(&src2)) {
+                    if let (Some(&val1), Some(&val2)) =
+                        (const_values.get(&src1), const_values.get(&src2))
+                    {
                         let result = val1.wrapping_mul(val2);
-                        inst.opcode = Opcode::Const { dest, value: result };
+                        inst.opcode = Opcode::Const {
+                            dest,
+                            value: result,
+                        };
                         const_values.insert(dest, result);
                         modified += 1;
 
                         if self.verbose {
-                            eprintln!("Folded: mul {} = {} * {} -> const {} = {}",
-                                dest.0, val1, val2, dest.0, result);
+                            eprintln!(
+                                "Folded: mul {} = {} * {} -> const {} = {}",
+                                dest.0, val1, val2, dest.0, result
+                            );
                         }
                     }
                 }
@@ -350,9 +371,7 @@ impl CommonSubexpressionElimination {
             let opcode = inst.opcode.clone();
 
             // Resolve register mappings
-            let resolve = |r: Reg| -> Reg {
-                reg_map.get(&r).copied().unwrap_or(r)
-            };
+            let resolve = |r: Reg| -> Reg { reg_map.get(&r).copied().unwrap_or(r) };
 
             match opcode {
                 Opcode::Add { dest, src1, src2 } => {
@@ -368,8 +387,10 @@ impl CommonSubexpressionElimination {
                         modified += 1;
 
                         if self.verbose {
-                            eprintln!("CSE: Eliminated add r{} = r{} + r{}, reuse r{}",
-                                dest.0, src1.0, src2.0, existing.0);
+                            eprintln!(
+                                "CSE: Eliminated add r{} = r{} + r{}, reuse r{}",
+                                dest.0, src1.0, src2.0, existing.0
+                            );
                         }
                     } else {
                         expr_map.insert(key, dest);
@@ -390,8 +411,10 @@ impl CommonSubexpressionElimination {
                         modified += 1;
 
                         if self.verbose {
-                            eprintln!("CSE: Eliminated sub r{} = r{} - r{}, reuse r{}",
-                                dest.0, src1.0, src2.0, existing.0);
+                            eprintln!(
+                                "CSE: Eliminated sub r{} = r{} - r{}, reuse r{}",
+                                dest.0, src1.0, src2.0, existing.0
+                            );
                         }
                     } else {
                         expr_map.insert(key, dest);
@@ -411,8 +434,10 @@ impl CommonSubexpressionElimination {
                         modified += 1;
 
                         if self.verbose {
-                            eprintln!("CSE: Eliminated mul r{} = r{} * r{}, reuse r{}",
-                                dest.0, src1.0, src2.0, existing.0);
+                            eprintln!(
+                                "CSE: Eliminated mul r{} = r{} * r{}, reuse r{}",
+                                dest.0, src1.0, src2.0, existing.0
+                            );
                         }
                     } else {
                         expr_map.insert(key, dest);
@@ -430,8 +455,10 @@ impl CommonSubexpressionElimination {
                         modified += 1;
 
                         if self.verbose {
-                            eprintln!("CSE: Eliminated load r{} = [0x{:x}], reuse r{}",
-                                dest.0, addr, existing.0);
+                            eprintln!(
+                                "CSE: Eliminated load r{} = [0x{:x}], reuse r{}",
+                                dest.0, addr, existing.0
+                            );
                         }
                     } else {
                         expr_map.insert(key, dest);
@@ -511,7 +538,11 @@ impl AlgebraicSimplification {
                 }
 
                 // Simplify: x + 0 = x, 0 + x = x
-                Opcode::Add { dest: _, src1, src2 } => {
+                Opcode::Add {
+                    dest: _,
+                    src1,
+                    src2,
+                } => {
                     let val1 = const_values.get(&src1);
                     let val2 = const_values.get(&src2);
 
@@ -598,7 +629,10 @@ impl AlgebraicSimplification {
         }
 
         if self.verbose && modified > 0 {
-            eprintln!("Algebraic simplification: {} operations simplified", modified);
+            eprintln!(
+                "Algebraic simplification: {} operations simplified",
+                modified
+            );
         }
 
         OptResult {
@@ -658,7 +692,9 @@ impl PeepholeOptimization {
 
             // Pattern: const r1, a; const r1, b -> eliminate first const
             match (&inst1, &inst2) {
-                (Opcode::Const { dest: dest1, .. }, Opcode::Const { dest: dest2, .. }) if dest1 == dest2 => {
+                (Opcode::Const { dest: dest1, .. }, Opcode::Const { dest: dest2, .. })
+                    if dest1 == dest2 =>
+                {
                     // Second const overwrites first
                     instructions[i].is_dead = true;
                     modified += 1;
@@ -678,7 +714,8 @@ impl PeepholeOptimization {
         // Look for 3-instruction patterns
         let mut i = 0;
         while i + 2 < instructions.len() {
-            if instructions[i].is_dead || instructions[i + 1].is_dead || instructions[i + 2].is_dead {
+            if instructions[i].is_dead || instructions[i + 1].is_dead || instructions[i + 2].is_dead
+            {
                 i += 1;
                 continue;
             }
@@ -768,7 +805,11 @@ impl StrengthReduction {
                 }
 
                 // Reduce: x * 2^n -> x << n
-                Opcode::Mul { dest: _, src1, src2 } => {
+                Opcode::Mul {
+                    dest: _,
+                    src1,
+                    src2,
+                } => {
                     let val1 = const_values.get(&src1);
                     let val2 = const_values.get(&src2);
 
@@ -778,16 +819,26 @@ impl StrengthReduction {
                             // In real implementation, would use shift opcode
                             modified += 1;
                             if self.verbose {
-                                eprintln!("Strength reduction: r{} * {} -> r{} << {}",
-                                    src1.0, val, src1.0, Self::log2(val));
+                                eprintln!(
+                                    "Strength reduction: r{} * {} -> r{} << {}",
+                                    src1.0,
+                                    val,
+                                    src1.0,
+                                    Self::log2(val)
+                                );
                             }
                         }
                     } else if let Some(&val) = val1 {
                         if Self::is_power_of_2(val) {
                             modified += 1;
                             if self.verbose {
-                                eprintln!("Strength reduction: {} * r{} -> r{} << {}",
-                                    val, src2.0, src2.0, Self::log2(val));
+                                eprintln!(
+                                    "Strength reduction: {} * r{} -> r{} << {}",
+                                    val,
+                                    src2.0,
+                                    src2.0,
+                                    Self::log2(val)
+                                );
                             }
                         }
                     }
@@ -859,9 +910,15 @@ impl LoopInvariantCodeMotion {
                     Opcode::Const { .. } => true,
 
                     // Arithmetic ops are invariant if operands are
-                    Opcode::Add { src1: _, src2: _, .. } |
-                    Opcode::Sub { src1: _, src2: _, .. } |
-                    Opcode::Mul { src1: _, src2: _, .. } => {
+                    Opcode::Add {
+                        src1: _, src2: _, ..
+                    }
+                    | Opcode::Sub {
+                        src1: _, src2: _, ..
+                    }
+                    | Opcode::Mul {
+                        src1: _, src2: _, ..
+                    } => {
                         // Simplified check: if sources are from outside loop or are constants
                         // In real implementation, would track def-use chains
                         false // Conservative: mark as not invariant
@@ -889,7 +946,10 @@ impl LoopInvariantCodeMotion {
         // In a real implementation, would actually move instructions
         // For now, just count and report
         if self.verbose && !invariants.is_empty() {
-            eprintln!("LICM: {} loop-invariant instructions detected", invariants.len());
+            eprintln!(
+                "LICM: {} loop-invariant instructions detected",
+                invariants.len()
+            );
         }
 
         let modified = invariants.len();
@@ -1007,10 +1067,7 @@ impl CopyPropagation {
                     let new_src = Self::resolve(&copy_map, src);
 
                     if new_src != src {
-                        inst.opcode = Opcode::Store {
-                            src: new_src,
-                            addr,
-                        };
+                        inst.opcode = Opcode::Store { src: new_src, addr };
                         changed = true;
                         modified += 1;
                     }
@@ -1123,7 +1180,11 @@ impl InstructionCombining {
 
             match &inst.opcode {
                 // (x + c1) + c2 => x + (c1 + c2)
-                Opcode::Add { dest: _, src1, src2 } => {
+                Opcode::Add {
+                    dest: _,
+                    src1,
+                    src2,
+                } => {
                     // Check if src1 is the result of another add with a constant
                     if let Some(&val2) = const_values.get(&src2) {
                         // src2 is a constant
@@ -1160,7 +1221,11 @@ impl InstructionCombining {
                 // x * 1 => x (already handled by algebraic simplification)
                 // x * 0 => 0 (already handled by algebraic simplification)
                 // x - x => 0 (already handled by algebraic simplification)
-                Opcode::Mul { dest: _, src1: _, src2: _ } => {
+                Opcode::Mul {
+                    dest: _,
+                    src1: _,
+                    src2: _,
+                } => {
                     // Detect patterns like (x << n) which is mul by 2^n
                     // Already handled by strength reduction
                 }
@@ -1260,8 +1325,8 @@ impl Default for PassManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synth_cfg::Loop;
     use synth_cfg::CfgBuilder;
+    use synth_cfg::Loop;
 
     #[test]
     fn test_dce_removes_unreachable() {
@@ -1417,13 +1482,19 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 10 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 10,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             Instruction {
                 id: 1,
-                opcode: Opcode::Const { dest: Reg(1), value: 20 },
+                opcode: Opcode::Const {
+                    dest: Reg(1),
+                    value: 20,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -1445,7 +1516,13 @@ mod tests {
         // Should fold add to const 30
         assert!(result.changed);
         assert_eq!(result.modified_count, 1);
-        assert_eq!(instructions[2].opcode, Opcode::Const { dest: Reg(2), value: 30 });
+        assert_eq!(
+            instructions[2].opcode,
+            Opcode::Const {
+                dest: Reg(2),
+                value: 30
+            }
+        );
     }
 
     #[test]
@@ -1461,13 +1538,19 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 5 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 5,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             Instruction {
                 id: 1,
-                opcode: Opcode::Const { dest: Reg(1), value: 3 },
+                opcode: Opcode::Const {
+                    dest: Reg(1),
+                    value: 3,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -1509,9 +1592,27 @@ mod tests {
         // Should fold all three operations
         assert!(result.changed);
         assert_eq!(result.modified_count, 3);
-        assert_eq!(instructions[2].opcode, Opcode::Const { dest: Reg(2), value: 8 });  // 5 + 3
-        assert_eq!(instructions[3].opcode, Opcode::Const { dest: Reg(3), value: 2 });  // 5 - 3
-        assert_eq!(instructions[4].opcode, Opcode::Const { dest: Reg(4), value: 15 }); // 5 * 3
+        assert_eq!(
+            instructions[2].opcode,
+            Opcode::Const {
+                dest: Reg(2),
+                value: 8
+            }
+        ); // 5 + 3
+        assert_eq!(
+            instructions[3].opcode,
+            Opcode::Const {
+                dest: Reg(3),
+                value: 2
+            }
+        ); // 5 - 3
+        assert_eq!(
+            instructions[4].opcode,
+            Opcode::Const {
+                dest: Reg(4),
+                value: 15
+            }
+        ); // 5 * 3
     }
 
     #[test]
@@ -1527,13 +1628,19 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 2 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 2,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             Instruction {
                 id: 1,
-                opcode: Opcode::Const { dest: Reg(1), value: 3 },
+                opcode: Opcode::Const {
+                    dest: Reg(1),
+                    value: 3,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -1565,8 +1672,20 @@ mod tests {
         // First pass should fold r2 = 5
         assert!(result.changed);
         assert_eq!(result.modified_count, 2); // Both add and mul should fold
-        assert_eq!(instructions[2].opcode, Opcode::Const { dest: Reg(2), value: 5 });  // 2 + 3
-        assert_eq!(instructions[3].opcode, Opcode::Const { dest: Reg(3), value: 10 }); // 5 * 2
+        assert_eq!(
+            instructions[2].opcode,
+            Opcode::Const {
+                dest: Reg(2),
+                value: 5
+            }
+        ); // 2 + 3
+        assert_eq!(
+            instructions[3].opcode,
+            Opcode::Const {
+                dest: Reg(3),
+                value: 10
+            }
+        ); // 5 * 2
     }
 
     #[test]
@@ -1577,18 +1696,16 @@ mod tests {
         let mut cfg = builder.build();
 
         // Create: r2 = r0 + r1 (no constants defined)
-        let mut instructions = vec![
-            Instruction {
-                id: 0,
-                opcode: Opcode::Add {
-                    dest: Reg(2),
-                    src1: Reg(0),
-                    src2: Reg(1),
-                },
-                block_id: 0,
-                is_dead: false,
+        let mut instructions = vec![Instruction {
+            id: 0,
+            opcode: Opcode::Add {
+                dest: Reg(2),
+                src1: Reg(0),
+                src2: Reg(1),
             },
-        ];
+            block_id: 0,
+            is_dead: false,
+        }];
 
         let mut folder = ConstantFolding::new();
         let result = folder.run(&mut cfg, &mut instructions);
@@ -1852,7 +1969,10 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 0 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 0,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -1890,7 +2010,10 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 0 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 0,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -1923,18 +2046,16 @@ mod tests {
         let mut cfg = builder.build();
 
         // Create: r2 = r1 - r1 (self subtraction)
-        let mut instructions = vec![
-            Instruction {
-                id: 0,
-                opcode: Opcode::Sub {
-                    dest: Reg(2),
-                    src1: Reg(1),
-                    src2: Reg(1),
-                },
-                block_id: 0,
-                is_dead: false,
+        let mut instructions = vec![Instruction {
+            id: 0,
+            opcode: Opcode::Sub {
+                dest: Reg(2),
+                src1: Reg(1),
+                src2: Reg(1),
             },
-        ];
+            block_id: 0,
+            is_dead: false,
+        }];
 
         let mut simplify = AlgebraicSimplification::new();
         let result = simplify.run(&mut cfg, &mut instructions);
@@ -1942,7 +2063,13 @@ mod tests {
         // r1 - r1 should become const 0
         assert!(result.changed);
         assert_eq!(result.modified_count, 1);
-        assert_eq!(instructions[0].opcode, Opcode::Const { dest: Reg(2), value: 0 });
+        assert_eq!(
+            instructions[0].opcode,
+            Opcode::Const {
+                dest: Reg(2),
+                value: 0
+            }
+        );
     }
 
     #[test]
@@ -1958,7 +2085,10 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 0 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 0,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -1980,7 +2110,13 @@ mod tests {
         // r1 * 0 should become const 0
         assert!(result.changed);
         assert_eq!(result.modified_count, 1);
-        assert_eq!(instructions[1].opcode, Opcode::Const { dest: Reg(2), value: 0 });
+        assert_eq!(
+            instructions[1].opcode,
+            Opcode::Const {
+                dest: Reg(2),
+                value: 0
+            }
+        );
     }
 
     #[test]
@@ -1996,7 +2132,10 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 1 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 1,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2034,13 +2173,19 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 0 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 0,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             Instruction {
                 id: 1,
-                opcode: Opcode::Const { dest: Reg(1), value: 1 },
+                opcode: Opcode::Const {
+                    dest: Reg(1),
+                    value: 1,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2084,7 +2229,13 @@ mod tests {
         assert_eq!(result.modified_count, 3);
         assert!(instructions[2].is_dead); // r2 + 0
         assert!(instructions[3].is_dead); // r3 * 1
-        assert_eq!(instructions[4].opcode, Opcode::Const { dest: Reg(7), value: 0 }); // r4 - r4
+        assert_eq!(
+            instructions[4].opcode,
+            Opcode::Const {
+                dest: Reg(7),
+                value: 0
+            }
+        ); // r4 - r4
     }
 
     #[test]
@@ -2100,13 +2251,19 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 5 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 5,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             Instruction {
                 id: 1,
-                opcode: Opcode::Const { dest: Reg(0), value: 10 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 10,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2135,13 +2292,19 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 5 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 5,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             Instruction {
                 id: 1,
-                opcode: Opcode::Const { dest: Reg(1), value: 10 },
+                opcode: Opcode::Const {
+                    dest: Reg(1),
+                    value: 10,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2169,20 +2332,29 @@ mod tests {
             // Redundant const
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 5 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 5,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             Instruction {
                 id: 1,
-                opcode: Opcode::Const { dest: Reg(0), value: 10 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 10,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             // Constant folding opportunity
             Instruction {
                 id: 2,
-                opcode: Opcode::Const { dest: Reg(1), value: 20 },
+                opcode: Opcode::Const {
+                    dest: Reg(1),
+                    value: 20,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2199,7 +2371,10 @@ mod tests {
             // Algebraic simplification
             Instruction {
                 id: 4,
-                opcode: Opcode::Const { dest: Reg(3), value: 0 },
+                opcode: Opcode::Const {
+                    dest: Reg(3),
+                    value: 0,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2241,7 +2416,11 @@ mod tests {
 
         // At least some optimizations should have been applied
         let total_opts = result.removed_count + result.modified_count;
-        assert!(total_opts >= 2, "Expected at least 2 optimizations, got {}", total_opts);
+        assert!(
+            total_opts >= 2,
+            "Expected at least 2 optimizations, got {}",
+            total_opts
+        );
 
         // First const should be dead (peephole - redundant const)
         assert!(instructions[0].is_dead, "Redundant const not eliminated");
@@ -2268,7 +2447,10 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 8 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 8,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2306,7 +2488,10 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 7 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 7,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2343,7 +2528,10 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 4 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 4,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2359,7 +2547,10 @@ mod tests {
             },
             Instruction {
                 id: 2,
-                opcode: Opcode::Const { dest: Reg(3), value: 16 },
+                opcode: Opcode::Const {
+                    dest: Reg(3),
+                    value: 16,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2375,7 +2566,10 @@ mod tests {
             },
             Instruction {
                 id: 4,
-                opcode: Opcode::Const { dest: Reg(6), value: 5 },
+                opcode: Opcode::Const {
+                    dest: Reg(6),
+                    value: 5,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2434,7 +2628,10 @@ mod tests {
             // Loop-invariant: constant in loop
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 10 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 10,
+                },
                 block_id: block1,
                 is_dead: false,
             },
@@ -2466,14 +2663,15 @@ mod tests {
 
         let mut cfg = builder.build();
 
-        let mut instructions = vec![
-            Instruction {
-                id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 10 },
-                block_id: 0,
-                is_dead: false,
+        let mut instructions = vec![Instruction {
+            id: 0,
+            opcode: Opcode::Const {
+                dest: Reg(0),
+                value: 10,
             },
-        ];
+            block_id: 0,
+            is_dead: false,
+        }];
 
         let mut licm = LoopInvariantCodeMotion::new();
         let result = licm.run(&mut cfg, &mut instructions);
@@ -2496,13 +2694,19 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 8 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 8,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             Instruction {
                 id: 1,
-                opcode: Opcode::Const { dest: Reg(1), value: 5 },
+                opcode: Opcode::Const {
+                    dest: Reg(1),
+                    value: 5,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2558,7 +2762,10 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 10 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 10,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2593,7 +2800,10 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 10 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 10,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2628,7 +2838,10 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(1), value: 5 },
+                opcode: Opcode::Const {
+                    dest: Reg(1),
+                    value: 5,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2644,7 +2857,10 @@ mod tests {
             },
             Instruction {
                 id: 2,
-                opcode: Opcode::Const { dest: Reg(3), value: 10 },
+                opcode: Opcode::Const {
+                    dest: Reg(3),
+                    value: 10,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2681,13 +2897,19 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 10 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 10,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             Instruction {
                 id: 1,
-                opcode: Opcode::Const { dest: Reg(1), value: 20 },
+                opcode: Opcode::Const {
+                    dest: Reg(1),
+                    value: 20,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2713,13 +2935,19 @@ mod tests {
         let mut instructions = vec![
             Instruction {
                 id: 0,
-                opcode: Opcode::Const { dest: Reg(0), value: 8 },
+                opcode: Opcode::Const {
+                    dest: Reg(0),
+                    value: 8,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             Instruction {
                 id: 1,
-                opcode: Opcode::Const { dest: Reg(1), value: 5 },
+                opcode: Opcode::Const {
+                    dest: Reg(1),
+                    value: 5,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2735,13 +2963,19 @@ mod tests {
             },
             Instruction {
                 id: 3,
-                opcode: Opcode::Const { dest: Reg(3), value: 10 },
+                opcode: Opcode::Const {
+                    dest: Reg(3),
+                    value: 10,
+                },
                 block_id: 0,
                 is_dead: false,
             },
             Instruction {
                 id: 4,
-                opcode: Opcode::Const { dest: Reg(4), value: 20 },
+                opcode: Opcode::Const {
+                    dest: Reg(4),
+                    value: 20,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2757,7 +2991,10 @@ mod tests {
             },
             Instruction {
                 id: 6,
-                opcode: Opcode::Const { dest: Reg(6), value: 0 },
+                opcode: Opcode::Const {
+                    dest: Reg(6),
+                    value: 0,
+                },
                 block_id: 0,
                 is_dead: false,
             },
@@ -2791,6 +3028,10 @@ mod tests {
         assert!(result.changed);
 
         let total_opts = result.removed_count + result.modified_count + result.added_count;
-        assert!(total_opts >= 3, "Expected at least 3 optimizations, got {}", total_opts);
+        assert!(
+            total_opts >= 3,
+            "Expected at least 3 optimizations, got {}",
+            total_opts
+        );
     }
 }

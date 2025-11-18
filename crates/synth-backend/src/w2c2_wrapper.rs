@@ -85,7 +85,10 @@ impl W2C2Transpiler {
 
         // Execute w2c2
         let output = cmd.output().map_err(|e| {
-            Error::Other(format!("Failed to execute w2c2: {}. Make sure w2c2 is installed and accessible.", e))
+            Error::Other(format!(
+                "Failed to execute w2c2: {}. Make sure w2c2 is installed and accessible.",
+                e
+            ))
         })?;
 
         if !output.status.success() {
@@ -192,7 +195,10 @@ mod tests {
                     println!("Successfully transpiled to: {}", res.c_file.display());
                 }
                 Err(e) => {
-                    println!("Transpilation error (expected if w2c2 not installed): {}", e);
+                    println!(
+                        "Transpilation error (expected if w2c2 not installed): {}",
+                        e
+                    );
                 }
             }
         } else {

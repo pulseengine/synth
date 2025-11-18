@@ -27,7 +27,9 @@ impl PeepholeOptimizer {
 
             // Try 3-instruction patterns
             if i + 2 < instrs.len() {
-                if let Some(replacement) = self.try_optimize_3(&instrs[i], &instrs[i + 1], &instrs[i + 2]) {
+                if let Some(replacement) =
+                    self.try_optimize_3(&instrs[i], &instrs[i + 1], &instrs[i + 2])
+                {
                     result.extend(replacement);
                     i += 3;
                     optimized = true;
@@ -66,7 +68,10 @@ impl PeepholeOptimizer {
     fn try_optimize_1(&self, instr: &ArmOp) -> Option<Vec<ArmOp>> {
         match instr {
             // Remove redundant MOV R0, R0
-            ArmOp::Mov { rd, op2: Operand2::Reg(rs) } if rd == rs => Some(vec![]),
+            ArmOp::Mov {
+                rd,
+                op2: Operand2::Reg(rs),
+            } if rd == rs => Some(vec![]),
 
             // Remove NOP instructions
             ArmOp::Nop => Some(vec![]),
@@ -83,27 +88,49 @@ impl PeepholeOptimizer {
             // MOV Rd, Rs followed by MOV Rs, Rd → eliminate second if Rd != used after
             // This is simplified - would need liveness analysis
             (
-                ArmOp::Mov { rd: rd1, op2: Operand2::Reg(rs1) },
-                ArmOp::Mov { rd: rd2, op2: Operand2::Reg(rs2) },
+                ArmOp::Mov {
+                    rd: rd1,
+                    op2: Operand2::Reg(rs1),
+                },
+                ArmOp::Mov {
+                    rd: rd2,
+                    op2: Operand2::Reg(rs2),
+                },
             ) if rd1 == rs2 && rs1 == rd2 => {
                 // Keep only first MOV
                 Some(vec![instr1.clone()])
             }
 
             // ADD Rd, Rn, #0 followed by anything → eliminate ADD
-            (ArmOp::Add { rd, rn, op2: Operand2::Imm(0) }, _) if rd == rn => {
-                Some(vec![instr2.clone()])
-            }
+            (
+                ArmOp::Add {
+                    rd,
+                    rn,
+                    op2: Operand2::Imm(0),
+                },
+                _,
+            ) if rd == rn => Some(vec![instr2.clone()]),
 
             // SUB Rd, Rn, #0 → same as above
-            (ArmOp::Sub { rd, rn, op2: Operand2::Imm(0) }, _) if rd == rn => {
-                Some(vec![instr2.clone()])
-            }
+            (
+                ArmOp::Sub {
+                    rd,
+                    rn,
+                    op2: Operand2::Imm(0),
+                },
+                _,
+            ) if rd == rn => Some(vec![instr2.clone()]),
 
             // STR followed by LDR from same location → eliminate LDR if registers match
             (
-                ArmOp::Str { rd: rd1, addr: addr1 },
-                ArmOp::Ldr { rd: rd2, addr: addr2 },
+                ArmOp::Str {
+                    rd: rd1,
+                    addr: addr1,
+                },
+                ArmOp::Ldr {
+                    rd: rd2,
+                    addr: addr2,
+                },
             ) if rd1 == rd2 && addr1 == addr2 => {
                 // Keep only STR, value is already in register
                 Some(vec![instr1.clone()])
@@ -118,8 +145,15 @@ impl PeepholeOptimizer {
         match (instr1, instr2, instr3) {
             // Constant propagation: MOV R0, #X; ADD R1, R0, #Y; → MOV R0, #X; MOV R1, #(X+Y)
             (
-                ArmOp::Mov { rd: rd1, op2: Operand2::Imm(val1) },
-                ArmOp::Add { rd: rd2, rn, op2: Operand2::Imm(val2) },
+                ArmOp::Mov {
+                    rd: rd1,
+                    op2: Operand2::Imm(val1),
+                },
+                ArmOp::Add {
+                    rd: rd2,
+                    rn,
+                    op2: Operand2::Imm(val2),
+                },
                 _,
             ) if rn == rd1 => {
                 let new_val = val1.wrapping_add(*val2);
@@ -136,8 +170,15 @@ impl PeepholeOptimizer {
             // Strength reduction: MUL by power of 2 → LSL
             // MOV R0, #2; MUL R1, R2, R0 → MOV R0, #2; LSL R1, R2, #1
             (
-                ArmOp::Mov { rd: rd1, op2: Operand2::Imm(val) },
-                ArmOp::Mul { rd: rd2, rn: rn1, rm: rm1 },
+                ArmOp::Mov {
+                    rd: rd1,
+                    op2: Operand2::Imm(val),
+                },
+                ArmOp::Mul {
+                    rd: rd2,
+                    rn: rn1,
+                    rm: rm1,
+                },
                 _,
             ) if rm1 == rd1 && is_power_of_2(*val) => {
                 let shift = log2_power_of_2(*val);

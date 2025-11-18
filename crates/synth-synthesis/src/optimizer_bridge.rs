@@ -3,13 +3,13 @@
 //! This module bridges the synthesis engine with the optimization framework,
 //! allowing WASM-level and IR-level optimizations before final code generation.
 
-use synth_cfg::{Cfg, CfgBuilder};
-use synth_opt::{
-    AlgebraicSimplification, CommonSubexpressionElimination, ConstantFolding,
-    DeadCodeElimination, Instruction, Opcode, PassManager, PeepholeOptimization, Reg as OptReg,
-};
 use crate::rules::WasmOp;
+use synth_cfg::{Cfg, CfgBuilder};
 use synth_core::Result;
+use synth_opt::{
+    AlgebraicSimplification, CommonSubexpressionElimination, ConstantFolding, DeadCodeElimination,
+    Instruction, Opcode, PassManager, PeepholeOptimization, Reg as OptReg,
+};
 
 /// Optimization configuration
 #[derive(Debug, Clone)]
@@ -366,11 +366,7 @@ mod tests {
     #[test]
     fn test_optimizer_bridge_basic() {
         let bridge = OptimizerBridge::new();
-        let wasm_ops = vec![
-            WasmOp::I32Const(10),
-            WasmOp::I32Const(20),
-            WasmOp::I32Add,
-        ];
+        let wasm_ops = vec![WasmOp::I32Const(10), WasmOp::I32Const(20), WasmOp::I32Add];
 
         let stats = bridge.optimize(&wasm_ops).unwrap();
 
@@ -381,11 +377,7 @@ mod tests {
     #[test]
     fn test_optimizer_bridge_disabled() {
         let bridge = OptimizerBridge::with_config(OptimizationConfig::none());
-        let wasm_ops = vec![
-            WasmOp::I32Const(10),
-            WasmOp::I32Const(20),
-            WasmOp::I32Add,
-        ];
+        let wasm_ops = vec![WasmOp::I32Const(10), WasmOp::I32Const(20), WasmOp::I32Add];
 
         let stats = bridge.optimize(&wasm_ops).unwrap();
 
@@ -421,11 +413,7 @@ mod tests {
     #[test]
     fn test_wasm_division() {
         let bridge = OptimizerBridge::new();
-        let wasm_ops = vec![
-            WasmOp::I32Const(20),
-            WasmOp::I32Const(4),
-            WasmOp::I32DivS,
-        ];
+        let wasm_ops = vec![WasmOp::I32Const(20), WasmOp::I32Const(4), WasmOp::I32DivS];
 
         let stats = bridge.optimize(&wasm_ops).unwrap();
 
@@ -471,10 +459,10 @@ mod tests {
         let wasm_ops = vec![
             WasmOp::I32Const(10),
             WasmOp::I32Const(5),
-            WasmOp::I32LtS,  // 10 < 5 = 0
+            WasmOp::I32LtS, // 10 < 5 = 0
             WasmOp::I32Const(3),
             WasmOp::I32Const(7),
-            WasmOp::I32GtU,  // 3 > 7 = 0
+            WasmOp::I32GtU, // 3 > 7 = 0
         ];
 
         let stats = bridge.optimize(&wasm_ops).unwrap();
@@ -488,14 +476,14 @@ mod tests {
         let bridge = OptimizerBridge::with_config(OptimizationConfig::all());
         let wasm_ops = vec![
             // Compute (a & b) | (c << 2)
-            WasmOp::LocalGet(0),    // a
-            WasmOp::LocalGet(1),    // b
-            WasmOp::I32And,         // a & b
-            WasmOp::LocalGet(2),    // c
+            WasmOp::LocalGet(0), // a
+            WasmOp::LocalGet(1), // b
+            WasmOp::I32And,      // a & b
+            WasmOp::LocalGet(2), // c
             WasmOp::I32Const(2),
-            WasmOp::I32Shl,         // c << 2
-            WasmOp::I32Or,          // (a & b) | (c << 2)
-            WasmOp::LocalSet(3),    // store result
+            WasmOp::I32Shl,      // c << 2
+            WasmOp::I32Or,       // (a & b) | (c << 2)
+            WasmOp::LocalSet(3), // store result
         ];
 
         let stats = bridge.optimize(&wasm_ops).unwrap();

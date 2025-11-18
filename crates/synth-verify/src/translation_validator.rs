@@ -55,14 +55,10 @@ pub enum ValidationResult {
     Verified,
 
     /// Counterexample found - translation is incorrect
-    Invalid {
-        counterexample: Vec<(String, i64)>,
-    },
+    Invalid { counterexample: Vec<(String, i64)> },
 
     /// Verification inconclusive (timeout or unsupported operations)
-    Unknown {
-        reason: String,
-    },
+    Unknown { reason: String },
 }
 
 /// Translation validator
@@ -161,7 +157,8 @@ impl<'ctx> TranslationValidator<'ctx> {
         let mut inputs: Vec<BV> = Vec::new();
 
         for i in 0..num_inputs {
-            let input = if let Some((_, value)) = concrete_params.iter().find(|(idx, _)| *idx == i) {
+            let input = if let Some((_, value)) = concrete_params.iter().find(|(idx, _)| *idx == i)
+            {
                 // Concrete value
                 BV::from_i64(self.ctx, *value, 32)
             } else {
@@ -230,9 +227,10 @@ impl<'ctx> TranslationValidator<'ctx> {
                 1 => Reg::R1,
                 2 => Reg::R2,
                 _ => {
-                    return Err(VerificationError::UnsupportedOperation(
-                        format!("Too many inputs: {}", inputs.len()),
-                    ))
+                    return Err(VerificationError::UnsupportedOperation(format!(
+                        "Too many inputs: {}",
+                        inputs.len()
+                    )))
                 }
             };
             state.set_reg(&reg, input.clone());
@@ -274,11 +272,8 @@ impl<'ctx> TranslationValidator<'ctx> {
     {
         for value in range {
             let arm_ops = create_arm_ops(value);
-            let result = self.verify_equivalence_parameterized(
-                wasm_op,
-                &arm_ops,
-                &[(param_index, value)],
-            )?;
+            let result =
+                self.verify_equivalence_parameterized(wasm_op, &arm_ops, &[(param_index, value)])?;
 
             match result {
                 ValidationResult::Verified => continue,
@@ -317,7 +312,7 @@ impl<'ctx> TranslationValidator<'ctx> {
             I32Const(_) => 0,
 
             // Memory operations
-            I32Load { .. } => 1, // address
+            I32Load { .. } => 1,  // address
             I32Store { .. } => 2, // address + value
 
             // Control flow

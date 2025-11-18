@@ -38,22 +38,22 @@ impl LinkerScriptGenerator {
         regions.push(MemoryRegion {
             name: "FLASH".to_string(),
             origin: 0x08000000,
-            length: 512 * 1024,  // 512KB
+            length: 512 * 1024, // 512KB
             attributes: "rx".to_string(),
         });
 
         regions.push(MemoryRegion {
             name: "RAM".to_string(),
             origin: 0x20000000,
-            length: 128 * 1024,  // 128KB
+            length: 128 * 1024, // 128KB
             attributes: "rwx".to_string(),
         });
 
         Self {
             regions,
             entry_point: "Reset_Handler".to_string(),
-            stack_size: 4096,   // 4KB stack
-            heap_size: 8192,    // 8KB heap
+            stack_size: 4096, // 4KB stack
+            heap_size: 8192,  // 8KB heap
         }
     }
 
@@ -298,8 +298,7 @@ mod tests {
 
     #[test]
     fn test_entry_point() {
-        let generator = LinkerScriptGenerator::new_stm32()
-            .with_entry_point("main".to_string());
+        let generator = LinkerScriptGenerator::new_stm32().with_entry_point("main".to_string());
 
         let script = generator.generate().expect("Failed to generate");
         assert!(script.contains("ENTRY(main)"));
@@ -307,8 +306,7 @@ mod tests {
 
     #[test]
     fn test_stack_configuration() {
-        let generator = LinkerScriptGenerator::new_stm32()
-            .with_stack_size(8192);
+        let generator = LinkerScriptGenerator::new_stm32().with_stack_size(8192);
 
         let script = generator.generate().expect("Failed to generate");
         assert!(script.contains("_stack_size = 0x2000")); // 8192 = 0x2000
@@ -316,8 +314,7 @@ mod tests {
 
     #[test]
     fn test_heap_configuration() {
-        let generator = LinkerScriptGenerator::new_stm32()
-            .with_heap_size(16384);
+        let generator = LinkerScriptGenerator::new_stm32().with_heap_size(16384);
 
         let script = generator.generate().expect("Failed to generate");
         assert!(script.contains("_heap_size = 0x4000")); // 16384 = 0x4000

@@ -345,7 +345,11 @@ impl ElfBuilder {
 
         // Now write the actual ELF header at the beginning
         let num_sections = 4 + self.sections.len(); // null + shstrtab + strtab + symtab + user sections
-        self.write_elf_header_complete(&mut output[0..header_size], sh_offset as u32, num_sections as u16)?;
+        self.write_elf_header_complete(
+            &mut output[0..header_size],
+            sh_offset as u32,
+            num_sections as u16,
+        )?;
 
         Ok(output)
     }
@@ -444,18 +448,51 @@ impl ElfBuilder {
         headers.extend_from_slice(&[0u8; 40]);
 
         // Section 1: .shstrtab
-        self.write_section_header(&mut headers, 1, SectionType::StrTab as u32, 0, 0,
-            shstrtab_offset as u32, shstrtab_data.len() as u32, 0, 0, 1, 0);
+        self.write_section_header(
+            &mut headers,
+            1,
+            SectionType::StrTab as u32,
+            0,
+            0,
+            shstrtab_offset as u32,
+            shstrtab_data.len() as u32,
+            0,
+            0,
+            1,
+            0,
+        );
 
         // Section 2: .strtab
         let strtab_name_offset = ".shstrtab\0".len();
-        self.write_section_header(&mut headers, strtab_name_offset as u32, SectionType::StrTab as u32, 0, 0,
-            strtab_offset as u32, strtab_data.len() as u32, 0, 0, 1, 0);
+        self.write_section_header(
+            &mut headers,
+            strtab_name_offset as u32,
+            SectionType::StrTab as u32,
+            0,
+            0,
+            strtab_offset as u32,
+            strtab_data.len() as u32,
+            0,
+            0,
+            1,
+            0,
+        );
 
         // Section 3: .symtab (links to .strtab which is section 2)
         let symtab_name_offset = ".shstrtab\0.strtab\0".len();
-        self.write_section_header(&mut headers, symtab_name_offset as u32, SectionType::SymTab as u32, 0, 0,
-            symtab_offset as u32, symtab_data.len() as u32, 2, 1, 4, 16);
+        self.write_section_header(
+            &mut headers,
+            symtab_name_offset as u32,
+            SectionType::SymTab as u32,
+            0,
+            0,
+            symtab_offset as u32,
+            symtab_data.len() as u32,
+            2,
+            1,
+            4,
+            16,
+        );
 
         // User sections
         for (i, section) in self.sections.iter().enumerate() {
@@ -584,7 +621,12 @@ impl ElfBuilder {
     }
 
     /// Write complete ELF header with section information
-    fn write_elf_header_complete(&self, output: &mut [u8], sh_offset: u32, sh_count: u16) -> Result<()> {
+    fn write_elf_header_complete(
+        &self,
+        output: &mut [u8],
+        sh_offset: u32,
+        sh_count: u16,
+    ) -> Result<()> {
         let mut cursor = 0;
 
         // ELF magic number
@@ -839,12 +881,22 @@ mod tests {
 
         // Validate entry point is set correctly
         let entry_bytes = &elf[24..28];
-        let entry = u32::from_le_bytes([entry_bytes[0], entry_bytes[1], entry_bytes[2], entry_bytes[3]]);
+        let entry = u32::from_le_bytes([
+            entry_bytes[0],
+            entry_bytes[1],
+            entry_bytes[2],
+            entry_bytes[3],
+        ]);
         assert_eq!(entry, 0x8000);
 
         // Validate section header offset is non-zero
         let sh_off_bytes = &elf[32..36];
-        let sh_off = u32::from_le_bytes([sh_off_bytes[0], sh_off_bytes[1], sh_off_bytes[2], sh_off_bytes[3]]);
+        let sh_off = u32::from_le_bytes([
+            sh_off_bytes[0],
+            sh_off_bytes[1],
+            sh_off_bytes[2],
+            sh_off_bytes[3],
+        ]);
         assert!(sh_off > 0);
 
         // Validate section count (null + shstrtab + strtab + symtab + .text + .data + .bss = 7)
@@ -907,7 +959,12 @@ mod tests {
         // Second symbol should have correct encoding
         // Check st_value (bytes 4-7 of second entry)
         let value_bytes = &symtab[20..24];
-        let value = u32::from_le_bytes([value_bytes[0], value_bytes[1], value_bytes[2], value_bytes[3]]);
+        let value = u32::from_le_bytes([
+            value_bytes[0],
+            value_bytes[1],
+            value_bytes[2],
+            value_bytes[3],
+        ]);
         assert_eq!(value, 0x1000);
 
         // Check st_size (bytes 8-11 of second entry)

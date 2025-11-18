@@ -7,7 +7,7 @@
 //!
 //! Shows real-world optimization scenarios and their benefits.
 
-use synth_synthesis::{OptimizerBridge, OptimizationConfig, WasmOp};
+use synth_synthesis::{OptimizationConfig, OptimizerBridge, WasmOp};
 
 fn main() {
     println!("╔══════════════════════════════════════════════════════════╗");
@@ -75,15 +75,15 @@ fn run_scenario_2() {
     println!("Code: x + 0, y * 1, z - z\n");
 
     let wasm_ops = vec![
-        WasmOp::LocalGet(0),    // x
+        WasmOp::LocalGet(0), // x
         WasmOp::I32Const(0),
-        WasmOp::I32Add,         // x + 0
-        WasmOp::LocalGet(1),    // y
+        WasmOp::I32Add,      // x + 0
+        WasmOp::LocalGet(1), // y
         WasmOp::I32Const(1),
-        WasmOp::I32Mul,         // y * 1
-        WasmOp::LocalGet(2),    // z
-        WasmOp::LocalGet(2),    // z
-        WasmOp::I32Sub,         // z - z
+        WasmOp::I32Mul,      // y * 1
+        WasmOp::LocalGet(2), // z
+        WasmOp::LocalGet(2), // z
+        WasmOp::I32Sub,      // z - z
     ];
 
     println!("WASM Operations:");
@@ -112,17 +112,17 @@ fn run_scenario_3() {
     println!("Code: (a * 0) + (b + 0) + (5 + 3)\n");
 
     let wasm_ops = vec![
-        WasmOp::LocalGet(0),    // a
+        WasmOp::LocalGet(0), // a
         WasmOp::I32Const(0),
-        WasmOp::I32Mul,         // a * 0 (algebraic → 0)
-        WasmOp::LocalGet(1),    // b
+        WasmOp::I32Mul,      // a * 0 (algebraic → 0)
+        WasmOp::LocalGet(1), // b
         WasmOp::I32Const(0),
-        WasmOp::I32Add,         // b + 0 (algebraic → b)
-        WasmOp::I32Add,         // 0 + b
+        WasmOp::I32Add, // b + 0 (algebraic → b)
+        WasmOp::I32Add, // 0 + b
         WasmOp::I32Const(5),
         WasmOp::I32Const(3),
-        WasmOp::I32Add,         // 5 + 3 (constant fold → 8)
-        WasmOp::I32Add,         // b + 8
+        WasmOp::I32Add, // 5 + 3 (constant fold → 8)
+        WasmOp::I32Add, // b + 8
     ];
 
     println!("WASM Operations ({}): ", wasm_ops.len());
@@ -153,12 +153,12 @@ fn run_scenario_4() {
     println!("Code: index < length (with redundant operations)\n");
 
     let wasm_ops = vec![
-        WasmOp::LocalGet(0),    // index
+        WasmOp::LocalGet(0), // index
         WasmOp::I32Const(0),
-        WasmOp::I32Add,         // Redundant: index + 0
-        WasmOp::LocalGet(1),    // length
+        WasmOp::I32Add,      // Redundant: index + 0
+        WasmOp::LocalGet(1), // length
         WasmOp::I32Const(1),
-        WasmOp::I32Mul,         // Redundant: length * 1
+        WasmOp::I32Mul, // Redundant: length * 1
     ];
 
     println!("WASM Operations (Before):");
@@ -189,8 +189,17 @@ fn run_scenario_4() {
     println!("Removed: {}", stats_none.removed);
 
     println!("\n✓ Comparison:");
-    println!("  No optimization:   {} instructions unchanged", wasm_ops.len());
-    println!("  Fast optimization: {} passes, {} changes", stats_fast.passes_run, stats_fast.modified);
-    println!("  Full optimization: {} passes, {} changes", stats_full.passes_run, stats_full.modified);
+    println!(
+        "  No optimization:   {} instructions unchanged",
+        wasm_ops.len()
+    );
+    println!(
+        "  Fast optimization: {} passes, {} changes",
+        stats_fast.passes_run, stats_fast.modified
+    );
+    println!(
+        "  Full optimization: {} passes, {} changes",
+        stats_full.passes_run, stats_full.modified
+    );
     println!("  \nFull optimization provides best code quality\n");
 }
