@@ -7,6 +7,7 @@ use crate::rules::{ArmOp, Operand2, Reg};
 /// Peephole optimizer for ARM instructions
 pub struct PeepholeOptimizer {
     /// Window size for pattern matching
+    #[allow(dead_code)]
     window_size: usize,
 }
 

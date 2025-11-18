@@ -31,6 +31,7 @@ impl Parser {
         self.tokens.get(self.position).unwrap_or(&self.eof_token)
     }
 
+    #[allow(dead_code)]
     fn peek(&self, offset: usize) -> &Token {
         self.tokens
             .get(self.position + offset)

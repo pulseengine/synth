@@ -80,6 +80,7 @@ impl CompilerProperties {
     }
 
     /// Generate arbitrary ARM operations for testing
+    #[allow(dead_code)]
     fn arbitrary_arm_op() -> impl Strategy<Value = ArmOp> {
         let reg_strategy = prop_oneof![Just(Reg::R0), Just(Reg::R1), Just(Reg::R2), Just(Reg::R3),];
 

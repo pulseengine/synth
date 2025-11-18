@@ -138,7 +138,7 @@ pub fn lower_record<M: Memory>(
 
     // Lower each field
     offset = 0;
-    for (i, (name, value)) in fields.iter().enumerate() {
+    for (i, (_name, value)) in fields.iter().enumerate() {
         let (_, ty) = &field_types[i];
         let align = alignment_of(ty);
         offset = align_to(offset, align);
@@ -219,7 +219,7 @@ pub fn lower_result<M: Memory>(
     err_ty: &Option<Box<Type>>,
     opts: &AbiOptions,
 ) -> AbiResult<Vec<u8>> {
-    use crate::{alignment_of, size_of};
+    use crate::size_of;
 
     match value {
         Ok(ok_val) => {
@@ -340,7 +340,7 @@ pub fn lower_variant<M: Memory>(
     cases: &[(String, Option<Type>)],
     opts: &AbiOptions,
 ) -> AbiResult<Vec<u8>> {
-    use crate::{alignment_of, size_of};
+    use crate::size_of;
 
     match value {
         ComponentValue::Variant {

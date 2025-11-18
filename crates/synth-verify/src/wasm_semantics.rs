@@ -13,6 +13,7 @@ pub struct WasmSemantics<'ctx> {
     ctx: &'ctx Context,
     /// Memory model: maps addresses to 32-bit values
     /// For bounded verification, we use a limited memory space
+    #[allow(dead_code)]
     memory: Vec<BV<'ctx>>,
 }
 
@@ -241,7 +242,7 @@ impl<'ctx> WasmSemantics<'ctx> {
                 // For bounded verification, we model memory as array of symbolic values
                 let address = inputs[0].clone();
                 let offset_bv = BV::from_u64(self.ctx, *offset as u64, 32);
-                let effective_addr = address.bvadd(&offset_bv);
+                let _effective_addr = address.bvadd(&offset_bv);
 
                 // For simplicity, return symbolic value based on address
                 // A complete model would index into memory array
@@ -271,14 +272,14 @@ impl<'ctx> WasmSemantics<'ctx> {
                 BV::new_const(self.ctx, format!("local_{}", index), 32)
             }
 
-            WasmOp::LocalSet(index) => {
+            WasmOp::LocalSet(_index) => {
                 assert_eq!(inputs.len(), 1, "LocalSet requires 1 input");
                 // Set local variable (modeled as assignment)
                 // Return the value for verification purposes
                 inputs[0].clone()
             }
 
-            WasmOp::LocalTee(index) => {
+            WasmOp::LocalTee(_index) => {
                 assert_eq!(inputs.len(), 1, "LocalTee requires 1 input");
                 // Tee sets local and returns the value
                 inputs[0].clone()
@@ -290,7 +291,7 @@ impl<'ctx> WasmSemantics<'ctx> {
                 BV::new_const(self.ctx, format!("global_{}", index), 32)
             }
 
-            WasmOp::GlobalSet(index) => {
+            WasmOp::GlobalSet(_index) => {
                 assert_eq!(inputs.len(), 1, "GlobalSet requires 1 input");
                 // Set global variable (modeled as assignment)
                 // Return the value for verification purposes
@@ -373,7 +374,7 @@ impl<'ctx> WasmSemantics<'ctx> {
                     // Verification mode - return placeholder
                     return BV::from_i64(self.ctx, 0, 32);
                 }
-                let index = inputs[0].clone();
+                let _index = inputs[0].clone();
 
                 // For verification, we model this as symbolic control flow
                 // A complete model would use nested ITEs to select the target
@@ -464,7 +465,7 @@ impl<'ctx> WasmSemantics<'ctx> {
                 // Full implementation would return 64-bit value
                 let address = inputs[0].clone();
                 let offset_bv = BV::from_u64(self.ctx, *offset as u64, 32);
-                let effective_addr = address.bvadd(&offset_bv);
+                let _effective_addr = address.bvadd(&offset_bv);
 
                 // Return symbolic value representing the low 32 bits of the loaded i64
                 BV::new_const(self.ctx, format!("i64load_{}_{}", offset, address), 32)

@@ -4,7 +4,7 @@
 
 use crate::arm_encoder::ArmEncoder;
 use synth_core::Result;
-use synth_synthesis::{ArmOp, MemAddr, Operand2, Reg};
+use synth_synthesis::{ArmOp, Operand2, Reg};
 
 /// Reset handler generator
 pub struct ResetHandlerGenerator {

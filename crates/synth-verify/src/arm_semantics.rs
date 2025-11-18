@@ -379,29 +379,29 @@ impl<'ctx> ArmSemantics<'ctx> {
             }
 
             // Memory operations simplified for now
-            ArmOp::Ldr { rd, addr } => {
+            ArmOp::Ldr { rd, addr: _ } => {
                 // Load from memory
                 // Simplified: return symbolic value
                 let result = BV::new_const(self.ctx, format!("load_{:?}", rd), 32);
                 state.set_reg(rd, result);
             }
 
-            ArmOp::Str { rd, addr } => {
+            ArmOp::Str { rd: _, addr: _ } => {
                 // Store to memory
                 // Simplified: memory updates not fully modeled yet
             }
 
             // Control flow operations
-            ArmOp::B { label } => {
+            ArmOp::B { label: _ } => {
                 // Branch - would update PC in full model
                 // For bounded verification, we treat this symbolically
             }
 
-            ArmOp::Bl { label } => {
+            ArmOp::Bl { label: _ } => {
                 // Branch with link - would update PC and LR
             }
 
-            ArmOp::Bx { rm } => {
+            ArmOp::Bx { rm: _ } => {
                 // Branch and exchange - would update PC
             }
 
@@ -459,7 +459,7 @@ impl<'ctx> ArmSemantics<'ctx> {
             } => {
                 // Multi-way branch based on index
                 // For verification, we model the control flow symbolically
-                let index = state.get_reg(index_reg).clone();
+                let _index = state.get_reg(index_reg).clone();
                 let result = BV::new_const(
                     self.ctx,
                     format!("br_table_{}_{}", targets.len(), default),
@@ -493,7 +493,7 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::I64Const { rdlo, rdhi, value } => {
                 // Load 64-bit constant into register pair
                 let low32 = (*value as u32) as i64;
-                let high32 = (*value >> 32);
+                let high32 = *value >> 32;
                 state.set_reg(rdlo, BV::from_i64(self.ctx, low32, 32));
                 state.set_reg(rdhi, BV::from_i64(self.ctx, high32, 32));
             }
@@ -984,34 +984,6 @@ impl<'ctx> ArmSemantics<'ctx> {
             }
 
             // ================================================================
-            // i64 Division and Remainder (stubs)
-            // ================================================================
-            ArmOp::I64DivS { rdlo, rdhi, .. } => {
-                // Signed 64-bit division - complex operation
-                // Requires multi-instruction sequence on ARM32
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_div_s_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_div_s_hi", 32));
-            }
-
-            ArmOp::I64DivU { rdlo, rdhi, .. } => {
-                // Unsigned 64-bit division
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_div_u_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_div_u_hi", 32));
-            }
-
-            ArmOp::I64RemS { rdlo, rdhi, .. } => {
-                // Signed 64-bit remainder
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_rem_s_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_rem_s_hi", 32));
-            }
-
-            ArmOp::I64RemU { rdlo, rdhi, .. } => {
-                // Unsigned 64-bit remainder
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_rem_u_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_rem_u_hi", 32));
-            }
-
-            // ================================================================
             // i64 Shift Operations
             // ================================================================
             ArmOp::I64Shl {
@@ -1310,7 +1282,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, result_hi);
             }
 
-            ArmOp::I64Str { rdlo, rdhi, addr } => {
+            ArmOp::I64Str { rdlo: _, rdhi: _, addr: _ } => {
                 // Store 64-bit value to memory
                 // Simplified: memory updates not fully modeled yet
                 // Real implementation would store rdlo to [addr] and rdhi to [addr+4]
@@ -2036,6 +2008,7 @@ impl<'ctx> ArmSemantics<'ctx> {
     /// Similar to subtraction but with different carry logic:
     /// - C = 1 if unsigned overflow (result < a or result < b)
     /// - V = 1 if signed overflow
+    #[allow(dead_code)]
     fn update_flags_add(
         &self,
         state: &mut ArmState<'ctx>,
