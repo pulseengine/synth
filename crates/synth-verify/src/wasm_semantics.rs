@@ -645,6 +645,57 @@ impl<'ctx> WasmSemantics<'ctx> {
                 BV::new_const(self.ctx, "f32_trunc_result", 32)
             }
 
+            WasmOp::F32Nearest => {
+                assert_eq!(inputs.len(), 1, "F32Nearest requires 1 input");
+                // f32 nearest: round to nearest, ties to even
+                BV::new_const(self.ctx, "f32_nearest_result", 32)
+            }
+
+            // f32 Conversions from Integers
+            WasmOp::F32ConvertI32S => {
+                assert_eq!(inputs.len(), 1, "F32ConvertI32S requires 1 input");
+                // Convert signed i32 to f32
+                BV::new_const(self.ctx, "f32_convert_i32s_result", 32)
+            }
+
+            WasmOp::F32ConvertI32U => {
+                assert_eq!(inputs.len(), 1, "F32ConvertI32U requires 1 input");
+                // Convert unsigned i32 to f32
+                BV::new_const(self.ctx, "f32_convert_i32u_result", 32)
+            }
+
+            WasmOp::F32ConvertI64S => {
+                assert_eq!(inputs.len(), 1, "F32ConvertI64S requires 1 input");
+                // Convert signed i64 to f32
+                BV::new_const(self.ctx, "f32_convert_i64s_result", 32)
+            }
+
+            WasmOp::F32ConvertI64U => {
+                assert_eq!(inputs.len(), 1, "F32ConvertI64U requires 1 input");
+                // Convert unsigned i64 to f32
+                BV::new_const(self.ctx, "f32_convert_i64u_result", 32)
+            }
+
+            // f32 Type Conversions
+            WasmOp::F32DemoteF64 => {
+                assert_eq!(inputs.len(), 1, "F32DemoteF64 requires 1 input");
+                // Convert f64 to f32 (lose precision)
+                BV::new_const(self.ctx, "f32_demote_f64_result", 32)
+            }
+
+            // f32 Reinterpretations
+            WasmOp::F32ReinterpretI32 => {
+                assert_eq!(inputs.len(), 1, "F32ReinterpretI32 requires 1 input");
+                // Reinterpret i32 bits as f32 (bitcast)
+                inputs[0].clone()
+            }
+
+            WasmOp::I32ReinterpretF32 => {
+                assert_eq!(inputs.len(), 1, "I32ReinterpretF32 requires 1 input");
+                // Reinterpret f32 bits as i32 (bitcast)
+                inputs[0].clone()
+            }
+
             // Not yet supported operations
             _ => {
                 // For unsupported operations, return a symbolic constant
