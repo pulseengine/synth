@@ -146,7 +146,7 @@ fn test_remainder_sequences_concrete() {
     // WASM: rem_u(17, 5) = 2
     let wasm_result =
         wasm_encoder.encode_op(&WasmOp::I32RemU, &[dividend.clone(), divisor.clone()]);
-    assert_eq!(wasm_result.as_i64(), Some(2), "WASM rem_u(17, 5) = 2");
+    assert_eq!(wasm_result.simplify().as_i64(), Some(2), "WASM rem_u(17, 5) = 2");
 
     // ARM sequence: UDIV + MLS
     let mut state = ArmState::new_symbolic(&ctx);
@@ -162,7 +162,7 @@ fn test_remainder_sequences_concrete() {
         },
         &mut state,
     );
-    assert_eq!(state.get_reg(&Reg::R2).as_i64(), Some(3), "Quotient = 3");
+    assert_eq!(state.get_reg(&Reg::R2).simplify().as_i64(), Some(3), "Quotient = 3");
 
     // MLS R0, R2, R1, R0 -> R0 = 17 - 3*5 = 2
     arm_encoder.encode_op(
@@ -175,7 +175,7 @@ fn test_remainder_sequences_concrete() {
         &mut state,
     );
     let arm_result = state.get_reg(&Reg::R0);
-    assert_eq!(arm_result.as_i64(), Some(2), "ARM rem_u(17, 5) = 2");
+    assert_eq!(arm_result.simplify().as_i64(), Some(2), "ARM rem_u(17, 5) = 2");
 
     // Test signed remainder: (-17) % 5 = -2 (in most languages, sign follows dividend)
     let neg_dividend = z3::ast::BV::from_i64(&ctx, -17, 32);
@@ -526,7 +526,7 @@ fn test_arm_ror_semantics() {
         shift: 8,
     };
     encoder.encode_op(&ror_op, &mut state);
-    assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x78123456));
+    assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(0x78123456));
 
     // Test that ROTL(x, n) = ROR(x, 32-n) transformation holds
     // For example: ROTL(0x12345678, 8) = ROR(0x12345678, 24)
@@ -539,7 +539,7 @@ fn test_arm_ror_semantics() {
     encoder.encode_op(&ror_24, &mut state);
     // ROTL(0x12345678, 8) = 0x34567812
     // ROR(0x12345678, 24) = 0x34567812 ✓
-    assert_eq!(state.get_reg(&Reg::R0).as_i64(), Some(0x34567812));
+    assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(0x34567812));
 }
 
 #[test]
@@ -649,7 +649,7 @@ fn test_ctz_sequence_concrete() {
 
     // WASM CTZ
     let wasm_result = wasm_encoder.encode_op(&WasmOp::I32Ctz, &[value.clone()]);
-    assert_eq!(wasm_result.as_i64(), Some(2), "WASM CTZ(12) should be 2");
+    assert_eq!(wasm_result.simplify().as_i64(), Some(2), "WASM CTZ(12) should be 2");
 
     // ARM sequence: RBIT R1, R0; CLZ R0, R1
     let mut state = ArmState::new_symbolic(&ctx);
@@ -671,7 +671,7 @@ fn test_ctz_sequence_concrete() {
     );
 
     let arm_result = state.get_reg(&Reg::R0);
-    assert_eq!(arm_result.as_i64(), Some(2), "ARM CTZ(12) should be 2");
+    assert_eq!(arm_result.simplify().as_i64(), Some(2), "ARM CTZ(12) should be 2");
 
     // Test CTZ(8) = 3
     // Binary: 8 = 0b1000, trailing zeros = 3

@@ -1171,7 +1171,7 @@ mod tests {
         let result = encoder.encode_op(&WasmOp::I32Const(42), &[]);
 
         // Should be the constant 42
-        assert_eq!(result.as_i64(), Some(42));
+        assert_eq!(result.simplify().as_i64(), Some(42));
     }
 
     #[test]
@@ -1185,7 +1185,7 @@ mod tests {
         let result = encoder.encode_op(&WasmOp::I32LtS, &[a, b]);
 
         // 5 < 10 should be true (1)
-        assert_eq!(result.as_i64(), Some(1));
+        assert_eq!(result.simplify().as_i64(), Some(1));
     }
 
     #[test]
@@ -1198,15 +1198,15 @@ mod tests {
 
         // Test AND
         let and_result = encoder.encode_op(&WasmOp::I32And, &[a.clone(), b.clone()]);
-        assert_eq!(and_result.as_i64(), Some(0b1000));
+        assert_eq!(and_result.simplify().as_i64(), Some(0b1000));
 
         // Test OR
         let or_result = encoder.encode_op(&WasmOp::I32Or, &[a.clone(), b.clone()]);
-        assert_eq!(or_result.as_i64(), Some(0b1110));
+        assert_eq!(or_result.simplify().as_i64(), Some(0b1110));
 
         // Test XOR
         let xor_result = encoder.encode_op(&WasmOp::I32Xor, &[a, b]);
-        assert_eq!(xor_result.as_i64(), Some(0b0110));
+        assert_eq!(xor_result.simplify().as_i64(), Some(0b0110));
     }
 
     #[test]
@@ -1219,11 +1219,11 @@ mod tests {
 
         // Test left shift: 8 << 2 = 32
         let shl_result = encoder.encode_op(&WasmOp::I32Shl, &[value.clone(), shift.clone()]);
-        assert_eq!(shl_result.as_i64(), Some(32));
+        assert_eq!(shl_result.simplify().as_i64(), Some(32));
 
         // Test logical right shift: 8 >> 2 = 2
         let shr_result = encoder.encode_op(&WasmOp::I32ShrU, &[value, shift]);
-        assert_eq!(shr_result.as_i64(), Some(2));
+        assert_eq!(shr_result.simplify().as_i64(), Some(2));
     }
 
     #[test]
@@ -1237,7 +1237,7 @@ mod tests {
 
         let shl_result = encoder.encode_op(&WasmOp::I32Shl, &[value.clone(), shift.clone()]);
         // 0xFF << 33 = 0xFF << 1 = 0x1FE
-        assert_eq!(shl_result.as_i64(), Some(0x1FE));
+        assert_eq!(shl_result.simplify().as_i64(), Some(0x1FE));
     }
 
     #[test]
@@ -1250,11 +1250,11 @@ mod tests {
 
         // Test signed remainder: 17 % 5 = 2
         let rem_s = encoder.encode_op(&WasmOp::I32RemS, &[a.clone(), b.clone()]);
-        assert_eq!(rem_s.as_i64(), Some(2));
+        assert_eq!(rem_s.simplify().as_i64(), Some(2));
 
         // Test unsigned remainder
         let rem_u = encoder.encode_op(&WasmOp::I32RemU, &[a, b]);
-        assert_eq!(rem_u.as_i64(), Some(2));
+        assert_eq!(rem_u.simplify().as_i64(), Some(2));
     }
 
     #[test]
@@ -1267,11 +1267,11 @@ mod tests {
 
         // Test rotate right
         let rotr_result = encoder.encode_op(&WasmOp::I32Rotr, &[value.clone(), rotate.clone()]);
-        assert_eq!(rotr_result.as_i64(), Some(0x78123456));
+        assert_eq!(rotr_result.simplify().as_i64(), Some(0x78123456));
 
         // Test rotate left
         let rotl_result = encoder.encode_op(&WasmOp::I32Rotl, &[value, rotate]);
-        assert_eq!(rotl_result.as_i64(), Some(0x34567812));
+        assert_eq!(rotl_result.simplify().as_i64(), Some(0x34567812));
     }
 
     #[test]
@@ -1282,37 +1282,37 @@ mod tests {
         // Test CLZ(0) = 32
         let zero = BV::from_i64(&ctx, 0, 32);
         let clz_zero = encoder.encode_op(&WasmOp::I32Clz, &[zero]);
-        assert_eq!(clz_zero.as_i64(), Some(32), "CLZ(0) should be 32");
+        assert_eq!(clz_zero.simplify().as_i64(), Some(32), "CLZ(0) should be 32");
 
         // Test CLZ(1) = 31 (binary: 0000...0001)
         let one = BV::from_i64(&ctx, 1, 32);
         let clz_one = encoder.encode_op(&WasmOp::I32Clz, &[one]);
-        assert_eq!(clz_one.as_i64(), Some(31), "CLZ(1) should be 31");
+        assert_eq!(clz_one.simplify().as_i64(), Some(31), "CLZ(1) should be 31");
 
         // Test CLZ(0x80000000) = 0 (binary: 1000...0000)
         let msb_set = BV::from_u64(&ctx, 0x80000000, 32);
         let clz_msb = encoder.encode_op(&WasmOp::I32Clz, &[msb_set]);
-        assert_eq!(clz_msb.as_i64(), Some(0), "CLZ(0x80000000) should be 0");
+        assert_eq!(clz_msb.simplify().as_i64(), Some(0), "CLZ(0x80000000) should be 0");
 
         // Test CLZ(0x00FF0000) = 8
         let val1 = BV::from_u64(&ctx, 0x00FF0000, 32);
         let clz1 = encoder.encode_op(&WasmOp::I32Clz, &[val1]);
-        assert_eq!(clz1.as_i64(), Some(8), "CLZ(0x00FF0000) should be 8");
+        assert_eq!(clz1.simplify().as_i64(), Some(8), "CLZ(0x00FF0000) should be 8");
 
         // Test CLZ(0x00001000) = 19
         let val2 = BV::from_u64(&ctx, 0x00001000, 32);
         let clz2 = encoder.encode_op(&WasmOp::I32Clz, &[val2]);
-        assert_eq!(clz2.as_i64(), Some(19), "CLZ(0x00001000) should be 19");
+        assert_eq!(clz2.simplify().as_i64(), Some(19), "CLZ(0x00001000) should be 19");
 
         // Test CLZ(0xFFFFFFFF) = 0 (all bits set)
         let all_ones = BV::from_u64(&ctx, 0xFFFFFFFF, 32);
         let clz_all = encoder.encode_op(&WasmOp::I32Clz, &[all_ones]);
-        assert_eq!(clz_all.as_i64(), Some(0), "CLZ(0xFFFFFFFF) should be 0");
+        assert_eq!(clz_all.simplify().as_i64(), Some(0), "CLZ(0xFFFFFFFF) should be 0");
 
         // Test CLZ(0x00000100) = 23
         let val3 = BV::from_u64(&ctx, 0x00000100, 32);
         let clz3 = encoder.encode_op(&WasmOp::I32Clz, &[val3]);
-        assert_eq!(clz3.as_i64(), Some(23), "CLZ(0x00000100) should be 23");
+        assert_eq!(clz3.simplify().as_i64(), Some(23), "CLZ(0x00000100) should be 23");
     }
 
     #[test]
@@ -1323,47 +1323,47 @@ mod tests {
         // Test CTZ(0) = 32
         let zero = BV::from_i64(&ctx, 0, 32);
         let ctz_zero = encoder.encode_op(&WasmOp::I32Ctz, &[zero]);
-        assert_eq!(ctz_zero.as_i64(), Some(32), "CTZ(0) should be 32");
+        assert_eq!(ctz_zero.simplify().as_i64(), Some(32), "CTZ(0) should be 32");
 
         // Test CTZ(1) = 0 (binary: ...0001)
         let one = BV::from_i64(&ctx, 1, 32);
         let ctz_one = encoder.encode_op(&WasmOp::I32Ctz, &[one]);
-        assert_eq!(ctz_one.as_i64(), Some(0), "CTZ(1) should be 0");
+        assert_eq!(ctz_one.simplify().as_i64(), Some(0), "CTZ(1) should be 0");
 
         // Test CTZ(2) = 1 (binary: ...0010)
         let two = BV::from_i64(&ctx, 2, 32);
         let ctz_two = encoder.encode_op(&WasmOp::I32Ctz, &[two]);
-        assert_eq!(ctz_two.as_i64(), Some(1), "CTZ(2) should be 1");
+        assert_eq!(ctz_two.simplify().as_i64(), Some(1), "CTZ(2) should be 1");
 
         // Test CTZ(0x80000000) = 31 (binary: 1000...0000)
         let msb_set = BV::from_u64(&ctx, 0x80000000, 32);
         let ctz_msb = encoder.encode_op(&WasmOp::I32Ctz, &[msb_set]);
-        assert_eq!(ctz_msb.as_i64(), Some(31), "CTZ(0x80000000) should be 31");
+        assert_eq!(ctz_msb.simplify().as_i64(), Some(31), "CTZ(0x80000000) should be 31");
 
         // Test CTZ(0x00FF0000) = 16
         let val1 = BV::from_u64(&ctx, 0x00FF0000, 32);
         let ctz1 = encoder.encode_op(&WasmOp::I32Ctz, &[val1]);
-        assert_eq!(ctz1.as_i64(), Some(16), "CTZ(0x00FF0000) should be 16");
+        assert_eq!(ctz1.simplify().as_i64(), Some(16), "CTZ(0x00FF0000) should be 16");
 
         // Test CTZ(0x00001000) = 12
         let val2 = BV::from_u64(&ctx, 0x00001000, 32);
         let ctz2 = encoder.encode_op(&WasmOp::I32Ctz, &[val2]);
-        assert_eq!(ctz2.as_i64(), Some(12), "CTZ(0x00001000) should be 12");
+        assert_eq!(ctz2.simplify().as_i64(), Some(12), "CTZ(0x00001000) should be 12");
 
         // Test CTZ(0xFFFFFFFF) = 0 (all bits set, lowest is bit 0)
         let all_ones = BV::from_u64(&ctx, 0xFFFFFFFF, 32);
         let ctz_all = encoder.encode_op(&WasmOp::I32Ctz, &[all_ones]);
-        assert_eq!(ctz_all.as_i64(), Some(0), "CTZ(0xFFFFFFFF) should be 0");
+        assert_eq!(ctz_all.simplify().as_i64(), Some(0), "CTZ(0xFFFFFFFF) should be 0");
 
         // Test CTZ(0x00000100) = 8
         let val3 = BV::from_u64(&ctx, 0x00000100, 32);
         let ctz3 = encoder.encode_op(&WasmOp::I32Ctz, &[val3]);
-        assert_eq!(ctz3.as_i64(), Some(8), "CTZ(0x00000100) should be 8");
+        assert_eq!(ctz3.simplify().as_i64(), Some(8), "CTZ(0x00000100) should be 8");
 
         // Test CTZ(12) = 2 (binary: ...1100, lowest 1 is at bit 2)
         let twelve = BV::from_i64(&ctx, 12, 32);
         let ctz_twelve = encoder.encode_op(&WasmOp::I32Ctz, &[twelve]);
-        assert_eq!(ctz_twelve.as_i64(), Some(2), "CTZ(12) should be 2");
+        assert_eq!(ctz_twelve.simplify().as_i64(), Some(2), "CTZ(12) should be 2");
     }
 
     #[test]
@@ -1374,18 +1374,18 @@ mod tests {
         // Test POPCNT(0) = 0
         let zero = BV::from_i64(&ctx, 0, 32);
         let popcnt_zero = encoder.encode_op(&WasmOp::I32Popcnt, &[zero]);
-        assert_eq!(popcnt_zero.as_i64(), Some(0), "POPCNT(0) should be 0");
+        assert_eq!(popcnt_zero.simplify().as_i64(), Some(0), "POPCNT(0) should be 0");
 
         // Test POPCNT(1) = 1
         let one = BV::from_i64(&ctx, 1, 32);
         let popcnt_one = encoder.encode_op(&WasmOp::I32Popcnt, &[one]);
-        assert_eq!(popcnt_one.as_i64(), Some(1), "POPCNT(1) should be 1");
+        assert_eq!(popcnt_one.simplify().as_i64(), Some(1), "POPCNT(1) should be 1");
 
         // Test POPCNT(0xFFFFFFFF) = 32
         let all_ones = BV::from_u64(&ctx, 0xFFFFFFFF, 32);
         let popcnt_all = encoder.encode_op(&WasmOp::I32Popcnt, &[all_ones]);
         assert_eq!(
-            popcnt_all.as_i64(),
+            popcnt_all.simplify().as_i64(),
             Some(32),
             "POPCNT(0xFFFFFFFF) should be 32"
         );
@@ -1394,7 +1394,7 @@ mod tests {
         let half = BV::from_u64(&ctx, 0x0F0F0F0F, 32);
         let popcnt_half = encoder.encode_op(&WasmOp::I32Popcnt, &[half]);
         assert_eq!(
-            popcnt_half.as_i64(),
+            popcnt_half.simplify().as_i64(),
             Some(16),
             "POPCNT(0x0F0F0F0F) should be 16"
         );
@@ -1402,13 +1402,13 @@ mod tests {
         // Test POPCNT(7) = 3 (binary: 0111)
         let seven = BV::from_i64(&ctx, 7, 32);
         let popcnt_seven = encoder.encode_op(&WasmOp::I32Popcnt, &[seven]);
-        assert_eq!(popcnt_seven.as_i64(), Some(3), "POPCNT(7) should be 3");
+        assert_eq!(popcnt_seven.simplify().as_i64(), Some(3), "POPCNT(7) should be 3");
 
         // Test POPCNT(0xAAAAAAAA) = 16 (alternating bits)
         let alternating = BV::from_u64(&ctx, 0xAAAAAAAA, 32);
         let popcnt_alt = encoder.encode_op(&WasmOp::I32Popcnt, &[alternating]);
         assert_eq!(
-            popcnt_alt.as_i64(),
+            popcnt_alt.simplify().as_i64(),
             Some(16),
             "POPCNT(0xAAAAAAAA) should be 16"
         );
@@ -1425,7 +1425,7 @@ mod tests {
         let cond_true = BV::from_i64(&ctx, 1, 32);
         let result = encoder.encode_op(&WasmOp::Select, &[val1.clone(), val2.clone(), cond_true]);
         assert_eq!(
-            result.as_i64(),
+            result.simplify().as_i64(),
             Some(10),
             "select(10, 20, 1) should return 10"
         );
@@ -1434,7 +1434,7 @@ mod tests {
         let cond_false = BV::from_i64(&ctx, 0, 32);
         let result = encoder.encode_op(&WasmOp::Select, &[val1.clone(), val2.clone(), cond_false]);
         assert_eq!(
-            result.as_i64(),
+            result.simplify().as_i64(),
             Some(20),
             "select(10, 20, 0) should return 20"
         );
@@ -1445,7 +1445,7 @@ mod tests {
         let cond_neg = BV::from_i64(&ctx, -1, 32);
         let result = encoder.encode_op(&WasmOp::Select, &[val3, val4, cond_neg]);
         assert_eq!(
-            result.as_i64(),
+            result.simplify().as_i64(),
             Some(42),
             "select(42, 99, -1) should return 42"
         );
