@@ -15,8 +15,8 @@ pub use pattern_matcher::{
 };
 pub use peephole::{OptimizationStats as PeepholeStats, PeepholeOptimizer};
 pub use rules::{
-    ArmOp, Cost, MemAddr, Operand2, Pattern, Reg, Replacement, RuleDatabase, ShiftType,
-    SynthesisRule, WasmOp,
+    ArmOp, Condition, Cost, MemAddr, Operand2, Pattern, Reg, Replacement, RuleDatabase,
+    ShiftType, SynthesisRule, WasmOp,
 };
 
 // Stub for PoC
