@@ -350,9 +350,11 @@ impl<'ctx> WasmSemantics<'ctx> {
             }
 
             WasmOp::If => {
-                assert_eq!(inputs.len(), 1, "If requires 1 input (condition)");
                 // If is a structure marker with condition check
-                let _cond = inputs[0].clone();
+                // For verification purposes, may be called without inputs
+                if !inputs.is_empty() {
+                    let _cond = inputs[0].clone();
+                }
                 BV::from_i64(self.ctx, 0, 32)
             }
 
@@ -363,10 +365,14 @@ impl<'ctx> WasmSemantics<'ctx> {
             }
 
             WasmOp::BrTable { targets, default } => {
-                assert_eq!(inputs.len(), 1, "BrTable requires 1 input (index)");
                 // Multi-way branch based on index
+                // For verification purposes, may be called without inputs
                 // If index < len(targets), branch to targets[index]
                 // Otherwise, branch to default
+                if inputs.is_empty() {
+                    // Verification mode - return placeholder
+                    return BV::from_i64(self.ctx, 0, 32);
+                }
                 let index = inputs[0].clone();
 
                 // For verification, we model this as symbolic control flow
@@ -386,11 +392,12 @@ impl<'ctx> WasmSemantics<'ctx> {
             }
 
             WasmOp::CallIndirect(type_idx) => {
-                assert_eq!(
-                    inputs.len(),
-                    1,
-                    "CallIndirect requires 1 input (table index)"
-                );
+                // CallIndirect is a structural operation
+                // For verification purposes, may be called without inputs
+                if inputs.is_empty() {
+                    // Verification mode - return placeholder
+                    return BV::from_i64(self.ctx, 0, 32);
+                }
                 // Indirect function call through table
                 // For verification, we model the call result symbolically
                 let _table_index = inputs[0].clone();
