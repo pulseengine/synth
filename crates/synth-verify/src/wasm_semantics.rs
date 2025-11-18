@@ -562,6 +562,69 @@ impl<'ctx> WasmSemantics<'ctx> {
                 BV::new_const(self.ctx, "f32_load_result", 32)
             }
 
+            // f32 Comparisons (return i32: 0 or 1)
+            WasmOp::F32Eq => {
+                assert_eq!(inputs.len(), 2, "F32Eq requires 2 inputs");
+                // f32 equal: IEEE 754 semantics (NaN != NaN)
+                BV::new_const(self.ctx, "f32_eq_result", 32)
+            }
+
+            WasmOp::F32Ne => {
+                assert_eq!(inputs.len(), 2, "F32Ne requires 2 inputs");
+                // f32 not equal
+                BV::new_const(self.ctx, "f32_ne_result", 32)
+            }
+
+            WasmOp::F32Lt => {
+                assert_eq!(inputs.len(), 2, "F32Lt requires 2 inputs");
+                // f32 less than
+                BV::new_const(self.ctx, "f32_lt_result", 32)
+            }
+
+            WasmOp::F32Le => {
+                assert_eq!(inputs.len(), 2, "F32Le requires 2 inputs");
+                // f32 less than or equal
+                BV::new_const(self.ctx, "f32_le_result", 32)
+            }
+
+            WasmOp::F32Gt => {
+                assert_eq!(inputs.len(), 2, "F32Gt requires 2 inputs");
+                // f32 greater than
+                BV::new_const(self.ctx, "f32_gt_result", 32)
+            }
+
+            WasmOp::F32Ge => {
+                assert_eq!(inputs.len(), 2, "F32Ge requires 2 inputs");
+                // f32 greater than or equal
+                BV::new_const(self.ctx, "f32_ge_result", 32)
+            }
+
+            WasmOp::F32Store { offset: _, align: _ } => {
+                assert_eq!(inputs.len(), 2, "F32Store requires 2 inputs (address, value)");
+                // f32 store to memory - returns void (modeled as zero)
+                // In verification, memory effects are tracked symbolically
+                BV::from_i64(self.ctx, 0, 32)
+            }
+
+            // f32 Advanced Math Operations
+            WasmOp::F32Ceil => {
+                assert_eq!(inputs.len(), 1, "F32Ceil requires 1 input");
+                // f32 ceil: round toward +infinity
+                BV::new_const(self.ctx, "f32_ceil_result", 32)
+            }
+
+            WasmOp::F32Floor => {
+                assert_eq!(inputs.len(), 1, "F32Floor requires 1 input");
+                // f32 floor: round toward -infinity
+                BV::new_const(self.ctx, "f32_floor_result", 32)
+            }
+
+            WasmOp::F32Trunc => {
+                assert_eq!(inputs.len(), 1, "F32Trunc requires 1 input");
+                // f32 trunc: round toward zero
+                BV::new_const(self.ctx, "f32_trunc_result", 32)
+            }
+
             // Not yet supported operations
             _ => {
                 // For unsupported operations, return a symbolic constant
