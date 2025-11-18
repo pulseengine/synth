@@ -3,7 +3,6 @@
 //! Implements SSA construction, phi node insertion, and SSA-based optimizations
 
 use std::collections::{HashMap, HashSet};
-use synth_core::Result;
 
 /// SSA variable (versioned local variable)
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

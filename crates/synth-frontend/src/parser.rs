@@ -1,8 +1,7 @@
 //! WebAssembly Component Parser
 
 use synth_core::{
-    Component, CoreModule, Error, Export, ExportKind, Function, FunctionSignature, Global, Import,
-    ImportKind, Memory, Result, Table, ValueType,
+    Component, CoreModule, Error, Export, ExportKind, Memory, Result,
 };
 use wasmparser::{Parser, Payload};
 
