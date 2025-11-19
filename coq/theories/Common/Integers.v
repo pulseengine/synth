@@ -204,6 +204,22 @@ Module I32.
     rems x y = Some r ->
     r = sub x (mul q y).
 
+  (** ** Bit Manipulation Operations *)
+
+  (** Count leading zeros *)
+  Axiom clz : int -> int.
+
+  (** Count trailing zeros *)
+  Axiom ctz : int -> int.
+
+  (** Population count (count number of 1 bits) *)
+  Axiom popcnt : int -> int.
+
+  (** Properties of bit manipulation operations *)
+  Axiom clz_range : forall x, 0 <= unsigned (clz x) <= 32.
+  Axiom ctz_range : forall x, 0 <= unsigned (ctz x) <= 32.
+  Axiom popcnt_range : forall x, 0 <= unsigned (popcnt x) <= 32.
+
 End I32.
 
 (** ** 64-bit Integers *)

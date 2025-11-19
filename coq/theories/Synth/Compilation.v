@@ -95,6 +95,22 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
       (* Real: Would use ROR Rd, Rn, Rm *)
       []
 
+  (* i32 bit manipulation *)
+  | I32Clz =>
+      (* Simplified: bit count handled at WASM level *)
+      (* Real: Would use CLZ Rd, Rm (count leading zeros) *)
+      []
+
+  | I32Ctz =>
+      (* Simplified: bit count handled at WASM level *)
+      (* Real: Would use RBIT + CLZ (reverse bits, then count leading zeros) *)
+      []
+
+  | I32Popcnt =>
+      (* Simplified: bit count handled at WASM level *)
+      (* Real: Would need a loop or lookup table *)
+      []
+
   (* i32 comparison *)
   | I32Eqz =>
       (* Simplified: comparison handled at WASM level *)

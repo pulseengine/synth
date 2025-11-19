@@ -298,6 +298,31 @@ Definition exec_wasm_instr (i : wasm_instr) (s : wasm_state) : option wasm_state
       | None => None
       end
 
+  (* i32 bit manipulation operations *)
+  | I32Clz =>
+      match pop_i32 s with
+      | Some (v, s') =>
+          let result := I32.clz v in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I32Ctz =>
+      match pop_i32 s with
+      | Some (v, s') =>
+          let result := I32.ctz v in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I32Popcnt =>
+      match pop_i32 s with
+      | Some (v, s') =>
+          let result := I32.popcnt v in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
   (* i64 comparison operations *)
   | I64Eqz =>
       match pop_i64 s with
