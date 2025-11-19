@@ -1,0 +1,25 @@
+-R theories Synth
+
+# Coq standard library extensions
+-arg -w -arg -notation-overridden
+-arg -w -arg -redundant-canonical-projection
+-arg -w -arg -projection-no-head-constant
+
+# Output directories
+-Q theories Synth
+
+# Theory files (will be populated)
+theories/Common/Base.v
+theories/Common/Integers.v
+theories/Common/StateMonad.v
+
+theories/ARM/ArmState.v
+theories/ARM/ArmInstructions.v
+theories/ARM/ArmSemantics.v
+
+theories/WASM/WasmValues.v
+theories/WASM/WasmInstructions.v
+theories/WASM/WasmSemantics.v
+
+theories/Synth/Compilation.v
+theories/Synth/Correctness.v
