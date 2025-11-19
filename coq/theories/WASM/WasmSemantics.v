@@ -295,6 +295,25 @@ Definition exec_wasm_instr (i : wasm_instr) (s : wasm_state) : option wasm_state
       | None => None
       end
 
+  | Select =>
+      (* Pop 3 values: condition, val2, val1 *)
+      (* If condition ≠ 0, push val1; else push val2 *)
+      match pop_i32 s with
+      | Some (cond, s') =>
+          match pop_value s' with
+          | Some (val2, s'') =>
+              match pop_value s'' with
+              | Some (val1, s''') =>
+                  if I32.eq cond I32.zero
+                  then Some (push_value val2 s''')
+                  else Some (push_value val1 s''')
+              | None => None
+              end
+          | None => None
+          end
+      | None => None
+      end
+
   | Nop =>
       Some s
 

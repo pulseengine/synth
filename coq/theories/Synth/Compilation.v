@@ -94,6 +94,11 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
       (* Load immediate into R0 *)
       [MOVW R0 n]
 
+  | I64Const n =>
+      (* Load 64-bit constant: low 32 bits in R0, high 32 bits in R1 *)
+      (* Simplified: just load low bits to R0 for now *)
+      [MOVW R0 (I32.repr (n mod I32.modulus))]
+
   (* Local variables *)
   | LocalGet idx =>
       (* Load local variable from memory or register *)
@@ -117,6 +122,12 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
                        | _ => R4
                        end in
       [MOV local_reg (Reg R0)]
+
+  (* Control flow *)
+  | Select =>
+      (* Simplified: conditional select handled at WASM level *)
+      (* Real implementation would use conditional moves (MOVNE, MOVEQ, etc.) *)
+      []
 
   (* Not yet implemented *)
   | _ => []

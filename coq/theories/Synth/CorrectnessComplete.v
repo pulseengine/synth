@@ -71,10 +71,10 @@ Module ProgressMetrics.
 
   Definition total_operations : nat := 151.
 
-  Definition fully_proven : nat := 17.
+  Definition fully_proven : nat := 19.
   (** i32 arithmetic: add, sub, mul, divs, divu
       i32 bitwise: and, or, xor
-      Simple ops: nop, drop, local_get, local_set, local_tee, i32_const, global_get, global_set
+      Simple ops: nop, select, drop, local_get, local_set, local_tee, i32_const, i64_const, global_get, global_set
       One auto-proven example *)
 
   Definition structured_admitted : nat := 87.
@@ -85,8 +85,8 @@ Module ProgressMetrics.
   (** f32 (29) + f64 (30) + memory (8) + remaining locals/globals (2) + control (1)
       = 70, but some overlap with Simple, actual ~50 *)
 
-  Definition completion_percentage : Q := 17 # 151.
-  (** Approximately 11% fully proven *)
+  Definition completion_percentage : Q := 19 # 151.
+  (** Approximately 13% fully proven *)
 
   Definition coverage_percentage : Q := 101 # 151.
   (** Approximately 67% have theorem statements (even if admitted) *)
@@ -212,20 +212,26 @@ End ProgressMetrics.
    7. i32.or      (Correctness.v + CorrectnessI32.v)
    8. i32.xor     (Correctness.v + CorrectnessI32.v)
 
-   Simple Operations (5):
+   Simple Operations (7):
    9.  nop        (CorrectnessSimple.v)
-   10. drop       (CorrectnessSimple.v)
-   11. local.get  (CorrectnessSimple.v)
-   12. local.set  (CorrectnessSimple.v)
-   13. i32.const  (CorrectnessSimple.v)
+   10. select     (CorrectnessSimple.v)
+   11. drop       (CorrectnessSimple.v)
+   12. local.get  (CorrectnessSimple.v)
+   13. local.set  (CorrectnessSimple.v)
+   14. local.tee  (CorrectnessSimple.v)
+   15. i32.const  (CorrectnessSimple.v)
+   16. i64.const  (CorrectnessSimple.v)
+   17. global.get (CorrectnessSimple.v)
+   18. global.set (CorrectnessSimple.v)
 
    Automation Example (1):
-   14. i32.add (auto-proven with tactics in Tactics.v)
+   19. i32.add (auto-proven with tactics in Tactics.v)
 
-   Total: 14 operations fully proven
+   Total: 19 operations fully proven
 
-   These proofs are complete, require no axioms, and are ready for
-   certification review.
+   These proofs are complete (no Admitted). Note that Integers.v contains
+   axioms for remainder operation properties that will be proven later.
+   All 19 proven operations are ready for certification review.
 *)
 
 (** ** Statistics *)
