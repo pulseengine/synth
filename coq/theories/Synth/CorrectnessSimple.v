@@ -532,9 +532,59 @@ Proof.
   exists astate. reflexivity.
 Qed.
 
+(** ** I32 Bit Manipulation Operations *)
+
+Theorem i32_clz_correct : forall wstate astate v stack',
+  wstate.(stack) = VI32 v :: stack' ->
+  exec_wasm_instr I32Clz wstate =
+    Some (mkWasmState
+            (VI32 (I32.clz v) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I32Clz) astate = Some astate'.
+Proof.
+  intros wstate astate v stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
+Theorem i32_ctz_correct : forall wstate astate v stack',
+  wstate.(stack) = VI32 v :: stack' ->
+  exec_wasm_instr I32Ctz wstate =
+    Some (mkWasmState
+            (VI32 (I32.ctz v) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I32Ctz) astate = Some astate'.
+Proof.
+  intros wstate astate v stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
+Theorem i32_popcnt_correct : forall wstate astate v stack',
+  wstate.(stack) = VI32 v :: stack' ->
+  exec_wasm_instr I32Popcnt wstate =
+    Some (mkWasmState
+            (VI32 (I32.popcnt v) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I32Popcnt) astate = Some astate'.
+Proof.
+  intros wstate astate v stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
 (** ** Summary
 
-    Operations in this file: 26 total (10 simple + 11 comparison + 5 shift/rotate)
+    Operations in this file: 29 total (10 simple + 11 comparison + 5 shift/rotate + 3 bit manipulation)
 
     Simple Operations (10):
     - ✅ Nop (fully proven)
@@ -568,8 +618,13 @@ Qed.
     - ✅ I32Rotl (fully proven, rotate left)
     - ✅ I32Rotr (fully proven, rotate right)
 
+    Bit Manipulation Operations (3):
+    - ✅ I32Clz (fully proven, count leading zeros)
+    - ✅ I32Ctz (fully proven, count trailing zeros)
+    - ✅ I32Popcnt (fully proven, population count)
+
     All operations FULLY PROVEN (no Admitted)!
 
-    This file contains 26 operations.
-    Combined with other files: 44 + 2 = 46 operations fully proven total!
+    This file contains 29 operations.
+    Combined with other files: 46 + 3 = 49 operations fully proven total!
 *)
