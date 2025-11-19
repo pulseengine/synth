@@ -125,15 +125,19 @@ CompCert earned the 2021 ACM Software System Award for "lasting influence" on re
 CakeML is a functional programming language with a proven-correct compiler that can bootstrap itself. It includes an ecosystem of proofs and tools.
 
 **Compiler Backend:**
-The verified CakeML compiler backend includes mechanized proofs of correctness for all compilation phases from high-level functional programs to machine code.
+The verified CakeML compiler backend includes mechanized proofs of correctness for all compilation phases from high-level functional programs to machine code. Targets include ARMv6, ARMv7, ARMv8, ARMv8_ASL (Sail-derived), x86-64, MIPS-64, and RISC-V.
 
 **Recent Developments (2024-2025):**
 - March 2024: Papers accepted by AAAI, ESOP, CAV, and IJCAR on end-to-end verification
 - January 2024: "CakeML: A verified implementation of ML" received Most Influential POPL Paper Award at POPL 2024
 - PureCake: Verified compiler for Haskell-like language within CakeML ecosystem
+- As of June 2024: 698,590 lines of HOL4 definitions and proofs
 
 **Key Innovation:**
 CakeML demonstrates that entire language ecosystems can be verified, including compilers, runtime systems, and proof infrastructure.
+
+**Sail Integration (ARMv8_ASL Backend):**
+CakeML's ARMv8_ASL backend uses ARM's official ASL specification automatically translated to Sail, then to HOL4. Paper: "Taming an Authoritative Armv8 ISA Specification" (ITP 2022) proves compiler correctness against ARM's official ARMv8.6-A specification.
 
 ### 2.3 Verified LLVM Components
 
@@ -208,6 +212,45 @@ Princeton FPCC project focused on proving correctness of PCC-checkers using:
 
 **Relation to Verified Compilers:**
 Verified compilers like CompCert guarantee that safety properties proved on source code hold for executable compiled code, essentially providing proof-carrying guarantees through compiler verification.
+
+### 2.6 Sail ISA Specifications and Machine-Readable Architecture
+
+**Sail Language:**
+Sail is a language for describing instruction-set architecture (ISA) semantics of processors, developed by the REMS project at Cambridge University. It is engineer-friendly like vendor pseudocode but precisely defined with comprehensive tooling.
+
+**Official Models:**
+- **ARMv8-A:** Complete sequential behavior, auto-derived from ARM's ASL, Linux-capable
+- **ARMv8-M:** Cortex-M profile for embedded systems
+- **RISC-V:** Official golden model (selected by RISC-V International in 2020)
+- **MIPS, CHERI:** Complete specifications
+
+**Code Generation from Sail:**
+Single Sail specification automatically generates:
+- **Theorem prover definitions:** Coq, Isabelle, HOL4, Lean
+- **Executable emulators:** C, OCaml
+- **Hardware models:** SystemVerilog for formal verification
+- **Symbolic execution:** Isla engine for concurrency analysis
+
+**ARM ASL to Sail Translation:**
+ARM released ARMv8.2+ specification in machine-readable ASL (Architecture Specification Language). The `asl_to_sail` tool automatically translates ARM's official ASL to Sail, enabling:
+- Authoritative ARM semantics from ARM's own specification
+- Automatic Coq/Isabelle/HOL4 generation
+- Complete ISA coverage (~1000+ instructions)
+- Validation via ARM Architecture Validation Suite (AVS) and Linux boot
+
+**Application to Compiler Verification:**
+- **CakeML ARMv8_ASL backend:** Uses Sail-derived ARM semantics (ITP 2022)
+- **Islaris:** Machine code verification against Sail ISA semantics (PLDI 2022)
+- **VeriISLE/Arrival:** WebAssembly instruction selection verification with Sail-ISLA
+
+**Benefits for WebAssembly-to-ARM Compilation:**
+1. Replaces hand-coded ARM semantics with authoritative source
+2. 95%+ reduction in manual encoding effort
+3. Automatic theorem prover definitions generation
+4. Proven approach (CakeML demonstrates feasibility)
+5. Multi-target support (ARM, RISC-V, MIPS from same methodology)
+
+**See Also:** Comprehensive analysis in `docs/research/06_sail_arm_cakeml.md`
 
 ---
 
@@ -1060,9 +1103,19 @@ Use hybrid approach:
 - Watt. "Mechanising and Verifying the WebAssembly Specification." CPP 2018.
 - Vassena et al. "Iris-Wasm: Robust and Modular Verification of WebAssembly Programs." PACMPL 2023.
 
+**Sail ISA Specifications:**
+- Armstrong et al. "ISA Semantics for ARMv8-A, RISC-V, and CHERI-MIPS." POPL 2019.
+- Armstrong et al. "Isla: Integrating Full-Scale ISA Semantics and Axiomatic Concurrency Models." CAV 2021.
+- Armstrong et al. "Islaris: Verification of Machine Code Against Authoritative ISA Semantics." PLDI 2022.
+- Reid et al. "Trustworthy Specifications of ARM v8-A and v8-M System Level Architecture." FMCAD 2016.
+
+**CakeML with ARM ASL/Sail:**
+- "Taming an Authoritative Armv8 ISA Specification" (CakeML + ARM Research). ITP 2022.
+- "A Verified Compiler from Isabelle/HOL to CakeML." ESOP 2018.
+
 **Instruction Selection Verification:**
 - Pardeshi et al. "VeriISLE: Verifying Instruction Selection in Cranelift." CMU Tech Report 2023.
-- Ho et al. "Scaling Instruction-Selection Verification." preprint 2024.
+- Ho et al. "Scaling Instruction-Selection Verification." OOPSLA 2024.
 
 **High-Level Synthesis:**
 - Herklotz et al. "Formal Verification of High-Level Synthesis." OOPSLA 2021.
@@ -1099,6 +1152,12 @@ Use hybrid approach:
 **Verification Tools:**
 - Alive2: https://github.com/AliveToolkit/alive2
 - VeriISLE: http://reports-archive.adm.cs.cmu.edu/anon/2023/CMU-CS-23-126.pdf
+
+**ISA Specification Tools:**
+- Sail: https://github.com/rems-project/sail
+- asl_to_sail: https://github.com/rems-project/asl_to_sail
+- Isla (Sail symbolic execution): https://github.com/rems-project/isla
+- ARM ASL Specifications: Available from ARM (v8.2+)
 
 **WebAssembly Tools:**
 - Cranelift: https://cranelift.dev/

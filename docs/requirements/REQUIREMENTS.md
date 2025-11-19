@@ -367,7 +367,15 @@ WebAssembly Components → Synthesis → Optimized Native Code → ARM/RISC-V
   - Lean 4 as alternative
   - Export proofs in standard formats
 
-- TR-005.3: **Fuzzing Integration**
+- TR-005.3: **ISA Specification Integration (RECOMMENDED)**
+  - **Sail ISA specifications** for ARM and RISC-V
+  - **ARM ASL (Architecture Specification Language)** via asl_to_sail tool
+  - Automatic Coq generation from Sail specifications
+  - Authoritative ARM semantics from ARM's machine-readable spec
+  - Benefits: 95%+ reduction in manual ARM semantics encoding
+  - Reference: `docs/research/06_sail_arm_cakeml.md`
+
+- TR-005.4: **Fuzzing Integration**
   - OSS-Fuzz for continuous fuzzing
   - Differential testing against other runtimes
   - Property-based testing (QuickCheck-style)
@@ -500,6 +508,8 @@ WebAssembly Components → Synthesis → Optimized Native Code → ARM/RISC-V
 - Z3 SMT solver
 - Coq proof assistant
 - egg (equality saturation)
+- **Sail toolchain (recommended):** ISA specification language
+- **asl_to_sail (recommended):** ARM ASL to Sail translator
 
 **D-004: Embedded Toolchains**
 - ARM GCC / Clang for ARM targets
@@ -615,6 +625,10 @@ WebAssembly Components → Synthesis → Optimized Native Code → ARM/RISC-V
 - VeriISLE (CMU 2023): Verifying Instruction Selection
 - CompCert: Verified C Compiler
 - Vericert: Verified High-Level Synthesis
+- **CakeML (POPL 2014):** Verified ML Compiler (POPL 2024 Most Influential Paper Award)
+- **Sail ISA Semantics (POPL 2019):** ARMv8-A, RISC-V, CHERI formal specifications
+- **Islaris (PLDI 2022):** Machine code verification against Sail ISA semantics
+- **Taming ARMv8 (ITP 2022):** CakeML with ARM's authoritative ASL specification
 
 ### Tools and Frameworks
 - Cranelift: https://cranelift.dev/
@@ -626,6 +640,8 @@ WebAssembly Components → Synthesis → Optimized Native Code → ARM/RISC-V
 - pulseengine/loom: Initial WebAssembly optimizations (reference)
 - Bytecode Alliance: WebAssembly ecosystem
 - Rust Embedded Working Group
+- **REMS Project (Cambridge):** Sail ISA specifications, Islaris verification
+- **CakeML:** Verified compiler with ARM ASL/Sail backend integration
 
 ---
 
