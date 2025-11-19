@@ -60,6 +60,13 @@ Definition pop2_i32 (s : wasm_state) : option (I32.int * I32.int * wasm_state) :
   | _ => None
   end.
 
+Definition pop2_i64 (s : wasm_state) : option (I64.int * I64.int * wasm_state) :=
+  match pop2 s.(stack) with
+  | Some (VI64 v1, VI64 v2, stack') =>
+      Some (v1, v2, mkWasmState stack' s.(locals) s.(globals) s.(memory))
+  | _ => None
+  end.
+
 (** ** Instruction Semantics *)
 
 (** Execute a single WebAssembly instruction *)
@@ -287,6 +294,95 @@ Definition exec_wasm_instr (i : wasm_instr) (s : wasm_state) : option wasm_state
       match pop2_i32 s with
       | Some (v1, v2, s') =>
           let result := if I32.geu v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  (* i64 comparison operations *)
+  | I64Eqz =>
+      match pop_i64 s with
+      | Some (v, s') =>
+          let result := if I64.eq v I64.zero then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I64Eq =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := if I64.eq v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I64Ne =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := if I64.ne v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I64LtS =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := if I64.lts v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I64LtU =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := if I64.ltu v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I64GtS =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := if I64.gts v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I64GtU =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := if I64.gtu v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I64LeS =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := if I64.les v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I64LeU =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := if I64.leu v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I64GeS =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := if I64.ges v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I64GeU =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := if I64.geu v1 v2 then I32.one else I32.zero in
           Some (push_value (VI32 result) s')
       | None => None
       end
