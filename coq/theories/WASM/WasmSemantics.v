@@ -203,6 +203,14 @@ Definition exec_wasm_instr (i : wasm_instr) (s : wasm_state) : option wasm_state
       end
 
   (* i32 comparison operations *)
+  | I32Eqz =>
+      match pop_i32 s with
+      | Some (v, s') =>
+          let result := if I32.eq v I32.zero then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
   | I32Eq =>
       match pop2_i32 s with
       | Some (v1, v2, s') =>
