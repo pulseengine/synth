@@ -4,9 +4,11 @@
     the Synth verification framework.
 *)
 
-Require Import ZArith.
-Require Import List.
-Require Import Omega.
+From Stdlib Require Import ZArith.
+From Stdlib Require Import List.
+From Stdlib Require Import Lia.
+From Stdlib Require Import String.
+From Stdlib Require Import FunctionalExtensionality.
 Import ListNotations.
 Open Scope Z_scope.
 

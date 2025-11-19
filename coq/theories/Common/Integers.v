@@ -7,9 +7,9 @@
     following the approach from CompCert's Integers library.
 *)
 
-Require Import ZArith.
-Require Import Znumtheory.
-Require Import Omega.
+From Stdlib Require Import ZArith.
+From Stdlib Require Import Znumtheory.
+From Stdlib Require Import Lia.
 Require Import Synth.Common.Base.
 
 Open Scope Z_scope.
@@ -126,13 +126,15 @@ Module I32.
   Proof.
     intros n [Hlo Hhi].
     unfold unsigned, repr.
-    apply Zmod_small. omega.
+    apply Zmod_small.
+    unfold valid_unsigned, max_unsigned, modulus in *.
+    lia.
   Qed.
 
   Theorem add_commut : forall x y,
     add x y = add y x.
   Proof.
-    intros. unfold add. f_equal. omega.
+    intros. unfold add. f_equal. lia.
   Qed.
 
   Theorem add_assoc : forall x y z,
@@ -141,21 +143,21 @@ Module I32.
     intros. unfold add, repr.
     rewrite Zplus_mod_idemp_l.
     rewrite Zplus_mod_idemp_r.
-    f_equal. omega.
+    f_equal. lia.
   Qed.
 
   Theorem add_zero : forall x,
     add x zero = x.
   Proof.
     intros. unfold add, zero, repr.
-    replace (x + 0 mod modulus) with x by omega.
+    replace (x + 0 mod modulus) with x by lia.
     apply repr_unsigned.
   Qed.
 
   Theorem mul_commut : forall x y,
     mul x y = mul y x.
   Proof.
-    intros. unfold mul. f_equal. omega.
+    intros. unfold mul. f_equal. lia.
   Qed.
 
   Theorem and_commut : forall x y,
@@ -321,7 +323,7 @@ Module I64.
   Theorem add_commut : forall x y,
     add x y = add y x.
   Proof.
-    intros. unfold add. f_equal. omega.
+    intros. unfold add. f_equal. lia.
   Qed.
 
 End I64.
