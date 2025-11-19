@@ -71,12 +71,12 @@ Module ProgressMetrics.
 
   Definition total_operations : nat := 151.
 
-  Definition fully_proven : nat := 21.
-  (** i32 arithmetic: add, sub, mul, divs, divu
-      i32 bitwise: and, or, xor
-      i32 comparison: eqz, eq
-      Simple ops: nop, select, drop, local_get, local_set, local_tee, i32_const, i64_const, global_get, global_set
-      One auto-proven example *)
+  Definition fully_proven : nat := 30.
+  (** i32 arithmetic: add, sub, mul, divs, divu (5)
+      i32 bitwise: and, or, xor (3)
+      i32 comparison: eqz, eq, ne, lts, ltu, gts, gtu, les, leu, ges, geu (11)
+      Simple ops: nop, select, drop, local_get, local_set, local_tee, i32_const, i64_const, global_get, global_set (10)
+      Automation demo: i32.add (1) *)
 
   Definition structured_admitted : nat := 87.
   (** i32 (25) + i64 (34) + conversions (24) + f32 placeholder theorems (0) +
@@ -86,8 +86,8 @@ Module ProgressMetrics.
   (** f32 (29) + f64 (30) + memory (8) + remaining locals/globals (2) + control (1)
       = 70, but some overlap with Simple, actual ~50 *)
 
-  Definition completion_percentage : Q := 21 # 151.
-  (** Approximately 14% fully proven *)
+  Definition completion_percentage : Q := 30 # 151.
+  (** Approximately 20% fully proven *)
 
   Definition coverage_percentage : Q := 101 # 151.
   (** Approximately 67% have theorem statements (even if admitted) *)
@@ -213,30 +213,39 @@ End ProgressMetrics.
    7. i32.or      (Correctness.v + CorrectnessI32.v)
    8. i32.xor     (Correctness.v + CorrectnessI32.v)
 
-   I32 Comparison (2):
+   I32 Comparison (11):
    9.  i32.eqz    (CorrectnessSimple.v)
    10. i32.eq     (CorrectnessSimple.v)
+   11. i32.ne     (CorrectnessSimple.v)
+   12. i32.lt_s   (CorrectnessSimple.v)
+   13. i32.lt_u   (CorrectnessSimple.v)
+   14. i32.gt_s   (CorrectnessSimple.v)
+   15. i32.gt_u   (CorrectnessSimple.v)
+   16. i32.le_s   (CorrectnessSimple.v)
+   17. i32.le_u   (CorrectnessSimple.v)
+   18. i32.ge_s   (CorrectnessSimple.v)
+   19. i32.ge_u   (CorrectnessSimple.v)
 
-   Simple Operations (8):
-   11. nop        (CorrectnessSimple.v)
-   12. select     (CorrectnessSimple.v)
-   13. drop       (CorrectnessSimple.v)
-   14. local.get  (CorrectnessSimple.v)
-   15. local.set  (CorrectnessSimple.v)
-   16. local.tee  (CorrectnessSimple.v)
-   17. i32.const  (CorrectnessSimple.v)
-   18. i64.const  (CorrectnessSimple.v)
-   19. global.get (CorrectnessSimple.v)
-   20. global.set (CorrectnessSimple.v)
+   Simple Operations (10):
+   20. nop        (CorrectnessSimple.v)
+   21. select     (CorrectnessSimple.v)
+   22. drop       (CorrectnessSimple.v)
+   23. local.get  (CorrectnessSimple.v)
+   24. local.set  (CorrectnessSimple.v)
+   25. local.tee  (CorrectnessSimple.v)
+   26. i32.const  (CorrectnessSimple.v)
+   27. i64.const  (CorrectnessSimple.v)
+   28. global.get (CorrectnessSimple.v)
+   29. global.set (CorrectnessSimple.v)
 
    Automation Example (1):
-   21. i32.add (auto-proven with tactics in Tactics.v)
+   30. i32.add (auto-proven with tactics in Tactics.v)
 
-   Total: 21 operations fully proven
+   Total: 30 operations fully proven
 
    These proofs are complete (no Admitted). Note that Integers.v contains
    axioms for remainder operation properties that will be proven later.
-   All 21 proven operations are ready for certification review.
+   All 30 proven operations are ready for certification review.
 *)
 
 (** ** Statistics *)

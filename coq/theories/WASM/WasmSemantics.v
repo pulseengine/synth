@@ -251,6 +251,46 @@ Definition exec_wasm_instr (i : wasm_instr) (s : wasm_state) : option wasm_state
       | None => None
       end
 
+  | I32LeU =>
+      match pop2_i32 s with
+      | Some (v1, v2, s') =>
+          let result := if I32.leu v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I32GtS =>
+      match pop2_i32 s with
+      | Some (v1, v2, s') =>
+          let result := if I32.gts v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I32GtU =>
+      match pop2_i32 s with
+      | Some (v1, v2, s') =>
+          let result := if I32.gtu v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I32GeS =>
+      match pop2_i32 s with
+      | Some (v1, v2, s') =>
+          let result := if I32.ges v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
+  | I32GeU =>
+      match pop2_i32 s with
+      | Some (v1, v2, s') =>
+          let result := if I32.geu v1 v2 then I32.one else I32.zero in
+          Some (push_value (VI32 result) s')
+      | None => None
+      end
+
   (* Local variable operations *)
   | LocalGet idx =>
       let value := s.(locals) idx in
