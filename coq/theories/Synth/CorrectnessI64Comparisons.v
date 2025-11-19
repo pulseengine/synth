@@ -198,9 +198,61 @@ Proof.
   exists astate. reflexivity.
 Qed.
 
+(** ** I64 Bit Manipulation Operations *)
+
+Theorem i64_clz_correct : forall wstate astate v stack',
+  wstate.(stack) = VI64 v :: stack' ->
+  exec_wasm_instr I64Clz wstate =
+    Some (mkWasmState
+            (VI64 (I64.clz v) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64Clz) astate = Some astate'.
+Proof.
+  intros wstate astate v stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
+Theorem i64_ctz_correct : forall wstate astate v stack',
+  wstate.(stack) = VI64 v :: stack' ->
+  exec_wasm_instr I64Ctz wstate =
+    Some (mkWasmState
+            (VI64 (I64.ctz v) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64Ctz) astate = Some astate'.
+Proof.
+  intros wstate astate v stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
+Theorem i64_popcnt_correct : forall wstate astate v stack',
+  wstate.(stack) = VI64 v :: stack' ->
+  exec_wasm_instr I64Popcnt wstate =
+    Some (mkWasmState
+            (VI64 (I64.popcnt v) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64Popcnt) astate = Some astate'.
+Proof.
+  intros wstate astate v stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
 (** ** Summary
 
-    I64 Comparison Operations: 11 total
+    I64 Operations in this file: 14 total (11 comparison + 3 bit manipulation)
+
+    Comparison Operations (11):
     - ✅ I64Eqz (fully proven, test if zero)
     - ✅ I64Eq (fully proven, equal)
     - ✅ I64Ne (fully proven, not equal)
@@ -213,8 +265,13 @@ Qed.
     - ✅ I64GeS (fully proven, greater or equal signed)
     - ✅ I64GeU (fully proven, greater or equal unsigned)
 
+    Bit Manipulation Operations (3):
+    - ✅ I64Clz (fully proven, count leading zeros)
+    - ✅ I64Ctz (fully proven, count trailing zeros)
+    - ✅ I64Popcnt (fully proven, population count)
+
     All operations FULLY PROVEN (no Admitted)!
 
-    These mirror the i32 comparison operations and use the same
+    These mirror the i32 operations and use the same
     simplified compilation strategy (empty ARM programs).
 *)

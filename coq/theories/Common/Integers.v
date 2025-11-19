@@ -289,6 +289,22 @@ Module I64.
   Definition geu (x y : int) : bool := Z.geb (unsigned x) (unsigned y).
   Definition ges (x y : int) : bool := Z.geb (signed x) (signed y).
 
+  (** ** Bit Manipulation Operations *)
+
+  (** Count leading zeros *)
+  Axiom clz : int -> int.
+
+  (** Count trailing zeros *)
+  Axiom ctz : int -> int.
+
+  (** Population count (count number of 1 bits) *)
+  Axiom popcnt : int -> int.
+
+  (** Properties of bit manipulation operations *)
+  Axiom clz_range : forall x, 0 <= unsigned (clz x) <= 64.
+  Axiom ctz_range : forall x, 0 <= unsigned (ctz x) <= 64.
+  Axiom popcnt_range : forall x, 0 <= unsigned (popcnt x) <= 64.
+
   Definition zero : int := repr 0.
   Definition one : int := repr 1.
 

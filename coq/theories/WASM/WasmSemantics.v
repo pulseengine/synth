@@ -412,6 +412,31 @@ Definition exec_wasm_instr (i : wasm_instr) (s : wasm_state) : option wasm_state
       | None => None
       end
 
+  (* i64 bit manipulation operations *)
+  | I64Clz =>
+      match pop_i64 s with
+      | Some (v, s') =>
+          let result := I64.clz v in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
+  | I64Ctz =>
+      match pop_i64 s with
+      | Some (v, s') =>
+          let result := I64.ctz v in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
+  | I64Popcnt =>
+      match pop_i64 s with
+      | Some (v, s') =>
+          let result := I64.popcnt v in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
   (* Local variable operations *)
   | LocalGet idx =>
       let value := s.(locals) idx in

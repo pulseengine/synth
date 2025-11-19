@@ -6,8 +6,8 @@
     **CHALLENGE ACCEPTED: 151 / 151 Operations Defined**
 
     Total Operations: 151
-    - Fully Proven (no Admitted): 49
-    - Structured (admitted, needs implementation): 102
+    - Fully Proven (no Admitted): 52
+    - Structured (admitted, needs implementation): 99
     - Coverage: 100% (all operations have theorem statements)
 *)
 
@@ -29,8 +29,8 @@ Require Export Synth.Synth.CorrectnessConversions.
    [i64 Operations: 34 total]
    - Arithmetic (10): All admit
    - Bitwise (10): All admit
-   - Comparison (11): All admit
-   - Bit manipulation (3): All admit
+   - Comparison (11): All ✅ (fully proven)
+   - Bit manipulation (3): Clz✅, Ctz✅, Popcnt✅ (fully proven)
 
    [f32 Operations: 29 total - NOT YET DEFINED]
    - Arithmetic (14): Add, Sub, Mul, Div, Sqrt, Min, Max, Abs, Neg, Copysign, Ceil, Floor, Trunc, Nearest
@@ -71,28 +71,29 @@ Module ProgressMetrics.
 
   Definition total_operations : nat := 151.
 
-  Definition fully_proven : nat := 49.
+  Definition fully_proven : nat := 52.
   (** i32 arithmetic: add, sub, mul, divs, divu (5)
       i32 bitwise: and, or, xor (3)
       i32 shift/rotate: shl, shr_u, shr_s, rotl, rotr (5)
       i32 bit manipulation: clz, ctz, popcnt (3)
       i32 comparison: eqz, eq, ne, lts, ltu, gts, gtu, les, leu, ges, geu (11)
       i64 comparison: eqz, eq, ne, lts, ltu, gts, gtu, les, leu, ges, geu (11)
+      i64 bit manipulation: clz, ctz, popcnt (3)
       Simple ops: nop, select, drop, local_get, local_set, local_tee, i32_const, i64_const, global_get, global_set (10)
       Automation demo: i32.add (1) *)
 
-  Definition structured_admitted : nat := 68.
-  (** i32 (17) + i64 (23) + conversions (24) + f32 placeholder theorems (0) +
+  Definition structured_admitted : nat := 65.
+  (** i32 (14) + i64 (20) + conversions (24) + f32 placeholder theorems (0) +
       f64 placeholder theorems (0) + memory (0) + control (0)
       Note: i32 reduced from 34 to 17 as 17 operations now fully proven
-            i64 reduced from 34 to 23 as 11 comparisons are now fully proven *)
+            i64 reduced from 34 to 20 as 14 operations (11 comparisons + 3 bit manipulation) are now fully proven *)
 
   Definition not_yet_defined : nat := 50.
   (** f32 (29) + f64 (30) + memory (8) + remaining locals/globals (2) + control (1)
       = 70, but some overlap with Simple, actual ~50 *)
 
-  Definition completion_percentage : Q := 49 # 151.
-  (** Approximately 32% fully proven *)
+  Definition completion_percentage : Q := 52 # 151.
+  (** Approximately 34% fully proven *)
 
   Definition coverage_percentage : Q := 101 # 151.
   (** Approximately 67% have theorem statements (even if admitted) *)

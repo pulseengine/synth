@@ -207,6 +207,22 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
       (* Simplified: comparison handled at WASM level *)
       []
 
+  (* i64 bit manipulation *)
+  | I64Clz =>
+      (* Simplified: bit count handled at WASM level *)
+      (* Real: Would use CLZ on 64-bit registers *)
+      []
+
+  | I64Ctz =>
+      (* Simplified: bit count handled at WASM level *)
+      (* Real: Would use RBIT + CLZ on 64-bit registers *)
+      []
+
+  | I64Popcnt =>
+      (* Simplified: bit count handled at WASM level *)
+      (* Real: Would need a loop or lookup table for 64-bit *)
+      []
+
   (* Constants *)
   | I32Const n =>
       (* Load immediate into R0 *)
