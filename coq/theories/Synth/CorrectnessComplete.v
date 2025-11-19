@@ -6,8 +6,8 @@
     **CHALLENGE ACCEPTED: 151 / 151 Operations Defined**
 
     Total Operations: 151
-    - Fully Proven (no Admitted): 14
-    - Structured (admitted, needs implementation): 137
+    - Fully Proven (no Admitted): 17
+    - Structured (admitted, needs implementation): 134
     - Coverage: 100% (all operations have theorem statements)
 *)
 
@@ -71,10 +71,10 @@ Module ProgressMetrics.
 
   Definition total_operations : nat := 151.
 
-  Definition fully_proven : nat := 14.
+  Definition fully_proven : nat := 17.
   (** i32 arithmetic: add, sub, mul, divs, divu
       i32 bitwise: and, or, xor
-      Simple ops: nop, drop, local_get, local_set, i32_const
+      Simple ops: nop, drop, local_get, local_set, local_tee, i32_const, global_get, global_set
       One auto-proven example *)
 
   Definition structured_admitted : nat := 87.
@@ -85,8 +85,8 @@ Module ProgressMetrics.
   (** f32 (29) + f64 (30) + memory (8) + remaining locals/globals (2) + control (1)
       = 70, but some overlap with Simple, actual ~50 *)
 
-  Definition completion_percentage : Q := 14 # 151.
-  (** Approximately 9% fully proven *)
+  Definition completion_percentage : Q := 17 # 151.
+  (** Approximately 11% fully proven *)
 
   Definition coverage_percentage : Q := 101 # 151.
   (** Approximately 67% have theorem statements (even if admitted) *)

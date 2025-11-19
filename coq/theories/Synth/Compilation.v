@@ -48,6 +48,17 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
   | I32DivU =>
       [UDIV R0 R0 R1]
 
+  | I32RemS =>
+      (* Signed remainder: a % b = a - (a/b) * b *)
+      (* Use MLS (Multiply and Subtract): Rd = Ra - Rn * Rm *)
+      [SDIV R2 R0 R1;    (* R2 = R0 / R1 (quotient) *)
+       MLS R0 R2 R1 R0]  (* R0 = R0 - (R2 * R1) (remainder) *)
+
+  | I32RemU =>
+      (* Unsigned remainder: a % b = a - (a/b) * b *)
+      [UDIV R2 R0 R1;    (* R2 = R0 / R1 (quotient) *)
+       MLS R0 R2 R1 R0]  (* R0 = R0 - (R2 * R1) (remainder) *)
+
   (* i32 bitwise operations *)
   | I32And =>
       [AND R0 R0 (Reg R1)]
