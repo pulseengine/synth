@@ -1,4 +1,4 @@
-DIGEST 03f0b7e9a4f159d10e776b60f0c6ee9b
+DIGEST c5af211aef939a9508dad3d1b4cb7c4d
 FSynth.Common.Integers
 R299:304 Stdlib.ZArith.ZArith <> <> lib
 R334:343 Stdlib.ZArith.Znumtheory <> <> lib
@@ -401,6 +401,693 @@ R3969:3969 Synth.Common.Integers <> n:60 var
 R3974:3974 Synth.Common.Integers <> n:60 var
 R4021:4028 Synth.Common.Integers I32 unsigned def
 R4031:4034 Synth.Common.Integers I32 repr def
-R4037:4048 Synth.Common.Integers I32 max_unsigned def
-R4066:4075 Stdlib.ZArith.Zdiv <> Zmod_small thm
-R4066:4075 Stdlib.ZArith.Zdiv <> Zmod_small thm
+R4070:4076 Synth.Common.Integers I32 modulus def
+R4049:4057 Stdlib.ZArith.BinInt Z mod_mod thm
+R4049:4057 Stdlib.ZArith.BinInt Z mod_mod thm
+R4049:4057 Stdlib.ZArith.BinInt Z mod_mod thm
+R4095:4105 Stdlib.ZArith.BinInt Z mod_small thm
+R4095:4105 Stdlib.ZArith.BinInt Z mod_small thm
+R4119:4132 Synth.Common.Integers I32 valid_unsigned def
+R4135:4146 Synth.Common.Integers I32 max_unsigned def
+R4149:4155 Synth.Common.Integers I32 modulus def
+prf 4186:4195 I32 add_commut
+binder 4206:4206 <> x:61
+binder 4208:4208 <> y:62
+R4222:4224 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4215:4217 Synth.Common.Integers I32 add def
+R4219:4219 Synth.Common.Integers <> x:61 var
+R4221:4221 Synth.Common.Integers <> y:62 var
+R4225:4227 Synth.Common.Integers I32 add def
+R4229:4229 Synth.Common.Integers <> y:62 var
+R4231:4231 Synth.Common.Integers <> x:61 var
+R4262:4264 Synth.Common.Integers I32 add def
+prf 4299:4307 I32 add_assoc
+binder 4318:4318 <> x:63
+binder 4320:4320 <> y:64
+binder 4322:4322 <> z:65
+R4344:4346 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4329:4331 Synth.Common.Integers I32 add def
+R4334:4336 Synth.Common.Integers I32 add def
+R4338:4338 Synth.Common.Integers <> x:63 var
+R4340:4340 Synth.Common.Integers <> y:64 var
+R4343:4343 Synth.Common.Integers <> z:65 var
+R4347:4349 Synth.Common.Integers I32 add def
+R4351:4351 Synth.Common.Integers <> x:63 var
+R4354:4356 Synth.Common.Integers I32 add def
+R4358:4358 Synth.Common.Integers <> y:64 var
+R4360:4360 Synth.Common.Integers <> z:65 var
+R4392:4394 Synth.Common.Integers I32 add def
+R4397:4400 Synth.Common.Integers I32 repr def
+R4415:4431 Stdlib.ZArith.Zdiv <> Zplus_mod_idemp_l thm
+R4415:4431 Stdlib.ZArith.Zdiv <> Zplus_mod_idemp_l thm
+R4415:4431 Stdlib.ZArith.Zdiv <> Zplus_mod_idemp_l thm
+R4446:4462 Stdlib.ZArith.Zdiv <> Zplus_mod_idemp_r thm
+R4446:4462 Stdlib.ZArith.Zdiv <> Zplus_mod_idemp_r thm
+R4446:4462 Stdlib.ZArith.Zdiv <> Zplus_mod_idemp_r thm
+prf 4501:4508 I32 add_zero
+binder 4519:4519 <> x:66
+R4536:4538 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4526:4528 Synth.Common.Integers I32 add def
+R4530:4530 Synth.Common.Integers <> x:66 var
+R4532:4535 Synth.Common.Integers I32 zero def
+R4539:4539 Synth.Common.Integers <> x:66 var
+prf 4617:4626 I32 mul_commut
+binder 4637:4637 <> x:67
+binder 4639:4639 <> y:68
+R4653:4655 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4646:4648 Synth.Common.Integers I32 mul def
+R4650:4650 Synth.Common.Integers <> x:67 var
+R4652:4652 Synth.Common.Integers <> y:68 var
+R4656:4658 Synth.Common.Integers I32 mul def
+R4660:4660 Synth.Common.Integers <> y:68 var
+R4662:4662 Synth.Common.Integers <> x:67 var
+R4693:4695 Synth.Common.Integers I32 mul def
+prf 4730:4739 I32 and_commut
+binder 4750:4750 <> x:69
+binder 4752:4752 <> y:70
+R4766:4768 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4759:4761 Synth.Common.Integers I32 and def
+R4763:4763 Synth.Common.Integers <> x:69 var
+R4765:4765 Synth.Common.Integers <> y:70 var
+R4769:4771 Synth.Common.Integers I32 and def
+R4773:4773 Synth.Common.Integers <> y:70 var
+R4775:4775 Synth.Common.Integers <> x:69 var
+R4806:4808 Synth.Common.Integers I32 and def
+R4826:4836 Stdlib.ZArith.BinInt Z land_comm thm
+R4826:4836 Stdlib.ZArith.BinInt Z land_comm thm
+prf 4857:4865 I32 or_commut
+binder 4876:4876 <> x:71
+binder 4878:4878 <> y:72
+R4891:4893 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4885:4886 Synth.Common.Integers I32 or def
+R4888:4888 Synth.Common.Integers <> x:71 var
+R4890:4890 Synth.Common.Integers <> y:72 var
+R4894:4895 Synth.Common.Integers I32 or def
+R4897:4897 Synth.Common.Integers <> y:72 var
+R4899:4899 Synth.Common.Integers <> x:71 var
+R4930:4931 Synth.Common.Integers I32 or def
+R4949:4958 Stdlib.ZArith.BinInt Z lor_comm thm
+R4949:4958 Stdlib.ZArith.BinInt Z lor_comm thm
+prf 4979:4988 I32 xor_commut
+binder 4999:4999 <> x:73
+binder 5001:5001 <> y:74
+R5015:5017 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5008:5010 Synth.Common.Integers I32 xor def
+R5012:5012 Synth.Common.Integers <> x:73 var
+R5014:5014 Synth.Common.Integers <> y:74 var
+R5018:5020 Synth.Common.Integers I32 xor def
+R5022:5022 Synth.Common.Integers <> y:74 var
+R5024:5024 Synth.Common.Integers <> x:73 var
+R5055:5057 Synth.Common.Integers I32 xor def
+R5075:5085 Stdlib.ZArith.BinInt Z lxor_comm thm
+R5075:5085 Stdlib.ZArith.BinInt Z lxor_comm thm
+ax 5221:5240 I32 div_mul_rem_unsigned
+binder 5251:5251 <> x:75
+binder 5253:5253 <> y:76
+binder 5255:5255 <> q:77
+binder 5257:5257 <> r:78
+R5270:5277 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5265:5268 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R5264:5264 Synth.Common.Integers <> y:76 var
+R5295:5302 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5286:5288 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5278:5281 Synth.Common.Integers I32 divu def
+R5283:5283 Synth.Common.Integers <> x:75 var
+R5285:5285 Synth.Common.Integers <> y:76 var
+R5289:5292 Corelib.Init.Datatypes <> Some constr
+R5294:5294 Synth.Common.Integers <> q:77 var
+R5320:5327 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5311:5313 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5303:5306 Synth.Common.Integers I32 remu def
+R5308:5308 Synth.Common.Integers <> x:75 var
+R5310:5310 Synth.Common.Integers <> y:76 var
+R5314:5317 Corelib.Init.Datatypes <> Some constr
+R5319:5319 Synth.Common.Integers <> r:78 var
+R5329:5331 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5328:5328 Synth.Common.Integers <> x:75 var
+R5332:5335 Synth.Common.Integers I32 repr def
+R5361:5363 Stdlib.ZArith.BinInt <> ::Z_scope:x_'+'_x not
+R5348:5350 Stdlib.ZArith.BinInt <> ::Z_scope:x_'*'_x not
+R5338:5345 Synth.Common.Integers I32 unsigned def
+R5347:5347 Synth.Common.Integers <> q:77 var
+R5351:5358 Synth.Common.Integers I32 unsigned def
+R5360:5360 Synth.Common.Integers <> y:76 var
+R5364:5371 Synth.Common.Integers I32 unsigned def
+R5373:5373 Synth.Common.Integers <> r:78 var
+ax 5386:5403 I32 div_mul_rem_signed
+binder 5414:5414 <> x:81
+binder 5416:5416 <> y:82
+binder 5418:5418 <> q:83
+binder 5420:5420 <> r:84
+R5433:5440 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5428:5431 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R5427:5427 Synth.Common.Integers <> y:82 var
+R5458:5465 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5449:5451 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5441:5444 Synth.Common.Integers I32 divs def
+R5446:5446 Synth.Common.Integers <> x:81 var
+R5448:5448 Synth.Common.Integers <> y:82 var
+R5452:5455 Corelib.Init.Datatypes <> Some constr
+R5457:5457 Synth.Common.Integers <> q:83 var
+R5483:5490 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5474:5476 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5466:5469 Synth.Common.Integers I32 rems def
+R5471:5471 Synth.Common.Integers <> x:81 var
+R5473:5473 Synth.Common.Integers <> y:82 var
+R5477:5480 Corelib.Init.Datatypes <> Some constr
+R5482:5482 Synth.Common.Integers <> r:84 var
+R5492:5494 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5491:5491 Synth.Common.Integers <> x:81 var
+R5495:5498 Synth.Common.Integers I32 repr def
+R5520:5522 Stdlib.ZArith.BinInt <> ::Z_scope:x_'+'_x not
+R5509:5511 Stdlib.ZArith.BinInt <> ::Z_scope:x_'*'_x not
+R5501:5506 Synth.Common.Integers I32 signed def
+R5508:5508 Synth.Common.Integers <> q:83 var
+R5512:5517 Synth.Common.Integers I32 signed def
+R5519:5519 Synth.Common.Integers <> y:82 var
+R5523:5528 Synth.Common.Integers I32 signed def
+R5530:5530 Synth.Common.Integers <> r:84 var
+ax 5600:5611 I32 remu_formula
+binder 5622:5622 <> x:87
+binder 5624:5624 <> y:88
+binder 5626:5626 <> q:89
+binder 5628:5628 <> r:90
+R5641:5648 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5636:5639 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R5635:5635 Synth.Common.Integers <> y:88 var
+R5666:5673 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5657:5659 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5649:5652 Synth.Common.Integers I32 divu def
+R5654:5654 Synth.Common.Integers <> x:87 var
+R5656:5656 Synth.Common.Integers <> y:88 var
+R5660:5663 Corelib.Init.Datatypes <> Some constr
+R5665:5665 Synth.Common.Integers <> q:89 var
+R5691:5698 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5682:5684 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5674:5677 Synth.Common.Integers I32 remu def
+R5679:5679 Synth.Common.Integers <> x:87 var
+R5681:5681 Synth.Common.Integers <> y:88 var
+R5685:5688 Corelib.Init.Datatypes <> Some constr
+R5690:5690 Synth.Common.Integers <> r:90 var
+R5700:5702 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5699:5699 Synth.Common.Integers <> r:90 var
+R5703:5705 Synth.Common.Integers I32 sub def
+R5707:5707 Synth.Common.Integers <> x:87 var
+R5710:5712 Synth.Common.Integers I32 mul def
+R5714:5714 Synth.Common.Integers <> q:89 var
+R5716:5716 Synth.Common.Integers <> y:88 var
+ax 5729:5740 I32 rems_formula
+binder 5751:5751 <> x:93
+binder 5753:5753 <> y:94
+binder 5755:5755 <> q:95
+binder 5757:5757 <> r:96
+R5770:5777 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5765:5768 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R5764:5764 Synth.Common.Integers <> y:94 var
+R5795:5802 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5786:5788 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5778:5781 Synth.Common.Integers I32 divs def
+R5783:5783 Synth.Common.Integers <> x:93 var
+R5785:5785 Synth.Common.Integers <> y:94 var
+R5789:5792 Corelib.Init.Datatypes <> Some constr
+R5794:5794 Synth.Common.Integers <> q:95 var
+R5820:5827 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5811:5813 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5803:5806 Synth.Common.Integers I32 rems def
+R5808:5808 Synth.Common.Integers <> x:93 var
+R5810:5810 Synth.Common.Integers <> y:94 var
+R5814:5817 Corelib.Init.Datatypes <> Some constr
+R5819:5819 Synth.Common.Integers <> r:96 var
+R5829:5831 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5828:5828 Synth.Common.Integers <> r:96 var
+R5832:5834 Synth.Common.Integers I32 sub def
+R5836:5836 Synth.Common.Integers <> x:93 var
+R5839:5841 Synth.Common.Integers I32 mul def
+R5843:5843 Synth.Common.Integers <> q:95 var
+R5845:5845 Synth.Common.Integers <> y:94 var
+ax 5928:5930 I32 clz
+R5937:5940 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5934:5936 Synth.Common.Integers I32 int def
+R5941:5943 Synth.Common.Integers I32 int def
+ax 5985:5987 I32 ctz
+R5994:5997 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5991:5993 Synth.Common.Integers I32 int def
+R5998:6000 Synth.Common.Integers I32 int def
+ax 6063:6068 I32 popcnt
+R6075:6078 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R6072:6074 Synth.Common.Integers I32 int def
+R6079:6081 Synth.Common.Integers I32 int def
+ax 6144:6152 I32 clz_range
+binder 6163:6163 <> x:105
+R6167:6170 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R6187:6190 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R6171:6178 Synth.Common.Integers I32 unsigned def
+R6181:6183 Synth.Common.Integers I32 clz prfax
+R6185:6185 Synth.Common.Integers <> x:105 var
+R6171:6178 Synth.Common.Integers I32 unsigned def
+R6181:6183 Synth.Common.Integers I32 clz prfax
+R6185:6185 Synth.Common.Integers <> x:105 var
+ax 6203:6211 I32 ctz_range
+binder 6222:6222 <> x:108
+R6226:6229 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R6246:6249 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R6230:6237 Synth.Common.Integers I32 unsigned def
+R6240:6242 Synth.Common.Integers I32 ctz prfax
+R6244:6244 Synth.Common.Integers <> x:108 var
+R6230:6237 Synth.Common.Integers I32 unsigned def
+R6240:6242 Synth.Common.Integers I32 ctz prfax
+R6244:6244 Synth.Common.Integers <> x:108 var
+ax 6262:6273 I32 popcnt_range
+binder 6284:6284 <> x:111
+R6288:6291 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R6311:6314 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R6292:6299 Synth.Common.Integers I32 unsigned def
+R6302:6307 Synth.Common.Integers I32 popcnt prfax
+R6309:6309 Synth.Common.Integers <> x:111 var
+R6292:6299 Synth.Common.Integers I32 unsigned def
+R6302:6307 Synth.Common.Integers I32 popcnt prfax
+R6309:6309 Synth.Common.Integers <> x:111 var
+R6324:6326 Synth.Common.Integers I32 <> mod
+mod 6364:6366 <> I64
+def 6383:6389 I64 modulus
+R6393:6393 Corelib.Numbers.BinNums <> Z ind
+R6399:6399 Stdlib.ZArith.BinInt <> ::Z_scope:x_'^'_x not
+def 6417:6428 I64 half_modulus
+R6432:6432 Corelib.Numbers.BinNums <> Z ind
+R6438:6438 Stdlib.ZArith.BinInt <> ::Z_scope:x_'^'_x not
+def 6456:6467 I64 max_unsigned
+R6471:6471 Corelib.Numbers.BinNums <> Z ind
+R6483:6485 Stdlib.ZArith.BinInt <> ::Z_scope:x_'-'_x not
+R6476:6482 Synth.Common.Integers I64 modulus def
+def 6502:6511 I64 max_signed
+R6515:6515 Corelib.Numbers.BinNums <> Z ind
+R6532:6534 Stdlib.ZArith.BinInt <> ::Z_scope:x_'-'_x not
+R6520:6531 Synth.Common.Integers I64 half_modulus def
+def 6551:6560 I64 min_signed
+R6564:6564 Corelib.Numbers.BinNums <> Z ind
+R6569:6570 Stdlib.ZArith.BinInt <> ::Z_scope:'-'_x not
+R6571:6582 Synth.Common.Integers I64 half_modulus def
+def 6599:6601 I64 int
+R6606:6606 Corelib.Numbers.BinNums <> Z ind
+def 6623:6636 I64 valid_unsigned
+R6643:6643 Corelib.Numbers.BinNums <> Z ind
+binder 6639:6639 <> n:114
+R6661:6664 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R6666:6669 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R6665:6665 Synth.Common.Integers <> n:114 var
+R6665:6665 Synth.Common.Integers <> n:114 var
+R6670:6681 Synth.Common.Integers I64 max_unsigned def
+def 6698:6709 I64 valid_signed
+R6716:6716 Corelib.Numbers.BinNums <> Z ind
+binder 6712:6712 <> n:115
+R6743:6746 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R6748:6751 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R6733:6742 Synth.Common.Integers I64 min_signed def
+R6747:6747 Synth.Common.Integers <> n:115 var
+R6747:6747 Synth.Common.Integers <> n:115 var
+R6752:6761 Synth.Common.Integers I64 max_signed def
+def 6778:6781 I64 repr
+R6788:6788 Corelib.Numbers.BinNums <> Z ind
+binder 6784:6784 <> n:116
+R6793:6795 Synth.Common.Integers I64 int def
+R6801:6805 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
+R6800:6800 Synth.Common.Integers <> n:116 var
+R6806:6812 Synth.Common.Integers I64 modulus def
+def 6829:6836 I64 unsigned
+R6843:6845 Synth.Common.Integers I64 int def
+binder 6839:6839 <> n:117
+R6850:6850 Corelib.Numbers.BinNums <> Z ind
+R6856:6860 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
+R6855:6855 Synth.Common.Integers <> n:117 var
+R6861:6867 Synth.Common.Integers I64 modulus def
+def 6884:6889 I64 signed
+R6896:6898 Synth.Common.Integers I64 int def
+binder 6892:6892 <> n:118
+R6903:6903 Corelib.Numbers.BinNums <> Z ind
+R6921:6928 Synth.Common.Integers I64 unsigned def
+R6930:6930 Synth.Common.Integers <> n:118 var
+binder 6916:6916 <> u:119
+R6942:6946 Stdlib.ZArith.BinInt Z ltb def
+R6948:6948 Synth.Common.Integers <> u:119 var
+R6950:6961 Synth.Common.Integers I64 half_modulus def
+R6976:6978 Stdlib.ZArith.BinInt <> ::Z_scope:x_'-'_x not
+R6975:6975 Synth.Common.Integers <> u:119 var
+R6979:6985 Synth.Common.Integers I64 modulus def
+R6968:6968 Synth.Common.Integers <> u:119 var
+def 7040:7042 I64 add
+R7051:7053 Synth.Common.Integers I64 int def
+binder 7045:7045 <> x:120
+binder 7047:7047 <> y:121
+R7058:7060 Synth.Common.Integers I64 int def
+R7065:7068 Synth.Common.Integers I64 repr def
+R7072:7074 Stdlib.ZArith.BinInt <> ::Z_scope:x_'+'_x not
+R7071:7071 Synth.Common.Integers <> x:120 var
+R7075:7075 Synth.Common.Integers <> y:121 var
+def 7092:7094 I64 sub
+R7103:7105 Synth.Common.Integers I64 int def
+binder 7097:7097 <> x:122
+binder 7099:7099 <> y:123
+R7110:7112 Synth.Common.Integers I64 int def
+R7117:7120 Synth.Common.Integers I64 repr def
+R7124:7126 Stdlib.ZArith.BinInt <> ::Z_scope:x_'-'_x not
+R7123:7123 Synth.Common.Integers <> x:122 var
+R7127:7127 Synth.Common.Integers <> y:123 var
+def 7144:7146 I64 mul
+R7155:7157 Synth.Common.Integers I64 int def
+binder 7149:7149 <> x:124
+binder 7151:7151 <> y:125
+R7162:7164 Synth.Common.Integers I64 int def
+R7169:7172 Synth.Common.Integers I64 repr def
+R7176:7178 Stdlib.ZArith.BinInt <> ::Z_scope:x_'*'_x not
+R7175:7175 Synth.Common.Integers <> x:124 var
+R7179:7179 Synth.Common.Integers <> y:125 var
+def 7197:7200 I64 divs
+R7209:7211 Synth.Common.Integers I64 int def
+binder 7203:7203 <> x:126
+binder 7205:7205 <> y:127
+R7216:7221 Corelib.Init.Datatypes <> option ind
+R7223:7225 Synth.Common.Integers I64 int def
+R7237:7241 Stdlib.ZArith.BinInt Z eqb def
+R7243:7243 Synth.Common.Integers <> y:127 var
+R7269:7272 Corelib.Init.Datatypes <> andb def
+R7296:7300 Stdlib.ZArith.BinInt Z eqb def
+R7302:7302 Synth.Common.Integers <> y:127 var
+R7275:7279 Stdlib.ZArith.BinInt Z eqb def
+R7281:7281 Synth.Common.Integers <> x:126 var
+R7283:7292 Synth.Common.Integers I64 min_signed def
+R7329:7332 Corelib.Init.Datatypes <> Some constr
+R7335:7338 Synth.Common.Integers I64 repr def
+R7349:7351 Stdlib.ZArith.BinInt <> ::Z_scope:x_'/'_x not
+R7341:7346 Synth.Common.Integers I64 signed def
+R7348:7348 Synth.Common.Integers <> x:126 var
+R7352:7357 Synth.Common.Integers I64 signed def
+R7359:7359 Synth.Common.Integers <> y:127 var
+R7315:7318 Corelib.Init.Datatypes <> None constr
+R7252:7255 Corelib.Init.Datatypes <> None constr
+def 7378:7381 I64 divu
+R7390:7392 Synth.Common.Integers I64 int def
+binder 7384:7384 <> x:128
+binder 7386:7386 <> y:129
+R7397:7402 Corelib.Init.Datatypes <> option ind
+R7404:7406 Synth.Common.Integers I64 int def
+R7418:7422 Stdlib.ZArith.BinInt Z eqb def
+R7424:7424 Synth.Common.Integers <> y:129 var
+R7447:7450 Corelib.Init.Datatypes <> Some constr
+R7453:7456 Synth.Common.Integers I64 repr def
+R7469:7471 Stdlib.ZArith.BinInt <> ::Z_scope:x_'/'_x not
+R7459:7466 Synth.Common.Integers I64 unsigned def
+R7468:7468 Synth.Common.Integers <> x:128 var
+R7472:7479 Synth.Common.Integers I64 unsigned def
+R7481:7481 Synth.Common.Integers <> y:129 var
+R7433:7436 Corelib.Init.Datatypes <> None constr
+def 7500:7502 I64 and
+R7511:7513 Synth.Common.Integers I64 int def
+binder 7505:7505 <> x:130
+binder 7507:7507 <> y:131
+R7518:7520 Synth.Common.Integers I64 int def
+R7525:7528 Synth.Common.Integers I64 repr def
+R7531:7536 Stdlib.ZArith.BinInt Z land def
+R7538:7538 Synth.Common.Integers <> x:130 var
+R7540:7540 Synth.Common.Integers <> y:131 var
+def 7557:7558 I64 or
+R7567:7569 Synth.Common.Integers I64 int def
+binder 7561:7561 <> x:132
+binder 7563:7563 <> y:133
+R7574:7576 Synth.Common.Integers I64 int def
+R7581:7584 Synth.Common.Integers I64 repr def
+R7587:7591 Stdlib.ZArith.BinInt Z lor def
+R7593:7593 Synth.Common.Integers <> x:132 var
+R7595:7595 Synth.Common.Integers <> y:133 var
+def 7612:7614 I64 xor
+R7623:7625 Synth.Common.Integers I64 int def
+binder 7617:7617 <> x:134
+binder 7619:7619 <> y:135
+R7630:7632 Synth.Common.Integers I64 int def
+R7637:7640 Synth.Common.Integers I64 repr def
+R7643:7648 Stdlib.ZArith.BinInt Z lxor def
+R7650:7650 Synth.Common.Integers <> x:134 var
+R7652:7652 Synth.Common.Integers <> y:135 var
+def 7670:7672 I64 shl
+R7681:7683 Synth.Common.Integers I64 int def
+binder 7675:7675 <> x:136
+binder 7677:7677 <> y:137
+R7688:7690 Synth.Common.Integers I64 int def
+R7699:7702 Synth.Common.Integers I64 repr def
+R7705:7712 Stdlib.ZArith.BinInt Z shiftl def
+R7714:7714 Synth.Common.Integers <> x:136 var
+R7727:7731 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
+R7717:7724 Synth.Common.Integers I64 unsigned def
+R7726:7726 Synth.Common.Integers <> y:137 var
+def 7752:7755 I64 shru
+R7764:7766 Synth.Common.Integers I64 int def
+binder 7758:7758 <> x:138
+binder 7760:7760 <> y:139
+R7771:7773 Synth.Common.Integers I64 int def
+R7782:7785 Synth.Common.Integers I64 repr def
+R7788:7795 Stdlib.ZArith.BinInt Z shiftr def
+R7798:7805 Synth.Common.Integers I64 unsigned def
+R7807:7807 Synth.Common.Integers <> x:138 var
+R7821:7825 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
+R7811:7818 Synth.Common.Integers I64 unsigned def
+R7820:7820 Synth.Common.Integers <> y:139 var
+def 7846:7849 I64 shrs
+R7858:7860 Synth.Common.Integers I64 int def
+binder 7852:7852 <> x:140
+binder 7854:7854 <> y:141
+R7865:7867 Synth.Common.Integers I64 int def
+R7876:7879 Synth.Common.Integers I64 repr def
+R7882:7889 Stdlib.ZArith.BinInt Z shiftr def
+R7892:7897 Synth.Common.Integers I64 signed def
+R7899:7899 Synth.Common.Integers <> x:140 var
+R7913:7917 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
+R7903:7910 Synth.Common.Integers I64 unsigned def
+R7912:7912 Synth.Common.Integers <> y:141 var
+def 7938:7941 I64 rotl
+R7950:7952 Synth.Common.Integers I64 int def
+binder 7944:7944 <> x:142
+binder 7946:7946 <> y:143
+R7957:7959 Synth.Common.Integers I64 int def
+R7987:7991 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
+R7977:7984 Synth.Common.Integers I64 unsigned def
+R7986:7986 Synth.Common.Integers <> y:143 var
+binder 7972:7972 <> n:144
+R8002:8003 Synth.Common.Integers I64 or def
+R8006:8008 Synth.Common.Integers I64 shl def
+R8010:8010 Synth.Common.Integers <> x:142 var
+R8013:8016 Synth.Common.Integers I64 repr def
+R8018:8018 Synth.Common.Integers <> n:144 var
+R8023:8026 Synth.Common.Integers I64 shru def
+R8028:8028 Synth.Common.Integers <> x:142 var
+R8031:8034 Synth.Common.Integers I64 repr def
+R8039:8041 Stdlib.ZArith.BinInt <> ::Z_scope:x_'-'_x not
+R8042:8042 Synth.Common.Integers <> n:144 var
+def 8062:8065 I64 rotr
+R8074:8076 Synth.Common.Integers I64 int def
+binder 8068:8068 <> x:145
+binder 8070:8070 <> y:146
+R8081:8083 Synth.Common.Integers I64 int def
+R8111:8115 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
+R8101:8108 Synth.Common.Integers I64 unsigned def
+R8110:8110 Synth.Common.Integers <> y:146 var
+binder 8096:8096 <> n:147
+R8126:8127 Synth.Common.Integers I64 or def
+R8130:8133 Synth.Common.Integers I64 shru def
+R8135:8135 Synth.Common.Integers <> x:145 var
+R8138:8141 Synth.Common.Integers I64 repr def
+R8143:8143 Synth.Common.Integers <> n:147 var
+R8148:8150 Synth.Common.Integers I64 shl def
+R8152:8152 Synth.Common.Integers <> x:145 var
+R8155:8158 Synth.Common.Integers I64 repr def
+R8163:8165 Stdlib.ZArith.BinInt <> ::Z_scope:x_'-'_x not
+R8166:8166 Synth.Common.Integers <> n:147 var
+def 8218:8219 I64 eq
+R8228:8230 Synth.Common.Integers I64 int def
+binder 8222:8222 <> x:148
+binder 8224:8224 <> y:149
+R8235:8238 Corelib.Init.Datatypes <> bool ind
+R8243:8247 Stdlib.ZArith.BinInt Z eqb def
+R8250:8257 Synth.Common.Integers I64 unsigned def
+R8259:8259 Synth.Common.Integers <> x:148 var
+R8263:8270 Synth.Common.Integers I64 unsigned def
+R8272:8272 Synth.Common.Integers <> y:149 var
+def 8289:8290 I64 ne
+R8299:8301 Synth.Common.Integers I64 int def
+binder 8293:8293 <> x:150
+binder 8295:8295 <> y:151
+R8306:8309 Corelib.Init.Datatypes <> bool ind
+R8314:8317 Corelib.Init.Datatypes <> negb def
+R8320:8321 Synth.Common.Integers I64 eq def
+R8323:8323 Synth.Common.Integers <> x:150 var
+R8325:8325 Synth.Common.Integers <> y:151 var
+def 8342:8344 I64 ltu
+R8353:8355 Synth.Common.Integers I64 int def
+binder 8347:8347 <> x:152
+binder 8349:8349 <> y:153
+R8360:8363 Corelib.Init.Datatypes <> bool ind
+R8368:8372 Stdlib.ZArith.BinInt Z ltb def
+R8375:8382 Synth.Common.Integers I64 unsigned def
+R8384:8384 Synth.Common.Integers <> x:152 var
+R8388:8395 Synth.Common.Integers I64 unsigned def
+R8397:8397 Synth.Common.Integers <> y:153 var
+def 8414:8416 I64 lts
+R8425:8427 Synth.Common.Integers I64 int def
+binder 8419:8419 <> x:154
+binder 8421:8421 <> y:155
+R8432:8435 Corelib.Init.Datatypes <> bool ind
+R8440:8444 Stdlib.ZArith.BinInt Z ltb def
+R8447:8452 Synth.Common.Integers I64 signed def
+R8454:8454 Synth.Common.Integers <> x:154 var
+R8458:8463 Synth.Common.Integers I64 signed def
+R8465:8465 Synth.Common.Integers <> y:155 var
+def 8482:8484 I64 gtu
+R8493:8495 Synth.Common.Integers I64 int def
+binder 8487:8487 <> x:156
+binder 8489:8489 <> y:157
+R8500:8503 Corelib.Init.Datatypes <> bool ind
+R8508:8512 Stdlib.ZArith.BinInt Z gtb def
+R8515:8522 Synth.Common.Integers I64 unsigned def
+R8524:8524 Synth.Common.Integers <> x:156 var
+R8528:8535 Synth.Common.Integers I64 unsigned def
+R8537:8537 Synth.Common.Integers <> y:157 var
+def 8554:8556 I64 gts
+R8565:8567 Synth.Common.Integers I64 int def
+binder 8559:8559 <> x:158
+binder 8561:8561 <> y:159
+R8572:8575 Corelib.Init.Datatypes <> bool ind
+R8580:8584 Stdlib.ZArith.BinInt Z gtb def
+R8587:8592 Synth.Common.Integers I64 signed def
+R8594:8594 Synth.Common.Integers <> x:158 var
+R8598:8603 Synth.Common.Integers I64 signed def
+R8605:8605 Synth.Common.Integers <> y:159 var
+def 8622:8624 I64 leu
+R8633:8635 Synth.Common.Integers I64 int def
+binder 8627:8627 <> x:160
+binder 8629:8629 <> y:161
+R8640:8643 Corelib.Init.Datatypes <> bool ind
+R8648:8652 Stdlib.ZArith.BinInt Z leb def
+R8655:8662 Synth.Common.Integers I64 unsigned def
+R8664:8664 Synth.Common.Integers <> x:160 var
+R8668:8675 Synth.Common.Integers I64 unsigned def
+R8677:8677 Synth.Common.Integers <> y:161 var
+def 8694:8696 I64 les
+R8705:8707 Synth.Common.Integers I64 int def
+binder 8699:8699 <> x:162
+binder 8701:8701 <> y:163
+R8712:8715 Corelib.Init.Datatypes <> bool ind
+R8720:8724 Stdlib.ZArith.BinInt Z leb def
+R8727:8732 Synth.Common.Integers I64 signed def
+R8734:8734 Synth.Common.Integers <> x:162 var
+R8738:8743 Synth.Common.Integers I64 signed def
+R8745:8745 Synth.Common.Integers <> y:163 var
+def 8762:8764 I64 geu
+R8773:8775 Synth.Common.Integers I64 int def
+binder 8767:8767 <> x:164
+binder 8769:8769 <> y:165
+R8780:8783 Corelib.Init.Datatypes <> bool ind
+R8788:8792 Stdlib.ZArith.BinInt Z geb def
+R8795:8802 Synth.Common.Integers I64 unsigned def
+R8804:8804 Synth.Common.Integers <> x:164 var
+R8808:8815 Synth.Common.Integers I64 unsigned def
+R8817:8817 Synth.Common.Integers <> y:165 var
+def 8834:8836 I64 ges
+R8845:8847 Synth.Common.Integers I64 int def
+binder 8839:8839 <> x:166
+binder 8841:8841 <> y:167
+R8852:8855 Corelib.Init.Datatypes <> bool ind
+R8860:8864 Stdlib.ZArith.BinInt Z geb def
+R8867:8872 Synth.Common.Integers I64 signed def
+R8874:8874 Synth.Common.Integers <> x:166 var
+R8878:8883 Synth.Common.Integers I64 signed def
+R8885:8885 Synth.Common.Integers <> y:167 var
+ax 8968:8970 I64 clz
+R8977:8980 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R8974:8976 Synth.Common.Integers I64 int def
+R8981:8983 Synth.Common.Integers I64 int def
+ax 9025:9027 I64 ctz
+R9034:9037 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R9031:9033 Synth.Common.Integers I64 int def
+R9038:9040 Synth.Common.Integers I64 int def
+ax 9103:9108 I64 popcnt
+R9115:9118 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R9112:9114 Synth.Common.Integers I64 int def
+R9119:9121 Synth.Common.Integers I64 int def
+ax 9184:9192 I64 clz_range
+binder 9203:9203 <> x:174
+R9207:9210 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R9227:9230 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R9211:9218 Synth.Common.Integers I64 unsigned def
+R9221:9223 Synth.Common.Integers I64 clz prfax
+R9225:9225 Synth.Common.Integers <> x:174 var
+R9211:9218 Synth.Common.Integers I64 unsigned def
+R9221:9223 Synth.Common.Integers I64 clz prfax
+R9225:9225 Synth.Common.Integers <> x:174 var
+ax 9243:9251 I64 ctz_range
+binder 9262:9262 <> x:177
+R9266:9269 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R9286:9289 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R9270:9277 Synth.Common.Integers I64 unsigned def
+R9280:9282 Synth.Common.Integers I64 ctz prfax
+R9284:9284 Synth.Common.Integers <> x:177 var
+R9270:9277 Synth.Common.Integers I64 unsigned def
+R9280:9282 Synth.Common.Integers I64 ctz prfax
+R9284:9284 Synth.Common.Integers <> x:177 var
+ax 9302:9313 I64 popcnt_range
+binder 9324:9324 <> x:180
+R9328:9331 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R9351:9354 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<='_x not
+R9332:9339 Synth.Common.Integers I64 unsigned def
+R9342:9347 Synth.Common.Integers I64 popcnt prfax
+R9349:9349 Synth.Common.Integers <> x:180 var
+R9332:9339 Synth.Common.Integers I64 unsigned def
+R9342:9347 Synth.Common.Integers I64 popcnt prfax
+R9349:9349 Synth.Common.Integers <> x:180 var
+def 9373:9376 I64 zero
+R9380:9382 Synth.Common.Integers I64 int def
+R9387:9390 Synth.Common.Integers I64 repr def
+def 9408:9410 I64 one
+R9414:9416 Synth.Common.Integers I64 int def
+R9421:9424 Synth.Common.Integers I64 repr def
+prf 9461:9470 I64 add_commut
+binder 9481:9481 <> x:183
+binder 9483:9483 <> y:184
+R9497:9499 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R9490:9492 Synth.Common.Integers I64 add def
+R9494:9494 Synth.Common.Integers <> x:183 var
+R9496:9496 Synth.Common.Integers <> y:184 var
+R9500:9502 Synth.Common.Integers I64 add def
+R9504:9504 Synth.Common.Integers <> y:184 var
+R9506:9506 Synth.Common.Integers <> x:183 var
+R9537:9539 Synth.Common.Integers I64 add def
+R9568:9570 Synth.Common.Integers I64 <> mod
+def 9628:9646 <> i32_to_i64_unsigned
+R9653:9659 Synth.Common.Integers <> int def
+binder 9649:9649 <> x:185
+R9664:9670 Synth.Common.Integers <> int def
+R9677:9684 Synth.Common.Integers <> repr def
+R9687:9698 Synth.Common.Integers <> unsigned def
+R9700:9700 Synth.Common.Integers <> x:185 var
+def 9716:9732 <> i32_to_i64_signed
+R9739:9745 Synth.Common.Integers <> int def
+binder 9735:9735 <> x:186
+R9750:9756 Synth.Common.Integers <> int def
+R9763:9770 Synth.Common.Integers <> repr def
+R9773:9782 Synth.Common.Integers <> signed def
+R9784:9784 Synth.Common.Integers <> x:186 var
+def 9800:9809 <> i64_to_i32
+R9816:9822 Synth.Common.Integers <> int def
+binder 9812:9812 <> x:187
+R9827:9833 Synth.Common.Integers <> int def
+R9840:9847 Synth.Common.Integers <> repr def
+R9850:9861 Synth.Common.Integers <> unsigned def
+R9863:9863 Synth.Common.Integers <> x:187 var
+prf 9913:9934 <> i64_to_i32_to_i64_wrap
+binder 9945:9945 <> x:188
+R9999:10003 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R9950:9961 Synth.Common.Integers <> unsigned def
+R9964:9982 Synth.Common.Integers <> i32_to_i64_unsigned def
+R9985:9994 Synth.Common.Integers <> i64_to_i32 def
+R9996:9996 Synth.Common.Integers <> x:188 var
+R10018:10022 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
+R10004:10015 Synth.Common.Integers <> unsigned def
+R10017:10017 Synth.Common.Integers <> x:188 var
+R10023:10033 Synth.Common.Integers <> modulus def

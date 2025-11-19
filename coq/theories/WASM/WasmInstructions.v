@@ -4,9 +4,14 @@
     Based on synth-synthesis/src/lib.rs WasmOp enum.
 *)
 
+From Stdlib Require Import List.
+From Stdlib Require Import ZArith.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.WASM.WasmValues.
+
+Import ListNotations.
+Open Scope Z_scope.
 
 (** ** WebAssembly Instructions *)
 
