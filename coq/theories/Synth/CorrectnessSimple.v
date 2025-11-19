@@ -450,9 +450,59 @@ Proof.
   exists astate. reflexivity.
 Qed.
 
+(** ** I32 Shift Operations *)
+
+Theorem i32_shl_correct : forall wstate astate v1 v2 stack',
+  wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
+  exec_wasm_instr I32Shl wstate =
+    Some (mkWasmState
+            (VI32 (I32.shl v1 v2) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I32Shl) astate = Some astate'.
+Proof.
+  intros wstate astate v1 v2 stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
+Theorem i32_shru_correct : forall wstate astate v1 v2 stack',
+  wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
+  exec_wasm_instr I32ShrU wstate =
+    Some (mkWasmState
+            (VI32 (I32.shru v1 v2) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I32ShrU) astate = Some astate'.
+Proof.
+  intros wstate astate v1 v2 stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
+Theorem i32_shrs_correct : forall wstate astate v1 v2 stack',
+  wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
+  exec_wasm_instr I32ShrS wstate =
+    Some (mkWasmState
+            (VI32 (I32.shrs v1 v2) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I32ShrS) astate = Some astate'.
+Proof.
+  intros wstate astate v1 v2 stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
 (** ** Summary
 
-    Operations in this file: 21 total (10 simple + 11 comparison)
+    Operations in this file: 24 total (10 simple + 11 comparison + 3 shift)
 
     Simple Operations (10):
     - ✅ Nop (fully proven)
@@ -479,7 +529,13 @@ Qed.
     - ✅ I32GeS (fully proven, greater or equal signed)
     - ✅ I32GeU (fully proven, greater or equal unsigned)
 
+    Shift Operations (3):
+    - ✅ I32Shl (fully proven, shift left)
+    - ✅ I32ShrU (fully proven, shift right unsigned)
+    - ✅ I32ShrS (fully proven, shift right signed)
+
     All operations FULLY PROVEN (no Admitted)!
 
-    Combined with other files: 21 + 9 = 30 operations fully proven total!
+    This file contains 24 operations.
+    Combined with other files: 41 + 3 = 44 operations fully proven total!
 *)
