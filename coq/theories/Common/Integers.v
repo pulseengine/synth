@@ -276,6 +276,14 @@ Module I64.
   Definition shrs (x y : int) : int :=
     repr (Z.shiftr (signed x) (unsigned y mod 64)).
 
+  Definition rotl (x y : int) : int :=
+    let n := unsigned y mod 64 in
+    or (shl x (repr n)) (shru x (repr (64 - n))).
+
+  Definition rotr (x y : int) : int :=
+    let n := unsigned y mod 64 in
+    or (shru x (repr n)) (shl x (repr (64 - n))).
+
   (** Comparison operations *)
 
   Definition eq (x y : int) : bool := Z.eqb (unsigned x) (unsigned y).

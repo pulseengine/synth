@@ -412,6 +412,47 @@ Definition exec_wasm_instr (i : wasm_instr) (s : wasm_state) : option wasm_state
       | None => None
       end
 
+  (* i64 shift/rotate operations *)
+  | I64Shl =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := I64.shl v1 v2 in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
+  | I64ShrU =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := I64.shru v1 v2 in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
+  | I64ShrS =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := I64.shrs v1 v2 in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
+  | I64Rotl =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := I64.rotl v1 v2 in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
+  | I64Rotr =>
+      match pop2_i64 s with
+      | Some (v1, v2, s') =>
+          let result := I64.rotr v1 v2 in
+          Some (push_value (VI64 result) s')
+      | None => None
+      end
+
   (* i64 bit manipulation operations *)
   | I64Clz =>
       match pop_i64 s with

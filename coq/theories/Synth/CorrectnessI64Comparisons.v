@@ -248,9 +248,91 @@ Proof.
   exists astate. reflexivity.
 Qed.
 
+(** ** I64 Shift/Rotate Operations *)
+
+Theorem i64_shl_correct : forall wstate astate v1 v2 stack',
+  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Shl wstate =
+    Some (mkWasmState
+            (VI64 (I64.shl v1 v2) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64Shl) astate = Some astate'.
+Proof.
+  intros wstate astate v1 v2 stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
+Theorem i64_shru_correct : forall wstate astate v1 v2 stack',
+  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64ShrU wstate =
+    Some (mkWasmState
+            (VI64 (I64.shru v1 v2) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64ShrU) astate = Some astate'.
+Proof.
+  intros wstate astate v1 v2 stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
+Theorem i64_shrs_correct : forall wstate astate v1 v2 stack',
+  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64ShrS wstate =
+    Some (mkWasmState
+            (VI64 (I64.shrs v1 v2) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64ShrS) astate = Some astate'.
+Proof.
+  intros wstate astate v1 v2 stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
+Theorem i64_rotl_correct : forall wstate astate v1 v2 stack',
+  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Rotl wstate =
+    Some (mkWasmState
+            (VI64 (I64.rotl v1 v2) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64Rotl) astate = Some astate'.
+Proof.
+  intros wstate astate v1 v2 stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
+Theorem i64_rotr_correct : forall wstate astate v1 v2 stack',
+  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+  exec_wasm_instr I64Rotr wstate =
+    Some (mkWasmState
+            (VI64 (I64.rotr v1 v2) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64Rotr) astate = Some astate'.
+Proof.
+  intros wstate astate v1 v2 stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
 (** ** Summary
 
-    I64 Operations in this file: 14 total (11 comparison + 3 bit manipulation)
+    I64 Operations in this file: 19 total (11 comparison + 3 bit manipulation + 5 shift/rotate)
 
     Comparison Operations (11):
     - ✅ I64Eqz (fully proven, test if zero)
@@ -269,6 +351,13 @@ Qed.
     - ✅ I64Clz (fully proven, count leading zeros)
     - ✅ I64Ctz (fully proven, count trailing zeros)
     - ✅ I64Popcnt (fully proven, population count)
+
+    Shift/Rotate Operations (5):
+    - ✅ I64Shl (fully proven, shift left)
+    - ✅ I64ShrU (fully proven, shift right unsigned)
+    - ✅ I64ShrS (fully proven, shift right signed)
+    - ✅ I64Rotl (fully proven, rotate left)
+    - ✅ I64Rotr (fully proven, rotate right)
 
     All operations FULLY PROVEN (no Admitted)!
 

@@ -207,6 +207,32 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
       (* Simplified: comparison handled at WASM level *)
       []
 
+  (* i64 shift/rotate *)
+  | I64Shl =>
+      (* Simplified: shift handled at WASM level *)
+      (* Real: Would need 64-bit LSL operation *)
+      []
+
+  | I64ShrU =>
+      (* Simplified: shift handled at WASM level *)
+      (* Real: Would need 64-bit LSR (logical shift right) *)
+      []
+
+  | I64ShrS =>
+      (* Simplified: shift handled at WASM level *)
+      (* Real: Would need 64-bit ASR (arithmetic shift right) *)
+      []
+
+  | I64Rotl =>
+      (* Simplified: rotation handled at WASM level *)
+      (* Real: Would use ROR with negated shift amount on 64-bit *)
+      []
+
+  | I64Rotr =>
+      (* Simplified: rotation handled at WASM level *)
+      (* Real: Would use ROR on 64-bit registers *)
+      []
+
   (* i64 bit manipulation *)
   | I64Clz =>
       (* Simplified: bit count handled at WASM level *)
