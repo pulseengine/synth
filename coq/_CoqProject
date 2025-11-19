@@ -22,4 +22,9 @@ theories/WASM/WasmInstructions.v
 theories/WASM/WasmSemantics.v
 
 theories/Synth/Compilation.v
+theories/Synth/Tactics.v
 theories/Synth/Correctness.v
+theories/Synth/CorrectnessI32.v
+theories/Synth/CorrectnessI64.v
+theories/Synth/CorrectnessConversions.v
+theories/Synth/CorrectnessComplete.v
