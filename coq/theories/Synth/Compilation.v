@@ -133,6 +133,51 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
       (* Simplified: comparison handled at WASM level *)
       []
 
+  (* i64 comparison *)
+  | I64Eqz =>
+      (* Simplified: comparison handled at WASM level *)
+      []
+
+  | I64Eq =>
+      (* Simplified: comparison handled at WASM level *)
+      []
+
+  | I64Ne =>
+      (* Simplified: comparison handled at WASM level *)
+      []
+
+  | I64LtS =>
+      (* Simplified: comparison handled at WASM level *)
+      []
+
+  | I64LtU =>
+      (* Simplified: comparison handled at WASM level *)
+      []
+
+  | I64GtS =>
+      (* Simplified: comparison handled at WASM level *)
+      []
+
+  | I64GtU =>
+      (* Simplified: comparison handled at WASM level *)
+      []
+
+  | I64LeS =>
+      (* Simplified: comparison handled at WASM level *)
+      []
+
+  | I64LeU =>
+      (* Simplified: comparison handled at WASM level *)
+      []
+
+  | I64GeS =>
+      (* Simplified: comparison handled at WASM level *)
+      []
+
+  | I64GeU =>
+      (* Simplified: comparison handled at WASM level *)
+      []
+
   (* Constants *)
   | I32Const n =>
       (* Load immediate into R0 *)

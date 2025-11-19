@@ -263,8 +263,15 @@ Module I64.
   (** Comparison operations *)
 
   Definition eq (x y : int) : bool := Z.eqb (unsigned x) (unsigned y).
+  Definition ne (x y : int) : bool := negb (eq x y).
   Definition ltu (x y : int) : bool := Z.ltb (unsigned x) (unsigned y).
   Definition lts (x y : int) : bool := Z.ltb (signed x) (signed y).
+  Definition gtu (x y : int) : bool := Z.gtb (unsigned x) (unsigned y).
+  Definition gts (x y : int) : bool := Z.gtb (signed x) (signed y).
+  Definition leu (x y : int) : bool := Z.leb (unsigned x) (unsigned y).
+  Definition les (x y : int) : bool := Z.leb (signed x) (signed y).
+  Definition geu (x y : int) : bool := Z.geb (unsigned x) (unsigned y).
+  Definition ges (x y : int) : bool := Z.geb (signed x) (signed y).
 
   Definition zero : int := repr 0.
   Definition one : int := repr 1.
