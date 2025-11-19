@@ -19,6 +19,16 @@ Class EqDec (A : Type) := {
   eq_dec : forall (x y : A), {x = y} + {x <> y}
 }.
 
+(** Instance for nat *)
+#[export] Instance nat_eq_dec : EqDec nat := {
+  eq_dec := Nat.eq_dec
+}.
+
+(** Instance for Z *)
+#[export] Instance Z_eq_dec : EqDec Z := {
+  eq_dec := Z.eq_dec
+}.
+
 (** ** Option Monad *)
 
 Definition bind_option {A B : Type} (m : option A) (f : A -> option B) : option B :=

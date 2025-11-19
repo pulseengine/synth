@@ -1,0 +1,454 @@
+DIGEST 25ad93e385fd8896259ccba56156ede6
+FSynth.ARM.ArmInstructions
+R163:168 Stdlib.ZArith.ZArith <> <> lib
+R186:202 Synth.Common.Base <> <> lib
+R220:240 Synth.Common.Integers <> <> lib
+R258:275 Synth.ARM.ArmState <> <> lib
+ind 514:521 <> operand2
+constr 537:539 <> Imm
+constr 567:569 <> Reg
+constr 597:604 <> RegShift
+R550:553 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R543:549 Synth.Common.Integers I32 int def
+R554:561 Synth.ARM.ArmInstructions <> operand2:1 ind
+R580:583 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R573:579 Synth.ARM.ArmState <> arm_reg ind
+R584:591 Synth.ARM.ArmInstructions <> operand2:1 ind
+R615:618 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R608:614 Synth.ARM.ArmState <> arm_reg ind
+R622:625 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R619:621 Corelib.Init.Datatypes <> nat ind
+R626:633 Synth.ARM.ArmInstructions <> operand2:1 ind
+scheme 514:521 <> operand2_rect
+scheme 514:521 <> operand2_ind
+scheme 514:521 <> operand2_rec
+scheme 514:521 <> operand2_sind
+ind 709:717 <> arm_instr
+constr 763:765 <> ADD
+constr 817:819 <> SUB
+constr 871:873 <> MUL
+constr 924:927 <> SDIV
+constr 978:981 <> UDIV
+constr 1032:1034 <> MLS
+constr 1175:1177 <> AND
+constr 1229:1231 <> ORR
+constr 1283:1285 <> EOR
+constr 1337:1339 <> MVN
+constr 1417:1419 <> LSL
+constr 1492:1494 <> LSR
+constr 1568:1570 <> ASR
+constr 1647:1649 <> ROR
+constr 1741:1743 <> MOV
+constr 1784:1787 <> MOVW
+constr 1856:1859 <> MOVT
+constr 1954:1956 <> CMP
+constr 2023:2025 <> CLZ
+constr 2095:2098 <> RBIT
+constr 2160:2165 <> POPCNT
+constr 2256:2258 <> LDR
+constr 2325:2327 <> STR
+constr 2417:2417 <> B
+constr 2462:2463 <> BL
+constr 2517:2518 <> BX
+constr 2616:2623 <> VADD_F32
+constr 2674:2681 <> VSUB_F32
+constr 2732:2739 <> VMUL_F32
+constr 2790:2797 <> VDIV_F32
+constr 2848:2856 <> VSQRT_F32
+constr 2896:2903 <> VABS_F32
+constr 2943:2950 <> VNEG_F32
+constr 2991:2998 <> VADD_F64
+constr 3049:3056 <> VSUB_F64
+constr 3107:3114 <> VMUL_F64
+constr 3165:3172 <> VDIV_F64
+constr 3223:3231 <> VSQRT_F64
+constr 3271:3278 <> VABS_F64
+constr 3318:3325 <> VNEG_F64
+constr 3404:3411 <> VCMP_F32
+constr 3451:3458 <> VCMP_F64
+constr 3498:3509 <> VCVT_F32_F64
+constr 3549:3560 <> VCVT_F64_F32
+constr 3600:3611 <> VCVT_S32_F32
+constr 3651:3662 <> VCVT_F32_S32
+constr 3731:3734 <> VMOV
+constr 3774:3788 <> VMOV_ARM_TO_VFP
+constr 3828:3842 <> VMOV_VFP_TO_ARM
+constr 3913:3920 <> VLDR_F32
+constr 3965:3972 <> VSTR_F32
+constr 4017:4024 <> VLDR_F64
+constr 4069:4076 <> VSTR_F64
+R776:779 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R769:775 Synth.ARM.ArmState <> arm_reg ind
+R787:790 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R780:786 Synth.ARM.ArmState <> arm_reg ind
+R799:802 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R791:798 Synth.ARM.ArmInstructions <> operand2 ind
+R803:811 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R830:833 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R823:829 Synth.ARM.ArmState <> arm_reg ind
+R841:844 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R834:840 Synth.ARM.ArmState <> arm_reg ind
+R853:856 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R845:852 Synth.ARM.ArmInstructions <> operand2 ind
+R857:865 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R884:887 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R877:883 Synth.ARM.ArmState <> arm_reg ind
+R895:898 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R888:894 Synth.ARM.ArmState <> arm_reg ind
+R906:909 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R899:905 Synth.ARM.ArmState <> arm_reg ind
+R910:918 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R938:941 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R931:937 Synth.ARM.ArmState <> arm_reg ind
+R949:952 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R942:948 Synth.ARM.ArmState <> arm_reg ind
+R960:963 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R953:959 Synth.ARM.ArmState <> arm_reg ind
+R964:972 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R992:995 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R985:991 Synth.ARM.ArmState <> arm_reg ind
+R1003:1006 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R996:1002 Synth.ARM.ArmState <> arm_reg ind
+R1014:1017 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1007:1013 Synth.ARM.ArmState <> arm_reg ind
+R1018:1026 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1045:1048 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1038:1044 Synth.ARM.ArmState <> arm_reg ind
+R1056:1059 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1049:1055 Synth.ARM.ArmState <> arm_reg ind
+R1067:1070 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1060:1066 Synth.ARM.ArmState <> arm_reg ind
+R1078:1081 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1071:1077 Synth.ARM.ArmState <> arm_reg ind
+R1082:1090 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1188:1191 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1181:1187 Synth.ARM.ArmState <> arm_reg ind
+R1199:1202 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1192:1198 Synth.ARM.ArmState <> arm_reg ind
+R1211:1214 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1203:1210 Synth.ARM.ArmInstructions <> operand2 ind
+R1215:1223 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1242:1245 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1235:1241 Synth.ARM.ArmState <> arm_reg ind
+R1253:1256 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1246:1252 Synth.ARM.ArmState <> arm_reg ind
+R1265:1268 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1257:1264 Synth.ARM.ArmInstructions <> operand2 ind
+R1269:1277 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1296:1299 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1289:1295 Synth.ARM.ArmState <> arm_reg ind
+R1307:1310 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1300:1306 Synth.ARM.ArmState <> arm_reg ind
+R1319:1322 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1311:1318 Synth.ARM.ArmInstructions <> operand2 ind
+R1323:1331 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1350:1353 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1343:1349 Synth.ARM.ArmState <> arm_reg ind
+R1362:1365 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1354:1361 Synth.ARM.ArmInstructions <> operand2 ind
+R1366:1374 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1430:1433 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1423:1429 Synth.ARM.ArmState <> arm_reg ind
+R1441:1444 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1434:1440 Synth.ARM.ArmState <> arm_reg ind
+R1448:1451 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1445:1447 Corelib.Init.Datatypes <> nat ind
+R1452:1460 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1505:1508 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1498:1504 Synth.ARM.ArmState <> arm_reg ind
+R1516:1519 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1509:1515 Synth.ARM.ArmState <> arm_reg ind
+R1523:1526 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1520:1522 Corelib.Init.Datatypes <> nat ind
+R1527:1535 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1581:1584 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1574:1580 Synth.ARM.ArmState <> arm_reg ind
+R1592:1595 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1585:1591 Synth.ARM.ArmState <> arm_reg ind
+R1599:1602 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1596:1598 Corelib.Init.Datatypes <> nat ind
+R1603:1611 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1660:1663 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1653:1659 Synth.ARM.ArmState <> arm_reg ind
+R1671:1674 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1664:1670 Synth.ARM.ArmState <> arm_reg ind
+R1678:1681 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1675:1677 Corelib.Init.Datatypes <> nat ind
+R1682:1690 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1754:1757 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1747:1753 Synth.ARM.ArmState <> arm_reg ind
+R1766:1769 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1758:1765 Synth.ARM.ArmInstructions <> operand2 ind
+R1770:1778 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1798:1801 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1791:1797 Synth.ARM.ArmState <> arm_reg ind
+R1809:1812 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1802:1808 Synth.Common.Integers I32 int def
+R1813:1821 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1870:1873 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1863:1869 Synth.ARM.ArmState <> arm_reg ind
+R1881:1884 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1874:1880 Synth.Common.Integers I32 int def
+R1885:1893 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R1967:1970 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1960:1966 Synth.ARM.ArmState <> arm_reg ind
+R1979:1982 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1971:1978 Synth.ARM.ArmInstructions <> operand2 ind
+R1983:1991 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2036:2039 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2029:2035 Synth.ARM.ArmState <> arm_reg ind
+R2047:2050 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2040:2046 Synth.ARM.ArmState <> arm_reg ind
+R2051:2059 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2109:2112 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2102:2108 Synth.ARM.ArmState <> arm_reg ind
+R2120:2123 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2113:2119 Synth.ARM.ArmState <> arm_reg ind
+R2124:2132 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2176:2179 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2169:2175 Synth.ARM.ArmState <> arm_reg ind
+R2187:2190 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2180:2186 Synth.ARM.ArmState <> arm_reg ind
+R2191:2199 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2269:2272 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2262:2268 Synth.ARM.ArmState <> arm_reg ind
+R2280:2283 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2273:2279 Synth.ARM.ArmState <> arm_reg ind
+R2285:2288 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2284:2284 Corelib.Numbers.BinNums <> Z ind
+R2289:2297 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2338:2341 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2331:2337 Synth.ARM.ArmState <> arm_reg ind
+R2349:2352 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2342:2348 Synth.ARM.ArmState <> arm_reg ind
+R2354:2357 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2353:2353 Corelib.Numbers.BinNums <> Z ind
+R2358:2366 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2422:2425 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2421:2421 Corelib.Numbers.BinNums <> Z ind
+R2426:2434 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2468:2471 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2467:2467 Corelib.Numbers.BinNums <> Z ind
+R2472:2480 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2529:2532 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2522:2528 Synth.ARM.ArmState <> arm_reg ind
+R2533:2541 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2634:2637 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2627:2633 Synth.ARM.ArmState <> vfp_reg ind
+R2645:2648 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2638:2644 Synth.ARM.ArmState <> vfp_reg ind
+R2656:2659 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2649:2655 Synth.ARM.ArmState <> vfp_reg ind
+R2660:2668 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2692:2695 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2685:2691 Synth.ARM.ArmState <> vfp_reg ind
+R2703:2706 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2696:2702 Synth.ARM.ArmState <> vfp_reg ind
+R2714:2717 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2707:2713 Synth.ARM.ArmState <> vfp_reg ind
+R2718:2726 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2750:2753 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2743:2749 Synth.ARM.ArmState <> vfp_reg ind
+R2761:2764 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2754:2760 Synth.ARM.ArmState <> vfp_reg ind
+R2772:2775 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2765:2771 Synth.ARM.ArmState <> vfp_reg ind
+R2776:2784 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2808:2811 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2801:2807 Synth.ARM.ArmState <> vfp_reg ind
+R2819:2822 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2812:2818 Synth.ARM.ArmState <> vfp_reg ind
+R2830:2833 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2823:2829 Synth.ARM.ArmState <> vfp_reg ind
+R2834:2842 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2867:2870 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2860:2866 Synth.ARM.ArmState <> vfp_reg ind
+R2878:2881 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2871:2877 Synth.ARM.ArmState <> vfp_reg ind
+R2882:2890 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2914:2917 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2907:2913 Synth.ARM.ArmState <> vfp_reg ind
+R2925:2928 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2918:2924 Synth.ARM.ArmState <> vfp_reg ind
+R2929:2937 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R2961:2964 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2954:2960 Synth.ARM.ArmState <> vfp_reg ind
+R2972:2975 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2965:2971 Synth.ARM.ArmState <> vfp_reg ind
+R2976:2984 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3009:3012 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3002:3008 Synth.ARM.ArmState <> vfp_reg ind
+R3020:3023 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3013:3019 Synth.ARM.ArmState <> vfp_reg ind
+R3031:3034 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3024:3030 Synth.ARM.ArmState <> vfp_reg ind
+R3035:3043 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3067:3070 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3060:3066 Synth.ARM.ArmState <> vfp_reg ind
+R3078:3081 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3071:3077 Synth.ARM.ArmState <> vfp_reg ind
+R3089:3092 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3082:3088 Synth.ARM.ArmState <> vfp_reg ind
+R3093:3101 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3125:3128 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3118:3124 Synth.ARM.ArmState <> vfp_reg ind
+R3136:3139 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3129:3135 Synth.ARM.ArmState <> vfp_reg ind
+R3147:3150 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3140:3146 Synth.ARM.ArmState <> vfp_reg ind
+R3151:3159 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3183:3186 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3176:3182 Synth.ARM.ArmState <> vfp_reg ind
+R3194:3197 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3187:3193 Synth.ARM.ArmState <> vfp_reg ind
+R3205:3208 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3198:3204 Synth.ARM.ArmState <> vfp_reg ind
+R3209:3217 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3242:3245 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3235:3241 Synth.ARM.ArmState <> vfp_reg ind
+R3253:3256 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3246:3252 Synth.ARM.ArmState <> vfp_reg ind
+R3257:3265 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3289:3292 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3282:3288 Synth.ARM.ArmState <> vfp_reg ind
+R3300:3303 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3293:3299 Synth.ARM.ArmState <> vfp_reg ind
+R3304:3312 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3336:3339 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3329:3335 Synth.ARM.ArmState <> vfp_reg ind
+R3347:3350 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3340:3346 Synth.ARM.ArmState <> vfp_reg ind
+R3351:3359 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3422:3425 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3415:3421 Synth.ARM.ArmState <> vfp_reg ind
+R3433:3436 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3426:3432 Synth.ARM.ArmState <> vfp_reg ind
+R3437:3445 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3469:3472 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3462:3468 Synth.ARM.ArmState <> vfp_reg ind
+R3480:3483 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3473:3479 Synth.ARM.ArmState <> vfp_reg ind
+R3484:3492 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3520:3523 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3513:3519 Synth.ARM.ArmState <> vfp_reg ind
+R3531:3534 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3524:3530 Synth.ARM.ArmState <> vfp_reg ind
+R3535:3543 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3571:3574 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3564:3570 Synth.ARM.ArmState <> vfp_reg ind
+R3582:3585 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3575:3581 Synth.ARM.ArmState <> vfp_reg ind
+R3586:3594 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3622:3625 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3615:3621 Synth.ARM.ArmState <> vfp_reg ind
+R3633:3636 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3626:3632 Synth.ARM.ArmState <> vfp_reg ind
+R3637:3645 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3673:3676 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3666:3672 Synth.ARM.ArmState <> vfp_reg ind
+R3684:3687 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3677:3683 Synth.ARM.ArmState <> vfp_reg ind
+R3688:3696 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3745:3748 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3738:3744 Synth.ARM.ArmState <> vfp_reg ind
+R3756:3759 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3749:3755 Synth.ARM.ArmState <> vfp_reg ind
+R3760:3768 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3799:3802 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3792:3798 Synth.ARM.ArmState <> vfp_reg ind
+R3810:3813 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3803:3809 Synth.ARM.ArmState <> arm_reg ind
+R3814:3822 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3853:3856 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3846:3852 Synth.ARM.ArmState <> arm_reg ind
+R3864:3867 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3857:3863 Synth.ARM.ArmState <> vfp_reg ind
+R3868:3876 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3931:3934 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3924:3930 Synth.ARM.ArmState <> vfp_reg ind
+R3942:3945 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3935:3941 Synth.ARM.ArmState <> arm_reg ind
+R3947:3950 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3946:3946 Corelib.Numbers.BinNums <> Z ind
+R3951:3959 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R3983:3986 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3976:3982 Synth.ARM.ArmState <> vfp_reg ind
+R3994:3997 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3987:3993 Synth.ARM.ArmState <> arm_reg ind
+R3999:4002 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3998:3998 Corelib.Numbers.BinNums <> Z ind
+R4003:4011 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R4035:4038 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4028:4034 Synth.ARM.ArmState <> vfp_reg ind
+R4046:4049 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4039:4045 Synth.ARM.ArmState <> arm_reg ind
+R4051:4054 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4050:4050 Corelib.Numbers.BinNums <> Z ind
+R4055:4063 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+R4087:4090 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4080:4086 Synth.ARM.ArmState <> vfp_reg ind
+R4098:4101 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4091:4097 Synth.ARM.ArmState <> arm_reg ind
+R4103:4106 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4102:4102 Corelib.Numbers.BinNums <> Z ind
+R4107:4115 Synth.ARM.ArmInstructions <> arm_instr:3 ind
+scheme 709:717 <> arm_instr_rect
+scheme 709:717 <> arm_instr_ind
+scheme 709:717 <> arm_instr_rec
+scheme 709:717 <> arm_instr_sind
+def 4163:4173 <> arm_program
+R4178:4181 Corelib.Init.Datatypes <> list ind
+R4183:4191 Synth.ARM.ArmInstructions <> arm_instr ind
+def 4259:4271 <> eval_operand2
+R4280:4287 Synth.ARM.ArmInstructions <> operand2 ind
+binder 4274:4276 <> op2:5
+R4295:4303 Synth.ARM.ArmState <> arm_state rec
+binder 4291:4291 <> s:6
+R4308:4314 Synth.Common.Integers I32 int def
+R4327:4329 Synth.ARM.ArmInstructions <> op2:5 var
+R4340:4342 Synth.ARM.ArmInstructions <> Imm constr
+R4355:4357 Synth.ARM.ArmInstructions <> Reg constr
+R4364:4370 Synth.ARM.ArmState <> get_reg def
+R4372:4372 Synth.ARM.ArmInstructions <> s:6 var
+R4380:4387 Synth.ARM.ArmInstructions <> RegShift constr
+R4481:4487 Synth.ARM.ArmState <> get_reg def
+R4489:4489 Synth.ARM.ArmInstructions <> s:6 var
+def 4591:4601 <> ex_add_regs
+R4605:4613 Synth.ARM.ArmInstructions <> arm_instr ind
+R4618:4620 Synth.ARM.ArmInstructions <> ADD constr
+R4622:4623 Synth.ARM.ArmState <> R0 constr
+R4625:4626 Synth.ARM.ArmState <> R1 constr
+R4629:4631 Synth.ARM.ArmInstructions <> Reg constr
+R4633:4634 Synth.ARM.ArmState <> R2 constr
+def 4685:4694 <> ex_add_imm
+R4698:4706 Synth.ARM.ArmInstructions <> arm_instr ind
+R4711:4713 Synth.ARM.ArmInstructions <> ADD constr
+R4715:4716 Synth.ARM.ArmState <> R0 constr
+R4718:4719 Synth.ARM.ArmState <> R0 constr
+R4722:4724 Synth.ARM.ArmInstructions <> Imm constr
+R4726:4732 Synth.Common.Integers I32 one def
+def 4784:4794 <> ex_sub_regs
+R4798:4806 Synth.ARM.ArmInstructions <> arm_instr ind
+R4811:4813 Synth.ARM.ArmInstructions <> SUB constr
+R4815:4816 Synth.ARM.ArmState <> R0 constr
+R4818:4819 Synth.ARM.ArmState <> R0 constr
+R4822:4824 Synth.ARM.ArmInstructions <> Reg constr
+R4826:4827 Synth.ARM.ArmState <> R1 constr
+def 4879:4889 <> ex_and_regs
+R4893:4901 Synth.ARM.ArmInstructions <> arm_instr ind
+R4906:4908 Synth.ARM.ArmInstructions <> AND constr
+R4910:4911 Synth.ARM.ArmState <> R0 constr
+R4913:4914 Synth.ARM.ArmState <> R1 constr
+R4917:4919 Synth.ARM.ArmInstructions <> Reg constr
+R4921:4922 Synth.ARM.ArmState <> R2 constr
+def 4965:4974 <> ex_mov_reg
+R4978:4986 Synth.ARM.ArmInstructions <> arm_instr ind
+R4991:4993 Synth.ARM.ArmInstructions <> MOV constr
+R4995:4996 Synth.ARM.ArmState <> R0 constr
+R4999:5001 Synth.ARM.ArmInstructions <> Reg constr
+R5003:5004 Synth.ARM.ArmState <> R1 constr
+def 5056:5061 <> ex_lsl
+R5065:5073 Synth.ARM.ArmInstructions <> arm_instr ind
+R5078:5080 Synth.ARM.ArmInstructions <> LSL constr
+R5082:5083 Synth.ARM.ArmState <> R0 constr
+R5085:5086 Synth.ARM.ArmState <> R1 constr

@@ -9,8 +9,8 @@
     Based on synth-verify/src/arm_semantics.rs
 *)
 
-Require Import ZArith.
-Require Import List.
+From Stdlib Require Import ZArith.
+From Stdlib Require Import List.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 
@@ -32,7 +32,7 @@ Proof.
   decide equality.
 Defined.
 
-Instance arm_reg_EqDec : EqDec arm_reg := {
+#[export] Instance arm_reg_EqDec : EqDec arm_reg := {
   eq_dec := arm_reg_eq_dec
 }.
 
@@ -73,6 +73,16 @@ Definition vfp_reg_to_nat (r : vfp_reg) : nat :=
   | D8 => 40 | D9 => 41 | D10 => 42 | D11 => 43
   | D12 => 44 | D13 => 45 | D14 => 46 | D15 => 47
   end.
+
+(** Decidable equality for VFP registers *)
+Lemma vfp_reg_eq_dec : forall (r1 r2 : vfp_reg), {r1 = r2} + {r1 <> r2}.
+Proof.
+  decide equality.
+Defined.
+
+#[export] Instance vfp_reg_EqDec : EqDec vfp_reg := {
+  eq_dec := vfp_reg_eq_dec
+}.
 
 (** ** Condition Flags *)
 

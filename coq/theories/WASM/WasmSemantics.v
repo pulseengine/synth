@@ -6,14 +6,15 @@
     Based on synth-verify/src/wasm_semantics.rs
 *)
 
-Require Import ZArith.
-Require Import List.
+From Stdlib Require Import ZArith.
+From Stdlib Require Import List.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.WASM.WasmValues.
 Require Import Synth.WASM.WasmInstructions.
 
-Import ListNotations.
+Import List.ListNotations.
+Open Scope list_scope.
 Open Scope Z_scope.
 
 (** ** WebAssembly Machine State *)
@@ -611,7 +612,7 @@ Qed.
 
 (** Executing an empty program doesn't change state *)
 Theorem exec_wasm_program_nil : forall s,
-  exec_wasm_program [] s = Some s.
+  exec_wasm_program (@nil wasm_instr) s = Some s.
 Proof.
   intros. reflexivity.
 Qed.
@@ -626,8 +627,9 @@ Theorem exec_wasm_program_app : forall p1 p2 s,
 Proof.
   induction p1; intros.
   - simpl. reflexivity.
-  - simpl. destruct (exec_wasm_instr a s) eqn:E; auto.
-    apply IHp1.
+  - simpl. destruct (exec_wasm_instr a s) eqn:E.
+    + apply IHp1.
+    + reflexivity.
 Qed.
 
 (** LocalGet after LocalSet returns the set value *)

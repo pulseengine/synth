@@ -4,7 +4,7 @@
     Based on synth-synthesis/src/rules.rs
 *)
 
-Require Import ZArith.
+From Stdlib Require Import ZArith.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
