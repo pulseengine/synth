@@ -3,10 +3,12 @@
     This file defines WebAssembly value types.
 *)
 
-Require Import ZArith.
+From Stdlib Require Import ZArith.
+From Stdlib Require Import List.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 
+Import ListNotations.
 Open Scope Z_scope.
 
 (** ** WebAssembly Value Types *)

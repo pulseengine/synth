@@ -1,0 +1,354 @@
+DIGEST 6997cb747981dcebe6f1c79b8fb27815
+FSynth.WASM.WasmInstructions
+R171:174 Stdlib.Lists.List <> <> lib
+R204:209 Stdlib.ZArith.ZArith <> <> lib
+R227:243 Synth.Common.Base <> <> lib
+R261:281 Synth.Common.Integers <> <> lib
+R299:319 Synth.WASM.WasmValues <> <> lib
+R330:342 Stdlib.Lists.List ListNotations <> mod
+ind 412:421 <> wasm_instr
+constr 455:462 <> I32Const
+constr 492:499 <> I64Const
+constr 564:569 <> I32Add
+constr 588:593 <> I32Sub
+constr 612:617 <> I32Mul
+constr 636:642 <> I32DivS
+constr 661:667 <> I32DivU
+constr 686:692 <> I32RemS
+constr 711:717 <> I32RemU
+constr 768:773 <> I32And
+constr 792:796 <> I32Or
+constr 815:820 <> I32Xor
+constr 839:844 <> I32Shl
+constr 863:869 <> I32ShrS
+constr 888:894 <> I32ShrU
+constr 913:919 <> I32Rotl
+constr 938:944 <> I32Rotr
+constr 998:1003 <> I32Eqz
+constr 1022:1026 <> I32Eq
+constr 1045:1049 <> I32Ne
+constr 1068:1073 <> I32LtS
+constr 1092:1097 <> I32LtU
+constr 1116:1121 <> I32GtS
+constr 1140:1145 <> I32GtU
+constr 1164:1169 <> I32LeS
+constr 1188:1193 <> I32LeU
+constr 1212:1217 <> I32GeS
+constr 1236:1241 <> I32GeU
+constr 1290:1295 <> I32Clz
+constr 1314:1319 <> I32Ctz
+constr 1338:1346 <> I32Popcnt
+constr 1400:1405 <> I64Add
+constr 1424:1429 <> I64Sub
+constr 1448:1453 <> I64Mul
+constr 1472:1478 <> I64DivS
+constr 1497:1503 <> I64DivU
+constr 1522:1528 <> I64RemS
+constr 1547:1553 <> I64RemU
+constr 1604:1609 <> I64And
+constr 1628:1632 <> I64Or
+constr 1651:1656 <> I64Xor
+constr 1675:1680 <> I64Shl
+constr 1699:1705 <> I64ShrS
+constr 1724:1730 <> I64ShrU
+constr 1749:1755 <> I64Rotl
+constr 1774:1780 <> I64Rotr
+constr 1834:1839 <> I64Eqz
+constr 1858:1862 <> I64Eq
+constr 1881:1885 <> I64Ne
+constr 1904:1909 <> I64LtS
+constr 1928:1933 <> I64LtU
+constr 1952:1957 <> I64GtS
+constr 1976:1981 <> I64GtU
+constr 2000:2005 <> I64LeS
+constr 2024:2029 <> I64LeU
+constr 2048:2053 <> I64GeS
+constr 2072:2077 <> I64GeU
+constr 2126:2131 <> I64Clz
+constr 2150:2155 <> I64Ctz
+constr 2174:2182 <> I64Popcnt
+constr 2236:2241 <> F32Add
+constr 2260:2265 <> F32Sub
+constr 2284:2289 <> F32Mul
+constr 2308:2313 <> F32Div
+constr 2332:2338 <> F32Sqrt
+constr 2357:2362 <> F32Min
+constr 2381:2386 <> F32Max
+constr 2405:2410 <> F32Abs
+constr 2429:2434 <> F32Neg
+constr 2453:2463 <> F32Copysign
+constr 2482:2488 <> F32Ceil
+constr 2507:2514 <> F32Floor
+constr 2533:2540 <> F32Trunc
+constr 2559:2568 <> F32Nearest
+constr 2622:2626 <> F32Eq
+constr 2645:2649 <> F32Ne
+constr 2668:2672 <> F32Lt
+constr 2691:2695 <> F32Gt
+constr 2714:2718 <> F32Le
+constr 2737:2741 <> F32Ge
+constr 2795:2800 <> F64Add
+constr 2819:2824 <> F64Sub
+constr 2843:2848 <> F64Mul
+constr 2867:2872 <> F64Div
+constr 2891:2897 <> F64Sqrt
+constr 2916:2921 <> F64Min
+constr 2940:2945 <> F64Max
+constr 2964:2969 <> F64Abs
+constr 2988:2993 <> F64Neg
+constr 3012:3022 <> F64Copysign
+constr 3041:3047 <> F64Ceil
+constr 3066:3073 <> F64Floor
+constr 3092:3099 <> F64Trunc
+constr 3118:3127 <> F64Nearest
+constr 3181:3185 <> F64Eq
+constr 3204:3208 <> F64Ne
+constr 3227:3231 <> F64Lt
+constr 3250:3254 <> F64Gt
+constr 3273:3277 <> F64Le
+constr 3296:3300 <> F64Ge
+constr 3350:3359 <> I32WrapI64
+constr 3378:3390 <> I64ExtendI32S
+constr 3409:3421 <> I64ExtendI32U
+constr 3440:3451 <> I32TruncF32S
+constr 3470:3481 <> I32TruncF32U
+constr 3500:3511 <> I32TruncF64S
+constr 3530:3541 <> I32TruncF64U
+constr 3560:3571 <> I64TruncF32S
+constr 3590:3601 <> I64TruncF32U
+constr 3620:3631 <> I64TruncF64S
+constr 3650:3661 <> I64TruncF64U
+constr 3680:3693 <> F32ConvertI32S
+constr 3712:3725 <> F32ConvertI32U
+constr 3744:3757 <> F32ConvertI64S
+constr 3776:3789 <> F32ConvertI64U
+constr 3808:3819 <> F32DemoteF64
+constr 3838:3851 <> F64ConvertI32S
+constr 3870:3883 <> F64ConvertI32U
+constr 3902:3915 <> F64ConvertI64S
+constr 3934:3947 <> F64ConvertI64U
+constr 3966:3978 <> F64PromoteF32
+constr 4024:4030 <> I32Load
+constr 4070:4076 <> I64Load
+constr 4102:4108 <> F32Load
+constr 4134:4140 <> F64Load
+constr 4166:4173 <> I32Store
+constr 4199:4206 <> I64Store
+constr 4232:4239 <> F32Store
+constr 4265:4272 <> F64Store
+constr 4340:4347 <> LocalGet
+constr 4373:4380 <> LocalSet
+constr 4406:4413 <> LocalTee
+constr 4439:4447 <> GlobalGet
+constr 4473:4481 <> GlobalSet
+constr 4529:4532 <> Drop
+constr 4551:4556 <> Select
+constr 4575:4577 <> Nop
+R473:476 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R466:472 Synth.Common.Integers I32 int def
+R477:486 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R510:513 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R503:509 Synth.Common.Integers I64 int def
+R514:523 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R573:582 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R597:606 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R621:630 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R646:655 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R671:680 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R696:705 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R721:730 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R777:786 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R800:809 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R824:833 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R848:857 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R873:882 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R898:907 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R923:932 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R948:957 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1007:1016 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1030:1039 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1053:1062 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1077:1086 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1101:1110 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1125:1134 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1149:1158 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1173:1182 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1197:1206 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1221:1230 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1245:1254 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1299:1308 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1323:1332 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1350:1359 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1409:1418 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1433:1442 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1457:1466 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1482:1491 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1507:1516 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1532:1541 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1557:1566 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1613:1622 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1636:1645 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1660:1669 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1684:1693 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1709:1718 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1734:1743 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1759:1768 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1784:1793 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1843:1852 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1866:1875 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1889:1898 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1913:1922 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1937:1946 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1961:1970 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R1985:1994 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2009:2018 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2033:2042 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2057:2066 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2081:2090 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2135:2144 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2159:2168 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2186:2195 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2245:2254 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2269:2278 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2293:2302 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2317:2326 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2342:2351 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2366:2375 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2390:2399 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2414:2423 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2438:2447 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2467:2476 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2492:2501 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2518:2527 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2544:2553 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2572:2581 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2630:2639 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2653:2662 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2676:2685 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2699:2708 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2722:2731 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2745:2754 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2804:2813 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2828:2837 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2852:2861 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2876:2885 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2901:2910 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2925:2934 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2949:2958 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2973:2982 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R2997:3006 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3026:3035 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3051:3060 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3077:3086 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3103:3112 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3131:3140 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3189:3198 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3212:3221 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3235:3244 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3258:3267 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3281:3290 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3304:3313 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3363:3372 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3394:3403 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3425:3434 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3455:3464 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3485:3494 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3515:3524 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3545:3554 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3575:3584 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3605:3614 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3635:3644 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3665:3674 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3697:3706 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3729:3738 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3761:3770 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3793:3802 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3823:3832 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3855:3864 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3887:3896 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3919:3928 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3951:3960 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R3982:3991 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4037:4040 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4034:4036 Corelib.Init.Datatypes <> nat ind
+R4041:4050 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4083:4086 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4080:4082 Corelib.Init.Datatypes <> nat ind
+R4087:4096 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4115:4118 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4112:4114 Corelib.Init.Datatypes <> nat ind
+R4119:4128 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4147:4150 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4144:4146 Corelib.Init.Datatypes <> nat ind
+R4151:4160 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4180:4183 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4177:4179 Corelib.Init.Datatypes <> nat ind
+R4184:4193 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4213:4216 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4210:4212 Corelib.Init.Datatypes <> nat ind
+R4217:4226 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4246:4249 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4243:4245 Corelib.Init.Datatypes <> nat ind
+R4250:4259 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4279:4282 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4276:4278 Corelib.Init.Datatypes <> nat ind
+R4283:4292 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4354:4357 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4351:4353 Corelib.Init.Datatypes <> nat ind
+R4358:4367 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4387:4390 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4384:4386 Corelib.Init.Datatypes <> nat ind
+R4391:4400 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4420:4423 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4417:4419 Corelib.Init.Datatypes <> nat ind
+R4424:4433 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4454:4457 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4451:4453 Corelib.Init.Datatypes <> nat ind
+R4458:4467 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4488:4491 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4485:4487 Corelib.Init.Datatypes <> nat ind
+R4492:4501 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4536:4545 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4560:4569 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+R4581:4590 Synth.WASM.WasmInstructions <> wasm_instr:1 ind
+scheme 412:421 <> wasm_instr_rect
+scheme 412:421 <> wasm_instr_ind
+scheme 412:421 <> wasm_instr_rec
+scheme 412:421 <> wasm_instr_sind
+def 4637:4648 <> wasm_program
+R4653:4656 Corelib.Init.Datatypes <> list ind
+R4658:4667 Synth.WASM.WasmInstructions <> wasm_instr ind
+def 4717:4726 <> ex_i32_add
+R4730:4741 Synth.WASM.WasmInstructions <> wasm_program def
+R4748:4748 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R4770:4771 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R4793:4794 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R4801:4801 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R4749:4756 Synth.WASM.WasmInstructions <> I32Const constr
+R4759:4766 Synth.Common.Integers I32 repr def
+R4772:4779 Synth.WASM.WasmInstructions <> I32Const constr
+R4782:4789 Synth.Common.Integers I32 repr def
+R4795:4800 Synth.WASM.WasmInstructions <> I32Add constr
+def 4831:4840 <> ex_i32_mul
+R4844:4855 Synth.WASM.WasmInstructions <> wasm_program def
+R4862:4862 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R4884:4885 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R4907:4908 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R4915:4915 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R4863:4870 Synth.WASM.WasmInstructions <> I32Const constr
+R4873:4880 Synth.Common.Integers I32 repr def
+R4886:4893 Synth.WASM.WasmInstructions <> I32Const constr
+R4896:4903 Synth.Common.Integers I32 repr def
+R4909:4914 Synth.WASM.WasmInstructions <> I32Mul constr
+def 4984:5003 <> ex_increment_local_0
+R5007:5018 Synth.WASM.WasmInstructions <> wasm_program def
+R5025:5025 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R5036:5037 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R5054:5055 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R5062:5063 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R5074:5074 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R5026:5033 Synth.WASM.WasmInstructions <> LocalGet constr
+R5038:5045 Synth.WASM.WasmInstructions <> I32Const constr
+R5047:5053 Synth.Common.Integers I32 one def
+R5056:5061 Synth.WASM.WasmInstructions <> I32Add constr
+R5064:5071 Synth.WASM.WasmInstructions <> LocalSet constr
