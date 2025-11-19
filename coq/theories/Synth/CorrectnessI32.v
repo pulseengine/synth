@@ -148,7 +148,30 @@ Theorem i32_remu_correct : forall wstate astate v1 v2 stack' result,
     get_reg astate' R0 = result.
 Proof.
   (* Remainder implemented as: a % b = a - (a/b) * b using MLS instruction *)
-  intros. unfold compile_wasm_to_arm.
+  (* Compilation: [UDIV R2 R0 R1; MLS R0 R2 R1 R0] *)
+  intros wstate astate v1 v2 stack' result Hstack HR0 HR1 Hremu Hwasm.
+  unfold compile_wasm_to_arm.
+
+  (* Strategy:
+     1. Execute UDIV R2 R0 R1 -> R2 gets quotient
+     2. Execute MLS R0 R2 R1 R0 -> R0 gets remainder
+     3. Use I32.remu_formula to show this computes remainder correctly
+
+     However, the full proof requires:
+     - Explicit unfolding of exec_program for 2-instruction sequence
+     - Reasoning about intermediate state after UDIV
+     - Showing MLS correctly implements R0 - (R2 * R1)
+     - Connecting ARM semantics to I32 operations
+
+     This is a complex multi-step proof that would require additional
+     infrastructure lemmas about:
+     - exec_program composition
+     - ARM instruction semantics matching I32 operations
+     - State independence (R2 doesn't affect subsequent operations)
+
+     For now, we document the proof structure and admit it.
+     Once we prove 30-50 operations and establish patterns,
+     we can return to complete this with proper infrastructure. *)
   admit.
 Admitted.
 

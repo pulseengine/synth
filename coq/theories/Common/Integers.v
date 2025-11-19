@@ -176,6 +176,34 @@ Module I32.
     intros. unfold xor. f_equal. apply Z.lxor_comm.
   Qed.
 
+  (** ** Division and Remainder Properties *)
+
+  (** Relationship between division, multiplication, and remainder *)
+  Axiom div_mul_rem_unsigned : forall x y q r,
+    y <> 0 ->
+    divu x y = Some q ->
+    remu x y = Some r ->
+    x = repr (unsigned q * unsigned y + unsigned r).
+
+  Axiom div_mul_rem_signed : forall x y q r,
+    y <> 0 ->
+    divs x y = Some q ->
+    rems x y = Some r ->
+    x = repr (signed q * signed y + signed r).
+
+  (** Remainder can be computed as: r = a - (a/b) * b *)
+  Axiom remu_formula : forall x y q r,
+    y <> 0 ->
+    divu x y = Some q ->
+    remu x y = Some r ->
+    r = sub x (mul q y).
+
+  Axiom rems_formula : forall x y q r,
+    y <> 0 ->
+    divs x y = Some q ->
+    rems x y = Some r ->
+    r = sub x (mul q y).
+
 End I32.
 
 (** ** 64-bit Integers *)
