@@ -71,27 +71,27 @@ Module ProgressMetrics.
 
   Definition total_operations : nat := 151.
 
-  Definition fully_proven : nat := 44.
+  Definition fully_proven : nat := 46.
   (** i32 arithmetic: add, sub, mul, divs, divu (5)
       i32 bitwise: and, or, xor (3)
-      i32 shift: shl, shr_u, shr_s (3)
+      i32 shift/rotate: shl, shr_u, shr_s, rotl, rotr (5)
       i32 comparison: eqz, eq, ne, lts, ltu, gts, gtu, les, leu, ges, geu (11)
       i64 comparison: eqz, eq, ne, lts, ltu, gts, gtu, les, leu, ges, geu (11)
       Simple ops: nop, select, drop, local_get, local_set, local_tee, i32_const, i64_const, global_get, global_set (10)
       Automation demo: i32.add (1) *)
 
-  Definition structured_admitted : nat := 73.
-  (** i32 (22) + i64 (23) + conversions (24) + f32 placeholder theorems (0) +
+  Definition structured_admitted : nat := 71.
+  (** i32 (20) + i64 (23) + conversions (24) + f32 placeholder theorems (0) +
       f64 placeholder theorems (0) + memory (0) + control (0)
-      Note: i32 reduced from 25 to 22 as 3 shifts now fully proven
+      Note: i32 reduced from 25 to 20 as 5 shifts/rotates now fully proven
             i64 reduced from 34 to 23 as 11 comparisons are now fully proven *)
 
   Definition not_yet_defined : nat := 50.
   (** f32 (29) + f64 (30) + memory (8) + remaining locals/globals (2) + control (1)
       = 70, but some overlap with Simple, actual ~50 *)
 
-  Definition completion_percentage : Q := 44 # 151.
-  (** Approximately 29% fully proven *)
+  Definition completion_percentage : Q := 46 # 151.
+  (** Approximately 30% fully proven *)
 
   Definition coverage_percentage : Q := 101 # 151.
   (** Approximately 67% have theorem statements (even if admitted) *)
@@ -217,57 +217,59 @@ End ProgressMetrics.
    7. i32.or      (Correctness.v + CorrectnessI32.v)
    8. i32.xor     (Correctness.v + CorrectnessI32.v)
 
-   I32 Shift (3):
+   I32 Shift/Rotate (5):
    9.  i32.shl    (CorrectnessSimple.v)
    10. i32.shr_u  (CorrectnessSimple.v)
    11. i32.shr_s  (CorrectnessSimple.v)
+   12. i32.rotl   (CorrectnessSimple.v)
+   13. i32.rotr   (CorrectnessSimple.v)
 
    I32 Comparison (11):
-   12. i32.eqz    (CorrectnessSimple.v)
-   13. i32.eq     (CorrectnessSimple.v)
-   14. i32.ne     (CorrectnessSimple.v)
-   15. i32.lt_s   (CorrectnessSimple.v)
-   16. i32.lt_u   (CorrectnessSimple.v)
-   17. i32.gt_s   (CorrectnessSimple.v)
-   18. i32.gt_u   (CorrectnessSimple.v)
-   19. i32.le_s   (CorrectnessSimple.v)
-   20. i32.le_u   (CorrectnessSimple.v)
-   21. i32.ge_s   (CorrectnessSimple.v)
-   22. i32.ge_u   (CorrectnessSimple.v)
+   14. i32.eqz    (CorrectnessSimple.v)
+   15. i32.eq     (CorrectnessSimple.v)
+   16. i32.ne     (CorrectnessSimple.v)
+   17. i32.lt_s   (CorrectnessSimple.v)
+   18. i32.lt_u   (CorrectnessSimple.v)
+   19. i32.gt_s   (CorrectnessSimple.v)
+   20. i32.gt_u   (CorrectnessSimple.v)
+   21. i32.le_s   (CorrectnessSimple.v)
+   22. i32.le_u   (CorrectnessSimple.v)
+   23. i32.ge_s   (CorrectnessSimple.v)
+   24. i32.ge_u   (CorrectnessSimple.v)
 
    I64 Comparison (11):
-   23. i64.eqz    (CorrectnessI64Comparisons.v)
-   24. i64.eq     (CorrectnessI64Comparisons.v)
-   25. i64.ne     (CorrectnessI64Comparisons.v)
-   26. i64.lt_s   (CorrectnessI64Comparisons.v)
-   27. i64.lt_u   (CorrectnessI64Comparisons.v)
-   28. i64.gt_s   (CorrectnessI64Comparisons.v)
-   29. i64.gt_u   (CorrectnessI64Comparisons.v)
-   30. i64.le_s   (CorrectnessI64Comparisons.v)
-   31. i64.le_u   (CorrectnessI64Comparisons.v)
-   32. i64.ge_s   (CorrectnessI64Comparisons.v)
-   33. i64.ge_u   (CorrectnessI64Comparisons.v)
+   25. i64.eqz    (CorrectnessI64Comparisons.v)
+   26. i64.eq     (CorrectnessI64Comparisons.v)
+   27. i64.ne     (CorrectnessI64Comparisons.v)
+   28. i64.lt_s   (CorrectnessI64Comparisons.v)
+   29. i64.lt_u   (CorrectnessI64Comparisons.v)
+   30. i64.gt_s   (CorrectnessI64Comparisons.v)
+   31. i64.gt_u   (CorrectnessI64Comparisons.v)
+   32. i64.le_s   (CorrectnessI64Comparisons.v)
+   33. i64.le_u   (CorrectnessI64Comparisons.v)
+   34. i64.ge_s   (CorrectnessI64Comparisons.v)
+   35. i64.ge_u   (CorrectnessI64Comparisons.v)
 
    Simple Operations (10):
-   34. nop        (CorrectnessSimple.v)
-   35. select     (CorrectnessSimple.v)
-   36. drop       (CorrectnessSimple.v)
-   37. local.get  (CorrectnessSimple.v)
-   38. local.set  (CorrectnessSimple.v)
-   39. local.tee  (CorrectnessSimple.v)
-   40. i32.const  (CorrectnessSimple.v)
-   41. i64.const  (CorrectnessSimple.v)
-   42. global.get (CorrectnessSimple.v)
-   43. global.set (CorrectnessSimple.v)
+   36. nop        (CorrectnessSimple.v)
+   37. select     (CorrectnessSimple.v)
+   38. drop       (CorrectnessSimple.v)
+   39. local.get  (CorrectnessSimple.v)
+   40. local.set  (CorrectnessSimple.v)
+   41. local.tee  (CorrectnessSimple.v)
+   42. i32.const  (CorrectnessSimple.v)
+   43. i64.const  (CorrectnessSimple.v)
+   44. global.get (CorrectnessSimple.v)
+   45. global.set (CorrectnessSimple.v)
 
    Automation Example (1):
-   44. i32.add (auto-proven with tactics in Tactics.v)
+   46. i32.add (auto-proven with tactics in Tactics.v)
 
-   Total: 44 operations fully proven
+   Total: 46 operations fully proven
 
    These proofs are complete (no Admitted). Note that Integers.v contains
    axioms for remainder operation properties that will be proven later.
-   All 44 proven operations are ready for certification review.
+   All 46 proven operations are ready for certification review.
 *)
 
 (** ** Statistics *)

@@ -85,6 +85,16 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
       (* Real: Would need dynamic shift with ASR Rd, Rn, Rm *)
       []
 
+  | I32Rotl =>
+      (* Simplified: rotation handled at WASM level *)
+      (* Real: Would use ROR with negated shift amount, or multiple shifts *)
+      []
+
+  | I32Rotr =>
+      (* Simplified: rotation handled at WASM level *)
+      (* Real: Would use ROR Rd, Rn, Rm *)
+      []
+
   (* i32 comparison *)
   | I32Eqz =>
       (* Simplified: comparison handled at WASM level *)

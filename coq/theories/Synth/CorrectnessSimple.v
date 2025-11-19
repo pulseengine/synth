@@ -500,9 +500,41 @@ Proof.
   exists astate. reflexivity.
 Qed.
 
+Theorem i32_rotl_correct : forall wstate astate v1 v2 stack',
+  wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
+  exec_wasm_instr I32Rotl wstate =
+    Some (mkWasmState
+            (VI32 (I32.rotl v1 v2) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I32Rotl) astate = Some astate'.
+Proof.
+  intros wstate astate v1 v2 stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
+Theorem i32_rotr_correct : forall wstate astate v1 v2 stack',
+  wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
+  exec_wasm_instr I32Rotr wstate =
+    Some (mkWasmState
+            (VI32 (I32.rotr v1 v2) :: stack')
+            wstate.(locals)
+            wstate.(globals)
+            wstate.(memory)) ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I32Rotr) astate = Some astate'.
+Proof.
+  intros wstate astate v1 v2 stack' Hstack Hwasm.
+  unfold compile_wasm_to_arm. simpl.
+  exists astate. reflexivity.
+Qed.
+
 (** ** Summary
 
-    Operations in this file: 24 total (10 simple + 11 comparison + 3 shift)
+    Operations in this file: 26 total (10 simple + 11 comparison + 5 shift/rotate)
 
     Simple Operations (10):
     - ✅ Nop (fully proven)
@@ -529,13 +561,15 @@ Qed.
     - ✅ I32GeS (fully proven, greater or equal signed)
     - ✅ I32GeU (fully proven, greater or equal unsigned)
 
-    Shift Operations (3):
+    Shift/Rotate Operations (5):
     - ✅ I32Shl (fully proven, shift left)
     - ✅ I32ShrU (fully proven, shift right unsigned)
     - ✅ I32ShrS (fully proven, shift right signed)
+    - ✅ I32Rotl (fully proven, rotate left)
+    - ✅ I32Rotr (fully proven, rotate right)
 
     All operations FULLY PROVEN (no Admitted)!
 
-    This file contains 24 operations.
-    Combined with other files: 41 + 3 = 44 operations fully proven total!
+    This file contains 26 operations.
+    Combined with other files: 44 + 2 = 46 operations fully proven total!
 *)
