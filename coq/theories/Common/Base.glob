@@ -1,0 +1,285 @@
+DIGEST caf54996ebee019eede150b389015f1c
+FSynth.Common.Base
+R193:198 Stdlib.ZArith.ZArith <> <> lib
+R228:231 Stdlib.Lists.List <> <> lib
+R261:263 Stdlib.micromega.Lia <> <> lib
+R293:298 Stdlib.Strings.String <> <> lib
+R328:351 Stdlib.Logic.FunctionalExtensionality <> <> lib
+R361:373 Stdlib.Lists.List ListNotations <> mod
+rec 516:520 <> EqDec
+proj 540:545 <> eq_dec
+binder 523:523 <> A:1
+R563:563 Synth.Common.Base <> A:1 var
+binder 557:557 <> x:3
+binder 559:559 <> y:4
+R567:567 Corelib.Init.Specif <> ::type_scope:'{'_x_'}'_'+'_'{'_x_'}' not
+R573:577 Corelib.Init.Specif <> ::type_scope:'{'_x_'}'_'+'_'{'_x_'}' not
+R584:584 Corelib.Init.Specif <> ::type_scope:'{'_x_'}'_'+'_'{'_x_'}' not
+R569:571 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R568:568 Synth.Common.Base <> x:3 var
+R572:572 Synth.Common.Base <> y:4 var
+R579:582 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R578:578 Synth.Common.Base <> x:3 var
+R583:583 Synth.Common.Base <> y:4 var
+def 625:635 <> bind_option
+binder 638:638 <> A:6
+binder 640:640 <> B:7
+R655:660 Corelib.Init.Datatypes <> option ind
+R662:662 Synth.Common.Base <> A:6 var
+binder 651:651 <> m:8
+R671:674 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R670:670 Synth.Common.Base <> A:6 var
+R675:680 Corelib.Init.Datatypes <> option ind
+R682:682 Synth.Common.Base <> B:7 var
+binder 666:666 <> f:9
+R687:692 Corelib.Init.Datatypes <> option ind
+R694:694 Synth.Common.Base <> B:7 var
+R707:707 Synth.Common.Base <> m:8 var
+R718:721 Corelib.Init.Datatypes <> Some constr
+R728:728 Synth.Common.Base <> f:9 var
+R736:739 Corelib.Init.Datatypes <> None constr
+R744:747 Corelib.Init.Datatypes <> None constr
+R780:790 Synth.Common.Base <> bind_option def
+not 766:766 <> :::x_'>>='_x
+def 844:853 <> ret_option
+binder 856:856 <> A:11
+R871:871 Synth.Common.Base <> A:11 var
+binder 867:867 <> x:12
+R876:881 Corelib.Init.Datatypes <> option ind
+R883:883 Synth.Common.Base <> A:11 var
+R888:891 Corelib.Init.Datatypes <> Some constr
+R893:893 Synth.Common.Base <> x:12 var
+ind 949:954 <> result
+constr 981:982 <> Ok
+constr 1004:1008 <> Error
+binder 957:957 <> A:13
+R987:990 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R986:986 Synth.Common.Base <> A:13 var
+R991:996 Synth.Common.Base <> result:14 ind
+R998:998 Synth.Common.Base <> A:13 var
+R1018:1021 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1012:1017 Stdlib.Strings.String <> string ind
+R1022:1027 Synth.Common.Base <> result:14 ind
+R1029:1029 Synth.Common.Base <> A:13 var
+scheme 949:954 <> result_rect
+scheme 949:954 <> result_ind
+scheme 949:954 <> result_rec
+scheme 949:954 <> result_sind
+R1043:1044 Synth.Common.Base <> Ok constr
+R1043:1044 Synth.Common.Base <> Ok constr
+R1061:1065 Synth.Common.Base <> Error constr
+R1061:1065 Synth.Common.Base <> Error constr
+def 1084:1094 <> bind_result
+binder 1097:1097 <> A:16
+binder 1099:1099 <> B:17
+R1114:1119 Synth.Common.Base <> result ind
+R1121:1121 Synth.Common.Base <> A:16 var
+binder 1110:1110 <> m:18
+R1130:1133 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1129:1129 Synth.Common.Base <> A:16 var
+R1134:1139 Synth.Common.Base <> result ind
+R1141:1141 Synth.Common.Base <> B:17 var
+binder 1125:1125 <> f:19
+R1146:1151 Synth.Common.Base <> result ind
+R1153:1153 Synth.Common.Base <> B:17 var
+R1166:1166 Synth.Common.Base <> m:18 var
+R1177:1178 Synth.Common.Base <> Ok constr
+R1185:1185 Synth.Common.Base <> f:19 var
+R1193:1197 Synth.Common.Base <> Error constr
+R1206:1210 Synth.Common.Base <> Error constr
+R1248:1258 Synth.Common.Base <> bind_result def
+not 1233:1233 <> :::x_'>>=r'_x
+def 1312:1321 <> ret_result
+binder 1324:1324 <> A:21
+R1339:1339 Synth.Common.Base <> A:21 var
+binder 1335:1335 <> x:22
+R1344:1349 Synth.Common.Base <> result ind
+R1351:1351 Synth.Common.Base <> A:21 var
+R1356:1357 Synth.Common.Base <> Ok constr
+R1359:1359 Synth.Common.Base <> x:22 var
+def 1446:1451 <> update
+binder 1454:1454 <> A:23
+binder 1456:1456 <> B:24
+R1468:1472 Synth.Common.Base <> EqDec class
+R1474:1474 Synth.Common.Base <> A:23 var
+binder 1468:1474 <> H:25
+R1483:1486 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1482:1482 Synth.Common.Base <> A:23 var
+R1487:1487 Synth.Common.Base <> B:24 var
+binder 1478:1478 <> f:26
+R1495:1495 Synth.Common.Base <> A:23 var
+binder 1491:1491 <> x:27
+R1503:1503 Synth.Common.Base <> B:24 var
+binder 1499:1499 <> v:28
+R1509:1512 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1508:1508 Synth.Common.Base <> A:23 var
+R1513:1513 Synth.Common.Base <> B:24 var
+binder 1524:1524 <> y:29
+R1532:1537 Synth.Common.Base <> eq_dec meth
+R1541:1541 Synth.Common.Base <> y:29 var
+R1539:1539 Synth.Common.Base <> x:27 var
+R1555:1555 Synth.Common.Base <> f:26 var
+R1557:1557 Synth.Common.Base <> y:29 var
+R1548:1548 Synth.Common.Base <> v:28 var
+R1590:1595 Synth.Common.Base <> update def
+not 1570:1570 <> :::x_'['_x_'|->'_x_']'
+prf 1661:1669 <> update_eq
+binder 1681:1681 <> A:30
+binder 1683:1683 <> B:31
+R1695:1699 Synth.Common.Base <> EqDec class
+R1701:1701 Synth.Common.Base <> A:30 var
+binder 1695:1701 <> H:32
+R1710:1713 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1709:1709 Synth.Common.Base <> A:30 var
+R1714:1714 Synth.Common.Base <> B:31 var
+binder 1705:1705 <> f:33
+R1722:1722 Synth.Common.Base <> A:30 var
+binder 1718:1718 <> x:34
+R1730:1730 Synth.Common.Base <> B:31 var
+binder 1726:1726 <> v:35
+R1751:1753 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1736:1736 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R1738:1739 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R1741:1745 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R1747:1750 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R1737:1737 Synth.Common.Base <> f:33 var
+R1740:1740 Synth.Common.Base <> x:34 var
+R1746:1746 Synth.Common.Base <> v:35 var
+R1750:1750 Synth.Common.Base <> x:34 var
+R1754:1754 Synth.Common.Base <> v:35 var
+R1781:1786 Synth.Common.Base <> update def
+R1801:1806 Synth.Common.Base <> eq_dec meth
+R1801:1806 Synth.Common.Base <> eq_dec meth
+prf 1859:1868 <> update_neq
+binder 1880:1880 <> A:36
+binder 1882:1882 <> B:37
+R1894:1898 Synth.Common.Base <> EqDec class
+R1900:1900 Synth.Common.Base <> A:36 var
+binder 1894:1900 <> H:38
+R1909:1912 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1908:1908 Synth.Common.Base <> A:36 var
+R1913:1913 Synth.Common.Base <> B:37 var
+binder 1904:1904 <> f:39
+R1923:1923 Synth.Common.Base <> A:36 var
+binder 1917:1917 <> x:40
+binder 1919:1919 <> y:41
+R1931:1931 Synth.Common.Base <> B:37 var
+binder 1927:1927 <> v:42
+R1943:1948 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1938:1941 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R1937:1937 Synth.Common.Base <> x:40 var
+R1942:1942 Synth.Common.Base <> y:41 var
+R1964:1966 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1949:1949 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R1951:1952 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R1954:1958 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R1960:1963 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R1950:1950 Synth.Common.Base <> f:39 var
+R1953:1953 Synth.Common.Base <> x:40 var
+R1959:1959 Synth.Common.Base <> v:42 var
+R1963:1963 Synth.Common.Base <> y:41 var
+R1967:1967 Synth.Common.Base <> f:39 var
+R1969:1969 Synth.Common.Base <> y:41 var
+R1996:2001 Synth.Common.Base <> update def
+R2016:2021 Synth.Common.Base <> eq_dec meth
+R2016:2021 Synth.Common.Base <> eq_dec meth
+prf 2074:2086 <> update_shadow
+binder 2098:2098 <> A:43
+binder 2100:2100 <> B:44
+R2112:2116 Synth.Common.Base <> EqDec class
+R2118:2118 Synth.Common.Base <> A:43 var
+binder 2112:2118 <> H:45
+R2127:2130 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2126:2126 Synth.Common.Base <> A:43 var
+R2131:2131 Synth.Common.Base <> B:44 var
+binder 2122:2122 <> f:46
+R2139:2139 Synth.Common.Base <> A:43 var
+binder 2135:2135 <> x:47
+R2151:2151 Synth.Common.Base <> B:44 var
+binder 2143:2144 <> v1:48
+binder 2146:2147 <> v2:49
+R2182:2184 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2157:2157 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2170:2172 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2174:2178 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2181:2181 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2159:2160 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2162:2166 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2169:2169 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2158:2158 Synth.Common.Base <> f:46 var
+R2161:2161 Synth.Common.Base <> x:47 var
+R2167:2168 Synth.Common.Base <> v1:48 var
+R2173:2173 Synth.Common.Base <> x:47 var
+R2179:2180 Synth.Common.Base <> v2:49 var
+R2186:2187 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2189:2193 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2196:2196 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2185:2185 Synth.Common.Base <> f:46 var
+R2188:2188 Synth.Common.Base <> x:47 var
+R2194:2195 Synth.Common.Base <> v2:49 var
+R2243:2248 Synth.Common.Base <> update def
+R2263:2268 Synth.Common.Base <> eq_dec meth
+R2263:2268 Synth.Common.Base <> eq_dec meth
+prf 2303:2316 <> update_commute
+binder 2328:2328 <> A:50
+binder 2330:2330 <> B:51
+R2342:2346 Synth.Common.Base <> EqDec class
+R2348:2348 Synth.Common.Base <> A:50 var
+binder 2342:2348 <> H:52
+R2357:2360 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2356:2356 Synth.Common.Base <> A:50 var
+R2361:2361 Synth.Common.Base <> B:51 var
+binder 2352:2352 <> f:53
+R2373:2373 Synth.Common.Base <> A:50 var
+binder 2365:2366 <> x1:54
+binder 2368:2369 <> x2:55
+R2385:2385 Synth.Common.Base <> B:51 var
+binder 2377:2378 <> v1:56
+binder 2380:2381 <> v2:57
+R2399:2404 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2393:2396 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R2391:2392 Synth.Common.Base <> x1:54 var
+R2397:2398 Synth.Common.Base <> x2:55 var
+R2432:2434 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2405:2405 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2419:2421 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2424:2428 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2431:2431 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2407:2408 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2411:2415 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2418:2418 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2406:2406 Synth.Common.Base <> f:53 var
+R2409:2410 Synth.Common.Base <> x1:54 var
+R2416:2417 Synth.Common.Base <> v1:56 var
+R2422:2423 Synth.Common.Base <> x2:55 var
+R2429:2430 Synth.Common.Base <> v2:57 var
+R2435:2435 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2449:2451 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2454:2458 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2461:2461 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2437:2438 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2441:2445 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2448:2448 Synth.Common.Base <> :::x_'['_x_'|->'_x_']' not
+R2436:2436 Synth.Common.Base <> f:53 var
+R2439:2440 Synth.Common.Base <> x2:55 var
+R2446:2447 Synth.Common.Base <> v2:57 var
+R2452:2453 Synth.Common.Base <> x1:54 var
+R2459:2460 Synth.Common.Base <> v1:56 var
+R2508:2513 Synth.Common.Base <> update def
+R2528:2533 Synth.Common.Base <> eq_dec meth
+R2552:2557 Synth.Common.Base <> eq_dec meth
+R2528:2533 Synth.Common.Base <> eq_dec meth
+R2552:2557 Synth.Common.Base <> eq_dec meth
+R2552:2557 Synth.Common.Base <> eq_dec meth
+def 2653:2656 <> byte
+R2661:2661 Corelib.Numbers.BinNums <> Z ind
+def 2676:2685 <> byte_bound
+R2689:2692 Synth.Common.Base <> byte def
+def 2714:2723 <> valid_byte
+R2730:2733 Synth.Common.Base <> byte def
+binder 2726:2726 <> b:58
+R2749:2752 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<'_x not
+R2754:2756 Stdlib.ZArith.BinInt <> ::Z_scope:x_'<='_x_'<'_x not
+R2753:2753 Synth.Common.Base <> b:58 var
+R2753:2753 Synth.Common.Base <> b:58 var
+R2757:2766 Synth.Common.Base <> byte_bound def
