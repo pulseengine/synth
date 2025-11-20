@@ -1,0 +1,8 @@
+(executable
+ (name synth_compile)
+ (modules BinNums BinPos Datatypes Specif PeanoNat PosDef NatDef BinInt Base Integers List0
+          ArmState ArmInstructions WasmValues WasmInstructions
+          Compilation synth_compile)
+ (flags (:standard -w -33 -w -27)))
+
+(copy_files ../validation/{*.ml,*.mli})
