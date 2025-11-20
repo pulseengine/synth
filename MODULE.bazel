@@ -1,9 +1,6 @@
 """
 Synth - WebAssembly Component Synthesizer for Embedded Systems
 Bazel module definition
-
-NOTE: This is a minimal configuration that can be expanded once network
-access to Bazel Central Registry is available.
 """
 
 module(
@@ -11,64 +8,46 @@ module(
     version = "0.1.0",
 )
 
-# Bazel dependencies (minimal set for now)
+# Bazel dependencies
 bazel_dep(name = "platforms", version = "0.0.10")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
+bazel_dep(name = "rules_rust", version = "0.54.1")
 
-# TODO: Add these dependencies when BCR is accessible:
-# bazel_dep(name = "rules_rust", version = "0.54.1")
-# bazel_dep(name = "rules_cc", version = "0.0.13")
-# bazel_dep(name = "rules_python", version = "0.38.0")
+# Rust toolchains
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2021",
+    versions = ["1.81.0"],
+)
+use_repo(rust, "rust_toolchains")
+register_toolchains("@rust_toolchains//:all")
 
+# Rust crates repository
+crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
+
+# Core dependencies from Cargo.toml
+crate.spec(package = "anyhow", version = "1.0")
+crate.spec(package = "wasmparser", version = "0.121")
+crate.spec(package = "wasm-encoder", version = "0.39")
+crate.spec(package = "wat", version = "1.0")
+crate.spec(package = "wasmprinter", version = "0.2")
+
+# Verification dependencies
+crate.spec(package = "z3", version = "0.12", features = ["static-link-z3"])
+
+# Testing dependencies
+crate.spec(package = "proptest", version = "1.4")
+crate.spec(package = "quickcheck", version = "1.0")
+
+crate.from_specs()
+use_repo(crate, "crates")
+
+# TODO: Add when rules_wasm_component is ready
 # PulseEngine WebAssembly Component Model rules
-# TODO: Enable once rules_wasm_component repository is available and configured
 # bazel_dep(name = "rules_wasm_component", version = "0.1.0")
 # git_override(
 #     module_name = "rules_wasm_component",
 #     remote = "https://github.com/pulseengine/rules_wasm_component.git",
 #     commit = "<specific-commit-hash>",
 # )
-
-# Rust toolchains
-# TODO: Enable once rules_rust is available
-# rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-# rust.toolchain(
-#     edition = "2021",
-#     versions = ["1.81.0"],
-# )
-# use_repo(rust, "rust_toolchains")
-# register_toolchains("@rust_toolchains//:all")
-
-# Rust crates repository
-# TODO: Enable once rules_rust is available
-# crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
-#
-# # Core dependencies from Cargo.toml
-# crate.spec(package = "anyhow", version = "1.0")
-# crate.spec(package = "wasmparser", version = "0.121")
-# crate.spec(package = "wasm-encoder", version = "0.39")
-# crate.spec(package = "wat", version = "1.0")
-# crate.spec(package = "wasmprinter", version = "0.2")
-# crate.spec(package = "z3", version = "0.12", features = ["static-link-z3"])
-# crate.spec(package = "proptest", version = "1.4")
-# crate.spec(package = "quickcheck", version = "1.0")
-# crate.from_specs()
-# use_repo(crate, "crates")
-
-# ARM toolchain for embedded targets
-# TODO: Add once available
-# bazel_dep(name = "toolchains_arm_gnu", version = "1.0.0", dev_dependency = True)
-
-# Python for build scripts and Coq extraction
-# TODO: Enable once rules_python is available
-# python = use_extension("@rules_python//python/extensions:python.bzl", "python")
-# python.toolchain(
-#     python_version = "3.11",
-# )
-
-# OCaml for Sail toolchain (needed for ARM ASL processing)
-# TODO: Add custom OCaml rules - see //bazel/ocaml
-
-# Register toolchains
-# TODO: Enable once toolchains are configured
 # register_toolchains("@rules_wasm_component//toolchains:all")

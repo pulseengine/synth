@@ -9,6 +9,15 @@ build --incompatible_strict_action_env
 build --verbose_failures
 build --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 
+# Network configuration (git gateway proxy)
+# These are set by the environment but Bazel needs them explicitly
+build --action_env=HTTP_PROXY
+build --action_env=HTTPS_PROXY
+build --action_env=NO_PROXY
+build --action_env=http_proxy
+build --action_env=https_proxy
+build --action_env=no_proxy
+
 # Use remote cache if available (optional - configure later)
 # build --remote_cache=grpc://localhost:9092
 
