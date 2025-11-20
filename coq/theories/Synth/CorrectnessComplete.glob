@@ -1,43 +1,46 @@
-DIGEST b85b457fb887198d7b8e00e114590cb1
+DIGEST 8cb469815a05f840de009af147d82170
 FSynth.Synth.CorrectnessComplete
 R446:451 Stdlib.QArith.QArith <> <> lib
 R469:491 Synth.Synth.Correctness <> <> lib
 R509:537 Synth.Synth.CorrectnessSimple <> <> lib
 R555:580 Synth.Synth.CorrectnessI32 <> <> lib
 R598:623 Synth.Synth.CorrectnessI64 <> <> lib
-R641:674 Synth.Synth.CorrectnessConversions <> <> lib
-R692:728 Synth.Synth.CorrectnessI64Comparisons <> <> lib
-mod 2587:2601 <> ProgressMetrics
-def 2618:2633 ProgressMetrics total_operations
-R2637:2639 Corelib.Init.Datatypes <> nat ind
-def 2663:2674 ProgressMetrics fully_proven
-R2678:2680 Corelib.Init.Datatypes <> nat ind
-def 3321:3339 ProgressMetrics structured_admitted
-R3343:3345 Corelib.Init.Datatypes <> nat ind
-def 3585:3610 ProgressMetrics theorem_statements_defined
-R3614:3616 Corelib.Init.Datatypes <> nat ind
-def 4175:4195 ProgressMetrics completion_percentage
-R4199:4199 Stdlib.QArith.QArith_base <> Q rec
-R4206:4208 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
-def 4289:4307 ProgressMetrics coverage_percentage
-R4311:4311 Stdlib.QArith.QArith_base <> Q rec
-R4319:4321 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
-R4412:4426 Synth.Synth.CorrectnessComplete ProgressMetrics <> mod
-mod 10272:10281 <> Statistics
-def 10349:10360 Statistics lines_of_coq
-R10364:10366 Corelib.Init.Datatypes <> nat ind
-def 10440:10451 Statistics theory_files
-R10455:10457 Corelib.Init.Datatypes <> nat ind
-def 10505:10519 Statistics theorems_stated
-R10523:10525 Corelib.Init.Datatypes <> nat ind
-def 10580:10594 Statistics theorems_proven
-R10598:10600 Corelib.Init.Datatypes <> nat ind
-def 10646:10659 Statistics hours_invested
-R10663:10665 Corelib.Init.Datatypes <> nat ind
-def 10736:10747 Statistics ops_per_hour
-R10751:10751 Stdlib.QArith.QArith_base <> Q rec
-R10759:10761 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
-def 10844:10858 Statistics proven_per_hour
-R10862:10862 Stdlib.QArith.QArith_base <> Q rec
-R10869:10871 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
-R10906:10915 Synth.Synth.CorrectnessComplete Statistics <> mod
+R641:677 Synth.Synth.CorrectnessI64Comparisons <> <> lib
+R695:728 Synth.Synth.CorrectnessConversions <> <> lib
+R746:771 Synth.Synth.CorrectnessF32 <> <> lib
+R789:814 Synth.Synth.CorrectnessF64 <> <> lib
+R832:860 Synth.Synth.CorrectnessMemory <> <> lib
+mod 2719:2733 <> ProgressMetrics
+def 2750:2765 ProgressMetrics total_operations
+R2769:2771 Corelib.Init.Datatypes <> nat ind
+def 2795:2806 ProgressMetrics fully_proven
+R2810:2812 Corelib.Init.Datatypes <> nat ind
+def 3453:3471 ProgressMetrics structured_admitted
+R3475:3477 Corelib.Init.Datatypes <> nat ind
+def 3820:3845 ProgressMetrics theorem_statements_defined
+R3849:3851 Corelib.Init.Datatypes <> nat ind
+def 4739:4759 ProgressMetrics completion_percentage
+R4763:4763 Stdlib.QArith.QArith_base <> Q rec
+R4770:4772 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
+def 4853:4871 ProgressMetrics coverage_percentage
+R4875:4875 Stdlib.QArith.QArith_base <> Q rec
+R4883:4885 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
+R4965:4979 Synth.Synth.CorrectnessComplete ProgressMetrics <> mod
+mod 10825:10834 <> Statistics
+def 10902:10913 Statistics lines_of_coq
+R10917:10919 Corelib.Init.Datatypes <> nat ind
+def 10993:11004 Statistics theory_files
+R11008:11010 Corelib.Init.Datatypes <> nat ind
+def 11058:11072 Statistics theorems_stated
+R11076:11078 Corelib.Init.Datatypes <> nat ind
+def 11133:11147 Statistics theorems_proven
+R11151:11153 Corelib.Init.Datatypes <> nat ind
+def 11199:11212 Statistics hours_invested
+R11216:11218 Corelib.Init.Datatypes <> nat ind
+def 11289:11300 Statistics ops_per_hour
+R11304:11304 Stdlib.QArith.QArith_base <> Q rec
+R11312:11314 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
+def 11397:11411 Statistics proven_per_hour
+R11415:11415 Stdlib.QArith.QArith_base <> Q rec
+R11422:11424 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
+R11459:11468 Synth.Synth.CorrectnessComplete Statistics <> mod
