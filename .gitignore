@@ -49,3 +49,4 @@ loom/
 
 # Bazel local configuration (environment-specific)
 .bazelrc.local
+vendor.log
