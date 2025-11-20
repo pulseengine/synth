@@ -5,3 +5,7 @@
 (executable
  (name validation_suite)
  (flags (:standard -w -33 -w -27)))
+
+(executable
+ (name comprehensive_suite)
+ (flags (:standard -w -33 -w -27)))
