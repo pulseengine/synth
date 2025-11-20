@@ -209,18 +209,39 @@ module I32 =
 
   (** val clz : int -> int **)
 
-  let clz =
-    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I32.clz)"
+  let clz n =
+    let u = unsigned n in
+    if Z.eqb u 0 then repr 32 else
+      let rec loop count shifted =
+        if count >= 32 then 32
+        else if Z.ltb shifted 0 then count  (* Check sign bit *)
+        else loop (count + 1) (Z.shiftl shifted 1)
+      in
+      repr (loop 0 u)
 
   (** val ctz : int -> int **)
 
-  let ctz =
-    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I32.ctz)"
+  let ctz n =
+    let u = unsigned n in
+    if Z.eqb u 0 then repr 32 else
+      let rec loop count val_ =
+        if count >= 32 then 32
+        else if Z.eqb (Z.coq_land val_ 1) 1 then count
+        else loop (count + 1) (Z.shiftr val_ 1)
+      in
+      repr (loop 0 u)
 
   (** val popcnt : int -> int **)
 
-  let popcnt =
-    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I32.popcnt)"
+  let popcnt n =
+    let u = unsigned n in
+    let rec loop count val_ bits_left =
+      if bits_left <= 0 then count
+      else
+        let bit = Z.coq_land val_ 1 in
+        loop (Z.add count bit) (Z.shiftr val_ 1) (bits_left - 1)
+    in
+    repr (loop 0 u 32)
  end
 
 module I64 =
@@ -375,18 +396,39 @@ module I64 =
 
   (** val clz : int -> int **)
 
-  let clz =
-    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I64.clz)"
+  let clz n =
+    let u = unsigned n in
+    if Z.eqb u 0 then repr 64 else
+      let rec loop count shifted =
+        if count >= 64 then 64
+        else if Z.ltb shifted 0 then count  (* Check sign bit *)
+        else loop (count + 1) (Z.shiftl shifted 1)
+      in
+      repr (loop 0 u)
 
   (** val ctz : int -> int **)
 
-  let ctz =
-    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I64.ctz)"
+  let ctz n =
+    let u = unsigned n in
+    if Z.eqb u 0 then repr 64 else
+      let rec loop count val_ =
+        if count >= 64 then 64
+        else if Z.eqb (Z.coq_land val_ 1) 1 then count
+        else loop (count + 1) (Z.shiftr val_ 1)
+      in
+      repr (loop 0 u)
 
   (** val popcnt : int -> int **)
 
-  let popcnt =
-    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I64.popcnt)"
+  let popcnt n =
+    let u = unsigned n in
+    let rec loop count val_ bits_left =
+      if bits_left <= 0 then count
+      else
+        let bit = Z.coq_land val_ 1 in
+        loop (Z.add count bit) (Z.shiftr val_ 1) (bits_left - 1)
+    in
+    repr (loop 0 u 64)
 
   (** val zero : int **)
 
