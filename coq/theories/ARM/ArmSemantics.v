@@ -8,6 +8,7 @@
 
 From Stdlib Require Import ZArith.
 From Stdlib Require Import List.
+From Stdlib Require Import Bool.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
@@ -15,6 +16,7 @@ Require Import Synth.ARM.ArmInstructions.
 
 Import ListNotations.
 Open Scope Z_scope.
+Open Scope bool_scope.
 
 (** ** Flag Computation Helpers *)
 
@@ -168,6 +170,70 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       else
         let v := eval_operand2 op2 s in
         Some (set_reg s rd v)
+
+  | MOVLT rd op2 =>
+      (* Less than (signed): N != V *)
+      if Bool.eqb s.(flags).(flag_n) s.(flags).(flag_v) then
+        Some s
+      else
+        let v := eval_operand2 op2 s in
+        Some (set_reg s rd v)
+
+  | MOVLE rd op2 =>
+      (* Less or equal (signed): Z set OR N != V *)
+      if s.(flags).(flag_z) || negb (Bool.eqb s.(flags).(flag_n) s.(flags).(flag_v)) then
+        let v := eval_operand2 op2 s in
+        Some (set_reg s rd v)
+      else
+        Some s
+
+  | MOVGT rd op2 =>
+      (* Greater than (signed): Z clear AND N == V *)
+      if negb s.(flags).(flag_z) && Bool.eqb s.(flags).(flag_n) s.(flags).(flag_v) then
+        let v := eval_operand2 op2 s in
+        Some (set_reg s rd v)
+      else
+        Some s
+
+  | MOVGE rd op2 =>
+      (* Greater or equal (signed): N == V *)
+      if Bool.eqb s.(flags).(flag_n) s.(flags).(flag_v) then
+        let v := eval_operand2 op2 s in
+        Some (set_reg s rd v)
+      else
+        Some s
+
+  | MOVLO rd op2 =>
+      (* Lower (unsigned): C clear *)
+      if s.(flags).(flag_c) then
+        Some s
+      else
+        let v := eval_operand2 op2 s in
+        Some (set_reg s rd v)
+
+  | MOVLS rd op2 =>
+      (* Lower or same (unsigned): C clear OR Z set *)
+      if negb s.(flags).(flag_c) || s.(flags).(flag_z) then
+        let v := eval_operand2 op2 s in
+        Some (set_reg s rd v)
+      else
+        Some s
+
+  | MOVHI rd op2 =>
+      (* Higher (unsigned): C set AND Z clear *)
+      if s.(flags).(flag_c) && negb s.(flags).(flag_z) then
+        let v := eval_operand2 op2 s in
+        Some (set_reg s rd v)
+      else
+        Some s
+
+  | MOVHS rd op2 =>
+      (* Higher or same (unsigned): C set *)
+      if s.(flags).(flag_c) then
+        let v := eval_operand2 op2 s in
+        Some (set_reg s rd v)
+      else
+        Some s
 
   | MOVW rd imm =>
       (* Move 16-bit immediate to lower 16 bits *)

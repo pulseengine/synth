@@ -56,6 +56,14 @@ Inductive arm_instr : Type :=
   (* Conditional move operations *)
   | MOVEQ : arm_reg -> operand2 -> arm_instr  (* Move if equal (Z=1) *)
   | MOVNE : arm_reg -> operand2 -> arm_instr  (* Move if not equal (Z=0) *)
+  | MOVLT : arm_reg -> operand2 -> arm_instr  (* Move if less than (signed) *)
+  | MOVLE : arm_reg -> operand2 -> arm_instr  (* Move if less or equal (signed) *)
+  | MOVGT : arm_reg -> operand2 -> arm_instr  (* Move if greater than (signed) *)
+  | MOVGE : arm_reg -> operand2 -> arm_instr  (* Move if greater or equal (signed) *)
+  | MOVLO : arm_reg -> operand2 -> arm_instr  (* Move if lower (unsigned) *)
+  | MOVLS : arm_reg -> operand2 -> arm_instr  (* Move if lower or same (unsigned) *)
+  | MOVHI : arm_reg -> operand2 -> arm_instr  (* Move if higher (unsigned) *)
+  | MOVHS : arm_reg -> operand2 -> arm_instr  (* Move if higher or same (unsigned) *)
 
   (* Comparison operations *)
   | CMP : arm_reg -> operand2 -> arm_instr
