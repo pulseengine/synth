@@ -13,6 +13,22 @@ bazel_dep(name = "platforms", version = "0.0.10")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
 bazel_dep(name = "rules_rust", version = "0.54.1")
 
+# Local overrides to bypass BCR proxy issues
+local_path_override(
+    module_name = "platforms",
+    path = "/root/bazel_local_modules/platforms",
+)
+
+local_path_override(
+    module_name = "bazel_skylib",
+    path = "/root/bazel_local_modules/bazel_skylib",
+)
+
+local_path_override(
+    module_name = "rules_rust",
+    path = "/root/bazel_local_modules/rules_rust",
+)
+
 # Rust toolchains
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
@@ -51,3 +67,18 @@ use_repo(crate, "crates")
 #     commit = "<specific-commit-hash>",
 # )
 # register_toolchains("@rules_wasm_component//toolchains:all")
+
+# TODO: Enable when network allows (proxy issue in Claude Code environment)
+# OBazl - OCaml rules for Bazel (for Coq-extracted compiler code)
+# bazel_dep(name = "rules_ocaml", version = "3.0.0")
+#
+# ocaml = use_extension("@rules_ocaml//ocaml:extensions.bzl", "ocaml")
+# ocaml.toolchain(version = "5.1.1")  # OCaml 5.1+ recommended
+# use_repo(ocaml, "ocaml_toolchains")
+# register_toolchains("@ocaml_toolchains//:all")
+#
+# # OPAM integration for OCaml packages (Sail dependencies)
+# opam = use_extension("@rules_ocaml//opam:extensions.bzl", "opam")
+# opam.package(name = "zarith", version = "1.13")     # Z3 bindings
+# opam.package(name = "menhir", version = "20231231") # Parser generator
+# use_repo(opam, "opam")
