@@ -1,10 +1,10 @@
 open Integers
 
 type wasm_val =
-| VI32 of I32.int
-| VI64 of I64.int
-| VF32 of I32.int
-| VF64 of I64.int
+| VI32 of int
+| VI64 of int
+| VF32 of int
+| VF64 of int
 
 type wasm_stack = wasm_val list
 

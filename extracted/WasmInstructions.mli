@@ -1,8 +1,8 @@
 open Integers
 
 type wasm_instr =
-| I32Const of I32.int
-| I64Const of I64.int
+| I32Const of int
+| I64Const of int
 | I32Add
 | I32Sub
 | I32Mul
