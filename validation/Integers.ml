@@ -210,28 +210,17 @@ module I32 =
   (** val clz : int -> int **)
 
   let clz =
-  let rec count_leading_zeros n acc =
-    if acc >= 32 then 32
-    else if (n land (1 lsl (31 - acc))) <> 0 then acc
-    else count_leading_zeros n (acc + 1)
-  in count_leading_zeros
+    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I32.clz)"
 
   (** val ctz : int -> int **)
 
   let ctz =
-  let rec count_trailing_zeros n acc =
-    if acc >= 32 then 32
-    else if (n land (1 lsl acc)) <> 0 then acc
-    else count_trailing_zeros n (acc + 1)
-  in count_trailing_zeros
+    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I32.ctz)"
 
   (** val popcnt : int -> int **)
 
   let popcnt =
-  let rec count_bits n acc =
-    if n = 0 then acc
-    else count_bits (n lsr 1) (acc + (n land 1))
-  in count_bits
+    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I32.popcnt)"
  end
 
 module I64 =
@@ -387,55 +376,20 @@ module I64 =
   (** val clz : int -> int **)
 
   let clz =
-  let rec count_leading_zeros n acc =
-    if acc >= 64 then 64
-    else if (n land (1 lsl (63 - acc))) <> 0 then acc
-    else count_leading_zeros n (acc + 1)
-  in count_leading_zeros
+    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I64.clz)"
 
   (** val ctz : int -> int **)
 
   let ctz =
-  let rec count_trailing_zeros n acc =
-    if acc >= 64 then 64
-    else if (n land (1 lsl acc)) <> 0 then acc
-    else count_trailing_zeros n (acc + 1)
-  in count_trailing_zeros
+    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I64.ctz)"
 
   (** val popcnt : int -> int **)
 
   let popcnt =
-  let rec count_bits n acc =
-    if n = 0 then acc
-    else count_bits (n lsr 1) (acc + (n land 1))
-  in count_bits
+    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I64.popcnt)"
 
   (** val zero : int **)
 
   let zero =
     repr 0
  end
-
-(* Implement the axioms that were left undefined *)
-let clz x =
-  let rec count_leading_zeros n acc =
-    if acc >= 32 then 32
-    else if (n land (1 lsl (31 - acc))) <> 0 then acc
-    else count_leading_zeros n (acc + 1)
-  in
-  count_leading_zeros x 0
-
-let ctz x =
-  let rec count_trailing_zeros n acc =
-    if acc >= 32 then 32
-    else if (n land (1 lsl acc)) <> 0 then acc
-    else count_trailing_zeros n (acc + 1)
-  in
-  count_trailing_zeros x 0
-
-let popcnt x =
-  let rec count_bits n acc =
-    if n = 0 then acc
-    else count_bits (n lsr 1) (acc + (n land 1))
-  in
-  count_bits x 0
