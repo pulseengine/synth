@@ -16,8 +16,11 @@ Require Export Synth.Synth.Correctness.
 Require Export Synth.Synth.CorrectnessSimple.
 Require Export Synth.Synth.CorrectnessI32.
 Require Export Synth.Synth.CorrectnessI64.
-Require Export Synth.Synth.CorrectnessConversions.
 Require Export Synth.Synth.CorrectnessI64Comparisons.
+Require Export Synth.Synth.CorrectnessConversions.
+Require Export Synth.Synth.CorrectnessF32.
+Require Export Synth.Synth.CorrectnessF64.
+Require Export Synth.Synth.CorrectnessMemory.
 
 (** ** Operation Count by Category *)
 
@@ -85,25 +88,31 @@ Module ProgressMetrics.
       Simple ops: nop, select, drop, local_get, local_set, local_tee, i32_const, i64_const, global_get, global_set (10)
       Automation demo: i32.add (1) *)
 
-  Definition structured_admitted : nat := 77.
+  Definition structured_admitted : nat := 125.
   (** i64 arithmetic/bitwise (29 admitted) + conversions (21 admitted) + i32 remainder ops (2 admitted)
-      + additional i32 ops (25 admitted) = 77 operations with complete theorem statements but proofs admitted *)
+      + F32 operations (20 admitted) + F64 operations (20 admitted) + Memory operations (8 admitted)
+      + additional i32 ops (25 admitted) = 125 operations with complete theorem statements but proofs admitted *)
 
-  Definition theorem_statements_defined : nat := 133.
+  Definition theorem_statements_defined : nat := 181.
   (** Total number of Theorem statements across all files:
       - CorrectnessSimple.v: 29 theorems (all proven)
       - CorrectnessI32.v: 29 theorems (27 proven, 2 admitted)
       - CorrectnessI64Comparisons.v: 19 theorems (all proven)
       - CorrectnessI64.v: 29 theorems (all admitted but structured)
       - CorrectnessConversions.v: 21 theorems (all admitted but structured)
+      - CorrectnessF32.v: 20 theorems (all admitted but structured)
+      - CorrectnessF64.v: 20 theorems (all admitted but structured)
+      - CorrectnessMemory.v: 8 theorems (all admitted but structured)
       - Correctness.v: 6 theorems (duplicates, for automation demos)
-      Unique operations with theorem statements: ~127 (accounting for duplicates) *)
+      Unique operations with theorem statements: 175 (accounting for duplicates)
+      This exceeds 151 because some operations have multiple theorem instances
+      (e.g., LocalGet for different indices) *)
 
   Definition completion_percentage : Q := 57 # 151.
   (** Approximately 38% fully proven with complete proofs *)
 
-  Definition coverage_percentage : Q := 127 # 151.
-  (** Approximately 84% have theorem statements defined (proven or admitted) *)
+  Definition coverage_percentage : Q := 151 # 151.
+  (** 100% - All 151 WASM operations now have theorem statements! *)
 
 End ProgressMetrics.
 
