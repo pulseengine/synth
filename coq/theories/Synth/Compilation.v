@@ -116,9 +116,12 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
 
   (* i32 comparison *)
   | I32Eqz =>
-      (* Simplified: comparison handled at WASM level *)
-      (* Real implementation would use: CMP R0, #0; MOVEQ R0, #1; MOVNE R0, #0 *)
-      []
+      (* Test if R0 is zero: returns 1 if zero, 0 otherwise *)
+      (* CMP R0, #0 sets Z flag if R0 == 0 *)
+      (* Then set R0=0, and conditionally set R0=1 if Z flag is set *)
+      [CMP R0 (Imm I32.zero);      (* Compare R0 with 0, sets Z flag *)
+       MOV R0 (Imm I32.zero);      (* Set R0 to 0 (assume false) *)
+       MOVEQ R0 (Imm I32.one)]     (* If Z flag set (was 0), set R0 to 1 *)
 
   | I32Eq =>
       (* Simplified: comparison handled at WASM level *)

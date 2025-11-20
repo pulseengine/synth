@@ -260,9 +260,23 @@ let test_i32_comparisons () =
   (* Note: Comparison operations likely need special handling *)
   (* For now, just test that they compile *)
 
-  test "i32.eqz compiles" (fun () ->
-    let arm = Compilation.compile_wasm_program [WasmInstructions.I32Eqz] in
-    assert (List.length arm >= 0)
+  (* i32.eqz - semantic validation *)
+  test "i32.eqz (0 → 1)" (fun () ->
+    let setup s = set_reg s ArmState.R0 0 in
+    let state = compile_and_execute [WasmInstructions.I32Eqz] setup in
+    assert_reg_eq state ArmState.R0 1  (* 0 is zero, so result is 1 *)
+  );
+
+  test "i32.eqz (42 → 0)" (fun () ->
+    let setup s = set_reg s ArmState.R0 42 in
+    let state = compile_and_execute [WasmInstructions.I32Eqz] setup in
+    assert_reg_eq state ArmState.R0 0  (* 42 is not zero, so result is 0 *)
+  );
+
+  test "i32.eqz (-1 → 0)" (fun () ->
+    let setup s = set_reg s ArmState.R0 (-1) in
+    let state = compile_and_execute [WasmInstructions.I32Eqz] setup in
+    assert_reg_eq state ArmState.R0 0  (* -1 is not zero, so result is 0 *)
   );
 
   test "i32.eq compiles" (fun () ->
