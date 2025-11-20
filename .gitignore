@@ -25,3 +25,23 @@ target
 **/.z3-trace
 external/sail-arm/
 _build/
+
+# Coq compilation artifacts
+*.aux
+*.glob
+*.vo
+*.vok
+*.vos
+
+# OCaml compilation artifacts
+*.cmi
+*.cmo
+*.cmx
+*.o
+*.cma
+*.cmxa
+*.a
+
+# Extracted files in wrong location
+coq/theories/*.ml
+coq/theories/*.mli
