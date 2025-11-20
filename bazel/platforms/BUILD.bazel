@@ -1,0 +1,78 @@
+"""
+Platform definitions for Synth cross-compilation targets
+"""
+
+load("@platforms//os:os.bzl", "os")
+load("@platforms//cpu:cpu.bzl", "cpu")
+
+package(default_visibility = ["//visibility:public"])
+
+# Native host platform (x86_64 Linux)
+platform(
+    name = "linux_x86_64",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+)
+
+# ARM Cortex-M4F (STM32F4, nRF52840)
+# Thumb-2 instruction set, hardware FPU
+platform(
+    name = "cortex_m4",
+    constraint_values = [
+        "@platforms//os:none",  # Bare-metal
+        "@platforms//cpu:armv7e-m",
+        "//bazel/constraints:cortex_m4",
+        "//bazel/constraints:thumbv7em",
+        "//bazel/constraints:fpu_fpv4_sp_d16",
+    ],
+)
+
+# ARM Cortex-M33 (nRF9160, STM32L5)
+# ARMv8-M, TrustZone support
+platform(
+    name = "cortex_m33",
+    constraint_values = [
+        "@platforms//os:none",
+        "@platforms//cpu:armv8-m",
+        "//bazel/constraints:cortex_m33",
+        "//bazel/constraints:thumbv8m",
+        "//bazel/constraints:fpu_fpv5_sp_d16",
+    ],
+)
+
+# RISC-V 32-bit (RV32IMAC)
+# For comparison and alternate target
+platform(
+    name = "riscv32",
+    constraint_values = [
+        "@platforms//os:none",
+        "@platforms//cpu:riscv32",
+        "//bazel/constraints:rv32imac",
+    ],
+)
+
+# WebAssembly (wasm32-unknown-unknown)
+# For Component Model testing
+platform(
+    name = "wasm32",
+    constraint_values = [
+        "@platforms//os:wasi",
+        "@platforms//cpu:wasm32",
+        "//bazel/constraints:wasm_component_model",
+    ],
+)
+
+# ASIL D certified target (ARM Cortex-M4 with strict settings)
+platform(
+    name = "asil_d_cortex_m4",
+    constraint_values = [
+        "@platforms//os:none",
+        "@platforms//cpu:armv7e-m",
+        "//bazel/constraints:cortex_m4",
+        "//bazel/constraints:asil_d",
+        "//bazel/constraints:misra_c_2012",
+    ],
+    parents = [":cortex_m4"],
+)
