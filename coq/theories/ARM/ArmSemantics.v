@@ -153,6 +153,22 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       let v := eval_operand2 op2 s in
       Some (set_reg s rd v)
 
+  | MOVEQ rd op2 =>
+      (* Conditional move: only move if Z flag is set (equal) *)
+      if s.(flags).(flag_z) then
+        let v := eval_operand2 op2 s in
+        Some (set_reg s rd v)
+      else
+        Some s  (* No operation if condition false *)
+
+  | MOVNE rd op2 =>
+      (* Conditional move: only move if Z flag is clear (not equal) *)
+      if s.(flags).(flag_z) then
+        Some s  (* No operation if condition false *)
+      else
+        let v := eval_operand2 op2 s in
+        Some (set_reg s rd v)
+
   | MOVW rd imm =>
       (* Move 16-bit immediate to lower 16 bits *)
       Some (set_reg s rd imm)

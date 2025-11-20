@@ -53,6 +53,10 @@ Inductive arm_instr : Type :=
   | MOVW : arm_reg -> I32.int -> arm_instr  (* Move 16-bit immediate *)
   | MOVT : arm_reg -> I32.int -> arm_instr  (* Move top 16 bits *)
 
+  (* Conditional move operations *)
+  | MOVEQ : arm_reg -> operand2 -> arm_instr  (* Move if equal (Z=1) *)
+  | MOVNE : arm_reg -> operand2 -> arm_instr  (* Move if not equal (Z=0) *)
+
   (* Comparison operations *)
   | CMP : arm_reg -> operand2 -> arm_instr
 

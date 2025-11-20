@@ -3,23 +3,23 @@ open ArmState
 open BinInt
 open Integers
 
-(** val compute_n_flag : int -> bool **)
+(** val compute_n_flag : I32.int -> bool **)
 
 let compute_n_flag result =
   Z.ltb (I32.signed result) 0
 
-(** val compute_z_flag : int -> bool **)
+(** val compute_z_flag : I32.int -> bool **)
 
 let compute_z_flag result =
   I32.eq result I32.zero
 
-(** val compute_c_flag_add : int -> int -> bool **)
+(** val compute_c_flag_add : I32.int -> I32.int -> bool **)
 
 let compute_c_flag_add x y =
   let ux = I32.unsigned x in
   let uy = I32.unsigned y in Z.ltb I32.max_unsigned (Z.add ux uy)
 
-(** val compute_v_flag_add : int -> int -> int -> bool **)
+(** val compute_v_flag_add : I32.int -> I32.int -> I32.int -> bool **)
 
 let compute_v_flag_add x y result =
   let sx = I32.signed x in
@@ -28,7 +28,7 @@ let compute_v_flag_add x y result =
   (||) ((&&) ((&&) (Z.leb 0 sx) (Z.leb 0 sy)) (Z.ltb sr 0))
     ((&&) ((&&) (Z.ltb sx 0) (Z.ltb sy 0)) (Z.leb 0 sr))
 
-(** val update_flags_arith : int -> bool -> bool -> condition_flags **)
+(** val update_flags_arith : I32.int -> bool -> bool -> condition_flags **)
 
 let update_flags_arith result c v =
   { flag_n = (compute_n_flag result); flag_z = (compute_z_flag result);
@@ -118,6 +118,14 @@ let exec_instr i s =
           1)))))
     in
     let result = I32.coq_or lower upper in Some (set_reg s rd result)
+  | MOVEQ (rd, op2) ->
+    if s.flags.flag_z
+    then let v = eval_operand2 op2 s in Some (set_reg s rd v)
+    else Some s
+  | MOVNE (rd, op2) ->
+    if s.flags.flag_z
+    then Some s
+    else let v = eval_operand2 op2 s in Some (set_reg s rd v)
   | CMP (rn, op2) ->
     let v1 = get_reg s rn in
     let v2 = eval_operand2 op2 s in

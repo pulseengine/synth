@@ -21,6 +21,9 @@ let compile_wasm_to_arm = function
 | I32And -> (AND (R0, R0, (Reg R1)))::[]
 | I32Or -> (ORR (R0, R0, (Reg R1)))::[]
 | I32Xor -> (EOR (R0, R0, (Reg R1)))::[]
+| I32Eqz ->
+  (CMP (R0, (Imm I32.zero)))::((MOV (R0, (Imm I32.zero)))::((MOVEQ (R0, (Imm
+    I32.one)))::[]))
 | LocalGet idx ->
   let local_reg =
     (fun fO fS n -> if n=0 then fO () else fS (n-1))
