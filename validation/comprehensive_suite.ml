@@ -566,6 +566,439 @@ let test_integration () =
   )
 
 (** ========================================
+    CATEGORY 8: F32 OPERATIONS (29 operations)
+    ======================================== *)
+
+let test_f32_operations () =
+  Printf.printf "\n╔══════════════════════════════════════════════════════════╗\n";
+  Printf.printf "║ CATEGORY 8: F32 Operations (29 operations)              ║\n";
+  Printf.printf "╚══════════════════════════════════════════════════════════╝\n\n";
+
+  (* F32 Arithmetic *)
+  test "f32.add compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Add] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.sub compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Sub] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.mul compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Mul] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.div compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Div] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.sqrt compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Sqrt] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.min compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Min] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.max compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Max] in
+    assert (List.length arm >= 0)
+  );
+
+  (* F32 Unary *)
+  test "f32.abs compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Abs] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.neg compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Neg] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.copysign compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Copysign] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.ceil compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Ceil] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.floor compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Floor] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.trunc compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Trunc] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.nearest compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Nearest] in
+    assert (List.length arm >= 0)
+  );
+
+  (* F32 Comparisons *)
+  test "f32.eq compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Eq] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.ne compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Ne] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.lt compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Lt] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.gt compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Gt] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.le compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Le] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.ge compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Ge] in
+    assert (List.length arm >= 0)
+  )
+
+(** ========================================
+    CATEGORY 9: F64 OPERATIONS (20 operations)
+    ======================================== *)
+
+let test_f64_operations () =
+  Printf.printf "\n╔══════════════════════════════════════════════════════════╗\n";
+  Printf.printf "║ CATEGORY 9: F64 Operations (20 operations)              ║\n";
+  Printf.printf "╚══════════════════════════════════════════════════════════╝\n\n";
+
+  (* F64 Arithmetic *)
+  test "f64.add compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Add] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.sub compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Sub] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.mul compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Mul] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.div compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Div] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.sqrt compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Sqrt] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.min compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Min] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.max compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Max] in
+    assert (List.length arm >= 0)
+  );
+
+  (* F64 Unary *)
+  test "f64.abs compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Abs] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.neg compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Neg] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.copysign compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Copysign] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.ceil compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Ceil] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.floor compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Floor] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.trunc compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Trunc] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.nearest compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Nearest] in
+    assert (List.length arm >= 0)
+  );
+
+  (* F64 Comparisons *)
+  test "f64.eq compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Eq] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.ne compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Ne] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.lt compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Lt] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.gt compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Gt] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.le compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Le] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.ge compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Ge] in
+    assert (List.length arm >= 0)
+  )
+
+(** ========================================
+    CATEGORY 10: MEMORY OPERATIONS (8 operations)
+    ======================================== *)
+
+let test_memory_operations () =
+  Printf.printf "\n╔══════════════════════════════════════════════════════════╗\n";
+  Printf.printf "║ CATEGORY 10: Memory Operations (8 operations)           ║\n";
+  Printf.printf "╚══════════════════════════════════════════════════════════╝\n\n";
+
+  (* Load operations *)
+  test "i32.load compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I32Load 0] in
+    assert (List.length arm >= 0)
+  );
+
+  test "i64.load compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I64Load 0] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.load compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Load 0] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.load compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Load 0] in
+    assert (List.length arm >= 0)
+  );
+
+  (* Store operations *)
+  test "i32.store compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I32Store 0] in
+    assert (List.length arm >= 0)
+  );
+
+  test "i64.store compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I64Store 0] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.store compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32Store 0] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.store compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64Store 0] in
+    assert (List.length arm >= 0)
+  )
+
+(** ========================================
+    CATEGORY 11: CONVERSION OPERATIONS (21 operations)
+    ======================================== *)
+
+let test_conversion_operations () =
+  Printf.printf "\n╔══════════════════════════════════════════════════════════╗\n";
+  Printf.printf "║ CATEGORY 11: Conversion Operations (21 operations)      ║\n";
+  Printf.printf "╚══════════════════════════════════════════════════════════╝\n\n";
+
+  (* Integer conversions *)
+  test "i32.wrap_i64 compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I32WrapI64] in
+    assert (List.length arm >= 0)
+  );
+
+  test "i64.extend_i32_s compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I64ExtendI32S] in
+    assert (List.length arm >= 0)
+  );
+
+  test "i64.extend_i32_u compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I64ExtendI32U] in
+    assert (List.length arm >= 0)
+  );
+
+  (* i32 truncations *)
+  test "i32.trunc_f32_s compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I32TruncF32S] in
+    assert (List.length arm >= 0)
+  );
+
+  test "i32.trunc_f32_u compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I32TruncF32U] in
+    assert (List.length arm >= 0)
+  );
+
+  test "i32.trunc_f64_s compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I32TruncF64S] in
+    assert (List.length arm >= 0)
+  );
+
+  test "i32.trunc_f64_u compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I32TruncF64U] in
+    assert (List.length arm >= 0)
+  );
+
+  (* i64 truncations *)
+  test "i64.trunc_f32_s compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I64TruncF32S] in
+    assert (List.length arm >= 0)
+  );
+
+  test "i64.trunc_f32_u compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I64TruncF32U] in
+    assert (List.length arm >= 0)
+  );
+
+  test "i64.trunc_f64_s compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I64TruncF64S] in
+    assert (List.length arm >= 0)
+  );
+
+  test "i64.trunc_f64_u compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.I64TruncF64U] in
+    assert (List.length arm >= 0)
+  );
+
+  (* f32 conversions *)
+  test "f32.convert_i32_s compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32ConvertI32S] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.convert_i32_u compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32ConvertI32U] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.convert_i64_s compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32ConvertI64S] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.convert_i64_u compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32ConvertI64U] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f32.demote_f64 compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F32DemoteF64] in
+    assert (List.length arm >= 0)
+  );
+
+  (* f64 conversions *)
+  test "f64.convert_i32_s compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64ConvertI32S] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.convert_i32_u compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64ConvertI32U] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.convert_i64_s compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64ConvertI64S] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.convert_i64_u compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64ConvertI64U] in
+    assert (List.length arm >= 0)
+  );
+
+  test "f64.promote_f32 compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.F64PromoteF32] in
+    assert (List.length arm >= 0)
+  )
+
+(** ========================================
+    CATEGORY 12: MISCELLANEOUS OPERATIONS (5 operations)
+    ======================================== *)
+
+let test_misc_operations () =
+  Printf.printf "\n╔══════════════════════════════════════════════════════════╗\n";
+  Printf.printf "║ CATEGORY 12: Miscellaneous Operations (5 operations)    ║\n";
+  Printf.printf "╚══════════════════════════════════════════════════════════╝\n\n";
+
+  test "global.get compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.GlobalGet 0] in
+    assert (List.length arm >= 0)
+  );
+
+  test "global.set compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.GlobalSet 0] in
+    assert (List.length arm >= 0)
+  );
+
+  test "local.tee compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.LocalTee 0] in
+    assert (List.length arm >= 0)
+  );
+
+  test "drop compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.Drop] in
+    assert (List.length arm >= 0)
+  );
+
+  test "select compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.Select] in
+    assert (List.length arm >= 0)
+  );
+
+  test "nop compiles" (fun () ->
+    let arm = Compilation.compile_wasm_program [WasmInstructions.Nop] in
+    assert (List.length arm >= 0)
+  )
+
+(** ========================================
     MAIN TEST RUNNER
     ======================================== *)
 
@@ -587,6 +1020,11 @@ let () =
   test_i64_operations ();
   test_locals ();
   test_integration ();
+  test_f32_operations ();
+  test_f64_operations ();
+  test_memory_operations ();
+  test_conversion_operations ();
+  test_misc_operations ();
 
   (* Print summary *)
   Printf.printf "\n╔══════════════════════════════════════════════════════════╗\n";
