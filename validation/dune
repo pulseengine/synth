@@ -1,0 +1,7 @@
+(executable
+ (name simple_test)
+ (flags (:standard -w -33 -w -27)))
+
+(executable
+ (name validation_suite)
+ (flags (:standard -w -33 -w -27)))

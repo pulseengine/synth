@@ -2,7 +2,7 @@ open ArmState
 open Integers
 
 type operand2 =
-| Imm of I32.int
+| Imm of int
 | Reg of arm_reg
 | RegShift of arm_reg * int
 
@@ -22,8 +22,8 @@ type arm_instr =
 | ASR of arm_reg * arm_reg * int
 | ROR of arm_reg * arm_reg * int
 | MOV of arm_reg * operand2
-| MOVW of arm_reg * I32.int
-| MOVT of arm_reg * I32.int
+| MOVW of arm_reg * int
+| MOVT of arm_reg * int
 | CMP of arm_reg * operand2
 | CLZ of arm_reg * arm_reg
 | RBIT of arm_reg * arm_reg
@@ -63,4 +63,4 @@ type arm_instr =
 
 type arm_program = arm_instr list
 
-val eval_operand2 : operand2 -> arm_state -> I32.int
+val eval_operand2 : operand2 -> arm_state -> int

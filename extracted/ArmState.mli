@@ -76,26 +76,26 @@ type vfp_reg =
 type condition_flags = { flag_n : bool; flag_z : bool; flag_c : bool;
                          flag_v : bool }
 
-type regfile = arm_reg -> I32.int
+type regfile = arm_reg -> int
 
-type vfp_regfile = vfp_reg -> I32.int
+type vfp_regfile = vfp_reg -> int
 
-type memory = int -> I32.int
+type memory = int -> int
 
 type arm_state = { regs : regfile; flags : condition_flags;
                    vfp_regs : vfp_regfile; mem : memory;
-                   locals : (int -> I32.int); globals : (int -> I32.int) }
+                   locals : (int -> int); globals : (int -> int) }
 
-val get_reg : arm_state -> arm_reg -> I32.int
+val get_reg : arm_state -> arm_reg -> int
 
-val set_reg : arm_state -> arm_reg -> I32.int -> arm_state
+val set_reg : arm_state -> arm_reg -> int -> arm_state
 
 val set_flags : arm_state -> condition_flags -> arm_state
 
-val load_mem : arm_state -> int -> I32.int
+val load_mem : arm_state -> int -> int
 
-val store_mem : arm_state -> int -> I32.int -> arm_state
+val store_mem : arm_state -> int -> int -> arm_state
 
-val get_local : arm_state -> int -> I32.int
+val get_local : arm_state -> int -> int
 
-val set_local : arm_state -> int -> I32.int -> arm_state
+val set_local : arm_state -> int -> int -> arm_state

@@ -11,7 +11,6 @@ module I32 :
 
   val min_signed : int
 
-  type int = int
 
   val repr : int -> int
 
@@ -86,7 +85,6 @@ module I64 :
 
   val half_modulus : int
 
-  type int = int
 
   val repr : int -> int
 
