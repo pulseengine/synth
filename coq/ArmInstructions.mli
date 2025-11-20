@@ -2,7 +2,7 @@ open ArmState
 open Integers
 
 type operand2 =
-| Imm of int
+| Imm of I32.int
 | Reg of arm_reg
 | RegShift of arm_reg * int
 
@@ -22,8 +22,8 @@ type arm_instr =
 | ASR of arm_reg * arm_reg * int
 | ROR of arm_reg * arm_reg * int
 | MOV of arm_reg * operand2
-| MOVW of arm_reg * int
-| MOVT of arm_reg * int
+| MOVW of arm_reg * I32.int
+| MOVT of arm_reg * I32.int
 | MOVEQ of arm_reg * operand2
 | MOVNE of arm_reg * operand2
 | MOVLT of arm_reg * operand2
@@ -73,10 +73,4 @@ type arm_instr =
 
 type arm_program = arm_instr list
 
-(** val eval_operand2 : operand2 -> arm_state -> int **)
-
-let eval_operand2 op2 s =
-  match op2 with
-  | Imm n -> n
-  | Reg r -> get_reg s r
-  | RegShift (r, _) -> get_reg s r
+val eval_operand2 : operand2 -> arm_state -> I32.int

@@ -1,675 +1,816 @@
-DIGEST 287443769f02a4c4d4e2e3c75ec07425
+DIGEST b768a416884792b74a7c78df95c73d76
 FSynth.ARM.ArmSemantics
 R249:254 Stdlib.ZArith.ZArith <> <> lib
 R284:287 Stdlib.Lists.List <> <> lib
-R305:321 Synth.Common.Base <> <> lib
-R339:359 Synth.Common.Integers <> <> lib
-R377:394 Synth.ARM.ArmState <> <> lib
-R412:436 Synth.ARM.ArmInstructions <> <> lib
-R447:459 Stdlib.Lists.List ListNotations <> mod
-def 580:593 <> compute_n_flag
-R605:611 Synth.Common.Integers I32 int def
-binder 596:601 <> result:1
-R616:619 Corelib.Init.Datatypes <> bool ind
-R626:630 Stdlib.ZArith.BinInt Z ltb def
-R633:642 Synth.Common.Integers I32 signed def
-R644:649 Synth.ARM.ArmSemantics <> result:1 var
-def 705:718 <> compute_z_flag
-R730:736 Synth.Common.Integers I32 int def
-binder 721:726 <> result:2
-R741:744 Corelib.Init.Datatypes <> bool ind
-R751:756 Synth.Common.Integers I32 eq def
-R758:763 Synth.ARM.ArmSemantics <> result:2 var
-R765:772 Synth.Common.Integers I32 zero def
-def 826:843 <> compute_c_flag_add
-R852:858 Synth.Common.Integers I32 int def
-binder 846:846 <> x:3
-binder 848:848 <> y:4
-R863:866 Corelib.Init.Datatypes <> bool ind
-R883:894 Synth.Common.Integers I32 unsigned def
-R896:896 Synth.ARM.ArmSemantics <> x:3 var
-binder 877:878 <> ux:5
-R913:924 Synth.Common.Integers I32 unsigned def
-R926:926 Synth.ARM.ArmSemantics <> y:4 var
-binder 907:908 <> uy:6
-R933:937 Stdlib.ZArith.BinInt Z ltb def
-R939:954 Synth.Common.Integers I32 max_unsigned def
-R959:961 Stdlib.ZArith.BinInt <> ::Z_scope:x_'+'_x not
-R957:958 Synth.ARM.ArmSemantics <> ux:5 var
-R962:963 Synth.ARM.ArmSemantics <> uy:6 var
-def 1021:1038 <> compute_v_flag_add
-R1054:1060 Synth.Common.Integers I32 int def
-binder 1041:1041 <> x:7
-binder 1043:1043 <> y:8
-binder 1045:1050 <> result:9
-R1065:1068 Corelib.Init.Datatypes <> bool ind
-R1085:1094 Synth.Common.Integers I32 signed def
-R1096:1096 Synth.ARM.ArmSemantics <> x:7 var
-binder 1079:1080 <> sx:10
-R1113:1122 Synth.Common.Integers I32 signed def
-R1124:1124 Synth.ARM.ArmSemantics <> y:8 var
-binder 1107:1108 <> sy:11
+R317:320 Stdlib.Bool.Bool <> <> lib
+R338:354 Synth.Common.Base <> <> lib
+R372:392 Synth.Common.Integers <> <> lib
+R410:427 Synth.ARM.ArmState <> <> lib
+R445:469 Synth.ARM.ArmInstructions <> <> lib
+R480:492 Stdlib.Lists.List ListNotations <> mod
+def 636:649 <> compute_n_flag
+R661:667 Synth.Common.Integers I32 int def
+binder 652:657 <> result:1
+R672:675 Corelib.Init.Datatypes <> bool ind
+R682:686 Stdlib.ZArith.BinInt Z ltb def
+R689:698 Synth.Common.Integers I32 signed def
+R700:705 Synth.ARM.ArmSemantics <> result:1 var
+def 761:774 <> compute_z_flag
+R786:792 Synth.Common.Integers I32 int def
+binder 777:782 <> result:2
+R797:800 Corelib.Init.Datatypes <> bool ind
+R807:812 Synth.Common.Integers I32 eq def
+R814:819 Synth.ARM.ArmSemantics <> result:2 var
+R821:828 Synth.Common.Integers I32 zero def
+def 882:899 <> compute_c_flag_add
+R908:914 Synth.Common.Integers I32 int def
+binder 902:902 <> x:3
+binder 904:904 <> y:4
+R919:922 Corelib.Init.Datatypes <> bool ind
+R939:950 Synth.Common.Integers I32 unsigned def
+R952:952 Synth.ARM.ArmSemantics <> x:3 var
+binder 933:934 <> ux:5
+R969:980 Synth.Common.Integers I32 unsigned def
+R982:982 Synth.ARM.ArmSemantics <> y:4 var
+binder 963:964 <> uy:6
+R989:993 Stdlib.ZArith.BinInt Z ltb def
+R995:1010 Synth.Common.Integers I32 max_unsigned def
+R1015:1017 Stdlib.ZArith.BinInt <> ::Z_scope:x_'+'_x not
+R1013:1014 Synth.ARM.ArmSemantics <> ux:5 var
+R1018:1019 Synth.ARM.ArmSemantics <> uy:6 var
+def 1077:1094 <> compute_v_flag_add
+R1110:1116 Synth.Common.Integers I32 int def
+binder 1097:1097 <> x:7
+binder 1099:1099 <> y:8
+binder 1101:1106 <> result:9
+R1121:1124 Corelib.Init.Datatypes <> bool ind
 R1141:1150 Synth.Common.Integers I32 signed def
-R1152:1157 Synth.ARM.ArmSemantics <> result:9 var
-binder 1135:1136 <> sr:12
-R1220:1222 Corelib.Init.Datatypes <> orb def
-R1286:1289 Corelib.Init.Datatypes <> andb def
-R1325:1329 Stdlib.ZArith.BinInt Z leb def
-R1333:1334 Synth.ARM.ArmSemantics <> sr:12 var
-R1292:1295 Corelib.Init.Datatypes <> andb def
-R1311:1315 Stdlib.ZArith.BinInt Z ltb def
-R1317:1318 Synth.ARM.ArmSemantics <> sy:11 var
-R1298:1302 Stdlib.ZArith.BinInt Z ltb def
-R1304:1305 Synth.ARM.ArmSemantics <> sx:10 var
-R1229:1232 Corelib.Init.Datatypes <> andb def
-R1268:1272 Stdlib.ZArith.BinInt Z ltb def
-R1274:1275 Synth.ARM.ArmSemantics <> sr:12 var
-R1235:1238 Corelib.Init.Datatypes <> andb def
-R1254:1258 Stdlib.ZArith.BinInt Z leb def
-R1262:1263 Synth.ARM.ArmSemantics <> sy:11 var
-R1241:1245 Stdlib.ZArith.BinInt Z leb def
-R1249:1250 Synth.ARM.ArmSemantics <> sx:10 var
-def 1398:1415 <> update_flags_arith
-R1427:1433 Synth.Common.Integers I32 int def
-binder 1418:1423 <> result:13
-R1443:1446 Corelib.Init.Datatypes <> bool ind
-binder 1437:1437 <> c:14
-binder 1439:1439 <> v:15
-R1451:1465 Synth.ARM.ArmState <> condition_flags rec
-R1472:1478 Synth.ARM.ArmState <> mkFlags constr
-R1485:1498 Synth.ARM.ArmSemantics <> compute_n_flag def
-R1500:1505 Synth.ARM.ArmSemantics <> result:13 var
-R1513:1526 Synth.ARM.ArmSemantics <> compute_z_flag def
-R1528:1533 Synth.ARM.ArmSemantics <> result:13 var
-R1540:1540 Synth.ARM.ArmSemantics <> c:14 var
-R1546:1546 Synth.ARM.ArmSemantics <> v:15 var
-def 1634:1643 <> exec_instr
-R1650:1658 Synth.ARM.ArmInstructions <> arm_instr ind
-binder 1646:1646 <> i:16
-R1666:1674 Synth.ARM.ArmState <> arm_state rec
-binder 1662:1662 <> s:17
-R1679:1684 Corelib.Init.Datatypes <> option ind
-R1686:1694 Synth.ARM.ArmState <> arm_state rec
-R1707:1707 Synth.ARM.ArmSemantics <> i:16 var
-R1748:1750 Synth.ARM.ArmInstructions <> ADD constr
-R1781:1787 Synth.ARM.ArmState <> get_reg def
-R1789:1789 Synth.ARM.ArmSemantics <> s:17 var
-binder 1775:1776 <> v1:19
-R1813:1825 Synth.ARM.ArmInstructions <> eval_operand2 def
-R1831:1831 Synth.ARM.ArmSemantics <> s:17 var
-binder 1807:1808 <> v2:20
-R1856:1862 Synth.Common.Integers I32 add def
-R1864:1865 Synth.ARM.ArmSemantics <> v1:19 var
-R1867:1868 Synth.ARM.ArmSemantics <> v2:20 var
-binder 1846:1851 <> result:21
-R1879:1882 Corelib.Init.Datatypes <> Some constr
-R1885:1891 Synth.ARM.ArmState <> set_reg def
-R1893:1893 Synth.ARM.ArmSemantics <> s:17 var
-R1898:1903 Synth.ARM.ArmSemantics <> result:21 var
-R1911:1913 Synth.ARM.ArmInstructions <> SUB constr
-R1944:1950 Synth.ARM.ArmState <> get_reg def
-R1952:1952 Synth.ARM.ArmSemantics <> s:17 var
-binder 1938:1939 <> v1:22
-R1976:1988 Synth.ARM.ArmInstructions <> eval_operand2 def
-R1994:1994 Synth.ARM.ArmSemantics <> s:17 var
-binder 1970:1971 <> v2:23
-R2019:2025 Synth.Common.Integers I32 sub def
-R2027:2028 Synth.ARM.ArmSemantics <> v1:22 var
-R2030:2031 Synth.ARM.ArmSemantics <> v2:23 var
-binder 2009:2014 <> result:24
-R2042:2045 Corelib.Init.Datatypes <> Some constr
-R2048:2054 Synth.ARM.ArmState <> set_reg def
-R2056:2056 Synth.ARM.ArmSemantics <> s:17 var
-R2061:2066 Synth.ARM.ArmSemantics <> result:24 var
-R2074:2076 Synth.ARM.ArmInstructions <> MUL constr
-R2106:2112 Synth.ARM.ArmState <> get_reg def
-R2114:2114 Synth.ARM.ArmSemantics <> s:17 var
-binder 2100:2101 <> v1:25
-R2138:2144 Synth.ARM.ArmState <> get_reg def
-R2146:2146 Synth.ARM.ArmSemantics <> s:17 var
-binder 2132:2133 <> v2:26
-R2174:2180 Synth.Common.Integers I32 mul def
-R2182:2183 Synth.ARM.ArmSemantics <> v1:25 var
-R2185:2186 Synth.ARM.ArmSemantics <> v2:26 var
-binder 2164:2169 <> result:27
-R2197:2200 Corelib.Init.Datatypes <> Some constr
-R2203:2209 Synth.ARM.ArmState <> set_reg def
-R2211:2211 Synth.ARM.ArmSemantics <> s:17 var
-R2216:2221 Synth.ARM.ArmSemantics <> result:27 var
-R2229:2232 Synth.ARM.ArmInstructions <> SDIV constr
-R2262:2268 Synth.ARM.ArmState <> get_reg def
-R2270:2270 Synth.ARM.ArmSemantics <> s:17 var
-binder 2256:2257 <> v1:28
-R2294:2300 Synth.ARM.ArmState <> get_reg def
-R2302:2302 Synth.ARM.ArmSemantics <> s:17 var
-binder 2288:2289 <> v2:29
-R2322:2329 Synth.Common.Integers I32 divs def
-R2331:2332 Synth.ARM.ArmSemantics <> v1:28 var
-R2334:2335 Synth.ARM.ArmSemantics <> v2:29 var
-R2350:2353 Corelib.Init.Datatypes <> Some constr
-R2365:2368 Corelib.Init.Datatypes <> Some constr
-R2371:2377 Synth.ARM.ArmState <> set_reg def
-R2379:2379 Synth.ARM.ArmSemantics <> s:17 var
-R2400:2403 Corelib.Init.Datatypes <> None constr
-R2408:2411 Corelib.Init.Datatypes <> None constr
-R2464:2467 Synth.ARM.ArmInstructions <> UDIV constr
-R2497:2503 Synth.ARM.ArmState <> get_reg def
-R2505:2505 Synth.ARM.ArmSemantics <> s:17 var
-binder 2491:2492 <> v1:30
-R2529:2535 Synth.ARM.ArmState <> get_reg def
-R2537:2537 Synth.ARM.ArmSemantics <> s:17 var
-binder 2523:2524 <> v2:31
-R2557:2564 Synth.Common.Integers I32 divu def
-R2566:2567 Synth.ARM.ArmSemantics <> v1:30 var
-R2569:2570 Synth.ARM.ArmSemantics <> v2:31 var
-R2585:2588 Corelib.Init.Datatypes <> Some constr
-R2600:2603 Corelib.Init.Datatypes <> Some constr
-R2606:2612 Synth.ARM.ArmState <> set_reg def
-R2614:2614 Synth.ARM.ArmSemantics <> s:17 var
-R2635:2638 Corelib.Init.Datatypes <> None constr
-R2643:2646 Corelib.Init.Datatypes <> None constr
-R2687:2689 Synth.ARM.ArmInstructions <> MLS constr
-R2759:2765 Synth.ARM.ArmState <> get_reg def
-R2767:2767 Synth.ARM.ArmSemantics <> s:17 var
-binder 2753:2754 <> vn:32
-R2791:2797 Synth.ARM.ArmState <> get_reg def
-R2799:2799 Synth.ARM.ArmSemantics <> s:17 var
-binder 2785:2786 <> vm:33
-R2823:2829 Synth.ARM.ArmState <> get_reg def
-R2831:2831 Synth.ARM.ArmSemantics <> s:17 var
-binder 2817:2818 <> va:34
-R2860:2866 Synth.Common.Integers I32 mul def
-R2868:2869 Synth.ARM.ArmSemantics <> vn:32 var
-R2871:2872 Synth.ARM.ArmSemantics <> vm:33 var
-binder 2849:2855 <> product:35
-R2897:2903 Synth.Common.Integers I32 sub def
-R2905:2906 Synth.ARM.ArmSemantics <> va:34 var
-R2908:2914 Synth.ARM.ArmSemantics <> product:35 var
-binder 2887:2892 <> result:36
-R2925:2928 Corelib.Init.Datatypes <> Some constr
-R2931:2937 Synth.ARM.ArmState <> set_reg def
-R2939:2939 Synth.ARM.ArmSemantics <> s:17 var
-R2944:2949 Synth.ARM.ArmSemantics <> result:36 var
-R2984:2986 Synth.ARM.ArmInstructions <> AND constr
-R3017:3023 Synth.ARM.ArmState <> get_reg def
-R3025:3025 Synth.ARM.ArmSemantics <> s:17 var
-binder 3011:3012 <> v1:37
-R3049:3061 Synth.ARM.ArmInstructions <> eval_operand2 def
-R3067:3067 Synth.ARM.ArmSemantics <> s:17 var
-binder 3043:3044 <> v2:38
-R3092:3098 Synth.Common.Integers I32 and def
-R3100:3101 Synth.ARM.ArmSemantics <> v1:37 var
-R3103:3104 Synth.ARM.ArmSemantics <> v2:38 var
-binder 3082:3087 <> result:39
-R3115:3118 Corelib.Init.Datatypes <> Some constr
-R3121:3127 Synth.ARM.ArmState <> set_reg def
-R3129:3129 Synth.ARM.ArmSemantics <> s:17 var
-R3134:3139 Synth.ARM.ArmSemantics <> result:39 var
-R3147:3149 Synth.ARM.ArmInstructions <> ORR constr
-R3180:3186 Synth.ARM.ArmState <> get_reg def
-R3188:3188 Synth.ARM.ArmSemantics <> s:17 var
-binder 3174:3175 <> v1:40
-R3212:3224 Synth.ARM.ArmInstructions <> eval_operand2 def
-R3230:3230 Synth.ARM.ArmSemantics <> s:17 var
-binder 3206:3207 <> v2:41
-R3255:3260 Synth.Common.Integers I32 or def
-R3262:3263 Synth.ARM.ArmSemantics <> v1:40 var
-R3265:3266 Synth.ARM.ArmSemantics <> v2:41 var
-binder 3245:3250 <> result:42
-R3277:3280 Corelib.Init.Datatypes <> Some constr
-R3283:3289 Synth.ARM.ArmState <> set_reg def
-R3291:3291 Synth.ARM.ArmSemantics <> s:17 var
-R3296:3301 Synth.ARM.ArmSemantics <> result:42 var
-R3309:3311 Synth.ARM.ArmInstructions <> EOR constr
-R3342:3348 Synth.ARM.ArmState <> get_reg def
-R3350:3350 Synth.ARM.ArmSemantics <> s:17 var
-binder 3336:3337 <> v1:43
-R3374:3386 Synth.ARM.ArmInstructions <> eval_operand2 def
-R3392:3392 Synth.ARM.ArmSemantics <> s:17 var
-binder 3368:3369 <> v2:44
-R3417:3423 Synth.Common.Integers I32 xor def
-R3425:3426 Synth.ARM.ArmSemantics <> v1:43 var
-R3428:3429 Synth.ARM.ArmSemantics <> v2:44 var
-binder 3407:3412 <> result:45
-R3440:3443 Corelib.Init.Datatypes <> Some constr
-R3446:3452 Synth.ARM.ArmState <> set_reg def
-R3454:3454 Synth.ARM.ArmSemantics <> s:17 var
-R3459:3464 Synth.ARM.ArmSemantics <> result:45 var
-R3472:3474 Synth.ARM.ArmInstructions <> MVN constr
-R3501:3513 Synth.ARM.ArmInstructions <> eval_operand2 def
-R3519:3519 Synth.ARM.ArmSemantics <> s:17 var
-binder 3496:3496 <> v:46
-R3544:3551 Synth.Common.Integers I32 repr def
-R3554:3559 Stdlib.ZArith.BinInt Z lnot def
-R3562:3573 Synth.Common.Integers I32 unsigned def
-R3575:3575 Synth.ARM.ArmSemantics <> v:46 var
-binder 3534:3539 <> result:47
-R3588:3591 Corelib.Init.Datatypes <> Some constr
-R3594:3600 Synth.ARM.ArmState <> set_reg def
-R3602:3602 Synth.ARM.ArmSemantics <> s:17 var
-R3607:3612 Synth.ARM.ArmSemantics <> result:47 var
-R3645:3647 Synth.ARM.ArmInstructions <> LSL constr
-R3679:3685 Synth.ARM.ArmState <> get_reg def
-R3687:3687 Synth.ARM.ArmSemantics <> s:17 var
-binder 3674:3674 <> v:48
-R3718:3725 Synth.Common.Integers I32 repr def
-R3728:3735 Stdlib.ZArith.BinInt Z of_nat def
-binder 3705:3713 <> shift_amt:49
-R3767:3773 Synth.Common.Integers I32 shl def
-R3775:3775 Synth.ARM.ArmSemantics <> v:48 var
-R3777:3785 Synth.ARM.ArmSemantics <> shift_amt:49 var
-binder 3757:3762 <> result:50
-R3796:3799 Corelib.Init.Datatypes <> Some constr
-R3802:3808 Synth.ARM.ArmState <> set_reg def
-R3810:3810 Synth.ARM.ArmSemantics <> s:17 var
-R3815:3820 Synth.ARM.ArmSemantics <> result:50 var
-R3828:3830 Synth.ARM.ArmInstructions <> LSR constr
-R3862:3868 Synth.ARM.ArmState <> get_reg def
-R3870:3870 Synth.ARM.ArmSemantics <> s:17 var
-binder 3857:3857 <> v:51
-R3901:3908 Synth.Common.Integers I32 repr def
-R3911:3918 Stdlib.ZArith.BinInt Z of_nat def
-binder 3888:3896 <> shift_amt:52
-R3950:3957 Synth.Common.Integers I32 shru def
-R3959:3959 Synth.ARM.ArmSemantics <> v:51 var
-R3961:3969 Synth.ARM.ArmSemantics <> shift_amt:52 var
-binder 3940:3945 <> result:53
-R3980:3983 Corelib.Init.Datatypes <> Some constr
-R3986:3992 Synth.ARM.ArmState <> set_reg def
-R3994:3994 Synth.ARM.ArmSemantics <> s:17 var
-R3999:4004 Synth.ARM.ArmSemantics <> result:53 var
-R4012:4014 Synth.ARM.ArmInstructions <> ASR constr
-R4046:4052 Synth.ARM.ArmState <> get_reg def
-R4054:4054 Synth.ARM.ArmSemantics <> s:17 var
-binder 4041:4041 <> v:54
-R4085:4092 Synth.Common.Integers I32 repr def
-R4095:4102 Stdlib.ZArith.BinInt Z of_nat def
-binder 4072:4080 <> shift_amt:55
-R4134:4141 Synth.Common.Integers I32 shrs def
-R4143:4143 Synth.ARM.ArmSemantics <> v:54 var
-R4145:4153 Synth.ARM.ArmSemantics <> shift_amt:55 var
-binder 4124:4129 <> result:56
-R4164:4167 Corelib.Init.Datatypes <> Some constr
-R4170:4176 Synth.ARM.ArmState <> set_reg def
-R4178:4178 Synth.ARM.ArmSemantics <> s:17 var
-R4183:4188 Synth.ARM.ArmSemantics <> result:56 var
-R4196:4198 Synth.ARM.ArmInstructions <> ROR constr
-R4230:4236 Synth.ARM.ArmState <> get_reg def
-R4238:4238 Synth.ARM.ArmSemantics <> s:17 var
-binder 4225:4225 <> v:57
-R4269:4276 Synth.Common.Integers I32 repr def
-R4279:4286 Stdlib.ZArith.BinInt Z of_nat def
-binder 4256:4264 <> shift_amt:58
-R4318:4325 Synth.Common.Integers I32 rotr def
-R4327:4327 Synth.ARM.ArmSemantics <> v:57 var
-R4329:4337 Synth.ARM.ArmSemantics <> shift_amt:58 var
-binder 4308:4313 <> result:59
-R4348:4351 Corelib.Init.Datatypes <> Some constr
-R4354:4360 Synth.ARM.ArmState <> set_reg def
-R4362:4362 Synth.ARM.ArmSemantics <> s:17 var
-R4367:4372 Synth.ARM.ArmSemantics <> result:59 var
-R4404:4406 Synth.ARM.ArmInstructions <> MOV constr
-R4433:4445 Synth.ARM.ArmInstructions <> eval_operand2 def
-R4451:4451 Synth.ARM.ArmSemantics <> s:17 var
-binder 4428:4428 <> v:60
-R4462:4465 Corelib.Init.Datatypes <> Some constr
-R4468:4474 Synth.ARM.ArmState <> set_reg def
-R4476:4476 Synth.ARM.ArmSemantics <> s:17 var
-R4481:4481 Synth.ARM.ArmSemantics <> v:60 var
-R4489:4493 Synth.ARM.ArmInstructions <> MOVEQ constr
-R4590:4595 Synth.ARM.ArmState <> flag_z proj
-R4582:4586 Synth.ARM.ArmState <> flags proj
-R4579:4579 Synth.ARM.ArmSemantics <> s:17 var
-R4692:4695 Corelib.Init.Datatypes <> Some constr
-R4697:4697 Synth.ARM.ArmSemantics <> s:17 var
-R4620:4632 Synth.ARM.ArmInstructions <> eval_operand2 def
-R4638:4638 Synth.ARM.ArmSemantics <> s:17 var
-binder 4615:4615 <> v:61
-R4651:4654 Corelib.Init.Datatypes <> Some constr
-R4657:4663 Synth.ARM.ArmState <> set_reg def
-R4665:4665 Synth.ARM.ArmSemantics <> s:17 var
-R4670:4670 Synth.ARM.ArmSemantics <> v:61 var
-R4743:4747 Synth.ARM.ArmInstructions <> MOVNE constr
-R4850:4855 Synth.ARM.ArmState <> flag_z proj
-R4842:4846 Synth.ARM.ArmState <> flags proj
-R4839:4839 Synth.ARM.ArmSemantics <> s:17 var
-R4945:4957 Synth.ARM.ArmInstructions <> eval_operand2 def
-R4963:4963 Synth.ARM.ArmSemantics <> s:17 var
-binder 4940:4940 <> v:62
-R4976:4979 Corelib.Init.Datatypes <> Some constr
-R4982:4988 Synth.ARM.ArmState <> set_reg def
-R4990:4990 Synth.ARM.ArmSemantics <> s:17 var
-R4995:4995 Synth.ARM.ArmSemantics <> v:62 var
-R4871:4874 Corelib.Init.Datatypes <> Some constr
-R4876:4876 Synth.ARM.ArmSemantics <> s:17 var
-R5003:5006 Synth.ARM.ArmInstructions <> MOVW constr
-R5075:5078 Corelib.Init.Datatypes <> Some constr
-R5081:5087 Synth.ARM.ArmState <> set_reg def
-R5089:5089 Synth.ARM.ArmSemantics <> s:17 var
-R5104:5107 Synth.ARM.ArmInstructions <> MOVT constr
-R5191:5197 Synth.ARM.ArmState <> get_reg def
-R5199:5199 Synth.ARM.ArmSemantics <> s:17 var
-binder 5180:5186 <> current:63
-R5226:5232 Synth.Common.Integers I32 and def
-R5234:5240 Synth.ARM.ArmSemantics <> current:63 var
-R5243:5250 Synth.Common.Integers I32 repr def
-binder 5217:5221 <> lower:64
-R5282:5288 Synth.Common.Integers I32 shl def
-R5295:5302 Synth.Common.Integers I32 repr def
-binder 5273:5277 <> upper:65
-R5331:5336 Synth.Common.Integers I32 or def
-R5338:5342 Synth.ARM.ArmSemantics <> lower:64 var
-R5344:5348 Synth.ARM.ArmSemantics <> upper:65 var
-binder 5321:5326 <> result:66
-R5359:5362 Corelib.Init.Datatypes <> Some constr
-R5365:5371 Synth.ARM.ArmState <> set_reg def
-R5373:5373 Synth.ARM.ArmSemantics <> s:17 var
-R5378:5383 Synth.ARM.ArmSemantics <> result:66 var
-R5410:5412 Synth.ARM.ArmInstructions <> CMP constr
-R5440:5446 Synth.ARM.ArmState <> get_reg def
-R5448:5448 Synth.ARM.ArmSemantics <> s:17 var
-binder 5434:5435 <> v1:67
-R5472:5484 Synth.ARM.ArmInstructions <> eval_operand2 def
-R5490:5490 Synth.ARM.ArmSemantics <> s:17 var
-binder 5466:5467 <> v2:68
-R5515:5521 Synth.Common.Integers I32 sub def
-R5523:5524 Synth.ARM.ArmSemantics <> v1:67 var
-R5526:5527 Synth.ARM.ArmSemantics <> v2:68 var
-binder 5505:5510 <> result:69
-R5600:5617 Synth.ARM.ArmSemantics <> compute_c_flag_add def
-R5619:5620 Synth.ARM.ArmSemantics <> v1:67 var
-R5623:5629 Synth.Common.Integers I32 sub def
-R5631:5638 Synth.Common.Integers I32 zero def
-R5640:5641 Synth.ARM.ArmSemantics <> v2:68 var
-binder 5595:5595 <> c:70
-R5662:5679 Synth.ARM.ArmSemantics <> compute_v_flag_add def
-R5681:5682 Synth.ARM.ArmSemantics <> v1:67 var
-R5685:5691 Synth.Common.Integers I32 sub def
-R5693:5700 Synth.Common.Integers I32 zero def
-R5702:5703 Synth.ARM.ArmSemantics <> v2:68 var
-R5706:5711 Synth.ARM.ArmSemantics <> result:69 var
-binder 5657:5657 <> v:71
-R5739:5756 Synth.ARM.ArmSemantics <> update_flags_arith def
-R5758:5763 Synth.ARM.ArmSemantics <> result:69 var
-R5765:5765 Synth.ARM.ArmSemantics <> c:70 var
-R5767:5767 Synth.ARM.ArmSemantics <> v:71 var
-binder 5726:5734 <> new_flags:72
-R5778:5781 Corelib.Init.Datatypes <> Some constr
-R5784:5792 Synth.ARM.ArmState <> set_flags def
-R5794:5794 Synth.ARM.ArmSemantics <> s:17 var
-R5796:5804 Synth.ARM.ArmSemantics <> new_flags:72 var
-R5866:5868 Synth.ARM.ArmInstructions <> CLZ constr
-R5940:5946 Synth.ARM.ArmState <> get_reg def
-R5948:5948 Synth.ARM.ArmSemantics <> s:17 var
-binder 5935:5935 <> v:73
-R6020:6023 Corelib.Init.Datatypes <> Some constr
-R6026:6032 Synth.ARM.ArmState <> set_reg def
-R6034:6034 Synth.ARM.ArmSemantics <> s:17 var
-R6039:6046 Synth.Common.Integers I32 zero def
-R6054:6057 Synth.ARM.ArmInstructions <> RBIT constr
-R6122:6128 Synth.ARM.ArmState <> get_reg def
-R6130:6130 Synth.ARM.ArmSemantics <> s:17 var
-binder 6117:6117 <> v:74
-R6144:6147 Corelib.Init.Datatypes <> Some constr
-R6150:6156 Synth.ARM.ArmState <> set_reg def
-R6158:6158 Synth.ARM.ArmSemantics <> s:17 var
-R6163:6163 Synth.ARM.ArmSemantics <> v:74 var
-R6171:6176 Synth.ARM.ArmInstructions <> POPCNT constr
-R6245:6251 Synth.ARM.ArmState <> get_reg def
-R6253:6253 Synth.ARM.ArmSemantics <> s:17 var
-binder 6240:6240 <> v:75
-R6267:6270 Corelib.Init.Datatypes <> Some constr
-R6273:6279 Synth.ARM.ArmState <> set_reg def
-R6281:6281 Synth.ARM.ArmSemantics <> s:17 var
-R6286:6293 Synth.Common.Integers I32 zero def
-R6327:6329 Synth.ARM.ArmInstructions <> LDR constr
-R6365:6371 Synth.ARM.ArmState <> get_reg def
-R6373:6373 Synth.ARM.ArmSemantics <> s:17 var
-binder 6357:6360 <> base:76
-R6399:6405 Synth.Common.Integers I32 add def
-R6407:6410 Synth.ARM.ArmSemantics <> base:76 var
-R6413:6420 Synth.Common.Integers I32 repr def
-binder 6391:6394 <> addr:77
-R6452:6459 Synth.ARM.ArmState <> load_mem def
-R6461:6461 Synth.ARM.ArmSemantics <> s:17 var
-R6464:6473 Synth.Common.Integers I32 signed def
-R6475:6478 Synth.ARM.ArmSemantics <> addr:77 var
-binder 6443:6447 <> value:78
-R6490:6493 Corelib.Init.Datatypes <> Some constr
-R6496:6502 Synth.ARM.ArmState <> set_reg def
-R6504:6504 Synth.ARM.ArmSemantics <> s:17 var
-R6509:6513 Synth.ARM.ArmSemantics <> value:78 var
-R6521:6523 Synth.ARM.ArmInstructions <> STR constr
-R6559:6565 Synth.ARM.ArmState <> get_reg def
-R6567:6567 Synth.ARM.ArmSemantics <> s:17 var
-binder 6551:6554 <> base:79
-R6593:6599 Synth.Common.Integers I32 add def
-R6601:6604 Synth.ARM.ArmSemantics <> base:79 var
-R6607:6614 Synth.Common.Integers I32 repr def
-binder 6585:6588 <> addr:80
-R6646:6652 Synth.ARM.ArmState <> get_reg def
-R6654:6654 Synth.ARM.ArmSemantics <> s:17 var
-binder 6637:6641 <> value:81
-R6668:6671 Corelib.Init.Datatypes <> Some constr
-R6674:6682 Synth.ARM.ArmState <> store_mem def
-R6684:6684 Synth.ARM.ArmSemantics <> s:17 var
-R6687:6696 Synth.Common.Integers I32 signed def
-R6698:6701 Synth.ARM.ArmSemantics <> addr:80 var
-R6704:6708 Synth.ARM.ArmSemantics <> value:81 var
-R6750:6750 Synth.ARM.ArmInstructions <> B constr
-R6816:6822 Synth.ARM.ArmState <> get_reg def
-R6824:6824 Synth.ARM.ArmSemantics <> s:17 var
-R6826:6827 Synth.ARM.ArmState <> PC constr
-binder 6802:6811 <> current_pc:82
-R6852:6858 Synth.Common.Integers I32 add def
-R6860:6869 Synth.ARM.ArmSemantics <> current_pc:82 var
-R6872:6879 Synth.Common.Integers I32 repr def
-binder 6842:6847 <> new_pc:83
-R6898:6901 Corelib.Init.Datatypes <> Some constr
-R6904:6910 Synth.ARM.ArmState <> set_reg def
-R6912:6912 Synth.ARM.ArmSemantics <> s:17 var
-R6914:6915 Synth.ARM.ArmState <> PC constr
-R6917:6922 Synth.ARM.ArmSemantics <> new_pc:83 var
-R6930:6931 Synth.ARM.ArmInstructions <> BL constr
-R7023:7029 Synth.ARM.ArmState <> get_reg def
-R7031:7031 Synth.ARM.ArmSemantics <> s:17 var
-R7033:7034 Synth.ARM.ArmState <> PC constr
-binder 7009:7018 <> current_pc:84
-R7064:7070 Synth.Common.Integers I32 add def
-R7072:7081 Synth.ARM.ArmSemantics <> current_pc:84 var
-R7084:7091 Synth.Common.Integers I32 repr def
-binder 7049:7059 <> return_addr:85
-R7115:7121 Synth.ARM.ArmState <> set_reg def
-R7123:7123 Synth.ARM.ArmSemantics <> s:17 var
-R7125:7126 Synth.ARM.ArmState <> LR constr
-R7128:7138 Synth.ARM.ArmSemantics <> return_addr:85 var
-binder 7109:7110 <> s':86
-R7163:7169 Synth.Common.Integers I32 add def
-R7171:7180 Synth.ARM.ArmSemantics <> current_pc:84 var
-R7183:7190 Synth.Common.Integers I32 repr def
-binder 7153:7158 <> new_pc:87
-R7209:7212 Corelib.Init.Datatypes <> Some constr
-R7215:7221 Synth.ARM.ArmState <> set_reg def
-R7223:7224 Synth.ARM.ArmSemantics <> s':86 var
-R7226:7227 Synth.ARM.ArmState <> PC constr
-R7229:7234 Synth.ARM.ArmSemantics <> new_pc:87 var
-R7242:7243 Synth.ARM.ArmInstructions <> BX constr
-R7303:7309 Synth.ARM.ArmState <> get_reg def
-R7311:7311 Synth.ARM.ArmSemantics <> s:17 var
-binder 7293:7298 <> target:88
-R7325:7328 Corelib.Init.Datatypes <> Some constr
-R7331:7337 Synth.ARM.ArmState <> set_reg def
-R7339:7339 Synth.ARM.ArmSemantics <> s:17 var
-R7341:7342 Synth.ARM.ArmState <> PC constr
-R7344:7349 Synth.ARM.ArmSemantics <> target:88 var
-R7403:7410 Synth.ARM.ArmInstructions <> VADD_F32 constr
-R7498:7501 Corelib.Init.Datatypes <> Some constr
-R7503:7503 Synth.ARM.ArmSemantics <> s:17 var
-R7510:7517 Synth.ARM.ArmInstructions <> VSUB_F32 constr
-R7537:7540 Corelib.Init.Datatypes <> Some constr
-R7542:7542 Synth.ARM.ArmSemantics <> s:17 var
-R7549:7556 Synth.ARM.ArmInstructions <> VMUL_F32 constr
-R7576:7579 Corelib.Init.Datatypes <> Some constr
-R7581:7581 Synth.ARM.ArmSemantics <> s:17 var
-R7588:7595 Synth.ARM.ArmInstructions <> VDIV_F32 constr
-R7615:7618 Corelib.Init.Datatypes <> Some constr
-R7620:7620 Synth.ARM.ArmSemantics <> s:17 var
-R7670:7673 Corelib.Init.Datatypes <> Some constr
-R7675:7675 Synth.ARM.ArmSemantics <> s:17 var
-def 7736:7747 <> exec_program
-R7757:7760 Corelib.Init.Datatypes <> list ind
-R7762:7770 Synth.ARM.ArmInstructions <> arm_instr ind
-binder 7750:7753 <> prog:89
-R7778:7786 Synth.ARM.ArmState <> arm_state rec
-binder 7774:7774 <> s:90
-R7791:7796 Corelib.Init.Datatypes <> option ind
-R7798:7806 Synth.ARM.ArmState <> arm_state rec
-R7819:7822 Synth.ARM.ArmSemantics <> prog:89 var
-R7833:7834 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R7839:7842 Corelib.Init.Datatypes <> Some constr
-R7844:7844 Synth.ARM.ArmSemantics <> s:90 var
-R7851:7854 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
-R7875:7884 Synth.ARM.ArmSemantics <> exec_instr def
-R7888:7888 Synth.ARM.ArmSemantics <> s:90 var
-R7903:7906 Corelib.Init.Datatypes <> Some constr
-R7914:7925 Synth.ARM.ArmSemantics <> exec_program:91 def
-R7943:7946 Corelib.Init.Datatypes <> None constr
-R7951:7954 Corelib.Init.Datatypes <> None constr
-prf 8077:8100 <> exec_instr_deterministic
-binder 8111:8111 <> i:93
-binder 8113:8113 <> s:94
-binder 8115:8116 <> s1:95
-binder 8118:8119 <> s2:96
-R8148:8153 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R8138:8140 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R8124:8133 Synth.ARM.ArmSemantics <> exec_instr def
-R8135:8135 Synth.ARM.ArmSemantics <> i:93 var
-R8137:8137 Synth.ARM.ArmSemantics <> s:94 var
-R8141:8144 Corelib.Init.Datatypes <> Some constr
-R8146:8147 Synth.ARM.ArmSemantics <> s1:95 var
-R8178:8183 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R8168:8170 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R8154:8163 Synth.ARM.ArmSemantics <> exec_instr def
-R8165:8165 Synth.ARM.ArmSemantics <> i:93 var
-R8167:8167 Synth.ARM.ArmSemantics <> s:94 var
-R8171:8174 Corelib.Init.Datatypes <> Some constr
-R8176:8177 Synth.ARM.ArmSemantics <> s2:96 var
-R8186:8188 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R8184:8185 Synth.ARM.ArmSemantics <> s1:95 var
-R8189:8190 Synth.ARM.ArmSemantics <> s2:96 var
-prf 8324:8338 <> add_commutative
-binder 8349:8350 <> rd:97
-binder 8352:8353 <> rn:98
-binder 8355:8356 <> rm:99
-binder 8358:8358 <> s:100
-R8396:8400 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R8363:8372 Synth.ARM.ArmSemantics <> exec_instr def
-R8375:8377 Synth.ARM.ArmInstructions <> ADD constr
-R8379:8380 Synth.ARM.ArmSemantics <> rd:97 var
-R8382:8383 Synth.ARM.ArmSemantics <> rn:98 var
-R8386:8388 Synth.ARM.ArmInstructions <> Reg constr
-R8390:8391 Synth.ARM.ArmSemantics <> rm:99 var
-R8395:8395 Synth.ARM.ArmSemantics <> s:100 var
-R8401:8410 Synth.ARM.ArmSemantics <> exec_instr def
-R8413:8415 Synth.ARM.ArmInstructions <> ADD constr
-R8417:8418 Synth.ARM.ArmSemantics <> rd:97 var
-R8420:8421 Synth.ARM.ArmSemantics <> rm:99 var
-R8424:8426 Synth.ARM.ArmInstructions <> Reg constr
-R8428:8429 Synth.ARM.ArmSemantics <> rn:98 var
-R8433:8433 Synth.ARM.ArmSemantics <> s:100 var
-R8469:8481 Synth.ARM.ArmInstructions <> eval_operand2 def
-R8494:8507 Synth.Common.Integers I32 add_commut thm
-R8494:8507 Synth.Common.Integers I32 add_commut thm
-R8494:8507 Synth.Common.Integers I32 add_commut thm
-prf 8596:8620 <> exec_preserves_other_regs
-binder 8631:8632 <> rd:101
-binder 8634:8635 <> rn:102
-binder 8637:8638 <> rm:103
-binder 8640:8640 <> s:104
-binder 8642:8642 <> r:105
-R8654:8659 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R8648:8651 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
-R8647:8647 Synth.ARM.ArmSemantics <> r:105 var
-R8652:8653 Synth.ARM.ArmSemantics <> rd:101 var
-R8666:8675 Synth.ARM.ArmSemantics <> exec_instr def
-R8678:8680 Synth.ARM.ArmInstructions <> ADD constr
-R8682:8683 Synth.ARM.ArmSemantics <> rd:101 var
-R8685:8686 Synth.ARM.ArmSemantics <> rn:102 var
-R8689:8691 Synth.ARM.ArmInstructions <> Reg constr
-R8693:8694 Synth.ARM.ArmSemantics <> rm:103 var
-R8698:8698 Synth.ARM.ArmSemantics <> s:104 var
-R8709:8712 Corelib.Init.Datatypes <> Some constr
-R8732:8734 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R8720:8726 Synth.ARM.ArmState <> get_reg def
-R8731:8731 Synth.ARM.ArmSemantics <> r:105 var
-R8735:8741 Synth.ARM.ArmState <> get_reg def
-R8743:8743 Synth.ARM.ArmSemantics <> s:104 var
-R8745:8745 Synth.ARM.ArmSemantics <> r:105 var
-R8751:8754 Corelib.Init.Datatypes <> None constr
-R8759:8762 Corelib.Init.Logic <> True ind
-prf 8879:8892 <> add_zero_right
-binder 8903:8904 <> rd:106
-binder 8906:8907 <> rn:107
-binder 8909:8909 <> s:108
-R8953:8957 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R8914:8923 Synth.ARM.ArmSemantics <> exec_instr def
-R8926:8928 Synth.ARM.ArmInstructions <> ADD constr
-R8930:8931 Synth.ARM.ArmSemantics <> rd:106 var
-R8933:8934 Synth.ARM.ArmSemantics <> rn:107 var
-R8937:8939 Synth.ARM.ArmInstructions <> Imm constr
-R8941:8948 Synth.Common.Integers I32 zero def
-R8952:8952 Synth.ARM.ArmSemantics <> s:108 var
-R8958:8961 Corelib.Init.Datatypes <> Some constr
-R8964:8970 Synth.ARM.ArmState <> set_reg def
-R8972:8972 Synth.ARM.ArmSemantics <> s:108 var
-R8974:8975 Synth.ARM.ArmSemantics <> rd:106 var
-R8978:8984 Synth.ARM.ArmState <> get_reg def
-R8986:8986 Synth.ARM.ArmSemantics <> s:108 var
-R8988:8989 Synth.ARM.ArmSemantics <> rn:107 var
-prf 9145:9155 <> mov_correct
-binder 9166:9167 <> rd:109
-binder 9169:9170 <> rs:110
-binder 9172:9172 <> s:111
-R9207:9211 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R9177:9186 Synth.ARM.ArmSemantics <> exec_instr def
-R9189:9191 Synth.ARM.ArmInstructions <> MOV constr
-R9193:9194 Synth.ARM.ArmSemantics <> rd:109 var
-R9197:9199 Synth.ARM.ArmInstructions <> Reg constr
-R9201:9202 Synth.ARM.ArmSemantics <> rs:110 var
-R9206:9206 Synth.ARM.ArmSemantics <> s:111 var
-R9212:9215 Corelib.Init.Datatypes <> Some constr
-R9218:9224 Synth.ARM.ArmState <> set_reg def
-R9226:9226 Synth.ARM.ArmSemantics <> s:111 var
-R9228:9229 Synth.ARM.ArmSemantics <> rd:109 var
-R9232:9238 Synth.ARM.ArmState <> get_reg def
-R9240:9240 Synth.ARM.ArmSemantics <> s:111 var
-R9242:9243 Synth.ARM.ArmSemantics <> rs:110 var
-prf 9354:9369 <> exec_program_nil
-binder 9380:9380 <> s:112
-R9416:9418 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R9385:9396 Synth.ARM.ArmSemantics <> exec_program def
-R9400:9402 Corelib.Init.Datatypes <> nil constr
-R9404:9412 Synth.ARM.ArmInstructions <> arm_instr ind
-R9415:9415 Synth.ARM.ArmSemantics <> s:112 var
-R9419:9422 Corelib.Init.Datatypes <> Some constr
-R9424:9424 Synth.ARM.ArmSemantics <> s:112 var
-prf 9537:9552 <> exec_program_app
-binder 9563:9564 <> p1:113
-binder 9566:9567 <> p2:114
-binder 9569:9569 <> s:115
-R9599:9603 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R9574:9585 Synth.ARM.ArmSemantics <> exec_program def
-R9590:9593 Corelib.Init.Datatypes <> ::list_scope:x_'++'_x not
-R9588:9589 Synth.ARM.ArmSemantics <> p1:113 var
-R9594:9595 Synth.ARM.ArmSemantics <> p2:114 var
-R9598:9598 Synth.ARM.ArmSemantics <> s:115 var
-R9610:9621 Synth.ARM.ArmSemantics <> exec_program def
-R9623:9624 Synth.ARM.ArmSemantics <> p1:113 var
-R9626:9626 Synth.ARM.ArmSemantics <> s:115 var
-R9637:9640 Corelib.Init.Datatypes <> Some constr
-R9648:9659 Synth.ARM.ArmSemantics <> exec_program def
-R9661:9662 Synth.ARM.ArmSemantics <> p2:114 var
-R9671:9674 Corelib.Init.Datatypes <> None constr
-R9679:9682 Corelib.Init.Datatypes <> None constr
-R9767:9776 Synth.ARM.ArmSemantics <> exec_instr def
-R9767:9776 Synth.ARM.ArmSemantics <> exec_instr def
+R1152:1152 Synth.ARM.ArmSemantics <> x:7 var
+binder 1135:1136 <> sx:10
+R1169:1178 Synth.Common.Integers I32 signed def
+R1180:1180 Synth.ARM.ArmSemantics <> y:8 var
+binder 1163:1164 <> sy:11
+R1197:1206 Synth.Common.Integers I32 signed def
+R1208:1213 Synth.ARM.ArmSemantics <> result:9 var
+binder 1191:1192 <> sr:12
+R1276:1278 Corelib.Init.Datatypes <> orb def
+R1342:1345 Corelib.Init.Datatypes <> andb def
+R1381:1385 Stdlib.ZArith.BinInt Z leb def
+R1389:1390 Synth.ARM.ArmSemantics <> sr:12 var
+R1348:1351 Corelib.Init.Datatypes <> andb def
+R1367:1371 Stdlib.ZArith.BinInt Z ltb def
+R1373:1374 Synth.ARM.ArmSemantics <> sy:11 var
+R1354:1358 Stdlib.ZArith.BinInt Z ltb def
+R1360:1361 Synth.ARM.ArmSemantics <> sx:10 var
+R1285:1288 Corelib.Init.Datatypes <> andb def
+R1324:1328 Stdlib.ZArith.BinInt Z ltb def
+R1330:1331 Synth.ARM.ArmSemantics <> sr:12 var
+R1291:1294 Corelib.Init.Datatypes <> andb def
+R1310:1314 Stdlib.ZArith.BinInt Z leb def
+R1318:1319 Synth.ARM.ArmSemantics <> sy:11 var
+R1297:1301 Stdlib.ZArith.BinInt Z leb def
+R1305:1306 Synth.ARM.ArmSemantics <> sx:10 var
+def 1454:1471 <> update_flags_arith
+R1483:1489 Synth.Common.Integers I32 int def
+binder 1474:1479 <> result:13
+R1499:1502 Corelib.Init.Datatypes <> bool ind
+binder 1493:1493 <> c:14
+binder 1495:1495 <> v:15
+R1507:1521 Synth.ARM.ArmState <> condition_flags rec
+R1528:1534 Synth.ARM.ArmState <> mkFlags constr
+R1541:1554 Synth.ARM.ArmSemantics <> compute_n_flag def
+R1556:1561 Synth.ARM.ArmSemantics <> result:13 var
+R1569:1582 Synth.ARM.ArmSemantics <> compute_z_flag def
+R1584:1589 Synth.ARM.ArmSemantics <> result:13 var
+R1596:1596 Synth.ARM.ArmSemantics <> c:14 var
+R1602:1602 Synth.ARM.ArmSemantics <> v:15 var
+def 1690:1699 <> exec_instr
+R1706:1714 Synth.ARM.ArmInstructions <> arm_instr ind
+binder 1702:1702 <> i:16
+R1722:1730 Synth.ARM.ArmState <> arm_state rec
+binder 1718:1718 <> s:17
+R1735:1740 Corelib.Init.Datatypes <> option ind
+R1742:1750 Synth.ARM.ArmState <> arm_state rec
+R1763:1763 Synth.ARM.ArmSemantics <> i:16 var
+R1804:1806 Synth.ARM.ArmInstructions <> ADD constr
+R1837:1843 Synth.ARM.ArmState <> get_reg def
+R1845:1845 Synth.ARM.ArmSemantics <> s:17 var
+binder 1831:1832 <> v1:19
+R1869:1881 Synth.ARM.ArmInstructions <> eval_operand2 def
+R1887:1887 Synth.ARM.ArmSemantics <> s:17 var
+binder 1863:1864 <> v2:20
+R1912:1918 Synth.Common.Integers I32 add def
+R1920:1921 Synth.ARM.ArmSemantics <> v1:19 var
+R1923:1924 Synth.ARM.ArmSemantics <> v2:20 var
+binder 1902:1907 <> result:21
+R1935:1938 Corelib.Init.Datatypes <> Some constr
+R1941:1947 Synth.ARM.ArmState <> set_reg def
+R1949:1949 Synth.ARM.ArmSemantics <> s:17 var
+R1954:1959 Synth.ARM.ArmSemantics <> result:21 var
+R1967:1969 Synth.ARM.ArmInstructions <> SUB constr
+R2000:2006 Synth.ARM.ArmState <> get_reg def
+R2008:2008 Synth.ARM.ArmSemantics <> s:17 var
+binder 1994:1995 <> v1:22
+R2032:2044 Synth.ARM.ArmInstructions <> eval_operand2 def
+R2050:2050 Synth.ARM.ArmSemantics <> s:17 var
+binder 2026:2027 <> v2:23
+R2075:2081 Synth.Common.Integers I32 sub def
+R2083:2084 Synth.ARM.ArmSemantics <> v1:22 var
+R2086:2087 Synth.ARM.ArmSemantics <> v2:23 var
+binder 2065:2070 <> result:24
+R2098:2101 Corelib.Init.Datatypes <> Some constr
+R2104:2110 Synth.ARM.ArmState <> set_reg def
+R2112:2112 Synth.ARM.ArmSemantics <> s:17 var
+R2117:2122 Synth.ARM.ArmSemantics <> result:24 var
+R2130:2132 Synth.ARM.ArmInstructions <> MUL constr
+R2162:2168 Synth.ARM.ArmState <> get_reg def
+R2170:2170 Synth.ARM.ArmSemantics <> s:17 var
+binder 2156:2157 <> v1:25
+R2194:2200 Synth.ARM.ArmState <> get_reg def
+R2202:2202 Synth.ARM.ArmSemantics <> s:17 var
+binder 2188:2189 <> v2:26
+R2230:2236 Synth.Common.Integers I32 mul def
+R2238:2239 Synth.ARM.ArmSemantics <> v1:25 var
+R2241:2242 Synth.ARM.ArmSemantics <> v2:26 var
+binder 2220:2225 <> result:27
+R2253:2256 Corelib.Init.Datatypes <> Some constr
+R2259:2265 Synth.ARM.ArmState <> set_reg def
+R2267:2267 Synth.ARM.ArmSemantics <> s:17 var
+R2272:2277 Synth.ARM.ArmSemantics <> result:27 var
+R2285:2288 Synth.ARM.ArmInstructions <> SDIV constr
+R2318:2324 Synth.ARM.ArmState <> get_reg def
+R2326:2326 Synth.ARM.ArmSemantics <> s:17 var
+binder 2312:2313 <> v1:28
+R2350:2356 Synth.ARM.ArmState <> get_reg def
+R2358:2358 Synth.ARM.ArmSemantics <> s:17 var
+binder 2344:2345 <> v2:29
+R2378:2385 Synth.Common.Integers I32 divs def
+R2387:2388 Synth.ARM.ArmSemantics <> v1:28 var
+R2390:2391 Synth.ARM.ArmSemantics <> v2:29 var
+R2406:2409 Corelib.Init.Datatypes <> Some constr
+R2421:2424 Corelib.Init.Datatypes <> Some constr
+R2427:2433 Synth.ARM.ArmState <> set_reg def
+R2435:2435 Synth.ARM.ArmSemantics <> s:17 var
+R2456:2459 Corelib.Init.Datatypes <> None constr
+R2464:2467 Corelib.Init.Datatypes <> None constr
+R2520:2523 Synth.ARM.ArmInstructions <> UDIV constr
+R2553:2559 Synth.ARM.ArmState <> get_reg def
+R2561:2561 Synth.ARM.ArmSemantics <> s:17 var
+binder 2547:2548 <> v1:30
+R2585:2591 Synth.ARM.ArmState <> get_reg def
+R2593:2593 Synth.ARM.ArmSemantics <> s:17 var
+binder 2579:2580 <> v2:31
+R2613:2620 Synth.Common.Integers I32 divu def
+R2622:2623 Synth.ARM.ArmSemantics <> v1:30 var
+R2625:2626 Synth.ARM.ArmSemantics <> v2:31 var
+R2641:2644 Corelib.Init.Datatypes <> Some constr
+R2656:2659 Corelib.Init.Datatypes <> Some constr
+R2662:2668 Synth.ARM.ArmState <> set_reg def
+R2670:2670 Synth.ARM.ArmSemantics <> s:17 var
+R2691:2694 Corelib.Init.Datatypes <> None constr
+R2699:2702 Corelib.Init.Datatypes <> None constr
+R2743:2745 Synth.ARM.ArmInstructions <> MLS constr
+R2815:2821 Synth.ARM.ArmState <> get_reg def
+R2823:2823 Synth.ARM.ArmSemantics <> s:17 var
+binder 2809:2810 <> vn:32
+R2847:2853 Synth.ARM.ArmState <> get_reg def
+R2855:2855 Synth.ARM.ArmSemantics <> s:17 var
+binder 2841:2842 <> vm:33
+R2879:2885 Synth.ARM.ArmState <> get_reg def
+R2887:2887 Synth.ARM.ArmSemantics <> s:17 var
+binder 2873:2874 <> va:34
+R2916:2922 Synth.Common.Integers I32 mul def
+R2924:2925 Synth.ARM.ArmSemantics <> vn:32 var
+R2927:2928 Synth.ARM.ArmSemantics <> vm:33 var
+binder 2905:2911 <> product:35
+R2953:2959 Synth.Common.Integers I32 sub def
+R2961:2962 Synth.ARM.ArmSemantics <> va:34 var
+R2964:2970 Synth.ARM.ArmSemantics <> product:35 var
+binder 2943:2948 <> result:36
+R2981:2984 Corelib.Init.Datatypes <> Some constr
+R2987:2993 Synth.ARM.ArmState <> set_reg def
+R2995:2995 Synth.ARM.ArmSemantics <> s:17 var
+R3000:3005 Synth.ARM.ArmSemantics <> result:36 var
+R3040:3042 Synth.ARM.ArmInstructions <> AND constr
+R3073:3079 Synth.ARM.ArmState <> get_reg def
+R3081:3081 Synth.ARM.ArmSemantics <> s:17 var
+binder 3067:3068 <> v1:37
+R3105:3117 Synth.ARM.ArmInstructions <> eval_operand2 def
+R3123:3123 Synth.ARM.ArmSemantics <> s:17 var
+binder 3099:3100 <> v2:38
+R3148:3154 Synth.Common.Integers I32 and def
+R3156:3157 Synth.ARM.ArmSemantics <> v1:37 var
+R3159:3160 Synth.ARM.ArmSemantics <> v2:38 var
+binder 3138:3143 <> result:39
+R3171:3174 Corelib.Init.Datatypes <> Some constr
+R3177:3183 Synth.ARM.ArmState <> set_reg def
+R3185:3185 Synth.ARM.ArmSemantics <> s:17 var
+R3190:3195 Synth.ARM.ArmSemantics <> result:39 var
+R3203:3205 Synth.ARM.ArmInstructions <> ORR constr
+R3236:3242 Synth.ARM.ArmState <> get_reg def
+R3244:3244 Synth.ARM.ArmSemantics <> s:17 var
+binder 3230:3231 <> v1:40
+R3268:3280 Synth.ARM.ArmInstructions <> eval_operand2 def
+R3286:3286 Synth.ARM.ArmSemantics <> s:17 var
+binder 3262:3263 <> v2:41
+R3311:3316 Synth.Common.Integers I32 or def
+R3318:3319 Synth.ARM.ArmSemantics <> v1:40 var
+R3321:3322 Synth.ARM.ArmSemantics <> v2:41 var
+binder 3301:3306 <> result:42
+R3333:3336 Corelib.Init.Datatypes <> Some constr
+R3339:3345 Synth.ARM.ArmState <> set_reg def
+R3347:3347 Synth.ARM.ArmSemantics <> s:17 var
+R3352:3357 Synth.ARM.ArmSemantics <> result:42 var
+R3365:3367 Synth.ARM.ArmInstructions <> EOR constr
+R3398:3404 Synth.ARM.ArmState <> get_reg def
+R3406:3406 Synth.ARM.ArmSemantics <> s:17 var
+binder 3392:3393 <> v1:43
+R3430:3442 Synth.ARM.ArmInstructions <> eval_operand2 def
+R3448:3448 Synth.ARM.ArmSemantics <> s:17 var
+binder 3424:3425 <> v2:44
+R3473:3479 Synth.Common.Integers I32 xor def
+R3481:3482 Synth.ARM.ArmSemantics <> v1:43 var
+R3484:3485 Synth.ARM.ArmSemantics <> v2:44 var
+binder 3463:3468 <> result:45
+R3496:3499 Corelib.Init.Datatypes <> Some constr
+R3502:3508 Synth.ARM.ArmState <> set_reg def
+R3510:3510 Synth.ARM.ArmSemantics <> s:17 var
+R3515:3520 Synth.ARM.ArmSemantics <> result:45 var
+R3528:3530 Synth.ARM.ArmInstructions <> MVN constr
+R3557:3569 Synth.ARM.ArmInstructions <> eval_operand2 def
+R3575:3575 Synth.ARM.ArmSemantics <> s:17 var
+binder 3552:3552 <> v:46
+R3600:3607 Synth.Common.Integers I32 repr def
+R3610:3615 Stdlib.ZArith.BinInt Z lnot def
+R3618:3629 Synth.Common.Integers I32 unsigned def
+R3631:3631 Synth.ARM.ArmSemantics <> v:46 var
+binder 3590:3595 <> result:47
+R3644:3647 Corelib.Init.Datatypes <> Some constr
+R3650:3656 Synth.ARM.ArmState <> set_reg def
+R3658:3658 Synth.ARM.ArmSemantics <> s:17 var
+R3663:3668 Synth.ARM.ArmSemantics <> result:47 var
+R3701:3703 Synth.ARM.ArmInstructions <> LSL constr
+R3735:3741 Synth.ARM.ArmState <> get_reg def
+R3743:3743 Synth.ARM.ArmSemantics <> s:17 var
+binder 3730:3730 <> v:48
+R3774:3781 Synth.Common.Integers I32 repr def
+R3784:3791 Stdlib.ZArith.BinInt Z of_nat def
+binder 3761:3769 <> shift_amt:49
+R3823:3829 Synth.Common.Integers I32 shl def
+R3831:3831 Synth.ARM.ArmSemantics <> v:48 var
+R3833:3841 Synth.ARM.ArmSemantics <> shift_amt:49 var
+binder 3813:3818 <> result:50
+R3852:3855 Corelib.Init.Datatypes <> Some constr
+R3858:3864 Synth.ARM.ArmState <> set_reg def
+R3866:3866 Synth.ARM.ArmSemantics <> s:17 var
+R3871:3876 Synth.ARM.ArmSemantics <> result:50 var
+R3884:3886 Synth.ARM.ArmInstructions <> LSR constr
+R3918:3924 Synth.ARM.ArmState <> get_reg def
+R3926:3926 Synth.ARM.ArmSemantics <> s:17 var
+binder 3913:3913 <> v:51
+R3957:3964 Synth.Common.Integers I32 repr def
+R3967:3974 Stdlib.ZArith.BinInt Z of_nat def
+binder 3944:3952 <> shift_amt:52
+R4006:4013 Synth.Common.Integers I32 shru def
+R4015:4015 Synth.ARM.ArmSemantics <> v:51 var
+R4017:4025 Synth.ARM.ArmSemantics <> shift_amt:52 var
+binder 3996:4001 <> result:53
+R4036:4039 Corelib.Init.Datatypes <> Some constr
+R4042:4048 Synth.ARM.ArmState <> set_reg def
+R4050:4050 Synth.ARM.ArmSemantics <> s:17 var
+R4055:4060 Synth.ARM.ArmSemantics <> result:53 var
+R4068:4070 Synth.ARM.ArmInstructions <> ASR constr
+R4102:4108 Synth.ARM.ArmState <> get_reg def
+R4110:4110 Synth.ARM.ArmSemantics <> s:17 var
+binder 4097:4097 <> v:54
+R4141:4148 Synth.Common.Integers I32 repr def
+R4151:4158 Stdlib.ZArith.BinInt Z of_nat def
+binder 4128:4136 <> shift_amt:55
+R4190:4197 Synth.Common.Integers I32 shrs def
+R4199:4199 Synth.ARM.ArmSemantics <> v:54 var
+R4201:4209 Synth.ARM.ArmSemantics <> shift_amt:55 var
+binder 4180:4185 <> result:56
+R4220:4223 Corelib.Init.Datatypes <> Some constr
+R4226:4232 Synth.ARM.ArmState <> set_reg def
+R4234:4234 Synth.ARM.ArmSemantics <> s:17 var
+R4239:4244 Synth.ARM.ArmSemantics <> result:56 var
+R4252:4254 Synth.ARM.ArmInstructions <> ROR constr
+R4286:4292 Synth.ARM.ArmState <> get_reg def
+R4294:4294 Synth.ARM.ArmSemantics <> s:17 var
+binder 4281:4281 <> v:57
+R4325:4332 Synth.Common.Integers I32 repr def
+R4335:4342 Stdlib.ZArith.BinInt Z of_nat def
+binder 4312:4320 <> shift_amt:58
+R4374:4381 Synth.Common.Integers I32 rotr def
+R4383:4383 Synth.ARM.ArmSemantics <> v:57 var
+R4385:4393 Synth.ARM.ArmSemantics <> shift_amt:58 var
+binder 4364:4369 <> result:59
+R4404:4407 Corelib.Init.Datatypes <> Some constr
+R4410:4416 Synth.ARM.ArmState <> set_reg def
+R4418:4418 Synth.ARM.ArmSemantics <> s:17 var
+R4423:4428 Synth.ARM.ArmSemantics <> result:59 var
+R4460:4462 Synth.ARM.ArmInstructions <> MOV constr
+R4489:4501 Synth.ARM.ArmInstructions <> eval_operand2 def
+R4507:4507 Synth.ARM.ArmSemantics <> s:17 var
+binder 4484:4484 <> v:60
+R4518:4521 Corelib.Init.Datatypes <> Some constr
+R4524:4530 Synth.ARM.ArmState <> set_reg def
+R4532:4532 Synth.ARM.ArmSemantics <> s:17 var
+R4537:4537 Synth.ARM.ArmSemantics <> v:60 var
+R4545:4549 Synth.ARM.ArmInstructions <> MOVEQ constr
+R4646:4651 Synth.ARM.ArmState <> flag_z proj
+R4638:4642 Synth.ARM.ArmState <> flags proj
+R4635:4635 Synth.ARM.ArmSemantics <> s:17 var
+R4748:4751 Corelib.Init.Datatypes <> Some constr
+R4753:4753 Synth.ARM.ArmSemantics <> s:17 var
+R4676:4688 Synth.ARM.ArmInstructions <> eval_operand2 def
+R4694:4694 Synth.ARM.ArmSemantics <> s:17 var
+binder 4671:4671 <> v:61
+R4707:4710 Corelib.Init.Datatypes <> Some constr
+R4713:4719 Synth.ARM.ArmState <> set_reg def
+R4721:4721 Synth.ARM.ArmSemantics <> s:17 var
+R4726:4726 Synth.ARM.ArmSemantics <> v:61 var
+R4799:4803 Synth.ARM.ArmInstructions <> MOVNE constr
+R4906:4911 Synth.ARM.ArmState <> flag_z proj
+R4898:4902 Synth.ARM.ArmState <> flags proj
+R4895:4895 Synth.ARM.ArmSemantics <> s:17 var
+R5001:5013 Synth.ARM.ArmInstructions <> eval_operand2 def
+R5019:5019 Synth.ARM.ArmSemantics <> s:17 var
+binder 4996:4996 <> v:62
+R5032:5035 Corelib.Init.Datatypes <> Some constr
+R5038:5044 Synth.ARM.ArmState <> set_reg def
+R5046:5046 Synth.ARM.ArmSemantics <> s:17 var
+R5051:5051 Synth.ARM.ArmSemantics <> v:62 var
+R4927:4930 Corelib.Init.Datatypes <> Some constr
+R4932:4932 Synth.ARM.ArmSemantics <> s:17 var
+R5059:5063 Synth.ARM.ArmInstructions <> MOVLT constr
+R5123:5130 Stdlib.Bool.Bool <> eqb def
+R5143:5148 Synth.ARM.ArmState <> flag_n proj
+R5135:5139 Synth.ARM.ArmState <> flags proj
+R5132:5132 Synth.ARM.ArmSemantics <> s:17 var
+R5162:5167 Synth.ARM.ArmState <> flag_v proj
+R5154:5158 Synth.ARM.ArmState <> flags proj
+R5151:5151 Synth.ARM.ArmSemantics <> s:17 var
+R5218:5230 Synth.ARM.ArmInstructions <> eval_operand2 def
+R5236:5236 Synth.ARM.ArmSemantics <> s:17 var
+binder 5213:5213 <> v:63
+R5249:5252 Corelib.Init.Datatypes <> Some constr
+R5255:5261 Synth.ARM.ArmState <> set_reg def
+R5263:5263 Synth.ARM.ArmSemantics <> s:17 var
+R5268:5268 Synth.ARM.ArmSemantics <> v:63 var
+R5183:5186 Corelib.Init.Datatypes <> Some constr
+R5188:5188 Synth.ARM.ArmSemantics <> s:17 var
+R5276:5280 Synth.ARM.ArmInstructions <> MOVLE constr
+R5371:5374 Corelib.Init.Datatypes <> ::bool_scope:x_'||'_x not
+R5364:5369 Synth.ARM.ArmState <> flag_z proj
+R5356:5360 Synth.ARM.ArmState <> flags proj
+R5353:5353 Synth.ARM.ArmSemantics <> s:17 var
+R5375:5378 Corelib.Init.Datatypes <> negb def
+R5381:5388 Stdlib.Bool.Bool <> eqb def
+R5401:5406 Synth.ARM.ArmState <> flag_n proj
+R5393:5397 Synth.ARM.ArmState <> flags proj
+R5390:5390 Synth.ARM.ArmSemantics <> s:17 var
+R5420:5425 Synth.ARM.ArmState <> flag_v proj
+R5412:5416 Synth.ARM.ArmState <> flags proj
+R5409:5409 Synth.ARM.ArmSemantics <> s:17 var
+R5523:5526 Corelib.Init.Datatypes <> Some constr
+R5528:5528 Synth.ARM.ArmSemantics <> s:17 var
+R5451:5463 Synth.ARM.ArmInstructions <> eval_operand2 def
+R5469:5469 Synth.ARM.ArmSemantics <> s:17 var
+binder 5446:5446 <> v:64
+R5482:5485 Corelib.Init.Datatypes <> Some constr
+R5488:5494 Synth.ARM.ArmState <> set_reg def
+R5496:5496 Synth.ARM.ArmSemantics <> s:17 var
+R5501:5501 Synth.ARM.ArmSemantics <> v:64 var
+R5535:5539 Synth.ARM.ArmInstructions <> MOVGT constr
+R5637:5640 Corelib.Init.Datatypes <> ::bool_scope:x_'&&'_x not
+R5614:5617 Corelib.Init.Datatypes <> negb def
+R5630:5635 Synth.ARM.ArmState <> flag_z proj
+R5622:5626 Synth.ARM.ArmState <> flags proj
+R5619:5619 Synth.ARM.ArmSemantics <> s:17 var
+R5641:5648 Stdlib.Bool.Bool <> eqb def
+R5661:5666 Synth.ARM.ArmState <> flag_n proj
+R5653:5657 Synth.ARM.ArmState <> flags proj
+R5650:5650 Synth.ARM.ArmSemantics <> s:17 var
+R5680:5685 Synth.ARM.ArmState <> flag_v proj
+R5672:5676 Synth.ARM.ArmState <> flags proj
+R5669:5669 Synth.ARM.ArmSemantics <> s:17 var
+R5782:5785 Corelib.Init.Datatypes <> Some constr
+R5787:5787 Synth.ARM.ArmSemantics <> s:17 var
+R5710:5722 Synth.ARM.ArmInstructions <> eval_operand2 def
+R5728:5728 Synth.ARM.ArmSemantics <> s:17 var
+binder 5705:5705 <> v:65
+R5741:5744 Corelib.Init.Datatypes <> Some constr
+R5747:5753 Synth.ARM.ArmState <> set_reg def
+R5755:5755 Synth.ARM.ArmSemantics <> s:17 var
+R5760:5760 Synth.ARM.ArmSemantics <> v:65 var
+R5794:5798 Synth.ARM.ArmInstructions <> MOVGE constr
+R5865:5872 Stdlib.Bool.Bool <> eqb def
+R5885:5890 Synth.ARM.ArmState <> flag_n proj
+R5877:5881 Synth.ARM.ArmState <> flags proj
+R5874:5874 Synth.ARM.ArmSemantics <> s:17 var
+R5904:5909 Synth.ARM.ArmState <> flag_v proj
+R5896:5900 Synth.ARM.ArmState <> flags proj
+R5893:5893 Synth.ARM.ArmSemantics <> s:17 var
+R6006:6009 Corelib.Init.Datatypes <> Some constr
+R6011:6011 Synth.ARM.ArmSemantics <> s:17 var
+R5934:5946 Synth.ARM.ArmInstructions <> eval_operand2 def
+R5952:5952 Synth.ARM.ArmSemantics <> s:17 var
+binder 5929:5929 <> v:66
+R5965:5968 Corelib.Init.Datatypes <> Some constr
+R5971:5977 Synth.ARM.ArmState <> set_reg def
+R5979:5979 Synth.ARM.ArmSemantics <> s:17 var
+R5984:5984 Synth.ARM.ArmSemantics <> v:66 var
+R6018:6022 Synth.ARM.ArmInstructions <> MOVLO constr
+R6092:6097 Synth.ARM.ArmState <> flag_c proj
+R6084:6088 Synth.ARM.ArmState <> flags proj
+R6081:6081 Synth.ARM.ArmSemantics <> s:17 var
+R6148:6160 Synth.ARM.ArmInstructions <> eval_operand2 def
+R6166:6166 Synth.ARM.ArmSemantics <> s:17 var
+binder 6143:6143 <> v:67
+R6179:6182 Corelib.Init.Datatypes <> Some constr
+R6185:6191 Synth.ARM.ArmState <> set_reg def
+R6193:6193 Synth.ARM.ArmSemantics <> s:17 var
+R6198:6198 Synth.ARM.ArmSemantics <> v:67 var
+R6113:6116 Corelib.Init.Datatypes <> Some constr
+R6118:6118 Synth.ARM.ArmSemantics <> s:17 var
+R6206:6210 Synth.ARM.ArmInstructions <> MOVLS constr
+R6309:6312 Corelib.Init.Datatypes <> ::bool_scope:x_'||'_x not
+R6286:6289 Corelib.Init.Datatypes <> negb def
+R6302:6307 Synth.ARM.ArmState <> flag_c proj
+R6294:6298 Synth.ARM.ArmState <> flags proj
+R6291:6291 Synth.ARM.ArmSemantics <> s:17 var
+R6324:6329 Synth.ARM.ArmState <> flag_z proj
+R6316:6320 Synth.ARM.ArmState <> flags proj
+R6313:6313 Synth.ARM.ArmSemantics <> s:17 var
+R6426:6429 Corelib.Init.Datatypes <> Some constr
+R6431:6431 Synth.ARM.ArmSemantics <> s:17 var
+R6354:6366 Synth.ARM.ArmInstructions <> eval_operand2 def
+R6372:6372 Synth.ARM.ArmSemantics <> s:17 var
+binder 6349:6349 <> v:68
+R6385:6388 Corelib.Init.Datatypes <> Some constr
+R6391:6397 Synth.ARM.ArmState <> set_reg def
+R6399:6399 Synth.ARM.ArmSemantics <> s:17 var
+R6404:6404 Synth.ARM.ArmSemantics <> v:68 var
+R6438:6442 Synth.ARM.ArmInstructions <> MOVHI constr
+R6530:6533 Corelib.Init.Datatypes <> ::bool_scope:x_'&&'_x not
+R6523:6528 Synth.ARM.ArmState <> flag_c proj
+R6515:6519 Synth.ARM.ArmState <> flags proj
+R6512:6512 Synth.ARM.ArmSemantics <> s:17 var
+R6534:6537 Corelib.Init.Datatypes <> negb def
+R6550:6555 Synth.ARM.ArmState <> flag_z proj
+R6542:6546 Synth.ARM.ArmState <> flags proj
+R6539:6539 Synth.ARM.ArmSemantics <> s:17 var
+R6652:6655 Corelib.Init.Datatypes <> Some constr
+R6657:6657 Synth.ARM.ArmSemantics <> s:17 var
+R6580:6592 Synth.ARM.ArmInstructions <> eval_operand2 def
+R6598:6598 Synth.ARM.ArmSemantics <> s:17 var
+binder 6575:6575 <> v:69
+R6611:6614 Corelib.Init.Datatypes <> Some constr
+R6617:6623 Synth.ARM.ArmState <> set_reg def
+R6625:6625 Synth.ARM.ArmSemantics <> s:17 var
+R6630:6630 Synth.ARM.ArmSemantics <> v:69 var
+R6664:6668 Synth.ARM.ArmInstructions <> MOVHS constr
+R6745:6750 Synth.ARM.ArmState <> flag_c proj
+R6737:6741 Synth.ARM.ArmState <> flags proj
+R6734:6734 Synth.ARM.ArmSemantics <> s:17 var
+R6847:6850 Corelib.Init.Datatypes <> Some constr
+R6852:6852 Synth.ARM.ArmSemantics <> s:17 var
+R6775:6787 Synth.ARM.ArmInstructions <> eval_operand2 def
+R6793:6793 Synth.ARM.ArmSemantics <> s:17 var
+binder 6770:6770 <> v:70
+R6806:6809 Corelib.Init.Datatypes <> Some constr
+R6812:6818 Synth.ARM.ArmState <> set_reg def
+R6820:6820 Synth.ARM.ArmSemantics <> s:17 var
+R6825:6825 Synth.ARM.ArmSemantics <> v:70 var
+R6859:6862 Synth.ARM.ArmInstructions <> MOVW constr
+R6931:6934 Corelib.Init.Datatypes <> Some constr
+R6937:6943 Synth.ARM.ArmState <> set_reg def
+R6945:6945 Synth.ARM.ArmSemantics <> s:17 var
+R6960:6963 Synth.ARM.ArmInstructions <> MOVT constr
+R7047:7053 Synth.ARM.ArmState <> get_reg def
+R7055:7055 Synth.ARM.ArmSemantics <> s:17 var
+binder 7036:7042 <> current:71
+R7082:7088 Synth.Common.Integers I32 and def
+R7090:7096 Synth.ARM.ArmSemantics <> current:71 var
+R7099:7106 Synth.Common.Integers I32 repr def
+binder 7073:7077 <> lower:72
+R7138:7144 Synth.Common.Integers I32 shl def
+R7151:7158 Synth.Common.Integers I32 repr def
+binder 7129:7133 <> upper:73
+R7187:7192 Synth.Common.Integers I32 or def
+R7194:7198 Synth.ARM.ArmSemantics <> lower:72 var
+R7200:7204 Synth.ARM.ArmSemantics <> upper:73 var
+binder 7177:7182 <> result:74
+R7215:7218 Corelib.Init.Datatypes <> Some constr
+R7221:7227 Synth.ARM.ArmState <> set_reg def
+R7229:7229 Synth.ARM.ArmSemantics <> s:17 var
+R7234:7239 Synth.ARM.ArmSemantics <> result:74 var
+R7266:7268 Synth.ARM.ArmInstructions <> CMP constr
+R7296:7302 Synth.ARM.ArmState <> get_reg def
+R7304:7304 Synth.ARM.ArmSemantics <> s:17 var
+binder 7290:7291 <> v1:75
+R7328:7340 Synth.ARM.ArmInstructions <> eval_operand2 def
+R7346:7346 Synth.ARM.ArmSemantics <> s:17 var
+binder 7322:7323 <> v2:76
+R7371:7377 Synth.Common.Integers I32 sub def
+R7379:7380 Synth.ARM.ArmSemantics <> v1:75 var
+R7382:7383 Synth.ARM.ArmSemantics <> v2:76 var
+binder 7361:7366 <> result:77
+R7456:7473 Synth.ARM.ArmSemantics <> compute_c_flag_add def
+R7475:7476 Synth.ARM.ArmSemantics <> v1:75 var
+R7479:7485 Synth.Common.Integers I32 sub def
+R7487:7494 Synth.Common.Integers I32 zero def
+R7496:7497 Synth.ARM.ArmSemantics <> v2:76 var
+binder 7451:7451 <> c:78
+R7518:7535 Synth.ARM.ArmSemantics <> compute_v_flag_add def
+R7537:7538 Synth.ARM.ArmSemantics <> v1:75 var
+R7541:7547 Synth.Common.Integers I32 sub def
+R7549:7556 Synth.Common.Integers I32 zero def
+R7558:7559 Synth.ARM.ArmSemantics <> v2:76 var
+R7562:7567 Synth.ARM.ArmSemantics <> result:77 var
+binder 7513:7513 <> v:79
+R7595:7612 Synth.ARM.ArmSemantics <> update_flags_arith def
+R7614:7619 Synth.ARM.ArmSemantics <> result:77 var
+R7621:7621 Synth.ARM.ArmSemantics <> c:78 var
+R7623:7623 Synth.ARM.ArmSemantics <> v:79 var
+binder 7582:7590 <> new_flags:80
+R7634:7637 Corelib.Init.Datatypes <> Some constr
+R7640:7648 Synth.ARM.ArmState <> set_flags def
+R7650:7650 Synth.ARM.ArmSemantics <> s:17 var
+R7652:7660 Synth.ARM.ArmSemantics <> new_flags:80 var
+R7722:7724 Synth.ARM.ArmInstructions <> CLZ constr
+R7796:7802 Synth.ARM.ArmState <> get_reg def
+R7804:7804 Synth.ARM.ArmSemantics <> s:17 var
+binder 7791:7791 <> v:81
+R7876:7879 Corelib.Init.Datatypes <> Some constr
+R7882:7888 Synth.ARM.ArmState <> set_reg def
+R7890:7890 Synth.ARM.ArmSemantics <> s:17 var
+R7895:7902 Synth.Common.Integers I32 zero def
+R7910:7913 Synth.ARM.ArmInstructions <> RBIT constr
+R7978:7984 Synth.ARM.ArmState <> get_reg def
+R7986:7986 Synth.ARM.ArmSemantics <> s:17 var
+binder 7973:7973 <> v:82
+R8000:8003 Corelib.Init.Datatypes <> Some constr
+R8006:8012 Synth.ARM.ArmState <> set_reg def
+R8014:8014 Synth.ARM.ArmSemantics <> s:17 var
+R8019:8019 Synth.ARM.ArmSemantics <> v:82 var
+R8027:8032 Synth.ARM.ArmInstructions <> POPCNT constr
+R8101:8107 Synth.ARM.ArmState <> get_reg def
+R8109:8109 Synth.ARM.ArmSemantics <> s:17 var
+binder 8096:8096 <> v:83
+R8123:8126 Corelib.Init.Datatypes <> Some constr
+R8129:8135 Synth.ARM.ArmState <> set_reg def
+R8137:8137 Synth.ARM.ArmSemantics <> s:17 var
+R8142:8149 Synth.Common.Integers I32 zero def
+R8183:8185 Synth.ARM.ArmInstructions <> LDR constr
+R8221:8227 Synth.ARM.ArmState <> get_reg def
+R8229:8229 Synth.ARM.ArmSemantics <> s:17 var
+binder 8213:8216 <> base:84
+R8255:8261 Synth.Common.Integers I32 add def
+R8263:8266 Synth.ARM.ArmSemantics <> base:84 var
+R8269:8276 Synth.Common.Integers I32 repr def
+binder 8247:8250 <> addr:85
+R8308:8315 Synth.ARM.ArmState <> load_mem def
+R8317:8317 Synth.ARM.ArmSemantics <> s:17 var
+R8320:8329 Synth.Common.Integers I32 signed def
+R8331:8334 Synth.ARM.ArmSemantics <> addr:85 var
+binder 8299:8303 <> value:86
+R8346:8349 Corelib.Init.Datatypes <> Some constr
+R8352:8358 Synth.ARM.ArmState <> set_reg def
+R8360:8360 Synth.ARM.ArmSemantics <> s:17 var
+R8365:8369 Synth.ARM.ArmSemantics <> value:86 var
+R8377:8379 Synth.ARM.ArmInstructions <> STR constr
+R8415:8421 Synth.ARM.ArmState <> get_reg def
+R8423:8423 Synth.ARM.ArmSemantics <> s:17 var
+binder 8407:8410 <> base:87
+R8449:8455 Synth.Common.Integers I32 add def
+R8457:8460 Synth.ARM.ArmSemantics <> base:87 var
+R8463:8470 Synth.Common.Integers I32 repr def
+binder 8441:8444 <> addr:88
+R8502:8508 Synth.ARM.ArmState <> get_reg def
+R8510:8510 Synth.ARM.ArmSemantics <> s:17 var
+binder 8493:8497 <> value:89
+R8524:8527 Corelib.Init.Datatypes <> Some constr
+R8530:8538 Synth.ARM.ArmState <> store_mem def
+R8540:8540 Synth.ARM.ArmSemantics <> s:17 var
+R8543:8552 Synth.Common.Integers I32 signed def
+R8554:8557 Synth.ARM.ArmSemantics <> addr:88 var
+R8560:8564 Synth.ARM.ArmSemantics <> value:89 var
+R8606:8606 Synth.ARM.ArmInstructions <> B constr
+R8672:8678 Synth.ARM.ArmState <> get_reg def
+R8680:8680 Synth.ARM.ArmSemantics <> s:17 var
+R8682:8683 Synth.ARM.ArmState <> PC constr
+binder 8658:8667 <> current_pc:90
+R8708:8714 Synth.Common.Integers I32 add def
+R8716:8725 Synth.ARM.ArmSemantics <> current_pc:90 var
+R8728:8735 Synth.Common.Integers I32 repr def
+binder 8698:8703 <> new_pc:91
+R8754:8757 Corelib.Init.Datatypes <> Some constr
+R8760:8766 Synth.ARM.ArmState <> set_reg def
+R8768:8768 Synth.ARM.ArmSemantics <> s:17 var
+R8770:8771 Synth.ARM.ArmState <> PC constr
+R8773:8778 Synth.ARM.ArmSemantics <> new_pc:91 var
+R8786:8787 Synth.ARM.ArmInstructions <> BL constr
+R8879:8885 Synth.ARM.ArmState <> get_reg def
+R8887:8887 Synth.ARM.ArmSemantics <> s:17 var
+R8889:8890 Synth.ARM.ArmState <> PC constr
+binder 8865:8874 <> current_pc:92
+R8920:8926 Synth.Common.Integers I32 add def
+R8928:8937 Synth.ARM.ArmSemantics <> current_pc:92 var
+R8940:8947 Synth.Common.Integers I32 repr def
+binder 8905:8915 <> return_addr:93
+R8971:8977 Synth.ARM.ArmState <> set_reg def
+R8979:8979 Synth.ARM.ArmSemantics <> s:17 var
+R8981:8982 Synth.ARM.ArmState <> LR constr
+R8984:8994 Synth.ARM.ArmSemantics <> return_addr:93 var
+binder 8965:8966 <> s':94
+R9019:9025 Synth.Common.Integers I32 add def
+R9027:9036 Synth.ARM.ArmSemantics <> current_pc:92 var
+R9039:9046 Synth.Common.Integers I32 repr def
+binder 9009:9014 <> new_pc:95
+R9065:9068 Corelib.Init.Datatypes <> Some constr
+R9071:9077 Synth.ARM.ArmState <> set_reg def
+R9079:9080 Synth.ARM.ArmSemantics <> s':94 var
+R9082:9083 Synth.ARM.ArmState <> PC constr
+R9085:9090 Synth.ARM.ArmSemantics <> new_pc:95 var
+R9098:9099 Synth.ARM.ArmInstructions <> BX constr
+R9159:9165 Synth.ARM.ArmState <> get_reg def
+R9167:9167 Synth.ARM.ArmSemantics <> s:17 var
+binder 9149:9154 <> target:96
+R9181:9184 Corelib.Init.Datatypes <> Some constr
+R9187:9193 Synth.ARM.ArmState <> set_reg def
+R9195:9195 Synth.ARM.ArmSemantics <> s:17 var
+R9197:9198 Synth.ARM.ArmState <> PC constr
+R9200:9205 Synth.ARM.ArmSemantics <> target:96 var
+R9259:9266 Synth.ARM.ArmInstructions <> VADD_F32 constr
+R9354:9357 Corelib.Init.Datatypes <> Some constr
+R9359:9359 Synth.ARM.ArmSemantics <> s:17 var
+R9366:9373 Synth.ARM.ArmInstructions <> VSUB_F32 constr
+R9393:9396 Corelib.Init.Datatypes <> Some constr
+R9398:9398 Synth.ARM.ArmSemantics <> s:17 var
+R9405:9412 Synth.ARM.ArmInstructions <> VMUL_F32 constr
+R9432:9435 Corelib.Init.Datatypes <> Some constr
+R9437:9437 Synth.ARM.ArmSemantics <> s:17 var
+R9444:9451 Synth.ARM.ArmInstructions <> VDIV_F32 constr
+R9471:9474 Corelib.Init.Datatypes <> Some constr
+R9476:9476 Synth.ARM.ArmSemantics <> s:17 var
+R9526:9529 Corelib.Init.Datatypes <> Some constr
+R9531:9531 Synth.ARM.ArmSemantics <> s:17 var
+def 9592:9603 <> exec_program
+R9613:9616 Corelib.Init.Datatypes <> list ind
+R9618:9626 Synth.ARM.ArmInstructions <> arm_instr ind
+binder 9606:9609 <> prog:97
+R9634:9642 Synth.ARM.ArmState <> arm_state rec
+binder 9630:9630 <> s:98
+R9647:9652 Corelib.Init.Datatypes <> option ind
+R9654:9662 Synth.ARM.ArmState <> arm_state rec
+R9675:9678 Synth.ARM.ArmSemantics <> prog:97 var
+R9689:9690 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R9695:9698 Corelib.Init.Datatypes <> Some constr
+R9700:9700 Synth.ARM.ArmSemantics <> s:98 var
+R9707:9710 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R9731:9740 Synth.ARM.ArmSemantics <> exec_instr def
+R9744:9744 Synth.ARM.ArmSemantics <> s:98 var
+R9759:9762 Corelib.Init.Datatypes <> Some constr
+R9770:9781 Synth.ARM.ArmSemantics <> exec_program:99 def
+R9799:9802 Corelib.Init.Datatypes <> None constr
+R9807:9810 Corelib.Init.Datatypes <> None constr
+prf 9933:9956 <> exec_instr_deterministic
+binder 9967:9967 <> i:101
+binder 9969:9969 <> s:102
+binder 9971:9972 <> s1:103
+binder 9974:9975 <> s2:104
+R10004:10009 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R9994:9996 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R9980:9989 Synth.ARM.ArmSemantics <> exec_instr def
+R9991:9991 Synth.ARM.ArmSemantics <> i:101 var
+R9993:9993 Synth.ARM.ArmSemantics <> s:102 var
+R9997:10000 Corelib.Init.Datatypes <> Some constr
+R10002:10003 Synth.ARM.ArmSemantics <> s1:103 var
+R10034:10039 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R10024:10026 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10010:10019 Synth.ARM.ArmSemantics <> exec_instr def
+R10021:10021 Synth.ARM.ArmSemantics <> i:101 var
+R10023:10023 Synth.ARM.ArmSemantics <> s:102 var
+R10027:10030 Corelib.Init.Datatypes <> Some constr
+R10032:10033 Synth.ARM.ArmSemantics <> s2:104 var
+R10042:10044 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10040:10041 Synth.ARM.ArmSemantics <> s1:103 var
+R10045:10046 Synth.ARM.ArmSemantics <> s2:104 var
+prf 10180:10194 <> add_commutative
+binder 10205:10206 <> rd:105
+binder 10208:10209 <> rn:106
+binder 10211:10212 <> rm:107
+binder 10214:10214 <> s:108
+R10252:10256 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10219:10228 Synth.ARM.ArmSemantics <> exec_instr def
+R10231:10233 Synth.ARM.ArmInstructions <> ADD constr
+R10235:10236 Synth.ARM.ArmSemantics <> rd:105 var
+R10238:10239 Synth.ARM.ArmSemantics <> rn:106 var
+R10242:10244 Synth.ARM.ArmInstructions <> Reg constr
+R10246:10247 Synth.ARM.ArmSemantics <> rm:107 var
+R10251:10251 Synth.ARM.ArmSemantics <> s:108 var
+R10257:10266 Synth.ARM.ArmSemantics <> exec_instr def
+R10269:10271 Synth.ARM.ArmInstructions <> ADD constr
+R10273:10274 Synth.ARM.ArmSemantics <> rd:105 var
+R10276:10277 Synth.ARM.ArmSemantics <> rm:107 var
+R10280:10282 Synth.ARM.ArmInstructions <> Reg constr
+R10284:10285 Synth.ARM.ArmSemantics <> rn:106 var
+R10289:10289 Synth.ARM.ArmSemantics <> s:108 var
+R10325:10337 Synth.ARM.ArmInstructions <> eval_operand2 def
+R10350:10363 Synth.Common.Integers I32 add_commut thm
+R10350:10363 Synth.Common.Integers I32 add_commut thm
+R10350:10363 Synth.Common.Integers I32 add_commut thm
+prf 10452:10476 <> exec_preserves_other_regs
+binder 10487:10488 <> rd:109
+binder 10490:10491 <> rn:110
+binder 10493:10494 <> rm:111
+binder 10496:10496 <> s:112
+binder 10498:10498 <> r:113
+R10510:10515 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R10504:10507 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R10503:10503 Synth.ARM.ArmSemantics <> r:113 var
+R10508:10509 Synth.ARM.ArmSemantics <> rd:109 var
+R10522:10531 Synth.ARM.ArmSemantics <> exec_instr def
+R10534:10536 Synth.ARM.ArmInstructions <> ADD constr
+R10538:10539 Synth.ARM.ArmSemantics <> rd:109 var
+R10541:10542 Synth.ARM.ArmSemantics <> rn:110 var
+R10545:10547 Synth.ARM.ArmInstructions <> Reg constr
+R10549:10550 Synth.ARM.ArmSemantics <> rm:111 var
+R10554:10554 Synth.ARM.ArmSemantics <> s:112 var
+R10565:10568 Corelib.Init.Datatypes <> Some constr
+R10588:10590 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10576:10582 Synth.ARM.ArmState <> get_reg def
+R10587:10587 Synth.ARM.ArmSemantics <> r:113 var
+R10591:10597 Synth.ARM.ArmState <> get_reg def
+R10599:10599 Synth.ARM.ArmSemantics <> s:112 var
+R10601:10601 Synth.ARM.ArmSemantics <> r:113 var
+R10607:10610 Corelib.Init.Datatypes <> None constr
+R10615:10618 Corelib.Init.Logic <> True ind
+prf 10735:10748 <> add_zero_right
+binder 10759:10760 <> rd:114
+binder 10762:10763 <> rn:115
+binder 10765:10765 <> s:116
+R10809:10813 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10770:10779 Synth.ARM.ArmSemantics <> exec_instr def
+R10782:10784 Synth.ARM.ArmInstructions <> ADD constr
+R10786:10787 Synth.ARM.ArmSemantics <> rd:114 var
+R10789:10790 Synth.ARM.ArmSemantics <> rn:115 var
+R10793:10795 Synth.ARM.ArmInstructions <> Imm constr
+R10797:10804 Synth.Common.Integers I32 zero def
+R10808:10808 Synth.ARM.ArmSemantics <> s:116 var
+R10814:10817 Corelib.Init.Datatypes <> Some constr
+R10820:10826 Synth.ARM.ArmState <> set_reg def
+R10828:10828 Synth.ARM.ArmSemantics <> s:116 var
+R10830:10831 Synth.ARM.ArmSemantics <> rd:114 var
+R10834:10840 Synth.ARM.ArmState <> get_reg def
+R10842:10842 Synth.ARM.ArmSemantics <> s:116 var
+R10844:10845 Synth.ARM.ArmSemantics <> rn:115 var
+prf 11001:11011 <> mov_correct
+binder 11022:11023 <> rd:117
+binder 11025:11026 <> rs:118
+binder 11028:11028 <> s:119
+R11063:11067 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R11033:11042 Synth.ARM.ArmSemantics <> exec_instr def
+R11045:11047 Synth.ARM.ArmInstructions <> MOV constr
+R11049:11050 Synth.ARM.ArmSemantics <> rd:117 var
+R11053:11055 Synth.ARM.ArmInstructions <> Reg constr
+R11057:11058 Synth.ARM.ArmSemantics <> rs:118 var
+R11062:11062 Synth.ARM.ArmSemantics <> s:119 var
+R11068:11071 Corelib.Init.Datatypes <> Some constr
+R11074:11080 Synth.ARM.ArmState <> set_reg def
+R11082:11082 Synth.ARM.ArmSemantics <> s:119 var
+R11084:11085 Synth.ARM.ArmSemantics <> rd:117 var
+R11088:11094 Synth.ARM.ArmState <> get_reg def
+R11096:11096 Synth.ARM.ArmSemantics <> s:119 var
+R11098:11099 Synth.ARM.ArmSemantics <> rs:118 var
+prf 11210:11225 <> exec_program_nil
+binder 11236:11236 <> s:120
+R11272:11274 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R11241:11252 Synth.ARM.ArmSemantics <> exec_program def
+R11256:11258 Corelib.Init.Datatypes <> nil constr
+R11260:11268 Synth.ARM.ArmInstructions <> arm_instr ind
+R11271:11271 Synth.ARM.ArmSemantics <> s:120 var
+R11275:11278 Corelib.Init.Datatypes <> Some constr
+R11280:11280 Synth.ARM.ArmSemantics <> s:120 var
+prf 11393:11408 <> exec_program_app
+binder 11419:11420 <> p1:121
+binder 11422:11423 <> p2:122
+binder 11425:11425 <> s:123
+R11455:11459 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R11430:11441 Synth.ARM.ArmSemantics <> exec_program def
+R11446:11449 Corelib.Init.Datatypes <> ::list_scope:x_'++'_x not
+R11444:11445 Synth.ARM.ArmSemantics <> p1:121 var
+R11450:11451 Synth.ARM.ArmSemantics <> p2:122 var
+R11454:11454 Synth.ARM.ArmSemantics <> s:123 var
+R11466:11477 Synth.ARM.ArmSemantics <> exec_program def
+R11479:11480 Synth.ARM.ArmSemantics <> p1:121 var
+R11482:11482 Synth.ARM.ArmSemantics <> s:123 var
+R11493:11496 Corelib.Init.Datatypes <> Some constr
+R11504:11515 Synth.ARM.ArmSemantics <> exec_program def
+R11517:11518 Synth.ARM.ArmSemantics <> p2:122 var
+R11527:11530 Corelib.Init.Datatypes <> None constr
+R11535:11538 Corelib.Init.Datatypes <> None constr
+R11623:11632 Synth.ARM.ArmSemantics <> exec_instr def
+R11623:11632 Synth.ARM.ArmSemantics <> exec_instr def

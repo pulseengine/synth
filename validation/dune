@@ -14,7 +14,7 @@
 
 (executable
  (name comprehensive_suite)
- (modules BinNums BinPos Datatypes Specif PeanoNat PosDef NatDef BinInt Base Integers List0
+ (modules BinNums BinPos Datatypes Specif PeanoNat PosDef NatDef BinInt Base Integers List0 Bool
           ArmState ArmInstructions WasmValues WasmInstructions ArmSemantics WasmSemantics
           Compilation comprehensive_suite)
  (flags (:standard -w -33 -w -27)))
