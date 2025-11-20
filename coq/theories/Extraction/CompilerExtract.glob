@@ -1,0 +1,24 @@
+DIGEST 3ba7248f277dbd11c6298cda4a6f4180
+FSynth.Extraction.CompilerExtract
+R197:206 Stdlib.extraction.Extraction <> <> lib
+R236:249 Stdlib.extraction.ExtrOcamlBasic <> <> lib
+R279:293 Stdlib.extraction.ExtrOcamlString <> <> lib
+R323:338 Stdlib.extraction.ExtrOcamlIntConv <> <> lib
+R368:382 Stdlib.extraction.ExtrOcamlNatInt <> <> lib
+R412:424 Stdlib.extraction.ExtrOcamlZInt <> <> lib
+R477:493 Synth.Common.Base <> <> lib
+R511:531 Synth.Common.Integers <> <> lib
+R549:569 Synth.WASM.WasmValues <> <> lib
+R587:613 Synth.WASM.WasmInstructions <> <> lib
+R631:654 Synth.WASM.WasmSemantics <> <> lib
+R672:696 Synth.ARM.ArmInstructions <> <> lib
+R714:731 Synth.ARM.ArmState <> <> lib
+R749:770 Synth.ARM.ArmSemantics <> <> lib
+R788:810 Synth.Synth.Compilation <> <> lib
+R899:901 Corelib.Init.Datatypes <> nat ind
+R1047:1050 Corelib.Init.Datatypes <> bool ind
+R1138:1143 Corelib.Init.Datatypes <> option ind
+R1228:1231 Corelib.Init.Datatypes <> list ind
+R1298:1301 Corelib.Init.Datatypes <> unit ind
+R1362:1365 Corelib.Init.Datatypes <> prod ind
+R1437:1443 Corelib.Init.Specif <> sumbool ind
