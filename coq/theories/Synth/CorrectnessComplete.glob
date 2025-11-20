@@ -1,2 +1,43 @@
-DIGEST 33f91559c80fe82975a683381c06d158
+DIGEST b85b457fb887198d7b8e00e114590cb1
 FSynth.Synth.CorrectnessComplete
+R446:451 Stdlib.QArith.QArith <> <> lib
+R469:491 Synth.Synth.Correctness <> <> lib
+R509:537 Synth.Synth.CorrectnessSimple <> <> lib
+R555:580 Synth.Synth.CorrectnessI32 <> <> lib
+R598:623 Synth.Synth.CorrectnessI64 <> <> lib
+R641:674 Synth.Synth.CorrectnessConversions <> <> lib
+R692:728 Synth.Synth.CorrectnessI64Comparisons <> <> lib
+mod 2587:2601 <> ProgressMetrics
+def 2618:2633 ProgressMetrics total_operations
+R2637:2639 Corelib.Init.Datatypes <> nat ind
+def 2663:2674 ProgressMetrics fully_proven
+R2678:2680 Corelib.Init.Datatypes <> nat ind
+def 3321:3339 ProgressMetrics structured_admitted
+R3343:3345 Corelib.Init.Datatypes <> nat ind
+def 3585:3610 ProgressMetrics theorem_statements_defined
+R3614:3616 Corelib.Init.Datatypes <> nat ind
+def 4175:4195 ProgressMetrics completion_percentage
+R4199:4199 Stdlib.QArith.QArith_base <> Q rec
+R4206:4208 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
+def 4289:4307 ProgressMetrics coverage_percentage
+R4311:4311 Stdlib.QArith.QArith_base <> Q rec
+R4319:4321 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
+R4412:4426 Synth.Synth.CorrectnessComplete ProgressMetrics <> mod
+mod 10272:10281 <> Statistics
+def 10349:10360 Statistics lines_of_coq
+R10364:10366 Corelib.Init.Datatypes <> nat ind
+def 10440:10451 Statistics theory_files
+R10455:10457 Corelib.Init.Datatypes <> nat ind
+def 10505:10519 Statistics theorems_stated
+R10523:10525 Corelib.Init.Datatypes <> nat ind
+def 10580:10594 Statistics theorems_proven
+R10598:10600 Corelib.Init.Datatypes <> nat ind
+def 10646:10659 Statistics hours_invested
+R10663:10665 Corelib.Init.Datatypes <> nat ind
+def 10736:10747 Statistics ops_per_hour
+R10751:10751 Stdlib.QArith.QArith_base <> Q rec
+R10759:10761 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
+def 10844:10858 Statistics proven_per_hour
+R10862:10862 Stdlib.QArith.QArith_base <> Q rec
+R10869:10871 Stdlib.QArith.QArith_base <> ::Q_scope:x_'#'_x not
+R10906:10915 Synth.Synth.CorrectnessComplete Statistics <> mod

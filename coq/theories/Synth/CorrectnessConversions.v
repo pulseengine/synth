@@ -4,6 +4,7 @@
     Total: 24 operations (conversions between i32, i64, f32, f64)
 *)
 
+From Stdlib Require Import ZArith.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
@@ -57,7 +58,7 @@ Admitted.
 Theorem i32_trunc_f32_s_correct : forall wstate astate bits stack',
   wstate.(stack) = VF32 bits :: stack' ->
   exec_wasm_instr I32TruncF32S wstate =
-    Some (mkWasmState (VI32 (I32.repr 0) :: stack')  (* Placeholder - needs IEEE 754 *)
+    Some (mkWasmState (VI32 (I32.zero) :: stack')  (* Placeholder - needs IEEE 754 *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I32TruncF32S) astate = Some astate'.
@@ -69,7 +70,7 @@ Admitted.
 Theorem i32_trunc_f32_u_correct : forall wstate astate bits stack',
   wstate.(stack) = VF32 bits :: stack' ->
   exec_wasm_instr I32TruncF32U wstate =
-    Some (mkWasmState (VI32 (I32.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI32 (I32.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I32TruncF32U) astate = Some astate'.
@@ -80,7 +81,7 @@ Admitted.
 Theorem i32_trunc_f64_s_correct : forall wstate astate bits stack',
   wstate.(stack) = VF64 bits :: stack' ->
   exec_wasm_instr I32TruncF64S wstate =
-    Some (mkWasmState (VI32 (I32.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI32 (I32.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I32TruncF64S) astate = Some astate'.
@@ -91,7 +92,7 @@ Admitted.
 Theorem i32_trunc_f64_u_correct : forall wstate astate bits stack',
   wstate.(stack) = VF64 bits :: stack' ->
   exec_wasm_instr I32TruncF64U wstate =
-    Some (mkWasmState (VI32 (I32.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI32 (I32.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I32TruncF64U) astate = Some astate'.
@@ -102,7 +103,7 @@ Admitted.
 Theorem i64_trunc_f32_s_correct : forall wstate astate bits stack',
   wstate.(stack) = VF32 bits :: stack' ->
   exec_wasm_instr I64TruncF32S wstate =
-    Some (mkWasmState (VI64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64TruncF32S) astate = Some astate'.
@@ -113,7 +114,7 @@ Admitted.
 Theorem i64_trunc_f32_u_correct : forall wstate astate bits stack',
   wstate.(stack) = VF32 bits :: stack' ->
   exec_wasm_instr I64TruncF32U wstate =
-    Some (mkWasmState (VI64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64TruncF32U) astate = Some astate'.
@@ -124,7 +125,7 @@ Admitted.
 Theorem i64_trunc_f64_s_correct : forall wstate astate bits stack',
   wstate.(stack) = VF64 bits :: stack' ->
   exec_wasm_instr I64TruncF64S wstate =
-    Some (mkWasmState (VI64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64TruncF64S) astate = Some astate'.
@@ -135,7 +136,7 @@ Admitted.
 Theorem i64_trunc_f64_u_correct : forall wstate astate bits stack',
   wstate.(stack) = VF64 bits :: stack' ->
   exec_wasm_instr I64TruncF64U wstate =
-    Some (mkWasmState (VI64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64TruncF64U) astate = Some astate'.
@@ -148,7 +149,7 @@ Admitted.
 Theorem f32_convert_i32_s_correct : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
   exec_wasm_instr F32ConvertI32S wstate =
-    Some (mkWasmState (VF32 (I32.repr 0) :: stack')  (* Placeholder - needs IEEE 754 *)
+    Some (mkWasmState (VF32 (I32.zero) :: stack')  (* Placeholder - needs IEEE 754 *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32ConvertI32S) astate = Some astate'.
@@ -160,7 +161,7 @@ Admitted.
 Theorem f32_convert_i32_u_correct : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
   exec_wasm_instr F32ConvertI32U wstate =
-    Some (mkWasmState (VF32 (I32.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VF32 (I32.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32ConvertI32U) astate = Some astate'.
@@ -171,7 +172,7 @@ Admitted.
 Theorem f32_convert_i64_s_correct : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
   exec_wasm_instr F32ConvertI64S wstate =
-    Some (mkWasmState (VF32 (I32.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VF32 (I32.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32ConvertI64S) astate = Some astate'.
@@ -182,7 +183,7 @@ Admitted.
 Theorem f32_convert_i64_u_correct : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
   exec_wasm_instr F32ConvertI64U wstate =
-    Some (mkWasmState (VF32 (I32.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VF32 (I32.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32ConvertI64U) astate = Some astate'.
@@ -193,7 +194,7 @@ Admitted.
 Theorem f64_convert_i32_s_correct : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
   exec_wasm_instr F64ConvertI32S wstate =
-    Some (mkWasmState (VF64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VF64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F64ConvertI32S) astate = Some astate'.
@@ -204,7 +205,7 @@ Admitted.
 Theorem f64_convert_i32_u_correct : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
   exec_wasm_instr F64ConvertI32U wstate =
-    Some (mkWasmState (VF64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VF64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F64ConvertI32U) astate = Some astate'.
@@ -215,7 +216,7 @@ Admitted.
 Theorem f64_convert_i64_s_correct : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
   exec_wasm_instr F64ConvertI64S wstate =
-    Some (mkWasmState (VF64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VF64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F64ConvertI64S) astate = Some astate'.
@@ -226,7 +227,7 @@ Admitted.
 Theorem f64_convert_i64_u_correct : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
   exec_wasm_instr F64ConvertI64U wstate =
-    Some (mkWasmState (VF64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VF64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F64ConvertI64U) astate = Some astate'.
@@ -239,7 +240,7 @@ Admitted.
 Theorem f32_demote_f64_correct : forall wstate astate bits stack',
   wstate.(stack) = VF64 bits :: stack' ->
   exec_wasm_instr F32DemoteF64 wstate =
-    Some (mkWasmState (VF32 (I32.repr 0) :: stack')  (* Placeholder - needs IEEE 754 *)
+    Some (mkWasmState (VF32 (I32.zero) :: stack')  (* Placeholder - needs IEEE 754 *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32DemoteF64) astate = Some astate'.
@@ -251,7 +252,7 @@ Admitted.
 Theorem f64_promote_f32_correct : forall wstate astate bits stack',
   wstate.(stack) = VF32 bits :: stack' ->
   exec_wasm_instr F64PromoteF32 wstate =
-    Some (mkWasmState (VF64 (I64.repr 0) :: stack')  (* Placeholder - needs IEEE 754 *)
+    Some (mkWasmState (VF64 (I64.zero) :: stack')  (* Placeholder - needs IEEE 754 *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F64PromoteF32) astate = Some astate'.

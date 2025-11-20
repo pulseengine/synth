@@ -6,6 +6,7 @@
     Note: Most proofs follow the exact same pattern as i32, just with I64 instead of I32.
 *)
 
+From Stdlib Require Import ZArith.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
@@ -173,7 +174,7 @@ Admitted.
 Theorem i64_rotl_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
   exec_wasm_instr I64Rotl wstate =
-    Some (mkWasmState (VI64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Rotl) astate = Some astate'.
@@ -184,7 +185,7 @@ Admitted.
 Theorem i64_rotr_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
   exec_wasm_instr I64Rotr wstate =
-    Some (mkWasmState (VI64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Rotr) astate = Some astate'.
@@ -331,7 +332,7 @@ Admitted.
 Theorem i64_clz_correct : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
   exec_wasm_instr I64Clz wstate =
-    Some (mkWasmState (VI64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Clz) astate = Some astate'.
@@ -342,7 +343,7 @@ Admitted.
 Theorem i64_ctz_correct : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
   exec_wasm_instr I64Ctz wstate =
-    Some (mkWasmState (VI64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Ctz) astate = Some astate'.
@@ -353,7 +354,7 @@ Admitted.
 Theorem i64_popcnt_correct : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
   exec_wasm_instr I64Popcnt wstate =
-    Some (mkWasmState (VI64 (I64.repr 0) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Popcnt) astate = Some astate'.
