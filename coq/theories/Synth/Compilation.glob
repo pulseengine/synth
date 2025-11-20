@@ -1,4 +1,4 @@
-DIGEST 5d27bc62419e0bd344917ca47d3e2f48
+DIGEST c967252865ba33c1a6a2765392d1f747
 FSynth.Synth.Compilation
 R161:164 Stdlib.Lists.List <> <> lib
 R194:199 Stdlib.ZArith.ZArith <> <> lib
@@ -119,306 +119,321 @@ R2911:2912 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
 R2919:2927 Synth.WASM.WasmInstructions <> I32Popcnt constr
 R3046:3047 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
 R3077:3082 Synth.WASM.WasmInstructions <> I32Eqz constr
-R3232:3233 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R3240:3244 Synth.WASM.WasmInstructions <> I32Eq constr
-R3394:3395 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R3402:3406 Synth.WASM.WasmInstructions <> I32Ne constr
-R3474:3475 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R3482:3487 Synth.WASM.WasmInstructions <> I32LtS constr
-R3612:3613 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R3620:3625 Synth.WASM.WasmInstructions <> I32LtU constr
-R3750:3751 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R3758:3763 Synth.WASM.WasmInstructions <> I32GtS constr
-R3888:3889 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R3896:3901 Synth.WASM.WasmInstructions <> I32GtU constr
-R4026:4027 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4034:4039 Synth.WASM.WasmInstructions <> I32LeS constr
-R4107:4108 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4115:4120 Synth.WASM.WasmInstructions <> I32LeU constr
-R4188:4189 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4196:4201 Synth.WASM.WasmInstructions <> I32GeS constr
-R4269:4270 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4277:4282 Synth.WASM.WasmInstructions <> I32GeU constr
-R4350:4351 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4381:4386 Synth.WASM.WasmInstructions <> I64Eqz constr
-R4454:4455 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4462:4466 Synth.WASM.WasmInstructions <> I64Eq constr
-R4534:4535 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4542:4546 Synth.WASM.WasmInstructions <> I64Ne constr
-R4614:4615 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4622:4627 Synth.WASM.WasmInstructions <> I64LtS constr
-R4695:4696 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4703:4708 Synth.WASM.WasmInstructions <> I64LtU constr
-R4776:4777 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4784:4789 Synth.WASM.WasmInstructions <> I64GtS constr
-R4857:4858 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4865:4870 Synth.WASM.WasmInstructions <> I64GtU constr
-R4938:4939 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R4946:4951 Synth.WASM.WasmInstructions <> I64LeS constr
-R5019:5020 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R5027:5032 Synth.WASM.WasmInstructions <> I64LeU constr
-R5100:5101 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R5108:5113 Synth.WASM.WasmInstructions <> I64GeS constr
-R5181:5182 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R5189:5194 Synth.WASM.WasmInstructions <> I64GeU constr
-R5262:5263 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R5295:5300 Synth.WASM.WasmInstructions <> I64Shl constr
-R5413:5414 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R5421:5427 Synth.WASM.WasmInstructions <> I64ShrU constr
-R5552:5553 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R5560:5566 Synth.WASM.WasmInstructions <> I64ShrS constr
-R5694:5695 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R5702:5708 Synth.WASM.WasmInstructions <> I64Rotl constr
-R5842:5843 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R5850:5856 Synth.WASM.WasmInstructions <> I64Rotr constr
-R5974:5975 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R6011:6016 Synth.WASM.WasmInstructions <> I64Clz constr
-R6135:6136 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R6143:6148 Synth.WASM.WasmInstructions <> I64Ctz constr
-R6274:6275 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R6282:6290 Synth.WASM.WasmInstructions <> I64Popcnt constr
-R6420:6421 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R6446:6453 Synth.WASM.WasmInstructions <> I32Const constr
-R6501:6501 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R6511:6511 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R6502:6505 Synth.ARM.ArmInstructions <> MOVW constr
-R6507:6508 Synth.ARM.ArmState <> R0 constr
-R6518:6525 Synth.WASM.WasmInstructions <> I64Const constr
-R6667:6667 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R6721:6721 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R6668:6671 Synth.ARM.ArmInstructions <> MOVW constr
-R6673:6674 Synth.ARM.ArmState <> R0 constr
-R6677:6684 Synth.Common.Integers I32 repr def
-R6687:6687 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
-R6702:6707 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
-R6688:6699 Synth.Common.Integers I64 unsigned def
-R6708:6718 Synth.Common.Integers I32 modulus def
-R6752:6759 Synth.WASM.WasmInstructions <> LocalGet constr
-R6943:6944 Synth.ARM.ArmState <> R4 constr
-R6980:6981 Synth.ARM.ArmState <> R5 constr
-R7017:7018 Synth.ARM.ArmState <> R6 constr
-R7054:7055 Synth.ARM.ArmState <> R7 constr
-R7087:7088 Synth.ARM.ArmState <> R4 constr
-binder 6881:6889 <> local_reg:4
-R7142:7142 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R7165:7165 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R7143:7145 Synth.ARM.ArmInstructions <> MOV constr
-R7147:7148 Synth.ARM.ArmState <> R0 constr
-R7151:7153 Synth.ARM.ArmInstructions <> Reg constr
-R7155:7163 Synth.Synth.Compilation <> local_reg:4 var
-R7172:7179 Synth.WASM.WasmInstructions <> LocalSet constr
-R7299:7300 Synth.ARM.ArmState <> R4 constr
-R7336:7337 Synth.ARM.ArmState <> R5 constr
-R7373:7374 Synth.ARM.ArmState <> R6 constr
-R7410:7411 Synth.ARM.ArmState <> R7 constr
-R7443:7444 Synth.ARM.ArmState <> R4 constr
-binder 7237:7245 <> local_reg:6
-R7482:7482 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R7505:7505 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
-R7483:7485 Synth.ARM.ArmInstructions <> MOV constr
-R7487:7495 Synth.Synth.Compilation <> local_reg:6 var
-R7498:7500 Synth.ARM.ArmInstructions <> Reg constr
-R7502:7503 Synth.ARM.ArmState <> R0 constr
-R7533:7538 Synth.WASM.WasmInstructions <> Select constr
-R7695:7696 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R7736:7737 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-def 7787:7806 <> compile_wasm_program
-R7816:7827 Synth.WASM.WasmInstructions <> wasm_program def
-binder 7809:7812 <> prog:7
-R7832:7842 Synth.ARM.ArmInstructions <> arm_program def
-R7849:7856 Stdlib.Lists.List <> flat_map def
-R7878:7881 Synth.Synth.Compilation <> prog:7 var
-R7858:7876 Synth.Synth.Compilation <> compile_wasm_to_arm def
-def 7961:7981 <> ex_compile_simple_add
-R8064:8069 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R8140:8140 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R7987:8006 Synth.Synth.Compilation <> compile_wasm_program def
-R8009:8009 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8031:8032 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8054:8055 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8062:8062 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8010:8017 Synth.WASM.WasmInstructions <> I32Const constr
-R8020:8027 Synth.Common.Integers I32 repr def
-R8033:8040 Synth.WASM.WasmInstructions <> I32Const constr
-R8043:8050 Synth.Common.Integers I32 repr def
-R8056:8061 Synth.WASM.WasmInstructions <> I32Add constr
-R8070:8070 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8091:8095 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8116:8120 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8139:8139 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8071:8074 Synth.ARM.ArmInstructions <> MOVW constr
-R8076:8077 Synth.ARM.ArmState <> R0 constr
-R8080:8087 Synth.Common.Integers I32 repr def
-R8096:8099 Synth.ARM.ArmInstructions <> MOVW constr
-R8101:8102 Synth.ARM.ArmState <> R0 constr
-R8105:8112 Synth.Common.Integers I32 repr def
-R8121:8123 Synth.ARM.ArmInstructions <> ADD constr
-R8125:8126 Synth.ARM.ArmState <> R0 constr
-R8128:8129 Synth.ARM.ArmState <> R0 constr
-R8132:8134 Synth.ARM.ArmInstructions <> Reg constr
-R8136:8137 Synth.ARM.ArmState <> R1 constr
-def 8250:8275 <> ex_compile_increment_local
-R8362:8367 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R8448:8448 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R8281:8300 Synth.Synth.Compilation <> compile_wasm_program def
-R8303:8303 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8318:8319 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8336:8337 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8344:8345 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8360:8360 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8304:8311 Synth.WASM.WasmInstructions <> LocalGet constr
-R8320:8327 Synth.WASM.WasmInstructions <> I32Const constr
-R8329:8335 Synth.Common.Integers I32 one def
-R8338:8343 Synth.WASM.WasmInstructions <> I32Add constr
-R8346:8353 Synth.WASM.WasmInstructions <> LocalSet constr
-R8368:8368 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8384:8388 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8404:8408 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8427:8431 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8447:8447 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
-R8369:8371 Synth.ARM.ArmInstructions <> MOV constr
+R3273:3273 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R3295:3345 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R3367:3413 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R3436:3436 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R3274:3276 Synth.ARM.ArmInstructions <> CMP constr
+R3278:3279 Synth.ARM.ArmState <> R0 constr
+R3282:3284 Synth.ARM.ArmInstructions <> Imm constr
+R3286:3293 Synth.Common.Integers I32 zero def
+R3346:3348 Synth.ARM.ArmInstructions <> MOV constr
+R3350:3351 Synth.ARM.ArmState <> R0 constr
+R3354:3356 Synth.ARM.ArmInstructions <> Imm constr
+R3358:3365 Synth.Common.Integers I32 zero def
+R3414:3418 Synth.ARM.ArmInstructions <> MOVEQ constr
+R3420:3421 Synth.ARM.ArmState <> R0 constr
+R3424:3426 Synth.ARM.ArmInstructions <> Imm constr
+R3428:3434 Synth.Common.Integers I32 one def
+R3488:3492 Synth.WASM.WasmInstructions <> I32Eq constr
+R3642:3643 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R3650:3654 Synth.WASM.WasmInstructions <> I32Ne constr
+R3722:3723 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R3730:3735 Synth.WASM.WasmInstructions <> I32LtS constr
+R3860:3861 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R3868:3873 Synth.WASM.WasmInstructions <> I32LtU constr
+R3998:3999 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R4006:4011 Synth.WASM.WasmInstructions <> I32GtS constr
+R4136:4137 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R4144:4149 Synth.WASM.WasmInstructions <> I32GtU constr
+R4274:4275 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R4282:4287 Synth.WASM.WasmInstructions <> I32LeS constr
+R4355:4356 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R4363:4368 Synth.WASM.WasmInstructions <> I32LeU constr
+R4436:4437 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R4444:4449 Synth.WASM.WasmInstructions <> I32GeS constr
+R4517:4518 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R4525:4530 Synth.WASM.WasmInstructions <> I32GeU constr
+R4598:4599 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R4629:4634 Synth.WASM.WasmInstructions <> I64Eqz constr
+R4702:4703 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R4710:4714 Synth.WASM.WasmInstructions <> I64Eq constr
+R4782:4783 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R4790:4794 Synth.WASM.WasmInstructions <> I64Ne constr
+R4862:4863 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R4870:4875 Synth.WASM.WasmInstructions <> I64LtS constr
+R4943:4944 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R4951:4956 Synth.WASM.WasmInstructions <> I64LtU constr
+R5024:5025 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R5032:5037 Synth.WASM.WasmInstructions <> I64GtS constr
+R5105:5106 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R5113:5118 Synth.WASM.WasmInstructions <> I64GtU constr
+R5186:5187 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R5194:5199 Synth.WASM.WasmInstructions <> I64LeS constr
+R5267:5268 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R5275:5280 Synth.WASM.WasmInstructions <> I64LeU constr
+R5348:5349 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R5356:5361 Synth.WASM.WasmInstructions <> I64GeS constr
+R5429:5430 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R5437:5442 Synth.WASM.WasmInstructions <> I64GeU constr
+R5510:5511 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R5543:5548 Synth.WASM.WasmInstructions <> I64Shl constr
+R5661:5662 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R5669:5675 Synth.WASM.WasmInstructions <> I64ShrU constr
+R5800:5801 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R5808:5814 Synth.WASM.WasmInstructions <> I64ShrS constr
+R5942:5943 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R5950:5956 Synth.WASM.WasmInstructions <> I64Rotl constr
+R6090:6091 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R6098:6104 Synth.WASM.WasmInstructions <> I64Rotr constr
+R6222:6223 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R6259:6264 Synth.WASM.WasmInstructions <> I64Clz constr
+R6383:6384 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R6391:6396 Synth.WASM.WasmInstructions <> I64Ctz constr
+R6522:6523 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R6530:6538 Synth.WASM.WasmInstructions <> I64Popcnt constr
+R6668:6669 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R6694:6701 Synth.WASM.WasmInstructions <> I32Const constr
+R6749:6749 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
+R6759:6759 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
+R6750:6753 Synth.ARM.ArmInstructions <> MOVW constr
+R6755:6756 Synth.ARM.ArmState <> R0 constr
+R6766:6773 Synth.WASM.WasmInstructions <> I64Const constr
+R6915:6915 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
+R6969:6969 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
+R6916:6919 Synth.ARM.ArmInstructions <> MOVW constr
+R6921:6922 Synth.ARM.ArmState <> R0 constr
+R6925:6932 Synth.Common.Integers I32 repr def
+R6935:6935 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
+R6950:6955 Stdlib.ZArith.BinInt <> ::Z_scope:x_'mod'_x not
+R6936:6947 Synth.Common.Integers I64 unsigned def
+R6956:6966 Synth.Common.Integers I32 modulus def
+R7000:7007 Synth.WASM.WasmInstructions <> LocalGet constr
+R7191:7192 Synth.ARM.ArmState <> R4 constr
+R7228:7229 Synth.ARM.ArmState <> R5 constr
+R7265:7266 Synth.ARM.ArmState <> R6 constr
+R7302:7303 Synth.ARM.ArmState <> R7 constr
+R7335:7336 Synth.ARM.ArmState <> R4 constr
+binder 7129:7137 <> local_reg:4
+R7390:7390 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
+R7413:7413 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
+R7391:7393 Synth.ARM.ArmInstructions <> MOV constr
+R7395:7396 Synth.ARM.ArmState <> R0 constr
+R7399:7401 Synth.ARM.ArmInstructions <> Reg constr
+R7403:7411 Synth.Synth.Compilation <> local_reg:4 var
+R7420:7427 Synth.WASM.WasmInstructions <> LocalSet constr
+R7547:7548 Synth.ARM.ArmState <> R4 constr
+R7584:7585 Synth.ARM.ArmState <> R5 constr
+R7621:7622 Synth.ARM.ArmState <> R6 constr
+R7658:7659 Synth.ARM.ArmState <> R7 constr
+R7691:7692 Synth.ARM.ArmState <> R4 constr
+binder 7485:7493 <> local_reg:6
+R7730:7730 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
+R7753:7753 Stdlib.Lists.List ListNotations ::list_scope:'['_x_']' not
+R7731:7733 Synth.ARM.ArmInstructions <> MOV constr
+R7735:7743 Synth.Synth.Compilation <> local_reg:6 var
+R7746:7748 Synth.ARM.ArmInstructions <> Reg constr
+R7750:7751 Synth.ARM.ArmState <> R0 constr
+R7781:7786 Synth.WASM.WasmInstructions <> Select constr
+R7943:7944 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R7984:7985 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+def 8035:8054 <> compile_wasm_program
+R8064:8075 Synth.WASM.WasmInstructions <> wasm_program def
+binder 8057:8060 <> prog:7
+R8080:8090 Synth.ARM.ArmInstructions <> arm_program def
+R8097:8104 Stdlib.Lists.List <> flat_map def
+R8126:8129 Synth.Synth.Compilation <> prog:7 var
+R8106:8124 Synth.Synth.Compilation <> compile_wasm_to_arm def
+def 8209:8229 <> ex_compile_simple_add
+R8312:8317 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R8388:8388 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R8235:8254 Synth.Synth.Compilation <> compile_wasm_program def
+R8257:8257 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8279:8280 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8302:8303 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8310:8310 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8258:8265 Synth.WASM.WasmInstructions <> I32Const constr
+R8268:8275 Synth.Common.Integers I32 repr def
+R8281:8288 Synth.WASM.WasmInstructions <> I32Const constr
+R8291:8298 Synth.Common.Integers I32 repr def
+R8304:8309 Synth.WASM.WasmInstructions <> I32Add constr
+R8318:8318 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8339:8343 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8364:8368 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8387:8387 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8319:8322 Synth.ARM.ArmInstructions <> MOVW constr
+R8324:8325 Synth.ARM.ArmState <> R0 constr
+R8328:8335 Synth.Common.Integers I32 repr def
+R8344:8347 Synth.ARM.ArmInstructions <> MOVW constr
+R8349:8350 Synth.ARM.ArmState <> R0 constr
+R8353:8360 Synth.Common.Integers I32 repr def
+R8369:8371 Synth.ARM.ArmInstructions <> ADD constr
 R8373:8374 Synth.ARM.ArmState <> R0 constr
-R8377:8379 Synth.ARM.ArmInstructions <> Reg constr
-R8381:8382 Synth.ARM.ArmState <> R4 constr
-R8389:8392 Synth.ARM.ArmInstructions <> MOVW constr
-R8394:8395 Synth.ARM.ArmState <> R0 constr
-R8397:8403 Synth.Common.Integers I32 one def
-R8409:8411 Synth.ARM.ArmInstructions <> ADD constr
-R8413:8414 Synth.ARM.ArmState <> R0 constr
-R8416:8417 Synth.ARM.ArmState <> R0 constr
-R8420:8422 Synth.ARM.ArmInstructions <> Reg constr
-R8424:8425 Synth.ARM.ArmState <> R1 constr
-R8432:8434 Synth.ARM.ArmInstructions <> MOV constr
-R8436:8437 Synth.ARM.ArmState <> R4 constr
-R8440:8442 Synth.ARM.ArmInstructions <> Reg constr
-R8444:8445 Synth.ARM.ArmState <> R0 constr
-prf 8855:8879 <> compile_i32_add_non_empty
-R8911:8914 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
-R8885:8903 Synth.Synth.Compilation <> compile_wasm_to_arm def
-R8905:8910 Synth.WASM.WasmInstructions <> I32Add constr
-R8915:8916 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R8935:8953 Synth.Synth.Compilation <> compile_wasm_to_arm def
-prf 8984:9008 <> compile_i32_sub_non_empty
-R9040:9043 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
-R9014:9032 Synth.Synth.Compilation <> compile_wasm_to_arm def
-R9034:9039 Synth.WASM.WasmInstructions <> I32Sub constr
-R9044:9045 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R9064:9082 Synth.Synth.Compilation <> compile_wasm_to_arm def
-prf 9113:9137 <> compile_i32_mul_non_empty
-R9169:9172 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
-R9143:9161 Synth.Synth.Compilation <> compile_wasm_to_arm def
-R9163:9168 Synth.WASM.WasmInstructions <> I32Mul constr
-R9173:9174 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
-R9193:9211 Synth.Synth.Compilation <> compile_wasm_to_arm def
-ind 9842:9865 <> stack_reg_correspondence
-constr 9908:9916 <> SRC_Empty
-constr 9994:10000 <> SRC_One
-constr 10157:10163 <> SRC_Two
-R9879:9882 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R9869:9878 Synth.WASM.WasmValues <> wasm_stack def
-R9892:9895 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R9883:9891 Synth.ARM.ArmState <> arm_state rec
-binder 9927:9932 <> astate:10
-R9941:9964 Synth.Synth.Compilation <> stack_reg_correspondence:8 ind
-R9982:9987 Synth.Synth.Compilation <> astate:10 var
-R9968:9970 Corelib.Init.Datatypes <> nil constr
-R9972:9979 Synth.WASM.WasmValues <> wasm_val ind
-binder 10011:10011 <> v:11
-binder 10013:10016 <> rest:12
-binder 10018:10023 <> astate:13
-R10098:10107 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R10049:10052 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R10097:10097 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R10032:10038 Synth.ARM.ArmState <> get_reg def
-R10040:10045 Synth.Synth.Compilation <> astate:13 var
-R10047:10048 Synth.ARM.ArmState <> R0 constr
-R10059:10059 Synth.Synth.Compilation <> v:11 var
-R10066:10069 Synth.WASM.WasmValues <> VI32 constr
-R10085:10092 Synth.Common.Integers I32 zero def
-R10108:10131 Synth.Synth.Compilation <> stack_reg_correspondence:8 ind
-R10145:10150 Synth.Synth.Compilation <> astate:13 var
-R10135:10138 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
-R10134:10134 Synth.Synth.Compilation <> v:11 var
-R10139:10142 Synth.Synth.Compilation <> rest:12 var
-binder 10174:10175 <> v1:15
-binder 10177:10178 <> v2:16
-binder 10180:10183 <> rest:17
-binder 10185:10190 <> astate:18
-R10266:10275 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R10216:10219 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R10265:10265 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R10199:10205 Synth.ARM.ArmState <> get_reg def
-R10207:10212 Synth.Synth.Compilation <> astate:18 var
-R10214:10215 Synth.ARM.ArmState <> R0 constr
-R10226:10227 Synth.Synth.Compilation <> v1:15 var
-R10234:10237 Synth.WASM.WasmValues <> VI32 constr
-R10253:10260 Synth.Common.Integers I32 zero def
-R10343:10352 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R10293:10296 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R10342:10342 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R10276:10282 Synth.ARM.ArmState <> get_reg def
-R10284:10289 Synth.Synth.Compilation <> astate:18 var
-R10291:10292 Synth.ARM.ArmState <> R1 constr
-R10303:10304 Synth.Synth.Compilation <> v2:16 var
-R10311:10314 Synth.WASM.WasmValues <> VI32 constr
-R10330:10337 Synth.Common.Integers I32 zero def
-R10353:10376 Synth.Synth.Compilation <> stack_reg_correspondence:8 ind
-R10397:10402 Synth.Synth.Compilation <> astate:18 var
-R10381:10384 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
-R10379:10380 Synth.Synth.Compilation <> v1:15 var
-R10387:10390 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
-R10385:10386 Synth.Synth.Compilation <> v2:16 var
-R10391:10394 Synth.Synth.Compilation <> rest:17 var
-scheme 9842:9865 <> stack_reg_correspondence_ind
-scheme 9842:9865 <> stack_reg_correspondence_sind
-def 10459:10478 <> local_correspondence
-R10494:10497 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
-R10491:10493 Corelib.Init.Datatypes <> nat ind
-R10498:10504 Synth.Common.Integers I32 int def
-binder 10481:10487 <> wlocals:21
-R10517:10525 Synth.ARM.ArmState <> arm_state rec
-binder 10508:10513 <> astate:22
-R10573:10578 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R10557:10559 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R10540:10546 Synth.ARM.ArmState <> get_reg def
-R10548:10553 Synth.Synth.Compilation <> astate:22 var
-R10555:10556 Synth.ARM.ArmState <> R4 constr
-R10560:10566 Synth.Synth.Compilation <> wlocals:21 var
-R10612:10617 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R10596:10598 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R10579:10585 Synth.ARM.ArmState <> get_reg def
-R10587:10592 Synth.Synth.Compilation <> astate:22 var
-R10594:10595 Synth.ARM.ArmState <> R5 constr
-R10599:10605 Synth.Synth.Compilation <> wlocals:21 var
-R10651:10656 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
-R10635:10637 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R10618:10624 Synth.ARM.ArmState <> get_reg def
-R10626:10631 Synth.Synth.Compilation <> astate:22 var
-R10633:10634 Synth.ARM.ArmState <> R6 constr
-R10638:10644 Synth.Synth.Compilation <> wlocals:21 var
-R10674:10676 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R10657:10663 Synth.ARM.ArmState <> get_reg def
-R10665:10670 Synth.Synth.Compilation <> astate:22 var
-R10672:10673 Synth.ARM.ArmState <> R7 constr
-R10677:10683 Synth.Synth.Compilation <> wlocals:21 var
-rec 10738:10757 <> state_correspondence
-proj 10816:10823 <> sc_stack
-proj 10877:10885 <> sc_locals
-proj 10936:10944 <> sc_memory
-R10769:10778 Synth.WASM.WasmSemantics <> wasm_state rec
-binder 10760:10765 <> wstate:23
-R10791:10799 Synth.ARM.ArmState <> arm_state rec
-binder 10782:10787 <> astate:24
-R10827:10850 Synth.Synth.Compilation <> stack_reg_correspondence ind
-R10860:10864 Synth.WASM.WasmSemantics <> stack proj
-R10852:10857 Synth.Synth.Compilation <> wstate:23 var
-R10867:10872 Synth.Synth.Compilation <> astate:24 var
-R10889:10908 Synth.Synth.Compilation <> local_correspondence def
-R10918:10923 Synth.WASM.WasmSemantics <> locals proj
-R10910:10915 Synth.Synth.Compilation <> wstate:23 var
-R10926:10931 Synth.Synth.Compilation <> astate:24 var
-R10963:10965 Corelib.Init.Logic <> ::type_scope:x_'='_x not
-R10956:10961 Synth.WASM.WasmSemantics <> memory proj
-R10948:10953 Synth.Synth.Compilation <> wstate:23 var
-R10974:10976 Synth.ARM.ArmState <> mem proj
-R10966:10971 Synth.Synth.Compilation <> astate:24 var
+R8376:8377 Synth.ARM.ArmState <> R0 constr
+R8380:8382 Synth.ARM.ArmInstructions <> Reg constr
+R8384:8385 Synth.ARM.ArmState <> R1 constr
+def 8498:8523 <> ex_compile_increment_local
+R8610:8615 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R8696:8696 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R8529:8548 Synth.Synth.Compilation <> compile_wasm_program def
+R8551:8551 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8566:8567 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8584:8585 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8592:8593 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8608:8608 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8552:8559 Synth.WASM.WasmInstructions <> LocalGet constr
+R8568:8575 Synth.WASM.WasmInstructions <> I32Const constr
+R8577:8583 Synth.Common.Integers I32 one def
+R8586:8591 Synth.WASM.WasmInstructions <> I32Add constr
+R8594:8601 Synth.WASM.WasmInstructions <> LocalSet constr
+R8616:8616 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8632:8636 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8652:8656 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8675:8679 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8695:8695 Stdlib.Lists.List ListNotations ::list_scope:'['_x_';'_x_';'_'..'_';'_x_']' not
+R8617:8619 Synth.ARM.ArmInstructions <> MOV constr
+R8621:8622 Synth.ARM.ArmState <> R0 constr
+R8625:8627 Synth.ARM.ArmInstructions <> Reg constr
+R8629:8630 Synth.ARM.ArmState <> R4 constr
+R8637:8640 Synth.ARM.ArmInstructions <> MOVW constr
+R8642:8643 Synth.ARM.ArmState <> R0 constr
+R8645:8651 Synth.Common.Integers I32 one def
+R8657:8659 Synth.ARM.ArmInstructions <> ADD constr
+R8661:8662 Synth.ARM.ArmState <> R0 constr
+R8664:8665 Synth.ARM.ArmState <> R0 constr
+R8668:8670 Synth.ARM.ArmInstructions <> Reg constr
+R8672:8673 Synth.ARM.ArmState <> R1 constr
+R8680:8682 Synth.ARM.ArmInstructions <> MOV constr
+R8684:8685 Synth.ARM.ArmState <> R4 constr
+R8688:8690 Synth.ARM.ArmInstructions <> Reg constr
+R8692:8693 Synth.ARM.ArmState <> R0 constr
+prf 9103:9127 <> compile_i32_add_non_empty
+R9159:9162 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R9133:9151 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R9153:9158 Synth.WASM.WasmInstructions <> I32Add constr
+R9163:9164 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R9183:9201 Synth.Synth.Compilation <> compile_wasm_to_arm def
+prf 9232:9256 <> compile_i32_sub_non_empty
+R9288:9291 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R9262:9280 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R9282:9287 Synth.WASM.WasmInstructions <> I32Sub constr
+R9292:9293 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R9312:9330 Synth.Synth.Compilation <> compile_wasm_to_arm def
+prf 9361:9385 <> compile_i32_mul_non_empty
+R9417:9420 Corelib.Init.Logic <> ::type_scope:x_'<>'_x not
+R9391:9409 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R9411:9416 Synth.WASM.WasmInstructions <> I32Mul constr
+R9421:9422 Stdlib.Lists.List ListNotations ::list_scope:'['_']' not
+R9441:9459 Synth.Synth.Compilation <> compile_wasm_to_arm def
+ind 10090:10113 <> stack_reg_correspondence
+constr 10156:10164 <> SRC_Empty
+constr 10242:10248 <> SRC_One
+constr 10405:10411 <> SRC_Two
+R10127:10130 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R10117:10126 Synth.WASM.WasmValues <> wasm_stack def
+R10140:10143 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R10131:10139 Synth.ARM.ArmState <> arm_state rec
+binder 10175:10180 <> astate:10
+R10189:10212 Synth.Synth.Compilation <> stack_reg_correspondence:8 ind
+R10230:10235 Synth.Synth.Compilation <> astate:10 var
+R10216:10218 Corelib.Init.Datatypes <> nil constr
+R10220:10227 Synth.WASM.WasmValues <> wasm_val ind
+binder 10259:10259 <> v:11
+binder 10261:10264 <> rest:12
+binder 10266:10271 <> astate:13
+R10346:10355 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R10297:10300 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10345:10345 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10280:10286 Synth.ARM.ArmState <> get_reg def
+R10288:10293 Synth.Synth.Compilation <> astate:13 var
+R10295:10296 Synth.ARM.ArmState <> R0 constr
+R10307:10307 Synth.Synth.Compilation <> v:11 var
+R10314:10317 Synth.WASM.WasmValues <> VI32 constr
+R10333:10340 Synth.Common.Integers I32 zero def
+R10356:10379 Synth.Synth.Compilation <> stack_reg_correspondence:8 ind
+R10393:10398 Synth.Synth.Compilation <> astate:13 var
+R10383:10386 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R10382:10382 Synth.Synth.Compilation <> v:11 var
+R10387:10390 Synth.Synth.Compilation <> rest:12 var
+binder 10422:10423 <> v1:15
+binder 10425:10426 <> v2:16
+binder 10428:10431 <> rest:17
+binder 10433:10438 <> astate:18
+R10514:10523 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R10464:10467 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10513:10513 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10447:10453 Synth.ARM.ArmState <> get_reg def
+R10455:10460 Synth.Synth.Compilation <> astate:18 var
+R10462:10463 Synth.ARM.ArmState <> R0 constr
+R10474:10475 Synth.Synth.Compilation <> v1:15 var
+R10482:10485 Synth.WASM.WasmValues <> VI32 constr
+R10501:10508 Synth.Common.Integers I32 zero def
+R10591:10600 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R10541:10544 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10590:10590 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10524:10530 Synth.ARM.ArmState <> get_reg def
+R10532:10537 Synth.Synth.Compilation <> astate:18 var
+R10539:10540 Synth.ARM.ArmState <> R1 constr
+R10551:10552 Synth.Synth.Compilation <> v2:16 var
+R10559:10562 Synth.WASM.WasmValues <> VI32 constr
+R10578:10585 Synth.Common.Integers I32 zero def
+R10601:10624 Synth.Synth.Compilation <> stack_reg_correspondence:8 ind
+R10645:10650 Synth.Synth.Compilation <> astate:18 var
+R10629:10632 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R10627:10628 Synth.Synth.Compilation <> v1:15 var
+R10635:10638 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R10633:10634 Synth.Synth.Compilation <> v2:16 var
+R10639:10642 Synth.Synth.Compilation <> rest:17 var
+scheme 10090:10113 <> stack_reg_correspondence_ind
+scheme 10090:10113 <> stack_reg_correspondence_sind
+def 10707:10726 <> local_correspondence
+R10742:10745 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R10739:10741 Corelib.Init.Datatypes <> nat ind
+R10746:10752 Synth.Common.Integers I32 int def
+binder 10729:10735 <> wlocals:21
+R10765:10773 Synth.ARM.ArmState <> arm_state rec
+binder 10756:10761 <> astate:22
+R10821:10826 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R10805:10807 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10788:10794 Synth.ARM.ArmState <> get_reg def
+R10796:10801 Synth.Synth.Compilation <> astate:22 var
+R10803:10804 Synth.ARM.ArmState <> R4 constr
+R10808:10814 Synth.Synth.Compilation <> wlocals:21 var
+R10860:10865 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R10844:10846 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10827:10833 Synth.ARM.ArmState <> get_reg def
+R10835:10840 Synth.Synth.Compilation <> astate:22 var
+R10842:10843 Synth.ARM.ArmState <> R5 constr
+R10847:10853 Synth.Synth.Compilation <> wlocals:21 var
+R10899:10904 Corelib.Init.Logic <> ::type_scope:x_'/\'_x not
+R10883:10885 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10866:10872 Synth.ARM.ArmState <> get_reg def
+R10874:10879 Synth.Synth.Compilation <> astate:22 var
+R10881:10882 Synth.ARM.ArmState <> R6 constr
+R10886:10892 Synth.Synth.Compilation <> wlocals:21 var
+R10922:10924 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R10905:10911 Synth.ARM.ArmState <> get_reg def
+R10913:10918 Synth.Synth.Compilation <> astate:22 var
+R10920:10921 Synth.ARM.ArmState <> R7 constr
+R10925:10931 Synth.Synth.Compilation <> wlocals:21 var
+rec 10986:11005 <> state_correspondence
+proj 11064:11071 <> sc_stack
+proj 11125:11133 <> sc_locals
+proj 11184:11192 <> sc_memory
+R11017:11026 Synth.WASM.WasmSemantics <> wasm_state rec
+binder 11008:11013 <> wstate:23
+R11039:11047 Synth.ARM.ArmState <> arm_state rec
+binder 11030:11035 <> astate:24
+R11075:11098 Synth.Synth.Compilation <> stack_reg_correspondence ind
+R11108:11112 Synth.WASM.WasmSemantics <> stack proj
+R11100:11105 Synth.Synth.Compilation <> wstate:23 var
+R11115:11120 Synth.Synth.Compilation <> astate:24 var
+R11137:11156 Synth.Synth.Compilation <> local_correspondence def
+R11166:11171 Synth.WASM.WasmSemantics <> locals proj
+R11158:11163 Synth.Synth.Compilation <> wstate:23 var
+R11174:11179 Synth.Synth.Compilation <> astate:24 var
+R11211:11213 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R11204:11209 Synth.WASM.WasmSemantics <> memory proj
+R11196:11201 Synth.Synth.Compilation <> wstate:23 var
+R11222:11224 Synth.ARM.ArmState <> mem proj
+R11214:11219 Synth.Synth.Compilation <> astate:24 var
