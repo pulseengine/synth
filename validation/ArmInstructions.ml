@@ -2,7 +2,7 @@ open ArmState
 open Integers
 
 type operand2 =
-| Imm of I32.int
+| Imm of int  (* Changed from I32.int - just use OCaml int *)
 | Reg of arm_reg
 | RegShift of arm_reg * int
 
@@ -22,8 +22,8 @@ type arm_instr =
 | ASR of arm_reg * arm_reg * int
 | ROR of arm_reg * arm_reg * int
 | MOV of arm_reg * operand2
-| MOVW of arm_reg * I32.int
-| MOVT of arm_reg * I32.int
+| MOVW of arm_reg * int  (* Changed from I32.int *)
+| MOVT of arm_reg * int  (* Changed from I32.int *)
 | MOVEQ of arm_reg * operand2
 | MOVNE of arm_reg * operand2
 | CMP of arm_reg * operand2
