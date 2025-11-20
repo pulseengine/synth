@@ -46,3 +46,6 @@ _build/
 coq/theories/*.ml
 coq/theories/*.mli
 loom/
+
+# Bazel local configuration (environment-specific)
+.bazelrc.local

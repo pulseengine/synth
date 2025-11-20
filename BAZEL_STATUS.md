@@ -140,23 +140,29 @@ ERROR: Unable to tunnel through proxy. Proxy returns "HTTP/1.1 401 Unauthorized"
 ❌ (Expected - JWT auth not supported by Bazel HTTP client)
 ```
 
+## 🔧 Workaround Attempts
+
+We tried multiple approaches to bypass the proxy issue:
+
+1. ✅ **Vendor mode** (`bazel vendor //...`) - Failed, still needs BCR for metadata
+2. ✅ **Manual download + distdir** - Partial success, downloaded archives but metadata still from BCR
+3. ✅ **Local path overrides** - Bypasses BCR for direct deps, but not transitive deps (rules_license, rules_cc, etc.)
+4. ✅ **Disable proxy env** - Failed, Bazel still detects proxy at Java layer
+
+**See BAZEL_PROXY_WORKAROUND.md for full details**
+
 ## 🚀 Next Steps
 
 ### For Use in This Environment
 
-**Option A:** Use Cargo for now (Bazel ready for later)
+**Use Cargo for development** (Bazel ready when network allows):
 ```bash
-# Continue using Cargo
+# Continue using Cargo for fast iteration
 cargo build
 cargo test
+cargo clippy
 
 # Bazel infrastructure is ready when you move to normal network
-```
-
-**Option B:** Create WORKSPACE alternative
-```bash
-# I can create a WORKSPACE file if you want to use Bazel now
-# Less modern than Bzlmod but works with proxy auth
 ```
 
 ### For Use in Normal Environment
