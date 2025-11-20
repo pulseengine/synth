@@ -1,0 +1,664 @@
+DIGEST bb6802ab23817b1a204b41977ad3c373
+FSynth.Synth.CorrectnessI64
+R263:279 Synth.Common.Base <> <> lib
+R297:317 Synth.Common.Integers <> <> lib
+R335:352 Synth.ARM.ArmState <> <> lib
+R370:394 Synth.ARM.ArmInstructions <> <> lib
+R412:433 Synth.ARM.ArmSemantics <> <> lib
+R451:471 Synth.WASM.WasmValues <> <> lib
+R489:515 Synth.WASM.WasmInstructions <> <> lib
+R533:556 Synth.WASM.WasmSemantics <> <> lib
+R574:596 Synth.Synth.Compilation <> <> lib
+R614:632 Synth.Synth.Tactics <> <> lib
+prf 713:727 <> i64_add_correct
+binder 738:743 <> wstate:1
+binder 745:750 <> astate:2
+binder 752:753 <> v1:3
+binder 755:756 <> v2:4
+binder 758:763 <> stack':5
+R813:870 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R782:784 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R776:780 Synth.WASM.WasmSemantics <> stack proj
+R768:773 Synth.Synth.CorrectnessI64 <> wstate:1 var
+R792:795 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R785:788 Synth.WASM.WasmValues <> VI64 constr
+R790:791 Synth.Synth.CorrectnessI64 <> v2:4 var
+R803:806 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R796:799 Synth.WASM.WasmValues <> VI64 constr
+R801:802 Synth.Synth.CorrectnessI64 <> v1:3 var
+R807:812 Synth.Synth.CorrectnessI64 <> stack':5 var
+R1019:1024 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R900:906 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R871:885 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R887:892 Synth.WASM.WasmInstructions <> I64Add constr
+R894:899 Synth.Synth.CorrectnessI64 <> wstate:1 var
+R907:910 Corelib.Init.Datatypes <> Some constr
+R913:923 Synth.WASM.WasmSemantics <> mkWasmState constr
+R946:949 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R926:929 Synth.WASM.WasmValues <> VI64 constr
+R932:938 Synth.Common.Integers I64 add def
+R940:941 Synth.Synth.CorrectnessI64 <> v1:3 var
+R943:944 Synth.Synth.CorrectnessI64 <> v2:4 var
+R950:955 Synth.Synth.CorrectnessI64 <> stack':5 var
+R978:983 Synth.WASM.WasmSemantics <> locals proj
+R970:975 Synth.Synth.CorrectnessI64 <> wstate:1 var
+R994:1000 Synth.WASM.WasmSemantics <> globals proj
+R986:991 Synth.Synth.CorrectnessI64 <> wstate:1 var
+R1011:1016 Synth.WASM.WasmSemantics <> memory proj
+R1003:1008 Synth.Synth.CorrectnessI64 <> wstate:1 var
+R1025:1031 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R1039:1044 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 1032:1038 <> astate':6
+R1093:1095 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1045:1056 Synth.ARM.ArmSemantics <> exec_program def
+R1059:1077 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R1079:1084 Synth.WASM.WasmInstructions <> I64Add constr
+R1087:1092 Synth.Synth.CorrectnessI64 <> astate:2 var
+R1096:1099 Corelib.Init.Datatypes <> Some constr
+R1101:1107 Synth.Synth.CorrectnessI64 <> astate':6 var
+prf 1213:1227 <> i64_sub_correct
+binder 1238:1243 <> wstate:7
+binder 1245:1250 <> astate:8
+binder 1252:1253 <> v1:9
+binder 1255:1256 <> v2:10
+binder 1258:1263 <> stack':11
+R1313:1318 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1282:1284 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1276:1280 Synth.WASM.WasmSemantics <> stack proj
+R1268:1273 Synth.Synth.CorrectnessI64 <> wstate:7 var
+R1292:1295 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R1285:1288 Synth.WASM.WasmValues <> VI64 constr
+R1290:1291 Synth.Synth.CorrectnessI64 <> v2:10 var
+R1303:1306 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R1296:1299 Synth.WASM.WasmValues <> VI64 constr
+R1301:1302 Synth.Synth.CorrectnessI64 <> v1:9 var
+R1307:1312 Synth.Synth.CorrectnessI64 <> stack':11 var
+R1467:1472 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1348:1354 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1319:1333 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R1335:1340 Synth.WASM.WasmInstructions <> I64Sub constr
+R1342:1347 Synth.Synth.CorrectnessI64 <> wstate:7 var
+R1355:1358 Corelib.Init.Datatypes <> Some constr
+R1361:1371 Synth.WASM.WasmSemantics <> mkWasmState constr
+R1394:1397 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R1374:1377 Synth.WASM.WasmValues <> VI64 constr
+R1380:1386 Synth.Common.Integers I64 sub def
+R1388:1389 Synth.Synth.CorrectnessI64 <> v1:9 var
+R1391:1392 Synth.Synth.CorrectnessI64 <> v2:10 var
+R1398:1403 Synth.Synth.CorrectnessI64 <> stack':11 var
+R1426:1431 Synth.WASM.WasmSemantics <> locals proj
+R1418:1423 Synth.Synth.CorrectnessI64 <> wstate:7 var
+R1442:1448 Synth.WASM.WasmSemantics <> globals proj
+R1434:1439 Synth.Synth.CorrectnessI64 <> wstate:7 var
+R1459:1464 Synth.WASM.WasmSemantics <> memory proj
+R1451:1456 Synth.Synth.CorrectnessI64 <> wstate:7 var
+R1473:1479 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R1487:1492 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 1480:1486 <> astate':12
+R1541:1543 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1493:1504 Synth.ARM.ArmSemantics <> exec_program def
+R1507:1525 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R1527:1532 Synth.WASM.WasmInstructions <> I64Sub constr
+R1535:1540 Synth.Synth.CorrectnessI64 <> astate:8 var
+R1544:1547 Corelib.Init.Datatypes <> Some constr
+R1549:1555 Synth.Synth.CorrectnessI64 <> astate':12 var
+prf 1593:1607 <> i64_mul_correct
+binder 1618:1623 <> wstate:13
+binder 1625:1630 <> astate:14
+binder 1632:1633 <> v1:15
+binder 1635:1636 <> v2:16
+binder 1638:1643 <> stack':17
+R1693:1698 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1662:1664 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1656:1660 Synth.WASM.WasmSemantics <> stack proj
+R1648:1653 Synth.Synth.CorrectnessI64 <> wstate:13 var
+R1672:1675 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R1665:1668 Synth.WASM.WasmValues <> VI64 constr
+R1670:1671 Synth.Synth.CorrectnessI64 <> v2:16 var
+R1683:1686 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R1676:1679 Synth.WASM.WasmValues <> VI64 constr
+R1681:1682 Synth.Synth.CorrectnessI64 <> v1:15 var
+R1687:1692 Synth.Synth.CorrectnessI64 <> stack':17 var
+R1847:1852 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R1728:1734 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1699:1713 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R1715:1720 Synth.WASM.WasmInstructions <> I64Mul constr
+R1722:1727 Synth.Synth.CorrectnessI64 <> wstate:13 var
+R1735:1738 Corelib.Init.Datatypes <> Some constr
+R1741:1751 Synth.WASM.WasmSemantics <> mkWasmState constr
+R1774:1777 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R1754:1757 Synth.WASM.WasmValues <> VI64 constr
+R1760:1766 Synth.Common.Integers I64 mul def
+R1768:1769 Synth.Synth.CorrectnessI64 <> v1:15 var
+R1771:1772 Synth.Synth.CorrectnessI64 <> v2:16 var
+R1778:1783 Synth.Synth.CorrectnessI64 <> stack':17 var
+R1806:1811 Synth.WASM.WasmSemantics <> locals proj
+R1798:1803 Synth.Synth.CorrectnessI64 <> wstate:13 var
+R1822:1828 Synth.WASM.WasmSemantics <> globals proj
+R1814:1819 Synth.Synth.CorrectnessI64 <> wstate:13 var
+R1839:1844 Synth.WASM.WasmSemantics <> memory proj
+R1831:1836 Synth.Synth.CorrectnessI64 <> wstate:13 var
+R1853:1859 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R1867:1872 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 1860:1866 <> astate':18
+R1921:1923 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R1873:1884 Synth.ARM.ArmSemantics <> exec_program def
+R1887:1905 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R1907:1912 Synth.WASM.WasmInstructions <> I64Mul constr
+R1915:1920 Synth.Synth.CorrectnessI64 <> astate:14 var
+R1924:1927 Corelib.Init.Datatypes <> Some constr
+R1929:1935 Synth.Synth.CorrectnessI64 <> astate':18 var
+prf 1973:1988 <> i64_divs_correct
+binder 1999:2004 <> wstate:19
+binder 2006:2011 <> astate:20
+binder 2013:2014 <> v1:21
+binder 2016:2017 <> v2:22
+binder 2019:2024 <> stack':23
+binder 2026:2031 <> result:24
+R2081:2086 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2050:2052 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2044:2048 Synth.WASM.WasmSemantics <> stack proj
+R2036:2041 Synth.Synth.CorrectnessI64 <> wstate:19 var
+R2060:2063 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R2053:2056 Synth.WASM.WasmValues <> VI64 constr
+R2058:2059 Synth.Synth.CorrectnessI64 <> v2:22 var
+R2071:2074 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R2064:2067 Synth.WASM.WasmValues <> VI64 constr
+R2069:2070 Synth.Synth.CorrectnessI64 <> v1:21 var
+R2075:2080 Synth.Synth.CorrectnessI64 <> stack':23 var
+R2115:2120 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2101:2103 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2087:2094 Synth.Common.Integers I64 divs def
+R2096:2097 Synth.Synth.CorrectnessI64 <> v1:21 var
+R2099:2100 Synth.Synth.CorrectnessI64 <> v2:22 var
+R2104:2107 Corelib.Init.Datatypes <> Some constr
+R2109:2114 Synth.Synth.CorrectnessI64 <> result:24 var
+R2261:2266 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2151:2157 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2121:2135 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R2137:2143 Synth.WASM.WasmInstructions <> I64DivS constr
+R2145:2150 Synth.Synth.CorrectnessI64 <> wstate:19 var
+R2158:2161 Corelib.Init.Datatypes <> Some constr
+R2164:2174 Synth.WASM.WasmSemantics <> mkWasmState constr
+R2188:2191 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R2177:2180 Synth.WASM.WasmValues <> VI64 constr
+R2182:2187 Synth.Synth.CorrectnessI64 <> result:24 var
+R2192:2197 Synth.Synth.CorrectnessI64 <> stack':23 var
+R2220:2225 Synth.WASM.WasmSemantics <> locals proj
+R2212:2217 Synth.Synth.CorrectnessI64 <> wstate:19 var
+R2236:2242 Synth.WASM.WasmSemantics <> globals proj
+R2228:2233 Synth.Synth.CorrectnessI64 <> wstate:19 var
+R2253:2258 Synth.WASM.WasmSemantics <> memory proj
+R2245:2250 Synth.Synth.CorrectnessI64 <> wstate:19 var
+R2267:2273 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R2281:2286 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 2274:2280 <> astate':25
+R2336:2338 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2287:2298 Synth.ARM.ArmSemantics <> exec_program def
+R2301:2319 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R2321:2327 Synth.WASM.WasmInstructions <> I64DivS constr
+R2330:2335 Synth.Synth.CorrectnessI64 <> astate:20 var
+R2339:2342 Corelib.Init.Datatypes <> Some constr
+R2344:2350 Synth.Synth.CorrectnessI64 <> astate':25 var
+prf 2388:2403 <> i64_divu_correct
+binder 2414:2419 <> wstate:26
+binder 2421:2426 <> astate:27
+binder 2428:2429 <> v1:28
+binder 2431:2432 <> v2:29
+binder 2434:2439 <> stack':30
+binder 2441:2446 <> result:31
+R2496:2501 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2465:2467 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2459:2463 Synth.WASM.WasmSemantics <> stack proj
+R2451:2456 Synth.Synth.CorrectnessI64 <> wstate:26 var
+R2475:2478 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R2468:2471 Synth.WASM.WasmValues <> VI64 constr
+R2473:2474 Synth.Synth.CorrectnessI64 <> v2:29 var
+R2486:2489 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R2479:2482 Synth.WASM.WasmValues <> VI64 constr
+R2484:2485 Synth.Synth.CorrectnessI64 <> v1:28 var
+R2490:2495 Synth.Synth.CorrectnessI64 <> stack':30 var
+R2530:2535 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2516:2518 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2502:2509 Synth.Common.Integers I64 divu def
+R2511:2512 Synth.Synth.CorrectnessI64 <> v1:28 var
+R2514:2515 Synth.Synth.CorrectnessI64 <> v2:29 var
+R2519:2522 Corelib.Init.Datatypes <> Some constr
+R2524:2529 Synth.Synth.CorrectnessI64 <> result:31 var
+R2676:2681 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2566:2572 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2536:2550 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R2552:2558 Synth.WASM.WasmInstructions <> I64DivU constr
+R2560:2565 Synth.Synth.CorrectnessI64 <> wstate:26 var
+R2573:2576 Corelib.Init.Datatypes <> Some constr
+R2579:2589 Synth.WASM.WasmSemantics <> mkWasmState constr
+R2603:2606 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R2592:2595 Synth.WASM.WasmValues <> VI64 constr
+R2597:2602 Synth.Synth.CorrectnessI64 <> result:31 var
+R2607:2612 Synth.Synth.CorrectnessI64 <> stack':30 var
+R2635:2640 Synth.WASM.WasmSemantics <> locals proj
+R2627:2632 Synth.Synth.CorrectnessI64 <> wstate:26 var
+R2651:2657 Synth.WASM.WasmSemantics <> globals proj
+R2643:2648 Synth.Synth.CorrectnessI64 <> wstate:26 var
+R2668:2673 Synth.WASM.WasmSemantics <> memory proj
+R2660:2665 Synth.Synth.CorrectnessI64 <> wstate:26 var
+R2682:2688 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R2696:2701 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 2689:2695 <> astate':32
+R2751:2753 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2702:2713 Synth.ARM.ArmSemantics <> exec_program def
+R2716:2734 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R2736:2742 Synth.WASM.WasmInstructions <> I64DivU constr
+R2745:2750 Synth.Synth.CorrectnessI64 <> astate:27 var
+R2754:2757 Corelib.Init.Datatypes <> Some constr
+R2759:2765 Synth.Synth.CorrectnessI64 <> astate':32 var
+prf 2803:2818 <> i64_rems_correct
+binder 2829:2834 <> wstate:33
+binder 2836:2841 <> astate:34
+binder 2843:2844 <> v1:35
+binder 2846:2847 <> v2:36
+binder 2849:2854 <> stack':37
+binder 2856:2861 <> result:38
+R2911:2916 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2880:2882 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2874:2878 Synth.WASM.WasmSemantics <> stack proj
+R2866:2871 Synth.Synth.CorrectnessI64 <> wstate:33 var
+R2890:2893 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R2883:2886 Synth.WASM.WasmValues <> VI64 constr
+R2888:2889 Synth.Synth.CorrectnessI64 <> v2:36 var
+R2901:2904 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R2894:2897 Synth.WASM.WasmValues <> VI64 constr
+R2899:2900 Synth.Synth.CorrectnessI64 <> v1:35 var
+R2905:2910 Synth.Synth.CorrectnessI64 <> stack':37 var
+R3057:3062 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R2947:2953 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R2917:2931 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R2933:2939 Synth.WASM.WasmInstructions <> I64RemS constr
+R2941:2946 Synth.Synth.CorrectnessI64 <> wstate:33 var
+R2954:2957 Corelib.Init.Datatypes <> Some constr
+R2960:2970 Synth.WASM.WasmSemantics <> mkWasmState constr
+R2984:2987 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R2973:2976 Synth.WASM.WasmValues <> VI64 constr
+R2978:2983 Synth.Synth.CorrectnessI64 <> result:38 var
+R2988:2993 Synth.Synth.CorrectnessI64 <> stack':37 var
+R3016:3021 Synth.WASM.WasmSemantics <> locals proj
+R3008:3013 Synth.Synth.CorrectnessI64 <> wstate:33 var
+R3032:3038 Synth.WASM.WasmSemantics <> globals proj
+R3024:3029 Synth.Synth.CorrectnessI64 <> wstate:33 var
+R3049:3054 Synth.WASM.WasmSemantics <> memory proj
+R3041:3046 Synth.Synth.CorrectnessI64 <> wstate:33 var
+R3063:3069 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R3077:3082 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 3070:3076 <> astate':39
+R3132:3134 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3083:3094 Synth.ARM.ArmSemantics <> exec_program def
+R3097:3115 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R3117:3123 Synth.WASM.WasmInstructions <> I64RemS constr
+R3126:3131 Synth.Synth.CorrectnessI64 <> astate:34 var
+R3135:3138 Corelib.Init.Datatypes <> Some constr
+R3140:3146 Synth.Synth.CorrectnessI64 <> astate':39 var
+prf 3184:3199 <> i64_remu_correct
+binder 3210:3215 <> wstate:40
+binder 3217:3222 <> astate:41
+binder 3224:3225 <> v1:42
+binder 3227:3228 <> v2:43
+binder 3230:3235 <> stack':44
+binder 3237:3242 <> result:45
+R3292:3297 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3261:3263 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3255:3259 Synth.WASM.WasmSemantics <> stack proj
+R3247:3252 Synth.Synth.CorrectnessI64 <> wstate:40 var
+R3271:3274 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R3264:3267 Synth.WASM.WasmValues <> VI64 constr
+R3269:3270 Synth.Synth.CorrectnessI64 <> v2:43 var
+R3282:3285 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R3275:3278 Synth.WASM.WasmValues <> VI64 constr
+R3280:3281 Synth.Synth.CorrectnessI64 <> v1:42 var
+R3286:3291 Synth.Synth.CorrectnessI64 <> stack':44 var
+R3438:3443 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3328:3334 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3298:3312 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R3314:3320 Synth.WASM.WasmInstructions <> I64RemU constr
+R3322:3327 Synth.Synth.CorrectnessI64 <> wstate:40 var
+R3335:3338 Corelib.Init.Datatypes <> Some constr
+R3341:3351 Synth.WASM.WasmSemantics <> mkWasmState constr
+R3365:3368 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R3354:3357 Synth.WASM.WasmValues <> VI64 constr
+R3359:3364 Synth.Synth.CorrectnessI64 <> result:45 var
+R3369:3374 Synth.Synth.CorrectnessI64 <> stack':44 var
+R3397:3402 Synth.WASM.WasmSemantics <> locals proj
+R3389:3394 Synth.Synth.CorrectnessI64 <> wstate:40 var
+R3413:3419 Synth.WASM.WasmSemantics <> globals proj
+R3405:3410 Synth.Synth.CorrectnessI64 <> wstate:40 var
+R3430:3435 Synth.WASM.WasmSemantics <> memory proj
+R3422:3427 Synth.Synth.CorrectnessI64 <> wstate:40 var
+R3444:3450 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R3458:3463 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 3451:3457 <> astate':46
+R3513:3515 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3464:3475 Synth.ARM.ArmSemantics <> exec_program def
+R3478:3496 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R3498:3504 Synth.WASM.WasmInstructions <> I64RemU constr
+R3507:3512 Synth.Synth.CorrectnessI64 <> astate:41 var
+R3516:3519 Corelib.Init.Datatypes <> Some constr
+R3521:3527 Synth.Synth.CorrectnessI64 <> astate':46 var
+prf 3610:3624 <> i64_and_correct
+binder 3635:3640 <> wstate:47
+binder 3642:3647 <> astate:48
+binder 3649:3650 <> v1:49
+binder 3652:3653 <> v2:50
+binder 3655:3660 <> stack':51
+R3710:3715 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3679:3681 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3673:3677 Synth.WASM.WasmSemantics <> stack proj
+R3665:3670 Synth.Synth.CorrectnessI64 <> wstate:47 var
+R3689:3692 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R3682:3685 Synth.WASM.WasmValues <> VI64 constr
+R3687:3688 Synth.Synth.CorrectnessI64 <> v2:50 var
+R3700:3703 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R3693:3696 Synth.WASM.WasmValues <> VI64 constr
+R3698:3699 Synth.Synth.CorrectnessI64 <> v1:49 var
+R3704:3709 Synth.Synth.CorrectnessI64 <> stack':51 var
+R3864:3869 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R3745:3751 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3716:3730 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R3732:3737 Synth.WASM.WasmInstructions <> I64And constr
+R3739:3744 Synth.Synth.CorrectnessI64 <> wstate:47 var
+R3752:3755 Corelib.Init.Datatypes <> Some constr
+R3758:3768 Synth.WASM.WasmSemantics <> mkWasmState constr
+R3791:3794 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R3771:3774 Synth.WASM.WasmValues <> VI64 constr
+R3777:3783 Synth.Common.Integers I64 and def
+R3785:3786 Synth.Synth.CorrectnessI64 <> v1:49 var
+R3788:3789 Synth.Synth.CorrectnessI64 <> v2:50 var
+R3795:3800 Synth.Synth.CorrectnessI64 <> stack':51 var
+R3823:3828 Synth.WASM.WasmSemantics <> locals proj
+R3815:3820 Synth.Synth.CorrectnessI64 <> wstate:47 var
+R3839:3845 Synth.WASM.WasmSemantics <> globals proj
+R3831:3836 Synth.Synth.CorrectnessI64 <> wstate:47 var
+R3856:3861 Synth.WASM.WasmSemantics <> memory proj
+R3848:3853 Synth.Synth.CorrectnessI64 <> wstate:47 var
+R3870:3876 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R3884:3889 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 3877:3883 <> astate':52
+R3938:3940 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R3890:3901 Synth.ARM.ArmSemantics <> exec_program def
+R3904:3922 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R3924:3929 Synth.WASM.WasmInstructions <> I64And constr
+R3932:3937 Synth.Synth.CorrectnessI64 <> astate:48 var
+R3941:3944 Corelib.Init.Datatypes <> Some constr
+R3946:3952 Synth.Synth.CorrectnessI64 <> astate':52 var
+prf 3990:4003 <> i64_or_correct
+binder 4014:4019 <> wstate:53
+binder 4021:4026 <> astate:54
+binder 4028:4029 <> v1:55
+binder 4031:4032 <> v2:56
+binder 4034:4039 <> stack':57
+R4089:4094 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4058:4060 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4052:4056 Synth.WASM.WasmSemantics <> stack proj
+R4044:4049 Synth.Synth.CorrectnessI64 <> wstate:53 var
+R4068:4071 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R4061:4064 Synth.WASM.WasmValues <> VI64 constr
+R4066:4067 Synth.Synth.CorrectnessI64 <> v2:56 var
+R4079:4082 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R4072:4075 Synth.WASM.WasmValues <> VI64 constr
+R4077:4078 Synth.Synth.CorrectnessI64 <> v1:55 var
+R4083:4088 Synth.Synth.CorrectnessI64 <> stack':57 var
+R4241:4246 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4123:4129 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4095:4109 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R4111:4115 Synth.WASM.WasmInstructions <> I64Or constr
+R4117:4122 Synth.Synth.CorrectnessI64 <> wstate:53 var
+R4130:4133 Corelib.Init.Datatypes <> Some constr
+R4136:4146 Synth.WASM.WasmSemantics <> mkWasmState constr
+R4168:4171 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R4149:4152 Synth.WASM.WasmValues <> VI64 constr
+R4155:4160 Synth.Common.Integers I64 or def
+R4162:4163 Synth.Synth.CorrectnessI64 <> v1:55 var
+R4165:4166 Synth.Synth.CorrectnessI64 <> v2:56 var
+R4172:4177 Synth.Synth.CorrectnessI64 <> stack':57 var
+R4200:4205 Synth.WASM.WasmSemantics <> locals proj
+R4192:4197 Synth.Synth.CorrectnessI64 <> wstate:53 var
+R4216:4222 Synth.WASM.WasmSemantics <> globals proj
+R4208:4213 Synth.Synth.CorrectnessI64 <> wstate:53 var
+R4233:4238 Synth.WASM.WasmSemantics <> memory proj
+R4225:4230 Synth.Synth.CorrectnessI64 <> wstate:53 var
+R4247:4253 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R4261:4266 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 4254:4260 <> astate':58
+R4314:4316 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4267:4278 Synth.ARM.ArmSemantics <> exec_program def
+R4281:4299 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R4301:4305 Synth.WASM.WasmInstructions <> I64Or constr
+R4308:4313 Synth.Synth.CorrectnessI64 <> astate:54 var
+R4317:4320 Corelib.Init.Datatypes <> Some constr
+R4322:4328 Synth.Synth.CorrectnessI64 <> astate':58 var
+prf 4366:4380 <> i64_xor_correct
+binder 4391:4396 <> wstate:59
+binder 4398:4403 <> astate:60
+binder 4405:4406 <> v1:61
+binder 4408:4409 <> v2:62
+binder 4411:4416 <> stack':63
+R4466:4471 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4435:4437 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4429:4433 Synth.WASM.WasmSemantics <> stack proj
+R4421:4426 Synth.Synth.CorrectnessI64 <> wstate:59 var
+R4445:4448 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R4438:4441 Synth.WASM.WasmValues <> VI64 constr
+R4443:4444 Synth.Synth.CorrectnessI64 <> v2:62 var
+R4456:4459 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R4449:4452 Synth.WASM.WasmValues <> VI64 constr
+R4454:4455 Synth.Synth.CorrectnessI64 <> v1:61 var
+R4460:4465 Synth.Synth.CorrectnessI64 <> stack':63 var
+R4620:4625 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4501:4507 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4472:4486 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R4488:4493 Synth.WASM.WasmInstructions <> I64Xor constr
+R4495:4500 Synth.Synth.CorrectnessI64 <> wstate:59 var
+R4508:4511 Corelib.Init.Datatypes <> Some constr
+R4514:4524 Synth.WASM.WasmSemantics <> mkWasmState constr
+R4547:4550 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R4527:4530 Synth.WASM.WasmValues <> VI64 constr
+R4533:4539 Synth.Common.Integers I64 xor def
+R4541:4542 Synth.Synth.CorrectnessI64 <> v1:61 var
+R4544:4545 Synth.Synth.CorrectnessI64 <> v2:62 var
+R4551:4556 Synth.Synth.CorrectnessI64 <> stack':63 var
+R4579:4584 Synth.WASM.WasmSemantics <> locals proj
+R4571:4576 Synth.Synth.CorrectnessI64 <> wstate:59 var
+R4595:4601 Synth.WASM.WasmSemantics <> globals proj
+R4587:4592 Synth.Synth.CorrectnessI64 <> wstate:59 var
+R4612:4617 Synth.WASM.WasmSemantics <> memory proj
+R4604:4609 Synth.Synth.CorrectnessI64 <> wstate:59 var
+R4626:4632 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R4640:4645 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 4633:4639 <> astate':64
+R4694:4696 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4646:4657 Synth.ARM.ArmSemantics <> exec_program def
+R4660:4678 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R4680:4685 Synth.WASM.WasmInstructions <> I64Xor constr
+R4688:4693 Synth.Synth.CorrectnessI64 <> astate:60 var
+R4697:4700 Corelib.Init.Datatypes <> Some constr
+R4702:4708 Synth.Synth.CorrectnessI64 <> astate':64 var
+prf 4746:4760 <> i64_shl_correct
+binder 4771:4776 <> wstate:65
+binder 4778:4783 <> astate:66
+binder 4785:4786 <> v1:67
+binder 4788:4789 <> v2:68
+binder 4791:4796 <> stack':69
+R4846:4851 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4815:4817 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4809:4813 Synth.WASM.WasmSemantics <> stack proj
+R4801:4806 Synth.Synth.CorrectnessI64 <> wstate:65 var
+R4825:4828 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R4818:4821 Synth.WASM.WasmValues <> VI64 constr
+R4823:4824 Synth.Synth.CorrectnessI64 <> v2:68 var
+R4836:4839 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R4829:4832 Synth.WASM.WasmValues <> VI64 constr
+R4834:4835 Synth.Synth.CorrectnessI64 <> v1:67 var
+R4840:4845 Synth.Synth.CorrectnessI64 <> stack':69 var
+R5000:5005 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R4881:4887 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R4852:4866 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R4868:4873 Synth.WASM.WasmInstructions <> I64Shl constr
+R4875:4880 Synth.Synth.CorrectnessI64 <> wstate:65 var
+R4888:4891 Corelib.Init.Datatypes <> Some constr
+R4894:4904 Synth.WASM.WasmSemantics <> mkWasmState constr
+R4927:4930 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R4907:4910 Synth.WASM.WasmValues <> VI64 constr
+R4913:4919 Synth.Common.Integers I64 shl def
+R4921:4922 Synth.Synth.CorrectnessI64 <> v1:67 var
+R4924:4925 Synth.Synth.CorrectnessI64 <> v2:68 var
+R4931:4936 Synth.Synth.CorrectnessI64 <> stack':69 var
+R4959:4964 Synth.WASM.WasmSemantics <> locals proj
+R4951:4956 Synth.Synth.CorrectnessI64 <> wstate:65 var
+R4975:4981 Synth.WASM.WasmSemantics <> globals proj
+R4967:4972 Synth.Synth.CorrectnessI64 <> wstate:65 var
+R4992:4997 Synth.WASM.WasmSemantics <> memory proj
+R4984:4989 Synth.Synth.CorrectnessI64 <> wstate:65 var
+R5006:5012 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R5020:5025 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 5013:5019 <> astate':70
+R5074:5076 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5026:5037 Synth.ARM.ArmSemantics <> exec_program def
+R5040:5058 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R5060:5065 Synth.WASM.WasmInstructions <> I64Shl constr
+R5068:5073 Synth.Synth.CorrectnessI64 <> astate:66 var
+R5077:5080 Corelib.Init.Datatypes <> Some constr
+R5082:5088 Synth.Synth.CorrectnessI64 <> astate':70 var
+prf 5126:5141 <> i64_shru_correct
+binder 5152:5157 <> wstate:71
+binder 5159:5164 <> astate:72
+binder 5166:5167 <> v1:73
+binder 5169:5170 <> v2:74
+binder 5172:5177 <> stack':75
+R5227:5232 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5196:5198 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5190:5194 Synth.WASM.WasmSemantics <> stack proj
+R5182:5187 Synth.Synth.CorrectnessI64 <> wstate:71 var
+R5206:5209 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R5199:5202 Synth.WASM.WasmValues <> VI64 constr
+R5204:5205 Synth.Synth.CorrectnessI64 <> v2:74 var
+R5217:5220 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R5210:5213 Synth.WASM.WasmValues <> VI64 constr
+R5215:5216 Synth.Synth.CorrectnessI64 <> v1:73 var
+R5221:5226 Synth.Synth.CorrectnessI64 <> stack':75 var
+R5383:5388 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5263:5269 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5233:5247 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R5249:5255 Synth.WASM.WasmInstructions <> I64ShrU constr
+R5257:5262 Synth.Synth.CorrectnessI64 <> wstate:71 var
+R5270:5273 Corelib.Init.Datatypes <> Some constr
+R5276:5286 Synth.WASM.WasmSemantics <> mkWasmState constr
+R5310:5313 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R5289:5292 Synth.WASM.WasmValues <> VI64 constr
+R5295:5302 Synth.Common.Integers I64 shru def
+R5304:5305 Synth.Synth.CorrectnessI64 <> v1:73 var
+R5307:5308 Synth.Synth.CorrectnessI64 <> v2:74 var
+R5314:5319 Synth.Synth.CorrectnessI64 <> stack':75 var
+R5342:5347 Synth.WASM.WasmSemantics <> locals proj
+R5334:5339 Synth.Synth.CorrectnessI64 <> wstate:71 var
+R5358:5364 Synth.WASM.WasmSemantics <> globals proj
+R5350:5355 Synth.Synth.CorrectnessI64 <> wstate:71 var
+R5375:5380 Synth.WASM.WasmSemantics <> memory proj
+R5367:5372 Synth.Synth.CorrectnessI64 <> wstate:71 var
+R5389:5395 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R5403:5408 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 5396:5402 <> astate':76
+R5458:5460 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5409:5420 Synth.ARM.ArmSemantics <> exec_program def
+R5423:5441 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R5443:5449 Synth.WASM.WasmInstructions <> I64ShrU constr
+R5452:5457 Synth.Synth.CorrectnessI64 <> astate:72 var
+R5461:5464 Corelib.Init.Datatypes <> Some constr
+R5466:5472 Synth.Synth.CorrectnessI64 <> astate':76 var
+prf 5510:5525 <> i64_shrs_correct
+binder 5536:5541 <> wstate:77
+binder 5543:5548 <> astate:78
+binder 5550:5551 <> v1:79
+binder 5553:5554 <> v2:80
+binder 5556:5561 <> stack':81
+R5611:5616 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5580:5582 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5574:5578 Synth.WASM.WasmSemantics <> stack proj
+R5566:5571 Synth.Synth.CorrectnessI64 <> wstate:77 var
+R5590:5593 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R5583:5586 Synth.WASM.WasmValues <> VI64 constr
+R5588:5589 Synth.Synth.CorrectnessI64 <> v2:80 var
+R5601:5604 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R5594:5597 Synth.WASM.WasmValues <> VI64 constr
+R5599:5600 Synth.Synth.CorrectnessI64 <> v1:79 var
+R5605:5610 Synth.Synth.CorrectnessI64 <> stack':81 var
+R5767:5772 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5647:5653 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5617:5631 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R5633:5639 Synth.WASM.WasmInstructions <> I64ShrS constr
+R5641:5646 Synth.Synth.CorrectnessI64 <> wstate:77 var
+R5654:5657 Corelib.Init.Datatypes <> Some constr
+R5660:5670 Synth.WASM.WasmSemantics <> mkWasmState constr
+R5694:5697 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R5673:5676 Synth.WASM.WasmValues <> VI64 constr
+R5679:5686 Synth.Common.Integers I64 shrs def
+R5688:5689 Synth.Synth.CorrectnessI64 <> v1:79 var
+R5691:5692 Synth.Synth.CorrectnessI64 <> v2:80 var
+R5698:5703 Synth.Synth.CorrectnessI64 <> stack':81 var
+R5726:5731 Synth.WASM.WasmSemantics <> locals proj
+R5718:5723 Synth.Synth.CorrectnessI64 <> wstate:77 var
+R5742:5748 Synth.WASM.WasmSemantics <> globals proj
+R5734:5739 Synth.Synth.CorrectnessI64 <> wstate:77 var
+R5759:5764 Synth.WASM.WasmSemantics <> memory proj
+R5751:5756 Synth.Synth.CorrectnessI64 <> wstate:77 var
+R5773:5779 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R5787:5792 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 5780:5786 <> astate':82
+R5842:5844 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5793:5804 Synth.ARM.ArmSemantics <> exec_program def
+R5807:5825 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R5827:5833 Synth.WASM.WasmInstructions <> I64ShrS constr
+R5836:5841 Synth.Synth.CorrectnessI64 <> astate:78 var
+R5845:5848 Corelib.Init.Datatypes <> Some constr
+R5850:5856 Synth.Synth.CorrectnessI64 <> astate':82 var
+prf 5894:5909 <> i64_rotl_correct
+binder 5920:5925 <> wstate:83
+binder 5927:5932 <> astate:84
+binder 5934:5935 <> v1:85
+binder 5937:5938 <> v2:86
+binder 5940:5945 <> stack':87
+R5995:6000 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R5964:5966 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R5958:5962 Synth.WASM.WasmSemantics <> stack proj
+R5950:5955 Synth.Synth.CorrectnessI64 <> wstate:83 var
+R5974:5977 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R5967:5970 Synth.WASM.WasmValues <> VI64 constr
+R5972:5973 Synth.Synth.CorrectnessI64 <> v2:86 var
+R5985:5988 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R5978:5981 Synth.WASM.WasmValues <> VI64 constr
+R5983:5984 Synth.Synth.CorrectnessI64 <> v1:85 var
+R5989:5994 Synth.Synth.CorrectnessI64 <> stack':87 var
+R6166:6171 Corelib.Init.Logic <> ::type_scope:x_'->'_x not
+R6031:6037 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R6001:6015 Synth.WASM.WasmSemantics <> exec_wasm_instr def
+R6017:6023 Synth.WASM.WasmInstructions <> I64Rotl constr
+R6025:6030 Synth.Synth.CorrectnessI64 <> wstate:83 var
+R6038:6041 Corelib.Init.Datatypes <> Some constr
+R6044:6054 Synth.WASM.WasmSemantics <> mkWasmState constr
+R6074:6077 Corelib.Init.Datatypes <> ::list_scope:x_'::'_x not
+R6057:6060 Synth.WASM.WasmValues <> VI64 constr
+R6063:6070 Synth.Common.Integers I64 repr def
+R6078:6083 Synth.Synth.CorrectnessI64 <> stack':87 var
+R6125:6130 Synth.WASM.WasmSemantics <> locals proj
+R6117:6122 Synth.Synth.CorrectnessI64 <> wstate:83 var
+R6141:6147 Synth.WASM.WasmSemantics <> globals proj
+R6133:6138 Synth.Synth.CorrectnessI64 <> wstate:83 var
+R6158:6163 Synth.WASM.WasmSemantics <> memory proj
+R6150:6155 Synth.Synth.CorrectnessI64 <> wstate:83 var
+R6172:6178 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+R6186:6191 Corelib.Init.Logic <> ::type_scope:'exists'_x_'..'_x_','_x not
+binder 6179:6185 <> astate':88
+R6241:6243 Corelib.Init.Logic <> ::type_scope:x_'='_x not
+R6192:6203 Synth.ARM.ArmSemantics <> exec_program def
+R6206:6224 Synth.Synth.Compilation <> compile_wasm_to_arm def
+R6226:6232 Synth.WASM.WasmInstructions <> I64Rotl constr
+R6235:6240 Synth.Synth.CorrectnessI64 <> astate:84 var
+R6244:6247 Corelib.Init.Datatypes <> Some constr
+R6249:6255 Synth.Synth.CorrectnessI64 <> astate':88 var
