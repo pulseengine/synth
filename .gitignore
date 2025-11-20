@@ -45,3 +45,4 @@ _build/
 # Extracted files in wrong location
 coq/theories/*.ml
 coq/theories/*.mli
+loom/
