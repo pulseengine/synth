@@ -1,0 +1,69 @@
+# Synth Bazel Configuration
+
+# Common settings
+common --enable_bzlmod
+common --enable_platform_specific_config
+
+# Build settings
+build --incompatible_strict_action_env
+build --verbose_failures
+build --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+
+# Use remote cache if available (optional - configure later)
+# build --remote_cache=grpc://localhost:9092
+
+# Rust settings
+build --@rules_rust//rust/toolchain/channel=stable
+
+# Enable workers for faster builds
+build --worker_max_instances=4
+
+# C++ settings for ARM cross-compilation
+build:arm --platforms=//bazel/platforms:cortex_m4
+build:arm --crosstool_top=@toolchains_arm_gnu//toolchain:arm-none-eabi
+build:arm --cpu=armv7e-m
+
+# Test configuration
+test --test_output=errors
+test --test_summary=detailed
+
+# Coverage
+coverage --combined_report=lcov
+coverage --instrumentation_filter="//crates/..."
+
+# Performance settings
+build --experimental_reuse_sandbox_directories
+build --experimental_inmemory_jdeps_files
+build --experimental_inmemory_dotd_files
+
+# WASM Component Model settings
+build:wasm --platforms=//bazel/platforms:wasm32
+build:wasm --@rules_wasm_component//wasm:component_model=true
+
+# Coq verification settings (when we add Coq rules)
+build:coq --define=coq_version=8.18
+build:coq --define=with_proofs=true
+
+# ASIL D build (strict flags for certification)
+build:asil_d --copt=-Wall
+build:asil_d --copt=-Werror
+build:asil_d --copt=-Wextra
+build:asil_d --copt=-pedantic
+build:asil_d --define=verification=full
+build:asil_d --define=with_coq_proofs=true
+build:asil_d --config=coq
+
+# Debug build
+build:debug --compilation_mode=dbg
+build:debug --strip=never
+
+# Optimized build
+build:opt --compilation_mode=opt
+build:opt --strip=always
+
+# Fast incremental builds (for development)
+build:dev --compilation_mode=fastbuild
+build:dev --config=debug
+
+# Try to import local settings (optional)
+try-import %workspace%/.bazelrc.local

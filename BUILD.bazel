@@ -1,0 +1,41 @@
+"""
+Root BUILD file for Synth project
+"""
+
+# Make the MODULE.bazel file visible to the workspace
+exports_files([
+    "MODULE.bazel",
+    ".bazelversion",
+    "Cargo.toml",
+    "Cargo.lock",
+])
+
+# Filegroup for all documentation
+filegroup(
+    name = "docs",
+    srcs = glob([
+        "*.md",
+        "docs/**/*.md",
+    ]),
+    visibility = ["//visibility:public"],
+)
+
+# Filegroup for all examples
+filegroup(
+    name = "examples",
+    srcs = glob([
+        "examples/**/*.wasm",
+        "examples/**/*.wat",
+    ]),
+    visibility = ["//visibility:public"],
+)
+
+# Test data for integration tests
+filegroup(
+    name = "test_data",
+    srcs = glob([
+        "validation/**/*.wasm",
+        "validation/**/*.wat",
+    ]),
+    visibility = ["//visibility:public"],
+)

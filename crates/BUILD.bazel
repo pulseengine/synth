@@ -1,0 +1,218 @@
+"""
+Main compiler crates for Synth
+"""
+
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_binary", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+# Core WebAssembly parsing and IR
+rust_library(
+    name = "synth-core",
+    srcs = glob(["synth-core/src/**/*.rs"]),
+    crate_root = "synth-core/src/lib.rs",
+    edition = "2021",
+    deps = [
+        "@crates//:anyhow",
+        "@crates//:wasmparser",
+        "@crates//:wasm-encoder",
+    ],
+)
+
+# Frontend: WASM parsing and validation
+rust_library(
+    name = "synth-frontend",
+    srcs = glob(["synth-frontend/src/**/*.rs"]),
+    crate_root = "synth-frontend/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        "@crates//:anyhow",
+        "@crates//:wasmparser",
+        "@crates//:wat",
+    ],
+)
+
+# Analysis passes (control flow, data flow, etc.)
+rust_library(
+    name = "synth-analysis",
+    srcs = glob(["synth-analysis/src/**/*.rs"]),
+    crate_root = "synth-analysis/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        ":synth-cfg",
+        "@crates//:anyhow",
+    ],
+)
+
+# Control Flow Graph
+rust_library(
+    name = "synth-cfg",
+    srcs = glob(["synth-cfg/src/**/*.rs"]),
+    crate_root = "synth-cfg/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        "@crates//:anyhow",
+    ],
+)
+
+# Optimization passes
+rust_library(
+    name = "synth-opt",
+    srcs = glob(["synth-opt/src/**/*.rs"]),
+    crate_root = "synth-opt/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        ":synth-analysis",
+        "@crates//:anyhow",
+    ],
+)
+
+# Synthesis engine (e-graphs, equality saturation)
+rust_library(
+    name = "synth-synthesis",
+    srcs = glob(["synth-synthesis/src/**/*.rs"]),
+    crate_root = "synth-synthesis/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        ":synth-opt",
+        "@crates//:anyhow",
+        # TODO: Add egg (e-graphs) dependency
+    ],
+)
+
+# Register allocation
+rust_library(
+    name = "synth-regalloc",
+    srcs = glob(["synth-regalloc/src/**/*.rs"]),
+    crate_root = "synth-regalloc/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        "@crates//:anyhow",
+        # TODO: Add regalloc2 dependency
+    ],
+)
+
+# Code generation backend (ARM, RISC-V)
+rust_library(
+    name = "synth-backend",
+    srcs = glob(["synth-backend/src/**/*.rs"]),
+    crate_root = "synth-backend/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        ":synth-codegen",
+        ":synth-regalloc",
+        "@crates//:anyhow",
+    ],
+)
+
+# Machine code generation
+rust_library(
+    name = "synth-codegen",
+    srcs = glob(["synth-codegen/src/**/*.rs"]),
+    crate_root = "synth-codegen/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        "@crates//:anyhow",
+    ],
+)
+
+# ABI and calling conventions
+rust_library(
+    name = "synth-abi",
+    srcs = glob(["synth-abi/src/**/*.rs"]),
+    crate_root = "synth-abi/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        "@crates//:anyhow",
+    ],
+)
+
+# WIT (WebAssembly Interface Types) support
+rust_library(
+    name = "synth-wit",
+    srcs = glob(["synth-wit/src/**/*.rs"]),
+    crate_root = "synth-wit/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        "@crates//:anyhow",
+        # Will use @rules_wasm_component for WIT parsing
+    ],
+)
+
+# Verification (Z3 SMT + Coq proof generation)
+rust_library(
+    name = "synth-verify",
+    srcs = glob(["synth-verify/src/**/*.rs"]),
+    crate_root = "synth-verify/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        ":synth-backend",
+        "@crates//:anyhow",
+        "@crates//:z3",
+    ],
+    rustc_flags = select({
+        "//bazel/features:with_verification": ["--cfg", "feature=\"verification\""],
+        "//conditions:default": [],
+    }),
+)
+
+# QEMU integration for testing
+rust_library(
+    name = "synth-qemu",
+    srcs = glob(["synth-qemu/src/**/*.rs"]),
+    crate_root = "synth-qemu/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        "@crates//:anyhow",
+    ],
+)
+
+# Main CLI binary
+rust_binary(
+    name = "synth",
+    srcs = glob(["synth-cli/src/**/*.rs"]),
+    crate_root = "synth-cli/src/main.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        ":synth-frontend",
+        ":synth-analysis",
+        ":synth-opt",
+        ":synth-synthesis",
+        ":synth-backend",
+        ":synth-verify",
+        "@crates//:anyhow",
+    ],
+)
+
+# All crates for testing
+filegroup(
+    name = "all_crates",
+    srcs = [
+        ":synth-core",
+        ":synth-frontend",
+        ":synth-analysis",
+        ":synth-cfg",
+        ":synth-opt",
+        ":synth-synthesis",
+        ":synth-regalloc",
+        ":synth-backend",
+        ":synth-codegen",
+        ":synth-abi",
+        ":synth-wit",
+        ":synth-verify",
+        ":synth-qemu",
+    ],
+)
