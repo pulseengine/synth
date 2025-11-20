@@ -4,6 +4,7 @@
     in Synth compilation correctness proofs.
 *)
 
+From Stdlib Require Import ZArith Ring.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
@@ -111,7 +112,8 @@ Ltac synth_auto :=
 
 (** ** Examples of using automation *)
 
-Require Import Synth.Synth.Correctness.
+(* Commented out to avoid cyclic dependency - Correctness files import Tactics *)
+(* Require Import Synth.Synth.Correctness.
 
 (** Reprove i32.add using automation *)
 Theorem compile_i32_add_correct_auto : forall wstate astate v1 v2 stack',
@@ -132,3 +134,4 @@ Proof.
 Qed.
 
 (** This proof is 1 line instead of 8! *)
+*)

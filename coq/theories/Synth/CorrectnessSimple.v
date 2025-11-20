@@ -19,8 +19,6 @@ Require Import Synth.WASM.WasmInstructions.
 Require Import Synth.WASM.WasmSemantics.
 Require Import Synth.Synth.Compilation.
 
-Open Scope Z_scope.
-
 (** ** Control Flow Operations *)
 
 (** Nop does nothing *)
@@ -77,18 +75,18 @@ Qed.
 (** ** Local Variable Operations *)
 
 (** LocalGet loads a local variable *)
-Theorem local_get_correct : forall wstate astate idx,
-  idx < 4 ->  (* Only support 4 locals in registers for now *)
+Theorem local_get_correct : forall wstate astate (idx : nat),
+  lt idx 4 ->  (* Only support 4 locals in registers for now *)
   exec_wasm_instr (LocalGet idx) wstate =
     Some (mkWasmState
             (VI32 (wstate.(locals) idx) :: wstate.(stack))
             wstate.(locals)
             wstate.(globals)
             wstate.(memory)) ->
-  (forall i, i < 4 -> get_reg astate (match i with
-                                       | 0 => R4
-                                       | 1 => R5
-                                       | 2 => R6
+  (forall i, lt i 4 -> get_reg astate (match i with
+                                       | O => R4
+                                       | S O => R5
+                                       | S (S O) => R6
                                        | _ => R7
                                        end) = wstate.(locals) i) ->
   exists astate',
@@ -99,8 +97,8 @@ Proof.
 Admitted.
 
 (** LocalSet stores to a local variable *)
-Theorem local_set_correct : forall wstate astate v stack' idx,
-  idx < 4 ->  (* Only support 4 locals in registers *)
+Theorem local_set_correct : forall wstate astate v stack' (idx : nat),
+  lt idx 4 ->  (* Only support 4 locals in registers *)
   wstate.(stack) = VI32 v :: stack' ->
   get_reg astate R0 = v ->
   exec_wasm_instr (LocalSet idx) wstate =
@@ -112,9 +110,9 @@ Theorem local_set_correct : forall wstate astate v stack' idx,
   exists astate',
     exec_program (compile_wasm_to_arm (LocalSet idx)) astate = Some astate' /\
     get_reg astate' (match idx with
-                     | 0 => R4
-                     | 1 => R5
-                     | 2 => R6
+                     | O => R4
+                     | S O => R5
+                     | S (S O) => R6
                      | _ => R7
                      end) = v.
 Proof.
@@ -164,8 +162,8 @@ Proof.
 Qed.
 
 (** LocalTee sets local and keeps value on stack *)
-Theorem local_tee_correct : forall wstate astate v stack' idx,
-  idx < 4 ->
+Theorem local_tee_correct : forall wstate astate v stack' (idx : nat),
+  lt idx 4 ->
   wstate.(stack) = VI32 v :: stack' ->
   get_reg astate R0 = v ->
   exec_wasm_instr (LocalTee idx) wstate =
@@ -185,8 +183,8 @@ Qed.
 (** ** Global Variable Operations *)
 
 (** Similar to locals, but for globals *)
-Theorem global_get_correct : forall wstate astate idx,
-  idx < 4 ->  (* Simplified: support 4 globals in registers *)
+Theorem global_get_correct : forall wstate astate (idx : nat),
+  lt idx 4 ->  (* Simplified: support 4 globals in registers *)
   exec_wasm_instr (GlobalGet idx) wstate =
     Some (mkWasmState
             (VI32 (wstate.(globals) idx) :: wstate.(stack))
@@ -201,8 +199,8 @@ Proof.
   exists astate. reflexivity.
 Qed.
 
-Theorem global_set_correct : forall wstate astate v stack' idx,
-  idx < 4 ->
+Theorem global_set_correct : forall wstate astate v stack' (idx : nat),
+  lt idx 4 ->
   wstate.(stack) = VI32 v :: stack' ->
   exec_wasm_instr (GlobalSet idx) wstate =
     Some (mkWasmState

@@ -4,6 +4,7 @@
     Total: 34 operations
 *)
 
+From Stdlib Require Import ZArith.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
@@ -73,7 +74,7 @@ Theorem i32_divs_correct : forall wstate astate v1 v2 stack' result,
 Proof.
   intros. unfold compile_wasm_to_arm.
   unfold exec_program, exec_instr. simpl.
-  rewrite H0, H1.
+  rewrite H0, H1, H2.
   eexists. split.
   - reflexivity.
   - simpl. apply get_set_reg_eq.
@@ -93,7 +94,7 @@ Theorem i32_divu_correct : forall wstate astate v1 v2 stack' result,
 Proof.
   intros. unfold compile_wasm_to_arm.
   unfold exec_program, exec_instr. simpl.
-  rewrite H0, H1.
+  rewrite H0, H1, H2.
   eexists. split.
   - reflexivity.
   - simpl. apply get_set_reg_eq.
@@ -121,7 +122,7 @@ Proof.
   unfold exec_instr. simpl.
 
   (* After SDIV: R2 = quotient, R0 and R1 unchanged *)
-  rewrite HR0, HR1.
+  rewrite HR0, HR1, Hquot.
 
   (* After MLS: R0 = v1 - (quotient * v2) = remainder *)
   eexists. split.
