@@ -24,6 +24,17 @@ Synth is a WebAssembly-to-ARM compiler designed specifically for embedded system
 - Linker script generation for multiple ARM targets
 - **0.85x native code size** (better than typical native compilation!)
 
+### Synth and Loom
+
+Synth works alongside [Loom](https://github.com/pulseengine/loom), our open-source WebAssembly optimizer:
+
+| Project | Purpose | Verification | Output |
+|---------|---------|--------------|--------|
+| **Loom** | WASM optimization | Z3 SMT (ASIL B) | Optimized WASM |
+| **Synth** | Native code synthesis | Coq proofs (ASIL D) | ARM/RISC-V ELF |
+
+Synth can optionally use Loom to optimize WASM before native code generation. See [SYNTH_LOOM_RELATIONSHIP.md](docs/architecture/SYNTH_LOOM_RELATIONSHIP.md) for details.
+
 ## System Architecture
 
 ```

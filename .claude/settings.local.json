@@ -8,7 +8,8 @@
       "Bash(wc:*)",
       "Bash(gh api:*)",
       "Bash(gh label list:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(gh pr merge:*)"
     ],
     "deny": [],
     "ask": []
