@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(tree:*)",
+      "Bash(gh repo view:*)",
+      "Bash(chmod +x /Users/r/git/Synth/scripts/create_project_board.sh)",
+      "Bash(done)",
+      "Bash(wc:*)",
+      "Bash(gh api:*)",
+      "Bash(gh label list:*)",
+      "Bash(ls:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

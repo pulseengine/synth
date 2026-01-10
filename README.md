@@ -63,11 +63,26 @@ See [PoC Implementation Plan](docs/poc/POC_PLAN.md) for details.
 
 ## Documentation
 
+### Quick Navigation
+
+| Directory | Contents |
+|-----------|----------|
+| [docs/status/](docs/status/) | Project status, implementation progress, phase completions |
+| [docs/planning/](docs/planning/) | Roadmaps, reorganization plans, detailed todos |
+| [docs/architecture/](docs/architecture/) | System design, crate structure |
+| [docs/research/](docs/research/) | Literature review, Sail/ARM analysis, formal methods |
+| [docs/analysis/](docs/analysis/) | Technical comparisons, Loom evaluation, reality checks |
+| [docs/build-systems/](docs/build-systems/) | Bazel, Cargo, Coq/Dune setup guides |
+| [docs/validation/](docs/validation/) | Test reports, verification status |
+| [docs/sessions/](docs/sessions/) | Development session notes (archived) |
+
 ### Core Documents
 
 - **[Requirements](docs/requirements/REQUIREMENTS.md)** - Functional and non-functional requirements
 - **[Architecture](docs/architecture/ARCHITECTURE.md)** - System architecture and design decisions
 - **[PoC Plan](docs/poc/POC_PLAN.md)** - Proof-of-concept implementation plan
+- **[Project Status](docs/status/PROJECT_STATUS.md)** - Current implementation state
+- **[Changelog](CHANGELOG.md)** - Version history and notable changes
 
 ### Research Documents
 
@@ -77,6 +92,7 @@ See [PoC Implementation Plan](docs/poc/POC_PLAN.md) for details.
 - **[Synthesis & Verification](docs/research/03_synthesis_verification.md)** - Compiler synthesis and verification frameworks
 - **[Cranelift & ISLE](docs/research/04_cranelift_isle.md)** - Cranelift code generator and ISLE DSL
 - **[AOT Compilation](docs/research/05_aot_transpilation.md)** - WebAssembly AOT compilation and transpilation
+- **[Sail/ARM/CakeML](docs/research/06_sail_arm_cakeml.md)** - Formal semantics and verified code generation
 
 ---
 
