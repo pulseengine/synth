@@ -291,9 +291,37 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
+## Synth and Loom
+
+Synth is part of a two-tier architecture with [Loom](https://github.com/pulseengine/loom):
+
+```
+┌─────────────────────────────────────────┐
+│  LOOM (Open Source)                     │
+│  WebAssembly → Optimized WebAssembly    │
+│  Z3 SMT verification (ASIL B)           │
+└────────────────┬────────────────────────┘
+                 │ optional dependency
+                 ▼
+┌─────────────────────────────────────────┐
+│  SYNTH (This Repository)                │
+│  WebAssembly → Native ARM/RISC-V        │
+│  Coq proofs + Sail semantics (ASIL D)   │
+└─────────────────────────────────────────┘
+```
+
+| Project | Purpose | Safety Level |
+|---------|---------|--------------|
+| **Loom** | WASM optimizer with Z3 verification | ASIL B |
+| **Synth** | Native code synthesizer with Coq proofs | ASIL D |
+
+See [docs/architecture/SYNTH_LOOM_RELATIONSHIP.md](docs/architecture/SYNTH_LOOM_RELATIONSHIP.md) for details.
+
+---
+
 ## Related Projects
 
-- **[PulseEngine/loom](https://github.com/pulseengine/loom)** - Initial WebAssembly optimizations (reference)
+- **[PulseEngine/loom](https://github.com/pulseengine/loom)** - Companion WASM optimizer (see above)
 - **[Bytecode Alliance/wasmtime](https://github.com/bytecodealliance/wasmtime)** - WebAssembly runtime with Cranelift
 - **[Bytecode Alliance/wasm-micro-runtime](https://github.com/bytecodealliance/wasm-micro-runtime)** - Embedded WebAssembly runtime
 - **[turbolent/w2c2](https://github.com/turbolent/w2c2)** - WebAssembly to C transpiler
