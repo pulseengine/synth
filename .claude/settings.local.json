@@ -9,7 +9,9 @@
       "Bash(gh api:*)",
       "Bash(gh label list:*)",
       "Bash(ls:*)",
-      "Bash(gh pr merge:*)"
+      "Bash(gh pr merge:*)",
+      "Bash(git checkout:*)",
+      "Bash(git pull:*)"
     ],
     "deny": [],
     "ask": []
