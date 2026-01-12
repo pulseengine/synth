@@ -14,6 +14,8 @@ rust_library(
     edition = "2021",
     deps = [
         "@crates//:anyhow",
+        "@crates//:serde",
+        "@crates//:thiserror",
         "@crates//:wasmparser",
         "@crates//:wasm-encoder",
     ],
@@ -28,6 +30,7 @@ rust_library(
     deps = [
         ":synth-core",
         "@crates//:anyhow",
+        "@crates//:tracing",
         "@crates//:wasmparser",
         "@crates//:wat",
     ],
@@ -65,8 +68,7 @@ rust_library(
     crate_root = "synth-opt/src/lib.rs",
     edition = "2021",
     deps = [
-        ":synth-core",
-        ":synth-analysis",
+        ":synth-cfg",
         "@crates//:anyhow",
     ],
 )
@@ -80,7 +82,9 @@ rust_library(
     deps = [
         ":synth-core",
         ":synth-opt",
+        ":synth-cfg",
         "@crates//:anyhow",
+        "@crates//:serde",
         # TODO: Add egg (e-graphs) dependency
     ],
 )
@@ -93,6 +97,7 @@ rust_library(
     edition = "2021",
     deps = [
         ":synth-core",
+        ":synth-opt",
         "@crates//:anyhow",
         # TODO: Add regalloc2 dependency
     ],
@@ -108,6 +113,7 @@ rust_library(
         ":synth-core",
         ":synth-codegen",
         ":synth-regalloc",
+        ":synth-synthesis",
         "@crates//:anyhow",
     ],
 )
@@ -120,6 +126,8 @@ rust_library(
     edition = "2021",
     deps = [
         ":synth-core",
+        ":synth-opt",
+        ":synth-regalloc",
         "@crates//:anyhow",
     ],
 )
@@ -131,7 +139,7 @@ rust_library(
     crate_root = "synth-abi/src/lib.rs",
     edition = "2021",
     deps = [
-        ":synth-core",
+        ":synth-wit",
         "@crates//:anyhow",
     ],
 )
@@ -194,6 +202,9 @@ rust_binary(
         ":synth-backend",
         ":synth-verify",
         "@crates//:anyhow",
+        "@crates//:clap",
+        "@crates//:tracing",
+        "@crates//:tracing-subscriber",
     ],
 )
 
