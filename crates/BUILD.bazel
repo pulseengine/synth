@@ -196,6 +196,8 @@ rust_binary(
     deps = [
         ":synth-core",
         ":synth-frontend",
+        ":synth-synthesis",
+        ":synth-backend",
         "@crates//:anyhow",
         "@crates//:clap",
         "@crates//:serde_json",
