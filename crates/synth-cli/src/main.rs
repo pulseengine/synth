@@ -4,9 +4,16 @@
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use std::fs::File;
+use std::io::Write;
 use std::path::PathBuf;
+use synth_backend::{
+    ArmEncoder, ElfBuilder, ElfSectionType, Section, SectionFlags, Symbol, SymbolBinding,
+    SymbolType,
+};
 use synth_core::HardwareCapabilities;
 use synth_frontend;
+use synth_synthesis::{InstructionSelector, RuleDatabase, WasmOp};
 use tracing::{info, Level};
 use tracing_subscriber;
 
@@ -78,6 +85,17 @@ enum Commands {
         #[arg(value_name = "TARGET")]
         target: String,
     },
+
+    /// Compile WASM operations to ARM ELF (demo mode)
+    Compile {
+        /// Output ELF file
+        #[arg(short, long, value_name = "OUTPUT", default_value = "output.elf")]
+        output: PathBuf,
+
+        /// Demo function to compile (add, mul, fib)
+        #[arg(short, long, value_name = "DEMO", default_value = "add")]
+        demo: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -112,6 +130,9 @@ fn main() -> Result<()> {
         }
         Commands::TargetInfo { target } => {
             target_info_command(target)?;
+        }
+        Commands::Compile { output, demo } => {
+            compile_command(output, demo)?;
         }
     }
 
@@ -246,4 +267,105 @@ fn print_hardware_info(caps: &HardwareCapabilities) {
         caps.flash_size / (1024 * 1024)
     );
     println!("  RAM: {} KB", caps.ram_size / 1024);
+}
+
+fn compile_command(output: PathBuf, demo: String) -> Result<()> {
+    info!("Compiling demo function: {}", demo);
+
+    // Select WASM operations based on demo
+    let (wasm_ops, func_name) = match demo.as_str() {
+        "add" => (
+            vec![
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::I32Add,
+            ],
+            "add",
+        ),
+        "mul" => (
+            vec![
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::I32Mul,
+            ],
+            "mul",
+        ),
+        "calc" => (
+            vec![
+                WasmOp::I32Const(5),
+                WasmOp::I32Const(3),
+                WasmOp::I32Mul,
+                WasmOp::I32Const(2),
+                WasmOp::I32Add,
+            ],
+            "calc",
+        ),
+        _ => {
+            anyhow::bail!(
+                "Unknown demo: {}. Available: add, mul, calc",
+                demo
+            );
+        }
+    };
+
+    info!("WASM operations: {:?}", wasm_ops);
+
+    // Step 1: Instruction selection
+    let db = RuleDatabase::with_standard_rules();
+    let mut selector = InstructionSelector::new(db.rules().to_vec());
+    let arm_instrs = selector
+        .select(&wasm_ops)
+        .context("Instruction selection failed")?;
+
+    info!("Generated {} ARM instructions", arm_instrs.len());
+
+    // Step 2: Encode to binary
+    let encoder = ArmEncoder::new_arm32();
+    let mut code = Vec::new();
+
+    for instr in &arm_instrs {
+        let encoded = encoder
+            .encode(&instr.op)
+            .context("ARM encoding failed")?;
+        code.extend_from_slice(&encoded);
+    }
+
+    info!("Encoded {} bytes of machine code", code.len());
+
+    // Step 3: Build ELF
+    let mut elf_builder = ElfBuilder::new_arm32().with_entry(0x8000);
+
+    let text_section = Section::new(".text", ElfSectionType::ProgBits)
+        .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
+        .with_addr(0x8000)
+        .with_align(4)
+        .with_data(code.clone());
+
+    elf_builder.add_section(text_section);
+
+    let func_sym = Symbol::new(func_name)
+        .with_value(0x8000)
+        .with_size(code.len() as u32)
+        .with_binding(SymbolBinding::Global)
+        .with_type(SymbolType::Func)
+        .with_section(4);
+
+    elf_builder.add_symbol(func_sym);
+
+    let elf_data = elf_builder.build().context("ELF generation failed")?;
+
+    info!("Generated {} byte ELF file", elf_data.len());
+
+    // Step 4: Write to file
+    let mut file = File::create(&output)
+        .context(format!("Failed to create output file: {}", output.display()))?;
+    file.write_all(&elf_data)
+        .context("Failed to write ELF data")?;
+
+    println!("Compiled {} to {}", func_name, output.display());
+    println!("  Code size: {} bytes", code.len());
+    println!("  ELF size: {} bytes", elf_data.len());
+    println!("\nInspect with: arm-none-eabi-objdump -d {}", output.display());
+
+    Ok(())
 }

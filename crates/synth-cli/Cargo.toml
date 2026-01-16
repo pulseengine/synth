@@ -13,6 +13,8 @@ path = "src/main.rs"
 [dependencies]
 synth-core = { path = "../synth-core" }
 synth-frontend = { path = "../synth-frontend" }
+synth-synthesis = { path = "../synth-synthesis" }
+synth-backend = { path = "../synth-backend" }
 
 clap.workspace = true
 anyhow.workspace = true
