@@ -13,7 +13,7 @@ use synth_backend::{
 };
 use synth_core::HardwareCapabilities;
 use synth_frontend;
-use synth_synthesis::{InstructionSelector, RuleDatabase, WasmOp};
+use synth_synthesis::{decode_wasm_functions, InstructionSelector, RuleDatabase, WasmOp};
 use tracing::{info, Level};
 use tracing_subscriber;
 
@@ -86,15 +86,23 @@ enum Commands {
         target: String,
     },
 
-    /// Compile WASM operations to ARM ELF (demo mode)
+    /// Compile WASM/WAT to ARM ELF
     Compile {
+        /// Input WASM or WAT file (optional, use --demo for built-in demos)
+        #[arg(value_name = "INPUT")]
+        input: Option<PathBuf>,
+
         /// Output ELF file
         #[arg(short, long, value_name = "OUTPUT", default_value = "output.elf")]
         output: PathBuf,
 
-        /// Demo function to compile (add, mul, fib)
-        #[arg(short, long, value_name = "DEMO", default_value = "add")]
-        demo: String,
+        /// Demo function to compile (add, mul, calc) - used when no input file
+        #[arg(short, long, value_name = "DEMO")]
+        demo: Option<String>,
+
+        /// Function index to compile (default: 0, first function)
+        #[arg(short, long, value_name = "INDEX", default_value = "0")]
+        func_index: u32,
     },
 }
 
@@ -131,8 +139,13 @@ fn main() -> Result<()> {
         Commands::TargetInfo { target } => {
             target_info_command(target)?;
         }
-        Commands::Compile { output, demo } => {
-            compile_command(output, demo)?;
+        Commands::Compile {
+            input,
+            output,
+            demo,
+            func_index,
+        } => {
+            compile_command(input, output, demo, func_index)?;
         }
     }
 
@@ -269,42 +282,97 @@ fn print_hardware_info(caps: &HardwareCapabilities) {
     println!("  RAM: {} KB", caps.ram_size / 1024);
 }
 
-fn compile_command(output: PathBuf, demo: String) -> Result<()> {
-    info!("Compiling demo function: {}", demo);
+fn compile_command(
+    input: Option<PathBuf>,
+    output: PathBuf,
+    demo: Option<String>,
+    func_index: u32,
+) -> Result<()> {
+    // Get WASM operations either from file or demo
+    let (wasm_ops, func_name): (Vec<WasmOp>, String) = match (&input, &demo) {
+        (Some(path), _) => {
+            info!("Compiling WASM file: {}", path.display());
 
-    // Select WASM operations based on demo
-    let (wasm_ops, func_name) = match demo.as_str() {
-        "add" => (
-            vec![
-                WasmOp::LocalGet(0),
-                WasmOp::LocalGet(1),
-                WasmOp::I32Add,
-            ],
-            "add",
-        ),
-        "mul" => (
-            vec![
-                WasmOp::LocalGet(0),
-                WasmOp::LocalGet(1),
-                WasmOp::I32Mul,
-            ],
-            "mul",
-        ),
-        "calc" => (
-            vec![
-                WasmOp::I32Const(5),
-                WasmOp::I32Const(3),
-                WasmOp::I32Mul,
-                WasmOp::I32Const(2),
-                WasmOp::I32Add,
-            ],
-            "calc",
-        ),
-        _ => {
-            anyhow::bail!(
-                "Unknown demo: {}. Available: add, mul, calc",
-                demo
-            );
+            // Read the file
+            let file_bytes = std::fs::read(path)
+                .context(format!("Failed to read input file: {}", path.display()))?;
+
+            // If it's a .wat file, parse it first
+            let wasm_bytes = if path.extension().map_or(false, |ext| ext == "wat") {
+                info!("Parsing WAT to WASM...");
+                wat::parse_bytes(&file_bytes)
+                    .context("Failed to parse WAT file")?
+                    .into_owned()
+            } else {
+                file_bytes
+            };
+
+            // Decode functions
+            let functions = decode_wasm_functions(&wasm_bytes)
+                .context("Failed to decode WASM functions")?;
+
+            info!("Found {} functions in module", functions.len());
+
+            // Get the requested function
+            let func = functions
+                .into_iter()
+                .find(|f| f.index == func_index)
+                .context(format!("Function index {} not found", func_index))?;
+
+            let name = format!("func_{}", func.index);
+            info!("Compiling function {} ({} ops)", name, func.ops.len());
+
+            (func.ops, name)
+        }
+        (None, Some(demo_name)) => {
+            info!("Compiling demo function: {}", demo_name);
+
+            match demo_name.as_str() {
+                "add" => (
+                    vec![
+                        WasmOp::LocalGet(0),
+                        WasmOp::LocalGet(1),
+                        WasmOp::I32Add,
+                    ],
+                    "add".to_string(),
+                ),
+                "mul" => (
+                    vec![
+                        WasmOp::LocalGet(0),
+                        WasmOp::LocalGet(1),
+                        WasmOp::I32Mul,
+                    ],
+                    "mul".to_string(),
+                ),
+                "calc" => (
+                    vec![
+                        WasmOp::I32Const(5),
+                        WasmOp::I32Const(3),
+                        WasmOp::I32Mul,
+                        WasmOp::I32Const(2),
+                        WasmOp::I32Add,
+                    ],
+                    "calc".to_string(),
+                ),
+                _ => {
+                    anyhow::bail!(
+                        "Unknown demo: {}. Available: add, mul, calc",
+                        demo_name
+                    );
+                }
+            }
+        }
+        (None, None) => {
+            // Default to add demo
+            info!("No input specified, using 'add' demo");
+            (
+                vec![
+                    WasmOp::LocalGet(0),
+                    WasmOp::LocalGet(1),
+                    WasmOp::I32Add,
+                ],
+                "add".to_string(),
+            )
         }
     };
 
@@ -343,7 +411,7 @@ fn compile_command(output: PathBuf, demo: String) -> Result<()> {
 
     elf_builder.add_section(text_section);
 
-    let func_sym = Symbol::new(func_name)
+    let func_sym = Symbol::new(&func_name)
         .with_value(0x8000)
         .with_size(code.len() as u32)
         .with_binding(SymbolBinding::Global)

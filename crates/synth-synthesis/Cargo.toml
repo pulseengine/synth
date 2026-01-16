@@ -13,3 +13,7 @@ synth-opt = { path = "../synth-opt" }
 serde.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+wasmparser.workspace = true
+
+[dev-dependencies]
+wat.workspace = true

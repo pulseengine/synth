@@ -5,6 +5,7 @@ pub mod optimizer_bridge;
 pub mod pattern_matcher;
 pub mod peephole;
 pub mod rules;
+pub mod wasm_decoder;
 
 pub use instruction_selector::{
     ArmInstruction, InstructionSelector, RegisterState, SelectionStats,
@@ -18,6 +19,7 @@ pub use rules::{
     ArmOp, Condition, Cost, MemAddr, Operand2, Pattern, Reg, Replacement, RuleDatabase,
     ShiftType, SynthesisRule, WasmOp,
 };
+pub use wasm_decoder::{decode_wasm_functions, FunctionOps};
 
 // Stub for PoC
 pub struct SynthesisEngine;
