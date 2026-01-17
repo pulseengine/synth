@@ -659,3 +659,142 @@ fn generate_default_handler() -> Vec<u8> {
     // B . (branch to self) - Thumb encoding
     vec![0xfe, 0xe7]
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cortex_m_binary_structure() {
+        // Simple add function: ADD r0, r0, r1; BX lr
+        let code = vec![
+            0x00, 0x80, 0x80, 0xe0, // ADD r0, r0, r1 (ARM encoding)
+            0x1e, 0xff, 0x2f, 0xe1, // BX lr (ARM encoding)
+        ];
+
+        let elf_data = build_cortex_m_elf(&code, "test_func").unwrap();
+
+        // Verify ELF magic
+        assert_eq!(&elf_data[0..4], b"\x7fELF", "Invalid ELF magic");
+
+        // Verify 32-bit little-endian ARM
+        assert_eq!(elf_data[4], 1, "Should be 32-bit ELF");
+        assert_eq!(elf_data[5], 1, "Should be little-endian");
+
+        // Verify it's an executable
+        assert_eq!(elf_data[16], 2, "Should be ET_EXEC");
+
+        // Verify ARM architecture (0x28 = ARM)
+        assert_eq!(elf_data[18], 0x28, "Should be ARM architecture");
+    }
+
+    #[test]
+    fn test_vector_table_structure() {
+        let code = vec![0x00, 0x80, 0x80, 0xe0]; // ADD r0, r0, r1
+
+        let elf_data = build_cortex_m_elf(&code, "test").unwrap();
+
+        // Find .text section (it starts after ELF headers)
+        // For simplicity, look for the vector table pattern
+        // Stack pointer at offset 0 should be 0x20010000 (64KB RAM)
+        // This is little-endian, so bytes are: 00 00 01 20
+
+        // The vector table is in the .text section data
+        // Find where vector table data starts (after ELF headers)
+        let mut found_sp = false;
+        for i in 0..elf_data.len().saturating_sub(4) {
+            let word = u32::from_le_bytes([
+                elf_data[i],
+                elf_data[i + 1],
+                elf_data[i + 2],
+                elf_data[i + 3],
+            ]);
+            if word == 0x20010000 {
+                found_sp = true;
+                // Next word should be reset handler with Thumb bit (0x81)
+                let reset = u32::from_le_bytes([
+                    elf_data[i + 4],
+                    elf_data[i + 5],
+                    elf_data[i + 6],
+                    elf_data[i + 7],
+                ]);
+                assert_eq!(reset, 0x81, "Reset handler should be 0x81 (0x80 | 1)");
+                break;
+            }
+        }
+        assert!(found_sp, "Stack pointer (0x20010000) not found in ELF");
+    }
+
+    #[test]
+    fn test_simple_elf_generation() {
+        let code = vec![0x00, 0x80, 0x80, 0xe0]; // ADD r0, r0, r1
+
+        let elf_data = build_simple_elf(&code, "simple_func").unwrap();
+
+        // Verify ELF magic
+        assert_eq!(&elf_data[0..4], b"\x7fELF", "Invalid ELF magic");
+
+        // Verify entry point is 0x8000
+        let entry = u32::from_le_bytes([
+            elf_data[24],
+            elf_data[25],
+            elf_data[26],
+            elf_data[27],
+        ]);
+        assert_eq!(entry, 0x8000, "Entry point should be 0x8000");
+    }
+
+    #[test]
+    fn test_startup_code_patching() {
+        let code = vec![0x00, 0x80, 0x80, 0xe0];
+
+        let elf_data = build_cortex_m_elf(&code, "patched").unwrap();
+
+        // The function should be at 0x90, so literal pool should contain 0x91
+        // Search for the pattern 0x91 0x00 0x00 0x00 in the startup code area
+        let mut found_literal = false;
+        for i in 0..elf_data.len().saturating_sub(4) {
+            let word = u32::from_le_bytes([
+                elf_data[i],
+                elf_data[i + 1],
+                elf_data[i + 2],
+                elf_data[i + 3],
+            ]);
+            if word == 0x91 {
+                found_literal = true;
+                break;
+            }
+        }
+        assert!(found_literal, "Literal pool should contain 0x91 (0x90 | 1)");
+    }
+
+    #[test]
+    fn test_minimal_startup_generation() {
+        let startup = generate_minimal_startup();
+
+        // Should be 12 bytes
+        assert_eq!(startup.len(), 12, "Startup code should be 12 bytes");
+
+        // First two bytes: LDR r0, [pc, #4] = 0x4801
+        assert_eq!(startup[0], 0x01);
+        assert_eq!(startup[1], 0x48);
+
+        // Next two bytes: BLX r0 = 0x4780
+        assert_eq!(startup[2], 0x80);
+        assert_eq!(startup[3], 0x47);
+
+        // Next two bytes: B . = 0xe7fe
+        assert_eq!(startup[4], 0xfe);
+        assert_eq!(startup[5], 0xe7);
+    }
+
+    #[test]
+    fn test_default_handler_generation() {
+        let handler = generate_default_handler();
+
+        // Should be 2 bytes: B . = 0xe7fe
+        assert_eq!(handler.len(), 2);
+        assert_eq!(handler[0], 0xfe);
+        assert_eq!(handler[1], 0xe7);
+    }
+}
