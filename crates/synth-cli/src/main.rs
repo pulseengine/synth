@@ -9,7 +9,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use synth_backend::{
     ArmEncoder, ElfBuilder, ElfSectionType, Section, SectionFlags, Symbol, SymbolBinding,
-    SymbolType,
+    SymbolType, VectorTable,
 };
 use synth_core::HardwareCapabilities;
 use synth_frontend;
@@ -103,6 +103,10 @@ enum Commands {
         /// Function index to compile (default: 0, first function)
         #[arg(short, long, value_name = "INDEX", default_value = "0")]
         func_index: u32,
+
+        /// Generate complete Cortex-M binary with vector table (for Renode/QEMU)
+        #[arg(long)]
+        cortex_m: bool,
     },
 
     /// Disassemble an ARM ELF file
@@ -151,8 +155,9 @@ fn main() -> Result<()> {
             output,
             demo,
             func_index,
+            cortex_m,
         } => {
-            compile_command(input, output, demo, func_index)?;
+            compile_command(input, output, demo, func_index, cortex_m)?;
         }
         Commands::Disasm { input } => {
             disasm_command(input)?;
@@ -297,6 +302,7 @@ fn compile_command(
     output: PathBuf,
     demo: Option<String>,
     func_index: u32,
+    cortex_m: bool,
 ) -> Result<()> {
     // Get WASM operations either from file or demo
     let (wasm_ops, func_name): (Vec<WasmOp>, String) = match (&input, &demo) {
@@ -411,26 +417,11 @@ fn compile_command(
     info!("Encoded {} bytes of machine code", code.len());
 
     // Step 3: Build ELF
-    let mut elf_builder = ElfBuilder::new_arm32().with_entry(0x8000);
-
-    let text_section = Section::new(".text", ElfSectionType::ProgBits)
-        .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
-        .with_addr(0x8000)
-        .with_align(4)
-        .with_data(code.clone());
-
-    elf_builder.add_section(text_section);
-
-    let func_sym = Symbol::new(&func_name)
-        .with_value(0x8000)
-        .with_size(code.len() as u32)
-        .with_binding(SymbolBinding::Global)
-        .with_type(SymbolType::Func)
-        .with_section(4);
-
-    elf_builder.add_symbol(func_sym);
-
-    let elf_data = elf_builder.build().context("ELF generation failed")?;
+    let elf_data = if cortex_m {
+        build_cortex_m_elf(&code, &func_name)?
+    } else {
+        build_simple_elf(&code, &func_name)?
+    };
 
     info!("Generated {} byte ELF file", elf_data.len());
 
@@ -483,4 +474,173 @@ fn disasm_command(input: PathBuf) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Build a simple ELF with just the code section (for quick testing)
+fn build_simple_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
+    let mut elf_builder = ElfBuilder::new_arm32().with_entry(0x8000);
+
+    let text_section = Section::new(".text", ElfSectionType::ProgBits)
+        .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
+        .with_addr(0x8000)
+        .with_align(4)
+        .with_data(code.to_vec());
+
+    elf_builder.add_section(text_section);
+
+    let func_sym = Symbol::new(func_name)
+        .with_value(0x8000)
+        .with_size(code.len() as u32)
+        .with_binding(SymbolBinding::Global)
+        .with_type(SymbolType::Func)
+        .with_section(4);
+
+    elf_builder.add_symbol(func_sym);
+
+    elf_builder.build().context("ELF generation failed")
+}
+
+/// Build a complete Cortex-M ELF with vector table and startup code
+fn build_cortex_m_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
+    // Memory layout for generic Cortex-M (works with QEMU/Renode)
+    let flash_base: u32 = 0x0000_0000;
+    let ram_base: u32 = 0x2000_0000;
+    let ram_size: u32 = 64 * 1024; // 64KB
+    let stack_top = ram_base + ram_size;
+
+    // Calculate addresses
+    let vector_table_addr = flash_base;
+    let vector_table_size: u32 = 128; // 32 entries * 4 bytes
+
+    let startup_addr = flash_base + vector_table_size;
+    let startup_code = generate_minimal_startup();
+    let startup_size = startup_code.len() as u32;
+
+    let default_handler_addr = startup_addr + startup_size;
+    let default_handler = generate_default_handler();
+    let default_handler_size = default_handler.len() as u32;
+
+    // Align code to 4 bytes
+    let code_addr = (default_handler_addr + default_handler_size + 3) & !3;
+
+    info!("Cortex-M layout:");
+    info!("  Vector table: 0x{:08x}", vector_table_addr);
+    info!("  Startup code: 0x{:08x}", startup_addr);
+    info!("  Default handler: 0x{:08x}", default_handler_addr);
+    info!("  User code: 0x{:08x}", code_addr);
+    info!("  Stack top: 0x{:08x}", stack_top);
+
+    // Generate vector table
+    let mut vt = VectorTable::new_cortex_m(stack_top);
+    vt.reset_handler = startup_addr;
+
+    // Set all handlers to default handler
+    for handler in &mut vt.handlers {
+        if handler.address == 0 {
+            handler.address = default_handler_addr;
+        }
+    }
+
+    let vector_table_data = vt.generate_binary().context("Vector table generation failed")?;
+
+    // Build complete flash image
+    let mut flash_image = Vec::new();
+
+    // Vector table
+    flash_image.extend_from_slice(&vector_table_data);
+
+    // Pad to startup address
+    while flash_image.len() < (startup_addr - flash_base) as usize {
+        flash_image.push(0);
+    }
+
+    // Startup code (patch the literal pool with actual function address)
+    let mut patched_startup = startup_code.clone();
+    let func_addr_thumb = code_addr | 1; // Thumb bit
+    patched_startup[8..12].copy_from_slice(&func_addr_thumb.to_le_bytes());
+    flash_image.extend_from_slice(&patched_startup);
+
+    // Default handler
+    flash_image.extend_from_slice(&default_handler);
+
+    // Pad to code address
+    while flash_image.len() < (code_addr - flash_base) as usize {
+        flash_image.push(0);
+    }
+
+    // User code
+    flash_image.extend_from_slice(code);
+
+    // Build ELF
+    let mut elf_builder = ElfBuilder::new_arm32().with_entry(startup_addr | 1); // Thumb bit
+
+    let text_section = Section::new(".text", ElfSectionType::ProgBits)
+        .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
+        .with_addr(flash_base)
+        .with_align(4)
+        .with_data(flash_image);
+
+    elf_builder.add_section(text_section);
+
+    // Add symbols
+    let reset_sym = Symbol::new("Reset_Handler")
+        .with_value(startup_addr | 1)
+        .with_size(startup_size)
+        .with_binding(SymbolBinding::Global)
+        .with_type(SymbolType::Func)
+        .with_section(4);
+    elf_builder.add_symbol(reset_sym);
+
+    let default_sym = Symbol::new("Default_Handler")
+        .with_value(default_handler_addr | 1)
+        .with_size(default_handler_size)
+        .with_binding(SymbolBinding::Global)
+        .with_type(SymbolType::Func)
+        .with_section(4);
+    elf_builder.add_symbol(default_sym);
+
+    let func_sym = Symbol::new(func_name)
+        .with_value(code_addr | 1)
+        .with_size(code.len() as u32)
+        .with_binding(SymbolBinding::Global)
+        .with_type(SymbolType::Func)
+        .with_section(4);
+    elf_builder.add_symbol(func_sym);
+
+    elf_builder.build().context("ELF generation failed")
+}
+
+/// Generate minimal Thumb startup code that calls the user function and loops
+fn generate_minimal_startup() -> Vec<u8> {
+    // This startup code:
+    // 1. Loads the address of the user function
+    // 2. Calls it with BLX
+    // 3. Loops forever
+    //
+    // In Thumb assembly:
+    //   LDR r0, [pc, #4]   ; Load function address from literal pool
+    //   BLX r0             ; Call function
+    //   B .                ; Infinite loop
+    //   .word func_addr    ; Literal pool (filled by linker conceptually)
+
+    vec![
+        // LDR r0, [pc, #4] - Thumb encoding: 0x4801
+        0x01, 0x48,
+        // BLX r0 - Thumb encoding: 0x4780
+        0x80, 0x47,
+        // B . (branch to self) - Thumb encoding: 0xe7fe
+        0xfe, 0xe7,
+        // Padding for alignment
+        0x00, 0x00,
+        // Literal pool placeholder (will be at offset 8)
+        // The actual function address will be computed at runtime
+        // For now, put a placeholder that points to the infinite loop
+        0x85, 0x00, 0x00, 0x00, // Will be code_addr | 1
+    ]
+}
+
+/// Generate default exception handler (infinite loop)
+fn generate_default_handler() -> Vec<u8> {
+    // B . (branch to self) - Thumb encoding
+    vec![0xfe, 0xe7]
 }
