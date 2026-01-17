@@ -85,6 +85,8 @@ rust_library(
         ":synth-cfg",
         "@crates//:anyhow",
         "@crates//:serde",
+        "@crates//:thiserror",
+        "@crates//:wasmparser",
         # TODO: Add egg (e-graphs) dependency
     ],
 )
@@ -203,6 +205,7 @@ rust_binary(
         "@crates//:serde_json",
         "@crates//:tracing",
         "@crates//:tracing-subscriber",
+        "@crates//:wat",
     ],
 )
 
