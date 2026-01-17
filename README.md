@@ -38,26 +38,26 @@ WebAssembly Components + Target Constraints
 
 ## Project Status
 
-**Current Phase:** Research & Planning ✅ | PoC Implementation (Starting)
+**Current Phase:** Phase 1 Build System ✅ | Phase 2 Calculator Demo (In Progress)
 
-### Completed Research
+### Working Features
 
-- ✅ WebAssembly Component Model specifications and optimization opportunities
-- ✅ Embedded systems optimizations (ARM Cortex-M, RISC-V, MPU/PMP, multi-memory)
-- ✅ Safety-critical systems formal verification and qualification
-- ✅ Cranelift/ISLE compilation techniques
-- ✅ WebAssembly AOT compilation and transpilation approaches
-- ✅ Synthesis methodologies and compiler verification frameworks
+- ✅ WASM/WAT file parsing and decoding
+- ✅ Pattern-based instruction selection (WASM → ARM)
+- ✅ ARM binary encoding
+- ✅ ELF file generation
+- ✅ CLI: `synth compile input.wat -o output.elf`
+- ✅ CLI: `synth disasm output.elf`
+- ✅ Bazel build system
 
-### Next Steps
+### In Progress
 
-- 🚧 PoC Implementation (Weeks 1-10)
-  - Week 1-2: Foundation (Parser, w2c2 integration, ARM toolchain)
-  - Week 3-5: Optimization (MPU mapping, XIP, performance tuning)
-  - Week 6-8: Synthesis enhancements (custom rules, call graph optimization, validation)
-  - Week 9-10: Evaluation (benchmarking, documentation)
+- 🚧 Register allocation (regalloc2 integration)
+- 🚧 QEMU testing infrastructure
+- 🚧 Full function prologue/epilogue generation
+- 🚧 Zephyr RTOS integration
 
-See [PoC Implementation Plan](docs/poc/POC_PLAN.md) for details.
+See [ROADMAP.md](ROADMAP.md) for detailed progress.
 
 ---
 
@@ -128,16 +128,31 @@ cargo install wasm-tools
 git clone https://github.com/pulseengine/Synth.git
 cd Synth
 
-# Build synthesizer
-cargo build --release
+# Build CLI
+cargo build --release -p synth-cli
 
-# Synthesize example
-cargo run --release -- examples/hello.wasm \
-    --target thumbv7em-none-eabihf \
-    --output hello.elf
+# Compile WAT/WASM to ARM ELF
+cargo run -p synth-cli -- compile examples/wat/simple_add.wat -o add.elf
 
-# Flash to hardware
-openocd -f openocd.cfg -c "program hello.elf verify reset exit"
+# Disassemble to verify output
+cargo run -p synth-cli -- disasm add.elf
+
+# Or use Bazel
+bazel build //crates:synth
+bazel-bin/crates/synth compile examples/wat/simple_add.wat -o add.elf
+```
+
+### Testing with QEMU (Optional)
+
+```bash
+# Install QEMU for ARM (macOS)
+brew install qemu
+
+# Install QEMU for ARM (Linux)
+sudo apt install qemu-system-arm
+
+# Run in QEMU (requires full ELF with startup code - WIP)
+qemu-system-arm -M stm32f4-discovery -nographic -kernel add.elf
 ```
 
 ---
