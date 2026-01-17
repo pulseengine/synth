@@ -104,6 +104,13 @@ enum Commands {
         #[arg(short, long, value_name = "INDEX", default_value = "0")]
         func_index: u32,
     },
+
+    /// Disassemble an ARM ELF file
+    Disasm {
+        /// Input ELF file
+        #[arg(value_name = "INPUT")]
+        input: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -146,6 +153,9 @@ fn main() -> Result<()> {
             func_index,
         } => {
             compile_command(input, output, demo, func_index)?;
+        }
+        Commands::Disasm { input } => {
+            disasm_command(input)?;
         }
     }
 
@@ -433,7 +443,44 @@ fn compile_command(
     println!("Compiled {} to {}", func_name, output.display());
     println!("  Code size: {} bytes", code.len());
     println!("  ELF size: {} bytes", elf_data.len());
-    println!("\nInspect with: arm-none-eabi-objdump -d {}", output.display());
+    println!("\nInspect with: synth disasm {}", output.display());
+
+    Ok(())
+}
+
+fn disasm_command(input: PathBuf) -> Result<()> {
+    use std::process::Command;
+
+    if !input.exists() {
+        anyhow::bail!("File not found: {}", input.display());
+    }
+
+    info!("Disassembling: {}", input.display());
+
+    // Try objdump with ARM triple (works on macOS with Apple LLVM)
+    let output = Command::new("objdump")
+        .args(["-d", "--triple=arm-none-eabi"])
+        .arg(&input)
+        .output()
+        .context("Failed to run objdump. Is it installed?")?;
+
+    if output.status.success() {
+        print!("{}", String::from_utf8_lossy(&output.stdout));
+    } else {
+        // Fallback: try without triple
+        let output = Command::new("objdump")
+            .arg("-d")
+            .arg(&input)
+            .output()
+            .context("Failed to run objdump")?;
+
+        if output.status.success() {
+            print!("{}", String::from_utf8_lossy(&output.stdout));
+        } else {
+            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+            anyhow::bail!("objdump failed");
+        }
+    }
 
     Ok(())
 }
