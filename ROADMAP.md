@@ -7,9 +7,10 @@
 ## Current Status
 
 - **Phase 1:** In Progress
-- **Code:** 14 crates, ~24K lines, 376+ tests passing
+- **Code:** 14 crates, ~24K lines, 380+ tests passing
 - **Coverage:** 151/151 WASM Core 1.0 operations (unit tests)
-- **Working:** `synth compile input.wat -o output.elf` produces ARM ELF
+- **Working:** `synth compile input.wat -o output.elf --cortex-m` produces complete Cortex-M binaries
+- **New:** AAPCS-compliant code generation, vector tables, startup code
 
 ---
 
@@ -35,7 +36,7 @@
 
 ---
 
-## Phase 1: Build System
+## Phase 1: Build System & Code Generation
 
 **Duration:** 2 weeks | **Status:** In Progress
 
@@ -43,17 +44,23 @@
 |------|----------|--------|
 | Fix Bazel dependency resolution | P0 | Done |
 | Create BUILD files for all crates | P0 | Done |
-| ARM cross-compilation toolchain | P1 | Open |
-| QEMU testing infrastructure | P1 | Open |
-| Integrate Coq/OCaml extraction | P1 | Open |
-| Loom dependency integration | P1 | Open |
 | WASM → ELF integration test | P1 | Done |
+| Vector table generation | P1 | Done |
+| Startup code (reset handler) | P1 | Done |
+| AAPCS-compliant register allocation | P1 | Done |
+| Binary validation tests | P1 | Done |
+| ARM cross-compilation toolchain | P1 | Open |
+| Renode/QEMU testing infrastructure | P1 | Open |
+| Integrate Coq/OCaml extraction | P2 | Open |
+| Loom dependency integration | P2 | Open |
 
 **Success Criteria:**
 - [x] `bazel build //crates:synth` works
+- [x] `synth compile input.wat -o output.elf --cortex-m` generates valid Cortex-M binary
+- [x] Vector table, startup code, and function code all present
+- [x] AAPCS calling convention (params in r0-r3, return in r0)
 - [ ] `bazel test //...` passes
-- [ ] Cross-compilation to ARM works
-- [ ] Integration test: WASM → ELF → QEMU
+- [ ] Integration test: WASM → ELF → Renode
 
 ---
 
