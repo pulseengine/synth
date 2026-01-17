@@ -394,11 +394,26 @@ fn compile_command(
 
     info!("WASM operations: {:?}", wasm_ops);
 
-    // Step 1: Instruction selection
+    // Determine number of parameters by looking at LocalGet indices
+    let num_params = wasm_ops
+        .iter()
+        .filter_map(|op| {
+            if let WasmOp::LocalGet(idx) = op {
+                Some(*idx + 1)
+            } else {
+                None
+            }
+        })
+        .max()
+        .unwrap_or(0);
+
+    info!("Detected {} parameters", num_params);
+
+    // Step 1: Instruction selection with AAPCS-compliant stack-based allocation
     let db = RuleDatabase::with_standard_rules();
     let mut selector = InstructionSelector::new(db.rules().to_vec());
     let arm_instrs = selector
-        .select(&wasm_ops)
+        .select_with_stack(&wasm_ops, num_params)
         .context("Instruction selection failed")?;
 
     info!("Generated {} ARM instructions", arm_instrs.len());

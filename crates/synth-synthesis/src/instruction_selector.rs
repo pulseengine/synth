@@ -382,6 +382,190 @@ impl InstructionSelector {
     pub fn reset(&mut self) {
         self.regs.reset();
     }
+
+    /// Select ARM instructions using a stack-based approach with AAPCS calling convention
+    ///
+    /// This method properly tracks the WASM virtual stack and generates code that
+    /// uses r0-r3 for the first 4 parameters per AAPCS.
+    pub fn select_with_stack(
+        &mut self,
+        wasm_ops: &[WasmOp],
+        num_params: u32,
+    ) -> Result<Vec<ArmInstruction>> {
+        use WasmOp::*;
+
+        let mut instructions = Vec::new();
+        // Virtual stack holds register indices
+        let mut stack: Vec<Reg> = Vec::new();
+        // Next available register for temporaries (start after params)
+        let mut next_temp = num_params.min(4) as u8;
+
+        // Map of local index -> register
+        let mut local_to_reg: std::collections::HashMap<u32, Reg> = std::collections::HashMap::new();
+        // First 4 params are in r0-r3
+        for i in 0..num_params.min(4) {
+            local_to_reg.insert(i, index_to_reg(i as u8));
+        }
+
+        for (idx, op) in wasm_ops.iter().enumerate() {
+            match op {
+                LocalGet(local_idx) => {
+                    // Get the register for this local
+                    let reg = if let Some(&r) = local_to_reg.get(local_idx) {
+                        r
+                    } else {
+                        // Local not in register (spilled to stack) - load it
+                        let dst = index_to_reg(next_temp);
+                        next_temp = (next_temp + 1) % 13;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Ldr {
+                                rd: dst,
+                                addr: MemAddr {
+                                    base: Reg::SP,
+                                    offset: (*local_idx as i32 - 4) * 4, // Stack offset for spilled params
+                                },
+                            },
+                            source_line: Some(idx),
+                        });
+                        dst
+                    };
+                    stack.push(reg);
+                }
+
+                I32Const(val) => {
+                    let dst = index_to_reg(next_temp);
+                    next_temp = (next_temp + 1) % 13;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Mov {
+                            rd: dst,
+                            op2: Operand2::Imm(*val as i32),
+                        },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                I32Add => {
+                    let b = stack.pop().unwrap_or(Reg::R1);
+                    let a = stack.pop().unwrap_or(Reg::R0);
+                    // Result goes in r0 for return value (or temp if not last op)
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        let t = index_to_reg(next_temp);
+                        next_temp = (next_temp + 1) % 13;
+                        t
+                    };
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Add {
+                            rd: dst,
+                            rn: a,
+                            op2: Operand2::Reg(b),
+                        },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                I32Sub => {
+                    let b = stack.pop().unwrap_or(Reg::R1);
+                    let a = stack.pop().unwrap_or(Reg::R0);
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        index_to_reg(next_temp)
+                    };
+                    if dst != Reg::R0 {
+                        next_temp = (next_temp + 1) % 13;
+                    }
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Sub {
+                            rd: dst,
+                            rn: a,
+                            op2: Operand2::Reg(b),
+                        },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                I32Mul => {
+                    let b = stack.pop().unwrap_or(Reg::R1);
+                    let a = stack.pop().unwrap_or(Reg::R0);
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        index_to_reg(next_temp)
+                    };
+                    if dst != Reg::R0 {
+                        next_temp = (next_temp + 1) % 13;
+                    }
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Mul {
+                            rd: dst,
+                            rn: a,
+                            rm: b,
+                        },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                I32And => {
+                    let b = stack.pop().unwrap_or(Reg::R1);
+                    let a = stack.pop().unwrap_or(Reg::R0);
+                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
+                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::And { rd: dst, rn: a, op2: Operand2::Reg(b) },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                I32Or => {
+                    let b = stack.pop().unwrap_or(Reg::R1);
+                    let a = stack.pop().unwrap_or(Reg::R0);
+                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
+                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Orr { rd: dst, rn: a, op2: Operand2::Reg(b) },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                I32Xor => {
+                    let b = stack.pop().unwrap_or(Reg::R1);
+                    let a = stack.pop().unwrap_or(Reg::R0);
+                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
+                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Eor { rd: dst, rn: a, op2: Operand2::Reg(b) },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                // For other operations, fall back to default behavior
+                _ => {
+                    let arm_op = self.select_default(op)?;
+                    instructions.push(ArmInstruction {
+                        op: arm_op,
+                        source_line: Some(idx),
+                    });
+                }
+            }
+        }
+
+        // Add BX LR at the end to return
+        instructions.push(ArmInstruction {
+            op: ArmOp::Bx { rm: Reg::LR },
+            source_line: None,
+        });
+
+        Ok(instructions)
+    }
 }
 
 /// Statistics from instruction selection
