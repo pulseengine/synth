@@ -6,10 +6,10 @@
 
 ## Current Status
 
-- **Phase 0:** In Progress (7/9 issues complete)
-- **Code:** 14 crates, ~24K lines, 376 tests passing
+- **Phase 1:** In Progress
+- **Code:** 14 crates, ~24K lines, 376+ tests passing
 - **Coverage:** 151/151 WASM Core 1.0 operations (unit tests)
-- **Gap:** CLI not wired, no end-to-end compilation
+- **Working:** `synth compile input.wat -o output.elf` produces ARM ELF
 
 ---
 
@@ -37,20 +37,20 @@
 
 ## Phase 1: Build System
 
-**Duration:** 2 weeks
+**Duration:** 2 weeks | **Status:** In Progress
 
 | Task | Priority | Status |
 |------|----------|--------|
-| Fix Bazel dependency resolution | P0 | Open |
-| Create BUILD files for all crates | P0 | Open |
+| Fix Bazel dependency resolution | P0 | Done |
+| Create BUILD files for all crates | P0 | Done |
 | ARM cross-compilation toolchain | P1 | Open |
 | QEMU testing infrastructure | P1 | Open |
 | Integrate Coq/OCaml extraction | P1 | Open |
 | Loom dependency integration | P1 | Open |
-| WASM → ELF integration test | P1 | Open |
+| WASM → ELF integration test | P1 | Done |
 
 **Success Criteria:**
-- [ ] `bazel build //...` works
+- [x] `bazel build //crates:synth` works
 - [ ] `bazel test //...` passes
 - [ ] Cross-compilation to ARM works
 - [ ] Integration test: WASM → ELF → QEMU
@@ -68,12 +68,12 @@
 | Unit tests for WASM module | P1 |
 
 ### 2b: Compiler CLI
-| Task | Priority |
-|------|----------|
-| Wire synth-cli to full pipeline | P0 |
-| `synth compile input.wasm -o output.elf` | P0 |
-| Add `--target`, `--optimize` flags | P1 |
-| Add verification pass (optional) | P1 |
+| Task | Priority | Status |
+|------|----------|--------|
+| Wire synth-cli to full pipeline | P0 | Done |
+| `synth compile input.wasm -o output.elf` | P0 | Done |
+| Add `--target`, `--optimize` flags | P1 | Open |
+| Add verification pass (optional) | P1 | Open |
 
 ### 2c: Zephyr Integration
 | Task | Priority |
@@ -90,7 +90,7 @@
 | Demo video | P2 |
 
 **Success Criteria:**
-- [ ] `synth compile calculator.wasm -o calculator.elf` works
+- [x] `synth compile calculator.wasm -o calculator.elf` works
 - [ ] Calculator runs in QEMU
 - [ ] Calculator runs on hardware (STM32/nRF52)
 - [ ] Demo video recorded
