@@ -65,6 +65,10 @@ pub enum WasmOp {
     I32Ctz,    // Count trailing zeros
     I32Popcnt, // Population count (count 1 bits)
 
+    // Sign extension
+    I32Extend8S,  // Sign-extend low 8 bits to 32 bits
+    I32Extend16S, // Sign-extend low 16 bits to 32 bits
+
     // Comparison
     I32Eqz, // Equal to zero (unary)
     I32Eq,
@@ -93,7 +97,7 @@ pub enum WasmOp {
     BrTable { targets: Vec<u32>, default: u32 },
     Return,
     Call(u32),
-    CallIndirect(u32),
+    CallIndirect { type_index: u32, table_index: u32 },
     LocalGet(u32),
     LocalSet(u32),
     LocalTee(u32),
@@ -157,6 +161,11 @@ pub enum WasmOp {
     I64ExtendI32S, // Sign-extend i32 to i64
     I64ExtendI32U, // Zero-extend i32 to i64
     I32WrapI64,    // Wrap i64 to i32 (truncate)
+
+    // i64 In-place sign extension
+    I64Extend8S,  // Sign-extend low 8 bits to 64 bits
+    I64Extend16S, // Sign-extend low 16 bits to 64 bits
+    I64Extend32S, // Sign-extend low 32 bits to 64 bits
 
     // ========================================================================
     // f32 Operations (Phase 2 - Floating Point)
@@ -286,6 +295,31 @@ pub enum ArmOp {
         rn: Reg,
         op2: Operand2,
     },
+    // i64 support: Add/Sub with carry/borrow for register pairs
+    Adds {
+        // Add and set flags (for carry)
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
+    Adc {
+        // Add with carry (uses C flag)
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
+    Subs {
+        // Subtract and set flags (for borrow)
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
+    Sbc {
+        // Subtract with carry (borrow)
+        rd: Reg,
+        rn: Reg,
+        op2: Operand2,
+    },
     Mul {
         rd: Reg,
         rn: Reg,
@@ -341,7 +375,35 @@ pub enum ArmOp {
         rd: Reg,
         rn: Reg,
         shift: u32,
-    }, // Rotate right
+    }, // Rotate right (immediate)
+    // Register-based shifts (shift amount in register)
+    LslReg {
+        rd: Reg,
+        rn: Reg,
+        rm: Reg,
+    },
+    LsrReg {
+        rd: Reg,
+        rn: Reg,
+        rm: Reg,
+    },
+    AsrReg {
+        rd: Reg,
+        rn: Reg,
+        rm: Reg,
+    },
+    RorReg {
+        rd: Reg,
+        rn: Reg,
+        rm: Reg,
+    },
+
+    // Reverse subtract: Rd = imm - Rn (used for ROTL: 32 - shift_amount)
+    Rsb {
+        rd: Reg,
+        rn: Reg,
+        imm: u32,
+    },
 
     // Bit manipulation (ARMv6T2+)
     Clz {
@@ -356,6 +418,14 @@ pub enum ArmOp {
         rd: Reg,
         rm: Reg,
     }, // Population count (pseudo-instruction for verification)
+    Sxtb {
+        rd: Reg,
+        rm: Reg,
+    }, // Sign-extend byte (8-bit to 32-bit)
+    Sxth {
+        rd: Reg,
+        rm: Reg,
+    }, // Sign-extend halfword (16-bit to 32-bit)
 
     // Move
     Mov {
@@ -366,9 +436,26 @@ pub enum ArmOp {
         rd: Reg,
         op2: Operand2,
     },
+    // Move Wide (load 16-bit immediate into low half, zero upper)
+    Movw {
+        rd: Reg,
+        imm16: u16,
+    },
+    // Move Top (load 16-bit immediate into high half, preserve low)
+    Movt {
+        rd: Reg,
+        imm16: u16,
+    },
 
     // Compare
     Cmp {
+        rn: Reg,
+        op2: Operand2,
+    },
+
+    /// Compare Negative (CMN) - computes Rn + op2 and sets flags
+    /// CMN Rn, #1 sets Z flag if Rn == -1 (since -1 + 1 = 0)
+    Cmn {
         rn: Reg,
         op2: Operand2,
     },
@@ -387,20 +474,116 @@ pub enum ArmOp {
     B {
         label: String,
     },
+    /// Branch with numeric offset (in instructions, not bytes)
+    /// offset is signed: negative = backward, positive = forward
+    BOffset {
+        offset: i32,
+    },
+    /// Conditional branch with numeric offset
+    /// Branch if condition is met (after CMP instruction)
+    BCondOffset {
+        cond: Condition,
+        offset: i32,
+    },
+    /// Branch if Higher or Same (unsigned >=) - used for bounds checking
+    /// Branches to label if C flag is set (after CMP, addr >= limit)
+    Bhs {
+        label: String,
+    },
+    /// Branch if Lower (unsigned <) - complementary to BHS
+    Blo {
+        label: String,
+    },
     Bl {
         label: String,
     },
     Bx {
         rm: Reg,
     },
+    // Branch with Link and Exchange (indirect call)
+    Blx {
+        rm: Reg,
+    },
 
     // No operation
     Nop,
+
+    /// Undefined instruction - triggers UsageFault (used for WASM traps)
+    /// imm8 can encode trap reason (0 = div by zero, 1 = integer overflow)
+    Udf {
+        imm: u8,
+    },
 
     // Conditional execution (for verification)
     // SetCond evaluates a condition based on NZCV flags and sets register to 0 or 1
     SetCond {
         rd: Reg,
+        cond: Condition,
+    },
+
+    // i64 comparison: compare two register pairs, result 0/1 in rd
+    // Emits multi-instruction sequence (CMP chain or SBCS approach)
+    I64SetCond {
+        rd: Reg,
+        rn_lo: Reg,
+        rn_hi: Reg,
+        rm_lo: Reg,
+        rm_hi: Reg,
+        cond: Condition,
+    },
+
+    // i64 equal-to-zero: test if register pair is zero, result 0/1 in rd
+    I64SetCondZ {
+        rd: Reg,
+        rn_lo: Reg,
+        rn_hi: Reg,
+    },
+
+    /// i64 multiply: UMULL + MLA cross products, result in rd_lo:rd_hi
+    I64Mul {
+        rd_lo: Reg,
+        rd_hi: Reg,
+        rn_lo: Reg,
+        rn_hi: Reg,
+        rm_lo: Reg,
+        rm_hi: Reg,
+    },
+
+    /// i64 shift left: multi-instruction with branch for n<32 vs n>=32
+    I64Shl {
+        rd_lo: Reg,
+        rd_hi: Reg,
+        rn_lo: Reg,
+        rn_hi: Reg,
+        rm_lo: Reg,
+        rm_hi: Reg, // used as temp
+    },
+
+    /// i64 arithmetic shift right: sign-extending shift
+    I64ShrS {
+        rd_lo: Reg,
+        rd_hi: Reg,
+        rn_lo: Reg,
+        rn_hi: Reg,
+        rm_lo: Reg,
+        rm_hi: Reg, // used as temp
+    },
+
+    /// i64 logical shift right: zero-extending shift
+    I64ShrU {
+        rd_lo: Reg,
+        rd_hi: Reg,
+        rn_lo: Reg,
+        rn_hi: Reg,
+        rm_lo: Reg,
+        rm_hi: Reg, // used as temp
+    },
+
+    // Conditional move: MOV{cond} rd, rm - only executes if condition is true
+    // Used in IT blocks for Thumb-2: IT <cond>; MOV rd, rm
+    SelectMove {
+        rd: Reg,
+        rm: Reg,
         cond: Condition,
     },
 
@@ -479,14 +662,6 @@ pub enum ArmOp {
         rmlo: Reg,
         rmhi: Reg,
     },
-    I64Mul {
-        rdlo: Reg,
-        rdhi: Reg,
-        rnlo: Reg,
-        rnhi: Reg,
-        rmlo: Reg,
-        rmhi: Reg,
-    },
     I64DivS {
         rdlo: Reg,
         rdhi: Reg,
@@ -546,28 +721,7 @@ pub enum ArmOp {
         rmhi: Reg,
     },
 
-    // i64 Shift operations (register pairs, shift amount in single register)
-    I64Shl {
-        rdlo: Reg,
-        rdhi: Reg,
-        rnlo: Reg,
-        rnhi: Reg,
-        shift: Reg,
-    },
-    I64ShrS {
-        rdlo: Reg,
-        rdhi: Reg,
-        rnlo: Reg,
-        rnhi: Reg,
-        shift: Reg,
-    },
-    I64ShrU {
-        rdlo: Reg,
-        rdhi: Reg,
-        rnlo: Reg,
-        rnhi: Reg,
-        shift: Reg,
-    },
+    // i64 Rotation operations (register pairs, shift amount in single register)
     I64Rotl {
         rdlo: Reg,
         rdhi: Reg,
@@ -707,6 +861,24 @@ pub enum ArmOp {
         rdhi: Reg,
         rn: Reg,
     }, // Zero-extend i32 to i64
+
+    // i64 in-place sign extension (operate on register pair)
+    I64Extend8S {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+    }, // Sign-extend low 8 bits to 64 bits
+    I64Extend16S {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+    }, // Sign-extend low 16 bits to 64 bits
+    I64Extend32S {
+        rdlo: Reg,
+        rdhi: Reg,
+        rnlo: Reg,
+    }, // Sign-extend low 32 bits to 64 bits
+
     I32WrapI64 {
         rd: Reg,
         rnlo: Reg,
@@ -1157,13 +1329,52 @@ pub enum ShiftType {
 }
 
 /// Memory address
+///
+/// Supports three addressing modes:
+/// 1. [base, #imm] - base register + immediate offset
+/// 2. [base, Roff] - base register + register offset
+/// 3. [base, Roff, #imm] - base register + register offset + immediate
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MemAddr {
     /// Base register
     pub base: Reg,
 
-    /// Offset
+    /// Immediate offset (can be combined with offset_reg)
     pub offset: i32,
+
+    /// Optional register offset for [base, Roff] addressing
+    /// Used for WASM memory access where base=R11 (memory base) and offset_reg=address from stack
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset_reg: Option<Reg>,
+}
+
+impl MemAddr {
+    /// Create a new memory address with immediate offset only
+    pub fn imm(base: Reg, offset: i32) -> Self {
+        Self {
+            base,
+            offset,
+            offset_reg: None,
+        }
+    }
+
+    /// Create a new memory address with register offset
+    pub fn reg(base: Reg, offset_reg: Reg) -> Self {
+        Self {
+            base,
+            offset: 0,
+            offset_reg: Some(offset_reg),
+        }
+    }
+
+    /// Create a new memory address with both register and immediate offset
+    pub fn reg_imm(base: Reg, offset_reg: Reg, offset: i32) -> Self {
+        Self {
+            base,
+            offset,
+            offset_reg: Some(offset_reg),
+        }
+    }
 }
 
 /// Cost model for transformations

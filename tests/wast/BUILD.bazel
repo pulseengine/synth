@@ -1,0 +1,2480 @@
+load("@rules_renode//renode:defs.bzl", "renode_test")
+load("//build:wast_test.bzl", "wast_test", "wast_multi_func_test")
+
+# WAST-driven integration tests for Synth
+# These tests parse .wast files, compile to ARM ELF, and execute on Renode
+
+# =============================================================================
+# Method 1: Manual Robot test (current, hand-written)
+# =============================================================================
+
+# Generate ELF for the add function from arithmetic module
+genrule(
+    name = "i32_add_elf",
+    srcs = ["//examples/wat:simple_add.wat"],
+    outs = ["i32_add.elf"],
+    cmd = "$(location //crates:synth) compile $(location //examples/wat:simple_add.wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+# Hand-written Robot test (for comparison/debugging)
+renode_test(
+    name = "wast_i32_arithmetic_manual",
+    robot_test = "i32_arithmetic_test.robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_add_elf",
+    },
+    tags = ["renode", "wast", "manual"],
+)
+
+# =============================================================================
+# Method 2: Auto-generated from WAST using synth-test (future-proof)
+# =============================================================================
+
+# Generate Robot test from WAST file
+genrule(
+    name = "i32_arithmetic_generated_robot",
+    srcs = ["i32_arithmetic.wast"],
+    outs = ["i32_arithmetic_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_arithmetic.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func add",
+    tools = ["//crates:synth-test"],
+)
+
+# Auto-generated Renode test
+renode_test(
+    name = "wast_i32_arithmetic_test",
+    robot_test = ":i32_arithmetic_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_add_elf",
+    },
+    tags = ["renode", "wast", "generated"],
+)
+
+# =============================================================================
+# Division tests (i32.div_s, i32.div_u)
+# =============================================================================
+
+# First extract the div_s WAT from the WAST (manually for now)
+# The i32_div.wast contains both div_s and div_u - we compile div_s
+genrule(
+    name = "i32_div_wat",
+    srcs = [],
+    outs = ["i32_div_s.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "div_s") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.div_s))
+EOF""",
+)
+
+# Generate ELF for division function
+genrule(
+    name = "i32_div_elf",
+    srcs = [":i32_div_wat"],
+    outs = ["i32_div.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_div_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+# Generate Robot test from division WAST
+genrule(
+    name = "i32_div_generated_robot",
+    srcs = ["i32_div.wast"],
+    outs = ["i32_div_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_div.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func div_s",
+    tools = ["//crates:synth-test"],
+)
+
+# Division Renode test (signed)
+renode_test(
+    name = "wast_i32_div_test",
+    robot_test = ":i32_div_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_div_elf",
+    },
+    tags = ["renode", "wast", "division"],
+)
+
+# Unsigned division
+genrule(
+    name = "i32_div_u_wat",
+    srcs = [],
+    outs = ["i32_div_u.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "div_u") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.div_u))
+EOF""",
+)
+
+genrule(
+    name = "i32_div_u_elf",
+    srcs = [":i32_div_u_wat"],
+    outs = ["i32_div_u.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_div_u_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_div_u_generated_robot",
+    srcs = ["i32_div.wast"],
+    outs = ["i32_div_u_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_div.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func div_u",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_div_u_test",
+    robot_test = ":i32_div_u_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_div_u_elf",
+    },
+    tags = ["renode", "wast", "division"],
+)
+
+# =============================================================================
+# Remainder tests (i32.rem_s, i32.rem_u)
+# =============================================================================
+
+genrule(
+    name = "i32_rem_s_wat",
+    srcs = [],
+    outs = ["i32_rem_s.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "rem_s") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.rem_s))
+EOF""",
+)
+
+genrule(
+    name = "i32_rem_s_elf",
+    srcs = [":i32_rem_s_wat"],
+    outs = ["i32_rem_s.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_rem_s_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_rem_generated_robot",
+    srcs = ["i32_rem.wast"],
+    outs = ["i32_rem_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_rem.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func rem_s",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_rem_test",
+    robot_test = ":i32_rem_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_rem_s_elf",
+    },
+    tags = ["renode", "wast", "remainder"],
+)
+
+# Unsigned remainder
+genrule(
+    name = "i32_rem_u_wat",
+    srcs = [],
+    outs = ["i32_rem_u.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "rem_u") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.rem_u))
+EOF""",
+)
+
+genrule(
+    name = "i32_rem_u_elf",
+    srcs = [":i32_rem_u_wat"],
+    outs = ["i32_rem_u.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_rem_u_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_rem_u_generated_robot",
+    srcs = ["i32_rem.wast"],
+    outs = ["i32_rem_u_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_rem.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func rem_u",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_rem_u_test",
+    robot_test = ":i32_rem_u_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_rem_u_elf",
+    },
+    tags = ["renode", "wast", "remainder"],
+)
+
+# =============================================================================
+# Comparison tests (i32.eq, i32.ne, i32.lt_s, i32.gt_s, etc.)
+# =============================================================================
+
+genrule(
+    name = "i32_eq_wat",
+    srcs = [],
+    outs = ["i32_eq.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "eq") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.eq))
+EOF""",
+)
+
+genrule(
+    name = "i32_eq_elf",
+    srcs = [":i32_eq_wat"],
+    outs = ["i32_eq.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_eq_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_eq_generated_robot",
+    srcs = ["i32_compare.wast"],
+    outs = ["i32_eq_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func eq",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_eq_test",
+    robot_test = ":i32_eq_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_eq_elf",
+    },
+    tags = ["renode", "wast", "comparison"],
+)
+
+# Less than signed
+genrule(
+    name = "i32_lt_s_wat",
+    srcs = [],
+    outs = ["i32_lt_s.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "lt_s") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.lt_s))
+EOF""",
+)
+
+genrule(
+    name = "i32_lt_s_elf",
+    srcs = [":i32_lt_s_wat"],
+    outs = ["i32_lt_s.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_lt_s_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_lt_s_generated_robot",
+    srcs = ["i32_compare.wast"],
+    outs = ["i32_lt_s_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func lt_s",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_lt_s_test",
+    robot_test = ":i32_lt_s_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_lt_s_elf",
+    },
+    tags = ["renode", "wast", "comparison"],
+)
+
+# =============================================================================
+# Additional comparison tests (ne, gt_s, lt_u, gt_u, eqz)
+# =============================================================================
+
+# Not equal
+genrule(
+    name = "i32_ne_wat",
+    srcs = [],
+    outs = ["i32_ne.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "ne") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.ne))
+EOF""",
+)
+
+genrule(
+    name = "i32_ne_elf",
+    srcs = [":i32_ne_wat"],
+    outs = ["i32_ne.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_ne_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_ne_generated_robot",
+    srcs = ["i32_compare.wast"],
+    outs = ["i32_ne_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func ne",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_ne_test",
+    robot_test = ":i32_ne_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_ne_elf",
+    },
+    tags = ["renode", "wast", "comparison"],
+)
+
+# Greater than signed
+genrule(
+    name = "i32_gt_s_wat",
+    srcs = [],
+    outs = ["i32_gt_s.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "gt_s") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.gt_s))
+EOF""",
+)
+
+genrule(
+    name = "i32_gt_s_elf",
+    srcs = [":i32_gt_s_wat"],
+    outs = ["i32_gt_s.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_gt_s_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_gt_s_generated_robot",
+    srcs = ["i32_compare.wast"],
+    outs = ["i32_gt_s_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func gt_s",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_gt_s_test",
+    robot_test = ":i32_gt_s_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_gt_s_elf",
+    },
+    tags = ["renode", "wast", "comparison"],
+)
+
+# Less than unsigned
+genrule(
+    name = "i32_lt_u_wat",
+    srcs = [],
+    outs = ["i32_lt_u.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "lt_u") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.lt_u))
+EOF""",
+)
+
+genrule(
+    name = "i32_lt_u_elf",
+    srcs = [":i32_lt_u_wat"],
+    outs = ["i32_lt_u.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_lt_u_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_lt_u_generated_robot",
+    srcs = ["i32_compare.wast"],
+    outs = ["i32_lt_u_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func lt_u",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_lt_u_test",
+    robot_test = ":i32_lt_u_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_lt_u_elf",
+    },
+    tags = ["renode", "wast", "comparison"],
+)
+
+# Greater than unsigned
+genrule(
+    name = "i32_gt_u_wat",
+    srcs = [],
+    outs = ["i32_gt_u.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "gt_u") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.gt_u))
+EOF""",
+)
+
+genrule(
+    name = "i32_gt_u_elf",
+    srcs = [":i32_gt_u_wat"],
+    outs = ["i32_gt_u.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_gt_u_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_gt_u_generated_robot",
+    srcs = ["i32_compare.wast"],
+    outs = ["i32_gt_u_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func gt_u",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_gt_u_test",
+    robot_test = ":i32_gt_u_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_gt_u_elf",
+    },
+    tags = ["renode", "wast", "comparison"],
+)
+
+# Equal to zero
+genrule(
+    name = "i32_eqz_wat",
+    srcs = [],
+    outs = ["i32_eqz.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "eqz") (param i32) (result i32)
+    local.get 0
+    i32.eqz))
+EOF""",
+)
+
+genrule(
+    name = "i32_eqz_elf",
+    srcs = [":i32_eqz_wat"],
+    outs = ["i32_eqz.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_eqz_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_eqz_generated_robot",
+    srcs = ["i32_compare.wast"],
+    outs = ["i32_eqz_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func eqz",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_eqz_test",
+    robot_test = ":i32_eqz_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_eqz_elf",
+    },
+    tags = ["renode", "wast", "comparison"],
+)
+
+# =============================================================================
+# Bit count tests (clz, ctz, popcnt)
+# =============================================================================
+
+# Count leading zeros
+genrule(
+    name = "i32_clz_wat",
+    srcs = [],
+    outs = ["i32_clz.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "clz") (param i32) (result i32)
+    local.get 0
+    i32.clz))
+EOF""",
+)
+
+genrule(
+    name = "i32_clz_elf",
+    srcs = [":i32_clz_wat"],
+    outs = ["i32_clz.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_clz_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_clz_generated_robot",
+    srcs = ["i32_bitcount.wast"],
+    outs = ["i32_clz_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_bitcount.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func clz",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_clz_test",
+    robot_test = ":i32_clz_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_clz_elf",
+    },
+    tags = ["renode", "wast", "bitcount"],
+)
+
+# Count trailing zeros
+genrule(
+    name = "i32_ctz_wat",
+    srcs = [],
+    outs = ["i32_ctz.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "ctz") (param i32) (result i32)
+    local.get 0
+    i32.ctz))
+EOF""",
+)
+
+genrule(
+    name = "i32_ctz_elf",
+    srcs = [":i32_ctz_wat"],
+    outs = ["i32_ctz.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_ctz_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_ctz_generated_robot",
+    srcs = ["i32_bitcount.wast"],
+    outs = ["i32_ctz_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_bitcount.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func ctz",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_ctz_test",
+    robot_test = ":i32_ctz_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_ctz_elf",
+    },
+    tags = ["renode", "wast", "bitcount"],
+)
+
+# Population count
+genrule(
+    name = "i32_popcnt_wat",
+    srcs = [],
+    outs = ["i32_popcnt.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "popcnt") (param i32) (result i32)
+    local.get 0
+    i32.popcnt))
+EOF""",
+)
+
+genrule(
+    name = "i32_popcnt_elf",
+    srcs = [":i32_popcnt_wat"],
+    outs = ["i32_popcnt.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_popcnt_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_popcnt_generated_robot",
+    srcs = ["i32_bitcount.wast"],
+    outs = ["i32_popcnt_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_bitcount.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func popcnt",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_popcnt_test",
+    robot_test = ":i32_popcnt_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_popcnt_elf",
+    },
+    tags = ["renode", "wast", "bitcount"],
+)
+
+# =============================================================================
+# i64 arithmetic tests (64-bit operations using register pairs)
+# =============================================================================
+
+# i64.add - 64-bit addition using ADDS + ADC
+genrule(
+    name = "i64_add_wat",
+    srcs = [],
+    outs = ["i64_add.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "add") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.add))
+EOF""",
+)
+
+genrule(
+    name = "i64_add_elf",
+    srcs = [":i64_add_wat"],
+    outs = ["i64_add.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_add_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_add_generated_robot",
+    srcs = ["i64_arithmetic.wast"],
+    outs = ["i64_add_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_arithmetic.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func add",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_add_test",
+    robot_test = ":i64_add_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_add_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# i64.sub - 64-bit subtraction using SUBS + SBC
+genrule(
+    name = "i64_sub_wat",
+    srcs = [],
+    outs = ["i64_sub.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "sub") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.sub))
+EOF""",
+)
+
+genrule(
+    name = "i64_sub_elf",
+    srcs = [":i64_sub_wat"],
+    outs = ["i64_sub.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_sub_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_sub_generated_robot",
+    srcs = ["i64_arithmetic.wast"],
+    outs = ["i64_sub_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_arithmetic.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func sub",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_sub_test",
+    robot_test = ":i64_sub_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_sub_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# i64.and - 64-bit bitwise AND
+genrule(
+    name = "i64_and_wat",
+    srcs = [],
+    outs = ["i64_and.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "and") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.and))
+EOF""",
+)
+
+genrule(
+    name = "i64_and_elf",
+    srcs = [":i64_and_wat"],
+    outs = ["i64_and.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_and_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_and_generated_robot",
+    srcs = ["i64_arithmetic.wast"],
+    outs = ["i64_and_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_arithmetic.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func and",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_and_test",
+    robot_test = ":i64_and_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_and_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# i64.or - 64-bit bitwise OR
+genrule(
+    name = "i64_or_wat",
+    srcs = [],
+    outs = ["i64_or.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "or") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.or))
+EOF""",
+)
+
+genrule(
+    name = "i64_or_elf",
+    srcs = [":i64_or_wat"],
+    outs = ["i64_or.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_or_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_or_generated_robot",
+    srcs = ["i64_arithmetic.wast"],
+    outs = ["i64_or_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_arithmetic.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func or",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_or_test",
+    robot_test = ":i64_or_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_or_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# i64.xor - 64-bit bitwise XOR
+genrule(
+    name = "i64_xor_wat",
+    srcs = [],
+    outs = ["i64_xor.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "xor") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.xor))
+EOF""",
+)
+
+genrule(
+    name = "i64_xor_elf",
+    srcs = [":i64_xor_wat"],
+    outs = ["i64_xor.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_xor_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_xor_generated_robot",
+    srcs = ["i64_arithmetic.wast"],
+    outs = ["i64_xor_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_arithmetic.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func xor",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_xor_test",
+    robot_test = ":i64_xor_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_xor_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# =============================================================================
+# i64 comparison tests (64-bit comparisons returning i32 results)
+# =============================================================================
+
+# i64.eq - 64-bit equality (compare both register pair halves)
+genrule(
+    name = "i64_eq_wat",
+    srcs = [],
+    outs = ["i64_eq.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "eq") (param i64 i64) (result i32)
+    local.get 0
+    local.get 1
+    i64.eq))
+EOF""",
+)
+
+genrule(
+    name = "i64_eq_elf",
+    srcs = [":i64_eq_wat"],
+    outs = ["i64_eq.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_eq_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_eq_generated_robot",
+    srcs = ["i64_compare.wast"],
+    outs = ["i64_eq_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func eq",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_eq_test",
+    robot_test = ":i64_eq_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_eq_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# i64.ne - 64-bit not-equal
+genrule(
+    name = "i64_ne_wat",
+    srcs = [],
+    outs = ["i64_ne.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "ne") (param i64 i64) (result i32)
+    local.get 0
+    local.get 1
+    i64.ne))
+EOF""",
+)
+
+genrule(
+    name = "i64_ne_elf",
+    srcs = [":i64_ne_wat"],
+    outs = ["i64_ne.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_ne_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_ne_generated_robot",
+    srcs = ["i64_compare.wast"],
+    outs = ["i64_ne_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func ne",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_ne_test",
+    robot_test = ":i64_ne_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_ne_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# i64.lt_s - 64-bit signed less-than
+genrule(
+    name = "i64_lt_s_wat",
+    srcs = [],
+    outs = ["i64_lt_s.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "lt_s") (param i64 i64) (result i32)
+    local.get 0
+    local.get 1
+    i64.lt_s))
+EOF""",
+)
+
+genrule(
+    name = "i64_lt_s_elf",
+    srcs = [":i64_lt_s_wat"],
+    outs = ["i64_lt_s.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_lt_s_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_lt_s_generated_robot",
+    srcs = ["i64_compare.wast"],
+    outs = ["i64_lt_s_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func lt_s",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_lt_s_test",
+    robot_test = ":i64_lt_s_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_lt_s_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# i64.gt_s - 64-bit signed greater-than
+genrule(
+    name = "i64_gt_s_wat",
+    srcs = [],
+    outs = ["i64_gt_s.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "gt_s") (param i64 i64) (result i32)
+    local.get 0
+    local.get 1
+    i64.gt_s))
+EOF""",
+)
+
+genrule(
+    name = "i64_gt_s_elf",
+    srcs = [":i64_gt_s_wat"],
+    outs = ["i64_gt_s.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_gt_s_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_gt_s_generated_robot",
+    srcs = ["i64_compare.wast"],
+    outs = ["i64_gt_s_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func gt_s",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_gt_s_test",
+    robot_test = ":i64_gt_s_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_gt_s_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# i64.eqz - 64-bit equal-to-zero (unary: single i64 param, returns i32)
+genrule(
+    name = "i64_eqz_wat",
+    srcs = [],
+    outs = ["i64_eqz.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "eqz") (param i64) (result i32)
+    local.get 0
+    i64.eqz))
+EOF""",
+)
+
+genrule(
+    name = "i64_eqz_elf",
+    srcs = [":i64_eqz_wat"],
+    outs = ["i64_eqz.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_eqz_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_eqz_generated_robot",
+    srcs = ["i64_compare.wast"],
+    outs = ["i64_eqz_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_compare.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func eqz",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_eqz_test",
+    robot_test = ":i64_eqz_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_eqz_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# =============================================================================
+# i64 shift tests (64-bit shifts using register pairs)
+# =============================================================================
+
+# i64.shl - 64-bit shift left
+genrule(
+    name = "i64_shl_wat",
+    srcs = [],
+    outs = ["i64_shl.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "shl") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.shl))
+EOF""",
+)
+
+genrule(
+    name = "i64_shl_elf",
+    srcs = [":i64_shl_wat"],
+    outs = ["i64_shl.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_shl_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_shl_generated_robot",
+    srcs = ["i64_shift.wast"],
+    outs = ["i64_shl_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_shift.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func shl",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_shl_test",
+    robot_test = ":i64_shl_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_shl_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# i64.shr_s - 64-bit arithmetic shift right (signed)
+genrule(
+    name = "i64_shr_s_wat",
+    srcs = [],
+    outs = ["i64_shr_s.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "shr_s") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.shr_s))
+EOF""",
+)
+
+genrule(
+    name = "i64_shr_s_elf",
+    srcs = [":i64_shr_s_wat"],
+    outs = ["i64_shr_s.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_shr_s_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_shr_s_generated_robot",
+    srcs = ["i64_shift.wast"],
+    outs = ["i64_shr_s_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_shift.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func shr_s",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_shr_s_test",
+    robot_test = ":i64_shr_s_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_shr_s_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# i64.shr_u - 64-bit logical shift right (unsigned)
+genrule(
+    name = "i64_shr_u_wat",
+    srcs = [],
+    outs = ["i64_shr_u.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "shr_u") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.shr_u))
+EOF""",
+)
+
+genrule(
+    name = "i64_shr_u_elf",
+    srcs = [":i64_shr_u_wat"],
+    outs = ["i64_shr_u.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_shr_u_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_shr_u_generated_robot",
+    srcs = ["i64_shift.wast"],
+    outs = ["i64_shr_u_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_shift.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func shr_u",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_shr_u_test",
+    robot_test = ":i64_shr_u_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_shr_u_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# =============================================================================
+# i64 multiplication test (uses UMULL/MUL/MLA on ARM)
+# =============================================================================
+
+# i64.mul - 64-bit multiplication
+genrule(
+    name = "i64_mul_wat",
+    srcs = [],
+    outs = ["i64_mul.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "mul") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.mul))
+EOF""",
+)
+
+genrule(
+    name = "i64_mul_elf",
+    srcs = [":i64_mul_wat"],
+    outs = ["i64_mul.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_mul_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_mul_generated_robot",
+    srcs = ["i64_mul.wast"],
+    outs = ["i64_mul_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_mul.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func mul",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_mul_test",
+    robot_test = ":i64_mul_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_mul_elf",
+    },
+    tags = ["renode", "wast", "i64"],
+)
+
+# =============================================================================
+# i64 Division tests (div_s, div_u, rem_s, rem_u)
+# =============================================================================
+
+genrule(
+    name = "i64_div_u_wat",
+    srcs = [],
+    outs = ["i64_div_u.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "div_u") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.div_u))
+WATEOF""",
+)
+
+genrule(
+    name = "i64_div_u_elf",
+    srcs = [":i64_div_u_wat"],
+    outs = ["i64_div_u.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_div_u_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_div_u_generated_robot",
+    srcs = ["i64_div.wast"],
+    outs = ["i64_div_u_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_div.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func div_u",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_div_u_test",
+    robot_test = ":i64_div_u_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_div_u_elf",
+    },
+    tags = ["renode", "wast", "i64", "div"],
+    timeout = "moderate",
+)
+
+# i64.div_s tests
+genrule(
+    name = "i64_div_s_wat",
+    srcs = [],
+    outs = ["i64_div_s.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "div_s") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.div_s))
+WATEOF""",
+)
+
+genrule(
+    name = "i64_div_s_elf",
+    srcs = [":i64_div_s_wat"],
+    outs = ["i64_div_s.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_div_s_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_div_s_generated_robot",
+    srcs = ["i64_div.wast"],
+    outs = ["i64_div_s_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_div.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func div_s",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_div_s_test",
+    robot_test = ":i64_div_s_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_div_s_elf",
+    },
+    tags = ["renode", "wast", "i64", "div"],
+    timeout = "moderate",
+)
+
+# i64.rem_u tests
+genrule(
+    name = "i64_rem_u_wat",
+    srcs = [],
+    outs = ["i64_rem_u.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "rem_u") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.rem_u))
+WATEOF""",
+)
+
+genrule(
+    name = "i64_rem_u_elf",
+    srcs = [":i64_rem_u_wat"],
+    outs = ["i64_rem_u.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_rem_u_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_rem_u_generated_robot",
+    srcs = ["i64_div.wast"],
+    outs = ["i64_rem_u_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_div.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func rem_u",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_rem_u_test",
+    robot_test = ":i64_rem_u_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_rem_u_elf",
+    },
+    tags = ["renode", "wast", "i64", "rem"],
+    timeout = "moderate",
+)
+
+# i64.rem_s tests
+genrule(
+    name = "i64_rem_s_wat",
+    srcs = [],
+    outs = ["i64_rem_s.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "rem_s") (param i64 i64) (result i64)
+    local.get 0
+    local.get 1
+    i64.rem_s))
+WATEOF""",
+)
+
+genrule(
+    name = "i64_rem_s_elf",
+    srcs = [":i64_rem_s_wat"],
+    outs = ["i64_rem_s.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i64_rem_s_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i64_rem_s_generated_robot",
+    srcs = ["i64_div.wast"],
+    outs = ["i64_rem_s_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i64_div.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func rem_s",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i64_rem_s_test",
+    robot_test = ":i64_rem_s_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i64_rem_s_elf",
+    },
+    tags = ["renode", "wast", "i64", "rem"],
+    timeout = "moderate",
+)
+
+# =============================================================================
+# Control flow tests - Phase 3a: select (ternary operator)
+# =============================================================================
+
+genrule(
+    name = "control_select_wat",
+    srcs = [],
+    outs = ["control_select.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "select_i32") (param i32 i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    local.get 2
+    select))
+WATEOF""",
+)
+
+genrule(
+    name = "control_select_elf",
+    srcs = [":control_select_wat"],
+    outs = ["control_select.elf"],
+    cmd = "$(location //crates:synth) compile $(location :control_select_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "control_select_generated_robot",
+    srcs = ["control_select.wast"],
+    outs = ["control_select_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location control_select.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func select_i32",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_control_select_test",
+    robot_test = ":control_select_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":control_select_elf",
+    },
+    tags = ["renode", "wast", "control"],
+)
+
+# =============================================================================
+# Control flow tests - Phase 3b: if-else blocks
+# =============================================================================
+
+genrule(
+    name = "control_if_simple_wat",
+    srcs = [],
+    outs = ["control_if_simple.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "if_else_simple") (param i32) (result i32)
+    local.get 0
+    if (result i32)
+      i32.const 1
+    else
+      i32.const 0
+    end))
+WATEOF""",
+)
+
+genrule(
+    name = "control_if_simple_elf",
+    srcs = [":control_if_simple_wat"],
+    outs = ["control_if_simple.elf"],
+    cmd = "$(location //crates:synth) compile $(location :control_if_simple_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "control_if_generated_robot",
+    srcs = ["control_if.wast"],
+    outs = ["control_if_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location control_if.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func if_else_simple",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_control_if_test",
+    robot_test = ":control_if_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":control_if_simple_elf",
+    },
+    tags = ["renode", "wast", "control"],
+)
+
+# =============================================================================
+# Control flow tests - Phase 3c: loop with backward branches
+# =============================================================================
+
+genrule(
+    name = "control_loop_countdown_wat",
+    srcs = [],
+    outs = ["control_loop_countdown.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "countdown") (param i32) (result i32)
+    (local i32)
+    local.get 0
+    local.set 1
+    loop (result i32)
+      local.get 1
+      i32.const 1
+      i32.sub
+      local.tee 1
+      local.get 1
+      i32.const 0
+      i32.gt_s
+      br_if 0
+    end))
+WATEOF""",
+)
+
+genrule(
+    name = "control_loop_countdown_elf",
+    srcs = [":control_loop_countdown_wat"],
+    outs = ["control_loop_countdown.elf"],
+    cmd = "$(location //crates:synth) compile $(location :control_loop_countdown_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "control_loop_generated_robot",
+    srcs = ["control_loop.wast"],
+    outs = ["control_loop_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location control_loop.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func countdown",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_control_loop_test",
+    robot_test = ":control_loop_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":control_loop_countdown_elf",
+    },
+    tags = ["renode", "wast", "control", "loop"],
+)
+
+# Sum to N loop test
+genrule(
+    name = "control_loop_sum_wat",
+    srcs = [],
+    outs = ["control_loop_sum.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "sum_to_n") (param i32) (result i32)
+    (local i32)
+    i32.const 0
+    local.set 1
+    loop (result i32)
+      local.get 1
+      local.get 0
+      i32.add
+      local.set 1
+      local.get 0
+      i32.const 1
+      i32.sub
+      local.tee 0
+      i32.const 0
+      i32.gt_s
+      br_if 0
+      local.get 1
+    end))
+WATEOF""",
+)
+
+genrule(
+    name = "control_loop_sum_elf",
+    srcs = [":control_loop_sum_wat"],
+    outs = ["control_loop_sum.elf"],
+    cmd = "$(location //crates:synth) compile $(location :control_loop_sum_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "control_loop_sum_generated_robot",
+    srcs = ["control_loop.wast"],
+    outs = ["control_loop_sum_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location control_loop.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func sum_to_n",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_control_loop_sum_test",
+    robot_test = ":control_loop_sum_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":control_loop_sum_elf",
+    },
+    tags = ["renode", "wast", "control", "loop"],
+)
+
+# Count iterations loop test
+genrule(
+    name = "control_loop_count_iters_wat",
+    srcs = [],
+    outs = ["control_loop_count_iters.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "count_iters") (param i32) (result i32)
+    (local i32)
+    i32.const 0
+    local.set 1
+    loop (result i32)
+      local.get 1
+      i32.const 1
+      i32.add
+      local.set 1
+      local.get 0
+      i32.const 1
+      i32.sub
+      local.tee 0
+      i32.const 0
+      i32.gt_s
+      br_if 0
+      local.get 1
+    end))
+WATEOF""",
+)
+
+genrule(
+    name = "control_loop_count_iters_elf",
+    srcs = [":control_loop_count_iters_wat"],
+    outs = ["control_loop_count_iters.elf"],
+    cmd = "$(location //crates:synth) compile $(location :control_loop_count_iters_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "control_loop_count_iters_generated_robot",
+    srcs = ["control_loop.wast"],
+    outs = ["control_loop_count_iters_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location control_loop.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func count_iters",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_control_loop_count_iters_test",
+    robot_test = ":control_loop_count_iters_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":control_loop_count_iters_elf",
+    },
+    tags = ["renode", "wast", "control", "loop"],
+)
+
+# =============================================================================
+# Control flow tests - Phase 3d: nested if-else (nested select)
+# =============================================================================
+
+# Nested if-else test
+genrule(
+    name = "control_nested_select_wat",
+    srcs = [],
+    outs = ["control_nested_select.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  ;; Nested if-else with simple values
+  ;; Returns: val1 if both conds true, val2 if outer true but inner false, val3 if outer false
+  (func (export "nested_if_else") (param i32 i32) (result i32)
+    local.get 0      ;; outer condition
+    if (result i32)
+      local.get 1    ;; inner condition
+      if (result i32)
+        i32.const 10 ;; val1: both conditions true
+      else
+        i32.const 20 ;; val2: outer true, inner false
+      end
+    else
+      i32.const 30   ;; val3: outer false
+    end))
+WATEOF""",
+)
+
+genrule(
+    name = "control_nested_select_elf",
+    srcs = [":control_nested_select_wat"],
+    outs = ["control_nested_select.elf"],
+    cmd = "$(location //crates:synth) compile $(location :control_nested_select_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "control_nested_select_generated_robot",
+    srcs = ["control_nested_select.wast"],
+    outs = ["control_nested_select_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location control_nested_select.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func nested_if_else",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_control_nested_select_test",
+    robot_test = ":control_nested_select_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":control_nested_select_elf",
+    },
+    tags = ["renode", "wast", "control", "nested"],
+)
+
+# =============================================================================
+# Control flow tests - Phase 3e: br_if block pattern
+# =============================================================================
+
+# br_if select pattern test
+genrule(
+    name = "control_br_if_select_wat",
+    srcs = [],
+    outs = ["control_br_if_select.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  ;; Basic br_if early exit pattern
+  ;; Returns val1 if condition is true, else val2
+  (func (export "br_if_select") (param i32) (result i32)
+    block (result i32)
+      i32.const 10     ;; val1 (early exit value)
+      local.get 0      ;; condition
+      br_if 0          ;; if cond, exit with val1
+      drop             ;; drop val1
+      i32.const 20     ;; val2 (fallthrough value)
+    end))
+WATEOF""",
+)
+
+genrule(
+    name = "control_br_if_select_elf",
+    srcs = [":control_br_if_select_wat"],
+    outs = ["control_br_if_select.elf"],
+    cmd = "$(location //crates:synth) compile $(location :control_br_if_select_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "control_br_if_select_generated_robot",
+    srcs = ["control_br_if_select.wast"],
+    outs = ["control_br_if_select_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location control_br_if_select.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func br_if_select",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_control_br_if_select_test",
+    robot_test = ":control_br_if_select_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":control_br_if_select_elf",
+    },
+    tags = ["renode", "wast", "control", "br_if"],
+)
+
+# =============================================================================
+# Shift tests (i32.shl, i32.shr_s, i32.shr_u)
+# =============================================================================
+
+# Shift left
+genrule(
+    name = "i32_shl_wat",
+    srcs = [],
+    outs = ["i32_shl.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "shl") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.shl))
+EOF""",
+)
+
+genrule(
+    name = "i32_shl_elf",
+    srcs = [":i32_shl_wat"],
+    outs = ["i32_shl.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_shl_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_shl_generated_robot",
+    srcs = ["i32_shift.wast"],
+    outs = ["i32_shl_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_shift.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func shl",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_shl_test",
+    robot_test = ":i32_shl_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_shl_elf",
+    },
+    tags = ["renode", "wast", "shift"],
+)
+
+# Shift right signed (arithmetic)
+genrule(
+    name = "i32_shr_s_wat",
+    srcs = [],
+    outs = ["i32_shr_s.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "shr_s") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.shr_s))
+EOF""",
+)
+
+genrule(
+    name = "i32_shr_s_elf",
+    srcs = [":i32_shr_s_wat"],
+    outs = ["i32_shr_s.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_shr_s_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_shr_s_generated_robot",
+    srcs = ["i32_shift.wast"],
+    outs = ["i32_shr_s_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_shift.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func shr_s",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_shr_s_test",
+    robot_test = ":i32_shr_s_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_shr_s_elf",
+    },
+    tags = ["renode", "wast", "shift"],
+)
+
+# Shift right unsigned (logical)
+genrule(
+    name = "i32_shr_u_wat",
+    srcs = [],
+    outs = ["i32_shr_u.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "shr_u") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.shr_u))
+EOF""",
+)
+
+genrule(
+    name = "i32_shr_u_elf",
+    srcs = [":i32_shr_u_wat"],
+    outs = ["i32_shr_u.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_shr_u_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_shr_u_generated_robot",
+    srcs = ["i32_shift.wast"],
+    outs = ["i32_shr_u_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_shift.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func shr_u",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_shr_u_test",
+    robot_test = ":i32_shr_u_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_shr_u_elf",
+    },
+    tags = ["renode", "wast", "shift"],
+)
+
+# =============================================================================
+# Rotate tests (i32.rotl, i32.rotr)
+# =============================================================================
+
+# Rotate left
+genrule(
+    name = "i32_rotl_wat",
+    srcs = [],
+    outs = ["i32_rotl.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "rotl") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.rotl))
+EOF""",
+)
+
+genrule(
+    name = "i32_rotl_elf",
+    srcs = [":i32_rotl_wat"],
+    outs = ["i32_rotl.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_rotl_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_rotl_generated_robot",
+    srcs = ["i32_rotate.wast"],
+    outs = ["i32_rotl_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_rotate.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func rotl",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_rotl_test",
+    robot_test = ":i32_rotl_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_rotl_elf",
+    },
+    tags = ["renode", "wast", "rotate"],
+)
+
+# Rotate right
+genrule(
+    name = "i32_rotr_wat",
+    srcs = [],
+    outs = ["i32_rotr.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "rotr") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.rotr))
+EOF""",
+)
+
+genrule(
+    name = "i32_rotr_elf",
+    srcs = [":i32_rotr_wat"],
+    outs = ["i32_rotr.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_rotr_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_rotr_generated_robot",
+    srcs = ["i32_rotate.wast"],
+    outs = ["i32_rotr_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_rotate.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func rotr",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_rotr_test",
+    robot_test = ":i32_rotr_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_rotr_elf",
+    },
+    tags = ["renode", "wast", "rotate"],
+)
+
+# =============================================================================
+# Bitwise tests (i32.and, i32.or, i32.xor) - from i32_arithmetic.wast
+# =============================================================================
+
+# Bitwise AND
+genrule(
+    name = "i32_and_wat",
+    srcs = [],
+    outs = ["i32_and.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "and") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.and))
+EOF""",
+)
+
+genrule(
+    name = "i32_and_elf",
+    srcs = [":i32_and_wat"],
+    outs = ["i32_and.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_and_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_and_generated_robot",
+    srcs = ["i32_arithmetic.wast"],
+    outs = ["i32_and_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_arithmetic.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func and",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_and_test",
+    robot_test = ":i32_and_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_and_elf",
+    },
+    tags = ["renode", "wast", "bitwise"],
+)
+
+# Bitwise OR
+genrule(
+    name = "i32_or_wat",
+    srcs = [],
+    outs = ["i32_or.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "or") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.or))
+EOF""",
+)
+
+genrule(
+    name = "i32_or_elf",
+    srcs = [":i32_or_wat"],
+    outs = ["i32_or.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_or_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_or_generated_robot",
+    srcs = ["i32_arithmetic.wast"],
+    outs = ["i32_or_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_arithmetic.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func or",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_or_test",
+    robot_test = ":i32_or_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_or_elf",
+    },
+    tags = ["renode", "wast", "bitwise"],
+)
+
+# Bitwise XOR
+genrule(
+    name = "i32_xor_wat",
+    srcs = [],
+    outs = ["i32_xor.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (func (export "xor") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.xor))
+EOF""",
+)
+
+genrule(
+    name = "i32_xor_elf",
+    srcs = [":i32_xor_wat"],
+    outs = ["i32_xor.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_xor_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_xor_generated_robot",
+    srcs = ["i32_arithmetic.wast"],
+    outs = ["i32_xor_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_arithmetic.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func xor",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_xor_test",
+    robot_test = ":i32_xor_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_xor_elf",
+    },
+    tags = ["renode", "wast", "bitwise"],
+)
+
+# =============================================================================
+# Memory tests (i32.load, i32.store) - Linear memory access
+# =============================================================================
+
+# store_load: store a value and load it back (roundtrip)
+genrule(
+    name = "i32_store_load_wat",
+    srcs = [],
+    outs = ["i32_store_load.wat"],
+    cmd = """cat > $@ << 'EOF'
+(module
+  (memory 1)
+  (func (export "store_load") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    i32.store
+    local.get 0
+    i32.load))
+EOF""",
+)
+
+genrule(
+    name = "i32_store_load_elf",
+    srcs = [":i32_store_load_wat"],
+    outs = ["i32_store_load.elf"],
+    cmd = "$(location //crates:synth) compile $(location :i32_store_load_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "i32_memory_generated_robot",
+    srcs = ["i32_memory.wast"],
+    outs = ["i32_memory_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_memory.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func store_load",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_i32_memory_test",
+    robot_test = ":i32_memory_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":i32_store_load_elf",
+    },
+    tags = ["renode", "wast", "memory"],
+)
+
+# =============================================================================
+# Control flow tests - Phase 4a: Nested loops (loop inside loop)
+# =============================================================================
+
+# Nested multiply: a * b via nested repeated addition
+genrule(
+    name = "control_nested_loop_wat",
+    srcs = [],
+    outs = ["control_nested_loop.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "nested_multiply") (param i32 i32) (result i32)
+    (local i32 i32)
+    i32.const 0
+    local.set 2
+    loop (result i32)
+      local.get 0
+      local.set 3
+      loop
+        local.get 2
+        i32.const 1
+        i32.add
+        local.set 2
+        local.get 3
+        i32.const 1
+        i32.sub
+        local.tee 3
+        i32.const 0
+        i32.gt_s
+        br_if 0
+      end
+      local.get 1
+      i32.const 1
+      i32.sub
+      local.tee 1
+      i32.const 0
+      i32.gt_s
+      br_if 0
+      local.get 2
+    end))
+WATEOF""",
+)
+
+genrule(
+    name = "control_nested_loop_elf",
+    srcs = [":control_nested_loop_wat"],
+    outs = ["control_nested_loop.elf"],
+    cmd = "$(location //crates:synth) compile $(location :control_nested_loop_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "control_nested_loop_generated_robot",
+    srcs = ["control_nested_loop.wast"],
+    outs = ["control_nested_loop_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location control_nested_loop.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func nested_multiply",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_control_nested_loop_test",
+    robot_test = ":control_nested_loop_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":control_nested_loop_elf",
+    },
+    tags = ["renode", "wast", "control", "nested", "loop"],
+)
+
+# =============================================================================
+# Control flow tests - Phase 4b: Select inside loop (conditional accumulation)
+# =============================================================================
+
+# sign_sum: loop with select for alternating +1/-1 accumulation
+genrule(
+    name = "control_loop_if_sign_sum_wat",
+    srcs = [],
+    outs = ["control_loop_if_sign_sum.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "sign_sum") (param i32) (result i32)
+    (local i32 i32)
+    i32.const 0
+    local.set 1
+    i32.const 1
+    local.set 2
+    loop (result i32)
+      i32.const 1
+      i32.const -1
+      local.get 2
+      select
+      local.get 1
+      i32.add
+      local.set 1
+      local.get 2
+      i32.const 1
+      i32.xor
+      local.set 2
+      local.get 0
+      i32.const 1
+      i32.sub
+      local.tee 0
+      i32.const 0
+      i32.gt_s
+      br_if 0
+      local.get 1
+    end))
+WATEOF""",
+)
+
+genrule(
+    name = "control_loop_if_sign_sum_elf",
+    srcs = [":control_loop_if_sign_sum_wat"],
+    outs = ["control_loop_if_sign_sum.elf"],
+    cmd = "$(location //crates:synth) compile $(location :control_loop_if_sign_sum_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "control_loop_if_sign_sum_generated_robot",
+    srcs = ["control_loop_if.wast"],
+    outs = ["control_loop_if_sign_sum_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location control_loop_if.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func sign_sum",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_control_loop_if_sign_sum_test",
+    robot_test = ":control_loop_if_sign_sum_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":control_loop_if_sign_sum_elf",
+    },
+    tags = ["renode", "wast", "control", "loop", "select"],
+)
+
+# max_val: select with comparison (non-loop, tests select+comparison interaction)
+genrule(
+    name = "control_loop_if_max_val_wat",
+    srcs = [],
+    outs = ["control_loop_if_max_val.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "max_val") (param i32 i32) (result i32)
+    local.get 0
+    local.get 1
+    local.get 0
+    local.get 1
+    i32.gt_s
+    select))
+WATEOF""",
+)
+
+genrule(
+    name = "control_loop_if_max_val_elf",
+    srcs = [":control_loop_if_max_val_wat"],
+    outs = ["control_loop_if_max_val.elf"],
+    cmd = "$(location //crates:synth) compile $(location :control_loop_if_max_val_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "control_loop_if_max_val_generated_robot",
+    srcs = ["control_loop_if.wast"],
+    outs = ["control_loop_if_max_val_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location control_loop_if.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func max_val",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_control_loop_if_max_val_test",
+    robot_test = ":control_loop_if_max_val_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":control_loop_if_max_val_elf",
+    },
+    tags = ["renode", "wast", "control", "select"],
+)
+
+# =============================================================================
+# Control flow tests - Phase 4c: Factorial (loop with i32.mul)
+# =============================================================================
+
+# factorial: n! via multiply loop
+genrule(
+    name = "control_factorial_wat",
+    srcs = [],
+    outs = ["control_factorial.wat"],
+    cmd = """cat > $@ << 'WATEOF'
+(module
+  (func (export "factorial") (param i32) (result i32)
+    (local i32)
+    i32.const 1
+    local.set 1
+    loop (result i32)
+      local.get 1
+      local.get 0
+      i32.mul
+      local.set 1
+      local.get 0
+      i32.const 1
+      i32.sub
+      local.tee 0
+      i32.const 1
+      i32.gt_s
+      br_if 0
+      local.get 1
+    end))
+WATEOF""",
+)
+
+genrule(
+    name = "control_factorial_elf",
+    srcs = [":control_factorial_wat"],
+    outs = ["control_factorial.elf"],
+    cmd = "$(location //crates:synth) compile $(location :control_factorial_wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+genrule(
+    name = "control_factorial_generated_robot",
+    srcs = ["control_factorial.wast"],
+    outs = ["control_factorial_generated.robot"],
+    cmd = "$(location //crates:synth-test) generate --wast $(location control_factorial.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func factorial",
+    tools = ["//crates:synth-test"],
+)
+
+renode_test(
+    name = "wast_control_factorial_test",
+    robot_test = ":control_factorial_generated_robot",
+    deps = [
+        "//tests/renode:synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": ":control_factorial_elf",
+    },
+    tags = ["renode", "wast", "control", "loop", "factorial"],
+)
+
+# =============================================================================
+# Official WebAssembly Spec Tests - Using wast_multi_func_test
+# =============================================================================
+# These tests use the official W3C WebAssembly testsuite, compiled with
+# --all-exports to create a multi-function ELF. The synth-test tool reads
+# the ELF symbol table to get per-function addresses.
+
+# Official i32.wast spec test (30 exported functions covering all i32 ops)
+wast_multi_func_test(
+    name = "spec_i32_test",
+    wast = "//tests/spec-testsuite:i32.wast",
+    tags = ["spec", "i32", "multi-func"],
+)
+
+# Official i64.wast spec test (30 exported functions covering all i64 ops)
+wast_multi_func_test(
+    name = "spec_i64_test",
+    wast = "//tests/spec-testsuite:i64.wast",
+    tags = ["spec", "i64", "multi-func"],
+)
+
+# Official select.wast spec test (control flow select instruction)
+wast_multi_func_test(
+    name = "spec_select_test",
+    wast = "//tests/spec-testsuite:select.wast",
+    tags = ["spec", "select", "multi-func"],
+)

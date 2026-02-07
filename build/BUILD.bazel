@@ -1,0 +1,7 @@
+# Build rules for Synth
+# This package contains Starlark macros and rules
+
+package(default_visibility = ["//visibility:public"])
+
+# Export all .bzl files for use by other packages
+exports_files(glob(["*.bzl"]))

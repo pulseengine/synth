@@ -367,6 +367,8 @@ impl RegisterAllocator {
             | Opcode::Shl { dest, src1, src2 }
             | Opcode::ShrS { dest, src1, src2 }
             | Opcode::ShrU { dest, src1, src2 }
+            | Opcode::Rotl { dest, src1, src2 }
+            | Opcode::Rotr { dest, src1, src2 }
             | Opcode::Eq { dest, src1, src2 }
             | Opcode::Ne { dest, src1, src2 }
             | Opcode::LtS { dest, src1, src2 }
@@ -377,12 +379,172 @@ impl RegisterAllocator {
             | Opcode::GtU { dest, src1, src2 }
             | Opcode::GeS { dest, src1, src2 }
             | Opcode::GeU { dest, src1, src2 } => (vec![*dest], vec![*src1, *src2]),
+            Opcode::Eqz { dest, src } => (vec![*dest], vec![*src]),
+            Opcode::Clz { dest, src } | Opcode::Ctz { dest, src } | Opcode::Popcnt { dest, src } |
+            Opcode::Extend8S { dest, src } | Opcode::Extend16S { dest, src } => {
+                (vec![*dest], vec![*src])
+            }
             Opcode::Load { dest, .. } => (vec![*dest], vec![]),
             Opcode::Store { src, .. } => (vec![], vec![*src]),
             Opcode::Return { value } => (vec![], value.map(|v| vec![v]).unwrap_or_default()),
             Opcode::Branch { .. } => (vec![], vec![]),
             Opcode::CondBranch { cond, .. } => (vec![], vec![*cond]),
+            Opcode::Select {
+                dest,
+                val_true,
+                val_false,
+                cond,
+            } => (vec![*dest], vec![*val_true, *val_false, *cond]),
             Opcode::Nop => (vec![], vec![]),
+            // i64 operations (register pairs)
+            Opcode::I64Add {
+                dest_lo,
+                dest_hi,
+                src1_lo,
+                src1_hi,
+                src2_lo,
+                src2_hi,
+            }
+            | Opcode::I64Sub {
+                dest_lo,
+                dest_hi,
+                src1_lo,
+                src1_hi,
+                src2_lo,
+                src2_hi,
+            }
+            | Opcode::I64And {
+                dest_lo,
+                dest_hi,
+                src1_lo,
+                src1_hi,
+                src2_lo,
+                src2_hi,
+            }
+            | Opcode::I64Or {
+                dest_lo,
+                dest_hi,
+                src1_lo,
+                src1_hi,
+                src2_lo,
+                src2_hi,
+            }
+            | Opcode::I64Xor {
+                dest_lo,
+                dest_hi,
+                src1_lo,
+                src1_hi,
+                src2_lo,
+                src2_hi,
+            } => (
+                vec![*dest_lo, *dest_hi],
+                vec![*src1_lo, *src1_hi, *src2_lo, *src2_hi],
+            ),
+            Opcode::I64Const {
+                dest_lo, dest_hi, ..
+            } => (vec![*dest_lo, *dest_hi], vec![]),
+            Opcode::I64Load {
+                dest_lo, dest_hi, ..
+            } => (vec![*dest_lo, *dest_hi], vec![]),
+            // i64 comparisons: 4 source regs (two pairs) → 1 dest reg
+            Opcode::I64Eq {
+                dest, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64Ne {
+                dest, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64LtS {
+                dest, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64GtS {
+                dest, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64LeS {
+                dest, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64GeS {
+                dest, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            // Unsigned i64 comparisons
+            | Opcode::I64LtU {
+                dest, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64GtU {
+                dest, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64LeU {
+                dest, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64GeU {
+                dest, src1_lo, src1_hi, src2_lo, src2_hi,
+            } => (
+                vec![*dest],
+                vec![*src1_lo, *src1_hi, *src2_lo, *src2_hi],
+            ),
+            // i64 equal-to-zero: 2 source regs (one pair) → 1 dest reg
+            Opcode::I64Eqz {
+                dest, src_lo, src_hi,
+            } => (vec![*dest], vec![*src_lo, *src_hi]),
+            // i64 bit counting: 2 source regs (one pair) → 1 dest reg
+            Opcode::I64Clz {
+                dest, src_lo, src_hi,
+            }
+            | Opcode::I64Ctz {
+                dest, src_lo, src_hi,
+            }
+            | Opcode::I64Popcnt {
+                dest, src_lo, src_hi,
+            } => (vec![*dest], vec![*src_lo, *src_hi]),
+            // i64 sign extension: 1 source reg (lo only) → 2 dest regs (pair)
+            Opcode::I64Extend8S { dest_lo, dest_hi, src_lo }
+            | Opcode::I64Extend16S { dest_lo, dest_hi, src_lo }
+            | Opcode::I64Extend32S { dest_lo, dest_hi, src_lo } => {
+                (vec![*dest_lo, *dest_hi], vec![*src_lo])
+            }
+            // i64 shifts and multiply: 4 source regs → 2 dest regs (pair)
+            Opcode::I64Mul {
+                dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64Shl {
+                dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64ShrS {
+                dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64ShrU {
+                dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64Rotl {
+                dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64Rotr {
+                dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            // i64 division and remainder: 4 source regs → 2 dest regs (pair)
+            | Opcode::I64DivS {
+                dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64DivU {
+                dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64RemS {
+                dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+            }
+            | Opcode::I64RemU {
+                dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+            } => (
+                vec![*dest_lo, *dest_hi],
+                vec![*src1_lo, *src1_hi, *src2_lo, *src2_hi],
+            ),
+
+            // Control flow - Label has no registers, Copy has src->dest
+            Opcode::Label { .. } => (vec![], vec![]),
+            Opcode::Copy { dest, src } => (vec![*dest], vec![*src]),
+            // TeeStore: stores src to local and copies to dest
+            Opcode::TeeStore { dest, src, .. } => (vec![*dest], vec![*src]),
+            // Linear memory operations
+            Opcode::MemLoad { dest, addr, .. } => (vec![*dest], vec![*addr]),
+            Opcode::MemStore { src, addr, .. } => (vec![], vec![*src, *addr]),
         }
     }
 }

@@ -1,0 +1,25 @@
+[package]
+name = "synth-test"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "WAST-driven test runner for Synth"
+
+[dependencies]
+wast = { workspace = true }
+wat = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+clap = { workspace = true }
+object = { workspace = true }
+
+[[bin]]
+name = "synth-test"
+path = "src/main.rs"
+
+[dev-dependencies]
+proptest = { workspace = true }

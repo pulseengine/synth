@@ -205,7 +205,40 @@ rust_binary(
         "@crates//:serde_json",
         "@crates//:tracing",
         "@crates//:tracing-subscriber",
+        "@crates//:wast",
         "@crates//:wat",
+    ],
+)
+
+# WAST test library
+rust_library(
+    name = "synth-test-lib",
+    srcs = glob(["synth-test/src/**/*.rs"], exclude = ["synth-test/src/main.rs"]),
+    crate_root = "synth-test/src/lib.rs",
+    crate_name = "synth_test",
+    edition = "2021",
+    deps = [
+        "@crates//:anyhow",
+        "@crates//:clap",
+        "@crates//:object",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
+        "@crates//:tracing",
+        "@crates//:wast",
+        "@crates//:wat",
+    ],
+)
+
+# WAST test CLI binary
+rust_binary(
+    name = "synth-test",
+    srcs = ["synth-test/src/main.rs"],
+    edition = "2021",
+    deps = [
+        ":synth-test-lib",
+        "@crates//:anyhow",
+        "@crates//:clap",
     ],
 )
 

@@ -99,6 +99,8 @@ pub struct Section {
     pub data: Vec<u8>,
     /// Alignment
     pub align: u32,
+    /// Explicit size (for NoBits sections like .bss where data is empty)
+    pub explicit_size: Option<u32>,
 }
 
 impl Section {
@@ -111,6 +113,7 @@ impl Section {
             addr: 0,
             data: Vec::new(),
             align: 1,
+            explicit_size: None,
         }
     }
 
@@ -136,6 +139,17 @@ impl Section {
     pub fn with_data(mut self, data: Vec<u8>) -> Self {
         self.data = data;
         self
+    }
+
+    /// Set explicit size (for NoBits sections like .bss where data is empty)
+    pub fn with_size(mut self, size: u32) -> Self {
+        self.explicit_size = Some(size);
+        self
+    }
+
+    /// Get the effective size of the section
+    pub fn size(&self) -> u32 {
+        self.explicit_size.unwrap_or(self.data.len() as u32)
     }
 }
 
@@ -226,6 +240,85 @@ impl Symbol {
     }
 }
 
+/// Program header type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgramType {
+    /// Null entry
+    Null = 0,
+    /// Loadable segment
+    Load = 1,
+    /// Dynamic linking info
+    Dynamic = 2,
+    /// Interpreter path
+    Interp = 3,
+    /// Note section
+    Note = 4,
+}
+
+/// Program header flags
+pub struct ProgramFlags;
+
+impl ProgramFlags {
+    /// Executable
+    pub const EXEC: u32 = 0x1;
+    /// Writable
+    pub const WRITE: u32 = 0x2;
+    /// Readable
+    pub const READ: u32 = 0x4;
+}
+
+/// ELF program header (segment)
+#[derive(Debug, Clone)]
+pub struct ProgramHeader {
+    /// Segment type
+    pub p_type: ProgramType,
+    /// Offset in file
+    pub offset: u32,
+    /// Virtual address
+    pub vaddr: u32,
+    /// Physical address
+    pub paddr: u32,
+    /// Size in file
+    pub filesz: u32,
+    /// Size in memory
+    pub memsz: u32,
+    /// Flags (R/W/X)
+    pub flags: u32,
+    /// Alignment
+    pub align: u32,
+}
+
+impl ProgramHeader {
+    /// Create a new LOAD segment
+    pub fn load(vaddr: u32, offset: u32, size: u32, flags: u32) -> Self {
+        Self {
+            p_type: ProgramType::Load,
+            offset,
+            vaddr,
+            paddr: vaddr, // Physical = virtual for simple cases
+            filesz: size,
+            memsz: size,
+            flags,
+            align: 4,
+        }
+    }
+
+    /// Create a new LOAD segment for BSS-like regions (no file data, only memory)
+    /// Used for .bss, linear memory, and other zero-initialized regions
+    pub fn load_nobits(vaddr: u32, memsz: u32, flags: u32) -> Self {
+        Self {
+            p_type: ProgramType::Load,
+            offset: 0,     // No file offset for NoBits
+            vaddr,
+            paddr: vaddr,  // Physical = virtual
+            filesz: 0,     // No file data
+            memsz,         // Memory size to allocate
+            flags,
+            align: 4,
+        }
+    }
+}
+
 /// ELF file builder
 pub struct ElfBuilder {
     /// File class (32 or 64 bit)
@@ -242,6 +335,8 @@ pub struct ElfBuilder {
     sections: Vec<Section>,
     /// Symbols
     symbols: Vec<Symbol>,
+    /// Program headers (segments)
+    program_headers: Vec<ProgramHeader>,
 }
 
 impl ElfBuilder {
@@ -255,6 +350,7 @@ impl ElfBuilder {
             entry: 0,
             sections: Vec::new(),
             symbols: Vec::new(),
+            program_headers: Vec::new(),
         }
     }
 
@@ -280,13 +376,24 @@ impl ElfBuilder {
         self.symbols.push(symbol);
     }
 
+    /// Add a program header (segment)
+    pub fn add_program_header(&mut self, ph: ProgramHeader) {
+        self.program_headers.push(ph);
+    }
+
     /// Build the ELF file to bytes
     pub fn build(&self) -> Result<Vec<u8>> {
         let mut output = Vec::new();
 
-        // Reserve space for ELF header (52 bytes for ELF32)
+        // ELF header size (52 bytes for ELF32)
         let header_size = 52;
-        output.resize(header_size, 0);
+        // Program header size (32 bytes for ELF32)
+        let ph_entry_size = 32;
+        let ph_count = self.program_headers.len();
+        let ph_table_size = ph_entry_size * ph_count;
+
+        // Reserve space for ELF header + program headers
+        output.resize(header_size + ph_table_size, 0);
 
         // Build string table for section names
         let (shstrtab_data, section_name_offsets) = self.build_section_string_table();
@@ -294,8 +401,8 @@ impl ElfBuilder {
         // Build symbol string table
         let (strtab_data, symbol_name_offsets) = self.build_symbol_string_table();
 
-        // Calculate section offsets
-        let mut current_offset = header_size;
+        // Calculate section offsets (after ELF header + program headers)
+        let mut current_offset = header_size + ph_table_size;
 
         // Section 1: .shstrtab (section name string table)
         let shstrtab_offset = current_offset;
@@ -343,15 +450,156 @@ impl ElfBuilder {
         );
         output.extend_from_slice(&section_headers);
 
+        // Write program headers (right after ELF header)
+        for (i, ph) in self.program_headers.iter().enumerate() {
+            let ph_offset = header_size + i * ph_entry_size;
+            self.write_program_header(&mut output[ph_offset..ph_offset + ph_entry_size], ph);
+        }
+
         // Now write the actual ELF header at the beginning
         let num_sections = 4 + self.sections.len(); // null + shstrtab + strtab + symtab + user sections
-        self.write_elf_header_complete(
+        let ph_offset = if ph_count > 0 { header_size as u32 } else { 0 };
+        self.write_elf_header_with_phdrs(
             &mut output[0..header_size],
+            ph_offset,
+            ph_count as u16,
             sh_offset as u32,
             num_sections as u16,
         )?;
 
         Ok(output)
+    }
+
+    /// Write a single program header
+    fn write_program_header(&self, output: &mut [u8], ph: &ProgramHeader) {
+        let mut cursor = 0;
+
+        // p_type (4 bytes)
+        output[cursor..cursor + 4].copy_from_slice(&(ph.p_type as u32).to_le_bytes());
+        cursor += 4;
+
+        // p_offset (4 bytes)
+        output[cursor..cursor + 4].copy_from_slice(&ph.offset.to_le_bytes());
+        cursor += 4;
+
+        // p_vaddr (4 bytes)
+        output[cursor..cursor + 4].copy_from_slice(&ph.vaddr.to_le_bytes());
+        cursor += 4;
+
+        // p_paddr (4 bytes)
+        output[cursor..cursor + 4].copy_from_slice(&ph.paddr.to_le_bytes());
+        cursor += 4;
+
+        // p_filesz (4 bytes)
+        output[cursor..cursor + 4].copy_from_slice(&ph.filesz.to_le_bytes());
+        cursor += 4;
+
+        // p_memsz (4 bytes)
+        output[cursor..cursor + 4].copy_from_slice(&ph.memsz.to_le_bytes());
+        cursor += 4;
+
+        // p_flags (4 bytes)
+        output[cursor..cursor + 4].copy_from_slice(&ph.flags.to_le_bytes());
+        cursor += 4;
+
+        // p_align (4 bytes)
+        output[cursor..cursor + 4].copy_from_slice(&ph.align.to_le_bytes());
+    }
+
+    /// Write ELF header with program header info
+    fn write_elf_header_with_phdrs(
+        &self,
+        output: &mut [u8],
+        ph_offset: u32,
+        ph_count: u16,
+        sh_offset: u32,
+        sh_count: u16,
+    ) -> Result<()> {
+        let mut cursor = 0;
+
+        // ELF magic number
+        output[cursor..cursor + 4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
+        cursor += 4;
+
+        // Class (32-bit)
+        output[cursor] = self.class as u8;
+        cursor += 1;
+
+        // Data (little-endian)
+        output[cursor] = self.data as u8;
+        cursor += 1;
+
+        // Version
+        output[cursor] = 1;
+        cursor += 1;
+
+        // OS/ABI
+        output[cursor] = 0; // System V
+        cursor += 1;
+
+        // ABI version
+        output[cursor] = 0;
+        cursor += 1;
+
+        // Padding (7 bytes)
+        output[cursor..cursor + 7].copy_from_slice(&[0; 7]);
+        cursor += 7;
+
+        // Type (little-endian u16)
+        let etype = self.elf_type as u16;
+        output[cursor..cursor + 2].copy_from_slice(&etype.to_le_bytes());
+        cursor += 2;
+
+        // Machine (little-endian u16)
+        let machine = self.machine as u16;
+        output[cursor..cursor + 2].copy_from_slice(&machine.to_le_bytes());
+        cursor += 2;
+
+        // Version (little-endian u32)
+        output[cursor..cursor + 4].copy_from_slice(&1u32.to_le_bytes());
+        cursor += 4;
+
+        // Entry point (little-endian u32)
+        output[cursor..cursor + 4].copy_from_slice(&self.entry.to_le_bytes());
+        cursor += 4;
+
+        // Program header offset (little-endian u32)
+        output[cursor..cursor + 4].copy_from_slice(&ph_offset.to_le_bytes());
+        cursor += 4;
+
+        // Section header offset (little-endian u32)
+        output[cursor..cursor + 4].copy_from_slice(&sh_offset.to_le_bytes());
+        cursor += 4;
+
+        // Flags (little-endian u32) - ARM EABI version 5
+        output[cursor..cursor + 4].copy_from_slice(&0x05000000u32.to_le_bytes());
+        cursor += 4;
+
+        // ELF header size (little-endian u16)
+        output[cursor..cursor + 2].copy_from_slice(&52u16.to_le_bytes());
+        cursor += 2;
+
+        // Program header entry size (little-endian u16)
+        let ph_entry_size: u16 = if ph_count > 0 { 32 } else { 0 };
+        output[cursor..cursor + 2].copy_from_slice(&ph_entry_size.to_le_bytes());
+        cursor += 2;
+
+        // Program header count (little-endian u16)
+        output[cursor..cursor + 2].copy_from_slice(&ph_count.to_le_bytes());
+        cursor += 2;
+
+        // Section header entry size (little-endian u16)
+        output[cursor..cursor + 2].copy_from_slice(&40u16.to_le_bytes());
+        cursor += 2;
+
+        // Section header count (little-endian u16)
+        output[cursor..cursor + 2].copy_from_slice(&sh_count.to_le_bytes());
+        cursor += 2;
+
+        // Section header string table index (little-endian u16) - .shstrtab is section 1
+        output[cursor..cursor + 2].copy_from_slice(&1u16.to_le_bytes());
+
+        Ok(())
     }
 
     /// Build section name string table
@@ -514,7 +762,7 @@ impl ElfBuilder {
                 section.flags,
                 section.addr,
                 offset,
-                section.data.len() as u32,
+                section.size(),
                 0,
                 0,
                 section.align,

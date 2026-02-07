@@ -1,0 +1,17 @@
+// Minimal Cortex-M4 platform for Synth-generated binaries
+// Memory mapped at 0x0 (where our vector table lives)
+
+flash: Memory.MappedMemory @ sysbus 0x0
+    size: 0x10000
+
+sram: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x20000  // 128KB for linear memory (64KB) + stack
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    priorityMask: 0xF0
+    systickFrequency: 72000000
+    IRQ -> cpu@0
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m4"
+    nvic: nvic

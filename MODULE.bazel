@@ -35,6 +35,7 @@ crate.spec(package = "wasm-encoder", version = "0.219")
 crate.spec(package = "wit-parser", version = "0.219")
 crate.spec(package = "wit-component", version = "0.219")
 crate.spec(package = "wat", version = "1.219")
+crate.spec(package = "wast", version = "219.0")
 crate.spec(package = "wasmprinter", version = "0.2")
 
 # Serialization
@@ -59,6 +60,9 @@ crate.spec(package = "z3", version = "0.12", features = ["static-link-z3"])
 crate.spec(package = "proptest", version = "1.4")
 crate.spec(package = "quickcheck", version = "1.0")
 
+# ELF parsing (for symbol table reading)
+crate.spec(package = "object", version = "0.36", default_features = False, features = ["read", "elf"])
+
 crate.from_specs()
 use_repo(crate, "crates")
 
@@ -70,17 +74,27 @@ git_override(
     commit = "43468cd52f6a09523fc4df08d17e88f67f1cfd82",  # v1.0.0
 )
 
-# TODO: Enable when network allows (proxy issue in Claude Code environment)
-# OBazl - OCaml rules for Bazel (for Coq-extracted compiler code)
-# bazel_dep(name = "rules_ocaml", version = "3.0.0")
-#
-# ocaml = use_extension("@rules_ocaml//ocaml:extensions.bzl", "ocaml")
-# ocaml.toolchain(version = "5.1.1")  # OCaml 5.1+ recommended
-# use_repo(ocaml, "ocaml_toolchains")
-# register_toolchains("@ocaml_toolchains//:all")
-#
-# # OPAM integration for OCaml packages (Sail dependencies)
-# opam = use_extension("@rules_ocaml//opam:extensions.bzl", "opam")
-# opam.package(name = "zarith", version = "1.13")     # Z3 bindings
-# opam.package(name = "menhir", version = "20231231") # Parser generator
-# use_repo(opam, "opam")
+# Renode simulation rules for embedded testing
+# Provides hermetic Renode + Python - no local install required
+# Using PulseEngine fork with macOS support
+bazel_dep(name = "rules_renode", version = "0.0.0")
+git_override(
+    module_name = "rules_renode",
+    remote = "https://github.com/pulseengine/renode-bazel-rules.git",
+    commit = "cf0dcfa9338e235a076542154e9f95ece5092b11",  # feat/macos-support
+)
+
+# Renode toolchain - auto-downloads appropriate platform build
+renode = use_extension("@rules_renode//renode:extensions.bzl", "renode")
+use_repo(renode, "renode_toolchains")
+register_toolchains("@renode_toolchains//:all")
+
+# Rocq/Coq theorem proving rules with coq-of-rust integration
+# Provides hermetic Coq toolchain for formal verification
+# TODO: Enable when upstream BUILD file issue is fixed
+# bazel_dep(name = "rules_rocq_rust", version = "0.1.0")
+# git_override(
+#     module_name = "rules_rocq_rust",
+#     remote = "https://github.com/pulseengine/rules_rocq_rust.git",
+#     commit = "f62262c250daaa64e6b67a931b6b1adb944e388d",
+# )

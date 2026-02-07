@@ -2,10 +2,23 @@
 //!
 //! Uses pattern matching to select optimal ARM instruction sequences
 
-use crate::rules::{ArmOp, MemAddr, Operand2, Reg, Replacement, SynthesisRule, WasmOp};
+use crate::rules::{ArmOp, Condition, MemAddr, Operand2, Reg, Replacement, SynthesisRule, WasmOp};
 use crate::{Bindings, PatternMatcher};
 use std::collections::HashMap;
 use synth_core::Result;
+
+/// Bounds checking configuration for memory operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundsCheckConfig {
+    /// No bounds checking (relies on MPU or other hardware protection)
+    None,
+    /// Software bounds checking with CMP/BHS before each access
+    /// R10 holds the memory size, initialized by startup code
+    Software,
+    /// Masking: AND address with (memory_size - 1) for power-of-2 sizes
+    /// Lower overhead but only works with power-of-2 memory sizes
+    Masking,
+}
 
 /// ARM instruction with operands
 #[derive(Debug, Clone, PartialEq)]
@@ -91,6 +104,8 @@ pub struct InstructionSelector {
     matcher: PatternMatcher,
     /// Register allocator
     regs: RegisterState,
+    /// Bounds checking configuration
+    bounds_check: BoundsCheckConfig,
 }
 
 impl InstructionSelector {
@@ -99,7 +114,22 @@ impl InstructionSelector {
         Self {
             matcher: PatternMatcher::new(rules),
             regs: RegisterState::new(),
+            bounds_check: BoundsCheckConfig::None,
         }
+    }
+
+    /// Create a new instruction selector with bounds checking
+    pub fn with_bounds_check(rules: Vec<SynthesisRule>, bounds_check: BoundsCheckConfig) -> Self {
+        Self {
+            matcher: PatternMatcher::new(rules),
+            regs: RegisterState::new(),
+            bounds_check,
+        }
+    }
+
+    /// Set bounds checking configuration
+    pub fn set_bounds_check(&mut self, config: BoundsCheckConfig) {
+        self.bounds_check = config;
     }
 
     /// Select ARM instructions for a sequence of WASM operations
@@ -125,12 +155,14 @@ impl InstructionSelector {
 
                 index += best_match.length;
             } else {
-                // No rule matched - generate default instruction
-                let arm_op = self.select_default(&wasm_ops[index])?;
-                arm_instructions.push(ArmInstruction {
-                    op: arm_op,
-                    source_line: Some(index),
-                });
+                // No rule matched - generate default instruction(s)
+                let arm_ops = self.select_default(&wasm_ops[index])?;
+                for op in arm_ops {
+                    arm_instructions.push(ArmInstruction {
+                        op,
+                        source_line: Some(index),
+                    });
+                }
                 index += 1;
             }
         }
@@ -175,8 +207,9 @@ impl InstructionSelector {
         }
     }
 
-    /// Select default ARM instruction for a WASM operation (no pattern match)
-    fn select_default(&mut self, wasm_op: &WasmOp) -> Result<ArmOp> {
+    /// Select default ARM instruction(s) for a WASM operation (no pattern match)
+    /// Returns a sequence of instructions (may include bounds checking for memory ops)
+    fn select_default(&mut self, wasm_op: &WasmOp) -> Result<Vec<ArmOp>> {
         use WasmOp::*;
 
         let rd = self.regs.alloc_reg();
@@ -184,190 +217,318 @@ impl InstructionSelector {
         let rm = self.regs.alloc_reg();
 
         Ok(match wasm_op {
-            I32Add => ArmOp::Add {
+            I32Add => vec![ArmOp::Add {
                 rd,
                 rn,
                 op2: Operand2::Reg(rm),
-            },
+            }],
 
-            I32Sub => ArmOp::Sub {
+            I32Sub => vec![ArmOp::Sub {
                 rd,
                 rn,
                 op2: Operand2::Reg(rm),
-            },
+            }],
 
-            I32Mul => ArmOp::Mul { rd, rn, rm },
+            I32Mul => vec![ArmOp::Mul { rd, rn, rm }],
 
-            I32And => ArmOp::And {
+            I32And => vec![ArmOp::And {
                 rd,
                 rn,
                 op2: Operand2::Reg(rm),
-            },
+            }],
 
-            I32Or => ArmOp::Orr {
+            I32Or => vec![ArmOp::Orr {
                 rd,
                 rn,
                 op2: Operand2::Reg(rm),
-            },
+            }],
 
-            I32Xor => ArmOp::Eor {
+            I32Xor => vec![ArmOp::Eor {
                 rd,
                 rn,
                 op2: Operand2::Reg(rm),
-            },
+            }],
 
-            I32Shl => ArmOp::Lsl {
+            I32Shl => vec![ArmOp::Lsl {
                 rd,
                 rn,
                 shift: 0, // Placeholder - would extract from operand
-            },
+            }],
 
-            I32ShrS => ArmOp::Asr { rd, rn, shift: 0 },
+            I32ShrS => vec![ArmOp::Asr { rd, rn, shift: 0 }],
 
-            I32ShrU => ArmOp::Lsr { rd, rn, shift: 0 },
+            I32ShrU => vec![ArmOp::Lsr { rd, rn, shift: 0 }],
 
             // Rotate operations
             I32Rotl => {
                 // Rotate left: ROR rd, rn, #(32-shift)
                 // For now, simplified with shift=0
-                ArmOp::Ror {
+                vec![ArmOp::Ror {
                     rd,
                     rn,
                     shift: 0, // Would be 32 - actual_shift
-                }
+                }]
             }
 
-            I32Rotr => ArmOp::Ror {
+            I32Rotr => vec![ArmOp::Ror {
                 rd,
                 rn,
                 shift: 0, // Placeholder - would extract from operand
-            },
+            }],
 
             // Bit count operations
-            I32Clz => ArmOp::Clz { rd, rm },
+            I32Clz => vec![ArmOp::Clz { rd, rm }],
 
             I32Ctz => {
                 // Count trailing zeros: RBIT + CLZ
                 // This would need to be a sequence, but for now return RBIT
-                ArmOp::Rbit { rd, rm }
+                vec![ArmOp::Rbit { rd, rm }]
             }
 
             I32Popcnt => {
                 // Population count - no native ARM instruction
                 // Would need to implement with sequence
                 // Placeholder for now
-                ArmOp::Nop
+                vec![ArmOp::Nop]
             }
 
             I32Const(val) => {
                 let imm_val = if *val >= 0 { *val as i32 } else { *val };
-                ArmOp::Mov {
+                vec![ArmOp::Mov {
                     rd,
                     op2: Operand2::Imm(imm_val),
-                }
+                }]
             }
 
-            I32Load { offset, .. } => ArmOp::Ldr {
-                rd,
-                addr: MemAddr {
-                    base: rn,
-                    offset: *offset as i32,
-                },
-            },
+            I32Load { offset, .. } => {
+                // WASM memory access: address from stack (rn) + static offset
+                // R11 is the dedicated memory base register for memory 0
+                // Effective address = R11 + rn + offset
+                self.generate_load_with_bounds_check(rd, rn, *offset as i32, 4)
+            }
 
-            I32Store { offset, .. } => ArmOp::Str {
-                rd,
-                addr: MemAddr {
-                    base: rn,
-                    offset: *offset as i32,
-                },
-            },
+            I32Store { offset, .. } => {
+                // WASM memory access: address from stack (rn) + static offset
+                // R11 is the dedicated memory base register for memory 0
+                // Effective address = R11 + rn + offset
+                self.generate_store_with_bounds_check(rd, rn, *offset as i32, 4)
+            }
 
-            LocalGet(_index) => ArmOp::Ldr {
+            LocalGet(_index) => vec![ArmOp::Ldr {
                 rd,
-                addr: MemAddr {
-                    base: Reg::SP,
-                    offset: 0, // Simplified - would use proper frame offset
-                },
-            },
+                addr: MemAddr::imm(Reg::SP, 0), // Simplified - would use proper frame offset
+            }],
 
-            LocalSet(_index) => ArmOp::Str {
+            LocalSet(_index) => vec![ArmOp::Str {
                 rd,
-                addr: MemAddr {
-                    base: Reg::SP,
-                    offset: 0,
-                },
-            },
+                addr: MemAddr::imm(Reg::SP, 0),
+            }],
 
-            Call(_func_idx) => ArmOp::Bl {
+            Call(_func_idx) => vec![ArmOp::Bl {
                 label: "func".to_string(), // Simplified - would use proper target
-            },
+            }],
+
+            CallIndirect { type_index, table_index: _ } => {
+                // Table index is on top of stack (in rn), call target via table lookup
+                // For now, generate the pseudo-instruction; ARM encoder will expand
+                vec![ArmOp::CallIndirect {
+                    rd,
+                    type_idx: *type_index,
+                    table_index_reg: rn, // Table index from stack
+                }]
+            }
 
             // Control flow (simplified - structural control flow)
-            Block => ArmOp::Nop, // Block is a label
-            Loop => ArmOp::Nop,  // Loop is a label
-            Br(_label) => ArmOp::B {
+            Block => vec![ArmOp::Nop], // Block is a label
+            Loop => vec![ArmOp::Nop],  // Loop is a label
+            Br(_label) => vec![ArmOp::B {
                 label: "br_target".to_string(),
-            },
+            }],
             BrIf(_label) => {
                 // Conditional branch - would pop condition from stack
                 // For now, placeholder
-                ArmOp::B {
+                vec![ArmOp::B {
                     label: "br_if_target".to_string(),
-                }
+                }]
             }
-            Return => ArmOp::Bx { rm: Reg::LR }, // Return via link register
+            Return => vec![ArmOp::Bx { rm: Reg::LR }], // Return via link register
 
             // Locals
             LocalTee(_index) => {
                 // Tee is like set but keeps value on stack
-                ArmOp::Str {
+                vec![ArmOp::Str {
                     rd,
-                    addr: MemAddr {
-                        base: Reg::SP,
-                        offset: 0,
-                    },
-                }
+                    addr: MemAddr::imm(Reg::SP, 0),
+                }]
             }
 
             // Comparisons
-            I32Eq => ArmOp::Cmp {
+            I32Eq => vec![ArmOp::Cmp {
                 rn,
                 op2: Operand2::Reg(rm),
-            },
-            I32Ne => ArmOp::Cmp {
+            }],
+            I32Ne => vec![ArmOp::Cmp {
                 rn,
                 op2: Operand2::Reg(rm),
-            },
-            I32LtS | I32LtU | I32LeS | I32LeU | I32GtS | I32GtU | I32GeS | I32GeU => ArmOp::Cmp {
-                rn,
-                op2: Operand2::Reg(rm),
-            },
+            }],
+            I32LtS | I32LtU | I32LeS | I32LeU | I32GtS | I32GtU | I32GeS | I32GeU => {
+                vec![ArmOp::Cmp {
+                    rn,
+                    op2: Operand2::Reg(rm),
+                }]
+            }
 
             // Division and remainder (ARMv7-M+)
             I32DivS => {
                 // Signed division: SDIV Rd, Rn, Rm
-                ArmOp::Sdiv { rd, rn, rm }
+                vec![ArmOp::Sdiv { rd, rn, rm }]
             }
             I32DivU => {
                 // Unsigned division: UDIV Rd, Rn, Rm
-                ArmOp::Udiv { rd, rn, rm }
+                vec![ArmOp::Udiv { rd, rn, rm }]
             }
             I32RemS => {
                 // Signed remainder: quotient = SDIV Rn, Rm
                 // remainder = Rn - (quotient * Rm)
                 // For now, simplified to SDIV (would need sequence)
-                ArmOp::Sdiv { rd, rn, rm }
+                vec![ArmOp::Sdiv { rd, rn, rm }]
             }
             I32RemU => {
                 // Unsigned remainder: quotient = UDIV Rn, Rm
                 // remainder = Rn - (quotient * Rm)
                 // For now, simplified to UDIV (would need sequence)
-                ArmOp::Udiv { rd, rn, rm }
+                vec![ArmOp::Udiv { rd, rn, rm }]
             }
 
-            _ => ArmOp::Nop, // Other unsupported operations
+            // Sign extension operations
+            I32Extend8S => {
+                // Sign-extend byte: SXTB Rd, Rm
+                vec![ArmOp::Sxtb { rd, rm }]
+            }
+            I32Extend16S => {
+                // Sign-extend halfword: SXTH Rd, Rm
+                vec![ArmOp::Sxth { rd, rm }]
+            }
+
+            _ => vec![ArmOp::Nop], // Other unsupported operations
         })
+    }
+
+    /// Generate a load with optional bounds checking
+    /// R10 = memory size, R11 = memory base
+    fn generate_load_with_bounds_check(
+        &self,
+        rd: Reg,
+        addr_reg: Reg,
+        offset: i32,
+        _access_size: u32,
+    ) -> Vec<ArmOp> {
+        let load_op = ArmOp::Ldr {
+            rd,
+            addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
+        };
+
+        match self.bounds_check {
+            BoundsCheckConfig::None => vec![load_op],
+            BoundsCheckConfig::Software => {
+                // Software bounds check sequence:
+                // ADD temp, addr_reg, #offset   ; Calculate effective address
+                // CMP temp, R10                 ; Compare against memory size (in R10)
+                // BHS .trap                     ; Branch to trap if >= memory size
+                // LDR rd, [R11, addr_reg, #offset]
+                let temp = Reg::R12; // Use R12 as scratch (IP register)
+                vec![
+                    // Calculate effective address: temp = addr_reg + offset
+                    ArmOp::Add {
+                        rd: temp,
+                        rn: addr_reg,
+                        op2: Operand2::Imm(offset),
+                    },
+                    // Compare against memory size (in R10)
+                    ArmOp::Cmp {
+                        rn: temp,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    // Branch to trap handler if >= (unsigned)
+                    ArmOp::Bhs {
+                        label: "Trap_Handler".to_string(),
+                    },
+                    // Actual load
+                    load_op,
+                ]
+            }
+            BoundsCheckConfig::Masking => {
+                // Masking approach: AND address with (memory_size - 1)
+                // This only works for power-of-2 memory sizes
+                // AND addr_reg, addr_reg, R10  ; R10 should contain mask (size - 1)
+                // LDR rd, [R11, addr_reg, #offset]
+                vec![
+                    ArmOp::And {
+                        rd: addr_reg,
+                        rn: addr_reg,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    load_op,
+                ]
+            }
+        }
+    }
+
+    /// Generate a store with optional bounds checking
+    /// R10 = memory size (or mask for masking mode), R11 = memory base
+    fn generate_store_with_bounds_check(
+        &self,
+        value_reg: Reg,
+        addr_reg: Reg,
+        offset: i32,
+        _access_size: u32,
+    ) -> Vec<ArmOp> {
+        let store_op = ArmOp::Str {
+            rd: value_reg,
+            addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
+        };
+
+        match self.bounds_check {
+            BoundsCheckConfig::None => vec![store_op],
+            BoundsCheckConfig::Software => {
+                // Software bounds check sequence:
+                // ADD temp, addr_reg, #offset   ; Calculate effective address
+                // CMP temp, R10                 ; Compare against memory size (in R10)
+                // BHS .trap                     ; Branch to trap if >= memory size
+                // STR value_reg, [R11, addr_reg, #offset]
+                let temp = Reg::R12; // Use R12 as scratch (IP register)
+                vec![
+                    // Calculate effective address: temp = addr_reg + offset
+                    ArmOp::Add {
+                        rd: temp,
+                        rn: addr_reg,
+                        op2: Operand2::Imm(offset),
+                    },
+                    // Compare against memory size (in R10)
+                    ArmOp::Cmp {
+                        rn: temp,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    // Branch to trap handler if >= (unsigned)
+                    ArmOp::Bhs {
+                        label: "Trap_Handler".to_string(),
+                    },
+                    // Actual store
+                    store_op,
+                ]
+            }
+            BoundsCheckConfig::Masking => {
+                // Masking approach: AND address with (memory_size - 1)
+                vec![
+                    ArmOp::And {
+                        rd: addr_reg,
+                        rn: addr_reg,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    store_op,
+                ]
+            }
+        }
     }
 
     /// Get statistics about instruction selection
@@ -420,10 +581,7 @@ impl InstructionSelector {
                         instructions.push(ArmInstruction {
                             op: ArmOp::Ldr {
                                 rd: dst,
-                                addr: MemAddr {
-                                    base: Reg::SP,
-                                    offset: (*local_idx as i32 - 4) * 4, // Stack offset for spilled params
-                                },
+                                addr: MemAddr::imm(Reg::SP, (*local_idx as i32 - 4) * 4),
                             },
                             source_line: Some(idx),
                         });
@@ -547,13 +705,231 @@ impl InstructionSelector {
                     stack.push(dst);
                 }
 
-                // For other operations, fall back to default behavior
-                _ => {
-                    let arm_op = self.select_default(op)?;
+                // Division operations with trap checks for divide-by-zero
+                I32DivU => {
+                    let divisor = stack.pop().unwrap_or(Reg::R1);  // b (divisor)
+                    let dividend = stack.pop().unwrap_or(Reg::R0); // a (dividend)
+                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
+                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+
+                    // Trap check: if divisor == 0, trigger UDF (UsageFault -> Trap_Handler)
+                    // CMP divisor, #0
                     instructions.push(ArmInstruction {
-                        op: arm_op,
+                        op: ArmOp::Cmp { rn: divisor, op2: Operand2::Imm(0) },
                         source_line: Some(idx),
                     });
+                    // BNE.N +0 (skip UDF if divisor != 0)
+                    // offset=0 means skip to PC+4, which skips the 2-byte UDF
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 0 },
+                        source_line: Some(idx),
+                    });
+                    // UDF #0 (triggers trap on divide by zero)
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Udf { imm: 0 },
+                        source_line: Some(idx),
+                    });
+                    // UDIV dst, dividend, divisor
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Udiv { rd: dst, rn: dividend, rm: divisor },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                I32DivS => {
+                    let divisor = stack.pop().unwrap_or(Reg::R1);
+                    let dividend = stack.pop().unwrap_or(Reg::R0);
+                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
+                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+
+                    // Trap check 1: divide by zero
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Cmp { rn: divisor, op2: Operand2::Imm(0) },
+                        source_line: Some(idx),
+                    });
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 0 },
+                        source_line: Some(idx),
+                    });
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Udf { imm: 0 },
+                        source_line: Some(idx),
+                    });
+
+                    // Trap check 2: signed overflow (INT_MIN / -1)
+                    // We need a temp register for INT_MIN (0x80000000)
+                    let tmp = index_to_reg(next_temp);
+                    next_temp = (next_temp + 1) % 13;
+
+                    // Load INT_MIN into tmp: MOVW tmp, #0; MOVT tmp, #0x8000
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Movw { rd: tmp, imm16: 0 },
+                        source_line: Some(idx),
+                    });
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Movt { rd: tmp, imm16: 0x8000 },
+                        source_line: Some(idx),
+                    });
+                    // CMP dividend, tmp (check if dividend == INT_MIN)
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Cmp { rn: dividend, op2: Operand2::Reg(tmp) },
+                        source_line: Some(idx),
+                    });
+                    // BNE.N +3 (skip overflow check if dividend != INT_MIN)
+                    // Skip 8 bytes: CMN.W(4) + BNE(2) + UDF(2)
+                    // Branch target = PC + (imm8 << 1) = B+4 + 6 = B+10 (SDIV)
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 3 },
+                        source_line: Some(idx),
+                    });
+                    // CMN divisor, #1 (check if divisor == -1: -1 + 1 = 0 sets Z flag)
+                    // CMN.W is 4 bytes
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Cmn { rn: divisor, op2: Operand2::Imm(1) },
+                        source_line: Some(idx),
+                    });
+                    // BNE.N +0 (skip UDF if divisor != -1)
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 0 },
+                        source_line: Some(idx),
+                    });
+                    // UDF #1 (triggers trap on overflow)
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Udf { imm: 1 },
+                        source_line: Some(idx),
+                    });
+
+                    // SDIV dst, dividend, divisor (safe to divide now)
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Sdiv { rd: dst, rn: dividend, rm: divisor },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                I32RemU => {
+                    let divisor = stack.pop().unwrap_or(Reg::R1);
+                    let dividend = stack.pop().unwrap_or(Reg::R0);
+                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
+                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+
+                    // Trap check: divide by zero
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Cmp { rn: divisor, op2: Operand2::Imm(0) },
+                        source_line: Some(idx),
+                    });
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 0 },
+                        source_line: Some(idx),
+                    });
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Udf { imm: 0 },
+                        source_line: Some(idx),
+                    });
+
+                    // Remainder: dst = dividend - (dividend / divisor) * divisor
+                    // quotient = UDIV tmp, dividend, divisor
+                    let tmp = index_to_reg(next_temp);
+                    next_temp = (next_temp + 1) % 13;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Udiv { rd: tmp, rn: dividend, rm: divisor },
+                        source_line: Some(idx),
+                    });
+                    // MLS dst, tmp, divisor, dividend  (dst = dividend - tmp * divisor)
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Mls { rd: dst, rn: tmp, rm: divisor, ra: dividend },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                I32RemS => {
+                    let divisor = stack.pop().unwrap_or(Reg::R1);
+                    let dividend = stack.pop().unwrap_or(Reg::R0);
+                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
+                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+
+                    // Trap check: divide by zero (rem_s doesn't trap on INT_MIN % -1)
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Cmp { rn: divisor, op2: Operand2::Imm(0) },
+                        source_line: Some(idx),
+                    });
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 0 },
+                        source_line: Some(idx),
+                    });
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Udf { imm: 0 },
+                        source_line: Some(idx),
+                    });
+
+                    // Signed remainder: dst = dividend - (dividend / divisor) * divisor
+                    let tmp = index_to_reg(next_temp);
+                    next_temp = (next_temp + 1) % 13;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Sdiv { rd: tmp, rn: dividend, rm: divisor },
+                        source_line: Some(idx),
+                    });
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Mls { rd: dst, rn: tmp, rm: divisor, ra: dividend },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                // Memory operations need stack-aware handling
+                I32Load { offset, .. } => {
+                    // Pop address from stack
+                    let addr = stack.pop().unwrap_or(Reg::R0);
+                    // Result goes in R0 if this is the last value-producing op (before End)
+                    // Check if next op is End or if we're at the last position
+                    let is_return_value = idx == wasm_ops.len() - 1
+                        || (idx + 1 < wasm_ops.len() && matches!(wasm_ops[idx + 1], End));
+                    let dst = if is_return_value {
+                        Reg::R0
+                    } else {
+                        let t = index_to_reg(next_temp);
+                        next_temp = (next_temp + 1) % 13;
+                        t
+                    };
+
+                    // Generate load with optional bounds checking
+                    let load_ops = self.generate_load_with_bounds_check(dst, addr, *offset as i32, 4);
+                    for op in load_ops {
+                        instructions.push(ArmInstruction {
+                            op,
+                            source_line: Some(idx),
+                        });
+                    }
+                    stack.push(dst);
+                }
+
+                I32Store { offset, .. } => {
+                    // WASM i32.store pops: value first, then address
+                    let value = stack.pop().unwrap_or(Reg::R1);
+                    let addr = stack.pop().unwrap_or(Reg::R0);
+
+                    // Generate store with optional bounds checking
+                    let store_ops = self.generate_store_with_bounds_check(value, addr, *offset as i32, 4);
+                    for op in store_ops {
+                        instructions.push(ArmInstruction {
+                            op,
+                            source_line: Some(idx),
+                        });
+                    }
+                    // Store doesn't push anything to stack
+                }
+
+                // For other operations, fall back to default behavior
+                _ => {
+                    let arm_ops = self.select_default(op)?;
+                    for arm_op in arm_ops {
+                        instructions.push(ArmInstruction {
+                            op: arm_op,
+                            source_line: Some(idx),
+                        });
+                    }
                 }
             }
         }
@@ -769,5 +1145,99 @@ mod tests {
         assert_eq!(index_to_reg(1), Reg::R1);
         assert_eq!(index_to_reg(12), Reg::R12);
         assert_eq!(index_to_reg(13), Reg::R0); // Wraps around
+    }
+
+    #[test]
+    fn test_bounds_check_none() {
+        // With BoundsCheckConfig::None, loads/stores should generate single instruction
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::with_bounds_check(
+            db.rules().to_vec(),
+            BoundsCheckConfig::None,
+        );
+
+        let wasm_ops = vec![WasmOp::I32Load { offset: 0, align: 4 }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        // Should be just the LDR instruction (1 instruction)
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::Ldr { .. } => {}
+            _ => panic!("Expected Ldr instruction"),
+        }
+    }
+
+    #[test]
+    fn test_bounds_check_software() {
+        // With BoundsCheckConfig::Software, loads should generate bounds check sequence
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::with_bounds_check(
+            db.rules().to_vec(),
+            BoundsCheckConfig::Software,
+        );
+
+        let wasm_ops = vec![WasmOp::I32Load { offset: 4, align: 4 }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        // Should be: ADD temp, addr, #offset; CMP temp, R10; BHS trap; LDR
+        assert_eq!(arm_instrs.len(), 4);
+
+        // First: ADD to calculate effective address
+        match &arm_instrs[0].op {
+            ArmOp::Add { rd, rn: _, op2: Operand2::Imm(4) } => {
+                assert_eq!(*rd, Reg::R12); // Uses R12 as temp
+            }
+            other => panic!("Expected Add with immediate 4, got {:?}", other),
+        }
+
+        // Second: CMP against R10 (memory size)
+        match &arm_instrs[1].op {
+            ArmOp::Cmp { rn, op2: Operand2::Reg(Reg::R10) } => {
+                assert_eq!(*rn, Reg::R12); // Compare temp
+            }
+            other => panic!("Expected Cmp against R10, got {:?}", other),
+        }
+
+        // Third: BHS to trap handler
+        match &arm_instrs[2].op {
+            ArmOp::Bhs { label } => {
+                assert_eq!(label, "Trap_Handler");
+            }
+            other => panic!("Expected Bhs to Trap_Handler, got {:?}", other),
+        }
+
+        // Fourth: The actual LDR
+        match &arm_instrs[3].op {
+            ArmOp::Ldr { .. } => {}
+            other => panic!("Expected Ldr instruction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_bounds_check_masking() {
+        // With BoundsCheckConfig::Masking, loads should generate AND + LDR
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::with_bounds_check(
+            db.rules().to_vec(),
+            BoundsCheckConfig::Masking,
+        );
+
+        let wasm_ops = vec![WasmOp::I32Store { offset: 0, align: 4 }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        // Should be: AND addr, addr, R10; STR
+        assert_eq!(arm_instrs.len(), 2);
+
+        // First: AND to mask address
+        match &arm_instrs[0].op {
+            ArmOp::And { rn: _, op2: Operand2::Reg(Reg::R10), .. } => {}
+            other => panic!("Expected And with R10, got {:?}", other),
+        }
+
+        // Second: The actual STR
+        match &arm_instrs[1].op {
+            ArmOp::Str { .. } => {}
+            other => panic!("Expected Str instruction, got {:?}", other),
+        }
     }
 }

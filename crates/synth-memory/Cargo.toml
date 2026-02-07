@@ -1,0 +1,19 @@
+[package]
+name = "synth-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Portable memory management for Synth WASM-to-ARM compiler"
+
+[dependencies]
+bitflags = "2.4"
+
+[features]
+default = ["std"]
+std = []
+# Platform-specific features (one active at a time for no_std)
+bare-metal = []
+zephyr = []
+freertos = []
+
+[dev-dependencies]

@@ -1,0 +1,3 @@
+# Test WAT files for Synth
+
+exports_files(glob(["*.wat"]))

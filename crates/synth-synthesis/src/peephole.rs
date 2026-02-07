@@ -362,10 +362,7 @@ mod tests {
     #[test]
     fn test_store_load_elimination() {
         let optimizer = PeepholeOptimizer::new();
-        let addr = crate::rules::MemAddr {
-            base: Reg::SP,
-            offset: 0,
-        };
+        let addr = crate::rules::MemAddr::imm(Reg::SP, 0);
 
         let instrs = vec![
             ArmOp::Str {

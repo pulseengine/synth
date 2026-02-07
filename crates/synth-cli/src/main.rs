@@ -7,13 +7,18 @@ use clap::{Parser, Subcommand};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use wast::parser::{self, ParseBuffer};
+use wast::{Wast, WastDirective};
 use synth_backend::{
-    ArmEncoder, ElfBuilder, ElfSectionType, Section, SectionFlags, Symbol, SymbolBinding,
-    SymbolType, VectorTable,
+    ArmEncoder, ElfBuilder, ElfSectionType, ProgramFlags, ProgramHeader, Section, SectionFlags,
+    Symbol, SymbolBinding, SymbolType, VectorTable,
 };
 use synth_core::HardwareCapabilities;
 use synth_frontend;
-use synth_synthesis::{decode_wasm_functions, InstructionSelector, RuleDatabase, WasmOp};
+use synth_synthesis::{
+    decode_wasm_functions, decode_wasm_module, ArmInstruction, InstructionSelector, OptimizerBridge,
+    RuleDatabase, WasmMemory, WasmOp,
+};
 use tracing::{info, Level};
 use tracing_subscriber;
 
@@ -104,9 +109,30 @@ enum Commands {
         #[arg(short, long, value_name = "INDEX", default_value = "0")]
         func_index: u32,
 
+        /// Function name (export name) to compile - overrides func_index
+        #[arg(short = 'n', long, value_name = "NAME")]
+        func_name: Option<String>,
+
+        /// Compile ALL exported functions into a multi-function ELF
+        #[arg(long)]
+        all_exports: bool,
+
         /// Generate complete Cortex-M binary with vector table (for Renode/QEMU)
         #[arg(long)]
         cortex_m: bool,
+
+        /// Disable optimization passes (use direct instruction selection)
+        #[arg(long)]
+        no_optimize: bool,
+
+        /// Use Loom-compatible optimization (skip passes Loom already handles)
+        #[arg(long)]
+        loom_compat: bool,
+
+        /// Enable software bounds checking for memory operations
+        /// Generates CMP/BHS before each load/store (~25% overhead)
+        #[arg(long)]
+        bounds_check: bool,
     },
 
     /// Disassemble an ARM ELF file
@@ -155,9 +181,14 @@ fn main() -> Result<()> {
             output,
             demo,
             func_index,
+            func_name,
+            all_exports,
             cortex_m,
+            no_optimize,
+            loom_compat,
+            bounds_check,
         } => {
-            compile_command(input, output, demo, func_index, cortex_m)?;
+            compile_command(input, output, demo, func_index, func_name, all_exports, cortex_m, no_optimize, loom_compat, bounds_check)?;
         }
         Commands::Disasm { input } => {
             disasm_command(input)?;
@@ -297,24 +328,124 @@ fn print_hardware_info(caps: &HardwareCapabilities) {
     println!("  RAM: {} KB", caps.ram_size / 1024);
 }
 
+/// Compiled function with name and machine code
+struct CompiledFunction {
+    name: String,
+    code: Vec<u8>,
+}
+
+/// Compile WASM ops to ARM machine code
+fn compile_wasm_to_arm(
+    wasm_ops: &[WasmOp],
+    cortex_m: bool,
+    no_optimize: bool,
+    loom_compat: bool,
+    bounds_check: bool,
+) -> Result<Vec<u8>> {
+    use synth_synthesis::BoundsCheckConfig;
+
+    // Determine number of parameters
+    let mut first_access: std::collections::HashMap<u32, bool> = std::collections::HashMap::new();
+    for op in wasm_ops {
+        match op {
+            WasmOp::LocalGet(idx) => {
+                first_access.entry(*idx).or_insert(true);
+            }
+            WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) => {
+                first_access.entry(*idx).or_insert(false);
+            }
+            _ => {}
+        }
+    }
+
+    let num_params = first_access
+        .iter()
+        .filter_map(|(&idx, &is_read_first)| {
+            if is_read_first { Some(idx + 1) } else { None }
+        })
+        .max()
+        .unwrap_or(0);
+
+    // Configure bounds checking
+    let bounds_config = if bounds_check {
+        info!("Bounds checking enabled (software mode)");
+        BoundsCheckConfig::Software
+    } else {
+        BoundsCheckConfig::None
+    };
+
+    // Instruction selection
+    let arm_instrs = if no_optimize {
+        let db = RuleDatabase::with_standard_rules();
+        let mut selector = InstructionSelector::with_bounds_check(db.rules().to_vec(), bounds_config);
+        selector.select_with_stack(wasm_ops, num_params)
+            .context("Instruction selection failed")?
+    } else {
+        use synth_synthesis::OptimizationConfig;
+
+        let config = if loom_compat {
+            OptimizationConfig::loom_compat()
+        } else {
+            OptimizationConfig::all()
+        };
+
+        let bridge = OptimizerBridge::with_config(config);
+        let (opt_ir, _cfg, _stats) = bridge.optimize_full(wasm_ops)
+            .context("Optimization failed")?;
+
+        let arm_ops = bridge.ir_to_arm(&opt_ir, num_params as usize);
+        arm_ops.into_iter()
+            .map(|op| ArmInstruction { op, source_line: None })
+            .collect()
+    };
+
+    // Encode to binary
+    let encoder = if cortex_m {
+        ArmEncoder::new_thumb2()
+    } else {
+        ArmEncoder::new_arm32()
+    };
+
+    let mut code = Vec::new();
+    for instr in &arm_instrs {
+        let encoded = encoder.encode(&instr.op).context("ARM encoding failed")?;
+        code.extend_from_slice(&encoded);
+    }
+
+    Ok(code)
+}
+
 fn compile_command(
     input: Option<PathBuf>,
     output: PathBuf,
     demo: Option<String>,
     func_index: u32,
+    func_name_arg: Option<String>,
+    all_exports: bool,
     cortex_m: bool,
+    no_optimize: bool,
+    loom_compat: bool,
+    bounds_check: bool,
 ) -> Result<()> {
-    // Get WASM operations either from file or demo
+    // Handle --all-exports mode for multi-function compilation
+    if all_exports {
+        return compile_all_exports(input, output, cortex_m, no_optimize, loom_compat, bounds_check);
+    }
+
+    // Single function compilation (original behavior)
     let (wasm_ops, func_name): (Vec<WasmOp>, String) = match (&input, &demo) {
         (Some(path), _) => {
             info!("Compiling WASM file: {}", path.display());
 
-            // Read the file
             let file_bytes = std::fs::read(path)
                 .context(format!("Failed to read input file: {}", path.display()))?;
 
-            // If it's a .wat file, parse it first
-            let wasm_bytes = if path.extension().map_or(false, |ext| ext == "wat") {
+            let wasm_bytes = if path.extension().map_or(false, |ext| ext == "wast") {
+                info!("Parsing WAST to WASM (extracting module)...");
+                let contents = String::from_utf8(file_bytes)
+                    .context("WAST file is not valid UTF-8")?;
+                extract_module_from_wast(&contents)?
+            } else if path.extension().map_or(false, |ext| ext == "wat") {
                 info!("Parsing WAT to WASM...");
                 wat::parse_bytes(&file_bytes)
                     .context("Failed to parse WAT file")?
@@ -323,19 +454,30 @@ fn compile_command(
                 file_bytes
             };
 
-            // Decode functions
             let functions = decode_wasm_functions(&wasm_bytes)
                 .context("Failed to decode WASM functions")?;
 
             info!("Found {} functions in module", functions.len());
 
-            // Get the requested function
-            let func = functions
-                .into_iter()
-                .find(|f| f.index == func_index)
-                .context(format!("Function index {} not found", func_index))?;
+            for f in &functions {
+                if let Some(ref name) = f.export_name {
+                    info!("  Export '{}' -> function index {}", name, f.index);
+                }
+            }
 
-            let name = format!("func_{}", func.index);
+            let func = if let Some(ref name) = func_name_arg {
+                functions
+                    .into_iter()
+                    .find(|f| f.export_name.as_deref() == Some(name.as_str()))
+                    .context(format!("Function '{}' not found", name))?
+            } else {
+                functions
+                    .into_iter()
+                    .find(|f| f.index == func_index)
+                    .context(format!("Function index {} not found", func_index))?
+            };
+
+            let name = func.export_name.clone().unwrap_or_else(|| format!("func_{}", func.index));
             info!("Compiling function {} ({} ops)", name, func.ops.len());
 
             (func.ops, name)
@@ -344,94 +486,23 @@ fn compile_command(
             info!("Compiling demo function: {}", demo_name);
 
             match demo_name.as_str() {
-                "add" => (
-                    vec![
-                        WasmOp::LocalGet(0),
-                        WasmOp::LocalGet(1),
-                        WasmOp::I32Add,
-                    ],
-                    "add".to_string(),
-                ),
-                "mul" => (
-                    vec![
-                        WasmOp::LocalGet(0),
-                        WasmOp::LocalGet(1),
-                        WasmOp::I32Mul,
-                    ],
-                    "mul".to_string(),
-                ),
-                "calc" => (
-                    vec![
-                        WasmOp::I32Const(5),
-                        WasmOp::I32Const(3),
-                        WasmOp::I32Mul,
-                        WasmOp::I32Const(2),
-                        WasmOp::I32Add,
-                    ],
-                    "calc".to_string(),
-                ),
-                _ => {
-                    anyhow::bail!(
-                        "Unknown demo: {}. Available: add, mul, calc",
-                        demo_name
-                    );
-                }
+                "add" => (vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add], "add".to_string()),
+                "mul" => (vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Mul], "mul".to_string()),
+                "calc" => (vec![WasmOp::I32Const(5), WasmOp::I32Const(3), WasmOp::I32Mul, WasmOp::I32Const(2), WasmOp::I32Add], "calc".to_string()),
+                _ => anyhow::bail!("Unknown demo: {}. Available: add, mul, calc", demo_name),
             }
         }
         (None, None) => {
-            // Default to add demo
             info!("No input specified, using 'add' demo");
-            (
-                vec![
-                    WasmOp::LocalGet(0),
-                    WasmOp::LocalGet(1),
-                    WasmOp::I32Add,
-                ],
-                "add".to_string(),
-            )
+            (vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add], "add".to_string())
         }
     };
 
     info!("WASM operations: {:?}", wasm_ops);
 
-    // Determine number of parameters by looking at LocalGet indices
-    let num_params = wasm_ops
-        .iter()
-        .filter_map(|op| {
-            if let WasmOp::LocalGet(idx) = op {
-                Some(*idx + 1)
-            } else {
-                None
-            }
-        })
-        .max()
-        .unwrap_or(0);
-
-    info!("Detected {} parameters", num_params);
-
-    // Step 1: Instruction selection with AAPCS-compliant stack-based allocation
-    let db = RuleDatabase::with_standard_rules();
-    let mut selector = InstructionSelector::new(db.rules().to_vec());
-    let arm_instrs = selector
-        .select_with_stack(&wasm_ops, num_params)
-        .context("Instruction selection failed")?;
-
-    info!("Generated {} ARM instructions", arm_instrs.len());
-
-    // Step 2: Encode to binary
-    let encoder = ArmEncoder::new_arm32();
-    let mut code = Vec::new();
-
-    for instr in &arm_instrs {
-        let encoded = encoder
-            .encode(&instr.op)
-            .context("ARM encoding failed")?;
-        code.extend_from_slice(&encoded);
-    }
-
+    let code = compile_wasm_to_arm(&wasm_ops, cortex_m, no_optimize, loom_compat, bounds_check)?;
     info!("Encoded {} bytes of machine code", code.len());
 
-    // Step 3: Build ELF
     let elf_data = if cortex_m {
         build_cortex_m_elf(&code, &func_name)?
     } else {
@@ -452,6 +523,414 @@ fn compile_command(
     println!("\nInspect with: synth disasm {}", output.display());
 
     Ok(())
+}
+
+/// Extract module binary from WAST file (handles assert_return, etc.)
+fn extract_module_from_wast(contents: &str) -> Result<Vec<u8>> {
+    let buf = ParseBuffer::new(contents)
+        .map_err(|e| anyhow::anyhow!("Failed to create parse buffer: {}", e))?;
+
+    let wast: Wast = parser::parse(&buf)
+        .map_err(|e| anyhow::anyhow!("Failed to parse WAST: {}", e))?;
+
+    // Find the first module in the WAST directives
+    for directive in wast.directives {
+        if let WastDirective::Module(mut quote_wat) = directive {
+            // Encode the WAT module to binary WASM
+            return quote_wat.encode()
+                .map_err(|e| anyhow::anyhow!("Failed to encode module: {}", e));
+        }
+    }
+
+    anyhow::bail!("No module found in WAST file")
+}
+
+/// Compile all exported functions into a multi-function ELF
+fn compile_all_exports(
+    input: Option<PathBuf>,
+    output: PathBuf,
+    cortex_m: bool,
+    no_optimize: bool,
+    loom_compat: bool,
+    bounds_check: bool,
+) -> Result<()> {
+    let path = input.context("--all-exports requires an input file")?;
+
+    info!("Compiling all exports from: {}", path.display());
+
+    let file_bytes = std::fs::read(&path)
+        .context(format!("Failed to read input file: {}", path.display()))?;
+
+    let wasm_bytes = if path.extension().map_or(false, |ext| ext == "wast") {
+        info!("Parsing WAST to WASM (extracting module)...");
+        let contents = String::from_utf8(file_bytes)
+            .context("WAST file is not valid UTF-8")?;
+        extract_module_from_wast(&contents)?
+    } else if path.extension().map_or(false, |ext| ext == "wat") {
+        info!("Parsing WAT to WASM...");
+        wat::parse_bytes(&file_bytes)
+            .context("Failed to parse WAT file")?
+            .into_owned()
+    } else {
+        file_bytes
+    };
+
+    let module = decode_wasm_module(&wasm_bytes)
+        .context("Failed to decode WASM module")?;
+
+    // Log memory information
+    if !module.memories.is_empty() {
+        info!("Module declares {} memories:", module.memories.len());
+        for mem in &module.memories {
+            let max_str = mem
+                .max_pages
+                .map(|m| format!("{}", m))
+                .unwrap_or_else(|| "unlimited".to_string());
+            info!(
+                "  memory[{}]: {} initial pages, {} max pages ({}KB initial)",
+                mem.index,
+                mem.initial_pages,
+                max_str,
+                mem.initial_pages * 64
+            );
+        }
+    }
+
+    // Filter to only exported functions
+    let exports: Vec<_> = module
+        .functions
+        .iter()
+        .filter(|f| f.export_name.is_some())
+        .collect();
+
+    if exports.is_empty() {
+        anyhow::bail!("No exported functions found in module");
+    }
+
+    info!("Found {} exported functions:", exports.len());
+    for f in &exports {
+        info!("  '{}' (index {})", f.export_name.as_ref().unwrap(), f.index);
+    }
+
+    // Compile each function
+    let mut compiled_funcs = Vec::new();
+    for func in &exports {
+        let name = func.export_name.clone().unwrap();
+        info!("Compiling function '{}'...", name);
+
+        let code = compile_wasm_to_arm(&func.ops, cortex_m, no_optimize, loom_compat, bounds_check)?;
+        info!("  {} bytes of machine code", code.len());
+
+        compiled_funcs.push(CompiledFunction { name, code });
+    }
+
+    // Build multi-function ELF
+    let elf_data = if cortex_m {
+        build_multi_func_cortex_m_elf(&compiled_funcs, &module.memories)?
+    } else {
+        build_multi_func_simple_elf(&compiled_funcs)?
+    };
+
+    info!("Generated {} byte ELF file", elf_data.len());
+
+    // Write to file
+    let mut file = File::create(&output)
+        .context(format!("Failed to create output file: {}", output.display()))?;
+    file.write_all(&elf_data)
+        .context("Failed to write ELF data")?;
+
+    let total_code: usize = compiled_funcs.iter().map(|f| f.code.len()).sum();
+    println!("Compiled {} functions to {}", compiled_funcs.len(), output.display());
+    println!("  Total code size: {} bytes", total_code);
+    println!("  ELF size: {} bytes", elf_data.len());
+    println!("\nFunction addresses:");
+
+    // Calculate and display addresses (will be printed after ELF building sets them)
+    println!("  Use 'synth disasm {}' or 'objdump -t {}' to see symbols",
+             output.display(), output.display());
+
+    Ok(())
+}
+
+/// Build a simple multi-function ELF
+fn build_multi_func_simple_elf(funcs: &[CompiledFunction]) -> Result<Vec<u8>> {
+    let base_addr: u32 = 0x8000;
+    let mut elf_builder = ElfBuilder::new_arm32().with_entry(base_addr);
+
+    // Concatenate all function code
+    let mut all_code = Vec::new();
+    let mut func_offsets = Vec::new();
+
+    for func in funcs {
+        // Align each function to 4 bytes
+        while all_code.len() % 4 != 0 {
+            all_code.push(0);
+        }
+        func_offsets.push(all_code.len() as u32);
+        all_code.extend_from_slice(&func.code);
+    }
+
+    let text_section = Section::new(".text", ElfSectionType::ProgBits)
+        .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
+        .with_addr(base_addr)
+        .with_align(4)
+        .with_data(all_code);
+
+    elf_builder.add_section(text_section);
+
+    // Add symbol for each function
+    for (i, func) in funcs.iter().enumerate() {
+        let func_sym = Symbol::new(&func.name)
+            .with_value(base_addr + func_offsets[i])
+            .with_size(func.code.len() as u32)
+            .with_binding(SymbolBinding::Global)
+            .with_type(SymbolType::Func)
+            .with_section(4);
+
+        elf_builder.add_symbol(func_sym);
+    }
+
+    elf_builder.build().context("ELF generation failed")
+}
+
+/// Build a complete Cortex-M multi-function ELF with vector table
+fn build_multi_func_cortex_m_elf(
+    funcs: &[CompiledFunction],
+    memories: &[WasmMemory],
+) -> Result<Vec<u8>> {
+    let flash_base: u32 = 0x0000_0000;
+    let ram_base: u32 = 0x2000_0000;
+    let ram_size: u32 = 128 * 1024; // 128KB to accommodate linear memory + stack
+
+    // Calculate linear memory size from WASM memory declarations
+    // Default to 1 page (64KB) if no memory declared (for backwards compatibility)
+    let linear_memory_pages = memories.first().map(|m| m.initial_pages).unwrap_or(1);
+    let linear_memory_size = linear_memory_pages * 64 * 1024; // 64KB per page
+
+    // RAM layout:
+    // 0x2000_0000: Linear memory (R11 points here)
+    // 0x2000_0000 + linear_memory_size: Stack base
+    // 0x2001_0000: Stack top (grows down)
+    //
+    // Ensure we have at least 4KB for stack
+    let min_stack_size: u32 = 4 * 1024;
+    if linear_memory_size + min_stack_size > ram_size {
+        anyhow::bail!(
+            "Linear memory ({} bytes) + minimum stack ({} bytes) exceeds RAM ({} bytes)",
+            linear_memory_size,
+            min_stack_size,
+            ram_size
+        );
+    }
+
+    let stack_top = ram_base + ram_size;
+
+    info!(
+        "RAM layout: linear memory {}KB at 0x{:08x}, stack at 0x{:08x}",
+        linear_memory_size / 1024,
+        ram_base,
+        stack_top
+    );
+
+    // Flash layout:
+    // 0x00: Vector table (128 bytes = 32 entries)
+    // 0x80: Reset handler (startup code with R10/R11 init)
+    // 0xA0: Default handler
+    // 0xA4+: User functions (4-byte aligned)
+
+    let vector_table_addr = flash_base;
+    let vector_table_size: u32 = 128;
+
+    let startup_addr = flash_base + vector_table_size;
+    let startup_code = generate_minimal_startup(linear_memory_size);
+    let startup_size = startup_code.len() as u32;
+
+    let default_handler_addr = startup_addr + startup_size;
+    let default_handler = generate_default_handler();
+    let default_handler_size = default_handler.len() as u32;
+
+    // Trap handler for WASM trap operations (div by zero, integer overflow)
+    let trap_handler_addr = default_handler_addr + default_handler_size;
+    let trap_handler = generate_trap_handler();
+    let trap_handler_size = trap_handler.len() as u32;
+
+    // Functions start after trap handler, aligned to 4 bytes
+    let funcs_base = (trap_handler_addr + trap_handler_size + 3) & !3;
+
+    // Concatenate all function code with alignment
+    let mut all_func_code = Vec::new();
+    let mut func_offsets = Vec::new();
+
+    for func in funcs {
+        while all_func_code.len() % 4 != 0 {
+            all_func_code.push(0);
+        }
+        func_offsets.push(all_func_code.len() as u32);
+        all_func_code.extend_from_slice(&func.code);
+    }
+
+    info!("Cortex-M multi-function layout:");
+    info!("  Vector table: 0x{:08x}", vector_table_addr);
+    info!("  Startup code: 0x{:08x}", startup_addr);
+    info!("  Default handler: 0x{:08x}", default_handler_addr);
+    info!("  Trap handler: 0x{:08x}", trap_handler_addr);
+    info!("  Functions base: 0x{:08x}", funcs_base);
+    for (i, func) in funcs.iter().enumerate() {
+        let addr = funcs_base + func_offsets[i];
+        info!("    {}: 0x{:08x} ({} bytes)", func.name, addr, func.code.len());
+    }
+    info!("  Stack top: 0x{:08x}", stack_top);
+
+    // Generate vector table
+    let mut vt = VectorTable::new_cortex_m(stack_top);
+    vt.reset_handler = startup_addr;
+
+    for handler in &mut vt.handlers {
+        if handler.address == 0 {
+            // UsageFault and HardFault go to Trap_Handler (for WASM trap detection)
+            if handler.name == "UsageFault_Handler" || handler.name == "HardFault_Handler" {
+                handler.address = trap_handler_addr;
+            } else {
+                handler.address = default_handler_addr;
+            }
+        }
+    }
+
+    let vector_table_data = vt.generate_binary().context("Vector table generation failed")?;
+
+    // Build flash image
+    let mut flash_image = Vec::new();
+
+    // Vector table
+    flash_image.extend_from_slice(&vector_table_data);
+
+    // Pad to startup address
+    while flash_image.len() < (startup_addr - flash_base) as usize {
+        flash_image.push(0);
+    }
+
+    // Startup code - patch literal pool to point to FIRST function
+    // Literal pool is at offset 24 (after R10/R11 init + LDR/BLX/B/padding)
+    let mut patched_startup = startup_code.clone();
+    let first_func_addr = funcs_base | 1; // Thumb bit
+    patched_startup[24..28].copy_from_slice(&first_func_addr.to_le_bytes());
+    flash_image.extend_from_slice(&patched_startup);
+
+    // Default handler
+    flash_image.extend_from_slice(&default_handler);
+
+    // Trap handler (for WASM trap operations)
+    flash_image.extend_from_slice(&trap_handler);
+
+    // Pad to functions base
+    while flash_image.len() < (funcs_base - flash_base) as usize {
+        flash_image.push(0);
+    }
+
+    // All function code
+    flash_image.extend_from_slice(&all_func_code);
+
+    // Build ELF
+    let flash_size = flash_image.len() as u32;
+    let mut elf_builder = ElfBuilder::new_arm32().with_entry(startup_addr | 1);
+
+    // Calculate proper file offset for .text section
+    let shstrtab_size = 1 + ".shstrtab\0.strtab\0.symtab\0.text\0".len();
+    let mut strtab_size = 1 + "Reset_Handler\0Default_Handler\0Trap_Handler\0".len();
+    for func in funcs {
+        strtab_size += func.name.len() + 1;
+    }
+    let text_file_offset = 52 + 32 + shstrtab_size + strtab_size;
+
+    let text_phdr = ProgramHeader::load(
+        flash_base,
+        text_file_offset as u32,
+        flash_size,
+        ProgramFlags::READ | ProgramFlags::EXEC,
+    );
+    elf_builder.add_program_header(text_phdr);
+
+    let text_section = Section::new(".text", ElfSectionType::ProgBits)
+        .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
+        .with_addr(flash_base)
+        .with_align(4)
+        .with_data(flash_image);
+
+    elf_builder.add_section(text_section);
+
+    // Add linear memory section (BSS-like, no file data)
+    // This section tells the loader about the RAM region for WASM linear memory
+    if linear_memory_size > 0 {
+        // Program header for linear memory (READ | WRITE, no EXEC)
+        // Use load_nobits since there's no file data, just memory allocation
+        let ram_phdr =
+            ProgramHeader::load_nobits(ram_base, linear_memory_size, ProgramFlags::READ | ProgramFlags::WRITE);
+        elf_builder.add_program_header(ram_phdr);
+
+        // NoBits section (like .bss) - no file data, just reserves address space
+        let linear_memory_section = Section::new(".linear_memory", ElfSectionType::NoBits)
+            .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+            .with_addr(ram_base)
+            .with_align(4)
+            .with_size(linear_memory_size);
+
+        elf_builder.add_section(linear_memory_section);
+
+        // Add symbol for linear memory base (useful for debugging)
+        let mem_sym = Symbol::new("__linear_memory_base")
+            .with_value(ram_base)
+            .with_size(linear_memory_size)
+            .with_binding(SymbolBinding::Global)
+            .with_type(SymbolType::Object)
+            .with_section(5); // Section 5 will be .linear_memory after .text (section 4)
+        elf_builder.add_symbol(mem_sym);
+
+        info!(
+            "Added .linear_memory section: 0x{:08x} ({} bytes, {} pages)",
+            ram_base,
+            linear_memory_size,
+            linear_memory_pages
+        );
+    }
+
+    // Add system symbols
+    let reset_sym = Symbol::new("Reset_Handler")
+        .with_value(startup_addr | 1)
+        .with_size(startup_size)
+        .with_binding(SymbolBinding::Global)
+        .with_type(SymbolType::Func)
+        .with_section(4);
+    elf_builder.add_symbol(reset_sym);
+
+    let default_sym = Symbol::new("Default_Handler")
+        .with_value(default_handler_addr | 1)
+        .with_size(default_handler_size)
+        .with_binding(SymbolBinding::Global)
+        .with_type(SymbolType::Func)
+        .with_section(4);
+    elf_builder.add_symbol(default_sym);
+
+    let trap_sym = Symbol::new("Trap_Handler")
+        .with_value(trap_handler_addr | 1)
+        .with_size(trap_handler_size)
+        .with_binding(SymbolBinding::Global)
+        .with_type(SymbolType::Func)
+        .with_section(4);
+    elf_builder.add_symbol(trap_sym);
+
+    // Add symbol for each user function
+    for (i, func) in funcs.iter().enumerate() {
+        let func_addr = funcs_base + func_offsets[i];
+        let func_sym = Symbol::new(&func.name)
+            .with_value(func_addr | 1) // Thumb bit for Cortex-M
+            .with_size(func.code.len() as u32)
+            .with_binding(SymbolBinding::Global)
+            .with_type(SymbolType::Func)
+            .with_section(4);
+        elf_builder.add_symbol(func_sym);
+    }
+
+    elf_builder.build().context("ELF generation failed")
 }
 
 fn disasm_command(input: PathBuf) -> Result<()> {
@@ -520,28 +999,37 @@ fn build_cortex_m_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
     // Memory layout for generic Cortex-M (works with QEMU/Renode)
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
-    let ram_size: u32 = 64 * 1024; // 64KB
+    let ram_size: u32 = 128 * 1024; // 128KB to accommodate linear memory + stack
     let stack_top = ram_base + ram_size;
+
+    // Default linear memory size (1 WASM page = 64KB) for single-function mode
+    let linear_memory_size: u32 = 64 * 1024;
 
     // Calculate addresses
     let vector_table_addr = flash_base;
     let vector_table_size: u32 = 128; // 32 entries * 4 bytes
 
     let startup_addr = flash_base + vector_table_size;
-    let startup_code = generate_minimal_startup();
+    let startup_code = generate_minimal_startup(linear_memory_size);
     let startup_size = startup_code.len() as u32;
 
     let default_handler_addr = startup_addr + startup_size;
     let default_handler = generate_default_handler();
     let default_handler_size = default_handler.len() as u32;
 
+    // Trap handler for WASM trap operations
+    let trap_handler_addr = default_handler_addr + default_handler_size;
+    let trap_handler = generate_trap_handler();
+    let trap_handler_size = trap_handler.len() as u32;
+
     // Align code to 4 bytes
-    let code_addr = (default_handler_addr + default_handler_size + 3) & !3;
+    let code_addr = (trap_handler_addr + trap_handler_size + 3) & !3;
 
     info!("Cortex-M layout:");
     info!("  Vector table: 0x{:08x}", vector_table_addr);
     info!("  Startup code: 0x{:08x}", startup_addr);
     info!("  Default handler: 0x{:08x}", default_handler_addr);
+    info!("  Trap handler: 0x{:08x}", trap_handler_addr);
     info!("  User code: 0x{:08x}", code_addr);
     info!("  Stack top: 0x{:08x}", stack_top);
 
@@ -549,10 +1037,14 @@ fn build_cortex_m_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
     let mut vt = VectorTable::new_cortex_m(stack_top);
     vt.reset_handler = startup_addr;
 
-    // Set all handlers to default handler
+    // Set handlers - UsageFault/HardFault go to Trap_Handler for WASM trap detection
     for handler in &mut vt.handlers {
         if handler.address == 0 {
-            handler.address = default_handler_addr;
+            if handler.name == "UsageFault_Handler" || handler.name == "HardFault_Handler" {
+                handler.address = trap_handler_addr;
+            } else {
+                handler.address = default_handler_addr;
+            }
         }
     }
 
@@ -570,13 +1062,17 @@ fn build_cortex_m_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
     }
 
     // Startup code (patch the literal pool with actual function address)
+    // Literal pool is at offset 24 (after R10/R11 init + LDR/BLX/B/padding)
     let mut patched_startup = startup_code.clone();
     let func_addr_thumb = code_addr | 1; // Thumb bit
-    patched_startup[8..12].copy_from_slice(&func_addr_thumb.to_le_bytes());
+    patched_startup[24..28].copy_from_slice(&func_addr_thumb.to_le_bytes());
     flash_image.extend_from_slice(&patched_startup);
 
     // Default handler
     flash_image.extend_from_slice(&default_handler);
+
+    // Trap handler
+    flash_image.extend_from_slice(&trap_handler);
 
     // Pad to code address
     while flash_image.len() < (code_addr - flash_base) as usize {
@@ -587,7 +1083,26 @@ fn build_cortex_m_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
     flash_image.extend_from_slice(code);
 
     // Build ELF
+    let flash_size = flash_image.len() as u32;
     let mut elf_builder = ElfBuilder::new_arm32().with_entry(startup_addr | 1); // Thumb bit
+
+    // Add LOAD program header for the .text section
+    // The offset is calculated as: ELF header (52) + program headers (32 * 1) + string tables
+    // String tables: .shstrtab (~33 bytes) + .strtab (~50 bytes)
+    // This puts .text data at approximately offset 167, but we need exact calculation
+    // For now, we'll compute based on the section name string table size
+    let shstrtab_size = 1 + ".shstrtab\0.strtab\0.symtab\0.text\0".len(); // ~34 bytes
+    let strtab_size =
+        1 + "Reset_Handler\0Default_Handler\0Trap_Handler\0".len() + func_name.len() + 1;
+    let text_file_offset = 52 + 32 + shstrtab_size + strtab_size;
+
+    let text_phdr = ProgramHeader::load(
+        flash_base,                                      // vaddr
+        text_file_offset as u32,                         // offset in file
+        flash_size,                                      // size
+        ProgramFlags::READ | ProgramFlags::EXEC,         // flags: R-X
+    );
+    elf_builder.add_program_header(text_phdr);
 
     let text_section = Section::new(".text", ElfSectionType::ProgBits)
         .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
@@ -614,6 +1129,14 @@ fn build_cortex_m_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
         .with_section(4);
     elf_builder.add_symbol(default_sym);
 
+    let trap_sym = Symbol::new("Trap_Handler")
+        .with_value(trap_handler_addr | 1)
+        .with_size(trap_handler_size)
+        .with_binding(SymbolBinding::Global)
+        .with_type(SymbolType::Func)
+        .with_section(4);
+    elf_builder.add_symbol(trap_sym);
+
     let func_sym = Symbol::new(func_name)
         .with_value(code_addr | 1)
         .with_size(code.len() as u32)
@@ -626,36 +1149,105 @@ fn build_cortex_m_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
 }
 
 /// Generate minimal Thumb startup code that calls the user function and loops
-fn generate_minimal_startup() -> Vec<u8> {
+///
+/// # Arguments
+/// * `memory_size` - Size of linear memory in bytes (for R10 bounds checking)
+///
+/// # Memory Register Setup
+/// * R10 = memory_size (for bounds checking)
+/// * R11 = 0x20000000 (linear memory base)
+fn generate_minimal_startup(memory_size: u32) -> Vec<u8> {
     // This startup code:
-    // 1. Loads the address of the user function
-    // 2. Calls it with BLX
-    // 3. Loops forever
+    // 1. Initializes R10 with memory size (for bounds checking)
+    // 2. Initializes R11 with linear memory base (0x20000000) for WASM memory access
+    // 3. Loads the address of the user function
+    // 4. Calls it with BLX
+    // 5. Loops forever
     //
     // In Thumb assembly:
+    //   MOVW R10, #(memory_size & 0xFFFF)
+    //   MOVT R10, #(memory_size >> 16)
+    //   MOVW R11, #0x0000  ; Low 16 bits of memory base
+    //   MOVT R11, #0x2000  ; High 16 bits of memory base
     //   LDR r0, [pc, #4]   ; Load function address from literal pool
     //   BLX r0             ; Call function
     //   B .                ; Infinite loop
-    //   .word func_addr    ; Literal pool (filled by linker conceptually)
+    //   .word func_addr    ; Literal pool
+
+    // Encode MOVW/MOVT for R10 with memory_size
+    let r10_movw = encode_thumb2_movw(10, (memory_size & 0xFFFF) as u16);
+    let r10_movt = encode_thumb2_movt(10, (memory_size >> 16) as u16);
 
     vec![
-        // LDR r0, [pc, #4] - Thumb encoding: 0x4801
+        // MOVW R10, #(memory_size & 0xFFFF)
+        r10_movw[0], r10_movw[1], r10_movw[2], r10_movw[3],
+        // MOVT R10, #(memory_size >> 16)
+        r10_movt[0], r10_movt[1], r10_movt[2], r10_movt[3],
+        // MOVW R11, #0x0000 - Thumb-2 32-bit encoding
+        0x40, 0xF2, 0x00, 0x0B,
+        // MOVT R11, #0x2000 - Thumb-2 32-bit encoding
+        0xC2, 0xF2, 0x00, 0x0B,
+        // LDR r0, [pc, #4] - Thumb 16-bit encoding: 0x4801
+        // PC = current_addr + 4, literal at PC+4
         0x01, 0x48,
         // BLX r0 - Thumb encoding: 0x4780
         0x80, 0x47,
         // B . (branch to self) - Thumb encoding: 0xe7fe
         0xfe, 0xe7,
-        // Padding for alignment
+        // Padding for alignment (to make literal pool 4-byte aligned)
         0x00, 0x00,
-        // Literal pool placeholder (will be at offset 8)
-        // The actual function address will be computed at runtime
-        // For now, put a placeholder that points to the infinite loop
-        0x85, 0x00, 0x00, 0x00, // Will be code_addr | 1
+        // Literal pool placeholder at offset 24 (will be patched with func_addr | 1)
+        0x91, 0x00, 0x00, 0x00,
     ]
+}
+
+/// Encode Thumb-2 MOVW instruction (move 16-bit immediate to low half of register)
+fn encode_thumb2_movw(rd: u8, imm16: u16) -> [u8; 4] {
+    // Thumb-2 MOVW encoding:
+    // First halfword:  1111 0 i 10 0 1 0 0 imm4
+    // Second halfword: 0 imm3 Rd imm8
+    let imm4 = ((imm16 >> 12) & 0xF) as u8;
+    let i = ((imm16 >> 11) & 0x1) as u8;
+    let imm3 = ((imm16 >> 8) & 0x7) as u8;
+    let imm8 = (imm16 & 0xFF) as u8;
+
+    let hw1: u16 = 0xF240 | ((i as u16) << 10) | (imm4 as u16);
+    let hw2: u16 = ((imm3 as u16) << 12) | ((rd as u16) << 8) | (imm8 as u16);
+
+    let hw1_bytes = hw1.to_le_bytes();
+    let hw2_bytes = hw2.to_le_bytes();
+    [hw1_bytes[0], hw1_bytes[1], hw2_bytes[0], hw2_bytes[1]]
+}
+
+/// Encode Thumb-2 MOVT instruction (move 16-bit immediate to high half of register)
+fn encode_thumb2_movt(rd: u8, imm16: u16) -> [u8; 4] {
+    // Thumb-2 MOVT encoding:
+    // First halfword:  1111 0 i 10 1 1 0 0 imm4
+    // Second halfword: 0 imm3 Rd imm8
+    let imm4 = ((imm16 >> 12) & 0xF) as u8;
+    let i = ((imm16 >> 11) & 0x1) as u8;
+    let imm3 = ((imm16 >> 8) & 0x7) as u8;
+    let imm8 = (imm16 & 0xFF) as u8;
+
+    let hw1: u16 = 0xF2C0 | ((i as u16) << 10) | (imm4 as u16);
+    let hw2: u16 = ((imm3 as u16) << 12) | ((rd as u16) << 8) | (imm8 as u16);
+
+    let hw1_bytes = hw1.to_le_bytes();
+    let hw2_bytes = hw2.to_le_bytes();
+    [hw1_bytes[0], hw1_bytes[1], hw2_bytes[0], hw2_bytes[1]]
 }
 
 /// Generate default exception handler (infinite loop)
 fn generate_default_handler() -> Vec<u8> {
+    // B . (branch to self) - Thumb encoding
+    vec![0xfe, 0xe7]
+}
+
+fn generate_trap_handler() -> Vec<u8> {
+    // Trap handler for WASM trap operations (div by zero, integer overflow)
+    // Same as Default_Handler - infinite loop (B .)
+    // The difference is the address, which allows tests to distinguish
+    // between normal return (PC at Default_Handler) and trap (PC at Trap_Handler)
     // B . (branch to self) - Thumb encoding
     vec![0xfe, 0xe7]
 }
@@ -696,8 +1288,8 @@ mod tests {
 
         // Find .text section (it starts after ELF headers)
         // For simplicity, look for the vector table pattern
-        // Stack pointer at offset 0 should be 0x20010000 (64KB RAM)
-        // This is little-endian, so bytes are: 00 00 01 20
+        // Stack pointer at offset 0 should be 0x20020000 (128KB RAM)
+        // This is little-endian, so bytes are: 00 00 02 20
 
         // The vector table is in the .text section data
         // Find where vector table data starts (after ELF headers)
@@ -709,7 +1301,7 @@ mod tests {
                 elf_data[i + 2],
                 elf_data[i + 3],
             ]);
-            if word == 0x20010000 {
+            if word == 0x20020000 {
                 found_sp = true;
                 // Next word should be reset handler with Thumb bit (0x81)
                 let reset = u32::from_le_bytes([
@@ -722,7 +1314,7 @@ mod tests {
                 break;
             }
         }
-        assert!(found_sp, "Stack pointer (0x20010000) not found in ELF");
+        assert!(found_sp, "Stack pointer (0x20020000) not found in ELF");
     }
 
     #[test]
@@ -750,8 +1342,12 @@ mod tests {
 
         let elf_data = build_cortex_m_elf(&code, "patched").unwrap();
 
-        // The function should be at 0x90, so literal pool should contain 0x91
-        // Search for the pattern 0x91 0x00 0x00 0x00 in the startup code area
+        // With the new startup code layout (28 bytes with R10/R11 init):
+        // - Startup: 0x80 (28 bytes)
+        // - Default handler: 0x9C (2 bytes)
+        // - Trap handler: 0x9E (2 bytes)
+        // - User function: 0xA0 (aligned to 4)
+        // So literal pool should contain 0xA1 (0xA0 | 1 for Thumb bit)
         let mut found_literal = false;
         for i in 0..elf_data.len().saturating_sub(4) {
             let word = u32::from_le_bytes([
@@ -760,32 +1356,47 @@ mod tests {
                 elf_data[i + 2],
                 elf_data[i + 3],
             ]);
-            if word == 0x91 {
+            if word == 0xA1 {
                 found_literal = true;
                 break;
             }
         }
-        assert!(found_literal, "Literal pool should contain 0x91 (0x90 | 1)");
+        assert!(found_literal, "Literal pool should contain 0xA1 (0xA0 | 1 for Thumb)");
     }
 
     #[test]
     fn test_minimal_startup_generation() {
-        let startup = generate_minimal_startup();
+        // Test with 64KB memory size (0x10000)
+        let memory_size: u32 = 64 * 1024;
+        let startup = generate_minimal_startup(memory_size);
 
-        // Should be 12 bytes
-        assert_eq!(startup.len(), 12, "Startup code should be 12 bytes");
+        // Should be 28 bytes:
+        // MOVW R10 + MOVT R10 + MOVW R11 + MOVT R11 + LDR + BLX + B + padding + literal
+        assert_eq!(startup.len(), 28, "Startup code should be 28 bytes");
 
-        // First two bytes: LDR r0, [pc, #4] = 0x4801
-        assert_eq!(startup[0], 0x01);
-        assert_eq!(startup[1], 0x48);
+        // Bytes 8-11: MOVW R11, #0
+        assert_eq!(startup[8], 0x40);
+        assert_eq!(startup[9], 0xF2);
+        assert_eq!(startup[10], 0x00);
+        assert_eq!(startup[11], 0x0B);
 
-        // Next two bytes: BLX r0 = 0x4780
-        assert_eq!(startup[2], 0x80);
-        assert_eq!(startup[3], 0x47);
+        // Bytes 12-15: MOVT R11, #0x2000
+        assert_eq!(startup[12], 0xC2);
+        assert_eq!(startup[13], 0xF2);
+        assert_eq!(startup[14], 0x00);
+        assert_eq!(startup[15], 0x0B);
 
-        // Next two bytes: B . = 0xe7fe
-        assert_eq!(startup[4], 0xfe);
-        assert_eq!(startup[5], 0xe7);
+        // Bytes 16-17: LDR r0, [pc, #4] = 0x4801
+        assert_eq!(startup[16], 0x01);
+        assert_eq!(startup[17], 0x48);
+
+        // Bytes 18-19: BLX r0 = 0x4780
+        assert_eq!(startup[18], 0x80);
+        assert_eq!(startup[19], 0x47);
+
+        // Bytes 20-21: B . = 0xe7fe
+        assert_eq!(startup[20], 0xfe);
+        assert_eq!(startup[21], 0xe7);
     }
 
     #[test]

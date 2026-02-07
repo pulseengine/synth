@@ -88,7 +88,17 @@ pub enum Opcode {
     Shl { dest: Reg, src1: Reg, src2: Reg },  // Shift left
     ShrS { dest: Reg, src1: Reg, src2: Reg }, // Shift right signed
     ShrU { dest: Reg, src1: Reg, src2: Reg }, // Shift right unsigned
+    Rotl { dest: Reg, src1: Reg, src2: Reg }, // Rotate left
+    Rotr { dest: Reg, src1: Reg, src2: Reg }, // Rotate right
+    // Bit count (unary)
+    Clz { dest: Reg, src: Reg },    // Count leading zeros
+    Ctz { dest: Reg, src: Reg },    // Count trailing zeros
+    Popcnt { dest: Reg, src: Reg }, // Population count
+    // Sign extension (unary)
+    Extend8S { dest: Reg, src: Reg },  // Sign-extend byte to 32-bit
+    Extend16S { dest: Reg, src: Reg }, // Sign-extend halfword to 32-bit
     // Comparison (result is 0 or 1)
+    Eqz { dest: Reg, src: Reg },           // Equal to zero (unary)
     Eq { dest: Reg, src1: Reg, src2: Reg },
     Ne { dest: Reg, src1: Reg, src2: Reg },
     LtS { dest: Reg, src1: Reg, src2: Reg }, // Less than signed
@@ -99,15 +109,280 @@ pub enum Opcode {
     GtU { dest: Reg, src1: Reg, src2: Reg }, // Greater than unsigned
     GeS { dest: Reg, src1: Reg, src2: Reg }, // Greater or equal signed
     GeU { dest: Reg, src1: Reg, src2: Reg }, // Greater or equal unsigned
-    // Memory
+    // Memory (local variable access)
     Load { dest: Reg, addr: u32 },
     Store { src: Reg, addr: u32 },
+    /// Load 64-bit value from local into register pair (for i64 on 32-bit ARM)
+    I64Load { dest_lo: Reg, dest_hi: Reg, addr: u32 },
+    // Linear memory access (WASM i32.load / i32.store)
+    /// Load 32-bit value from linear memory: dest = mem[addr + offset]
+    MemLoad { dest: Reg, addr: Reg, offset: u32 },
+    /// Store 32-bit value to linear memory: mem[addr + offset] = src
+    MemStore { src: Reg, addr: Reg, offset: u32 },
     // Control flow
     Branch { target: BlockId },
     CondBranch { cond: Reg, target: BlockId },
     Return { value: Option<Reg> },
+    /// Label marker for branch targets (loop start, block end)
+    Label { id: BlockId },
+    /// Copy a value (for local.tee semantics: store value and keep it on stack)
+    Copy { dest: Reg, src: Reg },
+    /// TeeStore: Store to local AND keep value on stack (local.tee)
+    /// Combines Store + Copy: stores src to local addr, dest gets same value
+    TeeStore { dest: Reg, src: Reg, addr: u32 },
+    // Select: dest = cond != 0 ? val_true : val_false (ternary operator)
+    Select {
+        dest: Reg,
+        val_true: Reg,
+        val_false: Reg,
+        cond: Reg,
+    },
     // Constants
     Const { dest: Reg, value: i32 },
+
+    // i64 operations (use register pairs on 32-bit ARM: lo, hi)
+    // dest_lo:dest_hi = src1_lo:src1_hi OP src2_lo:src2_hi
+    I64Add {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64Sub {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64And {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64Or {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64Xor {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64Const {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        value: i64,
+    },
+
+    // i64 comparisons (result is single i32: 0 or 1)
+    // Compare src1_lo:src1_hi with src2_lo:src2_hi
+    I64Eq {
+        dest: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64Ne {
+        dest: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64LtS {
+        dest: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64GtS {
+        dest: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64LeS {
+        dest: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64GeS {
+        dest: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    // i64 unsigned comparisons
+    I64LtU {
+        dest: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64GtU {
+        dest: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64LeU {
+        dest: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64GeU {
+        dest: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64Eqz {
+        dest: Reg,
+        src_lo: Reg,
+        src_hi: Reg,
+    },
+
+    // i64 bit counting (result is single i32)
+    I64Clz {
+        dest: Reg,
+        src_lo: Reg,
+        src_hi: Reg,
+    },
+    I64Ctz {
+        dest: Reg,
+        src_lo: Reg,
+        src_hi: Reg,
+    },
+    I64Popcnt {
+        dest: Reg,
+        src_lo: Reg,
+        src_hi: Reg,
+    },
+
+    // i64 sign extension (result is i64 pair)
+    I64Extend8S {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src_lo: Reg,
+    },
+    I64Extend16S {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src_lo: Reg,
+    },
+    I64Extend32S {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src_lo: Reg,
+    },
+
+    // i64 shifts and multiply (result is i64 pair)
+    I64Mul {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    // i64 division and remainder (result is i64 pair)
+    I64DivS {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64DivU {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64RemS {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64RemU {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64Shl {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64ShrS {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64ShrU {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64Rotl {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
+    I64Rotr {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src1_lo: Reg,
+        src1_hi: Reg,
+        src2_lo: Reg,
+        src2_hi: Reg,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -468,6 +743,183 @@ impl CommonSubexpressionElimination {
                 // Store invalidates loads from same address
                 Opcode::Store { addr, .. } => {
                     expr_map.remove(&ExprKey::Load(addr));
+                }
+
+                // TeeStore also invalidates loads from same address
+                Opcode::TeeStore { addr, .. } => {
+                    expr_map.remove(&ExprKey::Load(addr));
+                }
+
+                // Label marks a loop start - clear all Load caches since values
+                // can change across loop iterations (conservative but safe)
+                Opcode::Label { .. } => {
+                    expr_map.retain(|k, _| !matches!(k, ExprKey::Load(_)));
+                }
+
+                // CondBranch could be a back-edge, clear Load caches
+                Opcode::CondBranch { cond, target } => {
+                    let cond = resolve(cond);
+                    inst.opcode = Opcode::CondBranch { cond, target };
+                    // Clear loads since this might be a loop back-edge
+                    expr_map.retain(|k, _| !matches!(k, ExprKey::Load(_)));
+                }
+
+                // Comparisons need register resolution
+                Opcode::Eq { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::Eq { dest, src1, src2 };
+                }
+                Opcode::Ne { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::Ne { dest, src1, src2 };
+                }
+                Opcode::LtS { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::LtS { dest, src1, src2 };
+                }
+                Opcode::LtU { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::LtU { dest, src1, src2 };
+                }
+                Opcode::LeS { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::LeS { dest, src1, src2 };
+                }
+                Opcode::LeU { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::LeU { dest, src1, src2 };
+                }
+                Opcode::GtS { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::GtS { dest, src1, src2 };
+                }
+                Opcode::GtU { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::GtU { dest, src1, src2 };
+                }
+                Opcode::GeS { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::GeS { dest, src1, src2 };
+                }
+                Opcode::GeU { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::GeU { dest, src1, src2 };
+                }
+
+                // Eqz needs register resolution
+                Opcode::Eqz { dest, src } => {
+                    let src = resolve(src);
+                    inst.opcode = Opcode::Eqz { dest, src };
+                }
+
+                Opcode::Return { value } => {
+                    if let Some(v) = value {
+                        let v = resolve(v);
+                        inst.opcode = Opcode::Return { value: Some(v) };
+                    }
+                }
+
+                Opcode::Select { dest, val_true, val_false, cond } => {
+                    let val_true = resolve(val_true);
+                    let val_false = resolve(val_false);
+                    let cond = resolve(cond);
+                    inst.opcode = Opcode::Select { dest, val_true, val_false, cond };
+                }
+
+                // Division and remainder need resolution
+                Opcode::DivS { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::DivS { dest, src1, src2 };
+                }
+                Opcode::DivU { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::DivU { dest, src1, src2 };
+                }
+                Opcode::RemS { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::RemS { dest, src1, src2 };
+                }
+                Opcode::RemU { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::RemU { dest, src1, src2 };
+                }
+
+                // Bitwise operations need resolution
+                Opcode::And { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::And { dest, src1, src2 };
+                }
+                Opcode::Or { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::Or { dest, src1, src2 };
+                }
+                Opcode::Xor { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::Xor { dest, src1, src2 };
+                }
+
+                // Shifts need resolution
+                Opcode::Shl { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::Shl { dest, src1, src2 };
+                }
+                Opcode::ShrS { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::ShrS { dest, src1, src2 };
+                }
+                Opcode::ShrU { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::ShrU { dest, src1, src2 };
+                }
+                Opcode::Rotl { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::Rotl { dest, src1, src2 };
+                }
+                Opcode::Rotr { dest, src1, src2 } => {
+                    let src1 = resolve(src1);
+                    let src2 = resolve(src2);
+                    inst.opcode = Opcode::Rotr { dest, src1, src2 };
+                }
+
+                // Unary operations need resolution
+                Opcode::Clz { dest, src } => {
+                    let src = resolve(src);
+                    inst.opcode = Opcode::Clz { dest, src };
+                }
+                Opcode::Ctz { dest, src } => {
+                    let src = resolve(src);
+                    inst.opcode = Opcode::Ctz { dest, src };
+                }
+                Opcode::Popcnt { dest, src } => {
+                    let src = resolve(src);
+                    inst.opcode = Opcode::Popcnt { dest, src };
+                }
+
+                // Copy needs resolution
+                Opcode::Copy { dest, src } => {
+                    let src = resolve(src);
+                    inst.opcode = Opcode::Copy { dest, src };
                 }
 
                 _ => {}

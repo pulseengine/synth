@@ -14,8 +14,8 @@ pub mod w2c2_wrapper;
 pub use arm_encoder::ArmEncoder;
 pub use arm_startup::ARMStartupGenerator;
 pub use elf_builder::{
-    ElfBuilder, ElfClass, ElfData, ElfMachine, ElfType, Section, SectionFlags,
-    SectionType as ElfSectionType, Symbol, SymbolBinding, SymbolType,
+    ElfBuilder, ElfClass, ElfData, ElfMachine, ElfType, ProgramFlags, ProgramHeader, ProgramType,
+    Section, SectionFlags, SectionType as ElfSectionType, Symbol, SymbolBinding, SymbolType,
 };
 pub use linker_script::{LinkerScriptGenerator, MemoryRegion};
 pub use memory_layout::{MemoryLayout, MemoryLayoutAnalyzer, MemorySection, SectionType};

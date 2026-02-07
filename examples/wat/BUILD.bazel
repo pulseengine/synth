@@ -1,0 +1,6 @@
+# WebAssembly Text format examples
+
+exports_files(
+    ["simple_add.wat"],
+    visibility = ["//visibility:public"],
+)

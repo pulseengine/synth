@@ -1,0 +1,48 @@
+load("@rules_renode//renode:defs.bzl", "renode_test")
+
+# Export platform file for use by other test packages
+exports_files(["synth_cortex_m.repl"])
+
+# Renode-based integration tests for Synth-generated ARM binaries
+
+renode_test(
+    name = "cortex_m_add_test",
+    robot_test = "cortex_m_test.robot",
+    deps = [
+        "synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": "//tests/renode:test_add_elf",
+    },
+    tags = ["renode"],
+)
+
+# Generate test ELF using synth CLI
+genrule(
+    name = "test_add_elf",
+    srcs = ["//examples/wat:simple_add.wat"],
+    outs = ["test_add.elf"],
+    cmd = "$(location //crates:synth) compile $(location //examples/wat:simple_add.wat) -o $@ --cortex-m",
+    tools = ["//crates:synth"],
+)
+
+# Memory operations test
+genrule(
+    name = "memory_basic_elf",
+    srcs = ["//tests/wat:memory_basic.wat"],
+    outs = ["memory_basic.elf"],
+    cmd = "$(location //crates:synth) compile $(location //tests/wat:memory_basic.wat) -o $@ --cortex-m --all-exports --no-optimize",
+    tools = ["//crates:synth"],
+)
+
+renode_test(
+    name = "memory_test",
+    robot_test = "memory_test.robot",
+    deps = [
+        "synth_cortex_m.repl",
+    ],
+    variables_with_label = {
+        "ELF": "//tests/renode:memory_basic_elf",
+    },
+    tags = ["renode"],
+)
