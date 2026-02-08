@@ -1,68 +1,76 @@
 //! Formal Verification for Synth Compiler
 //!
 //! This crate provides SMT-based translation validation and property-based testing
-//! to formally verify the correctness of WebAssembly-to-ARM synthesis.
+//! to formally verify the correctness of WebAssembly-to-native synthesis.
 //!
 //! # Architecture
 //!
-//! The verification system uses Z3 SMT solver to prove that synthesized ARM code
+//! The verification system uses Z3 SMT solver to prove that synthesized native code
 //! has semantically equivalent behavior to the input WASM code.
+//!
+//! ## Backend-Agnostic Traits
+//!
+//! `SourceSemantics` and `TargetSemantics` traits allow any backend to provide
+//! SMT semantics. The ARM semantics are one implementation, behind the `arm` feature.
 //!
 //! ## Translation Validation
 //!
-//! For each synthesis rule WASM → ARM, we construct SMT formulas:
+//! For each synthesis rule WASM → target, we construct SMT formulas:
 //! - φ_wasm: Semantics of WASM operations
-//! - φ_arm: Semantics of generated ARM operations
-//! - Prove: ∀inputs. φ_wasm(inputs) ⟺ φ_arm(inputs)
-//!
-//! ## Proof Technique
-//!
-//! We use bounded translation validation (Alive2-style):
-//! 1. Encode WASM operation semantics as SMT bitvector formulas
-//! 2. Encode ARM operation semantics as SMT bitvector formulas
-//! 3. For each synthesis rule, prove equivalence under all input values
-//! 4. Use Z3 to either prove equivalence or find counterexample
-//!
-//! ## Property-Based Testing
-//!
-//! We use proptest to generate random test cases and verify properties:
-//! - Type preservation
-//! - Memory safety
-//! - Control flow correctness
-//! - Optimization semantic preservation
+//! - φ_target: Semantics of generated target operations
+//! - Prove: ∀inputs. φ_wasm(inputs) ⟺ φ_target(inputs)
 
+// Verification traits (always available)
 #[cfg(feature = "z3-solver")]
+pub mod traits;
+
+// ARM semantics (behind arm + z3-solver features)
+#[cfg(all(feature = "z3-solver", feature = "arm"))]
 pub mod arm_semantics;
-pub mod properties;
-#[cfg(feature = "z3-solver")]
-pub mod translation_validator;
+
+// WASM semantics (z3-solver only — source language for all backends)
 #[cfg(feature = "z3-solver")]
 pub mod wasm_semantics;
 
+// Translation validator (requires arm for the existing concrete implementation)
+#[cfg(all(feature = "z3-solver", feature = "arm"))]
+pub mod translation_validator;
+
+// Property-based testing (always available)
+pub mod properties;
+
 pub use properties::CompilerProperties;
-#[cfg(feature = "z3-solver")]
-pub use translation_validator::{TranslationValidator, ValidationResult, VerificationError};
-#[cfg(feature = "z3-solver")]
+
+#[cfg(all(feature = "z3-solver", feature = "arm"))]
 pub use arm_semantics::{ArmSemantics, ArmState};
+#[cfg(all(feature = "z3-solver", feature = "arm"))]
+pub use translation_validator::{TranslationValidator, ValidationResult, VerificationError};
 #[cfg(feature = "z3-solver")]
 pub use wasm_semantics::WasmSemantics;
 
 #[cfg(feature = "z3-solver")]
-use z3::{Config, Context, Solver};
+use z3::{Config, Solver};
 
-/// Create a Z3 context for verification
+/// Run verification operations with a configured Z3 context.
+///
+/// Z3 0.19 uses thread-local context — this function configures it
+/// with a 30-second timeout and model generation enabled.
 #[cfg(feature = "z3-solver")]
-pub fn create_z3_context() -> Context {
+pub fn with_z3_context<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R + Send + Sync,
+    R: Send + Sync,
+{
     let mut cfg = Config::new();
     cfg.set_timeout_msec(30000); // 30 second timeout
     cfg.set_model_generation(true);
-    Context::new(&cfg)
+    z3::with_z3_config(&cfg, f)
 }
 
 /// Create a Z3 solver with default configuration
 #[cfg(feature = "z3-solver")]
-pub fn create_solver(ctx: &Context) -> Solver<'_> {
-    Solver::new(ctx)
+pub fn create_solver() -> Solver {
+    Solver::new()
 }
 
 #[cfg(all(test, feature = "z3-solver"))]
@@ -71,8 +79,9 @@ mod tests {
 
     #[test]
     fn test_z3_context_creation() {
-        let ctx = create_z3_context();
-        let solver = create_solver(&ctx);
-        assert_eq!(solver.check(), z3::SatResult::Sat);
+        with_z3_context(|| {
+            let solver = create_solver();
+            assert_eq!(solver.check(), z3::SatResult::Sat);
+        });
     }
 }

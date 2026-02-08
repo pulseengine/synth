@@ -7,22 +7,23 @@
 //! # Verification Approach
 //!
 //! 1. Create symbolic inputs for both WASM and ARM
-//! 2. Encode WASM semantics as SMT formula φ_wasm
-//! 3. Encode ARM semantics as SMT formula φ_arm
-//! 4. Assert: φ_wasm(inputs) == φ_arm(inputs)
+//! 2. Encode WASM semantics as SMT formula phi_wasm
+//! 3. Encode ARM semantics as SMT formula phi_arm
+//! 4. Assert: phi_wasm(inputs) == phi_arm(inputs)
 //! 5. Check satisfiability - if UNSAT, then equivalence is proven
 //!
 //! # Example
 //!
-//! For the rule: WASM `i32.add` → ARM `ADD Rd, Rn, Rm`
+//! For the rule: WASM `i32.add` -> ARM `ADD Rd, Rn, Rm`
 //!
-//! We prove: ∀a,b. i32.add(a, b) == ADD(a, b)
+//! We prove: forall a,b. i32.add(a, b) == ADD(a, b)
 
 use crate::arm_semantics::{ArmSemantics, ArmState};
 use crate::wasm_semantics::WasmSemantics;
-use synth_synthesis::{ArmOp, Reg, SynthesisRule, WasmOp};
+use synth_core::WasmOp;
+use synth_synthesis::{ArmOp, Reg, SynthesisRule};
 use thiserror::Error;
-use z3::ast::{Ast, BV};
+use z3::ast::BV;
 use z3::{SatResult, Solver};
 
 /// Verification error types
@@ -61,23 +62,21 @@ pub enum ValidationResult {
     Unknown { reason: String },
 }
 
-/// Translation validator
-pub struct TranslationValidator<'ctx> {
-    ctx: &'ctx Context,
-    wasm_encoder: WasmSemantics<'ctx>,
-    arm_encoder: ArmSemantics<'ctx>,
+/// Translation validator using Z3 SMT solver.
+///
+/// Z3 0.19 uses thread-local context -- no lifetime parameters needed.
+pub struct TranslationValidator {
+    wasm_encoder: WasmSemantics,
+    arm_encoder: ArmSemantics,
     timeout_ms: u64,
 }
 
-use z3::Context;
-
-impl<'ctx> TranslationValidator<'ctx> {
+impl TranslationValidator {
     /// Create a new translation validator
-    pub fn new(ctx: &'ctx Context) -> Self {
+    pub fn new() -> Self {
         Self {
-            ctx,
-            wasm_encoder: WasmSemantics::new(ctx),
-            arm_encoder: ArmSemantics::new(ctx),
+            wasm_encoder: WasmSemantics::new(),
+            arm_encoder: ArmSemantics::new(),
             timeout_ms: 30000, // 30 seconds default
         }
     }
@@ -126,31 +125,13 @@ impl<'ctx> TranslationValidator<'ctx> {
     }
 
     /// Verify equivalence with concrete parameter values
-    ///
-    /// This enables verification of operations where some inputs are concrete
-    /// (like shift amounts) while others remain symbolic.
-    ///
-    /// # Arguments
-    /// * `wasm_op` - The WASM operation to verify
-    /// * `arm_ops` - The ARM operation sequence
-    /// * `concrete_params` - Pairs of (input_index, concrete_value)
-    ///
-    /// # Example
-    /// ```ignore
-    /// // Verify SHL with concrete shift amount 5
-    /// validator.verify_equivalence_parameterized(
-    ///     &WasmOp::I32Shl,
-    ///     &[ArmOp::Lsl { rd: R0, rn: R0, shift: 5 }],
-    ///     &[(1, 5)] // Input 1 (shift amount) is concrete value 5
-    /// )
-    /// ```
     pub fn verify_equivalence_parameterized(
         &self,
         wasm_op: &WasmOp,
         arm_ops: &[ArmOp],
         concrete_params: &[(usize, i64)],
     ) -> Result<ValidationResult, VerificationError> {
-        let solver = Solver::new(self.ctx);
+        let solver = Solver::new();
 
         // Create inputs - some symbolic, some concrete
         let num_inputs = self.get_num_inputs(wasm_op);
@@ -160,10 +141,10 @@ impl<'ctx> TranslationValidator<'ctx> {
             let input = if let Some((_, value)) = concrete_params.iter().find(|(idx, _)| *idx == i)
             {
                 // Concrete value
-                BV::from_i64(self.ctx, *value, 32)
+                BV::from_i64(*value, 32)
             } else {
                 // Symbolic value
-                BV::new_const(self.ctx, format!("input_{}", i), 32)
+                BV::new_const(format!("input_{}", i), 32)
             };
             inputs.push(input);
         }
@@ -177,7 +158,7 @@ impl<'ctx> TranslationValidator<'ctx> {
         // Assert that results are NOT equal
         // If this is UNSAT, then the results are always equal (proven correct)
         // If this is SAT, we found a counterexample
-        solver.assert(&wasm_result._eq(&arm_result).not());
+        solver.assert(&wasm_result.eq(&arm_result).not());
 
         match solver.check() {
             SatResult::Unsat => {
@@ -216,9 +197,9 @@ impl<'ctx> TranslationValidator<'ctx> {
     fn encode_arm_sequence(
         &self,
         arm_ops: &[ArmOp],
-        inputs: &[BV<'ctx>],
-    ) -> Result<BV<'ctx>, VerificationError> {
-        let mut state = ArmState::new_symbolic(self.ctx);
+        inputs: &[BV],
+    ) -> Result<BV, VerificationError> {
+        let mut state = ArmState::new_symbolic();
 
         // Initialize input registers
         for (i, input) in inputs.iter().enumerate() {
@@ -246,20 +227,6 @@ impl<'ctx> TranslationValidator<'ctx> {
     }
 
     /// Verify operation for all parameter values in a range
-    ///
-    /// This is useful for verifying shift/rotation operations with all possible
-    /// concrete shift amounts (e.g., 0-31).
-    ///
-    /// # Arguments
-    /// * `wasm_op` - The WASM operation
-    /// * `create_arm_ops` - Function to create ARM operations for a given parameter value
-    /// * `param_index` - Which input parameter to make concrete (usually 1 for binary ops)
-    /// * `range` - Range of values to test (e.g., 0..32 for shifts)
-    ///
-    /// # Returns
-    /// * `Ok(ValidationResult::Verified)` - All values in range verified
-    /// * `Ok(ValidationResult::Invalid)` - At least one value failed
-    /// * `Err` - Verification error
     pub fn verify_parameterized_range<F>(
         &self,
         wasm_op: &WasmOp,
@@ -348,7 +315,7 @@ impl<'ctx> TranslationValidator<'ctx> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::create_z3_context;
+    use crate::with_z3_context;
     use synth_synthesis::{Cost, Operand2, Pattern, Replacement};
 
     fn create_test_rule(wasm_op: WasmOp, arm_op: ArmOp) -> SynthesisRule {
@@ -357,7 +324,7 @@ mod tests {
             priority: 0,
             pattern: Pattern::WasmInstr(wasm_op),
             replacement: Replacement::ArmInstr(arm_op),
-            cost: synth_synthesis::Cost {
+            cost: Cost {
                 cycles: 1,
                 code_size: 4,
                 registers: 2,
@@ -367,149 +334,146 @@ mod tests {
 
     #[test]
     fn test_verify_add_correct() {
-        let ctx = create_z3_context();
-        let validator = TranslationValidator::new(&ctx);
+        with_z3_context(|| {
+            let validator = TranslationValidator::new();
 
-        // Correct rule: WASM i32.add → ARM ADD
-        let rule = create_test_rule(
-            WasmOp::I32Add,
-            ArmOp::Add {
-                rd: Reg::R0,
-                rn: Reg::R0,
-                op2: Operand2::Reg(Reg::R1),
-            },
-        );
+            let rule = create_test_rule(
+                WasmOp::I32Add,
+                ArmOp::Add {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(Reg::R1),
+                },
+            );
 
-        let result = validator.verify_rule(&rule).unwrap();
-        assert_eq!(result, ValidationResult::Verified);
+            let result = validator.verify_rule(&rule).unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
     }
 
     #[test]
     fn test_verify_sub_correct() {
-        let ctx = create_z3_context();
-        let validator = TranslationValidator::new(&ctx);
+        with_z3_context(|| {
+            let validator = TranslationValidator::new();
 
-        let rule = create_test_rule(
-            WasmOp::I32Sub,
-            ArmOp::Sub {
-                rd: Reg::R0,
-                rn: Reg::R0,
-                op2: Operand2::Reg(Reg::R1),
-            },
-        );
+            let rule = create_test_rule(
+                WasmOp::I32Sub,
+                ArmOp::Sub {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(Reg::R1),
+                },
+            );
 
-        let result = validator.verify_rule(&rule).unwrap();
-        assert_eq!(result, ValidationResult::Verified);
+            let result = validator.verify_rule(&rule).unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
     }
 
     #[test]
     fn test_verify_mul_correct() {
-        let ctx = create_z3_context();
-        let validator = TranslationValidator::new(&ctx);
+        with_z3_context(|| {
+            let validator = TranslationValidator::new();
 
-        let rule = create_test_rule(
-            WasmOp::I32Mul,
-            ArmOp::Mul {
-                rd: Reg::R0,
-                rn: Reg::R0,
-                rm: Reg::R1,
-            },
-        );
+            let rule = create_test_rule(
+                WasmOp::I32Mul,
+                ArmOp::Mul {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    rm: Reg::R1,
+                },
+            );
 
-        let result = validator.verify_rule(&rule).unwrap();
-        assert_eq!(result, ValidationResult::Verified);
+            let result = validator.verify_rule(&rule).unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
     }
 
     #[test]
     fn test_verify_and_correct() {
-        let ctx = create_z3_context();
-        let validator = TranslationValidator::new(&ctx);
+        with_z3_context(|| {
+            let validator = TranslationValidator::new();
 
-        let rule = create_test_rule(
-            WasmOp::I32And,
-            ArmOp::And {
-                rd: Reg::R0,
-                rn: Reg::R0,
-                op2: Operand2::Reg(Reg::R1),
-            },
-        );
+            let rule = create_test_rule(
+                WasmOp::I32And,
+                ArmOp::And {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(Reg::R1),
+                },
+            );
 
-        let result = validator.verify_rule(&rule).unwrap();
-        assert_eq!(result, ValidationResult::Verified);
+            let result = validator.verify_rule(&rule).unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
     }
 
     #[test]
     fn test_verify_incorrect_rule() {
-        let ctx = create_z3_context();
-        let validator = TranslationValidator::new(&ctx);
+        with_z3_context(|| {
+            let validator = TranslationValidator::new();
 
-        // INCORRECT rule: WASM i32.add → ARM SUB (should find counterexample)
-        let rule = create_test_rule(
-            WasmOp::I32Add,
-            ArmOp::Sub {
-                rd: Reg::R0,
-                rn: Reg::R0,
-                op2: Operand2::Reg(Reg::R1),
-            },
-        );
+            // INCORRECT rule: WASM i32.add -> ARM SUB (should find counterexample)
+            let rule = create_test_rule(
+                WasmOp::I32Add,
+                ArmOp::Sub {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(Reg::R1),
+                },
+            );
 
-        let result = validator.verify_rule(&rule).unwrap();
+            let result = validator.verify_rule(&rule).unwrap();
 
-        match result {
-            ValidationResult::Invalid { counterexample } => {
-                // Should find counterexample
-                assert!(!counterexample.is_empty());
+            match result {
+                ValidationResult::Invalid { counterexample } => {
+                    assert!(!counterexample.is_empty());
+                }
+                _ => panic!("Expected counterexample but got: {:?}", result),
             }
-            _ => panic!("Expected counterexample but got: {:?}", result),
-        }
+        });
     }
 
     #[test]
     fn test_verify_bitwise_ops() {
-        let ctx = create_z3_context();
-        let validator = TranslationValidator::new(&ctx);
+        with_z3_context(|| {
+            let validator = TranslationValidator::new();
 
-        // Test OR
-        let or_rule = create_test_rule(
-            WasmOp::I32Or,
-            ArmOp::Orr {
-                rd: Reg::R0,
-                rn: Reg::R0,
-                op2: Operand2::Reg(Reg::R1),
-            },
-        );
-        assert_eq!(
-            validator.verify_rule(&or_rule).unwrap(),
-            ValidationResult::Verified
-        );
+            // Test OR
+            let or_rule = create_test_rule(
+                WasmOp::I32Or,
+                ArmOp::Orr {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(Reg::R1),
+                },
+            );
+            assert_eq!(
+                validator.verify_rule(&or_rule).unwrap(),
+                ValidationResult::Verified
+            );
 
-        // Test XOR
-        let xor_rule = create_test_rule(
-            WasmOp::I32Xor,
-            ArmOp::Eor {
-                rd: Reg::R0,
-                rn: Reg::R0,
-                op2: Operand2::Reg(Reg::R1),
-            },
-        );
-        assert_eq!(
-            validator.verify_rule(&xor_rule).unwrap(),
-            ValidationResult::Verified
-        );
+            // Test XOR
+            let xor_rule = create_test_rule(
+                WasmOp::I32Xor,
+                ArmOp::Eor {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(Reg::R1),
+                },
+            );
+            assert_eq!(
+                validator.verify_rule(&xor_rule).unwrap(),
+                ValidationResult::Verified
+            );
+        });
     }
 
     #[test]
     fn test_verify_shift_ops() {
-        // Note: These tests are disabled because shift operations in ARM
-        // use immediate values, not register operands like WASM.
-        // The translation would require runtime value checking.
-
-        // For formal verification, we would need to prove:
-        // ∀x,shift. wasm_shl(x, shift) == arm_lsl(x, shift % 32)
-
-        // This requires modeling the shift amount modulo operation
-        // which is complex for SMT-based verification.
-
+        // Note: Shift operations require concrete immediate values in ARM
+        // but use register operands in WASM. Verification requires
+        // modeling the shift amount modulo operation.
         // TODO: Implement shift verification with proper modulo handling
     }
 }

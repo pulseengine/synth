@@ -4,6 +4,12 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use synth_core::backend::{
+    Backend, BackendCapabilities, BackendError, CompilationResult, CompileConfig, CompiledFunction,
+};
+use synth_core::target::TargetSpec;
+use synth_core::wasm_decoder::DecodedModule;
+use synth_core::wasm_op::WasmOp;
 use synth_core::{Error, Result};
 
 /// w2c2 transpiler wrapper
@@ -155,6 +161,119 @@ pub struct TranspileResult {
     pub stdout: String,
 }
 
+/// W2C2 backend — two-stage pipeline: w2c2 (WASM→C) + arm-none-eabi-gcc (C→ELF)
+///
+/// Verification tier: binary-level translation validation (ASIL B).
+pub struct W2C2Backend {
+    /// Path to w2c2 executable (None = search PATH)
+    w2c2_path: Option<String>,
+    /// Path to cross-compiler (None = search for arm-none-eabi-gcc)
+    gcc_path: Option<String>,
+}
+
+impl W2C2Backend {
+    pub fn new() -> Self {
+        Self {
+            w2c2_path: None,
+            gcc_path: None,
+        }
+    }
+
+    pub fn with_paths(w2c2: impl Into<String>, gcc: impl Into<String>) -> Self {
+        Self {
+            w2c2_path: Some(w2c2.into()),
+            gcc_path: Some(gcc.into()),
+        }
+    }
+
+    fn find_w2c2(&self) -> Option<String> {
+        if let Some(ref path) = self.w2c2_path {
+            if Path::new(path).exists() {
+                return Some(path.clone());
+            }
+        }
+        W2C2Transpiler::from_path()
+            .ok()
+            .map(|t| t.w2c2_path.to_string_lossy().to_string())
+    }
+
+    fn find_gcc(&self) -> Option<String> {
+        if let Some(ref path) = self.gcc_path {
+            if Path::new(path).exists() {
+                return Some(path.clone());
+            }
+        }
+        Command::new("which")
+            .arg("arm-none-eabi-gcc")
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    }
+}
+
+impl Default for W2C2Backend {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Backend for W2C2Backend {
+    fn name(&self) -> &str {
+        "w2c2"
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            produces_elf: true,
+            supports_rule_verification: false,
+            supports_binary_verification: true,
+            is_external: true,
+        }
+    }
+
+    fn supported_targets(&self) -> Vec<TargetSpec> {
+        vec![TargetSpec::cortex_m4(), TargetSpec::cortex_m7()]
+    }
+
+    fn compile_module(
+        &self,
+        _module: &DecodedModule,
+        _config: &CompileConfig,
+    ) -> std::result::Result<CompilationResult, BackendError> {
+        let _w2c2 = self.find_w2c2().ok_or_else(|| {
+            BackendError::NotAvailable(
+                "w2c2 not found. Install from https://github.com/turbolent/w2c2".to_string(),
+            )
+        })?;
+        let _gcc = self.find_gcc().ok_or_else(|| {
+            BackendError::NotAvailable(
+                "arm-none-eabi-gcc not found. Install ARM GNU toolchain.".to_string(),
+            )
+        })?;
+
+        // TODO: Write WASM to temp file, w2c2 transpile to C, gcc compile to ELF
+        Err(BackendError::CompilationFailed(
+            "w2c2 module compilation not yet implemented".to_string(),
+        ))
+    }
+
+    fn compile_function(
+        &self,
+        _name: &str,
+        _ops: &[WasmOp],
+        _config: &CompileConfig,
+    ) -> std::result::Result<CompiledFunction, BackendError> {
+        Err(BackendError::UnsupportedConfig(
+            "w2c2 only supports whole-module compilation (use compile_module)".to_string(),
+        ))
+    }
+
+    fn is_available(&self) -> bool {
+        self.find_w2c2().is_some() && self.find_gcc().is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +328,22 @@ mod tests {
         let _ = fs::remove_file(&wasm_path);
         let _ = fs::remove_file(&output_path);
         let _ = fs::remove_file(output_path.with_extension("h"));
+    }
+
+    #[test]
+    fn test_w2c2_backend_properties() {
+        let backend = W2C2Backend::new();
+        assert_eq!(backend.name(), "w2c2");
+        assert!(backend.capabilities().produces_elf);
+        assert!(backend.capabilities().is_external);
+        assert!(!backend.capabilities().supports_rule_verification);
+    }
+
+    #[test]
+    fn test_w2c2_function_compilation_unsupported() {
+        let backend = W2C2Backend::new();
+        let config = CompileConfig::default();
+        let result = backend.compile_function("test", &[WasmOp::I32Add], &config);
+        assert!(result.is_err());
     }
 }

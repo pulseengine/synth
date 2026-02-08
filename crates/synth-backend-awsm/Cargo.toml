@@ -1,5 +1,5 @@
 [package]
-name = "synth-core"
+name = "synth-backend-awsm"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -7,11 +7,6 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
+synth-core = { path = "../synth-core" }
 anyhow.workspace = true
-wasmparser.workspace = true
-
-[dev-dependencies]
-wat.workspace = true
+thiserror.workspace = true

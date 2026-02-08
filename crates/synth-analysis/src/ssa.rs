@@ -468,7 +468,7 @@ mod tests {
 
         let changed = ConstantPropagation::optimize(&mut func);
         // Should find the constant
-        assert!(changed >= 0);
+        let _ = changed; // verify optimization runs without panic
     }
 
     #[test]

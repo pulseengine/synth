@@ -8,9 +8,9 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
-use synth_test::{GenerateOptions, RobotGenerator, SynthTestConfig, WastParser};
 use synth_test::renode::RenodeController;
-use synth_test::runner::{NativeRunner, RunnerConfig, print_results};
+use synth_test::runner::{print_results, NativeRunner, RunnerConfig};
+use synth_test::{GenerateOptions, RobotGenerator, SynthTestConfig, WastParser};
 
 #[derive(Parser)]
 #[command(name = "synth-test")]
@@ -101,7 +101,11 @@ fn main() -> Result<()> {
             let parsed = WastParser::parse_file(&wast)
                 .with_context(|| format!("Failed to parse WAST file: {}", wast.display()))?;
 
-            println!("Running {} tests from {}", parsed.test_cases.len(), wast.display());
+            println!(
+                "Running {} tests from {}",
+                parsed.test_cases.len(),
+                wast.display()
+            );
             println!("ELF: {}", elf.display());
             println!("Connecting to Renode on port {}...", port);
 
@@ -120,11 +124,12 @@ fn main() -> Result<()> {
             // Note: Assumes Renode is already running
             // In future, we can auto-start it
             runner.controller = Some(synth_test::renode::telnet::TelnetController::new(
-                runner.config.renode.clone()
+                runner.config.renode.clone(),
             ));
 
             if let Some(ctrl) = &mut runner.controller {
-                ctrl.connect().context("Failed to connect to Renode. Is it running?")?;
+                ctrl.connect()
+                    .context("Failed to connect to Renode. Is it running?")?;
             }
 
             let (results, summary) = runner.run_all(&parsed, &elf)?;
@@ -163,10 +168,14 @@ fn main() -> Result<()> {
 
             // Load function addresses from ELF if provided (also updates handler addresses)
             if let Some(elf_path) = &elf {
-                config = config.with_elf_symbols(elf_path)
-                    .with_context(|| format!("Failed to read ELF symbols from {}", elf_path.display()))?;
+                config = config.with_elf_symbols(elf_path).with_context(|| {
+                    format!("Failed to read ELF symbols from {}", elf_path.display())
+                })?;
 
-                println!("Loaded {} function symbols from ELF:", config.function_addresses.len());
+                println!(
+                    "Loaded {} function symbols from ELF:",
+                    config.function_addresses.len()
+                );
                 for (name, addr) in &config.function_addresses {
                     println!("  {} = 0x{:X}", name, addr);
                 }
@@ -185,7 +194,9 @@ fn main() -> Result<()> {
             let test_count = if options.filter_funcs.is_empty() {
                 parsed.stats.assert_return_count
             } else {
-                parsed.test_cases.iter()
+                parsed
+                    .test_cases
+                    .iter()
                     .filter(|tc| options.should_include(&tc.function))
                     .count()
             };
@@ -198,9 +209,7 @@ fn main() -> Result<()> {
             );
             println!(
                 "  Modules: {}, Assert_return: {}, Skipped: {}",
-                parsed.stats.modules_loaded,
-                parsed.stats.assert_return_count,
-                parsed.stats.skipped
+                parsed.stats.modules_loaded, parsed.stats.assert_return_count, parsed.stats.skipped
             );
 
             Ok(())

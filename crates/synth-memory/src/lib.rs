@@ -9,15 +9,15 @@
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-pub mod descriptor;
 pub mod bounds;
+pub mod descriptor;
 pub mod table;
 
 #[cfg(feature = "std")]
 pub mod platform;
 
+pub use bounds::{BoundsChecker, MaskingBoundsChecker, SoftwareBoundsChecker};
 pub use descriptor::{MemoryDescriptor, MemoryFlags, ProtectionStrategy};
-pub use bounds::{BoundsChecker, SoftwareBoundsChecker, MaskingBoundsChecker};
 pub use table::{MemoryTable, MAX_MEMORIES};
 
 /// WASM page size (64KB)

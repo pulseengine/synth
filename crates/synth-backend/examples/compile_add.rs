@@ -91,7 +91,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Entry point: 0x8000");
 
     // Verify ELF header
-    assert_eq!(&elf_data[0..4], &[0x7f, b'E', b'L', b'F'], "Invalid ELF magic");
+    assert_eq!(
+        &elf_data[0..4],
+        &[0x7f, b'E', b'L', b'F'],
+        "Invalid ELF magic"
+    );
     println!("  ELF magic: valid");
 
     // Step 5: Write to file

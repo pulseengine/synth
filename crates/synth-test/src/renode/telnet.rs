@@ -37,10 +37,7 @@ impl TelnetController {
 
     /// Send a command and read the response
     fn send_command(&mut self, cmd: &str) -> Result<String> {
-        let stream = self
-            .stream
-            .as_mut()
-            .context("Not connected to Renode")?;
+        let stream = self.stream.as_mut().context("Not connected to Renode")?;
 
         // Send command with newline
         stream
@@ -77,8 +74,7 @@ impl TelnetController {
         // Renode returns values like "0x00000008" or just "8"
         let clean = response.trim();
         if clean.starts_with("0x") || clean.starts_with("0X") {
-            u32::from_str_radix(&clean[2..], 16)
-                .context("Failed to parse hex register value")
+            u32::from_str_radix(&clean[2..], 16).context("Failed to parse hex register value")
         } else {
             clean
                 .parse::<u32>()
@@ -244,6 +240,9 @@ mod tests {
             TelnetController::parse_register_value("0xFFFFFFFF").unwrap(),
             0xFFFFFFFF
         );
-        assert_eq!(TelnetController::parse_register_value("-1").unwrap(), 0xFFFFFFFF);
+        assert_eq!(
+            TelnetController::parse_register_value("-1").unwrap(),
+            0xFFFFFFFF
+        );
     }
 }

@@ -71,7 +71,10 @@ impl MaskingBoundsChecker {
     /// # Panics
     /// Panics if size is not a power of 2
     pub fn new(size: u32) -> Self {
-        assert!(size.is_power_of_two(), "Size must be power of 2 for masking");
+        assert!(
+            size.is_power_of_two(),
+            "Size must be power of 2 for masking"
+        );
         Self { mask: size - 1 }
     }
 
@@ -158,7 +161,11 @@ pub mod codegen {
     /// Generates: CMP Raddr, Rsize; BHS trap
     ///
     /// Returns (instructions, size_in_bytes)
-    pub fn generate_software_check(addr_reg: u8, size_reg: u8, trap_label: u32) -> (Vec<u8>, usize) {
+    pub fn generate_software_check(
+        addr_reg: u8,
+        size_reg: u8,
+        trap_label: u32,
+    ) -> (Vec<u8>, usize) {
         let mut bytes = Vec::with_capacity(8);
 
         // CMP Raddr, Rsize (Thumb-2: compare registers)

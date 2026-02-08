@@ -12,7 +12,9 @@
 //! 5. **Optimization Soundness**: Optimizations don't change semantics
 
 use proptest::prelude::*;
-use synth_synthesis::{ArmOp, Operand2, Reg, WasmOp};
+use synth_core::WasmOp;
+#[cfg(feature = "arm")]
+use synth_synthesis::{ArmOp, Operand2, Reg};
 
 /// Compiler properties to verify
 pub struct CompilerProperties;
@@ -80,6 +82,7 @@ impl CompilerProperties {
     }
 
     /// Generate arbitrary ARM operations for testing
+    #[cfg(feature = "arm")]
     #[allow(dead_code)]
     fn arbitrary_arm_op() -> impl Strategy<Value = ArmOp> {
         let reg_strategy = prop_oneof![Just(Reg::R0), Just(Reg::R1), Just(Reg::R2), Just(Reg::R3),];

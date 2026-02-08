@@ -3,8 +3,8 @@
 //! This module provides a test runner that executes WAST tests directly
 //! via the Renode telnet interface, without Robot Framework overhead.
 
-use crate::renode::{to_signed, ExecutionResult, RenodeConfig, RenodeController, TrapReason};
 use crate::renode::telnet::TelnetController;
+use crate::renode::{to_signed, ExecutionResult, RenodeConfig, RenodeController};
 use crate::{ParsedWast, Value, WastTestCase, WastTestType};
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -94,7 +94,8 @@ impl NativeRunner {
         let child = Command::new(&self.config.renode_bin)
             .args([
                 "--disable-xwt",
-                "--port", &self.config.renode.monitor_port.to_string(),
+                "--port",
+                &self.config.renode.monitor_port.to_string(),
             ])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -108,7 +109,9 @@ impl NativeRunner {
 
         // Connect telnet controller
         let mut controller = TelnetController::new(self.config.renode.clone());
-        controller.connect().context("Failed to connect to Renode")?;
+        controller
+            .connect()
+            .context("Failed to connect to Renode")?;
         self.controller = Some(controller);
 
         Ok(())
@@ -149,10 +152,7 @@ impl NativeRunner {
     pub fn run_test(&mut self, test: &WastTestCase, elf_path: &Path) -> Result<TestResult> {
         let start = Instant::now();
 
-        let controller = self
-            .controller
-            .as_mut()
-            .context("Renode not connected")?;
+        let controller = self.controller.as_mut().context("Renode not connected")?;
 
         // Set up machine if needed
         controller.create_machine("synth-test")?;
@@ -163,11 +163,8 @@ impl NativeRunner {
         let args: Vec<u32> = test.args.iter().map(|v| v.as_u32()).collect();
 
         // Execute function
-        let result = controller.execute_function(
-            self.config.func_addr,
-            &args,
-            self.config.max_steps,
-        )?;
+        let result =
+            controller.execute_function(self.config.func_addr, &args, self.config.max_steps)?;
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -186,7 +183,10 @@ impl NativeRunner {
                 let error_msg = if passed {
                     None
                 } else {
-                    Some(format!("Expected {:?}, got {:?}", test.expected, actual_value))
+                    Some(format!(
+                        "Expected {:?}, got {:?}",
+                        test.expected, actual_value
+                    ))
                 };
 
                 Ok(TestResult {
@@ -201,9 +201,10 @@ impl NativeRunner {
 
             // assert_trap: expect a trap that matches the expected message
             (ExecutionResult::Trap(reason), WastTestType::AssertTrap) => {
-                let passed = test.expected_trap.as_ref().map_or(true, |msg| {
-                    reason.matches_wast_message(msg)
-                });
+                let passed = test
+                    .expected_trap
+                    .as_ref()
+                    .map_or(true, |msg| reason.matches_wast_message(msg));
 
                 let error_msg = if passed {
                     None
@@ -226,68 +227,66 @@ impl NativeRunner {
             }
 
             // assert_trap but got a return: failure
-            (ExecutionResult::Return(actual), WastTestType::AssertTrap) => {
-                Ok(TestResult {
-                    name: test.name.clone(),
-                    passed: false,
-                    expected: test.expected.clone(),
-                    actual: Some(Value::I32(to_signed(actual))),
-                    error: Some(format!(
-                        "Expected trap '{}', but function returned {}",
-                        test.expected_trap.as_deref().unwrap_or("trap"),
-                        to_signed(actual)
-                    )),
-                    duration_ms,
-                })
-            }
+            (ExecutionResult::Return(actual), WastTestType::AssertTrap) => Ok(TestResult {
+                name: test.name.clone(),
+                passed: false,
+                expected: test.expected.clone(),
+                actual: Some(Value::I32(to_signed(actual))),
+                error: Some(format!(
+                    "Expected trap '{}', but function returned {}",
+                    test.expected_trap.as_deref().unwrap_or("trap"),
+                    to_signed(actual)
+                )),
+                duration_ms,
+            }),
 
             // assert_return but got a trap: failure
-            (ExecutionResult::Trap(reason), WastTestType::AssertReturn) => {
-                Ok(TestResult {
-                    name: test.name.clone(),
-                    passed: false,
-                    expected: test.expected.clone(),
-                    actual: None,
-                    error: Some(format!("Unexpected trap: {:?}", reason)),
-                    duration_ms,
-                })
-            }
+            (ExecutionResult::Trap(reason), WastTestType::AssertReturn) => Ok(TestResult {
+                name: test.name.clone(),
+                passed: false,
+                expected: test.expected.clone(),
+                actual: None,
+                error: Some(format!("Unexpected trap: {:?}", reason)),
+                duration_ms,
+            }),
 
             // Timeout is always a failure
-            (ExecutionResult::Timeout, _) => {
-                Ok(TestResult {
-                    name: test.name.clone(),
-                    passed: false,
-                    expected: test.expected.clone(),
-                    actual: None,
-                    error: Some("Execution timed out".to_string()),
-                    duration_ms,
-                })
-            }
+            (ExecutionResult::Timeout, _) => Ok(TestResult {
+                name: test.name.clone(),
+                passed: false,
+                expected: test.expected.clone(),
+                actual: None,
+                error: Some("Execution timed out".to_string()),
+                duration_ms,
+            }),
 
             // Other test types
-            (result, _) => {
-                Ok(TestResult {
-                    name: test.name.clone(),
-                    passed: matches!(result, ExecutionResult::Return(_)),
-                    expected: test.expected.clone(),
-                    actual: None,
-                    error: None,
-                    duration_ms,
-                })
-            }
+            (result, _) => Ok(TestResult {
+                name: test.name.clone(),
+                passed: matches!(result, ExecutionResult::Return(_)),
+                expected: test.expected.clone(),
+                actual: None,
+                error: None,
+                duration_ms,
+            }),
         }
     }
 
     /// Run all tests from a parsed WAST file
-    pub fn run_all(&mut self, parsed: &ParsedWast, elf_path: &Path) -> Result<(Vec<TestResult>, TestSummary)> {
+    pub fn run_all(
+        &mut self,
+        parsed: &ParsedWast,
+        elf_path: &Path,
+    ) -> Result<(Vec<TestResult>, TestSummary)> {
         let start = Instant::now();
         let mut results = Vec::new();
         let mut summary = TestSummary::default();
 
         for test in &parsed.test_cases {
             // Run assert_return and assert_trap tests
-            if test.test_type != WastTestType::AssertReturn && test.test_type != WastTestType::AssertTrap {
+            if test.test_type != WastTestType::AssertReturn
+                && test.test_type != WastTestType::AssertTrap
+            {
                 summary.skipped += 1;
                 continue;
             }
@@ -354,8 +353,11 @@ pub fn print_results(results: &[TestResult], summary: &TestSummary) {
 
     println!("\n=== Summary ===");
     println!("Total:   {}", summary.total);
-    println!("Passed:  {} ({:.1}%)", summary.passed,
-             100.0 * summary.passed as f64 / summary.total.max(1) as f64);
+    println!(
+        "Passed:  {} ({:.1}%)",
+        summary.passed,
+        100.0 * summary.passed as f64 / summary.total.max(1) as f64
+    );
     println!("Failed:  {}", summary.failed);
     println!("Skipped: {}", summary.skipped);
     println!("Time:    {}ms", summary.duration_ms);

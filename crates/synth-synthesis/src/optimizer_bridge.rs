@@ -11,10 +11,11 @@
 //! 4. IR → ARM lowering
 //! 5. ARM encoding with branch resolution
 
-use crate::rules::{ArmOp, WasmOp};
+use crate::rules::ArmOp;
 use crate::Condition;
 use synth_cfg::{Cfg, CfgBuilder};
 use synth_core::Result;
+use synth_core::WasmOp;
 use synth_opt::{
     AlgebraicSimplification, CommonSubexpressionElimination, ConstantFolding, DeadCodeElimination,
     Instruction, Opcode, OptResult, PassManager, PeepholeOptimization, Reg as OptReg,
@@ -337,9 +338,7 @@ impl OptimizerBridge {
     fn is_simple_value(op: &WasmOp) -> bool {
         matches!(
             op,
-            WasmOp::I32Const(_)
-                | WasmOp::LocalGet(_)
-                | WasmOp::GlobalGet(_)
+            WasmOp::I32Const(_) | WasmOp::LocalGet(_) | WasmOp::GlobalGet(_)
         )
     }
 
@@ -778,9 +777,16 @@ impl OptimizerBridge {
                 },
 
                 // i64 comparisons (consume 2 i64 pairs, produce single i32 result)
-                WasmOp::I64Eq | WasmOp::I64Ne | WasmOp::I64LtS | WasmOp::I64LtU
-                | WasmOp::I64GtS | WasmOp::I64GtU | WasmOp::I64LeS | WasmOp::I64LeU
-                | WasmOp::I64GeS | WasmOp::I64GeU => {
+                WasmOp::I64Eq
+                | WasmOp::I64Ne
+                | WasmOp::I64LtS
+                | WasmOp::I64LtU
+                | WasmOp::I64GtS
+                | WasmOp::I64GtU
+                | WasmOp::I64LeS
+                | WasmOp::I64LeU
+                | WasmOp::I64GeS
+                | WasmOp::I64GeU => {
                     // Comparisons take 2 i64 values (4 regs) and produce 1 i32 (1 reg)
                     let opcode = match wasm_op {
                         WasmOp::I64Eq => Opcode::I64Eq {
@@ -1032,9 +1038,11 @@ impl OptimizerBridge {
                     // Find the target block at given depth
                     let target_idx = block_stack.len().saturating_sub(1 + *depth as usize);
                     if target_idx < block_stack.len() {
-                        let (block_type, target_inst) = block_stack[target_idx];
+                        let (_block_type, target_inst) = block_stack[target_idx];
                         // For loops, branch to start; for blocks, target will be resolved later
-                        Opcode::Branch { target: target_inst }
+                        Opcode::Branch {
+                            target: target_inst,
+                        }
                     } else {
                         Opcode::Branch { target: 0 }
                     }
@@ -1045,7 +1053,7 @@ impl OptimizerBridge {
                     // Find the target block at given depth
                     let target_idx = block_stack.len().saturating_sub(1 + *depth as usize);
                     let target = if target_idx < block_stack.len() {
-                        let (block_type, target_inst) = block_stack[target_idx];
+                        let (_block_type, target_inst) = block_stack[target_idx];
                         // For loops (type 1), branch to start instruction
                         target_inst
                     } else {
@@ -1118,7 +1126,11 @@ impl OptimizerBridge {
         wasm_ops: &[WasmOp],
     ) -> Result<(Vec<Instruction>, Cfg, OptimizationStats)> {
         if wasm_ops.is_empty() {
-            return Ok((Vec::new(), CfgBuilder::new().build(), OptimizationStats::default()));
+            return Ok((
+                Vec::new(),
+                CfgBuilder::new().build(),
+                OptimizationStats::default(),
+            ));
         }
 
         // Preprocess: convert if-else patterns to select
@@ -1136,22 +1148,36 @@ impl OptimizerBridge {
             .filter(|i| !i.is_dead && i.opcode != Opcode::Nop)
             .collect();
 
-        Ok((live_instructions, cfg, OptimizationStats {
-            removed: result.removed_count,
-            modified: result.modified_count,
-            added: result.added_count,
-            passes_run: self.count_enabled_passes(),
-        }))
+        Ok((
+            live_instructions,
+            cfg,
+            OptimizationStats {
+                removed: result.removed_count,
+                modified: result.modified_count,
+                added: result.added_count,
+                passes_run: self.count_enabled_passes(),
+            },
+        ))
     }
 
     /// Count how many passes are enabled
     fn count_enabled_passes(&self) -> usize {
         let mut count = 0;
-        if self.config.enable_peephole { count += 1; }
-        if self.config.enable_constant_folding { count += 1; }
-        if self.config.enable_algebraic { count += 1; }
-        if self.config.enable_cse { count += 1; }
-        if self.config.enable_dce { count += 1; }
+        if self.config.enable_peephole {
+            count += 1;
+        }
+        if self.config.enable_constant_folding {
+            count += 1;
+        }
+        if self.config.enable_algebraic {
+            count += 1;
+        }
+        if self.config.enable_cse {
+            count += 1;
+        }
+        if self.config.enable_dce {
+            count += 1;
+        }
         count
     }
 
@@ -1343,7 +1369,10 @@ impl OptimizerBridge {
                     if *addr == 255 {
                         let local_reg = Reg::R11;
                         if rs != local_reg {
-                            arm_instrs.push(ArmOp::Mov { rd: local_reg, op2: Operand2::Reg(rs) });
+                            arm_instrs.push(ArmOp::Mov {
+                                rd: local_reg,
+                                op2: Operand2::Reg(rs),
+                            });
                         }
                         local_to_reg.insert(*addr, local_reg);
                     } else if (*addr as usize) >= num_params {
@@ -1356,7 +1385,10 @@ impl OptimizerBridge {
                         };
                         // Move value to the local's register if not already there
                         if rs != local_reg {
-                            arm_instrs.push(ArmOp::Mov { rd: local_reg, op2: Operand2::Reg(rs) });
+                            arm_instrs.push(ArmOp::Mov {
+                                rd: local_reg,
+                                op2: Operand2::Reg(rs),
+                            });
                         }
                         local_to_reg.insert(*addr, local_reg);
                     }
@@ -1375,15 +1407,29 @@ impl OptimizerBridge {
                     } else {
                         // Find next available temp register
                         // Exclude live vregs (not dead) and local_to_reg to avoid clobbering
-                        let used: Vec<_> = vreg_to_arm.iter()
+                        let used: Vec<_> = vreg_to_arm
+                            .iter()
                             .filter(|(k, _)| !dead_vregs.contains(k))
                             .map(|(_, v)| *v)
                             .chain(local_to_reg.values().copied())
                             .collect();
                         // Expanded temp register pool: R4-R11 (callee-saved) plus R3
                         // Note: R0-R2 are reserved for params/return, R12 is IP, R13 is SP, R14 is LR, R15 is PC
-                        let temp_regs = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::R9, Reg::R10, Reg::R11, Reg::R3];
-                        let rd = temp_regs.iter().find(|r| !used.contains(r)).copied()
+                        let temp_regs = [
+                            Reg::R4,
+                            Reg::R5,
+                            Reg::R6,
+                            Reg::R7,
+                            Reg::R8,
+                            Reg::R9,
+                            Reg::R10,
+                            Reg::R11,
+                            Reg::R3,
+                        ];
+                        let rd = temp_regs
+                            .iter()
+                            .find(|r| !used.contains(r))
+                            .copied()
                             .expect("Register allocation exhausted - too many live values");
                         vreg_to_arm.insert(dest.0, rd);
                         rd
@@ -1398,7 +1444,10 @@ impl OptimizerBridge {
                         arm_instrs.push(ArmOp::Movw { rd, imm16: lo });
                         arm_instrs.push(ArmOp::Movt { rd, imm16: hi });
                     } else {
-                        arm_instrs.push(ArmOp::Mov { rd, op2: Operand2::Imm(*value) });
+                        arm_instrs.push(ArmOp::Mov {
+                            rd,
+                            op2: Operand2::Imm(*value),
+                        });
                     }
                 }
 
@@ -1411,11 +1460,19 @@ impl OptimizerBridge {
                     // Use R8 for intermediate results to preserve params in R0-R3
                     let rd = Reg::R3;
                     vreg_to_arm.insert(dest.0, rd);
-                    arm_instrs.push(ArmOp::Add { rd, rn, op2: Operand2::Reg(rm) });
+                    arm_instrs.push(ArmOp::Add {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    });
                     last_result_vreg = Some(dest.0);
                     // Mark source vregs as dead (unless they're local vregs)
-                    if !local_vregs.contains(&src1.0) { dead_vregs.insert(src1.0); }
-                    if !local_vregs.contains(&src2.0) { dead_vregs.insert(src2.0); }
+                    if !local_vregs.contains(&src1.0) {
+                        dead_vregs.insert(src1.0);
+                    }
+                    if !local_vregs.contains(&src2.0) {
+                        dead_vregs.insert(src2.0);
+                    }
                 }
 
                 Opcode::Sub { dest, src1, src2 } => {
@@ -1423,10 +1480,18 @@ impl OptimizerBridge {
                     let rm = get_arm_reg(src2, &vreg_to_arm);
                     let rd = Reg::R3;
                     vreg_to_arm.insert(dest.0, rd);
-                    arm_instrs.push(ArmOp::Sub { rd, rn, op2: Operand2::Reg(rm) });
+                    arm_instrs.push(ArmOp::Sub {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    });
                     last_result_vreg = Some(dest.0);
-                    if !local_vregs.contains(&src1.0) { dead_vregs.insert(src1.0); }
-                    if !local_vregs.contains(&src2.0) { dead_vregs.insert(src2.0); }
+                    if !local_vregs.contains(&src1.0) {
+                        dead_vregs.insert(src1.0);
+                    }
+                    if !local_vregs.contains(&src2.0) {
+                        dead_vregs.insert(src2.0);
+                    }
                 }
 
                 Opcode::Mul { dest, src1, src2 } => {
@@ -1436,8 +1501,12 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::Mul { rd, rn, rm });
                     last_result_vreg = Some(dest.0);
-                    if !local_vregs.contains(&src1.0) { dead_vregs.insert(src1.0); }
-                    if !local_vregs.contains(&src2.0) { dead_vregs.insert(src2.0); }
+                    if !local_vregs.contains(&src1.0) {
+                        dead_vregs.insert(src1.0);
+                    }
+                    if !local_vregs.contains(&src2.0) {
+                        dead_vregs.insert(src2.0);
+                    }
                 }
 
                 Opcode::DivS { dest, src1, src2 } => {
@@ -1447,25 +1516,49 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, rd);
 
                     // Trap check 1: divide by zero
-                    arm_instrs.push(ArmOp::Cmp { rn: rm, op2: Operand2::Imm(0) });
-                    arm_instrs.push(ArmOp::BCondOffset { cond: Condition::NE, offset: 0 });
+                    arm_instrs.push(ArmOp::Cmp {
+                        rn: rm,
+                        op2: Operand2::Imm(0),
+                    });
+                    arm_instrs.push(ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 0,
+                    });
                     arm_instrs.push(ArmOp::Udf { imm: 0 });
 
                     // Trap check 2: signed overflow (INT_MIN / -1)
                     // Load INT_MIN (0x80000000) into R12
-                    arm_instrs.push(ArmOp::Movw { rd: Reg::R12, imm16: 0 });
-                    arm_instrs.push(ArmOp::Movt { rd: Reg::R12, imm16: 0x8000 });
+                    arm_instrs.push(ArmOp::Movw {
+                        rd: Reg::R12,
+                        imm16: 0,
+                    });
+                    arm_instrs.push(ArmOp::Movt {
+                        rd: Reg::R12,
+                        imm16: 0x8000,
+                    });
                     // CMP dividend, INT_MIN
-                    arm_instrs.push(ArmOp::Cmp { rn, op2: Operand2::Reg(Reg::R12) });
+                    arm_instrs.push(ArmOp::Cmp {
+                        rn,
+                        op2: Operand2::Reg(Reg::R12),
+                    });
                     // BNE.N +3 (skip overflow check if dividend != INT_MIN)
                     // Skip 8 bytes: CMN.W(4) + BNE(2) + UDF(2)
                     // Branch target = PC + (imm8 << 1) = B+4 + 6 = B+10 (SDIV)
-                    arm_instrs.push(ArmOp::BCondOffset { cond: Condition::NE, offset: 3 });
+                    arm_instrs.push(ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 3,
+                    });
                     // CMN divisor, #1 (check if divisor == -1: -1 + 1 = 0 sets Z flag)
                     // CMN.W is 4 bytes
-                    arm_instrs.push(ArmOp::Cmn { rn: rm, op2: Operand2::Imm(1) });
+                    arm_instrs.push(ArmOp::Cmn {
+                        rn: rm,
+                        op2: Operand2::Imm(1),
+                    });
                     // BNE.N +0 (skip UDF if divisor != -1)
-                    arm_instrs.push(ArmOp::BCondOffset { cond: Condition::NE, offset: 0 });
+                    arm_instrs.push(ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 0,
+                    });
                     // UDF #1 (trap on overflow)
                     arm_instrs.push(ArmOp::Udf { imm: 1 });
 
@@ -1480,8 +1573,14 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, rd);
 
                     // Trap check: divide by zero
-                    arm_instrs.push(ArmOp::Cmp { rn: rm, op2: Operand2::Imm(0) });
-                    arm_instrs.push(ArmOp::BCondOffset { cond: Condition::NE, offset: 0 });
+                    arm_instrs.push(ArmOp::Cmp {
+                        rn: rm,
+                        op2: Operand2::Imm(0),
+                    });
+                    arm_instrs.push(ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 0,
+                    });
                     arm_instrs.push(ArmOp::Udf { imm: 0 });
 
                     arm_instrs.push(ArmOp::Udiv { rd, rn, rm });
@@ -1496,13 +1595,28 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, rd);
 
                     // Trap check: divide by zero (rem_s doesn't trap on INT_MIN % -1)
-                    arm_instrs.push(ArmOp::Cmp { rn: rm, op2: Operand2::Imm(0) });
-                    arm_instrs.push(ArmOp::BCondOffset { cond: Condition::NE, offset: 0 });
+                    arm_instrs.push(ArmOp::Cmp {
+                        rn: rm,
+                        op2: Operand2::Imm(0),
+                    });
+                    arm_instrs.push(ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 0,
+                    });
                     arm_instrs.push(ArmOp::Udf { imm: 0 });
 
                     // Use MLS: rd = ra - rn * rm, where ra = dividend, result of div in temp
-                    arm_instrs.push(ArmOp::Sdiv { rd: Reg::R12, rn, rm }); // R12 = rn / rm
-                    arm_instrs.push(ArmOp::Mls { rd, rn: Reg::R12, rm, ra: rn }); // rd = rn - R12 * rm
+                    arm_instrs.push(ArmOp::Sdiv {
+                        rd: Reg::R12,
+                        rn,
+                        rm,
+                    }); // R12 = rn / rm
+                    arm_instrs.push(ArmOp::Mls {
+                        rd,
+                        rn: Reg::R12,
+                        rm,
+                        ra: rn,
+                    }); // rd = rn - R12 * rm
                     last_result_vreg = Some(dest.0);
                 }
 
@@ -1513,12 +1627,27 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, rd);
 
                     // Trap check: divide by zero
-                    arm_instrs.push(ArmOp::Cmp { rn: rm, op2: Operand2::Imm(0) });
-                    arm_instrs.push(ArmOp::BCondOffset { cond: Condition::NE, offset: 0 });
+                    arm_instrs.push(ArmOp::Cmp {
+                        rn: rm,
+                        op2: Operand2::Imm(0),
+                    });
+                    arm_instrs.push(ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 0,
+                    });
                     arm_instrs.push(ArmOp::Udf { imm: 0 });
 
-                    arm_instrs.push(ArmOp::Udiv { rd: Reg::R12, rn, rm });
-                    arm_instrs.push(ArmOp::Mls { rd, rn: Reg::R12, rm, ra: rn });
+                    arm_instrs.push(ArmOp::Udiv {
+                        rd: Reg::R12,
+                        rn,
+                        rm,
+                    });
+                    arm_instrs.push(ArmOp::Mls {
+                        rd,
+                        rn: Reg::R12,
+                        rm,
+                        ra: rn,
+                    });
                     last_result_vreg = Some(dest.0);
                 }
 
@@ -1528,7 +1657,11 @@ impl OptimizerBridge {
                     let rm = get_arm_reg(src2, &vreg_to_arm);
                     let rd = Reg::R0;
                     vreg_to_arm.insert(dest.0, rd);
-                    arm_instrs.push(ArmOp::And { rd, rn, op2: Operand2::Reg(rm) });
+                    arm_instrs.push(ArmOp::And {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    });
                     last_result_vreg = Some(dest.0);
                 }
 
@@ -1538,7 +1671,11 @@ impl OptimizerBridge {
                     // Use R3 as temp to avoid clobbering R0 (param register)
                     let rd = Reg::R3;
                     vreg_to_arm.insert(dest.0, rd);
-                    arm_instrs.push(ArmOp::Orr { rd, rn, op2: Operand2::Reg(rm) });
+                    arm_instrs.push(ArmOp::Orr {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    });
                     last_result_vreg = Some(dest.0);
                 }
 
@@ -1548,7 +1685,11 @@ impl OptimizerBridge {
                     // Use R3 as temp to avoid clobbering R0 (param register)
                     let rd = Reg::R3;
                     vreg_to_arm.insert(dest.0, rd);
-                    arm_instrs.push(ArmOp::Eor { rd, rn, op2: Operand2::Reg(rm) });
+                    arm_instrs.push(ArmOp::Eor {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    });
                     last_result_vreg = Some(dest.0);
                 }
 
@@ -1561,8 +1702,16 @@ impl OptimizerBridge {
                     let rd = Reg::R3;
                     vreg_to_arm.insert(dest.0, rd);
                     // Mask shift amount: R12 = rm & 31
-                    arm_instrs.push(ArmOp::And { rd: Reg::R12, rn: rm, op2: Operand2::Imm(31) });
-                    arm_instrs.push(ArmOp::LslReg { rd, rn, rm: Reg::R12 });
+                    arm_instrs.push(ArmOp::And {
+                        rd: Reg::R12,
+                        rn: rm,
+                        op2: Operand2::Imm(31),
+                    });
+                    arm_instrs.push(ArmOp::LslReg {
+                        rd,
+                        rn,
+                        rm: Reg::R12,
+                    });
                     last_result_vreg = Some(dest.0);
                 }
 
@@ -1571,8 +1720,16 @@ impl OptimizerBridge {
                     let rm = get_arm_reg(src2, &vreg_to_arm);
                     let rd = Reg::R3;
                     vreg_to_arm.insert(dest.0, rd);
-                    arm_instrs.push(ArmOp::And { rd: Reg::R12, rn: rm, op2: Operand2::Imm(31) });
-                    arm_instrs.push(ArmOp::AsrReg { rd, rn, rm: Reg::R12 });
+                    arm_instrs.push(ArmOp::And {
+                        rd: Reg::R12,
+                        rn: rm,
+                        op2: Operand2::Imm(31),
+                    });
+                    arm_instrs.push(ArmOp::AsrReg {
+                        rd,
+                        rn,
+                        rm: Reg::R12,
+                    });
                     last_result_vreg = Some(dest.0);
                 }
 
@@ -1581,8 +1738,16 @@ impl OptimizerBridge {
                     let rm = get_arm_reg(src2, &vreg_to_arm);
                     let rd = Reg::R3;
                     vreg_to_arm.insert(dest.0, rd);
-                    arm_instrs.push(ArmOp::And { rd: Reg::R12, rn: rm, op2: Operand2::Imm(31) });
-                    arm_instrs.push(ArmOp::LsrReg { rd, rn, rm: Reg::R12 });
+                    arm_instrs.push(ArmOp::And {
+                        rd: Reg::R12,
+                        rn: rm,
+                        op2: Operand2::Imm(31),
+                    });
+                    arm_instrs.push(ArmOp::LsrReg {
+                        rd,
+                        rn,
+                        rm: Reg::R12,
+                    });
                     last_result_vreg = Some(dest.0);
                 }
 
@@ -1594,8 +1759,16 @@ impl OptimizerBridge {
                     let rm = get_arm_reg(src2, &vreg_to_arm);
                     let rd = Reg::R3;
                     vreg_to_arm.insert(dest.0, rd);
-                    arm_instrs.push(ArmOp::And { rd: Reg::R12, rn: rm, op2: Operand2::Imm(31) });
-                    arm_instrs.push(ArmOp::RorReg { rd, rn, rm: Reg::R12 });
+                    arm_instrs.push(ArmOp::And {
+                        rd: Reg::R12,
+                        rn: rm,
+                        op2: Operand2::Imm(31),
+                    });
+                    arm_instrs.push(ArmOp::RorReg {
+                        rd,
+                        rn,
+                        rm: Reg::R12,
+                    });
                     last_result_vreg = Some(dest.0);
                 }
 
@@ -1607,11 +1780,23 @@ impl OptimizerBridge {
                     let rd = Reg::R3;
                     vreg_to_arm.insert(dest.0, rd);
                     // R12 = rm & 31
-                    arm_instrs.push(ArmOp::And { rd: Reg::R12, rn: rm, op2: Operand2::Imm(31) });
+                    arm_instrs.push(ArmOp::And {
+                        rd: Reg::R12,
+                        rn: rm,
+                        op2: Operand2::Imm(31),
+                    });
                     // R12 = 32 - R12
-                    arm_instrs.push(ArmOp::Rsb { rd: Reg::R12, rn: Reg::R12, imm: 32 });
+                    arm_instrs.push(ArmOp::Rsb {
+                        rd: Reg::R12,
+                        rn: Reg::R12,
+                        imm: 32,
+                    });
                     // rd = ROR(rn, R12)
-                    arm_instrs.push(ArmOp::RorReg { rd, rn, rm: Reg::R12 });
+                    arm_instrs.push(ArmOp::RorReg {
+                        rd,
+                        rn,
+                        rm: Reg::R12,
+                    });
                     last_result_vreg = Some(dest.0);
                 }
 
@@ -1667,22 +1852,28 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, rd);
 
                     // CMP rn, #0; SetCond rd, EQ
-                    arm_instrs.push(ArmOp::Cmp { rn, op2: Operand2::Imm(0) });
-                    arm_instrs.push(ArmOp::SetCond { rd, cond: crate::rules::Condition::EQ });
+                    arm_instrs.push(ArmOp::Cmp {
+                        rn,
+                        op2: Operand2::Imm(0),
+                    });
+                    arm_instrs.push(ArmOp::SetCond {
+                        rd,
+                        cond: crate::rules::Condition::EQ,
+                    });
                     last_result_vreg = Some(dest.0);
                 }
 
                 // Comparisons - set result to 0 or 1
-                Opcode::Eq { dest, src1, src2 } |
-                Opcode::Ne { dest, src1, src2 } |
-                Opcode::LtS { dest, src1, src2 } |
-                Opcode::LtU { dest, src1, src2 } |
-                Opcode::LeS { dest, src1, src2 } |
-                Opcode::LeU { dest, src1, src2 } |
-                Opcode::GtS { dest, src1, src2 } |
-                Opcode::GtU { dest, src1, src2 } |
-                Opcode::GeS { dest, src1, src2 } |
-                Opcode::GeU { dest, src1, src2 } => {
+                Opcode::Eq { dest, src1, src2 }
+                | Opcode::Ne { dest, src1, src2 }
+                | Opcode::LtS { dest, src1, src2 }
+                | Opcode::LtU { dest, src1, src2 }
+                | Opcode::LeS { dest, src1, src2 }
+                | Opcode::LeU { dest, src1, src2 }
+                | Opcode::GtS { dest, src1, src2 }
+                | Opcode::GtU { dest, src1, src2 }
+                | Opcode::GeS { dest, src1, src2 }
+                | Opcode::GeU { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm);
                     let rm = get_arm_reg(src2, &vreg_to_arm);
                     // Use R7 for comparison results to avoid clobbering R0
@@ -1705,7 +1896,10 @@ impl OptimizerBridge {
                         _ => crate::rules::Condition::EQ,
                     };
 
-                    arm_instrs.push(ArmOp::Cmp { rn, op2: Operand2::Reg(rm) });
+                    arm_instrs.push(ArmOp::Cmp {
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    });
                     arm_instrs.push(ArmOp::SetCond { rd, cond });
                     // Track comparison result as potential return value
                     last_result_vreg = Some(dest.0);
@@ -1721,7 +1915,10 @@ impl OptimizerBridge {
 
                 Opcode::CondBranch { cond, target } => {
                     let rcond = get_arm_reg(cond, &vreg_to_arm);
-                    arm_instrs.push(ArmOp::Cmp { rn: rcond, op2: Operand2::Imm(0) });
+                    arm_instrs.push(ArmOp::Cmp {
+                        rn: rcond,
+                        op2: Operand2::Imm(0),
+                    });
                     // Record this branch for later resolution
                     pending_branches.push((arm_instrs.len(), *target, true));
                     // Emit placeholder conditional branch (branch if NOT equal to zero)
@@ -1735,7 +1932,10 @@ impl OptimizerBridge {
                     if let Some(v) = value {
                         let rv = get_arm_reg(v, &vreg_to_arm);
                         if rv != Reg::R0 {
-                            arm_instrs.push(ArmOp::Mov { rd: Reg::R0, op2: Operand2::Reg(rv) });
+                            arm_instrs.push(ArmOp::Mov {
+                                rd: Reg::R0,
+                                op2: Operand2::Reg(rv),
+                            });
                         }
                     }
                     arm_instrs.push(ArmOp::Bx { rm: Reg::LR });
@@ -1744,7 +1944,12 @@ impl OptimizerBridge {
                 // Select: dest = cond != 0 ? val_true : val_false
                 // Implementation: CMP cond, #0; IT EQ; MOVEQ dest, val_false
                 // (if cond==0, move val_false to dest; otherwise val_true is already in position)
-                Opcode::Select { dest, val_true, val_false, cond } => {
+                Opcode::Select {
+                    dest,
+                    val_true,
+                    val_false,
+                    cond,
+                } => {
                     let r_cond = get_arm_reg(cond, &vreg_to_arm);
                     let r_true = get_arm_reg(val_true, &vreg_to_arm);
                     let r_false = get_arm_reg(val_false, &vreg_to_arm);
@@ -1758,7 +1963,10 @@ impl OptimizerBridge {
                     // we must save the condition first to avoid clobbering it
                     let actual_cond = if r_cond == rd && r_true != rd {
                         // Save condition to R12 (IP) before overwriting rd
-                        arm_instrs.push(ArmOp::Mov { rd: Reg::R12, op2: Operand2::Reg(r_cond) });
+                        arm_instrs.push(ArmOp::Mov {
+                            rd: Reg::R12,
+                            op2: Operand2::Reg(r_cond),
+                        });
                         Reg::R12
                     } else {
                         r_cond
@@ -1766,11 +1974,17 @@ impl OptimizerBridge {
 
                     // Move val_true to result (it will be overwritten if cond==0)
                     if r_true != rd {
-                        arm_instrs.push(ArmOp::Mov { rd, op2: Operand2::Reg(r_true) });
+                        arm_instrs.push(ArmOp::Mov {
+                            rd,
+                            op2: Operand2::Reg(r_true),
+                        });
                     }
 
                     // Compare condition with 0
-                    arm_instrs.push(ArmOp::Cmp { rn: actual_cond, op2: Operand2::Imm(0) });
+                    arm_instrs.push(ArmOp::Cmp {
+                        rn: actual_cond,
+                        op2: Operand2::Imm(0),
+                    });
 
                     // If cond == 0, overwrite with val_false using conditional move
                     arm_instrs.push(ArmOp::SelectMove {
@@ -1790,7 +2004,11 @@ impl OptimizerBridge {
                 // For i64 params on 32-bit ARM:
                 // - Param 0 (i64) is in R0:R1
                 // - Param 1 (i64) is in R2:R3
-                Opcode::I64Load { dest_lo, dest_hi, addr } => {
+                Opcode::I64Load {
+                    dest_lo,
+                    dest_hi,
+                    addr,
+                } => {
                     // Map local index to register pair
                     // Per AAPCS: i64 uses consecutive even/odd register pairs
                     let (lo_reg, hi_reg) = if *addr == 0 {
@@ -1808,7 +2026,11 @@ impl OptimizerBridge {
                     last_result_vreg = Some(dest_lo.0);
                 }
 
-                Opcode::I64Const { dest_lo, dest_hi, value } => {
+                Opcode::I64Const {
+                    dest_lo,
+                    dest_hi,
+                    value,
+                } => {
                     // Load 64-bit constant into register pair
                     let lo = (*value & 0xFFFFFFFF) as u32;
                     let hi = ((*value >> 32) & 0xFFFFFFFF) as u32;
@@ -1824,74 +2046,142 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest_hi.0, hi_reg);
                     // Load low word
                     if lo <= 255 {
-                        arm_instrs.push(ArmOp::Mov { rd: lo_reg, op2: Operand2::Imm(lo as i32) });
+                        arm_instrs.push(ArmOp::Mov {
+                            rd: lo_reg,
+                            op2: Operand2::Imm(lo as i32),
+                        });
                     } else {
-                        arm_instrs.push(ArmOp::Movw { rd: lo_reg, imm16: (lo & 0xFFFF) as u16 });
+                        arm_instrs.push(ArmOp::Movw {
+                            rd: lo_reg,
+                            imm16: (lo & 0xFFFF) as u16,
+                        });
                         if lo > 0xFFFF {
-                            arm_instrs.push(ArmOp::Movt { rd: lo_reg, imm16: ((lo >> 16) & 0xFFFF) as u16 });
+                            arm_instrs.push(ArmOp::Movt {
+                                rd: lo_reg,
+                                imm16: ((lo >> 16) & 0xFFFF) as u16,
+                            });
                         }
                     }
                     // Load high word
                     if hi <= 255 {
-                        arm_instrs.push(ArmOp::Mov { rd: hi_reg, op2: Operand2::Imm(hi as i32) });
+                        arm_instrs.push(ArmOp::Mov {
+                            rd: hi_reg,
+                            op2: Operand2::Imm(hi as i32),
+                        });
                     } else {
-                        arm_instrs.push(ArmOp::Movw { rd: hi_reg, imm16: (hi & 0xFFFF) as u16 });
+                        arm_instrs.push(ArmOp::Movw {
+                            rd: hi_reg,
+                            imm16: (hi & 0xFFFF) as u16,
+                        });
                         if hi > 0xFFFF {
-                            arm_instrs.push(ArmOp::Movt { rd: hi_reg, imm16: ((hi >> 16) & 0xFFFF) as u16 });
+                            arm_instrs.push(ArmOp::Movt {
+                                rd: hi_reg,
+                                imm16: ((hi >> 16) & 0xFFFF) as u16,
+                            });
                         }
                     }
                 }
 
-                Opcode::I64Add { dest_lo, dest_hi, .. } => {
+                Opcode::I64Add {
+                    dest_lo, dest_hi, ..
+                } => {
                     // i64.add: R0:R1 = R0:R1 + R2:R3
                     // ADDS R0, R0, R2 (sets carry)
                     // ADC  R1, R1, R3 (adds carry)
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
-                    arm_instrs.push(ArmOp::Adds { rd: Reg::R0, rn: Reg::R0, op2: Operand2::Reg(Reg::R2) });
-                    arm_instrs.push(ArmOp::Adc { rd: Reg::R1, rn: Reg::R1, op2: Operand2::Reg(Reg::R3) });
+                    arm_instrs.push(ArmOp::Adds {
+                        rd: Reg::R0,
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R2),
+                    });
+                    arm_instrs.push(ArmOp::Adc {
+                        rd: Reg::R1,
+                        rn: Reg::R1,
+                        op2: Operand2::Reg(Reg::R3),
+                    });
                     // Mark as i64 result - no final mov needed, result already in R0:R1
                     is_i64_result = true;
                 }
 
-                Opcode::I64Sub { dest_lo, dest_hi, .. } => {
+                Opcode::I64Sub {
+                    dest_lo, dest_hi, ..
+                } => {
                     // i64.sub: R0:R1 = R0:R1 - R2:R3
                     // SUBS R0, R0, R2 (sets borrow)
                     // SBC  R1, R1, R3 (subtracts borrow)
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
-                    arm_instrs.push(ArmOp::Subs { rd: Reg::R0, rn: Reg::R0, op2: Operand2::Reg(Reg::R2) });
-                    arm_instrs.push(ArmOp::Sbc { rd: Reg::R1, rn: Reg::R1, op2: Operand2::Reg(Reg::R3) });
+                    arm_instrs.push(ArmOp::Subs {
+                        rd: Reg::R0,
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R2),
+                    });
+                    arm_instrs.push(ArmOp::Sbc {
+                        rd: Reg::R1,
+                        rn: Reg::R1,
+                        op2: Operand2::Reg(Reg::R3),
+                    });
                     // Mark as i64 result - no final mov needed, result already in R0:R1
                     is_i64_result = true;
                 }
 
-                Opcode::I64And { dest_lo, dest_hi, .. } => {
+                Opcode::I64And {
+                    dest_lo, dest_hi, ..
+                } => {
                     // i64.and: R0:R1 = R0:R1 & R2:R3
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
-                    arm_instrs.push(ArmOp::And { rd: Reg::R0, rn: Reg::R0, op2: Operand2::Reg(Reg::R2) });
-                    arm_instrs.push(ArmOp::And { rd: Reg::R1, rn: Reg::R1, op2: Operand2::Reg(Reg::R3) });
+                    arm_instrs.push(ArmOp::And {
+                        rd: Reg::R0,
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R2),
+                    });
+                    arm_instrs.push(ArmOp::And {
+                        rd: Reg::R1,
+                        rn: Reg::R1,
+                        op2: Operand2::Reg(Reg::R3),
+                    });
                     // Mark as i64 result - no final mov needed, result already in R0:R1
                     is_i64_result = true;
                 }
 
-                Opcode::I64Or { dest_lo, dest_hi, .. } => {
+                Opcode::I64Or {
+                    dest_lo, dest_hi, ..
+                } => {
                     // i64.or: R0:R1 = R0:R1 | R2:R3
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
-                    arm_instrs.push(ArmOp::Orr { rd: Reg::R0, rn: Reg::R0, op2: Operand2::Reg(Reg::R2) });
-                    arm_instrs.push(ArmOp::Orr { rd: Reg::R1, rn: Reg::R1, op2: Operand2::Reg(Reg::R3) });
+                    arm_instrs.push(ArmOp::Orr {
+                        rd: Reg::R0,
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R2),
+                    });
+                    arm_instrs.push(ArmOp::Orr {
+                        rd: Reg::R1,
+                        rn: Reg::R1,
+                        op2: Operand2::Reg(Reg::R3),
+                    });
                     // Mark as i64 result - no final mov needed, result already in R0:R1
                     is_i64_result = true;
                 }
 
-                Opcode::I64Xor { dest_lo, dest_hi, .. } => {
+                Opcode::I64Xor {
+                    dest_lo, dest_hi, ..
+                } => {
                     // i64.xor: R0:R1 = R0:R1 ^ R2:R3
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
-                    arm_instrs.push(ArmOp::Eor { rd: Reg::R0, rn: Reg::R0, op2: Operand2::Reg(Reg::R2) });
-                    arm_instrs.push(ArmOp::Eor { rd: Reg::R1, rn: Reg::R1, op2: Operand2::Reg(Reg::R3) });
+                    arm_instrs.push(ArmOp::Eor {
+                        rd: Reg::R0,
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R2),
+                    });
+                    arm_instrs.push(ArmOp::Eor {
+                        rd: Reg::R1,
+                        rn: Reg::R1,
+                        op2: Operand2::Reg(Reg::R3),
+                    });
                     // Mark as i64 result - no final mov needed, result already in R0:R1
                     is_i64_result = true;
                 }
@@ -1899,14 +2189,15 @@ impl OptimizerBridge {
                 // ========================================================================
                 // i64 Comparisons (result is single i32 in R0)
                 // ========================================================================
-
                 Opcode::I64Eq { dest, .. } => {
                     // i64.eq: (R0:R1) == (R2:R3), result in R0
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd: Reg::R0,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                         cond: Condition::EQ,
                     });
                     last_result_vreg = Some(dest.0);
@@ -1917,8 +2208,10 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd: Reg::R0,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                         cond: Condition::NE,
                     });
                     last_result_vreg = Some(dest.0);
@@ -1929,8 +2222,10 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd: Reg::R0,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                         cond: Condition::LT,
                     });
                     last_result_vreg = Some(dest.0);
@@ -1941,8 +2236,10 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd: Reg::R0,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                         cond: Condition::GT,
                     });
                     last_result_vreg = Some(dest.0);
@@ -1953,8 +2250,10 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd: Reg::R0,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                         cond: Condition::LE,
                     });
                     last_result_vreg = Some(dest.0);
@@ -1965,8 +2264,10 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd: Reg::R0,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                         cond: Condition::GE,
                     });
                     last_result_vreg = Some(dest.0);
@@ -1978,8 +2279,10 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd: Reg::R0,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                         cond: Condition::LO,
                     });
                     last_result_vreg = Some(dest.0);
@@ -1990,8 +2293,10 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd: Reg::R0,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                         cond: Condition::HI,
                     });
                     last_result_vreg = Some(dest.0);
@@ -2002,8 +2307,10 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd: Reg::R0,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                         cond: Condition::LS,
                     });
                     last_result_vreg = Some(dest.0);
@@ -2014,8 +2321,10 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd: Reg::R0,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                         cond: Condition::HS,
                     });
                     last_result_vreg = Some(dest.0);
@@ -2026,7 +2335,8 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64SetCondZ {
                         rd: Reg::R0,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
                     });
                     last_result_vreg = Some(dest.0);
                 }
@@ -2036,7 +2346,8 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64Clz {
                         rd: Reg::R0,
-                        rnlo: Reg::R0, rnhi: Reg::R1,
+                        rnlo: Reg::R0,
+                        rnhi: Reg::R1,
                     });
                     last_result_vreg = Some(dest.0);
                     is_i64_result = true;
@@ -2047,7 +2358,8 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64Ctz {
                         rd: Reg::R0,
-                        rnlo: Reg::R0, rnhi: Reg::R1,
+                        rnlo: Reg::R0,
+                        rnhi: Reg::R1,
                     });
                     last_result_vreg = Some(dest.0);
                     is_i64_result = true;
@@ -2058,40 +2370,50 @@ impl OptimizerBridge {
                     vreg_to_arm.insert(dest.0, Reg::R0);
                     arm_instrs.push(ArmOp::I64Popcnt {
                         rd: Reg::R0,
-                        rnlo: Reg::R0, rnhi: Reg::R1,
+                        rnlo: Reg::R0,
+                        rnhi: Reg::R1,
                     });
                     last_result_vreg = Some(dest.0);
                     is_i64_result = true;
                 }
 
                 // i64 sign extension operations
-                Opcode::I64Extend8S { dest_lo, dest_hi, .. } => {
+                Opcode::I64Extend8S {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64Extend8S {
-                        rdlo: Reg::R0, rdhi: Reg::R1,
+                        rdlo: Reg::R0,
+                        rdhi: Reg::R1,
                         rnlo: Reg::R0,
                     });
                     last_result_vreg = Some(dest_lo.0);
                     is_i64_result = true;
                 }
 
-                Opcode::I64Extend16S { dest_lo, dest_hi, .. } => {
+                Opcode::I64Extend16S {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64Extend16S {
-                        rdlo: Reg::R0, rdhi: Reg::R1,
+                        rdlo: Reg::R0,
+                        rdhi: Reg::R1,
                         rnlo: Reg::R0,
                     });
                     last_result_vreg = Some(dest_lo.0);
                     is_i64_result = true;
                 }
 
-                Opcode::I64Extend32S { dest_lo, dest_hi, .. } => {
+                Opcode::I64Extend32S {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64Extend32S {
-                        rdlo: Reg::R0, rdhi: Reg::R1,
+                        rdlo: Reg::R0,
+                        rdhi: Reg::R1,
                         rnlo: Reg::R0,
                     });
                     last_result_vreg = Some(dest_lo.0);
@@ -2099,121 +2421,169 @@ impl OptimizerBridge {
                 }
 
                 // i64 multiply: UMULL + MLA cross products
-                Opcode::I64Mul { dest_lo, dest_hi, .. } => {
+                Opcode::I64Mul {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64Mul {
-                        rd_lo: Reg::R0, rd_hi: Reg::R1,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rd_lo: Reg::R0,
+                        rd_hi: Reg::R1,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                     });
                     is_i64_result = true;
                 }
 
                 // i64 shift left
-                Opcode::I64Shl { dest_lo, dest_hi, .. } => {
+                Opcode::I64Shl {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64Shl {
-                        rd_lo: Reg::R0, rd_hi: Reg::R1,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rd_lo: Reg::R0,
+                        rd_hi: Reg::R1,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                     });
                     is_i64_result = true;
                 }
 
                 // i64 arithmetic shift right
-                Opcode::I64ShrS { dest_lo, dest_hi, .. } => {
+                Opcode::I64ShrS {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64ShrS {
-                        rd_lo: Reg::R0, rd_hi: Reg::R1,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rd_lo: Reg::R0,
+                        rd_hi: Reg::R1,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                     });
                     is_i64_result = true;
                 }
 
                 // i64 logical shift right
-                Opcode::I64ShrU { dest_lo, dest_hi, .. } => {
+                Opcode::I64ShrU {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64ShrU {
-                        rd_lo: Reg::R0, rd_hi: Reg::R1,
-                        rn_lo: Reg::R0, rn_hi: Reg::R1,
-                        rm_lo: Reg::R2, rm_hi: Reg::R3,
+                        rd_lo: Reg::R0,
+                        rd_hi: Reg::R1,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                        rm_lo: Reg::R2,
+                        rm_hi: Reg::R3,
                     });
                     is_i64_result = true;
                 }
 
                 // i64 rotate left
-                Opcode::I64Rotl { dest_lo, dest_hi, .. } => {
+                Opcode::I64Rotl {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64Rotl {
-                        rdlo: Reg::R0, rdhi: Reg::R1,
-                        rnlo: Reg::R0, rnhi: Reg::R1,
+                        rdlo: Reg::R0,
+                        rdhi: Reg::R1,
+                        rnlo: Reg::R0,
+                        rnhi: Reg::R1,
                         shift: Reg::R2, // Only use low word of shift amount
                     });
                     is_i64_result = true;
                 }
 
                 // i64 rotate right
-                Opcode::I64Rotr { dest_lo, dest_hi, .. } => {
+                Opcode::I64Rotr {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64Rotr {
-                        rdlo: Reg::R0, rdhi: Reg::R1,
-                        rnlo: Reg::R0, rnhi: Reg::R1,
+                        rdlo: Reg::R0,
+                        rdhi: Reg::R1,
+                        rnlo: Reg::R0,
+                        rnhi: Reg::R1,
                         shift: Reg::R2, // Only use low word of shift amount
                     });
                     is_i64_result = true;
                 }
 
                 // i64 signed division
-                Opcode::I64DivS { dest_lo, dest_hi, .. } => {
+                Opcode::I64DivS {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64DivS {
-                        rdlo: Reg::R0, rdhi: Reg::R1,
-                        rnlo: Reg::R0, rnhi: Reg::R1,
-                        rmlo: Reg::R2, rmhi: Reg::R3,
+                        rdlo: Reg::R0,
+                        rdhi: Reg::R1,
+                        rnlo: Reg::R0,
+                        rnhi: Reg::R1,
+                        rmlo: Reg::R2,
+                        rmhi: Reg::R3,
                     });
                     is_i64_result = true;
                 }
 
                 // i64 unsigned division
-                Opcode::I64DivU { dest_lo, dest_hi, .. } => {
+                Opcode::I64DivU {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64DivU {
-                        rdlo: Reg::R0, rdhi: Reg::R1,
-                        rnlo: Reg::R0, rnhi: Reg::R1,
-                        rmlo: Reg::R2, rmhi: Reg::R3,
+                        rdlo: Reg::R0,
+                        rdhi: Reg::R1,
+                        rnlo: Reg::R0,
+                        rnhi: Reg::R1,
+                        rmlo: Reg::R2,
+                        rmhi: Reg::R3,
                     });
                     is_i64_result = true;
                 }
 
                 // i64 signed remainder
-                Opcode::I64RemS { dest_lo, dest_hi, .. } => {
+                Opcode::I64RemS {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64RemS {
-                        rdlo: Reg::R0, rdhi: Reg::R1,
-                        rnlo: Reg::R0, rnhi: Reg::R1,
-                        rmlo: Reg::R2, rmhi: Reg::R3,
+                        rdlo: Reg::R0,
+                        rdhi: Reg::R1,
+                        rnlo: Reg::R0,
+                        rnhi: Reg::R1,
+                        rmlo: Reg::R2,
+                        rmhi: Reg::R3,
                     });
                     is_i64_result = true;
                 }
 
                 // i64 unsigned remainder
-                Opcode::I64RemU { dest_lo, dest_hi, .. } => {
+                Opcode::I64RemU {
+                    dest_lo, dest_hi, ..
+                } => {
                     vreg_to_arm.insert(dest_lo.0, Reg::R0);
                     vreg_to_arm.insert(dest_hi.0, Reg::R1);
                     arm_instrs.push(ArmOp::I64RemU {
-                        rdlo: Reg::R0, rdhi: Reg::R1,
-                        rnlo: Reg::R0, rnhi: Reg::R1,
-                        rmlo: Reg::R2, rmhi: Reg::R3,
+                        rdlo: Reg::R0,
+                        rdhi: Reg::R1,
+                        rnlo: Reg::R0,
+                        rnhi: Reg::R1,
+                        rmlo: Reg::R2,
+                        rmhi: Reg::R3,
                     });
                     is_i64_result = true;
                 }
@@ -2237,7 +2607,10 @@ impl OptimizerBridge {
                     let rd = Reg::R0;
                     vreg_to_arm.insert(dest.0, rd);
                     if rs != rd {
-                        arm_instrs.push(ArmOp::Mov { rd, op2: Operand2::Reg(rs) });
+                        arm_instrs.push(ArmOp::Mov {
+                            rd,
+                            op2: Operand2::Reg(rs),
+                        });
                     }
                     last_result_vreg = Some(dest.0);
                 }
@@ -2256,7 +2629,10 @@ impl OptimizerBridge {
                         };
                         // Move value to the local's register if not already there
                         if rs != local_reg {
-                            arm_instrs.push(ArmOp::Mov { rd: local_reg, op2: Operand2::Reg(rs) });
+                            arm_instrs.push(ArmOp::Mov {
+                                rd: local_reg,
+                                op2: Operand2::Reg(rs),
+                            });
                         }
                         local_to_reg.insert(*addr, local_reg);
                         // The dest vreg now refers to the local's register
@@ -2270,7 +2646,10 @@ impl OptimizerBridge {
                             Reg::R0
                         };
                         if rs != param_reg {
-                            arm_instrs.push(ArmOp::Mov { rd: param_reg, op2: Operand2::Reg(rs) });
+                            arm_instrs.push(ArmOp::Mov {
+                                rd: param_reg,
+                                op2: Operand2::Reg(rs),
+                            });
                         }
                         vreg_to_arm.insert(dest.0, param_reg);
                     }
@@ -2295,10 +2674,20 @@ impl OptimizerBridge {
                     let base_hi = ((base >> 16) & 0xFFFF) as u16;
 
                     // Load base address into R12 (scratch register)
-                    arm_instrs.push(ArmOp::Movw { rd: Reg::R12, imm16: base_lo });
-                    arm_instrs.push(ArmOp::Movt { rd: Reg::R12, imm16: base_hi });
+                    arm_instrs.push(ArmOp::Movw {
+                        rd: Reg::R12,
+                        imm16: base_lo,
+                    });
+                    arm_instrs.push(ArmOp::Movt {
+                        rd: Reg::R12,
+                        imm16: base_hi,
+                    });
                     // Add WASM address offset
-                    arm_instrs.push(ArmOp::Add { rd: Reg::R12, rn: Reg::R12, op2: Operand2::Reg(r_addr) });
+                    arm_instrs.push(ArmOp::Add {
+                        rd: Reg::R12,
+                        rn: Reg::R12,
+                        op2: Operand2::Reg(r_addr),
+                    });
                     // Load from [base + wasm_addr + static_offset]
                     arm_instrs.push(ArmOp::Ldr {
                         rd,
@@ -2319,10 +2708,20 @@ impl OptimizerBridge {
                     let base_hi = ((base >> 16) & 0xFFFF) as u16;
 
                     // Load base address into R12 (scratch register)
-                    arm_instrs.push(ArmOp::Movw { rd: Reg::R12, imm16: base_lo });
-                    arm_instrs.push(ArmOp::Movt { rd: Reg::R12, imm16: base_hi });
+                    arm_instrs.push(ArmOp::Movw {
+                        rd: Reg::R12,
+                        imm16: base_lo,
+                    });
+                    arm_instrs.push(ArmOp::Movt {
+                        rd: Reg::R12,
+                        imm16: base_hi,
+                    });
                     // Add WASM address offset
-                    arm_instrs.push(ArmOp::Add { rd: Reg::R12, rn: Reg::R12, op2: Operand2::Reg(r_addr) });
+                    arm_instrs.push(ArmOp::Add {
+                        rd: Reg::R12,
+                        rn: Reg::R12,
+                        op2: Operand2::Reg(r_addr),
+                    });
                     // Store to [base + wasm_addr + static_offset]
                     arm_instrs.push(ArmOp::Str {
                         rd: r_src,
@@ -2336,26 +2735,43 @@ impl OptimizerBridge {
             // br_if pops the condition; the value underneath is the result.
             match &inst.opcode {
                 // Binary ops: consume 2, produce 1
-                Opcode::Add { dest, .. } | Opcode::Sub { dest, .. } | Opcode::Mul { dest, .. } |
-                Opcode::DivS { dest, .. } | Opcode::DivU { dest, .. } |
-                Opcode::RemS { dest, .. } | Opcode::RemU { dest, .. } |
-                Opcode::And { dest, .. } | Opcode::Or { dest, .. } | Opcode::Xor { dest, .. } |
-                Opcode::Shl { dest, .. } | Opcode::ShrS { dest, .. } | Opcode::ShrU { dest, .. } |
-                Opcode::Rotl { dest, .. } | Opcode::Rotr { dest, .. } |
-                Opcode::Eq { dest, .. } | Opcode::Ne { dest, .. } |
-                Opcode::LtS { dest, .. } | Opcode::LtU { dest, .. } |
-                Opcode::LeS { dest, .. } | Opcode::LeU { dest, .. } |
-                Opcode::GtS { dest, .. } | Opcode::GtU { dest, .. } |
-                Opcode::GeS { dest, .. } | Opcode::GeU { dest, .. } => {
+                Opcode::Add { dest, .. }
+                | Opcode::Sub { dest, .. }
+                | Opcode::Mul { dest, .. }
+                | Opcode::DivS { dest, .. }
+                | Opcode::DivU { dest, .. }
+                | Opcode::RemS { dest, .. }
+                | Opcode::RemU { dest, .. }
+                | Opcode::And { dest, .. }
+                | Opcode::Or { dest, .. }
+                | Opcode::Xor { dest, .. }
+                | Opcode::Shl { dest, .. }
+                | Opcode::ShrS { dest, .. }
+                | Opcode::ShrU { dest, .. }
+                | Opcode::Rotl { dest, .. }
+                | Opcode::Rotr { dest, .. }
+                | Opcode::Eq { dest, .. }
+                | Opcode::Ne { dest, .. }
+                | Opcode::LtS { dest, .. }
+                | Opcode::LtU { dest, .. }
+                | Opcode::LeS { dest, .. }
+                | Opcode::LeU { dest, .. }
+                | Opcode::GtS { dest, .. }
+                | Opcode::GtU { dest, .. }
+                | Opcode::GeS { dest, .. }
+                | Opcode::GeU { dest, .. } => {
                     value_stack.pop();
                     value_stack.pop();
                     value_stack.push(dest.0);
                 }
                 // Unary ops: consume 1, produce 1
-                Opcode::Clz { dest, .. } | Opcode::Ctz { dest, .. } |
-                Opcode::Popcnt { dest, .. } | Opcode::Eqz { dest, .. } |
-                Opcode::Copy { dest, .. } |
-                Opcode::Extend8S { dest, .. } | Opcode::Extend16S { dest, .. } => {
+                Opcode::Clz { dest, .. }
+                | Opcode::Ctz { dest, .. }
+                | Opcode::Popcnt { dest, .. }
+                | Opcode::Eqz { dest, .. }
+                | Opcode::Copy { dest, .. }
+                | Opcode::Extend8S { dest, .. }
+                | Opcode::Extend16S { dest, .. } => {
                     value_stack.pop();
                     value_stack.push(dest.0);
                 }
@@ -2412,10 +2828,22 @@ impl OptimizerBridge {
         // Helper to get register number
         let reg_num = |r: &Reg| -> u8 {
             match r {
-                Reg::R0 => 0, Reg::R1 => 1, Reg::R2 => 2, Reg::R3 => 3,
-                Reg::R4 => 4, Reg::R5 => 5, Reg::R6 => 6, Reg::R7 => 7,
-                Reg::R8 => 8, Reg::R9 => 9, Reg::R10 => 10, Reg::R11 => 11,
-                Reg::R12 => 12, Reg::SP => 13, Reg::LR => 14, Reg::PC => 15,
+                Reg::R0 => 0,
+                Reg::R1 => 1,
+                Reg::R2 => 2,
+                Reg::R3 => 3,
+                Reg::R4 => 4,
+                Reg::R5 => 5,
+                Reg::R6 => 6,
+                Reg::R7 => 7,
+                Reg::R8 => 8,
+                Reg::R9 => 9,
+                Reg::R10 => 10,
+                Reg::R11 => 11,
+                Reg::R12 => 12,
+                Reg::SP => 13,
+                Reg::LR => 14,
+                Reg::PC => 15,
             }
         };
 
@@ -2428,12 +2856,15 @@ impl OptimizerBridge {
                 // 32-bit Thumb-2 instructions (always 4 bytes)
                 ArmOp::Movw { .. } | ArmOp::Movt { .. } => 4,
                 // Register shifts and RSB are always 32-bit Thumb-2
-                ArmOp::LslReg { .. } | ArmOp::LsrReg { .. } |
-                ArmOp::AsrReg { .. } | ArmOp::RorReg { .. } |
-                ArmOp::Rsb { .. } => 4,
+                ArmOp::LslReg { .. }
+                | ArmOp::LsrReg { .. }
+                | ArmOp::AsrReg { .. }
+                | ArmOp::RorReg { .. }
+                | ArmOp::Rsb { .. } => 4,
                 // MUL, MLS, SDIV, UDIV are always 32-bit Thumb-2
-                ArmOp::Mul { .. } | ArmOp::Mls { .. } |
-                ArmOp::Sdiv { .. } | ArmOp::Udiv { .. } => 4,
+                ArmOp::Mul { .. } | ArmOp::Mls { .. } | ArmOp::Sdiv { .. } | ArmOp::Udiv { .. } => {
+                    4
+                }
                 // ADC, SBC are always 32-bit Thumb-2
                 ArmOp::Adc { .. } | ArmOp::Sbc { .. } => 4,
                 // CLZ, RBIT are always 32-bit Thumb-2
@@ -2442,7 +2873,11 @@ impl OptimizerBridge {
                 ArmOp::Sxtb { rd, rm } | ArmOp::Sxth { rd, rm } => {
                     let rd_bits = reg_num(rd);
                     let rm_bits = reg_num(rm);
-                    if rd_bits < 8 && rm_bits < 8 { 2 } else { 4 }
+                    if rd_bits < 8 && rm_bits < 8 {
+                        2
+                    } else {
+                        4
+                    }
                 }
                 // I64SetCond: multi-instruction sequence (12 bytes for all conditions)
                 // EQ/NE: CMP(2) + IT EQ(2) + CMP(2) + ITE(2) + MOV(2) + MOV(2)
@@ -2481,26 +2916,57 @@ impl OptimizerBridge {
                     let rd_bits = reg_num(rd);
                     let base_bits = reg_num(&addr.base);
                     let offset = addr.offset as u32;
-                    if rd_bits < 8 && base_bits < 8 && (offset & 0x3) == 0 && offset <= 124 { 2 } else { 4 }
+                    if rd_bits < 8 && base_bits < 8 && (offset & 0x3) == 0 && offset <= 124 {
+                        2
+                    } else {
+                        4
+                    }
                 }
                 ArmOp::Str { rd, addr } => {
                     let rd_bits = reg_num(rd);
                     let base_bits = reg_num(&addr.base);
                     let offset = addr.offset as u32;
-                    if rd_bits < 8 && base_bits < 8 && (offset & 0x3) == 0 && offset <= 124 { 2 } else { 4 }
+                    if rd_bits < 8 && base_bits < 8 && (offset & 0x3) == 0 && offset <= 124 {
+                        2
+                    } else {
+                        4
+                    }
                 }
                 // BL is always 32-bit
                 ArmOp::Bl { .. } => 4,
                 // MOV with high register (R8-R15) or large immediate needs MOVW (4 bytes)
-                ArmOp::Mov { rd, op2: Operand2::Imm(v) } => {
-                    if reg_num(rd) > 7 || *v > 255 || *v < 0 { 4 } else { 2 }
+                ArmOp::Mov {
+                    rd,
+                    op2: Operand2::Imm(v),
+                } => {
+                    if reg_num(rd) > 7 || *v > 255 || *v < 0 {
+                        4
+                    } else {
+                        2
+                    }
                 }
                 // SUB/ADD with high registers need 32-bit encoding
-                ArmOp::Sub { rd, rn, op2: Operand2::Reg(rm) } => {
-                    if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 { 4 } else { 2 }
+                ArmOp::Sub {
+                    rd,
+                    rn,
+                    op2: Operand2::Reg(rm),
+                } => {
+                    if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 {
+                        4
+                    } else {
+                        2
+                    }
                 }
-                ArmOp::Add { rd, rn, op2: Operand2::Reg(rm) } => {
-                    if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 { 4 } else { 2 }
+                ArmOp::Add {
+                    rd,
+                    rn,
+                    op2: Operand2::Reg(rm),
+                } => {
+                    if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 {
+                        4
+                    } else {
+                        2
+                    }
                 }
                 // Most 16-bit Thumb instructions (MOV low, CMP low, B, etc.)
                 _ => 2,
@@ -2535,7 +3001,9 @@ impl OptimizerBridge {
                         offset: halfword_offset,
                     };
                 } else {
-                    arm_instrs[branch_arm_idx] = ArmOp::BOffset { offset: halfword_offset };
+                    arm_instrs[branch_arm_idx] = ArmOp::BOffset {
+                        offset: halfword_offset,
+                    };
                 }
             }
         }
@@ -2545,7 +3013,10 @@ impl OptimizerBridge {
             if let Some(result_vreg) = last_result_vreg {
                 if let Some(&result_reg) = vreg_to_arm.get(&result_vreg) {
                     if result_reg != Reg::R0 {
-                        arm_instrs.push(ArmOp::Mov { rd: Reg::R0, op2: Operand2::Reg(result_reg) });
+                        arm_instrs.push(ArmOp::Mov {
+                            rd: Reg::R0,
+                            op2: Operand2::Reg(result_reg),
+                        });
                     }
                 }
             }
@@ -2710,11 +3181,11 @@ mod tests {
         // Pattern: cond, If, val1, Else, val2, End
         // Should become: val1, val2, cond, Select
         let wasm_ops = vec![
-            WasmOp::LocalGet(0),   // condition
+            WasmOp::LocalGet(0), // condition
             WasmOp::If,
-            WasmOp::I32Const(10),  // then value
+            WasmOp::I32Const(10), // then value
             WasmOp::Else,
-            WasmOp::I32Const(20),  // else value
+            WasmOp::I32Const(20), // else value
             WasmOp::End,
         ];
 
@@ -2722,9 +3193,9 @@ mod tests {
 
         // Should be transformed to: val1, val2, cond, Select
         assert_eq!(preprocessed.len(), 4);
-        assert_eq!(preprocessed[0], WasmOp::I32Const(10));  // then value
-        assert_eq!(preprocessed[1], WasmOp::I32Const(20));  // else value
-        assert_eq!(preprocessed[2], WasmOp::LocalGet(0));   // condition
+        assert_eq!(preprocessed[0], WasmOp::I32Const(10)); // then value
+        assert_eq!(preprocessed[1], WasmOp::I32Const(20)); // else value
+        assert_eq!(preprocessed[2], WasmOp::LocalGet(0)); // condition
         assert_eq!(preprocessed[3], WasmOp::Select);
     }
 
@@ -2735,30 +3206,35 @@ mod tests {
         // Pattern: outer_cond, If, inner_cond, If, val1, Else, val2, End, Else, val3, End
         // Should become two nested selects
         let wasm_ops = vec![
-            WasmOp::LocalGet(0),   // outer condition
+            WasmOp::LocalGet(0), // outer condition
             WasmOp::If,
-            WasmOp::LocalGet(1),   // inner condition
+            WasmOp::LocalGet(1), // inner condition
             WasmOp::If,
-            WasmOp::I32Const(10),  // val1 (both true)
+            WasmOp::I32Const(10), // val1 (both true)
             WasmOp::Else,
-            WasmOp::I32Const(20),  // val2 (outer true, inner false)
+            WasmOp::I32Const(20), // val2 (outer true, inner false)
             WasmOp::End,
             WasmOp::Else,
-            WasmOp::I32Const(30),  // val3 (outer false)
+            WasmOp::I32Const(30), // val3 (outer false)
             WasmOp::End,
         ];
 
         let preprocessed = bridge.preprocess_wasm_ops(&wasm_ops);
 
-        // Should be transformed to: val1, val2, inner_cond, Select, val3, outer_cond, Select
-        assert_eq!(preprocessed.len(), 7);
-        assert_eq!(preprocessed[0], WasmOp::I32Const(10));  // val1
-        assert_eq!(preprocessed[1], WasmOp::I32Const(20));  // val2
-        assert_eq!(preprocessed[2], WasmOp::LocalGet(1));   // inner condition
-        assert_eq!(preprocessed[3], WasmOp::Select);        // inner select
-        assert_eq!(preprocessed[4], WasmOp::I32Const(30));  // val3
-        assert_eq!(preprocessed[5], WasmOp::LocalGet(0));   // outer condition
-        assert_eq!(preprocessed[6], WasmOp::Select);        // outer select
+        // The outer condition (LocalGet 0 → R0) must be saved before the inner select
+        // runs, because the inner select overwrites R0 with its result.
+        // Expected: save outer_cond, inner select, then outer select using saved cond.
+        // outer_cond, LocalSet(255), val1, val2, inner_cond, Select, val3, LocalGet(255), Select
+        assert_eq!(preprocessed.len(), 9);
+        assert_eq!(preprocessed[0], WasmOp::LocalGet(0)); // outer condition (to save)
+        assert_eq!(preprocessed[1], WasmOp::LocalSet(255)); // save to synthetic local
+        assert_eq!(preprocessed[2], WasmOp::I32Const(10)); // val1
+        assert_eq!(preprocessed[3], WasmOp::I32Const(20)); // val2
+        assert_eq!(preprocessed[4], WasmOp::LocalGet(1)); // inner condition
+        assert_eq!(preprocessed[5], WasmOp::Select); // inner select
+        assert_eq!(preprocessed[6], WasmOp::I32Const(30)); // val3
+        assert_eq!(preprocessed[7], WasmOp::LocalGet(255)); // load saved outer condition
+        assert_eq!(preprocessed[8], WasmOp::Select); // outer select
     }
 
     #[test]
@@ -2769,11 +3245,11 @@ mod tests {
         // Should become: val1, val2, cond, Select
         let wasm_ops = vec![
             WasmOp::Block,
-            WasmOp::I32Const(10),  // val1 (early exit value)
-            WasmOp::LocalGet(0),   // condition
-            WasmOp::BrIf(0),       // if cond, exit with val1
+            WasmOp::I32Const(10), // val1 (early exit value)
+            WasmOp::LocalGet(0),  // condition
+            WasmOp::BrIf(0),      // if cond, exit with val1
             WasmOp::Drop,
-            WasmOp::I32Const(20),  // val2 (fallthrough value)
+            WasmOp::I32Const(20), // val2 (fallthrough value)
             WasmOp::End,
         ];
 
@@ -2781,9 +3257,9 @@ mod tests {
 
         // Should be transformed to: val1, val2, cond, Select
         assert_eq!(preprocessed.len(), 4);
-        assert_eq!(preprocessed[0], WasmOp::I32Const(10));  // val1
-        assert_eq!(preprocessed[1], WasmOp::I32Const(20));  // val2
-        assert_eq!(preprocessed[2], WasmOp::LocalGet(0));   // condition
+        assert_eq!(preprocessed[0], WasmOp::I32Const(10)); // val1
+        assert_eq!(preprocessed[1], WasmOp::I32Const(20)); // val2
+        assert_eq!(preprocessed[2], WasmOp::LocalGet(0)); // condition
         assert_eq!(preprocessed[3], WasmOp::Select);
     }
 
@@ -2794,11 +3270,11 @@ mod tests {
         // br_if pattern with LocalGet values
         let wasm_ops = vec![
             WasmOp::Block,
-            WasmOp::LocalGet(1),   // val1 from local
-            WasmOp::LocalGet(0),   // condition
+            WasmOp::LocalGet(1), // val1 from local
+            WasmOp::LocalGet(0), // condition
             WasmOp::BrIf(0),
             WasmOp::Drop,
-            WasmOp::LocalGet(2),   // val2 from local
+            WasmOp::LocalGet(2), // val2 from local
             WasmOp::End,
         ];
 
@@ -2806,9 +3282,9 @@ mod tests {
 
         // Should be transformed to: val1, val2, cond, Select
         assert_eq!(preprocessed.len(), 4);
-        assert_eq!(preprocessed[0], WasmOp::LocalGet(1));   // val1
-        assert_eq!(preprocessed[1], WasmOp::LocalGet(2));   // val2
-        assert_eq!(preprocessed[2], WasmOp::LocalGet(0));   // condition
+        assert_eq!(preprocessed[0], WasmOp::LocalGet(1)); // val1
+        assert_eq!(preprocessed[1], WasmOp::LocalGet(2)); // val2
+        assert_eq!(preprocessed[2], WasmOp::LocalGet(0)); // condition
         assert_eq!(preprocessed[3], WasmOp::Select);
     }
 
@@ -2822,7 +3298,7 @@ mod tests {
             WasmOp::If,
             WasmOp::I32Const(10),
             WasmOp::I32Const(5),
-            WasmOp::I32Add,        // Complex then block (not a simple value)
+            WasmOp::I32Add, // Complex then block (not a simple value)
             WasmOp::Else,
             WasmOp::I32Const(20),
             WasmOp::End,

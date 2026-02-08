@@ -251,8 +251,7 @@ impl WastParser {
             }
 
             WastDirective::AssertReturn { exec, results, .. } => {
-                if let Some(test_case) =
-                    Self::process_assert_return(&exec, &results, test_counter)?
+                if let Some(test_case) = Self::process_assert_return(&exec, &results, test_counter)?
                 {
                     result.test_cases.push(test_case);
                     result.stats.assert_return_count += 1;
@@ -260,9 +259,7 @@ impl WastParser {
             }
 
             WastDirective::AssertTrap { exec, message, .. } => {
-                if let Some(test_case) =
-                    Self::process_assert_trap(&exec, message, test_counter)?
-                {
+                if let Some(test_case) = Self::process_assert_trap(&exec, message, test_counter)? {
                     result.test_cases.push(test_case);
                     result.stats.assert_trap_count += 1;
                 } else {
@@ -415,7 +412,7 @@ impl Default for SynthTestConfig {
             function_address: 0x91, // 0x90 with Thumb bit set
             function_addresses: HashMap::new(),
             default_handler_address: 0x8C, // Default_Handler: infinite loop (b .)
-            trap_handler_address: 0x8E, // Trap_Handler: infinite loop for WASM traps
+            trap_handler_address: 0x8E,    // Trap_Handler: infinite loop for WASM traps
         }
     }
 }
@@ -456,7 +453,9 @@ pub struct GenerateOptions {
 impl GenerateOptions {
     /// Create options with function filter
     pub fn with_filter(funcs: Vec<String>) -> Self {
-        Self { filter_funcs: funcs }
+        Self {
+            filter_funcs: funcs,
+        }
     }
 
     /// Check if a function should be included
@@ -749,6 +748,7 @@ Execute Function Expect Trap
 "#
     }
 
+    #[allow(dead_code)]
     fn generate_test_case(test_case: &WastTestCase) -> String {
         let mut tc = String::new();
 
@@ -799,7 +799,9 @@ Execute Function Expect Trap
                     tc.push_str(&format!(
                         "    Should Be Equal As Integers    ${{result}}    {}    \
                          msg={} should return {} but got ${{result}}\n",
-                        expected.as_u32() as i32, test_case.function, expected.as_u32() as i32
+                        expected.as_u32() as i32,
+                        test_case.function,
+                        expected.as_u32() as i32
                     ));
                 }
             }
@@ -834,7 +836,9 @@ Execute Function Expect Trap
                     tc.push_str(&format!(
                         "    Should Be Equal As Integers    ${{result}}    {}    \
                          msg={} should return {} but got ${{result}}\n",
-                        expected.as_u32() as i32, test_case.function, expected.as_u32() as i32
+                        expected.as_u32() as i32,
+                        test_case.function,
+                        expected.as_u32() as i32
                     ));
                 }
             }
@@ -891,7 +895,8 @@ Execute Function Expect Trap
 
         // Execute function and check for trap (PC at Trap_Handler)
         tc.push_str(&format!(
-            "    ${{pc}}=    Execute Function Expect Trap    ${{ELF}}    {}", func_addr_var
+            "    ${{pc}}=    Execute Function Expect Trap    ${{ELF}}    {}",
+            func_addr_var
         ));
         for arg in &test_case.args {
             tc.push_str(&format!("    {}", arg.as_u32() as i32));
@@ -909,7 +914,10 @@ Execute Function Expect Trap
     }
 
     /// Generate test case with per-function address support
-    fn generate_test_case_with_config(test_case: &WastTestCase, config: &SynthTestConfig) -> String {
+    fn generate_test_case_with_config(
+        test_case: &WastTestCase,
+        config: &SynthTestConfig,
+    ) -> String {
         let mut tc = String::new();
         let func_addr_var = Self::get_func_addr_var(&test_case.function, config);
 
@@ -957,7 +965,9 @@ Execute Function Expect Trap
                     tc.push_str(&format!(
                         "    Should Be Equal As Integers    ${{result}}    {}    \
                          msg={} should return {} but got ${{result}}\n",
-                        expected.as_u32() as i32, test_case.function, expected.as_u32() as i32
+                        expected.as_u32() as i32,
+                        test_case.function,
+                        expected.as_u32() as i32
                     ));
                 }
             }
@@ -988,14 +998,17 @@ Execute Function Expect Trap
                     tc.push_str(&format!(
                         "    Should Be Equal As Integers    ${{result}}    {}    \
                          msg={} should return {} but got ${{result}}\n",
-                        expected.as_u32() as i32, test_case.function, expected.as_u32() as i32
+                        expected.as_u32() as i32,
+                        test_case.function,
+                        expected.as_u32() as i32
                     ));
                 }
             }
         } else {
             // Standard i32 function
             tc.push_str(&format!(
-                "    ${{result}}=    Execute Function    ${{ELF}}    {}", func_addr_var
+                "    ${{result}}=    Execute Function    ${{ELF}}    {}",
+                func_addr_var
             ));
             for arg in &test_case.args {
                 tc.push_str(&format!("    {}", arg.as_u32() as i32));
@@ -1020,14 +1033,14 @@ Execute Function Expect Trap
 /// High-level test orchestrator for WAST→Synth→Renode pipeline
 pub struct WastTestRunner {
     config: SynthTestConfig,
-    stats: WastTestStats,
+    _stats: WastTestStats,
 }
 
 impl WastTestRunner {
     pub fn new(config: SynthTestConfig) -> Self {
         Self {
             config,
-            stats: WastTestStats::default(),
+            _stats: WastTestStats::default(),
         }
     }
 

@@ -607,10 +607,14 @@ impl ArmEncoder {
             ArmOp::I32TruncF64S { .. } => 0xE1A00000, // NOP (real: VCVT.S32.F64 + VMOV)
             ArmOp::I32TruncF64U { .. } => 0xE1A00000, // NOP (real: VCVT.U32.F64 + VMOV)
             // Multi-instruction sequences - only meaningful in Thumb-2 mode
-            ArmOp::I64SetCond { .. } | ArmOp::I64SetCondZ { .. }
-            | ArmOp::I64Mul { .. } | ArmOp::I64Shl { .. }
-            | ArmOp::I64ShrS { .. } | ArmOp::I64ShrU { .. }
-            | ArmOp::I64Rotl { .. } | ArmOp::I64Rotr { .. } => 0xE1A00000, // NOP (Thumb-2 only)
+            ArmOp::I64SetCond { .. }
+            | ArmOp::I64SetCondZ { .. }
+            | ArmOp::I64Mul { .. }
+            | ArmOp::I64Shl { .. }
+            | ArmOp::I64ShrS { .. }
+            | ArmOp::I64ShrU { .. }
+            | ArmOp::I64Rotl { .. }
+            | ArmOp::I64Rotr { .. } => 0xE1A00000, // NOP (Thumb-2 only)
         };
 
         // ARM32 instructions are little-endian
@@ -635,8 +639,7 @@ impl ArmEncoder {
                 } else if let Operand2::Imm(imm) = op2 {
                     if *imm <= 7 && rd_bits < 8 && rn_bits < 8 {
                         // ADDS Rd, Rn, #imm3 (16-bit): 0001 110 imm3 Rn Rd
-                        let instr: u16 =
-                            0x1C00 | ((*imm as u16) << 6) | (rn_bits << 3) | rd_bits;
+                        let instr: u16 = 0x1C00 | ((*imm as u16) << 6) | (rn_bits << 3) | rd_bits;
                         Ok(instr.to_le_bytes().to_vec())
                     } else {
                         // Use 32-bit ADD for larger immediates
@@ -661,13 +664,16 @@ impl ArmEncoder {
                         Ok(instr.to_le_bytes().to_vec())
                     } else {
                         // Use 32-bit SUB.W for high registers
-                        self.encode_thumb32_sub_reg_raw(rd_bits as u32, rn_bits as u32, rm_bits as u32)
+                        self.encode_thumb32_sub_reg_raw(
+                            rd_bits as u32,
+                            rn_bits as u32,
+                            rm_bits as u32,
+                        )
                     }
                 } else if let Operand2::Imm(imm) = op2 {
                     if *imm <= 7 && rd_bits < 8 && rn_bits < 8 {
                         // SUBS Rd, Rn, #imm3 (16-bit): 0001 111 imm3 Rn Rd
-                        let instr: u16 =
-                            0x1E00 | ((*imm as u16) << 6) | (rn_bits << 3) | rd_bits;
+                        let instr: u16 = 0x1E00 | ((*imm as u16) << 6) | (rn_bits << 3) | rd_bits;
                         Ok(instr.to_le_bytes().to_vec())
                     } else {
                         self.encode_thumb32_sub(rd, rn, *imm as u32)
@@ -995,18 +1001,10 @@ impl ArmEncoder {
             // Register-based shifts (Thumb-2 32-bit)
             // Encoding: 11111010 0xxS Rn 1111 Rd 0000 Rm
             // xx = shift type: 00=LSL, 01=LSR, 10=ASR, 11=ROR
-            ArmOp::LslReg { rd, rn, rm } => {
-                self.encode_thumb32_shift_reg(rd, rn, rm, 0b00)
-            }
-            ArmOp::LsrReg { rd, rn, rm } => {
-                self.encode_thumb32_shift_reg(rd, rn, rm, 0b01)
-            }
-            ArmOp::AsrReg { rd, rn, rm } => {
-                self.encode_thumb32_shift_reg(rd, rn, rm, 0b10)
-            }
-            ArmOp::RorReg { rd, rn, rm } => {
-                self.encode_thumb32_shift_reg(rd, rn, rm, 0b11)
-            }
+            ArmOp::LslReg { rd, rn, rm } => self.encode_thumb32_shift_reg(rd, rn, rm, 0b00),
+            ArmOp::LsrReg { rd, rn, rm } => self.encode_thumb32_shift_reg(rd, rn, rm, 0b01),
+            ArmOp::AsrReg { rd, rn, rm } => self.encode_thumb32_shift_reg(rd, rn, rm, 0b10),
+            ArmOp::RorReg { rd, rn, rm } => self.encode_thumb32_shift_reg(rd, rn, rm, 0b11),
 
             // RSB (Reverse Subtract): Rd = imm - Rn
             // Thumb-2 T2 encoding: 11110 i 0 1110 S Rn | 0 imm3 Rd imm8
@@ -1126,8 +1124,7 @@ impl ArmEncoder {
                     } else {
                         // CMP Rn, Rm (16-bit high): 0100 0101 N Rm Rn[2:0]
                         let n_bit = (rn_bits >> 3) & 1;
-                        let instr: u16 =
-                            0x4500 | (n_bit << 7) | (rm_bits << 3) | (rn_bits & 0x7);
+                        let instr: u16 = 0x4500 | (n_bit << 7) | (rm_bits << 3) | (rn_bits & 0x7);
                         Ok(instr.to_le_bytes().to_vec())
                     }
                 } else {
@@ -1177,7 +1174,11 @@ impl ArmEncoder {
                     // If there's also an immediate offset, we need to ADD it first
                     if addr.offset != 0 {
                         // ADD Rm, Rm, #offset; LDR Rd, [base, Rm]
-                        let mut bytes = self.encode_thumb32_add_imm(offset_reg, offset_reg, addr.offset as u32)?;
+                        let mut bytes = self.encode_thumb32_add_imm(
+                            offset_reg,
+                            offset_reg,
+                            addr.offset as u32,
+                        )?;
                         bytes.extend(self.encode_thumb32_ldr_reg(rd, &addr.base, offset_reg)?);
                         return Ok(bytes);
                     }
@@ -1186,7 +1187,10 @@ impl ArmEncoder {
                     // 16-bit: only if Rd, Rn, Rm < R8
                     if rd_bits < 8 && base_bits < 8 && rm_bits < 8 {
                         // LDR Rd, [Rn, Rm] (16-bit): 0101 100 Rm Rn Rd
-                        let instr: u16 = 0x5800 | ((rm_bits as u16) << 6) | ((base_bits as u16) << 3) | (rd_bits as u16);
+                        let instr: u16 = 0x5800
+                            | ((rm_bits as u16) << 6)
+                            | ((base_bits as u16) << 3)
+                            | (rd_bits as u16);
                         return Ok(instr.to_le_bytes().to_vec());
                     }
 
@@ -1220,7 +1224,11 @@ impl ArmEncoder {
                     // If there's also an immediate offset, we need to ADD it first
                     if addr.offset != 0 {
                         // ADD Rm, Rm, #offset; STR Rd, [base, Rm]
-                        let mut bytes = self.encode_thumb32_add_imm(offset_reg, offset_reg, addr.offset as u32)?;
+                        let mut bytes = self.encode_thumb32_add_imm(
+                            offset_reg,
+                            offset_reg,
+                            addr.offset as u32,
+                        )?;
                         bytes.extend(self.encode_thumb32_str_reg(rd, &addr.base, offset_reg)?);
                         return Ok(bytes);
                     }
@@ -1229,7 +1237,10 @@ impl ArmEncoder {
                     // 16-bit: only if Rd, Rn, Rm < R8
                     if rd_bits < 8 && base_bits < 8 && rm_bits < 8 {
                         // STR Rd, [Rn, Rm] (16-bit): 0101 000 Rm Rn Rd
-                        let instr: u16 = 0x5000 | ((rm_bits as u16) << 6) | ((base_bits as u16) << 3) | (rd_bits as u16);
+                        let instr: u16 = 0x5000
+                            | ((rm_bits as u16) << 6)
+                            | ((base_bits as u16) << 3)
+                            | (rd_bits as u16);
                         return Ok(instr.to_le_bytes().to_vec());
                     }
 
@@ -1270,7 +1281,11 @@ impl ArmEncoder {
             // CallIndirect - indirect function call via table lookup
             // table_index_reg contains the table index
             // Generates: LSL R12, idx, #2; LDR R12, [R12, table_base]; BLX R12
-            ArmOp::CallIndirect { rd: _, type_idx: _, table_index_reg } => {
+            ArmOp::CallIndirect {
+                rd: _,
+                type_idx: _,
+                table_index_reg,
+            } => {
                 let idx_reg = reg_to_bits(table_index_reg) as u32;
                 let mut bytes = Vec::new();
 
@@ -1524,7 +1539,9 @@ impl ArmEncoder {
                 let mut bytes = Vec::new();
 
                 // Helper: encode CMP Rn, Rm (16-bit)
-                let encode_cmp_reg = |rn: &synth_synthesis::Reg, rm: &synth_synthesis::Reg| -> Vec<u8> {
+                let encode_cmp_reg = |rn: &synth_synthesis::Reg,
+                                      rm: &synth_synthesis::Reg|
+                 -> Vec<u8> {
                     let rn_bits = reg_to_bits(rn) as u16;
                     let rm_bits = reg_to_bits(rm) as u16;
                     if rn_bits < 8 && rm_bits < 8 {
@@ -1692,12 +1709,6 @@ impl ArmEncoder {
                         bytes.extend_from_slice(&hw2.to_le_bytes());
                         bytes.extend_from_slice(&encode_setcond(0x2, rd_bits)); // HS = 0x2 (CS) = !LO
                     }
-
-                    _ => {
-                        // Fallback: emit NOP (unsupported i64 comparison condition)
-                        let nop: u16 = 0xBF00;
-                        bytes.extend_from_slice(&nop.to_le_bytes());
-                    }
                 }
 
                 Ok(bytes)
@@ -1737,7 +1748,12 @@ impl ArmEncoder {
             // Formula: result = (a_lo * b_lo) + ((a_lo * b_hi + a_hi * b_lo) << 32)
             // Uses R12 as scratch register
             ArmOp::I64Mul {
-                rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi,
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
             } => {
                 let rd_lo_bits = reg_to_bits(rd_lo) as u32;
                 let rd_hi_bits = reg_to_bits(rd_hi) as u32;
@@ -1772,7 +1788,8 @@ impl ArmEncoder {
                 // 4. ADD rd_hi, R12  (rd_hi += cross products)
                 // 16-bit high reg ADD: 01000100 D Rm Rdn[2:0]
                 let d_bit = (rd_hi_bits >> 3) & 1;
-                let add_instr: u16 = (0x4400 | (d_bit << 7) | (r12 << 3) | (rd_hi_bits & 0x7)) as u16;
+                let add_instr: u16 =
+                    (0x4400 | (d_bit << 7) | (r12 << 3) | (rd_hi_bits & 0x7)) as u16;
                 bytes.extend_from_slice(&add_instr.to_le_bytes());
 
                 Ok(bytes)
@@ -1781,7 +1798,12 @@ impl ArmEncoder {
             // I64Shl: 64-bit shift left with branch for n<32 vs n>=32
             // rm_hi (R3) is used as temp register
             ArmOp::I64Shl {
-                rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi,
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
             } => {
                 let rd_lo_bits = reg_to_bits(rd_lo) as u32;
                 let rd_hi_bits = reg_to_bits(rd_hi) as u32;
@@ -1858,7 +1880,12 @@ impl ArmEncoder {
 
             // I64ShrU: 64-bit logical shift right with branch for n<32 vs n>=32
             ArmOp::I64ShrU {
-                rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi,
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
             } => {
                 let rd_lo_bits = reg_to_bits(rd_lo) as u32;
                 let rd_hi_bits = reg_to_bits(rd_hi) as u32;
@@ -1935,7 +1962,12 @@ impl ArmEncoder {
 
             // I64ShrS: 64-bit arithmetic shift right with branch for n<32 vs n>=32
             ArmOp::I64ShrS {
-                rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi,
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
             } => {
                 let rd_lo_bits = reg_to_bits(rd_lo) as u32;
                 let rd_hi_bits = reg_to_bits(rd_hi) as u32;
@@ -2019,7 +2051,11 @@ impl ArmEncoder {
             // For n >= 32: same formula but with lo/hi conceptually swapped, shift by (n-32)
             // Uses R4 (saved/restored) and R12 as scratch
             ArmOp::I64Rotl {
-                rdlo, rdhi, rnlo, rnhi, shift,
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                shift,
             } => {
                 let rd_lo_bits = reg_to_bits(rdlo) as u32;
                 let rd_hi_bits = reg_to_bits(rdhi) as u32;
@@ -2027,8 +2063,8 @@ impl ArmEncoder {
                 let rn_hi_bits = reg_to_bits(rnhi) as u32;
                 let shift_bits = reg_to_bits(shift) as u32;
                 let r12: u32 = 12; // IP scratch
-                let r3: u32 = 3;   // Scratch (high word of shift amount, unused)
-                let r4: u32 = 4;   // Scratch (saved/restored)
+                let r3: u32 = 3; // Scratch (high word of shift amount, unused)
+                let r4: u32 = 4; // Scratch (saved/restored)
                 let mut bytes = Vec::new();
 
                 // PUSH {R4}
@@ -2143,7 +2179,8 @@ impl ArmEncoder {
 
                 // MOV rd_hi, shift (rd_hi = new_hi)
                 let d_bit = (rd_hi_bits >> 3) & 1;
-                let mov_instr: u16 = (0x4600 | (d_bit << 7) | (shift_bits << 3) | (rd_hi_bits & 0x7)) as u16;
+                let mov_instr: u16 =
+                    (0x4600 | (d_bit << 7) | (shift_bits << 3) | (rd_hi_bits & 0x7)) as u16;
                 bytes.extend_from_slice(&mov_instr.to_le_bytes());
 
                 // POP {R4}
@@ -2157,7 +2194,11 @@ impl ArmEncoder {
             // For n < 32: new_lo = (lo >> n) | (hi << (32-n)), new_hi = (hi >> n) | (lo << (32-n))
             // For n >= 32: same formula but with lo/hi swapped, shift by (n-32)
             ArmOp::I64Rotr {
-                rdlo, rdhi, rnlo, rnhi, shift,
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                shift,
             } => {
                 let rd_lo_bits = reg_to_bits(rdlo) as u32;
                 let rd_hi_bits = reg_to_bits(rdhi) as u32;
@@ -2280,7 +2321,8 @@ impl ArmEncoder {
 
                 // MOV rd_lo, shift (rd_lo = new_lo)
                 let d_bit = (rd_lo_bits >> 3) & 1;
-                let mov_instr: u16 = (0x4600 | (d_bit << 7) | (shift_bits << 3) | (rd_lo_bits & 0x7)) as u16;
+                let mov_instr: u16 =
+                    (0x4600 | (d_bit << 7) | (shift_bits << 3) | (rd_lo_bits & 0x7)) as u16;
                 bytes.extend_from_slice(&mov_instr.to_le_bytes());
 
                 // POP {R4}
@@ -2448,7 +2490,7 @@ impl ArmEncoder {
                 let rn_lo_bits = reg_to_bits(rnlo) as u32;
                 let rn_hi_bits = reg_to_bits(rnhi) as u32;
                 let r12: u32 = 12; // IP scratch
-                let r3: u32 = 3;   // Scratch for hi popcnt result
+                let r3: u32 = 3; // Scratch for hi popcnt result
                 let mut bytes = Vec::new();
 
                 // PUSH {R3, R4, R5} - save scratch registers
@@ -2757,7 +2799,10 @@ impl ArmEncoder {
                 if rdlo_bits != rnlo_bits {
                     // MOV Rd, Rm (16-bit): 0100 0110 D Rm Rd[2:0]
                     let d_bit = ((rdlo_bits >> 3) & 1) as u16;
-                    let mov: u16 = 0x4600 | (d_bit << 7) | ((rnlo_bits as u16) << 3) | ((rdlo_bits & 0x7) as u16);
+                    let mov: u16 = 0x4600
+                        | (d_bit << 7)
+                        | ((rnlo_bits as u16) << 3)
+                        | ((rdlo_bits & 0x7) as u16);
                     bytes.extend_from_slice(&mov.to_le_bytes());
                 }
 
@@ -2842,7 +2887,11 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&self.encode_thumb32_and_reg_raw(11, 11, 12)?);
 
                 // rd = rd - R11
-                bytes.extend_from_slice(&self.encode_thumb32_sub_reg_raw(reg_to_bits(rd), reg_to_bits(rd), 11)?);
+                bytes.extend_from_slice(&self.encode_thumb32_sub_reg_raw(
+                    reg_to_bits(rd),
+                    reg_to_bits(rd),
+                    11,
+                )?);
 
                 // Step 2: x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
                 // Load 0x33333333 into R12
@@ -2850,48 +2899,84 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&self.encode_thumb32_movt_raw(12, 0x3333)?);
 
                 // R11 = rd & R12
-                bytes.extend_from_slice(&self.encode_thumb32_and_reg_raw(11, reg_to_bits(rd), 12)?);
+                bytes.extend_from_slice(&self.encode_thumb32_and_reg_raw(
+                    11,
+                    reg_to_bits(rd),
+                    12,
+                )?);
 
                 // rd = rd >> 2
-                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(reg_to_bits(rd), reg_to_bits(rd), 2)?);
+                bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(
+                    reg_to_bits(rd),
+                    reg_to_bits(rd),
+                    2,
+                )?);
 
                 // rd = rd & R12
-                bytes.extend_from_slice(&self.encode_thumb32_and_reg_raw(reg_to_bits(rd), reg_to_bits(rd), 12)?);
+                bytes.extend_from_slice(&self.encode_thumb32_and_reg_raw(
+                    reg_to_bits(rd),
+                    reg_to_bits(rd),
+                    12,
+                )?);
 
                 // rd = rd + R11
-                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(reg_to_bits(rd), reg_to_bits(rd), 11)?);
+                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(
+                    reg_to_bits(rd),
+                    reg_to_bits(rd),
+                    11,
+                )?);
 
                 // Step 3: x = (x + (x >> 4)) & 0x0F0F0F0F
                 // R11 = rd >> 4
                 bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(11, reg_to_bits(rd), 4)?);
 
                 // rd = rd + R11
-                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(reg_to_bits(rd), reg_to_bits(rd), 11)?);
+                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(
+                    reg_to_bits(rd),
+                    reg_to_bits(rd),
+                    11,
+                )?);
 
                 // Load 0x0F0F0F0F into R12
                 bytes.extend_from_slice(&self.encode_thumb32_movw_raw(12, 0x0F0F)?);
                 bytes.extend_from_slice(&self.encode_thumb32_movt_raw(12, 0x0F0F)?);
 
                 // rd = rd & R12
-                bytes.extend_from_slice(&self.encode_thumb32_and_reg_raw(reg_to_bits(rd), reg_to_bits(rd), 12)?);
+                bytes.extend_from_slice(&self.encode_thumb32_and_reg_raw(
+                    reg_to_bits(rd),
+                    reg_to_bits(rd),
+                    12,
+                )?);
 
                 // Step 4: x = x + (x >> 8)
                 // R11 = rd >> 8
                 bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(11, reg_to_bits(rd), 8)?);
 
                 // rd = rd + R11
-                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(reg_to_bits(rd), reg_to_bits(rd), 11)?);
+                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(
+                    reg_to_bits(rd),
+                    reg_to_bits(rd),
+                    11,
+                )?);
 
                 // Step 5: x = x + (x >> 16)
                 // R11 = rd >> 16
                 bytes.extend_from_slice(&self.encode_thumb32_lsr_raw(11, reg_to_bits(rd), 16)?);
 
                 // rd = rd + R11
-                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(reg_to_bits(rd), reg_to_bits(rd), 11)?);
+                bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(
+                    reg_to_bits(rd),
+                    reg_to_bits(rd),
+                    11,
+                )?);
 
                 // Step 6: return x & 0x3F
                 // AND with 0x3F (small immediate, can use BIC or AND with immediate)
-                bytes.extend_from_slice(&self.encode_thumb32_and_imm_raw(reg_to_bits(rd), reg_to_bits(rd), 0x3F)?);
+                bytes.extend_from_slice(&self.encode_thumb32_and_imm_raw(
+                    reg_to_bits(rd),
+                    reg_to_bits(rd),
+                    0x3F,
+                )?);
 
                 Ok(bytes)
             }
@@ -2901,7 +2986,12 @@ impl ArmEncoder {
             // Output: R0:R1 = quotient
             // Uses: R4-R7, R12 as loop counter (avoid R8 for Renode compatibility)
             ArmOp::I64DivU {
-                rdlo: _, rdhi: _, rnlo: _, rnhi: _, rmlo: _, rmhi: _,
+                rdlo: _,
+                rdhi: _,
+                rnlo: _,
+                rnhi: _,
+                rmlo: _,
+                rmhi: _,
             } => {
                 let mut bytes = Vec::new();
 
@@ -2933,31 +3023,31 @@ impl ArmEncoder {
                 // LSLS R5, R5, #1 (16-bit: 0000 0010 1010 1101 = 0x006D -> actually 0x002D for LSL R5,R5,#1)
                 // LSL Rd, Rm, #imm5: 000 00 imm5 Rm Rd = 000 00 00001 101 101 = 0x006D
                 bytes.extend_from_slice(&0x006Du16.to_le_bytes()); // LSLS R5, R5, #1
-                // Get carry from R4 into R5: ORR R5, R5, R4 LSR #31
-                // Thumb-2 ORR with shifted register: EA45 75D4 = ORR.W R5, R5, R4, LSR #31
-                // 11101010 010 S Rn | 0 imm3 Rd imm2 type Rm
-                // type=01 (LSR), imm5=31 (imm3=111, imm2=11)
+                                                                   // Get carry from R4 into R5: ORR R5, R5, R4 LSR #31
+                                                                   // Thumb-2 ORR with shifted register: EA45 75D4 = ORR.W R5, R5, R4, LSR #31
+                                                                   // 11101010 010 S Rn | 0 imm3 Rd imm2 type Rm
+                                                                   // type=01 (LSR), imm5=31 (imm3=111, imm2=11)
                 bytes.extend_from_slice(&0xEA45u16.to_le_bytes());
                 bytes.extend_from_slice(&0x75D4u16.to_le_bytes()); // ORR.W R5, R5, R4, LSR #31
-                // LSLS R4, R4, #1: 000 00 00001 100 100 = 0x0064
+                                                                   // LSLS R4, R4, #1: 000 00 00001 100 100 = 0x0064
                 bytes.extend_from_slice(&0x0064u16.to_le_bytes()); // LSLS R4, R4, #1
 
                 // 2. Shift remainder R6:R7 left by 1, OR in MSB of dividend R1
                 // LSLS R7, R7, #1
                 bytes.extend_from_slice(&0x007Fu16.to_le_bytes()); // LSLS R7, R7, #1
-                // ORR.W R7, R7, R6, LSR #31
+                                                                   // ORR.W R7, R7, R6, LSR #31
                 bytes.extend_from_slice(&0xEA47u16.to_le_bytes());
                 bytes.extend_from_slice(&0x77D6u16.to_le_bytes());
                 // LSLS R6, R6, #1
                 bytes.extend_from_slice(&0x0076u16.to_le_bytes()); // LSLS R6, R6, #1
-                // ORR.W R6, R6, R1, LSR #31 (bring in MSB of dividend high)
+                                                                   // ORR.W R6, R6, R1, LSR #31 (bring in MSB of dividend high)
                 bytes.extend_from_slice(&0xEA46u16.to_le_bytes());
                 bytes.extend_from_slice(&0x76D1u16.to_le_bytes());
 
                 // 3. Shift dividend R0:R1 left by 1
                 // LSLS R1, R1, #1
                 bytes.extend_from_slice(&0x0049u16.to_le_bytes()); // LSLS R1, R1, #1
-                // ORR.W R1, R1, R0, LSR #31
+                                                                   // ORR.W R1, R1, R0, LSR #31
                 bytes.extend_from_slice(&0xEA41u16.to_le_bytes());
                 bytes.extend_from_slice(&0x71D0u16.to_le_bytes());
                 // LSLS R0, R0, #1
@@ -2967,9 +3057,9 @@ impl ArmEncoder {
                 // Compare high words first: CMP R7, R3
                 // CMP Rn, Rm encoding: 0x4280 | (Rm << 3) | Rn
                 bytes.extend_from_slice(&0x429Fu16.to_le_bytes()); // CMP R7, R3 (16-bit)
-                // BHI means R7 > R3 (unsigned) - definitely subtract
-                // BLO means R7 < R3 - definitely don't subtract
-                // BEQ means need to check low words
+                                                                   // BHI means R7 > R3 (unsigned) - definitely subtract
+                                                                   // BLO means R7 < R3 - definitely don't subtract
+                                                                   // BEQ means need to check low words
 
                 // If high > divisor high: branch to subtract (forward +offset)
                 // BHI.N +6 (skip CMP, skip BLO, do subtract)
@@ -2982,14 +3072,14 @@ impl ArmEncoder {
 
                 // High words equal, compare low: CMP R6, R2
                 bytes.extend_from_slice(&0x4296u16.to_le_bytes()); // CMP R6, R2 (16-bit)
-                // BLO/BCC past subtract (skip SUBS+SBC.W+ORR.W = 10 bytes = 4 halfwords from PC+4)
+                                                                   // BLO/BCC past subtract (skip SUBS+SBC.W+ORR.W = 10 bytes = 4 halfwords from PC+4)
                 bytes.extend_from_slice(&0xD304u16.to_le_bytes()); // BCC +4 halfwords (past subtract)
 
                 // === Subtract block: remainder -= divisor, quotient |= 1 ===
                 // SUBS R6, R6, R2
                 bytes.extend_from_slice(&0x1AB6u16.to_le_bytes()); // SUBS R6, R6, R2 (16-bit)
-                // SBC R7, R7, R3 (with borrow)
-                // Thumb-2 SBC.W: EB67 0703 = SBC.W R7, R7, R3
+                                                                   // SBC R7, R7, R3 (with borrow)
+                                                                   // Thumb-2 SBC.W: EB67 0703 = SBC.W R7, R7, R3
                 bytes.extend_from_slice(&0xEB67u16.to_le_bytes());
                 bytes.extend_from_slice(&0x0703u16.to_le_bytes());
                 // ORR R4, R4, #1 (set bit 0 of quotient low)
@@ -3026,7 +3116,12 @@ impl ArmEncoder {
             // Input: R0:R1 = dividend (signed), R2:R3 = divisor (signed)
             // Output: R0:R1 = quotient (signed)
             ArmOp::I64DivS {
-                rdlo: _, rdhi: _, rnlo: _, rnhi: _, rmlo: _, rmhi: _,
+                rdlo: _,
+                rdhi: _,
+                rnlo: _,
+                rnhi: _,
+                rmlo: _,
+                rmhi: _,
             } => {
                 let mut bytes = Vec::new();
 
@@ -3042,7 +3137,7 @@ impl ArmEncoder {
                 // If dividend negative (R1 MSB set), negate it
                 // TST R1, R1 (check sign)
                 bytes.extend_from_slice(&0x4209u16.to_le_bytes()); // TST R1, R1
-                // BPL skip_neg_dividend (+10 bytes = 5 halfwords)
+                                                                   // BPL skip_neg_dividend (+10 bytes = 5 halfwords)
                 bytes.extend_from_slice(&0xD504u16.to_le_bytes()); // BPL +8
 
                 // Negate R0:R1 (64-bit): RSBS R0, R0, #0; SBC R1, R1, R1 LSL #1
@@ -3148,7 +3243,12 @@ impl ArmEncoder {
             // Input: R0:R1 = dividend, R2:R3 = divisor
             // Output: R0:R1 = remainder
             ArmOp::I64RemU {
-                rdlo: _, rdhi: _, rnlo: _, rnhi: _, rmlo: _, rmhi: _,
+                rdlo: _,
+                rdhi: _,
+                rnlo: _,
+                rnhi: _,
+                rmlo: _,
+                rmhi: _,
             } => {
                 let mut bytes = Vec::new();
 
@@ -3227,7 +3327,12 @@ impl ArmEncoder {
             // Input: R0:R1 = dividend (signed), R2:R3 = divisor (signed)
             // Output: R0:R1 = remainder (signed, same sign as dividend)
             ArmOp::I64RemS {
-                rdlo: _, rdhi: _, rnlo: _, rnhi: _, rmlo: _, rmhi: _,
+                rdlo: _,
+                rdhi: _,
+                rnlo: _,
+                rnhi: _,
+                rmlo: _,
+                rmhi: _,
             } => {
                 let mut bytes = Vec::new();
 
@@ -3446,7 +3551,13 @@ impl ArmEncoder {
     }
 
     /// Encode Thumb-2 32-bit shift with immediate
-    fn encode_thumb32_shift(&self, rd: &Reg, rm: &Reg, shift: u32, shift_type: u8) -> Result<Vec<u8>> {
+    fn encode_thumb32_shift(
+        &self,
+        rd: &Reg,
+        rm: &Reg,
+        shift: u32,
+        shift_type: u8,
+    ) -> Result<Vec<u8>> {
         let rd_bits = reg_to_bits(rd) as u32;
         let rm_bits = reg_to_bits(rm) as u32;
         let imm5 = shift & 0x1F;
@@ -3456,7 +3567,9 @@ impl ArmEncoder {
         // MOV.W Rd, Rm, <shift> #imm
         // EA4F 0 imm3 Rd imm2 type Rm
         let hw1: u16 = 0xEA4F;
-        let hw2: u16 = ((imm3 << 12) | (rd_bits << 8) | (imm2 << 6) | ((shift_type as u32) << 4) | rm_bits) as u16;
+        let hw2: u16 =
+            ((imm3 << 12) | (rd_bits << 8) | (imm2 << 6) | ((shift_type as u32) << 4) | rm_bits)
+                as u16;
 
         let mut bytes = hw1.to_le_bytes().to_vec();
         bytes.extend_from_slice(&hw2.to_le_bytes());
@@ -3466,7 +3579,13 @@ impl ArmEncoder {
     /// Encode Thumb-2 32-bit shift by register
     /// Encoding: 11111010 0xx0 Rn | 1111 Rd 0000 Rm
     /// shift_type: 00=LSL, 01=LSR, 10=ASR, 11=ROR
-    fn encode_thumb32_shift_reg(&self, rd: &Reg, rn: &Reg, rm: &Reg, shift_type: u8) -> Result<Vec<u8>> {
+    fn encode_thumb32_shift_reg(
+        &self,
+        rd: &Reg,
+        rn: &Reg,
+        rm: &Reg,
+        shift_type: u8,
+    ) -> Result<Vec<u8>> {
         let rd_bits = reg_to_bits(rd) as u32;
         let rn_bits = reg_to_bits(rn) as u32;
         let rm_bits = reg_to_bits(rm) as u32;

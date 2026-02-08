@@ -10,11 +10,24 @@ repository.workspace = true
 name = "synth"
 path = "src/main.rs"
 
+[features]
+default = []
+awsm = ["synth-backend-awsm"]
+wasker = ["synth-backend-wasker"]
+verify = ["synth-verify"]
+
 [dependencies]
 synth-core = { path = "../synth-core" }
 synth-frontend = { path = "../synth-frontend" }
 synth-synthesis = { path = "../synth-synthesis" }
 synth-backend = { path = "../synth-backend" }
+
+# Optional external backends
+synth-backend-awsm = { path = "../synth-backend-awsm", optional = true }
+synth-backend-wasker = { path = "../synth-backend-wasker", optional = true }
+
+# Optional verification (requires z3)
+synth-verify = { path = "../synth-verify", optional = true, features = ["z3-solver", "arm"] }
 
 clap.workspace = true
 anyhow.workspace = true

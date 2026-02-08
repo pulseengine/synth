@@ -2,7 +2,7 @@
 //!
 //! Performs pattern-based optimizations on small windows of instructions
 
-use crate::rules::{ArmOp, Operand2, Reg};
+use crate::rules::{ArmOp, Operand2};
 
 /// Peephole optimizer for ARM instructions
 pub struct PeepholeOptimizer {
@@ -267,6 +267,7 @@ fn log2_power_of_2(n: i32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::Reg;
 
     #[test]
     fn test_peephole_creation() {
@@ -395,7 +396,7 @@ mod tests {
             }, // Redundant
         ];
 
-        let (optimized, stats) = optimizer.optimize_with_stats(&instrs);
+        let (_optimized, stats) = optimizer.optimize_with_stats(&instrs);
 
         assert_eq!(stats.original_instructions, 4);
         assert!(stats.optimized_instructions < 4);

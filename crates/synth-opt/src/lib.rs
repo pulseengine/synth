@@ -74,62 +74,214 @@ pub struct Instruction {
 pub enum Opcode {
     Nop,
     // Arithmetic
-    Add { dest: Reg, src1: Reg, src2: Reg },
-    Sub { dest: Reg, src1: Reg, src2: Reg },
-    Mul { dest: Reg, src1: Reg, src2: Reg },
-    DivS { dest: Reg, src1: Reg, src2: Reg }, // Signed division
-    DivU { dest: Reg, src1: Reg, src2: Reg }, // Unsigned division
-    RemS { dest: Reg, src1: Reg, src2: Reg }, // Signed remainder
-    RemU { dest: Reg, src1: Reg, src2: Reg }, // Unsigned remainder
+    Add {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    },
+    Sub {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    },
+    Mul {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    },
+    DivS {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Signed division
+    DivU {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Unsigned division
+    RemS {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Signed remainder
+    RemU {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Unsigned remainder
     // Bitwise
-    And { dest: Reg, src1: Reg, src2: Reg },
-    Or { dest: Reg, src1: Reg, src2: Reg },
-    Xor { dest: Reg, src1: Reg, src2: Reg },
-    Shl { dest: Reg, src1: Reg, src2: Reg },  // Shift left
-    ShrS { dest: Reg, src1: Reg, src2: Reg }, // Shift right signed
-    ShrU { dest: Reg, src1: Reg, src2: Reg }, // Shift right unsigned
-    Rotl { dest: Reg, src1: Reg, src2: Reg }, // Rotate left
-    Rotr { dest: Reg, src1: Reg, src2: Reg }, // Rotate right
+    And {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    },
+    Or {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    },
+    Xor {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    },
+    Shl {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Shift left
+    ShrS {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Shift right signed
+    ShrU {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Shift right unsigned
+    Rotl {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Rotate left
+    Rotr {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Rotate right
     // Bit count (unary)
-    Clz { dest: Reg, src: Reg },    // Count leading zeros
-    Ctz { dest: Reg, src: Reg },    // Count trailing zeros
-    Popcnt { dest: Reg, src: Reg }, // Population count
+    Clz {
+        dest: Reg,
+        src: Reg,
+    }, // Count leading zeros
+    Ctz {
+        dest: Reg,
+        src: Reg,
+    }, // Count trailing zeros
+    Popcnt {
+        dest: Reg,
+        src: Reg,
+    }, // Population count
     // Sign extension (unary)
-    Extend8S { dest: Reg, src: Reg },  // Sign-extend byte to 32-bit
-    Extend16S { dest: Reg, src: Reg }, // Sign-extend halfword to 32-bit
+    Extend8S {
+        dest: Reg,
+        src: Reg,
+    }, // Sign-extend byte to 32-bit
+    Extend16S {
+        dest: Reg,
+        src: Reg,
+    }, // Sign-extend halfword to 32-bit
     // Comparison (result is 0 or 1)
-    Eqz { dest: Reg, src: Reg },           // Equal to zero (unary)
-    Eq { dest: Reg, src1: Reg, src2: Reg },
-    Ne { dest: Reg, src1: Reg, src2: Reg },
-    LtS { dest: Reg, src1: Reg, src2: Reg }, // Less than signed
-    LtU { dest: Reg, src1: Reg, src2: Reg }, // Less than unsigned
-    LeS { dest: Reg, src1: Reg, src2: Reg }, // Less or equal signed
-    LeU { dest: Reg, src1: Reg, src2: Reg }, // Less or equal unsigned
-    GtS { dest: Reg, src1: Reg, src2: Reg }, // Greater than signed
-    GtU { dest: Reg, src1: Reg, src2: Reg }, // Greater than unsigned
-    GeS { dest: Reg, src1: Reg, src2: Reg }, // Greater or equal signed
-    GeU { dest: Reg, src1: Reg, src2: Reg }, // Greater or equal unsigned
+    Eqz {
+        dest: Reg,
+        src: Reg,
+    }, // Equal to zero (unary)
+    Eq {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    },
+    Ne {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    },
+    LtS {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Less than signed
+    LtU {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Less than unsigned
+    LeS {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Less or equal signed
+    LeU {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Less or equal unsigned
+    GtS {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Greater than signed
+    GtU {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Greater than unsigned
+    GeS {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Greater or equal signed
+    GeU {
+        dest: Reg,
+        src1: Reg,
+        src2: Reg,
+    }, // Greater or equal unsigned
     // Memory (local variable access)
-    Load { dest: Reg, addr: u32 },
-    Store { src: Reg, addr: u32 },
+    Load {
+        dest: Reg,
+        addr: u32,
+    },
+    Store {
+        src: Reg,
+        addr: u32,
+    },
     /// Load 64-bit value from local into register pair (for i64 on 32-bit ARM)
-    I64Load { dest_lo: Reg, dest_hi: Reg, addr: u32 },
+    I64Load {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        addr: u32,
+    },
     // Linear memory access (WASM i32.load / i32.store)
     /// Load 32-bit value from linear memory: dest = mem[addr + offset]
-    MemLoad { dest: Reg, addr: Reg, offset: u32 },
+    MemLoad {
+        dest: Reg,
+        addr: Reg,
+        offset: u32,
+    },
     /// Store 32-bit value to linear memory: mem[addr + offset] = src
-    MemStore { src: Reg, addr: Reg, offset: u32 },
+    MemStore {
+        src: Reg,
+        addr: Reg,
+        offset: u32,
+    },
     // Control flow
-    Branch { target: BlockId },
-    CondBranch { cond: Reg, target: BlockId },
-    Return { value: Option<Reg> },
+    Branch {
+        target: BlockId,
+    },
+    CondBranch {
+        cond: Reg,
+        target: BlockId,
+    },
+    Return {
+        value: Option<Reg>,
+    },
     /// Label marker for branch targets (loop start, block end)
-    Label { id: BlockId },
+    Label {
+        id: BlockId,
+    },
     /// Copy a value (for local.tee semantics: store value and keep it on stack)
-    Copy { dest: Reg, src: Reg },
+    Copy {
+        dest: Reg,
+        src: Reg,
+    },
     /// TeeStore: Store to local AND keep value on stack (local.tee)
     /// Combines Store + Copy: stores src to local addr, dest gets same value
-    TeeStore { dest: Reg, src: Reg, addr: u32 },
+    TeeStore {
+        dest: Reg,
+        src: Reg,
+        addr: u32,
+    },
     // Select: dest = cond != 0 ? val_true : val_false (ternary operator)
     Select {
         dest: Reg,
@@ -138,7 +290,10 @@ pub enum Opcode {
         cond: Reg,
     },
     // Constants
-    Const { dest: Reg, value: i32 },
+    Const {
+        dest: Reg,
+        value: i32,
+    },
 
     // i64 operations (use register pairs on 32-bit ARM: lo, hi)
     // dest_lo:dest_hi = src1_lo:src1_hi OP src2_lo:src2_hi
@@ -829,11 +984,21 @@ impl CommonSubexpressionElimination {
                     }
                 }
 
-                Opcode::Select { dest, val_true, val_false, cond } => {
+                Opcode::Select {
+                    dest,
+                    val_true,
+                    val_false,
+                    cond,
+                } => {
                     let val_true = resolve(val_true);
                     let val_false = resolve(val_false);
                     let cond = resolve(cond);
-                    inst.opcode = Opcode::Select { dest, val_true, val_false, cond };
+                    inst.opcode = Opcode::Select {
+                        dest,
+                        val_true,
+                        val_false,
+                        cond,
+                    };
                 }
 
                 // Division and remainder need resolution

@@ -2,10 +2,11 @@
 //!
 //! Uses pattern matching to select optimal ARM instruction sequences
 
-use crate::rules::{ArmOp, Condition, MemAddr, Operand2, Reg, Replacement, SynthesisRule, WasmOp};
+use crate::rules::{ArmOp, Condition, MemAddr, Operand2, Reg, Replacement, SynthesisRule};
 use crate::{Bindings, PatternMatcher};
 use std::collections::HashMap;
 use synth_core::Result;
+use synth_core::WasmOp;
 
 /// Bounds checking configuration for memory operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -328,7 +329,10 @@ impl InstructionSelector {
                 label: "func".to_string(), // Simplified - would use proper target
             }],
 
-            CallIndirect { type_index, table_index: _ } => {
+            CallIndirect {
+                type_index,
+                table_index: _,
+            } => {
                 // Table index is on top of stack (in rn), call target via table lookup
                 // For now, generate the pseudo-instruction; ARM encoder will expand
                 vec![ArmOp::CallIndirect {
@@ -562,7 +566,8 @@ impl InstructionSelector {
         let mut next_temp = num_params.min(4) as u8;
 
         // Map of local index -> register
-        let mut local_to_reg: std::collections::HashMap<u32, Reg> = std::collections::HashMap::new();
+        let mut local_to_reg: std::collections::HashMap<u32, Reg> =
+            std::collections::HashMap::new();
         // First 4 params are in r0-r3
         for i in 0..num_params.min(4) {
             local_to_reg.insert(i, index_to_reg(i as u8));
@@ -672,10 +677,20 @@ impl InstructionSelector {
                 I32And => {
                     let b = stack.pop().unwrap_or(Reg::R1);
                     let a = stack.pop().unwrap_or(Reg::R0);
-                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
-                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        index_to_reg(next_temp)
+                    };
+                    if dst != Reg::R0 {
+                        next_temp = (next_temp + 1) % 13;
+                    }
                     instructions.push(ArmInstruction {
-                        op: ArmOp::And { rd: dst, rn: a, op2: Operand2::Reg(b) },
+                        op: ArmOp::And {
+                            rd: dst,
+                            rn: a,
+                            op2: Operand2::Reg(b),
+                        },
                         source_line: Some(idx),
                     });
                     stack.push(dst);
@@ -684,10 +699,20 @@ impl InstructionSelector {
                 I32Or => {
                     let b = stack.pop().unwrap_or(Reg::R1);
                     let a = stack.pop().unwrap_or(Reg::R0);
-                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
-                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        index_to_reg(next_temp)
+                    };
+                    if dst != Reg::R0 {
+                        next_temp = (next_temp + 1) % 13;
+                    }
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Orr { rd: dst, rn: a, op2: Operand2::Reg(b) },
+                        op: ArmOp::Orr {
+                            rd: dst,
+                            rn: a,
+                            op2: Operand2::Reg(b),
+                        },
                         source_line: Some(idx),
                     });
                     stack.push(dst);
@@ -696,10 +721,20 @@ impl InstructionSelector {
                 I32Xor => {
                     let b = stack.pop().unwrap_or(Reg::R1);
                     let a = stack.pop().unwrap_or(Reg::R0);
-                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
-                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        index_to_reg(next_temp)
+                    };
+                    if dst != Reg::R0 {
+                        next_temp = (next_temp + 1) % 13;
+                    }
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Eor { rd: dst, rn: a, op2: Operand2::Reg(b) },
+                        op: ArmOp::Eor {
+                            rd: dst,
+                            rn: a,
+                            op2: Operand2::Reg(b),
+                        },
                         source_line: Some(idx),
                     });
                     stack.push(dst);
@@ -707,21 +742,33 @@ impl InstructionSelector {
 
                 // Division operations with trap checks for divide-by-zero
                 I32DivU => {
-                    let divisor = stack.pop().unwrap_or(Reg::R1);  // b (divisor)
+                    let divisor = stack.pop().unwrap_or(Reg::R1); // b (divisor)
                     let dividend = stack.pop().unwrap_or(Reg::R0); // a (dividend)
-                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
-                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        index_to_reg(next_temp)
+                    };
+                    if dst != Reg::R0 {
+                        next_temp = (next_temp + 1) % 13;
+                    }
 
                     // Trap check: if divisor == 0, trigger UDF (UsageFault -> Trap_Handler)
                     // CMP divisor, #0
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp { rn: divisor, op2: Operand2::Imm(0) },
+                        op: ArmOp::Cmp {
+                            rn: divisor,
+                            op2: Operand2::Imm(0),
+                        },
                         source_line: Some(idx),
                     });
                     // BNE.N +0 (skip UDF if divisor != 0)
                     // offset=0 means skip to PC+4, which skips the 2-byte UDF
                     instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 0 },
+                        op: ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 0,
+                        },
                         source_line: Some(idx),
                     });
                     // UDF #0 (triggers trap on divide by zero)
@@ -731,7 +778,11 @@ impl InstructionSelector {
                     });
                     // UDIV dst, dividend, divisor
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Udiv { rd: dst, rn: dividend, rm: divisor },
+                        op: ArmOp::Udiv {
+                            rd: dst,
+                            rn: dividend,
+                            rm: divisor,
+                        },
                         source_line: Some(idx),
                     });
                     stack.push(dst);
@@ -740,16 +791,28 @@ impl InstructionSelector {
                 I32DivS => {
                     let divisor = stack.pop().unwrap_or(Reg::R1);
                     let dividend = stack.pop().unwrap_or(Reg::R0);
-                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
-                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        index_to_reg(next_temp)
+                    };
+                    if dst != Reg::R0 {
+                        next_temp = (next_temp + 1) % 13;
+                    }
 
                     // Trap check 1: divide by zero
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp { rn: divisor, op2: Operand2::Imm(0) },
+                        op: ArmOp::Cmp {
+                            rn: divisor,
+                            op2: Operand2::Imm(0),
+                        },
                         source_line: Some(idx),
                     });
                     instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 0 },
+                        op: ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 0,
+                        },
                         source_line: Some(idx),
                     });
                     instructions.push(ArmInstruction {
@@ -768,30 +831,45 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Movt { rd: tmp, imm16: 0x8000 },
+                        op: ArmOp::Movt {
+                            rd: tmp,
+                            imm16: 0x8000,
+                        },
                         source_line: Some(idx),
                     });
                     // CMP dividend, tmp (check if dividend == INT_MIN)
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp { rn: dividend, op2: Operand2::Reg(tmp) },
+                        op: ArmOp::Cmp {
+                            rn: dividend,
+                            op2: Operand2::Reg(tmp),
+                        },
                         source_line: Some(idx),
                     });
                     // BNE.N +3 (skip overflow check if dividend != INT_MIN)
                     // Skip 8 bytes: CMN.W(4) + BNE(2) + UDF(2)
                     // Branch target = PC + (imm8 << 1) = B+4 + 6 = B+10 (SDIV)
                     instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 3 },
+                        op: ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 3,
+                        },
                         source_line: Some(idx),
                     });
                     // CMN divisor, #1 (check if divisor == -1: -1 + 1 = 0 sets Z flag)
                     // CMN.W is 4 bytes
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Cmn { rn: divisor, op2: Operand2::Imm(1) },
+                        op: ArmOp::Cmn {
+                            rn: divisor,
+                            op2: Operand2::Imm(1),
+                        },
                         source_line: Some(idx),
                     });
                     // BNE.N +0 (skip UDF if divisor != -1)
                     instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 0 },
+                        op: ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 0,
+                        },
                         source_line: Some(idx),
                     });
                     // UDF #1 (triggers trap on overflow)
@@ -802,7 +880,11 @@ impl InstructionSelector {
 
                     // SDIV dst, dividend, divisor (safe to divide now)
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Sdiv { rd: dst, rn: dividend, rm: divisor },
+                        op: ArmOp::Sdiv {
+                            rd: dst,
+                            rn: dividend,
+                            rm: divisor,
+                        },
                         source_line: Some(idx),
                     });
                     stack.push(dst);
@@ -811,16 +893,28 @@ impl InstructionSelector {
                 I32RemU => {
                     let divisor = stack.pop().unwrap_or(Reg::R1);
                     let dividend = stack.pop().unwrap_or(Reg::R0);
-                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
-                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        index_to_reg(next_temp)
+                    };
+                    if dst != Reg::R0 {
+                        next_temp = (next_temp + 1) % 13;
+                    }
 
                     // Trap check: divide by zero
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp { rn: divisor, op2: Operand2::Imm(0) },
+                        op: ArmOp::Cmp {
+                            rn: divisor,
+                            op2: Operand2::Imm(0),
+                        },
                         source_line: Some(idx),
                     });
                     instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 0 },
+                        op: ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 0,
+                        },
                         source_line: Some(idx),
                     });
                     instructions.push(ArmInstruction {
@@ -833,12 +927,21 @@ impl InstructionSelector {
                     let tmp = index_to_reg(next_temp);
                     next_temp = (next_temp + 1) % 13;
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Udiv { rd: tmp, rn: dividend, rm: divisor },
+                        op: ArmOp::Udiv {
+                            rd: tmp,
+                            rn: dividend,
+                            rm: divisor,
+                        },
                         source_line: Some(idx),
                     });
                     // MLS dst, tmp, divisor, dividend  (dst = dividend - tmp * divisor)
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Mls { rd: dst, rn: tmp, rm: divisor, ra: dividend },
+                        op: ArmOp::Mls {
+                            rd: dst,
+                            rn: tmp,
+                            rm: divisor,
+                            ra: dividend,
+                        },
                         source_line: Some(idx),
                     });
                     stack.push(dst);
@@ -847,16 +950,28 @@ impl InstructionSelector {
                 I32RemS => {
                     let divisor = stack.pop().unwrap_or(Reg::R1);
                     let dividend = stack.pop().unwrap_or(Reg::R0);
-                    let dst = if idx == wasm_ops.len() - 1 { Reg::R0 } else { index_to_reg(next_temp) };
-                    if dst != Reg::R0 { next_temp = (next_temp + 1) % 13; }
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        index_to_reg(next_temp)
+                    };
+                    if dst != Reg::R0 {
+                        next_temp = (next_temp + 1) % 13;
+                    }
 
                     // Trap check: divide by zero (rem_s doesn't trap on INT_MIN % -1)
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp { rn: divisor, op2: Operand2::Imm(0) },
+                        op: ArmOp::Cmp {
+                            rn: divisor,
+                            op2: Operand2::Imm(0),
+                        },
                         source_line: Some(idx),
                     });
                     instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset { cond: Condition::NE, offset: 0 },
+                        op: ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 0,
+                        },
                         source_line: Some(idx),
                     });
                     instructions.push(ArmInstruction {
@@ -868,11 +983,20 @@ impl InstructionSelector {
                     let tmp = index_to_reg(next_temp);
                     next_temp = (next_temp + 1) % 13;
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Sdiv { rd: tmp, rn: dividend, rm: divisor },
+                        op: ArmOp::Sdiv {
+                            rd: tmp,
+                            rn: dividend,
+                            rm: divisor,
+                        },
                         source_line: Some(idx),
                     });
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Mls { rd: dst, rn: tmp, rm: divisor, ra: dividend },
+                        op: ArmOp::Mls {
+                            rd: dst,
+                            rn: tmp,
+                            rm: divisor,
+                            ra: dividend,
+                        },
                         source_line: Some(idx),
                     });
                     stack.push(dst);
@@ -895,7 +1019,8 @@ impl InstructionSelector {
                     };
 
                     // Generate load with optional bounds checking
-                    let load_ops = self.generate_load_with_bounds_check(dst, addr, *offset as i32, 4);
+                    let load_ops =
+                        self.generate_load_with_bounds_check(dst, addr, *offset as i32, 4);
                     for op in load_ops {
                         instructions.push(ArmInstruction {
                             op,
@@ -911,7 +1036,8 @@ impl InstructionSelector {
                     let addr = stack.pop().unwrap_or(Reg::R0);
 
                     // Generate store with optional bounds checking
-                    let store_ops = self.generate_store_with_bounds_check(value, addr, *offset as i32, 4);
+                    let store_ops =
+                        self.generate_store_with_bounds_check(value, addr, *offset as i32, 4);
                     for op in store_ops {
                         instructions.push(ArmInstruction {
                             op,
@@ -1151,12 +1277,13 @@ mod tests {
     fn test_bounds_check_none() {
         // With BoundsCheckConfig::None, loads/stores should generate single instruction
         let db = RuleDatabase::new();
-        let mut selector = InstructionSelector::with_bounds_check(
-            db.rules().to_vec(),
-            BoundsCheckConfig::None,
-        );
+        let mut selector =
+            InstructionSelector::with_bounds_check(db.rules().to_vec(), BoundsCheckConfig::None);
 
-        let wasm_ops = vec![WasmOp::I32Load { offset: 0, align: 4 }];
+        let wasm_ops = vec![WasmOp::I32Load {
+            offset: 0,
+            align: 4,
+        }];
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
         // Should be just the LDR instruction (1 instruction)
@@ -1176,7 +1303,10 @@ mod tests {
             BoundsCheckConfig::Software,
         );
 
-        let wasm_ops = vec![WasmOp::I32Load { offset: 4, align: 4 }];
+        let wasm_ops = vec![WasmOp::I32Load {
+            offset: 4,
+            align: 4,
+        }];
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
         // Should be: ADD temp, addr, #offset; CMP temp, R10; BHS trap; LDR
@@ -1184,7 +1314,11 @@ mod tests {
 
         // First: ADD to calculate effective address
         match &arm_instrs[0].op {
-            ArmOp::Add { rd, rn: _, op2: Operand2::Imm(4) } => {
+            ArmOp::Add {
+                rd,
+                rn: _,
+                op2: Operand2::Imm(4),
+            } => {
                 assert_eq!(*rd, Reg::R12); // Uses R12 as temp
             }
             other => panic!("Expected Add with immediate 4, got {:?}", other),
@@ -1192,7 +1326,10 @@ mod tests {
 
         // Second: CMP against R10 (memory size)
         match &arm_instrs[1].op {
-            ArmOp::Cmp { rn, op2: Operand2::Reg(Reg::R10) } => {
+            ArmOp::Cmp {
+                rn,
+                op2: Operand2::Reg(Reg::R10),
+            } => {
                 assert_eq!(*rn, Reg::R12); // Compare temp
             }
             other => panic!("Expected Cmp against R10, got {:?}", other),
@@ -1217,12 +1354,13 @@ mod tests {
     fn test_bounds_check_masking() {
         // With BoundsCheckConfig::Masking, loads should generate AND + LDR
         let db = RuleDatabase::new();
-        let mut selector = InstructionSelector::with_bounds_check(
-            db.rules().to_vec(),
-            BoundsCheckConfig::Masking,
-        );
+        let mut selector =
+            InstructionSelector::with_bounds_check(db.rules().to_vec(), BoundsCheckConfig::Masking);
 
-        let wasm_ops = vec![WasmOp::I32Store { offset: 0, align: 4 }];
+        let wasm_ops = vec![WasmOp::I32Store {
+            offset: 0,
+            align: 4,
+        }];
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
         // Should be: AND addr, addr, R10; STR
@@ -1230,7 +1368,11 @@ mod tests {
 
         // First: AND to mask address
         match &arm_instrs[0].op {
-            ArmOp::And { rn: _, op2: Operand2::Reg(Reg::R10), .. } => {}
+            ArmOp::And {
+                rn: _,
+                op2: Operand2::Reg(Reg::R10),
+                ..
+            } => {}
             other => panic!("Expected And with R10, got {:?}", other),
         }
 

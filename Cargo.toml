@@ -16,6 +16,8 @@ members = [
     "crates/synth-verify",
     "crates/synth-test",
     "crates/synth-memory",
+    "crates/synth-backend-awsm",
+    "crates/synth-backend-wasker",
 ]
 resolver = "2"
 

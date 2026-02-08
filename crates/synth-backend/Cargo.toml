@@ -6,8 +6,12 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["arm-cortex-m"]
+arm-cortex-m = ["synth-synthesis"]
+
 [dependencies]
 synth-core = { path = "../synth-core" }
-synth-synthesis = { path = "../synth-synthesis" }
+synth-synthesis = { path = "../synth-synthesis", optional = true }
 anyhow.workspace = true
 thiserror.workspace = true

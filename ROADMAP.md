@@ -1,160 +1,170 @@
 # Synth Roadmap
 
-**Focus:** Minimal working demo - Calculator running on embedded hardware
+**Updated:** February 2026
 
 ---
 
 ## Current Status
 
-- **Phase 1:** In Progress
-- **Code:** 14 crates, ~24K lines, 380+ tests passing
-- **Coverage:** 151/151 WASM Core 1.0 operations (unit tests)
-- **Working:** `synth compile input.wat -o output.elf --cortex-m` produces complete Cortex-M binaries
-- **New:** AAPCS-compliant code generation, vector tables, startup code
+- **18 crates**, ~24K lines of Rust, **496 tests passing**
+- **151/151** WASM Core 1.0 operations have synthesis rules + unit tests
+- **End-to-end compilation works:** `synth compile input.wat -o output.elf`
+- **Multi-backend architecture:** Backend trait, registry, ARM backend functional
+- **Z3 formal verification:** `--verify` flag and `synth verify` command
+- **Cortex-M binaries:** vector tables, startup code, AAPCS calling convention
 
 ---
 
-## Phase 0: Organization & Cleanup
+## Completed Work
 
-**Duration:** 1 week | **Status:** Nearly Complete
+### Phase 0: Organization & Cleanup ✅
 
 | Task | Status |
 |------|--------|
-| Consolidate root documentation | Done |
-| Create docs/ structure | Done |
-| Document Synth/Loom relationship | Done |
-| Archive obsolete docs | Done |
-| Audit crate boundaries | Done |
-| Create realistic roadmap | This document |
-| Document feature status | Next |
+| Documentation structure (91+ docs) | Done |
+| Crate architecture (18 crates) | Done |
+| Feature matrix | Done |
+| Roadmap | Done |
 
-**Success Criteria:**
-- [x] ≤5 markdown files at root
-- [x] Clear docs/ structure
-- [x] Crate architecture documented
-- [ ] Honest feature matrix
+### Phase 1: Build System & Code Generation ✅
+
+| Task | Status |
+|------|--------|
+| Bazel BUILD files (17/18 crates) | Done |
+| WASM → ARM ELF compilation | Done |
+| Vector table generation | Done |
+| Startup code (reset handler) | Done |
+| AAPCS-compliant register allocation | Done |
+| Binary validation tests | Done |
+| Cortex-M complete binaries | Done |
+
+### Multi-Backend Restructure (8 phases) ✅
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 1 | Preserve arm-compiler-v1 branch | Done |
+| 2 | Extract WasmOp + wasm_decoder to synth-core | Done |
+| 3 | Create Backend trait + TargetSpec | Done |
+| 4 | Wrap ARM compiler as Backend | Done |
+| 5 | Feature-gate synth-backend | Done |
+| 6 | Backend-agnostic verification traits | Done |
+| 7 | External backend crate stubs (aWsm, wasker, w2c2) | Done |
+| 8 | CLI rework (--backend, --verify, backends) | Done |
+
+### Z3 Verification ✅
+
+| Task | Status |
+|------|--------|
+| Z3 0.19 API migration (605 errors fixed) | Done |
+| WASM semantics encoding (30+ ops) | Done |
+| ARM semantics encoding (20+ instrs) | Done |
+| Translation validator (Alive2-style proofs) | Done |
+| `--verify` flag wired to real Z3 | Done |
+| `synth verify` standalone command | Done |
+| 53 comprehensive verification tests | Done |
 
 ---
 
-## Phase 1: Build System & Code Generation
+## Current Roadmap
 
-**Duration:** 2 weeks | **Status:** In Progress
+### Phase A: End-to-End Integration (P0)
+
+Close the gap between "unit tests pass" and "compiler actually works end-to-end."
 
 | Task | Priority | Status |
 |------|----------|--------|
-| Fix Bazel dependency resolution | P0 | Done |
-| Create BUILD files for all crates | P0 | Done |
-| WASM → ELF integration test | P1 | Done |
-| Vector table generation | P1 | Done |
-| Startup code (reset handler) | P1 | Done |
-| AAPCS-compliant register allocation | P1 | Done |
-| Binary validation tests | P1 | Done |
-| ARM cross-compilation toolchain | P1 | Open |
-| Renode/QEMU testing infrastructure | P1 | Open |
-| Integrate Coq/OCaml extraction | P2 | Open |
-| Loom dependency integration | P2 | Open |
+| Calculator demo (add, sub, mul, div) | P0 | Open |
+| Control flow through full compile path | P0 | Open |
+| Memory operations through full compile path | P0 | Open |
+| WAST integration test runner | P1 | Open |
 
 **Success Criteria:**
-- [x] `bazel build //crates:synth` works
-- [x] `synth compile input.wat -o output.elf --cortex-m` generates valid Cortex-M binary
-- [x] Vector table, startup code, and function code all present
-- [x] AAPCS calling convention (params in r0-r3, return in r0)
-- [ ] `bazel test //...` passes
-- [ ] Integration test: WASM → ELF → Renode
+- [ ] `synth compile calculator.wat --all-exports --cortex-m -o calculator.elf` works
+- [ ] `synth verify calculator.wat calculator.elf` passes
+- [ ] Control flow (if/else, loop, br) compiles end-to-end
+- [ ] Memory ops (load/store) compile end-to-end
 
----
+### Phase B: CI/CD & Automated Testing (P0)
 
-## Phase 2: Calculator Demo
-
-**Duration:** 2 weeks
-
-### 2a: WASM Module
-| Task | Priority |
-|------|----------|
-| Create calculator.wat (add, sub, mul, div) | P0 |
-| Unit tests for WASM module | P1 |
-
-### 2b: Compiler CLI
 | Task | Priority | Status |
 |------|----------|--------|
-| Wire synth-cli to full pipeline | P0 | Done |
-| `synth compile input.wasm -o output.elf` | P0 | Done |
-| Add `--target`, `--optimize` flags | P1 | Open |
-| Add verification pass (optional) | P1 | Open |
-
-### 2c: Zephyr Integration
-| Task | Priority |
-|------|----------|
-| Create Zephyr calculator app | P0 |
-| Integrate Synth into CMake build | P0 |
-| Test on QEMU | P0 |
-| Test on real hardware | P1 |
-
-### 2d: Demo
-| Task | Priority |
-|------|----------|
-| Documentation with screenshots | P1 |
-| Demo video | P2 |
+| GitHub Actions: `cargo test --workspace` | P0 | Open |
+| GitHub Actions: `cargo clippy --workspace` | P0 | Open |
+| GitHub Actions: `cargo fmt --check` | P0 | Open |
+| GitHub Actions: Z3 verification tests | P1 | Open |
+| Pre-commit hooks | P2 | Open |
 
 **Success Criteria:**
-- [x] `synth compile calculator.wasm -o calculator.elf` works
-- [ ] Calculator runs in QEMU
-- [ ] Calculator runs on hardware (STM32/nRF52)
-- [ ] Demo video recorded
+- [ ] PRs run tests automatically
+- [ ] Code quality checks enforced
+- [ ] Z3 verification tests run weekly or on synth-verify changes
 
----
+### Phase C: Testing Infrastructure (P1)
 
-## Phase 3: Polish & Release
-
-**Duration:** 1 week
-
-| Task | Priority |
-|------|----------|
-| GitHub Actions CI (Rust tests) | P0 |
-| GitHub Actions CI (Bazel builds) | P0 |
-| Code coverage reporting | P1 |
-| Development setup guide | P1 |
-| API documentation (rustdoc) | P1 |
-| User guide | P1 |
-| Tag v0.1.0 release | P0 |
+| Task | Priority | Status |
+|------|----------|--------|
+| QEMU ARM testing harness | P0 | Open |
+| Renode integration (config files exist) | P1 | Open |
+| W3C spec test suite adapter (267 files exist) | P2 | Open |
 
 **Success Criteria:**
-- [ ] CI/CD operational
-- [ ] Documentation complete
-- [ ] v0.1.0 released
+- [ ] Compiled ELFs execute on QEMU and produce correct results
+- [ ] Spec test conformance percentage tracked
+
+### Phase D: External Backends (P2)
+
+| Task | Priority | Status |
+|------|----------|--------|
+| w2c2 backend: `compile_module()` | P0 | Open |
+| aWsm backend: `compile_module()` | P1 | Open |
+| wasker backend: `compile_module()` | P1 | Open |
+| Backend comparison tests | P2 | Open |
+
+### Phase E: Bazel & Build (P2)
+
+| Task | Priority | Status |
+|------|----------|--------|
+| Add synth-memory to BUILD.bazel | P0 | Open |
+| Verify `bazel build //crates:synth` | P1 | Open |
+| Verify `bazel test //...` | P1 | Open |
+
+### Phase F: Authoritative ISA Semantics (P3, Research)
+
+| Task | Priority | Status |
+|------|----------|--------|
+| Evaluate Sail ARM integration | P0 | Research |
+| RISC-V via sail-riscv | P1 | Research |
+
+**Goal:** Replace hand-written ARM semantics with machine-readable specs derived from ARM's own ISA specification, making verification proofs authoritative.
 
 ---
 
 ## Out of Scope (Future)
 
-These are **not** in the current roadmap:
-
 - SIMD/vector operations
-- RISC-V backend
+- RISC-V backend (pending Phase F research)
 - Full Component Model support
-- Safety certification (ISO 26262)
+- ISO 26262 / IEC 62304 certification
 - Production optimizations
 - Commercial features
 
-See `docs/planning/FUTURE_ROADMAP.md` for long-term vision.
-
 ---
 
-## Timeline Summary
+## Key Metrics
 
-| Phase | Duration | Goal |
-|-------|----------|------|
-| Phase 0 | Week 1 | Clean, organized repo |
-| Phase 1 | Weeks 2-3 | Working Bazel build |
-| Phase 2 | Weeks 4-5 | Calculator demo |
-| Phase 3 | Week 6 | v0.1.0 release |
-
-**Total: 6 weeks to working demo**
+| Metric | Value |
+|--------|-------|
+| Crates | 18 |
+| Lines of Rust | ~24K |
+| Tests | 496 |
+| WASM ops covered | 151/151 (100%) |
+| Z3 verification tests | 53 |
+| Documentation files | 91+ |
+| Backends registered | 4 (1 functional) |
 
 ---
 
 ## Tracking
 
 - **Issues:** [GitHub Issues](https://github.com/pulseengine/Synth/issues)
-- **Milestones:** phase-0-cleanup, phase-1-bazel, phase-2-calculator, phase-3-polish
-- **Project Board:** [Synth Reorganization](https://github.com/orgs/pulseengine/projects)
+- **Plan:** `.claude/plans/elegant-toasting-koala.md` (detailed execution plan)

@@ -17,10 +17,12 @@ pub use pattern_matcher::{
 };
 pub use peephole::{OptimizationStats as PeepholeStats, PeepholeOptimizer};
 pub use rules::{
-    ArmOp, Condition, Cost, MemAddr, Operand2, Pattern, Reg, Replacement, RuleDatabase,
-    ShiftType, SynthesisRule, WasmOp,
+    ArmOp, Condition, Cost, MemAddr, Operand2, Pattern, Reg, Replacement, RuleDatabase, ShiftType,
+    SynthesisRule, WasmOp,
 };
-pub use wasm_decoder::{decode_wasm_functions, decode_wasm_module, DecodedModule, FunctionOps, WasmMemory};
+pub use wasm_decoder::{
+    decode_wasm_functions, decode_wasm_module, DecodedModule, FunctionOps, WasmMemory,
+};
 
 // Stub for PoC
 pub struct SynthesisEngine;

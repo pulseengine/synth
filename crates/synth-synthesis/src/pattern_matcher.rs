@@ -275,7 +275,7 @@ impl ApplyStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rules::{ArmOp, Cost, Operand2, Reg, Replacement, RuleDatabase};
+    use crate::rules::{Cost, Replacement, RuleDatabase};
 
     fn test_ops() -> Vec<WasmOp> {
         vec![
@@ -362,7 +362,7 @@ mod tests {
         let applicator = RuleApplicator::new(db.rules().to_vec());
 
         let ops = test_ops();
-        let (result, stats) = applicator.apply_with_stats(&ops);
+        let (_result, stats) = applicator.apply_with_stats(&ops);
 
         assert_eq!(stats.total_instructions, ops.len());
         assert!(stats.match_rate() >= 0.0 && stats.match_rate() <= 100.0);

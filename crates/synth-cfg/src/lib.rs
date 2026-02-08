@@ -622,7 +622,7 @@ mod tests {
         builder.current_block = Some(loop_body);
         builder.add_branch(loop_header); // Back edge
 
-        let mut cfg = builder.build();
+        let cfg = builder.build();
 
         // Loop detection should find one loop
         assert_eq!(cfg.loops.len(), 1);

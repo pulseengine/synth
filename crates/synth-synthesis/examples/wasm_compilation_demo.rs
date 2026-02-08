@@ -111,7 +111,7 @@ fn array_sum_example() {
         WasmOp::I32Add,      // sum + array[i]
         // Inefficient: add 0 (no-op)
         WasmOp::I32Const(0),
-        WasmOp::I32Add, // + 0 (algebraic simplification opportunity)
+        WasmOp::I32Add,      // + 0 (algebraic simplification opportunity)
         WasmOp::LocalSet(1), // sum = result
         // Index increment
         WasmOp::LocalGet(3), // i

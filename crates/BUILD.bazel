@@ -6,7 +6,7 @@ load("@rules_rust//rust:defs.bzl", "rust_library", "rust_binary", "rust_test")
 
 package(default_visibility = ["//visibility:public"])
 
-# Core WebAssembly parsing and IR
+# Core WebAssembly parsing and IR (includes WasmOp, wasm_decoder, Backend trait)
 rust_library(
     name = "synth-core",
     srcs = glob(["synth-core/src/**/*.rs"]),
@@ -105,18 +105,46 @@ rust_library(
     ],
 )
 
-# Code generation backend (ARM, RISC-V)
+# Code generation backend (ELF builder, linker scripts, ARM encoder)
+# ARM-specific modules require synth-synthesis (arm-cortex-m feature in Cargo)
 rust_library(
     name = "synth-backend",
     srcs = glob(["synth-backend/src/**/*.rs"]),
     crate_root = "synth-backend/src/lib.rs",
     edition = "2021",
+    rustc_flags = ["--cfg", "feature=\"arm-cortex-m\""],
     deps = [
         ":synth-core",
         ":synth-codegen",
         ":synth-regalloc",
         ":synth-synthesis",
         "@crates//:anyhow",
+    ],
+)
+
+# aWsm external backend
+rust_library(
+    name = "synth-backend-awsm",
+    srcs = glob(["synth-backend-awsm/src/**/*.rs"]),
+    crate_root = "synth-backend-awsm/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        "@crates//:anyhow",
+        "@crates//:thiserror",
+    ],
+)
+
+# Wasker external backend
+rust_library(
+    name = "synth-backend-wasker",
+    srcs = glob(["synth-backend-wasker/src/**/*.rs"]),
+    crate_root = "synth-backend-wasker/src/lib.rs",
+    edition = "2021",
+    deps = [
+        ":synth-core",
+        "@crates//:anyhow",
+        "@crates//:thiserror",
     ],
 )
 
@@ -159,22 +187,30 @@ rust_library(
     ],
 )
 
-# Verification (Z3 SMT + Coq proof generation)
+# Verification (Z3 SMT + property-based testing)
+# Features: z3-solver (SMT proofs), arm (ARM semantics via synth-synthesis)
 rust_library(
     name = "synth-verify",
     srcs = glob(["synth-verify/src/**/*.rs"]),
     crate_root = "synth-verify/src/lib.rs",
     edition = "2021",
+    rustc_flags = [
+        "--cfg", "feature=\"z3-solver\"",
+        "--cfg", "feature=\"arm\"",
+    ],
     deps = [
         ":synth-core",
-        ":synth-backend",
+        ":synth-cfg",
+        ":synth-opt",
+        ":synth-synthesis",
         "@crates//:anyhow",
+        "@crates//:chrono",
+        "@crates//:proptest",
+        "@crates//:serde",
+        "@crates//:serde_json",
+        "@crates//:thiserror",
         "@crates//:z3",
     ],
-    rustc_flags = select({
-        "//bazel/features:with_verification": ["--cfg", "feature=\"verification\""],
-        "//conditions:default": [],
-    }),
 )
 
 # QEMU integration for testing
@@ -254,6 +290,8 @@ filegroup(
         ":synth-synthesis",
         ":synth-regalloc",
         ":synth-backend",
+        ":synth-backend-awsm",
+        ":synth-backend-wasker",
         ":synth-codegen",
         ":synth-abi",
         ":synth-wit",

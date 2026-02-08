@@ -323,7 +323,7 @@ mod tests {
         let outer = cf.enter_block(BlockType::Block);
         cf.add_instruction();
 
-        let inner = cf.enter_block(BlockType::Block);
+        let _inner = cf.enter_block(BlockType::Block);
         cf.add_instruction();
 
         // Record a branch to outer block (depth 1)

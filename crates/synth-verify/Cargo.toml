@@ -7,20 +7,21 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["z3-solver"]
+default = ["z3-solver", "arm"]
 z3-solver = ["z3"]
+arm = ["synth-synthesis"]
 
 [dependencies]
-# Core dependencies
+# Core dependencies (always required)
 synth-core = { path = "../synth-core" }
-synth-synthesis = { path = "../synth-synthesis" }
 synth-cfg = { path = "../synth-cfg" }
 synth-opt = { path = "../synth-opt" }
 
+# ARM synthesis (optional, behind 'arm' feature)
+synth-synthesis = { path = "../synth-synthesis", optional = true }
+
 # SMT solver for formal verification
-# Uses static linking to bundle Z3, avoiding system dependency issues
-# This will download and build Z3 from source automatically
-z3 = { version = "0.12", features = ["static-link-z3"], optional = true }
+z3 = { version = "0.19", features = ["static-link-z3"], optional = true }
 
 # Error handling
 anyhow.workspace = true
@@ -37,5 +38,8 @@ proptest.workspace = true
 chrono = "0.4"
 
 [dev-dependencies]
-# Additional test utilities
 criterion = "0.5"
+
+[[example]]
+name = "verification_report"
+required-features = ["z3-solver", "arm"]

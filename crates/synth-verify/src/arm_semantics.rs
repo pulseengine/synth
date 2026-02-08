@@ -5,72 +5,62 @@
 //! captures its behavior, including register updates and condition flags.
 
 use synth_synthesis::rules::{ArmOp, Operand2, Reg, VfpReg};
-use z3::ast::{Ast, Bool, BV};
-use z3::Context;
+use z3::ast::{Bool, BV};
 
 /// ARM processor state representation in SMT
-pub struct ArmState<'ctx> {
+///
+/// Z3 0.19 uses thread-local context -- no lifetime parameters needed.
+pub struct ArmState {
     /// General purpose registers R0-R15
-    pub registers: Vec<BV<'ctx>>,
+    pub registers: Vec<BV>,
     /// Condition flags (N, Z, C, V)
-    pub flags: ConditionFlags<'ctx>,
+    pub flags: ConditionFlags,
     /// VFP (floating-point) registers
-    /// S0-S31 (32 single-precision) + D0-D15 (16 double-precision)
-    /// Modeled as 32-bit bitvectors (can represent f32 or parts of f64)
-    pub vfp_registers: Vec<BV<'ctx>>,
+    pub vfp_registers: Vec<BV>,
     /// Memory model (simplified for bounded verification)
-    pub memory: Vec<BV<'ctx>>,
+    pub memory: Vec<BV>,
     /// Local variables (for WASM verification)
-    pub locals: Vec<BV<'ctx>>,
+    pub locals: Vec<BV>,
     /// Global variables (for WASM verification)
-    pub globals: Vec<BV<'ctx>>,
+    pub globals: Vec<BV>,
 }
 
 /// ARM condition flags
-pub struct ConditionFlags<'ctx> {
-    pub n: Bool<'ctx>, // Negative
-    pub z: Bool<'ctx>, // Zero
-    pub c: Bool<'ctx>, // Carry
-    pub v: Bool<'ctx>, // Overflow
+pub struct ConditionFlags {
+    pub n: Bool, // Negative
+    pub z: Bool, // Zero
+    pub c: Bool, // Carry
+    pub v: Bool, // Overflow
 }
 
-impl<'ctx> ArmState<'ctx> {
+impl ArmState {
     /// Create a new ARM state with symbolic values
-    pub fn new_symbolic(ctx: &'ctx Context) -> Self {
+    pub fn new_symbolic() -> Self {
         let registers = (0..16)
-            .map(|i| BV::new_const(ctx, format!("r{}", i), 32))
+            .map(|i| BV::new_const(format!("r{}", i), 32))
             .collect();
 
         let flags = ConditionFlags {
-            n: Bool::new_const(ctx, "flag_n"),
-            z: Bool::new_const(ctx, "flag_z"),
-            c: Bool::new_const(ctx, "flag_c"),
-            v: Bool::new_const(ctx, "flag_v"),
+            n: Bool::new_const("flag_n"),
+            z: Bool::new_const("flag_z"),
+            c: Bool::new_const("flag_c"),
+            v: Bool::new_const("flag_v"),
         };
 
-        // Simplified memory model with fixed number of locations
         let memory = (0..256)
-            .map(|i| BV::new_const(ctx, format!("mem_{}", i), 32))
+            .map(|i| BV::new_const(format!("mem_{}", i), 32))
             .collect();
 
-        // Local variables (symbolic values)
         let locals = (0..32)
-            .map(|i| BV::new_const(ctx, format!("local_{}", i), 32))
+            .map(|i| BV::new_const(format!("local_{}", i), 32))
             .collect();
 
-        // Global variables (symbolic values)
         let globals = (0..16)
-            .map(|i| BV::new_const(ctx, format!("global_{}", i), 32))
+            .map(|i| BV::new_const(format!("global_{}", i), 32))
             .collect();
 
-        // VFP registers (S0-S31 single-precision + D0-D15 double-precision)
-        // We model all as 32-bit bitvectors:
-        // - S registers (32): Direct 32-bit f32 representation
-        // - D registers (16): Each D register uses two consecutive S registers
-        //   D0 = S0:S1, D1 = S2:S3, etc.
-        // Total: 48 VFP register slots (32 S + 16 D conceptually, but we store 48 for simplicity)
         let vfp_registers = (0..48)
-            .map(|i| BV::new_const(ctx, format!("vfp_{}", i), 32))
+            .map(|i| BV::new_const(format!("vfp_{}", i), 32))
             .collect();
 
         Self {
@@ -84,25 +74,25 @@ impl<'ctx> ArmState<'ctx> {
     }
 
     /// Get register value
-    pub fn get_reg(&self, reg: &Reg) -> &BV<'ctx> {
+    pub fn get_reg(&self, reg: &Reg) -> &BV {
         let index = reg_to_index(reg);
         &self.registers[index]
     }
 
     /// Set register value
-    pub fn set_reg(&mut self, reg: &Reg, value: BV<'ctx>) {
+    pub fn set_reg(&mut self, reg: &Reg, value: BV) {
         let index = reg_to_index(reg);
         self.registers[index] = value;
     }
 
     /// Get VFP register value
-    pub fn get_vfp_reg(&self, reg: &VfpReg) -> &BV<'ctx> {
+    pub fn get_vfp_reg(&self, reg: &VfpReg) -> &BV {
         let index = vfp_reg_to_index(reg);
         &self.vfp_registers[index]
     }
 
     /// Set VFP register value
-    pub fn set_vfp_reg(&mut self, reg: &VfpReg, value: BV<'ctx>) {
+    pub fn set_vfp_reg(&mut self, reg: &VfpReg, value: BV) {
         let index = vfp_reg_to_index(reg);
         self.vfp_registers[index] = value;
     }
@@ -189,20 +179,20 @@ fn vfp_reg_to_index(reg: &VfpReg) -> usize {
 }
 
 /// ARM semantics encoder
-pub struct ArmSemantics<'ctx> {
-    ctx: &'ctx Context,
-}
+///
+/// Z3 0.19 uses thread-local context -- no lifetime parameters needed.
+pub struct ArmSemantics;
 
-impl<'ctx> ArmSemantics<'ctx> {
+impl ArmSemantics {
     /// Create a new ARM semantics encoder
-    pub fn new(ctx: &'ctx Context) -> Self {
-        Self { ctx }
+    pub fn new() -> Self {
+        Self
     }
 
     /// Encode an ARM operation and return the resulting state
     ///
     /// This models the effect of executing the ARM instruction on the processor state.
-    pub fn encode_op(&self, op: &ArmOp, state: &mut ArmState<'ctx>) {
+    pub fn encode_op(&self, op: &ArmOp, state: &mut ArmState) {
         match op {
             ArmOp::Add { rd, rn, op2 } => {
                 let rn_val = state.get_reg(rn).clone();
@@ -273,21 +263,21 @@ impl<'ctx> ArmSemantics<'ctx> {
 
             ArmOp::Lsl { rd, rn, shift } => {
                 let rn_val = state.get_reg(rn).clone();
-                let shift_val = BV::from_i64(self.ctx, *shift as i64, 32);
+                let shift_val = BV::from_i64(*shift as i64, 32);
                 let result = rn_val.bvshl(&shift_val);
                 state.set_reg(rd, result);
             }
 
             ArmOp::Lsr { rd, rn, shift } => {
                 let rn_val = state.get_reg(rn).clone();
-                let shift_val = BV::from_i64(self.ctx, *shift as i64, 32);
+                let shift_val = BV::from_i64(*shift as i64, 32);
                 let result = rn_val.bvlshr(&shift_val);
                 state.set_reg(rd, result);
             }
 
             ArmOp::Asr { rd, rn, shift } => {
                 let rn_val = state.get_reg(rn).clone();
-                let shift_val = BV::from_i64(self.ctx, *shift as i64, 32);
+                let shift_val = BV::from_i64(*shift as i64, 32);
                 let result = rn_val.bvashr(&shift_val);
                 state.set_reg(rd, result);
             }
@@ -296,7 +286,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Rotate right - ARM ROR instruction
                 // ROR(x, n) rotates x right by n positions
                 let rn_val = state.get_reg(rn).clone();
-                let shift_val = BV::from_i64(self.ctx, *shift as i64, 32);
+                let shift_val = BV::from_i64(*shift as i64, 32);
                 let result = rn_val.bvrotr(&shift_val);
                 state.set_reg(rd, result);
             }
@@ -372,8 +362,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let val1 = state.get_reg(rval1).clone();
                 let val2 = state.get_reg(rval2).clone();
                 let cond = state.get_reg(rcond).clone();
-                let zero = BV::from_i64(self.ctx, 0, 32);
-                let cond_bool = cond._eq(&zero).not(); // cond != 0
+                let zero = BV::from_i64(0, 32);
+                let cond_bool = cond.eq(&zero).not(); // cond != 0
                 let result = cond_bool.ite(&val1, &val2);
                 state.set_reg(rd, result);
             }
@@ -382,7 +372,7 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::Ldr { rd, addr: _ } => {
                 // Load from memory
                 // Simplified: return symbolic value
-                let result = BV::new_const(self.ctx, format!("load_{:?}", rd), 32);
+                let result = BV::new_const(format!("load_{:?}", rd), 32);
                 state.set_reg(rd, result);
             }
 
@@ -412,7 +402,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                     .locals
                     .get(*index as usize)
                     .cloned()
-                    .unwrap_or_else(|| BV::new_const(self.ctx, format!("local_{}", index), 32));
+                    .unwrap_or_else(|| BV::new_const(format!("local_{}", index), 32));
                 state.set_reg(rd, value);
             }
 
@@ -439,7 +429,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                     .globals
                     .get(*index as usize)
                     .cloned()
-                    .unwrap_or_else(|| BV::new_const(self.ctx, format!("global_{}", index), 32));
+                    .unwrap_or_else(|| BV::new_const(format!("global_{}", index), 32));
                 state.set_reg(rd, value);
             }
 
@@ -460,17 +450,13 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Multi-way branch based on index
                 // For verification, we model the control flow symbolically
                 let _index = state.get_reg(index_reg).clone();
-                let result = BV::new_const(
-                    self.ctx,
-                    format!("br_table_{}_{}", targets.len(), default),
-                    32,
-                );
+                let result = BV::new_const(format!("br_table_{}_{}", targets.len(), default), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::Call { rd, func_idx } => {
                 // Function call - model result symbolically
-                let result = BV::new_const(self.ctx, format!("call_{}", func_idx), 32);
+                let result = BV::new_const(format!("call_{}", func_idx), 32);
                 state.set_reg(rd, result);
             }
 
@@ -481,7 +467,7 @@ impl<'ctx> ArmSemantics<'ctx> {
             } => {
                 // Indirect function call through table
                 let _table_index = state.get_reg(table_index_reg).clone();
-                let result = BV::new_const(self.ctx, format!("call_indirect_{}", type_idx), 32);
+                let result = BV::new_const(format!("call_indirect_{}", type_idx), 32);
                 state.set_reg(rd, result);
             }
 
@@ -494,8 +480,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Load 64-bit constant into register pair
                 let low32 = (*value as u32) as i64;
                 let high32 = *value >> 32;
-                state.set_reg(rdlo, BV::from_i64(self.ctx, low32, 32));
-                state.set_reg(rdhi, BV::from_i64(self.ctx, high32, 32));
+                state.set_reg(rdlo, BV::from_i64(low32, 32));
+                state.set_reg(rdhi, BV::from_i64(high32, 32));
             }
 
             ArmOp::I64Add {
@@ -522,10 +508,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Detect carry: overflow occurred if result < either operand
                 // For unsigned: carry = (result_low < n_low)
                 let carry = result_low.bvult(&n_low);
-                let carry_bv = carry.ite(
-                    &BV::from_i64(self.ctx, 1, 32),
-                    &BV::from_i64(self.ctx, 0, 32),
-                );
+                let carry_bv = carry.ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32));
 
                 // High part: add with carry
                 let high_sum = n_high.bvadd(&m_high);
@@ -536,10 +519,10 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::I64Eqz { rd, rnlo, rnhi } => {
                 // Check if 64-bit value is zero
                 // True if both low and high parts are zero
-                let zero = BV::from_i64(self.ctx, 0, 32);
-                let low_zero = state.get_reg(rnlo)._eq(&zero);
-                let high_zero = state.get_reg(rnhi)._eq(&zero);
-                let both_zero = Bool::and(self.ctx, &[&low_zero, &high_zero]);
+                let zero = BV::from_i64(0, 32);
+                let low_zero = state.get_reg(rnlo).eq(&zero);
+                let high_zero = state.get_reg(rnhi).eq(&zero);
+                let both_zero = Bool::and(&[&low_zero, &high_zero]);
                 let result = self.bool_to_bv32(&both_zero);
                 state.set_reg(rd, result);
             }
@@ -557,12 +540,10 @@ impl<'ctx> ArmSemantics<'ctx> {
 
                 // High part is sign extension (all 0s or all 1s based on sign bit)
                 let sign_bit = value.extract(31, 31); // Extract bit 31
-                let all_ones = BV::from_i64(self.ctx, -1, 32);
-                let zero = BV::from_i64(self.ctx, 0, 32);
+                let all_ones = BV::from_i64(-1, 32);
+                let zero = BV::from_i64(0, 32);
                 // If sign bit is 1, high = 0xFFFFFFFF, else high = 0
-                let high_val = sign_bit
-                    ._eq(&BV::from_i64(self.ctx, 1, 1))
-                    .ite(&all_ones, &zero);
+                let high_val = sign_bit.eq(&BV::from_i64(1, 1)).ite(&all_ones, &zero);
                 state.set_reg(rdhi, high_val);
             }
 
@@ -571,7 +552,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let value = state.get_reg(rn).clone();
                 state.set_reg(rdlo, value);
                 // High part is always zero for unsigned extend
-                state.set_reg(rdhi, BV::from_i64(self.ctx, 0, 32));
+                state.set_reg(rdhi, BV::from_i64(0, 32));
             }
 
             ArmOp::I64Sub {
@@ -597,10 +578,7 @@ impl<'ctx> ArmSemantics<'ctx> {
 
                 // Detect borrow: borrow occurred if n_low < m_low (unsigned)
                 let borrow = n_low.bvult(&m_low);
-                let borrow_bv = borrow.ite(
-                    &BV::from_i64(self.ctx, 1, 32),
-                    &BV::from_i64(self.ctx, 0, 32),
-                );
+                let borrow_bv = borrow.ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32));
 
                 // High part: subtract with borrow
                 let high_diff = n_high.bvsub(&m_high);
@@ -609,27 +587,27 @@ impl<'ctx> ArmSemantics<'ctx> {
             }
 
             ArmOp::I64Mul {
-                rdlo,
-                rdhi,
-                rnlo,
-                rnhi,
-                rmlo,
-                rmhi,
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
             } => {
                 // 64-bit multiplication: (a_hi:a_lo) * (b_hi:b_lo) → (result_hi:result_lo)
                 // Algorithm for 64x64→64 bit multiplication:
                 // result = (a_hi * b_lo * 2^32) + (a_lo * b_hi * 2^32) + (a_lo * b_lo)
                 // Only the low 64 bits are kept
 
-                let a_lo = state.get_reg(rnlo).clone();
-                let a_hi = state.get_reg(rnhi).clone();
-                let b_lo = state.get_reg(rmlo).clone();
-                let b_hi = state.get_reg(rmhi).clone();
+                let a_lo = state.get_reg(rn_lo).clone();
+                let a_hi = state.get_reg(rn_hi).clone();
+                let b_lo = state.get_reg(rm_lo).clone();
+                let b_hi = state.get_reg(rm_hi).clone();
 
                 // Low part: a_lo * b_lo (32x32→64, we need both parts)
                 // For SMT, we can use bvmul which gives 32-bit result (truncated)
                 let lo_lo = a_lo.bvmul(&b_lo);
-                state.set_reg(rdlo, lo_lo.clone());
+                state.set_reg(rd_lo, lo_lo.clone());
 
                 // For the high part, we need to handle overflow from a_lo * b_lo
                 // and add the cross products: a_hi * b_lo + a_lo * b_hi
@@ -645,7 +623,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // High part approximation (missing carry from a_lo * b_lo)
                 // result_hi ≈ hi_lo + lo_hi
                 let hi_sum = hi_lo.bvadd(&lo_hi);
-                state.set_reg(rdhi, hi_sum);
+                state.set_reg(rd_hi, hi_sum);
 
                 // Note: This is a simplified implementation. A complete implementation
                 // would need to:
@@ -664,32 +642,32 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Signed 64-bit division
                 // Real implementation would require __aeabi_ldivmod or equivalent
                 // For verification, return symbolic values
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_divs_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_divs_hi", 32));
+                state.set_reg(rdlo, BV::new_const("i64_divs_lo", 32));
+                state.set_reg(rdhi, BV::new_const("i64_divs_hi", 32));
             }
 
             ArmOp::I64DivU { rdlo, rdhi, .. } => {
                 // Unsigned 64-bit division
                 // Real implementation would require __aeabi_uldivmod or equivalent
                 // For verification, return symbolic values
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_divu_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_divu_hi", 32));
+                state.set_reg(rdlo, BV::new_const("i64_divu_lo", 32));
+                state.set_reg(rdhi, BV::new_const("i64_divu_hi", 32));
             }
 
             ArmOp::I64RemS { rdlo, rdhi, .. } => {
                 // Signed 64-bit remainder (modulo)
                 // Real implementation would require __aeabi_ldivmod or equivalent
                 // For verification, return symbolic values
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_rems_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_rems_hi", 32));
+                state.set_reg(rdlo, BV::new_const("i64_rems_lo", 32));
+                state.set_reg(rdhi, BV::new_const("i64_rems_hi", 32));
             }
 
             ArmOp::I64RemU { rdlo, rdhi, .. } => {
                 // Unsigned 64-bit remainder (modulo)
                 // Real implementation would require __aeabi_uldivmod or equivalent
                 // For verification, return symbolic values
-                state.set_reg(rdlo, BV::new_const(self.ctx, "i64_remu_lo", 32));
-                state.set_reg(rdhi, BV::new_const(self.ctx, "i64_remu_hi", 32));
+                state.set_reg(rdlo, BV::new_const("i64_remu_lo", 32));
+                state.set_reg(rdhi, BV::new_const("i64_remu_hi", 32));
             }
 
             ArmOp::I64And {
@@ -755,9 +733,9 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let n_high = state.get_reg(rnhi).clone();
                 let m_high = state.get_reg(rmhi).clone();
 
-                let low_eq = n_low._eq(&m_low);
-                let high_eq = n_high._eq(&m_high);
-                let both_eq = Bool::and(self.ctx, &[&low_eq, &high_eq]);
+                let low_eq = n_low.eq(&m_low);
+                let high_eq = n_high.eq(&m_high);
+                let both_eq = Bool::and(&[&low_eq, &high_eq]);
                 let result = self.bool_to_bv32(&both_eq);
                 state.set_reg(rd, result);
             }
@@ -778,14 +756,14 @@ impl<'ctx> ArmSemantics<'ctx> {
 
                 // High parts comparison (signed)
                 let high_lt = n_high.bvslt(&m_high);
-                let high_eq = n_high._eq(&m_high);
+                let high_eq = n_high.eq(&m_high);
 
                 // Low parts comparison (unsigned)
                 let low_lt = n_low.bvult(&m_low);
 
                 // Result: high_lt OR (high_eq AND low_lt)
-                let eq_and_low = Bool::and(self.ctx, &[&high_eq, &low_lt]);
-                let result_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_low]);
+                let eq_and_low = Bool::and(&[&high_eq, &low_lt]);
+                let result_bool = Bool::or(&[&high_lt, &eq_and_low]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -806,14 +784,14 @@ impl<'ctx> ArmSemantics<'ctx> {
 
                 // High parts comparison (unsigned)
                 let high_lt = n_high.bvult(&m_high);
-                let high_eq = n_high._eq(&m_high);
+                let high_eq = n_high.eq(&m_high);
 
                 // Low parts comparison (unsigned)
                 let low_lt = n_low.bvult(&m_low);
 
                 // Result: high_lt OR (high_eq AND low_lt)
-                let eq_and_low = Bool::and(self.ctx, &[&high_eq, &low_lt]);
-                let result_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_low]);
+                let eq_and_low = Bool::and(&[&high_eq, &low_lt]);
+                let result_bool = Bool::or(&[&high_lt, &eq_and_low]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -831,9 +809,9 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let n_high = state.get_reg(rnhi).clone();
                 let m_high = state.get_reg(rmhi).clone();
 
-                let low_eq = n_low._eq(&m_low);
-                let high_eq = n_high._eq(&m_high);
-                let both_eq = Bool::and(self.ctx, &[&low_eq, &high_eq]);
+                let low_eq = n_low.eq(&m_low);
+                let high_eq = n_high.eq(&m_high);
+                let both_eq = Bool::and(&[&low_eq, &high_eq]);
                 let not_eq = both_eq.not();
                 let result = self.bool_to_bv32(&not_eq);
                 state.set_reg(rd, result);
@@ -854,11 +832,11 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let m_high = state.get_reg(rmhi).clone();
 
                 let high_lt = n_high.bvslt(&m_high);
-                let high_eq = n_high._eq(&m_high);
+                let high_eq = n_high.eq(&m_high);
                 let low_le = n_low.bvule(&m_low); // Low parts unsigned LE
 
-                let eq_and_le = Bool::and(self.ctx, &[&high_eq, &low_le]);
-                let result_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_le]);
+                let eq_and_le = Bool::and(&[&high_eq, &low_le]);
+                let result_bool = Bool::or(&[&high_lt, &eq_and_le]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -877,11 +855,11 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let m_high = state.get_reg(rmhi).clone();
 
                 let high_lt = n_high.bvult(&m_high);
-                let high_eq = n_high._eq(&m_high);
+                let high_eq = n_high.eq(&m_high);
                 let low_le = n_low.bvule(&m_low);
 
-                let eq_and_le = Bool::and(self.ctx, &[&high_eq, &low_le]);
-                let result_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_le]);
+                let eq_and_le = Bool::and(&[&high_eq, &low_le]);
+                let result_bool = Bool::or(&[&high_lt, &eq_and_le]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -901,11 +879,11 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let m_high = state.get_reg(rmhi).clone();
 
                 let high_gt = n_high.bvsgt(&m_high);
-                let high_eq = n_high._eq(&m_high);
+                let high_eq = n_high.eq(&m_high);
                 let low_gt = n_low.bvugt(&m_low); // Low parts unsigned GT
 
-                let eq_and_gt = Bool::and(self.ctx, &[&high_eq, &low_gt]);
-                let result_bool = Bool::or(self.ctx, &[&high_gt, &eq_and_gt]);
+                let eq_and_gt = Bool::and(&[&high_eq, &low_gt]);
+                let result_bool = Bool::or(&[&high_gt, &eq_and_gt]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -924,11 +902,11 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let m_high = state.get_reg(rmhi).clone();
 
                 let high_gt = n_high.bvugt(&m_high);
-                let high_eq = n_high._eq(&m_high);
+                let high_eq = n_high.eq(&m_high);
                 let low_gt = n_low.bvugt(&m_low);
 
-                let eq_and_gt = Bool::and(self.ctx, &[&high_eq, &low_gt]);
-                let result_bool = Bool::or(self.ctx, &[&high_gt, &eq_and_gt]);
+                let eq_and_gt = Bool::and(&[&high_eq, &low_gt]);
+                let result_bool = Bool::or(&[&high_gt, &eq_and_gt]);
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
             }
@@ -948,11 +926,11 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let m_high = state.get_reg(rmhi).clone();
 
                 let high_lt = n_high.bvslt(&m_high);
-                let high_eq = n_high._eq(&m_high);
+                let high_eq = n_high.eq(&m_high);
                 let low_lt = n_low.bvult(&m_low);
 
-                let eq_and_lt = Bool::and(self.ctx, &[&high_eq, &low_lt]);
-                let lt_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_lt]);
+                let eq_and_lt = Bool::and(&[&high_eq, &low_lt]);
+                let lt_bool = Bool::or(&[&high_lt, &eq_and_lt]);
                 let result_bool = lt_bool.not(); // GE is !(LT)
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
@@ -973,11 +951,11 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let m_high = state.get_reg(rmhi).clone();
 
                 let high_lt = n_high.bvult(&m_high);
-                let high_eq = n_high._eq(&m_high);
+                let high_eq = n_high.eq(&m_high);
                 let low_lt = n_low.bvult(&m_low);
 
-                let eq_and_lt = Bool::and(self.ctx, &[&high_eq, &low_lt]);
-                let lt_bool = Bool::or(self.ctx, &[&high_lt, &eq_and_lt]);
+                let eq_and_lt = Bool::and(&[&high_eq, &low_lt]);
+                let lt_bool = Bool::or(&[&high_lt, &eq_and_lt]);
                 let result_bool = lt_bool.not(); // GE is !(LT)
                 let result = self.bool_to_bv32(&result_bool);
                 state.set_reg(rd, result);
@@ -987,24 +965,25 @@ impl<'ctx> ArmSemantics<'ctx> {
             // i64 Shift Operations
             // ================================================================
             ArmOp::I64Shl {
-                rdlo,
-                rdhi,
-                rnlo,
-                rnhi,
-                shift,
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi: _,
             } => {
                 // 64-bit left shift: (n_hi:n_lo) << shift
                 // WASM spec: shift amount is modulo 64
-                let n_lo = state.get_reg(rnlo).clone();
-                let n_hi = state.get_reg(rnhi).clone();
-                let shift_amt = state.get_reg(shift).clone();
+                let n_lo = state.get_reg(rn_lo).clone();
+                let n_hi = state.get_reg(rn_hi).clone();
+                let shift_amt = state.get_reg(rm_lo).clone();
 
                 // Modulo 64: shift_amt = shift_amt & 63
-                let shift_mod = shift_amt.bvand(&BV::from_i64(self.ctx, 63, 32));
+                let shift_mod = shift_amt.bvand(&BV::from_i64(63, 32));
 
                 // If shift < 32: normal shift with bits moving from low to high
                 // If shift >= 32: low becomes 0, high gets shifted low part
-                let shift_32 = BV::from_i64(self.ctx, 32, 32);
+                let shift_32 = BV::from_i64(32, 32);
                 let is_large = shift_mod.bvuge(&shift_32); // shift >= 32
 
                 // Small shift (< 32):
@@ -1018,7 +997,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Large shift (>= 32):
                 // result_lo = 0
                 // result_hi = n_lo << (shift - 32)
-                let zero = BV::from_i64(self.ctx, 0, 32);
+                let zero = BV::from_i64(0, 32);
                 let shift_minus_32 = shift_mod.bvsub(&shift_32);
                 let result_lo_large = zero.clone();
                 let result_hi_large = n_lo.bvshl(&shift_minus_32);
@@ -1027,24 +1006,25 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let result_lo = is_large.ite(&result_lo_large, &result_lo_small);
                 let result_hi = is_large.ite(&result_hi_large, &result_hi_small);
 
-                state.set_reg(rdlo, result_lo);
-                state.set_reg(rdhi, result_hi);
+                state.set_reg(rd_lo, result_lo);
+                state.set_reg(rd_hi, result_hi);
             }
 
             ArmOp::I64ShrU {
-                rdlo,
-                rdhi,
-                rnlo,
-                rnhi,
-                shift,
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi: _,
             } => {
                 // 64-bit logical (unsigned) right shift
-                let n_lo = state.get_reg(rnlo).clone();
-                let n_hi = state.get_reg(rnhi).clone();
-                let shift_amt = state.get_reg(shift).clone();
+                let n_lo = state.get_reg(rn_lo).clone();
+                let n_hi = state.get_reg(rn_hi).clone();
+                let shift_amt = state.get_reg(rm_lo).clone();
 
-                let shift_mod = shift_amt.bvand(&BV::from_i64(self.ctx, 63, 32));
-                let shift_32 = BV::from_i64(self.ctx, 32, 32);
+                let shift_mod = shift_amt.bvand(&BV::from_i64(63, 32));
+                let shift_32 = BV::from_i64(32, 32);
                 let is_large = shift_mod.bvuge(&shift_32);
 
                 // Small shift (< 32):
@@ -1058,7 +1038,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Large shift (>= 32):
                 // result_hi = 0
                 // result_lo = n_hi >> (shift - 32)
-                let zero = BV::from_i64(self.ctx, 0, 32);
+                let zero = BV::from_i64(0, 32);
                 let shift_minus_32 = shift_mod.bvsub(&shift_32);
                 let result_hi_large = zero.clone();
                 let result_lo_large = n_hi.bvlshr(&shift_minus_32);
@@ -1066,24 +1046,25 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let result_lo = is_large.ite(&result_lo_large, &result_lo_small);
                 let result_hi = is_large.ite(&result_hi_large, &result_hi_small);
 
-                state.set_reg(rdlo, result_lo);
-                state.set_reg(rdhi, result_hi);
+                state.set_reg(rd_lo, result_lo);
+                state.set_reg(rd_hi, result_hi);
             }
 
             ArmOp::I64ShrS {
-                rdlo,
-                rdhi,
-                rnlo,
-                rnhi,
-                shift,
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi: _,
             } => {
                 // 64-bit arithmetic (signed) right shift
-                let n_lo = state.get_reg(rnlo).clone();
-                let n_hi = state.get_reg(rnhi).clone();
-                let shift_amt = state.get_reg(shift).clone();
+                let n_lo = state.get_reg(rn_lo).clone();
+                let n_hi = state.get_reg(rn_hi).clone();
+                let shift_amt = state.get_reg(rm_lo).clone();
 
-                let shift_mod = shift_amt.bvand(&BV::from_i64(self.ctx, 63, 32));
-                let shift_32 = BV::from_i64(self.ctx, 32, 32);
+                let shift_mod = shift_amt.bvand(&BV::from_i64(63, 32));
+                let shift_32 = BV::from_i64(32, 32);
                 let is_large = shift_mod.bvuge(&shift_32);
 
                 // Small shift (< 32):
@@ -1097,7 +1078,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Large shift (>= 32):
                 // result_hi = n_hi >> 31 (sign extension: all 0s or all 1s)
                 // result_lo = n_hi >> (shift - 32) (arithmetic)
-                let shift_31 = BV::from_i64(self.ctx, 31, 32);
+                let shift_31 = BV::from_i64(31, 32);
                 let result_hi_large = n_hi.bvashr(&shift_31);
                 let shift_minus_32 = shift_mod.bvsub(&shift_32);
                 let result_lo_large = n_hi.bvashr(&shift_minus_32);
@@ -1105,8 +1086,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let result_lo = is_large.ite(&result_lo_large, &result_lo_small);
                 let result_hi = is_large.ite(&result_hi_large, &result_hi_small);
 
-                state.set_reg(rdlo, result_lo);
-                state.set_reg(rdhi, result_hi);
+                state.set_reg(rd_lo, result_lo);
+                state.set_reg(rd_hi, result_hi);
             }
 
             // ========================================================================
@@ -1126,8 +1107,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let shift_amt = state.get_reg(shift).clone();
 
                 // Normalize shift to 0-63 range
-                let shift_mod = shift_amt.bvand(&BV::from_i64(self.ctx, 63, 32));
-                let shift_32 = BV::from_i64(self.ctx, 32, 32);
+                let shift_mod = shift_amt.bvand(&BV::from_i64(63, 32));
+                let shift_32 = BV::from_i64(32, 32);
                 let is_large = shift_mod.bvuge(&shift_32); // shift >= 32
 
                 // For shift < 32:
@@ -1178,8 +1159,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let shift_amt = state.get_reg(shift).clone();
 
                 // Normalize shift to 0-63 range
-                let shift_mod = shift_amt.bvand(&BV::from_i64(self.ctx, 63, 32));
-                let shift_32 = BV::from_i64(self.ctx, 32, 32);
+                let shift_mod = shift_amt.bvand(&BV::from_i64(63, 32));
+                let shift_32 = BV::from_i64(32, 32);
                 let is_large = shift_mod.bvuge(&shift_32); // shift >= 32
 
                 // For shift < 32:
@@ -1227,8 +1208,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let lo_clz = self.encode_clz(&n_lo);
 
                 // If high == 32 (all zeros), add low clz; else use high clz
-                let thirty_two = BV::from_i64(self.ctx, 32, 32);
-                let hi_is_zero = hi_clz._eq(&thirty_two);
+                let thirty_two = BV::from_i64(32, 32);
+                let hi_is_zero = hi_clz.eq(&thirty_two);
                 let result = hi_is_zero.ite(
                     &thirty_two.bvadd(&lo_clz), // High is zero: 32 + clz(low)
                     &hi_clz,                    // High has bits: clz(high)
@@ -1247,8 +1228,8 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let hi_ctz = self.encode_ctz(&n_hi);
 
                 // If low == 32 (all zeros), add high ctz; else use low ctz
-                let thirty_two = BV::from_i64(self.ctx, 32, 32);
-                let lo_is_zero = lo_ctz._eq(&thirty_two);
+                let thirty_two = BV::from_i64(32, 32);
+                let lo_is_zero = lo_ctz.eq(&thirty_two);
                 let result = lo_is_zero.ite(
                     &thirty_two.bvadd(&hi_ctz), // Low is zero: 32 + ctz(high)
                     &lo_ctz,                    // Low has bits: ctz(low)
@@ -1276,13 +1257,17 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Load 64-bit value from memory
                 // Simplified: return symbolic values for both registers
                 // Real implementation would load from memory at [addr] and [addr+4]
-                let result_lo = BV::new_const(self.ctx, format!("i64load_lo_{:?}", addr), 32);
-                let result_hi = BV::new_const(self.ctx, format!("i64load_hi_{:?}", addr), 32);
+                let result_lo = BV::new_const(format!("i64load_lo_{:?}", addr), 32);
+                let result_hi = BV::new_const(format!("i64load_hi_{:?}", addr), 32);
                 state.set_reg(rdlo, result_lo);
                 state.set_reg(rdhi, result_hi);
             }
 
-            ArmOp::I64Str { rdlo: _, rdhi: _, addr: _ } => {
+            ArmOp::I64Str {
+                rdlo: _,
+                rdhi: _,
+                addr: _,
+            } => {
                 // Store 64-bit value to memory
                 // Simplified: memory updates not fully modeled yet
                 // Real implementation would store rdlo to [addr] and rdhi to [addr+4]
@@ -1301,7 +1286,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Load f32 constant (represented as 32-bit bitvector)
                 // Convert f32 to its IEEE 754 bit representation
                 let bits = value.to_bits() as i64;
-                let bv_val = BV::from_i64(self.ctx, bits, 32);
+                let bv_val = BV::from_i64(bits, 32);
                 state.set_vfp_reg(sd, bv_val);
             }
 
@@ -1310,25 +1295,25 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f32 addition: sd = sn + sm
                 // For verification, return symbolic value
                 // Full implementation would use Z3 FloatingPoint operations
-                let result = BV::new_const(self.ctx, format!("f32_add_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_add_{:?}_{:?}", sn, sm), 32);
                 state.set_vfp_reg(sd, result);
             }
 
             ArmOp::F32Sub { sd, sn, sm } => {
                 // f32 subtraction: sd = sn - sm
-                let result = BV::new_const(self.ctx, format!("f32_sub_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_sub_{:?}_{:?}", sn, sm), 32);
                 state.set_vfp_reg(sd, result);
             }
 
             ArmOp::F32Mul { sd, sn, sm } => {
                 // f32 multiplication: sd = sn * sm
-                let result = BV::new_const(self.ctx, format!("f32_mul_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_mul_{:?}_{:?}", sn, sm), 32);
                 state.set_vfp_reg(sd, result);
             }
 
             ArmOp::F32Div { sd, sn, sm } => {
                 // f32 division: sd = sn / sm
-                let result = BV::new_const(self.ctx, format!("f32_div_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_div_{:?}_{:?}", sn, sm), 32);
                 state.set_vfp_reg(sd, result);
             }
 
@@ -1337,7 +1322,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f32 absolute value: sd = |sm|
                 // Clear the sign bit (bit 31)
                 let val = state.get_vfp_reg(sm).clone();
-                let mask = BV::from_u64(self.ctx, 0x7FFFFFFF, 32); // Clear sign bit
+                let mask = BV::from_u64(0x7FFFFFFF, 32); // Clear sign bit
                 let result = val.bvand(&mask);
                 state.set_vfp_reg(sd, result);
             }
@@ -1346,7 +1331,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f32 negation: sd = -sm
                 // Flip the sign bit (bit 31)
                 let val = state.get_vfp_reg(sm).clone();
-                let mask = BV::from_u64(self.ctx, 0x80000000, 32); // Sign bit
+                let mask = BV::from_u64(0x80000000, 32); // Sign bit
                 let result = val.bvxor(&mask);
                 state.set_vfp_reg(sd, result);
             }
@@ -1354,7 +1339,7 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::F32Sqrt { sd, sm } => {
                 // f32 square root: sd = sqrt(sm)
                 // Symbolic representation for verification
-                let result = BV::new_const(self.ctx, format!("f32_sqrt_{:?}", sm), 32);
+                let result = BV::new_const(format!("f32_sqrt_{:?}", sm), 32);
                 state.set_vfp_reg(sd, result);
             }
 
@@ -1362,7 +1347,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f32 minimum: sd = min(sn, sm)
                 // IEEE 754 semantics: NaN propagation, -0.0 < +0.0
                 // Symbolic representation for verification
-                let result = BV::new_const(self.ctx, format!("f32_min_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_min_{:?}_{:?}", sn, sm), 32);
                 state.set_vfp_reg(sd, result);
             }
 
@@ -1370,7 +1355,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f32 maximum: sd = max(sn, sm)
                 // IEEE 754 semantics: NaN propagation, +0.0 > -0.0
                 // Symbolic representation for verification
-                let result = BV::new_const(self.ctx, format!("f32_max_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_max_{:?}_{:?}", sn, sm), 32);
                 state.set_vfp_reg(sd, result);
             }
 
@@ -1381,11 +1366,11 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let val_m = state.get_vfp_reg(sm).clone();
 
                 // Extract magnitude from sn (clear sign bit)
-                let mag_mask = BV::from_u64(self.ctx, 0x7FFFFFFF, 32);
+                let mag_mask = BV::from_u64(0x7FFFFFFF, 32);
                 let magnitude = val_n.bvand(&mag_mask);
 
                 // Extract sign from sm (bit 31 only)
-                let sign_mask = BV::from_u64(self.ctx, 0x80000000, 32);
+                let sign_mask = BV::from_u64(0x80000000, 32);
                 let sign = val_m.bvand(&sign_mask);
 
                 // Combine: magnitude | sign
@@ -1396,7 +1381,7 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::F32Load { sd, addr } => {
                 // f32 load: sd = memory[addr]
                 // Symbolic memory access for verification
-                let result = BV::new_const(self.ctx, format!("f32_load_{:?}", addr), 32);
+                let result = BV::new_const(format!("f32_load_{:?}", addr), 32);
                 state.set_vfp_reg(sd, result);
             }
 
@@ -1404,37 +1389,37 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::F32Eq { rd, sn, sm } => {
                 // f32 equal: rd = (sn == sm) ? 1 : 0
                 // IEEE 754: NaN != NaN, so symbolic comparison needed
-                let result = BV::new_const(self.ctx, format!("f32_eq_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_eq_{:?}_{:?}", sn, sm), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::F32Ne { rd, sn, sm } => {
                 // f32 not equal: rd = (sn != sm) ? 1 : 0
-                let result = BV::new_const(self.ctx, format!("f32_ne_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_ne_{:?}_{:?}", sn, sm), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::F32Lt { rd, sn, sm } => {
                 // f32 less than: rd = (sn < sm) ? 1 : 0
-                let result = BV::new_const(self.ctx, format!("f32_lt_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_lt_{:?}_{:?}", sn, sm), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::F32Le { rd, sn, sm } => {
                 // f32 less than or equal: rd = (sn <= sm) ? 1 : 0
-                let result = BV::new_const(self.ctx, format!("f32_le_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_le_{:?}_{:?}", sn, sm), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::F32Gt { rd, sn, sm } => {
                 // f32 greater than: rd = (sn > sm) ? 1 : 0
-                let result = BV::new_const(self.ctx, format!("f32_gt_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_gt_{:?}_{:?}", sn, sm), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::F32Ge { rd, sn, sm } => {
                 // f32 greater than or equal: rd = (sn >= sm) ? 1 : 0
-                let result = BV::new_const(self.ctx, format!("f32_ge_{:?}_{:?}", sn, sm), 32);
+                let result = BV::new_const(format!("f32_ge_{:?}_{:?}", sn, sm), 32);
                 state.set_reg(rd, result);
             }
 
@@ -1452,28 +1437,28 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::F32Ceil { sd, sm } => {
                 // f32 ceil: sd = ceil(sm) - round toward +infinity
                 // Symbolic representation for IEEE 754 rounding
-                let result = BV::new_const(self.ctx, format!("f32_ceil_{:?}", sm), 32);
+                let result = BV::new_const(format!("f32_ceil_{:?}", sm), 32);
                 state.set_vfp_reg(sd, result);
             }
 
             ArmOp::F32Floor { sd, sm } => {
                 // f32 floor: sd = floor(sm) - round toward -infinity
                 // Symbolic representation for IEEE 754 rounding
-                let result = BV::new_const(self.ctx, format!("f32_floor_{:?}", sm), 32);
+                let result = BV::new_const(format!("f32_floor_{:?}", sm), 32);
                 state.set_vfp_reg(sd, result);
             }
 
             ArmOp::F32Trunc { sd, sm } => {
                 // f32 trunc: sd = trunc(sm) - round toward zero
                 // Symbolic representation for IEEE 754 rounding
-                let result = BV::new_const(self.ctx, format!("f32_trunc_{:?}", sm), 32);
+                let result = BV::new_const(format!("f32_trunc_{:?}", sm), 32);
                 state.set_vfp_reg(sd, result);
             }
 
             ArmOp::F32Nearest { sd, sm } => {
                 // f32 nearest: sd = nearest(sm) - round to nearest, ties to even
                 // Symbolic representation for IEEE 754 rounding
-                let result = BV::new_const(self.ctx, format!("f32_nearest_{:?}", sm), 32);
+                let result = BV::new_const(format!("f32_nearest_{:?}", sm), 32);
                 state.set_vfp_reg(sd, result);
             }
 
@@ -1481,14 +1466,14 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::F32ConvertI32S { sd, rm } => {
                 // f32 convert from signed i32: sd = (f32)rm
                 let int_val = state.get_reg(rm);
-                let result = BV::new_const(self.ctx, format!("f32_convert_i32s_{:?}", int_val), 32);
+                let result = BV::new_const(format!("f32_convert_i32s_{:?}", int_val), 32);
                 state.set_vfp_reg(sd, result);
             }
 
             ArmOp::F32ConvertI32U { sd, rm } => {
                 // f32 convert from unsigned i32: sd = (f32)(unsigned)rm
                 let int_val = state.get_reg(rm);
-                let result = BV::new_const(self.ctx, format!("f32_convert_i32u_{:?}", int_val), 32);
+                let result = BV::new_const(format!("f32_convert_i32u_{:?}", int_val), 32);
                 state.set_vfp_reg(sd, result);
             }
 
@@ -1496,7 +1481,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f32 convert from signed i64: sd = (f32)r64
                 let lo = state.get_reg(rmlo);
                 let hi = state.get_reg(rmhi);
-                let result = BV::new_const(self.ctx, format!("f32_convert_i64s_{:?}_{:?}", lo, hi), 32);
+                let result = BV::new_const(format!("f32_convert_i64s_{:?}_{:?}", lo, hi), 32);
                 state.set_vfp_reg(sd, result);
             }
 
@@ -1504,7 +1489,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f32 convert from unsigned i64: sd = (f32)(unsigned)r64
                 let lo = state.get_reg(rmlo);
                 let hi = state.get_reg(rmhi);
-                let result = BV::new_const(self.ctx, format!("f32_convert_i64u_{:?}_{:?}", lo, hi), 32);
+                let result = BV::new_const(format!("f32_convert_i64u_{:?}_{:?}", lo, hi), 32);
                 state.set_vfp_reg(sd, result);
             }
 
@@ -1532,25 +1517,25 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f64 addition: dd = dn + dm
                 // For verification, return symbolic value
                 // Full implementation would use Z3 FloatingPoint operations
-                let result = BV::new_const(self.ctx, format!("f64_add_{:?}_{:?}", dn, dm), 64);
+                let result = BV::new_const(format!("f64_add_{:?}_{:?}", dn, dm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
             ArmOp::F64Sub { dd, dn, dm } => {
                 // f64 subtraction: dd = dn - dm
-                let result = BV::new_const(self.ctx, format!("f64_sub_{:?}_{:?}", dn, dm), 64);
+                let result = BV::new_const(format!("f64_sub_{:?}_{:?}", dn, dm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
             ArmOp::F64Mul { dd, dn, dm } => {
                 // f64 multiplication: dd = dn * dm
-                let result = BV::new_const(self.ctx, format!("f64_mul_{:?}_{:?}", dn, dm), 64);
+                let result = BV::new_const(format!("f64_mul_{:?}_{:?}", dn, dm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
             ArmOp::F64Div { dd, dn, dm } => {
                 // f64 division: dd = dn / dm
-                let result = BV::new_const(self.ctx, format!("f64_div_{:?}_{:?}", dn, dm), 64);
+                let result = BV::new_const(format!("f64_div_{:?}_{:?}", dn, dm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
@@ -1559,7 +1544,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f64 absolute value: dd = |dm|
                 // Clear the sign bit (bit 63)
                 let val = state.get_vfp_reg(dm).clone();
-                let mask = BV::from_u64(self.ctx, 0x7FFFFFFFFFFFFFFF, 64); // Clear sign bit
+                let mask = BV::from_u64(0x7FFFFFFFFFFFFFFF, 64); // Clear sign bit
                 let result = val.bvand(&mask);
                 state.set_vfp_reg(dd, result);
             }
@@ -1568,7 +1553,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f64 negation: dd = -dm
                 // Flip the sign bit (bit 63)
                 let val = state.get_vfp_reg(dm).clone();
-                let mask = BV::from_u64(self.ctx, 0x8000000000000000, 64); // Sign bit
+                let mask = BV::from_u64(0x8000000000000000, 64); // Sign bit
                 let result = val.bvxor(&mask);
                 state.set_vfp_reg(dd, result);
             }
@@ -1576,7 +1561,7 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::F64Sqrt { dd, dm } => {
                 // f64 square root: dd = sqrt(dm)
                 // Symbolic representation for verification
-                let result = BV::new_const(self.ctx, format!("f64_sqrt_{:?}", dm), 64);
+                let result = BV::new_const(format!("f64_sqrt_{:?}", dm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
@@ -1584,7 +1569,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f64 minimum: dd = min(dn, dm)
                 // IEEE 754 semantics: NaN propagation, -0.0 < +0.0
                 // Symbolic representation for verification
-                let result = BV::new_const(self.ctx, format!("f64_min_{:?}_{:?}", dn, dm), 64);
+                let result = BV::new_const(format!("f64_min_{:?}_{:?}", dn, dm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
@@ -1592,7 +1577,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // f64 maximum: dd = max(dn, dm)
                 // IEEE 754 semantics: NaN propagation, +0.0 > -0.0
                 // Symbolic representation for verification
-                let result = BV::new_const(self.ctx, format!("f64_max_{:?}_{:?}", dn, dm), 64);
+                let result = BV::new_const(format!("f64_max_{:?}_{:?}", dn, dm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
@@ -1603,11 +1588,11 @@ impl<'ctx> ArmSemantics<'ctx> {
                 let val_m = state.get_vfp_reg(dm).clone();
 
                 // Extract magnitude from dn (clear sign bit)
-                let mag_mask = BV::from_u64(self.ctx, 0x7FFFFFFFFFFFFFFF, 64);
+                let mag_mask = BV::from_u64(0x7FFFFFFFFFFFFFFF, 64);
                 let magnitude = val_n.bvand(&mag_mask);
 
                 // Extract sign from dm (bit 63 only)
-                let sign_mask = BV::from_u64(self.ctx, 0x8000000000000000, 64);
+                let sign_mask = BV::from_u64(0x8000000000000000, 64);
                 let sign = val_m.bvand(&sign_mask);
 
                 // Combine: magnitude | sign
@@ -1618,25 +1603,25 @@ impl<'ctx> ArmSemantics<'ctx> {
             // f64 Rounding Operations (symbolic for verification)
             ArmOp::F64Ceil { dd, dm } => {
                 // f64 ceil: dd = ceil(dm) - round toward +infinity
-                let result = BV::new_const(self.ctx, format!("f64_ceil_{:?}", dm), 64);
+                let result = BV::new_const(format!("f64_ceil_{:?}", dm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
             ArmOp::F64Floor { dd, dm } => {
                 // f64 floor: dd = floor(dm) - round toward -infinity
-                let result = BV::new_const(self.ctx, format!("f64_floor_{:?}", dm), 64);
+                let result = BV::new_const(format!("f64_floor_{:?}", dm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
             ArmOp::F64Trunc { dd, dm } => {
                 // f64 trunc: dd = trunc(dm) - round toward zero
-                let result = BV::new_const(self.ctx, format!("f64_trunc_{:?}", dm), 64);
+                let result = BV::new_const(format!("f64_trunc_{:?}", dm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
             ArmOp::F64Nearest { dd, dm } => {
                 // f64 nearest: dd = round(dm) - round to nearest, ties to even
-                let result = BV::new_const(self.ctx, format!("f64_nearest_{:?}", dm), 64);
+                let result = BV::new_const(format!("f64_nearest_{:?}", dm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
@@ -1644,7 +1629,7 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::F64Load { dd, addr } => {
                 // f64 load: dd = memory[addr]
                 // Symbolic memory access for verification
-                let result = BV::new_const(self.ctx, format!("f64_load_{:?}", addr), 64);
+                let result = BV::new_const(format!("f64_load_{:?}", addr), 64);
                 state.set_vfp_reg(dd, result);
             }
 
@@ -1657,7 +1642,7 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::F64Const { dd, value } => {
                 // f64 constant: dd = value
                 let bits = value.to_bits() as i64;
-                let result = BV::from_i64(self.ctx, bits, 64);
+                let result = BV::from_i64(bits, 64);
                 state.set_vfp_reg(dd, result);
             }
 
@@ -1665,37 +1650,37 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::F64Eq { rd, dn, dm } => {
                 // f64 equal: rd = (dn == dm) ? 1 : 0
                 // IEEE 754: NaN != NaN, so symbolic comparison needed
-                let result = BV::new_const(self.ctx, format!("f64_eq_{:?}_{:?}", dn, dm), 32);
+                let result = BV::new_const(format!("f64_eq_{:?}_{:?}", dn, dm), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::F64Ne { rd, dn, dm } => {
                 // f64 not equal: rd = (dn != dm) ? 1 : 0
-                let result = BV::new_const(self.ctx, format!("f64_ne_{:?}_{:?}", dn, dm), 32);
+                let result = BV::new_const(format!("f64_ne_{:?}_{:?}", dn, dm), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::F64Lt { rd, dn, dm } => {
                 // f64 less than: rd = (dn < dm) ? 1 : 0
-                let result = BV::new_const(self.ctx, format!("f64_lt_{:?}_{:?}", dn, dm), 32);
+                let result = BV::new_const(format!("f64_lt_{:?}_{:?}", dn, dm), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::F64Le { rd, dn, dm } => {
                 // f64 less than or equal: rd = (dn <= dm) ? 1 : 0
-                let result = BV::new_const(self.ctx, format!("f64_le_{:?}_{:?}", dn, dm), 32);
+                let result = BV::new_const(format!("f64_le_{:?}_{:?}", dn, dm), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::F64Gt { rd, dn, dm } => {
                 // f64 greater than: rd = (dn > dm) ? 1 : 0
-                let result = BV::new_const(self.ctx, format!("f64_gt_{:?}_{:?}", dn, dm), 32);
+                let result = BV::new_const(format!("f64_gt_{:?}_{:?}", dn, dm), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::F64Ge { rd, dn, dm } => {
                 // f64 greater than or equal: rd = (dn >= dm) ? 1 : 0
-                let result = BV::new_const(self.ctx, format!("f64_ge_{:?}_{:?}", dn, dm), 32);
+                let result = BV::new_const(format!("f64_ge_{:?}_{:?}", dn, dm), 32);
                 state.set_reg(rd, result);
             }
 
@@ -1703,35 +1688,43 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::F64ConvertI32S { dd, rm } => {
                 // f64 convert i32 signed: dd = (f64)rm
                 // Symbolic conversion
-                let result = BV::new_const(self.ctx, format!("f64_convert_i32s_{:?}", rm), 64);
+                let result = BV::new_const(format!("f64_convert_i32s_{:?}", rm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
             ArmOp::F64ConvertI32U { dd, rm } => {
                 // f64 convert i32 unsigned: dd = (f64)(unsigned)rm
                 // Symbolic conversion
-                let result = BV::new_const(self.ctx, format!("f64_convert_i32u_{:?}", rm), 64);
+                let result = BV::new_const(format!("f64_convert_i32u_{:?}", rm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
-            ArmOp::F64ConvertI64S { dd, rmlo: _, rmhi: _ } => {
+            ArmOp::F64ConvertI64S {
+                dd,
+                rmlo: _,
+                rmhi: _,
+            } => {
                 // f64 convert i64 signed: dd = (f64)(rmhi:rmlo)
                 // Symbolic conversion (complex operation)
-                let result = BV::new_const(self.ctx, "f64_convert_i64s_result", 64);
+                let result = BV::new_const("f64_convert_i64s_result", 64);
                 state.set_vfp_reg(dd, result);
             }
 
-            ArmOp::F64ConvertI64U { dd, rmlo: _, rmhi: _ } => {
+            ArmOp::F64ConvertI64U {
+                dd,
+                rmlo: _,
+                rmhi: _,
+            } => {
                 // f64 convert i64 unsigned: dd = (f64)(unsigned)(rmhi:rmlo)
                 // Symbolic conversion (complex operation)
-                let result = BV::new_const(self.ctx, "f64_convert_i64u_result", 64);
+                let result = BV::new_const("f64_convert_i64u_result", 64);
                 state.set_vfp_reg(dd, result);
             }
 
             ArmOp::F64PromoteF32 { dd, sm } => {
                 // f64 promote f32: dd = (f64)sm
                 // Promote from 32-bit to 64-bit (symbolic for verification)
-                let result = BV::new_const(self.ctx, format!("f64_promote_f32_{:?}", sm), 64);
+                let result = BV::new_const(format!("f64_promote_f32_{:?}", sm), 64);
                 state.set_vfp_reg(dd, result);
             }
 
@@ -1744,7 +1737,7 @@ impl<'ctx> ArmSemantics<'ctx> {
                 // Extend to 64 bits and combine: (hi << 32) | lo
                 let lo_64 = lo.zero_ext(32); // Extend to 64 bits
                 let hi_64 = hi.zero_ext(32);
-                let shift_32 = BV::from_u64(self.ctx, 32, 64);
+                let shift_32 = BV::from_u64(32, 64);
                 let hi_shifted = hi_64.bvshl(&shift_32);
                 let result = hi_shifted.bvor(&lo_64);
 
@@ -1765,13 +1758,21 @@ impl<'ctx> ArmSemantics<'ctx> {
                 state.set_reg(rdhi, hi);
             }
 
-            ArmOp::I64TruncF64S { rdlo: _, rdhi: _, dm: _ } => {
+            ArmOp::I64TruncF64S {
+                rdlo: _,
+                rdhi: _,
+                dm: _,
+            } => {
                 // i64 trunc f64 signed: (rdhi:rdlo) = (i64)dm
                 // Symbolic conversion (complex operation)
                 // Would require proper truncation with saturation
             }
 
-            ArmOp::I64TruncF64U { rdlo: _, rdhi: _, dm: _ } => {
+            ArmOp::I64TruncF64U {
+                rdlo: _,
+                rdhi: _,
+                dm: _,
+            } => {
                 // i64 trunc f64 unsigned: (rdhi:rdlo) = (unsigned i64)dm
                 // Symbolic conversion (complex operation)
                 // Would require proper truncation with saturation
@@ -1780,14 +1781,14 @@ impl<'ctx> ArmSemantics<'ctx> {
             ArmOp::I32TruncF64S { rd, dm } => {
                 // i32 trunc f64 signed: rd = (i32)dm
                 // Symbolic conversion
-                let result = BV::new_const(self.ctx, format!("i32_trunc_f64s_{:?}", dm), 32);
+                let result = BV::new_const(format!("i32_trunc_f64s_{:?}", dm), 32);
                 state.set_reg(rd, result);
             }
 
             ArmOp::I32TruncF64U { rd, dm } => {
                 // i32 trunc f64 unsigned: rd = (unsigned i32)dm
                 // Symbolic conversion
-                let result = BV::new_const(self.ctx, format!("i32_trunc_f64u_{:?}", dm), 32);
+                let result = BV::new_const(format!("i32_trunc_f64u_{:?}", dm), 32);
                 state.set_reg(rd, result);
             }
 
@@ -1798,13 +1799,13 @@ impl<'ctx> ArmSemantics<'ctx> {
     }
 
     /// Evaluate an Operand2 value
-    fn evaluate_operand2(&self, op2: &Operand2, state: &ArmState<'ctx>) -> BV<'ctx> {
+    fn evaluate_operand2(&self, op2: &Operand2, state: &ArmState) -> BV {
         match op2 {
-            Operand2::Imm(value) => BV::from_i64(self.ctx, *value as i64, 32),
+            Operand2::Imm(value) => BV::from_i64(*value as i64, 32),
             Operand2::Reg(reg) => state.get_reg(reg).clone(),
             Operand2::RegShift { rm, shift, amount } => {
                 let reg_val = state.get_reg(rm).clone();
-                let shift_amount = BV::from_i64(self.ctx, *amount as i64, 32);
+                let shift_amount = BV::from_i64(*amount as i64, 32);
 
                 match shift {
                     synth_synthesis::ShiftType::LSL => reg_val.bvshl(&shift_amount),
@@ -1817,7 +1818,7 @@ impl<'ctx> ArmSemantics<'ctx> {
     }
 
     /// Extract the result value from a register after execution
-    pub fn extract_result(&self, state: &ArmState<'ctx>, reg: &Reg) -> BV<'ctx> {
+    pub fn extract_result(&self, state: &ArmState, reg: &Reg) -> BV {
         state.get_reg(reg).clone()
     }
 
@@ -1825,58 +1826,55 @@ impl<'ctx> ArmSemantics<'ctx> {
     ///
     /// Implements the same algorithm as WASM i32.clz for equivalence verification.
     /// Uses binary search through bit positions.
-    fn encode_clz(&self, input: &BV<'ctx>) -> BV<'ctx> {
-        let zero = BV::from_i64(self.ctx, 0, 32);
+    fn encode_clz(&self, input: &BV) -> BV {
+        let zero = BV::from_i64(0, 32);
 
         // Special case: if input is 0, return 32
-        let all_zero = input._eq(&zero);
-        let result_if_zero = BV::from_i64(self.ctx, 32, 32);
+        let all_zero = input.eq(&zero);
+        let result_if_zero = BV::from_i64(32, 32);
 
         // Binary search approach
-        let mut count = BV::from_i64(self.ctx, 0, 32);
+        let mut count = BV::from_i64(0, 32);
         let mut remaining = input.clone();
 
         // Check top 16 bits
-        let mask_16 = BV::from_u64(self.ctx, 0xFFFF0000, 32);
+        let mask_16 = BV::from_u64(0xFFFF0000, 32);
         let top_16 = remaining.bvand(&mask_16);
-        let top_16_zero = top_16._eq(&zero);
+        let top_16_zero = top_16.eq(&zero);
 
-        count = top_16_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 16, 32)), &count);
-        remaining = top_16_zero.ite(
-            &remaining.bvshl(&BV::from_i64(self.ctx, 16, 32)),
-            &remaining,
-        );
+        count = top_16_zero.ite(&count.bvadd(&BV::from_i64(16, 32)), &count);
+        remaining = top_16_zero.ite(&remaining.bvshl(&BV::from_i64(16, 32)), &remaining);
 
         // Check top 8 bits
-        let mask_8 = BV::from_u64(self.ctx, 0xFF000000, 32);
+        let mask_8 = BV::from_u64(0xFF000000, 32);
         let top_8 = remaining.bvand(&mask_8);
-        let top_8_zero = top_8._eq(&zero);
+        let top_8_zero = top_8.eq(&zero);
 
-        count = top_8_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 8, 32)), &count);
-        remaining = top_8_zero.ite(&remaining.bvshl(&BV::from_i64(self.ctx, 8, 32)), &remaining);
+        count = top_8_zero.ite(&count.bvadd(&BV::from_i64(8, 32)), &count);
+        remaining = top_8_zero.ite(&remaining.bvshl(&BV::from_i64(8, 32)), &remaining);
 
         // Check top 4 bits
-        let mask_4 = BV::from_u64(self.ctx, 0xF0000000, 32);
+        let mask_4 = BV::from_u64(0xF0000000, 32);
         let top_4 = remaining.bvand(&mask_4);
-        let top_4_zero = top_4._eq(&zero);
+        let top_4_zero = top_4.eq(&zero);
 
-        count = top_4_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 4, 32)), &count);
-        remaining = top_4_zero.ite(&remaining.bvshl(&BV::from_i64(self.ctx, 4, 32)), &remaining);
+        count = top_4_zero.ite(&count.bvadd(&BV::from_i64(4, 32)), &count);
+        remaining = top_4_zero.ite(&remaining.bvshl(&BV::from_i64(4, 32)), &remaining);
 
         // Check top 2 bits
-        let mask_2 = BV::from_u64(self.ctx, 0xC0000000, 32);
+        let mask_2 = BV::from_u64(0xC0000000, 32);
         let top_2 = remaining.bvand(&mask_2);
-        let top_2_zero = top_2._eq(&zero);
+        let top_2_zero = top_2.eq(&zero);
 
-        count = top_2_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 2, 32)), &count);
-        remaining = top_2_zero.ite(&remaining.bvshl(&BV::from_i64(self.ctx, 2, 32)), &remaining);
+        count = top_2_zero.ite(&count.bvadd(&BV::from_i64(2, 32)), &count);
+        remaining = top_2_zero.ite(&remaining.bvshl(&BV::from_i64(2, 32)), &remaining);
 
         // Check top bit
-        let mask_1 = BV::from_u64(self.ctx, 0x80000000, 32);
+        let mask_1 = BV::from_u64(0x80000000, 32);
         let top_1 = remaining.bvand(&mask_1);
-        let top_1_zero = top_1._eq(&zero);
+        let top_1_zero = top_1.eq(&zero);
 
-        count = top_1_zero.ite(&count.bvadd(&BV::from_i64(self.ctx, 1, 32)), &count);
+        count = top_1_zero.ite(&count.bvadd(&BV::from_i64(1, 32)), &count);
 
         // Return 32 if all zeros, otherwise return count
         all_zero.ite(&result_if_zero, &count)
@@ -1887,7 +1885,7 @@ impl<'ctx> ArmSemantics<'ctx> {
     /// Counts the number of trailing (low-order) zero bits.
     /// Implemented as: ctz(x) = clz(rbit(x))
     /// Returns 32 if input is 0.
-    fn encode_ctz(&self, input: &BV<'ctx>) -> BV<'ctx> {
+    fn encode_ctz(&self, input: &BV) -> BV {
         // CTZ can be implemented by reversing bits and then counting leading zeros
         let reversed = self.encode_rbit(input);
         self.encode_clz(&reversed)
@@ -1897,60 +1895,42 @@ impl<'ctx> ArmSemantics<'ctx> {
     ///
     /// Reverses the bit order in a 32-bit value.
     /// Used in combination with CLZ to implement CTZ.
-    fn encode_rbit(&self, input: &BV<'ctx>) -> BV<'ctx> {
+    fn encode_rbit(&self, input: &BV) -> BV {
         // Reverse bits by swapping progressively smaller chunks
         let mut result = input.clone();
 
         // Swap 16-bit halves
-        let mask_16 = BV::from_u64(self.ctx, 0xFFFF0000, 32);
-        let top_16 = result
-            .bvand(&mask_16)
-            .bvlshr(&BV::from_i64(self.ctx, 16, 32));
-        let bottom_16 = result.bvshl(&BV::from_i64(self.ctx, 16, 32));
+        let mask_16 = BV::from_u64(0xFFFF0000, 32);
+        let top_16 = result.bvand(&mask_16).bvlshr(&BV::from_i64(16, 32));
+        let bottom_16 = result.bvshl(&BV::from_i64(16, 32));
         result = top_16.bvor(&bottom_16);
 
         // Swap 8-bit chunks
-        let mask_8_top = BV::from_u64(self.ctx, 0xFF00FF00, 32);
-        let mask_8_bottom = BV::from_u64(self.ctx, 0x00FF00FF, 32);
-        let top_8 = result
-            .bvand(&mask_8_top)
-            .bvlshr(&BV::from_i64(self.ctx, 8, 32));
-        let bottom_8 = result
-            .bvand(&mask_8_bottom)
-            .bvshl(&BV::from_i64(self.ctx, 8, 32));
+        let mask_8_top = BV::from_u64(0xFF00FF00, 32);
+        let mask_8_bottom = BV::from_u64(0x00FF00FF, 32);
+        let top_8 = result.bvand(&mask_8_top).bvlshr(&BV::from_i64(8, 32));
+        let bottom_8 = result.bvand(&mask_8_bottom).bvshl(&BV::from_i64(8, 32));
         result = top_8.bvor(&bottom_8);
 
         // Swap 4-bit chunks
-        let mask_4_top = BV::from_u64(self.ctx, 0xF0F0F0F0, 32);
-        let mask_4_bottom = BV::from_u64(self.ctx, 0x0F0F0F0F, 32);
-        let top_4 = result
-            .bvand(&mask_4_top)
-            .bvlshr(&BV::from_i64(self.ctx, 4, 32));
-        let bottom_4 = result
-            .bvand(&mask_4_bottom)
-            .bvshl(&BV::from_i64(self.ctx, 4, 32));
+        let mask_4_top = BV::from_u64(0xF0F0F0F0, 32);
+        let mask_4_bottom = BV::from_u64(0x0F0F0F0F, 32);
+        let top_4 = result.bvand(&mask_4_top).bvlshr(&BV::from_i64(4, 32));
+        let bottom_4 = result.bvand(&mask_4_bottom).bvshl(&BV::from_i64(4, 32));
         result = top_4.bvor(&bottom_4);
 
         // Swap 2-bit chunks
-        let mask_2_top = BV::from_u64(self.ctx, 0xCCCCCCCC, 32);
-        let mask_2_bottom = BV::from_u64(self.ctx, 0x33333333, 32);
-        let top_2 = result
-            .bvand(&mask_2_top)
-            .bvlshr(&BV::from_i64(self.ctx, 2, 32));
-        let bottom_2 = result
-            .bvand(&mask_2_bottom)
-            .bvshl(&BV::from_i64(self.ctx, 2, 32));
+        let mask_2_top = BV::from_u64(0xCCCCCCCC, 32);
+        let mask_2_bottom = BV::from_u64(0x33333333, 32);
+        let top_2 = result.bvand(&mask_2_top).bvlshr(&BV::from_i64(2, 32));
+        let bottom_2 = result.bvand(&mask_2_bottom).bvshl(&BV::from_i64(2, 32));
         result = top_2.bvor(&bottom_2);
 
         // Swap 1-bit chunks (individual bits)
-        let mask_1_top = BV::from_u64(self.ctx, 0xAAAAAAAA, 32);
-        let mask_1_bottom = BV::from_u64(self.ctx, 0x55555555, 32);
-        let top_1 = result
-            .bvand(&mask_1_top)
-            .bvlshr(&BV::from_i64(self.ctx, 1, 32));
-        let bottom_1 = result
-            .bvand(&mask_1_bottom)
-            .bvshl(&BV::from_i64(self.ctx, 1, 32));
+        let mask_1_top = BV::from_u64(0xAAAAAAAA, 32);
+        let mask_1_bottom = BV::from_u64(0x55555555, 32);
+        let top_1 = result.bvand(&mask_1_top).bvlshr(&BV::from_i64(1, 32));
+        let bottom_1 = result.bvand(&mask_1_bottom).bvshl(&BV::from_i64(1, 32));
         result = top_1.bvor(&bottom_1);
 
         result
@@ -1967,22 +1947,16 @@ impl<'ctx> ArmSemantics<'ctx> {
     /// For subtraction result = a - b:
     /// - C = 1 if a >= b (unsigned), 0 if borrow
     /// - V = 1 if signs of a and b differ AND sign of result differs from a
-    fn update_flags_sub(
-        &self,
-        state: &mut ArmState<'ctx>,
-        a: &BV<'ctx>,
-        b: &BV<'ctx>,
-        result: &BV<'ctx>,
-    ) {
-        let zero = BV::from_i64(self.ctx, 0, 32);
+    fn update_flags_sub(&self, state: &mut ArmState, a: &BV, b: &BV, result: &BV) {
+        let zero = BV::from_i64(0, 32);
 
         // N flag: bit 31 of result (negative if set)
         let sign_bit = result.extract(31, 31);
-        let one_bit = BV::from_i64(self.ctx, 1, 1);
-        state.flags.n = sign_bit._eq(&one_bit);
+        let one_bit = BV::from_i64(1, 1);
+        state.flags.n = sign_bit.eq(&one_bit);
 
         // Z flag: result == 0
-        state.flags.z = result._eq(&zero);
+        state.flags.z = result.eq(&zero);
 
         // C flag: carry/borrow flag for subtraction
         // For SUB: C = 1 if no borrow (i.e., a >= b unsigned)
@@ -1998,9 +1972,9 @@ impl<'ctx> ArmSemantics<'ctx> {
         let b_sign = b.extract(31, 31);
         let r_sign = result.extract(31, 31);
 
-        let signs_differ = a_sign._eq(&b_sign).not(); // a and b have different signs
-        let result_sign_wrong = a_sign._eq(&r_sign).not(); // result sign differs from a
-        state.flags.v = Bool::and(self.ctx, &[&signs_differ, &result_sign_wrong]);
+        let signs_differ = a_sign.eq(&b_sign).not(); // a and b have different signs
+        let result_sign_wrong = a_sign.eq(&r_sign).not(); // result sign differs from a
+        state.flags.v = Bool::and(&[&signs_differ, &result_sign_wrong]);
     }
 
     /// Update condition flags for addition
@@ -2009,22 +1983,16 @@ impl<'ctx> ArmSemantics<'ctx> {
     /// - C = 1 if unsigned overflow (result < a or result < b)
     /// - V = 1 if signed overflow
     #[allow(dead_code)]
-    fn update_flags_add(
-        &self,
-        state: &mut ArmState<'ctx>,
-        a: &BV<'ctx>,
-        b: &BV<'ctx>,
-        result: &BV<'ctx>,
-    ) {
-        let zero = BV::from_i64(self.ctx, 0, 32);
+    fn update_flags_add(&self, state: &mut ArmState, a: &BV, b: &BV, result: &BV) {
+        let zero = BV::from_i64(0, 32);
 
         // N flag: bit 31 of result
         let sign_bit = result.extract(31, 31);
-        let one_bit = BV::from_i64(self.ctx, 1, 1);
-        state.flags.n = sign_bit._eq(&one_bit);
+        let one_bit = BV::from_i64(1, 1);
+        state.flags.n = sign_bit.eq(&one_bit);
 
         // Z flag: result == 0
-        state.flags.z = result._eq(&zero);
+        state.flags.z = result.eq(&zero);
 
         // C flag: unsigned overflow
         // For ADD: C = 1 if carry out (unsigned overflow)
@@ -2040,9 +2008,9 @@ impl<'ctx> ArmSemantics<'ctx> {
         let b_sign = b.extract(31, 31);
         let r_sign = result.extract(31, 31);
 
-        let signs_same = a_sign._eq(&b_sign); // a and b have same sign
-        let result_sign_wrong = a_sign._eq(&r_sign).not(); // result sign differs
-        state.flags.v = Bool::and(self.ctx, &[&signs_same, &result_sign_wrong]);
+        let signs_same = a_sign.eq(&b_sign); // a and b have same sign
+        let result_sign_wrong = a_sign.eq(&r_sign).not(); // result sign differs
+        state.flags.v = Bool::and(&[&signs_same, &result_sign_wrong]);
     }
 
     /// Evaluate an ARM condition code based on NZCV flags
@@ -2061,8 +2029,8 @@ impl<'ctx> ArmSemantics<'ctx> {
     fn evaluate_condition(
         &self,
         cond: &synth_synthesis::rules::Condition,
-        flags: &ConditionFlags<'ctx>,
-    ) -> Bool<'ctx> {
+        flags: &ConditionFlags,
+    ) -> Bool {
         use synth_synthesis::rules::Condition;
 
         match cond {
@@ -2070,22 +2038,22 @@ impl<'ctx> ArmSemantics<'ctx> {
             Condition::NE => flags.z.not(),
             Condition::LT => {
                 // N != V: negative flag differs from overflow flag
-                flags.n._eq(&flags.v).not()
+                flags.n.eq(&flags.v).not()
             }
             Condition::LE => {
                 // Z == 1 || N != V
-                let n_ne_v = flags.n._eq(&flags.v).not();
-                Bool::or(self.ctx, &[&flags.z, &n_ne_v])
+                let n_ne_v = flags.n.eq(&flags.v).not();
+                Bool::or(&[&flags.z, &n_ne_v])
             }
             Condition::GT => {
                 // Z == 0 && N == V
                 let z_zero = flags.z.not();
-                let n_eq_v = flags.n._eq(&flags.v);
-                Bool::and(self.ctx, &[&z_zero, &n_eq_v])
+                let n_eq_v = flags.n.eq(&flags.v);
+                Bool::and(&[&z_zero, &n_eq_v])
             }
             Condition::GE => {
                 // N == V
-                flags.n._eq(&flags.v)
+                flags.n.eq(&flags.v)
             }
             Condition::LO => {
                 // C == 0 (no carry = less than unsigned)
@@ -2094,12 +2062,12 @@ impl<'ctx> ArmSemantics<'ctx> {
             Condition::LS => {
                 // C == 0 || Z == 1
                 let c_zero = flags.c.not();
-                Bool::or(self.ctx, &[&flags.z, &c_zero])
+                Bool::or(&[&flags.z, &c_zero])
             }
             Condition::HI => {
                 // C == 1 && Z == 0
                 let z_zero = flags.z.not();
-                Bool::and(self.ctx, &[&flags.c, &z_zero])
+                Bool::and(&[&flags.c, &z_zero])
             }
             Condition::HS => {
                 // C == 1 (carry = greater or equal unsigned)
@@ -2109,9 +2077,9 @@ impl<'ctx> ArmSemantics<'ctx> {
     }
 
     /// Convert a boolean to a 32-bit bitvector (0 or 1)
-    fn bool_to_bv32(&self, cond: &Bool<'ctx>) -> BV<'ctx> {
-        let zero = BV::from_i64(self.ctx, 0, 32);
-        let one = BV::from_i64(self.ctx, 1, 32);
+    fn bool_to_bv32(&self, cond: &Bool) -> BV {
+        let zero = BV::from_i64(0, 32);
+        let one = BV::from_i64(1, 32);
         cond.ite(&one, &zero)
     }
 
@@ -2119,34 +2087,34 @@ impl<'ctx> ArmSemantics<'ctx> {
     ///
     /// Uses the Hamming weight algorithm (same as WASM implementation).
     /// This is a pseudo-instruction that would be expanded into actual ARM code.
-    fn encode_popcnt(&self, input: &BV<'ctx>) -> BV<'ctx> {
+    fn encode_popcnt(&self, input: &BV) -> BV {
         let mut x = input.clone();
 
         // Step 1: Count bits in pairs
-        let mask1 = BV::from_u64(self.ctx, 0x55555555, 32);
+        let mask1 = BV::from_u64(0x55555555, 32);
         let masked = x.bvand(&mask1);
-        let shifted = x.bvlshr(&BV::from_i64(self.ctx, 1, 32));
+        let shifted = x.bvlshr(&BV::from_i64(1, 32));
         let shifted_masked = shifted.bvand(&mask1);
         x = masked.bvadd(&shifted_masked);
 
         // Step 2: Count pairs in nibbles
-        let mask2 = BV::from_u64(self.ctx, 0x33333333, 32);
+        let mask2 = BV::from_u64(0x33333333, 32);
         let masked = x.bvand(&mask2);
-        let shifted = x.bvlshr(&BV::from_i64(self.ctx, 2, 32));
+        let shifted = x.bvlshr(&BV::from_i64(2, 32));
         let shifted_masked = shifted.bvand(&mask2);
         x = masked.bvadd(&shifted_masked);
 
         // Step 3: Count nibbles in bytes
-        let mask3 = BV::from_u64(self.ctx, 0x0F0F0F0F, 32);
+        let mask3 = BV::from_u64(0x0F0F0F0F, 32);
         let masked = x.bvand(&mask3);
-        let shifted = x.bvlshr(&BV::from_i64(self.ctx, 4, 32));
+        let shifted = x.bvlshr(&BV::from_i64(4, 32));
         let shifted_masked = shifted.bvand(&mask3);
         x = masked.bvadd(&shifted_masked);
 
         // Step 4: Sum all bytes
-        let multiplier = BV::from_u64(self.ctx, 0x01010101, 32);
+        let multiplier = BV::from_u64(0x01010101, 32);
         x = x.bvmul(&multiplier);
-        x = x.bvlshr(&BV::from_i64(self.ctx, 24, 32));
+        x = x.bvlshr(&BV::from_i64(24, 32));
 
         x
     }
@@ -2155,426 +2123,432 @@ impl<'ctx> ArmSemantics<'ctx> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::create_z3_context;
+    use crate::with_z3_context;
+    use z3::ast::Ast; // needed for .simplify()
 
     #[test]
     fn test_arm_add_semantics() {
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        // Set up concrete values for testing
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
-        state.set_reg(&Reg::R2, BV::from_i64(&ctx, 20, 32));
+            // Set up concrete values for testing
+            state.set_reg(&Reg::R1, BV::from_i64(10, 32));
+            state.set_reg(&Reg::R2, BV::from_i64(20, 32));
 
-        // Execute: ADD R0, R1, R2
-        let op = ArmOp::Add {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            op2: Operand2::Reg(Reg::R2),
-        };
+            // Execute: ADD R0, R1, R2
+            let op = ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R2),
+            };
 
-        encoder.encode_op(&op, &mut state);
+            encoder.encode_op(&op, &mut state);
 
-        // Check result: R0 should be 30
-        let result = state.get_reg(&Reg::R0).simplify();
-        assert_eq!(result.as_i64(), Some(30));
+            // Check result: R0 should be 30
+            let result = state.get_reg(&Reg::R0).simplify();
+            assert_eq!(result.as_i64(), Some(30));
+        });
     }
 
     #[test]
     fn test_arm_sub_semantics() {
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 50, 32));
-        state.set_reg(&Reg::R2, BV::from_i64(&ctx, 20, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(50, 32));
+            state.set_reg(&Reg::R2, BV::from_i64(20, 32));
 
-        let op = ArmOp::Sub {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            op2: Operand2::Reg(Reg::R2),
-        };
+            let op = ArmOp::Sub {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R2),
+            };
 
-        encoder.encode_op(&op, &mut state);
+            encoder.encode_op(&op, &mut state);
 
-        let result = state.get_reg(&Reg::R0);
-        assert_eq!(result.simplify().as_i64(), Some(30));
+            let result = state.get_reg(&Reg::R0);
+            assert_eq!(result.simplify().as_i64(), Some(30));
+        });
     }
 
     #[test]
     fn test_arm_mov_immediate() {
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        let op = ArmOp::Mov {
-            rd: Reg::R0,
-            op2: Operand2::Imm(42),
-        };
+            let op = ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Imm(42),
+            };
 
-        encoder.encode_op(&op, &mut state);
+            encoder.encode_op(&op, &mut state);
 
-        let result = state.get_reg(&Reg::R0);
-        assert_eq!(result.simplify().as_i64(), Some(42));
+            let result = state.get_reg(&Reg::R0);
+            assert_eq!(result.simplify().as_i64(), Some(42));
+        });
     }
 
     #[test]
     fn test_arm_bitwise_ops() {
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 0b1010, 32));
-        state.set_reg(&Reg::R2, BV::from_i64(&ctx, 0b1100, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(0b1010, 32));
+            state.set_reg(&Reg::R2, BV::from_i64(0b1100, 32));
 
-        // Test AND
-        let and_op = ArmOp::And {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            op2: Operand2::Reg(Reg::R2),
-        };
-        encoder.encode_op(&and_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(0b1000));
+            // Test AND
+            let and_op = ArmOp::And {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R2),
+            };
+            encoder.encode_op(&and_op, &mut state);
+            assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(0b1000));
 
-        // Test ORR
-        let orr_op = ArmOp::Orr {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            op2: Operand2::Reg(Reg::R2),
-        };
-        encoder.encode_op(&orr_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(0b1110));
+            // Test ORR
+            let orr_op = ArmOp::Orr {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R2),
+            };
+            encoder.encode_op(&orr_op, &mut state);
+            assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(0b1110));
 
-        // Test EOR (XOR)
-        let eor_op = ArmOp::Eor {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            op2: Operand2::Reg(Reg::R2),
-        };
-        encoder.encode_op(&eor_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(0b0110));
+            // Test EOR (XOR)
+            let eor_op = ArmOp::Eor {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R2),
+            };
+            encoder.encode_op(&eor_op, &mut state);
+            assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(0b0110));
+        });
     }
 
     #[test]
     fn test_arm_mls() {
         // Test MLS (Multiply and Subtract): Rd = Ra - Rn * Rm
         // This is used for remainder: a % b = a - (a/b) * b
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        // Test: 17 % 5 = 17 - (17/5) * 5 = 17 - 3*5 = 17 - 15 = 2
-        // Ra = 17, Rn = 3 (quotient), Rm = 5 (divisor)
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 17, 32)); // Ra (dividend)
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 3, 32)); // Rn (quotient)
-        state.set_reg(&Reg::R2, BV::from_i64(&ctx, 5, 32)); // Rm (divisor)
+            // Test: 17 % 5 = 17 - (17/5) * 5 = 17 - 3*5 = 17 - 15 = 2
+            // Ra = 17, Rn = 3 (quotient), Rm = 5 (divisor)
+            state.set_reg(&Reg::R0, BV::from_i64(17, 32)); // Ra (dividend)
+            state.set_reg(&Reg::R1, BV::from_i64(3, 32)); // Rn (quotient)
+            state.set_reg(&Reg::R2, BV::from_i64(5, 32)); // Rm (divisor)
 
-        let mls_op = ArmOp::Mls {
-            rd: Reg::R3,
-            rn: Reg::R1,
-            rm: Reg::R2,
-            ra: Reg::R0,
-        };
-        encoder.encode_op(&mls_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R3).simplify().as_i64(),
-            Some(2),
-            "MLS: 17 - 3*5 = 2"
-        );
+            let mls_op = ArmOp::Mls {
+                rd: Reg::R3,
+                rn: Reg::R1,
+                rm: Reg::R2,
+                ra: Reg::R0,
+            };
+            encoder.encode_op(&mls_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R3).simplify().as_i64(),
+                Some(2),
+                "MLS: 17 - 3*5 = 2"
+            );
 
-        // Test: 100 - 7 * 3 = 100 - 21 = 79
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 100, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 7, 32));
-        state.set_reg(&Reg::R2, BV::from_i64(&ctx, 3, 32));
+            // Test: 100 - 7 * 3 = 100 - 21 = 79
+            state.set_reg(&Reg::R0, BV::from_i64(100, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(7, 32));
+            state.set_reg(&Reg::R2, BV::from_i64(3, 32));
 
-        let mls_op2 = ArmOp::Mls {
-            rd: Reg::R3,
-            rn: Reg::R1,
-            rm: Reg::R2,
-            ra: Reg::R0,
-        };
-        encoder.encode_op(&mls_op2, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R3).simplify().as_i64(),
-            Some(79),
-            "MLS: 100 - 7*3 = 79"
-        );
+            let mls_op2 = ArmOp::Mls {
+                rd: Reg::R3,
+                rn: Reg::R1,
+                rm: Reg::R2,
+                ra: Reg::R0,
+            };
+            encoder.encode_op(&mls_op2, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R3).simplify().as_i64(),
+                Some(79),
+                "MLS: 100 - 7*3 = 79"
+            );
 
-        // Test with negative numbers: (-17) - 3 * 5 = -17 - 15 = -32
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, -17, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 3, 32));
-        state.set_reg(&Reg::R2, BV::from_i64(&ctx, 5, 32));
+            // Test with negative numbers: (-17) - 3 * 5 = -17 - 15 = -32
+            state.set_reg(&Reg::R0, BV::from_i64(-17, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(3, 32));
+            state.set_reg(&Reg::R2, BV::from_i64(5, 32));
 
-        let mls_op3 = ArmOp::Mls {
-            rd: Reg::R3,
-            rn: Reg::R1,
-            rm: Reg::R2,
-            ra: Reg::R0,
-        };
-        encoder.encode_op(&mls_op3, &mut state);
-        // Result is -32, but as_i64() returns unsigned, so we need to convert
-        let result = state.get_reg(&Reg::R3).simplify().as_i64();
-        let signed_result = result.map(|v| (v as i32) as i64);
-        assert_eq!(
-            signed_result,
-            Some(-32),
-            "MLS: -17 - 3*5 = -32"
-        );
+            let mls_op3 = ArmOp::Mls {
+                rd: Reg::R3,
+                rn: Reg::R1,
+                rm: Reg::R2,
+                ra: Reg::R0,
+            };
+            encoder.encode_op(&mls_op3, &mut state);
+            // Result is -32, but as_i64() returns unsigned, so we need to convert
+            let result = state.get_reg(&Reg::R3).simplify().as_i64();
+            let signed_result = result.map(|v| (v as i32) as i64);
+            assert_eq!(signed_result, Some(-32), "MLS: -17 - 3*5 = -32");
+        });
     }
 
     #[test]
     fn test_arm_shift_ops() {
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 8, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(8, 32));
 
-        // Test LSL (logical shift left) with immediate
-        let lsl_op = ArmOp::Lsl {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            shift: 2,
-        };
-        encoder.encode_op(&lsl_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(32));
+            // Test LSL (logical shift left) with immediate
+            let lsl_op = ArmOp::Lsl {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                shift: 2,
+            };
+            encoder.encode_op(&lsl_op, &mut state);
+            assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(32));
 
-        // Test LSR (logical shift right) with immediate
-        let lsr_op = ArmOp::Lsr {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            shift: 2,
-        };
-        encoder.encode_op(&lsr_op, &mut state);
-        assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(2));
+            // Test LSR (logical shift right) with immediate
+            let lsr_op = ArmOp::Lsr {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                shift: 2,
+            };
+            encoder.encode_op(&lsr_op, &mut state);
+            assert_eq!(state.get_reg(&Reg::R0).simplify().as_i64(), Some(2));
+        });
     }
 
     #[test]
     fn test_arm_ror_comprehensive() {
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        // Test ROR with 0x12345678
-        // ROR by 8 should rotate right by 8 bits
-        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x12345678, 32));
-        let ror_op = ArmOp::Ror {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            shift: 8,
-        };
-        encoder.encode_op(&ror_op, &mut state);
-        // 0x12345678 ROR 8 = 0x78123456
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(0x78123456),
-            "ROR by 8"
-        );
+            // Test ROR with 0x12345678
+            // ROR by 8 should rotate right by 8 bits
+            state.set_reg(&Reg::R1, BV::from_u64(0x12345678, 32));
+            let ror_op = ArmOp::Ror {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                shift: 8,
+            };
+            encoder.encode_op(&ror_op, &mut state);
+            // 0x12345678 ROR 8 = 0x78123456
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(0x78123456),
+                "ROR by 8"
+            );
 
-        // Test ROR by 16 (swap halves)
-        let ror_op_16 = ArmOp::Ror {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            shift: 16,
-        };
-        encoder.encode_op(&ror_op_16, &mut state);
-        // 0x12345678 ROR 16 = 0x56781234
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(0x56781234),
-            "ROR by 16"
-        );
+            // Test ROR by 16 (swap halves)
+            let ror_op_16 = ArmOp::Ror {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                shift: 16,
+            };
+            encoder.encode_op(&ror_op_16, &mut state);
+            // 0x12345678 ROR 16 = 0x56781234
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(0x56781234),
+                "ROR by 16"
+            );
 
-        // Test ROR by 0 (no change)
-        let ror_op_0 = ArmOp::Ror {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            shift: 0,
-        };
-        encoder.encode_op(&ror_op_0, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(0x12345678),
-            "ROR by 0"
-        );
+            // Test ROR by 0 (no change)
+            let ror_op_0 = ArmOp::Ror {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                shift: 0,
+            };
+            encoder.encode_op(&ror_op_0, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(0x12345678),
+                "ROR by 0"
+            );
 
-        // Test ROR by 32 (full rotation, back to original)
-        let ror_op_32 = ArmOp::Ror {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            shift: 32,
-        };
-        encoder.encode_op(&ror_op_32, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(0x12345678),
-            "ROR by 32"
-        );
+            // Test ROR by 32 (full rotation, back to original)
+            let ror_op_32 = ArmOp::Ror {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                shift: 32,
+            };
+            encoder.encode_op(&ror_op_32, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(0x12345678),
+                "ROR by 32"
+            );
 
-        // Test ROR by 4 (nibble rotation)
-        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xABCDEF01, 32));
-        let ror_op_4 = ArmOp::Ror {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            shift: 4,
-        };
-        encoder.encode_op(&ror_op_4, &mut state);
-        // 0xABCDEF01 ROR 4 = 0x1ABCDEF0
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(0x1ABCDEF0),
-            "ROR by 4"
-        );
+            // Test ROR by 4 (nibble rotation)
+            state.set_reg(&Reg::R1, BV::from_u64(0xABCDEF01, 32));
+            let ror_op_4 = ArmOp::Ror {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                shift: 4,
+            };
+            encoder.encode_op(&ror_op_4, &mut state);
+            // 0xABCDEF01 ROR 4 = 0x1ABCDEF0
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(0x1ABCDEF0),
+                "ROR by 4"
+            );
 
-        // Test ROR with 1-bit rotation
-        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x80000001, 32));
-        let ror_op_1 = ArmOp::Ror {
-            rd: Reg::R0,
-            rn: Reg::R1,
-            shift: 1,
-        };
-        encoder.encode_op(&ror_op_1, &mut state);
-        // 0x80000001 ROR 1 = 0xC0000000
-        let result = state.get_reg(&Reg::R0).simplify().as_i64();
-        let signed_result = result.map(|v| (v as i32) as i64);
-        assert_eq!(
-            signed_result,
-            Some(0xC0000000_u32 as i32 as i64),
-            "ROR by 1"
-        );
+            // Test ROR with 1-bit rotation
+            state.set_reg(&Reg::R1, BV::from_u64(0x80000001, 32));
+            let ror_op_1 = ArmOp::Ror {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                shift: 1,
+            };
+            encoder.encode_op(&ror_op_1, &mut state);
+            // 0x80000001 ROR 1 = 0xC0000000
+            let result = state.get_reg(&Reg::R0).simplify().as_i64();
+            let signed_result = result.map(|v| (v as i32) as i64);
+            assert_eq!(
+                signed_result,
+                Some(0xC0000000_u32 as i32 as i64),
+                "ROR by 1"
+            );
+        });
     }
 
     #[test]
     fn test_arm_clz_comprehensive() {
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        // Test CLZ(0) = 32
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 0, 32));
-        let clz_op = ArmOp::Clz {
-            rd: Reg::R0,
-            rm: Reg::R1,
-        };
-        encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(32),
-            "CLZ(0) should be 32"
-        );
+            // Test CLZ(0) = 32
+            state.set_reg(&Reg::R1, BV::from_i64(0, 32));
+            let clz_op = ArmOp::Clz {
+                rd: Reg::R0,
+                rm: Reg::R1,
+            };
+            encoder.encode_op(&clz_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(32),
+                "CLZ(0) should be 32"
+            );
 
-        // Test CLZ(1) = 31
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 1, 32));
-        encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(31),
-            "CLZ(1) should be 31"
-        );
+            // Test CLZ(1) = 31
+            state.set_reg(&Reg::R1, BV::from_i64(1, 32));
+            encoder.encode_op(&clz_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(31),
+                "CLZ(1) should be 31"
+            );
 
-        // Test CLZ(0x80000000) = 0
-        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x80000000, 32));
-        encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(0),
-            "CLZ(0x80000000) should be 0"
-        );
+            // Test CLZ(0x80000000) = 0
+            state.set_reg(&Reg::R1, BV::from_u64(0x80000000, 32));
+            encoder.encode_op(&clz_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(0),
+                "CLZ(0x80000000) should be 0"
+            );
 
-        // Test CLZ(0x00FF0000) = 8
-        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x00FF0000, 32));
-        encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(8),
-            "CLZ(0x00FF0000) should be 8"
-        );
+            // Test CLZ(0x00FF0000) = 8
+            state.set_reg(&Reg::R1, BV::from_u64(0x00FF0000, 32));
+            encoder.encode_op(&clz_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(8),
+                "CLZ(0x00FF0000) should be 8"
+            );
 
-        // Test CLZ(0x00001000) = 19
-        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x00001000, 32));
-        encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(19),
-            "CLZ(0x00001000) should be 19"
-        );
+            // Test CLZ(0x00001000) = 19
+            state.set_reg(&Reg::R1, BV::from_u64(0x00001000, 32));
+            encoder.encode_op(&clz_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(19),
+                "CLZ(0x00001000) should be 19"
+            );
 
-        // Test CLZ(0xFFFFFFFF) = 0
-        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFFFFFFFF, 32));
-        encoder.encode_op(&clz_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(0),
-            "CLZ(0xFFFFFFFF) should be 0"
-        );
+            // Test CLZ(0xFFFFFFFF) = 0
+            state.set_reg(&Reg::R1, BV::from_u64(0xFFFFFFFF, 32));
+            encoder.encode_op(&clz_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(0),
+                "CLZ(0xFFFFFFFF) should be 0"
+            );
+        });
     }
 
     #[test]
     fn test_arm_rbit_comprehensive() {
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        let rbit_op = ArmOp::Rbit {
-            rd: Reg::R0,
-            rm: Reg::R1,
-        };
+            let rbit_op = ArmOp::Rbit {
+                rd: Reg::R0,
+                rm: Reg::R1,
+            };
 
-        // Test RBIT(0) = 0
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 0, 32));
-        encoder.encode_op(&rbit_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(0),
-            "RBIT(0) should be 0"
-        );
+            // Test RBIT(0) = 0
+            state.set_reg(&Reg::R1, BV::from_i64(0, 32));
+            encoder.encode_op(&rbit_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(0),
+                "RBIT(0) should be 0"
+            );
 
-        // Test RBIT(1) = 0x80000000 (bit 0 → bit 31)
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 1, 32));
-        encoder.encode_op(&rbit_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_u64(),
-            Some(0x80000000),
-            "RBIT(1) should be 0x80000000"
-        );
+            // Test RBIT(1) = 0x80000000 (bit 0 → bit 31)
+            state.set_reg(&Reg::R1, BV::from_i64(1, 32));
+            encoder.encode_op(&rbit_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_u64(),
+                Some(0x80000000),
+                "RBIT(1) should be 0x80000000"
+            );
 
-        // Test RBIT(0x80000000) = 1 (bit 31 → bit 0)
-        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x80000000, 32));
-        encoder.encode_op(&rbit_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(1),
-            "RBIT(0x80000000) should be 1"
-        );
+            // Test RBIT(0x80000000) = 1 (bit 31 → bit 0)
+            state.set_reg(&Reg::R1, BV::from_u64(0x80000000, 32));
+            encoder.encode_op(&rbit_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(1),
+                "RBIT(0x80000000) should be 1"
+            );
 
-        // Test RBIT(0xFF000000) = 0x000000FF (top byte → bottom byte)
-        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFF000000, 32));
-        encoder.encode_op(&rbit_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_u64(),
-            Some(0x000000FF),
-            "RBIT(0xFF000000) should be 0x000000FF"
-        );
+            // Test RBIT(0xFF000000) = 0x000000FF (top byte → bottom byte)
+            state.set_reg(&Reg::R1, BV::from_u64(0xFF000000, 32));
+            encoder.encode_op(&rbit_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_u64(),
+                Some(0x000000FF),
+                "RBIT(0xFF000000) should be 0x000000FF"
+            );
 
-        // Test RBIT(0x12345678) - specific pattern
-        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0x12345678, 32));
-        encoder.encode_op(&rbit_op, &mut state);
-        // 0x12345678 reversed = 0x1E6A2C48
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_u64(),
-            Some(0x1E6A2C48),
-            "RBIT(0x12345678) should be 0x1E6A2C48"
-        );
+            // Test RBIT(0x12345678) - specific pattern
+            state.set_reg(&Reg::R1, BV::from_u64(0x12345678, 32));
+            encoder.encode_op(&rbit_op, &mut state);
+            // 0x12345678 reversed = 0x1E6A2C48
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_u64(),
+                Some(0x1E6A2C48),
+                "RBIT(0x12345678) should be 0x1E6A2C48"
+            );
 
-        // Test RBIT(0xFFFFFFFF) = 0xFFFFFFFF (all bits stay)
-        state.set_reg(&Reg::R1, BV::from_u64(&ctx, 0xFFFFFFFF, 32));
-        encoder.encode_op(&rbit_op, &mut state);
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_u64(),
-            Some(0xFFFFFFFF),
-            "RBIT(0xFFFFFFFF) should be 0xFFFFFFFF"
-        );
+            // Test RBIT(0xFFFFFFFF) = 0xFFFFFFFF (all bits stay)
+            state.set_reg(&Reg::R1, BV::from_u64(0xFFFFFFFF, 32));
+            encoder.encode_op(&rbit_op, &mut state);
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_u64(),
+                Some(0xFFFFFFFF),
+                "RBIT(0xFFFFFFFF) should be 0xFFFFFFFF"
+            );
+        });
     }
 
     #[test]
@@ -2582,147 +2556,152 @@ mod tests {
         // Test CMP instruction and condition flag updates
         use z3::ast::Ast;
 
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        // Test 1: CMP with equal values (10 - 10 = 0)
-        // Should set: Z=1, N=0, C=1 (no borrow), V=0
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+            // Test 1: CMP with equal values (10 - 10 = 0)
+            // Should set: Z=1, N=0, C=1 (no borrow), V=0
+            state.set_reg(&Reg::R0, BV::from_i64(10, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(10, 32));
 
-        let cmp_op = ArmOp::Cmp {
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        };
-        encoder.encode_op(&cmp_op, &mut state);
+            let cmp_op = ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            };
+            encoder.encode_op(&cmp_op, &mut state);
 
-        assert_eq!(
-            state.flags.z.simplify().as_bool(),
-            Some(true),
-            "Z flag should be set (equal)"
-        );
-        assert_eq!(
-            state.flags.n.simplify().as_bool(),
-            Some(false),
-            "N flag should be clear (non-negative)"
-        );
-        assert_eq!(
-            state.flags.c.simplify().as_bool(),
-            Some(true),
-            "C flag should be set (no borrow)"
-        );
-        assert_eq!(
-            state.flags.v.simplify().as_bool(),
-            Some(false),
-            "V flag should be clear (no overflow)"
-        );
+            assert_eq!(
+                state.flags.z.simplify().as_bool(),
+                Some(true),
+                "Z flag should be set (equal)"
+            );
+            assert_eq!(
+                state.flags.n.simplify().as_bool(),
+                Some(false),
+                "N flag should be clear (non-negative)"
+            );
+            assert_eq!(
+                state.flags.c.simplify().as_bool(),
+                Some(true),
+                "C flag should be set (no borrow)"
+            );
+            assert_eq!(
+                state.flags.v.simplify().as_bool(),
+                Some(false),
+                "V flag should be clear (no overflow)"
+            );
 
-        // Test 2: CMP with first > second (20 - 10 = 10)
-        // Should set: Z=0, N=0, C=1 (no borrow), V=0
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 20, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
-        encoder.encode_op(&cmp_op, &mut state);
+            // Test 2: CMP with first > second (20 - 10 = 10)
+            // Should set: Z=0, N=0, C=1 (no borrow), V=0
+            state.set_reg(&Reg::R0, BV::from_i64(20, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(10, 32));
+            encoder.encode_op(&cmp_op, &mut state);
 
-        assert_eq!(
-            state.flags.z.simplify().as_bool(),
-            Some(false),
-            "Z flag should be clear (not equal)"
-        );
-        assert_eq!(
-            state.flags.n.simplify().as_bool(),
-            Some(false),
-            "N flag should be clear (positive result)"
-        );
-        assert_eq!(
-            state.flags.c.simplify().as_bool(),
-            Some(true),
-            "C flag should be set (no borrow)"
-        );
-        assert_eq!(
-            state.flags.v.simplify().as_bool(),
-            Some(false),
-            "V flag should be clear (no overflow)"
-        );
+            assert_eq!(
+                state.flags.z.simplify().as_bool(),
+                Some(false),
+                "Z flag should be clear (not equal)"
+            );
+            assert_eq!(
+                state.flags.n.simplify().as_bool(),
+                Some(false),
+                "N flag should be clear (positive result)"
+            );
+            assert_eq!(
+                state.flags.c.simplify().as_bool(),
+                Some(true),
+                "C flag should be set (no borrow)"
+            );
+            assert_eq!(
+                state.flags.v.simplify().as_bool(),
+                Some(false),
+                "V flag should be clear (no overflow)"
+            );
 
-        // Test 3: CMP with first < second (unsigned: will wrap)
-        // 10 - 20 = -10 (0xFFFFFFF6 in two's complement)
-        // Should set: Z=0, N=1 (negative), C=0 (borrow), V=0
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 20, 32));
-        encoder.encode_op(&cmp_op, &mut state);
+            // Test 3: CMP with first < second (unsigned: will wrap)
+            // 10 - 20 = -10 (0xFFFFFFF6 in two's complement)
+            // Should set: Z=0, N=1 (negative), C=0 (borrow), V=0
+            state.set_reg(&Reg::R0, BV::from_i64(10, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(20, 32));
+            encoder.encode_op(&cmp_op, &mut state);
 
-        assert_eq!(
-            state.flags.z.simplify().as_bool(),
-            Some(false),
-            "Z flag should be clear"
-        );
-        assert_eq!(
-            state.flags.n.simplify().as_bool(),
-            Some(true),
-            "N flag should be set (negative result)"
-        );
-        assert_eq!(
-            state.flags.c.simplify().as_bool(),
-            Some(false),
-            "C flag should be clear (borrow occurred)"
-        );
-        assert_eq!(
-            state.flags.v.simplify().as_bool(),
-            Some(false),
-            "V flag should be clear"
-        );
+            assert_eq!(
+                state.flags.z.simplify().as_bool(),
+                Some(false),
+                "Z flag should be clear"
+            );
+            assert_eq!(
+                state.flags.n.simplify().as_bool(),
+                Some(true),
+                "N flag should be set (negative result)"
+            );
+            assert_eq!(
+                state.flags.c.simplify().as_bool(),
+                Some(false),
+                "C flag should be clear (borrow occurred)"
+            );
+            assert_eq!(
+                state.flags.v.simplify().as_bool(),
+                Some(false),
+                "V flag should be clear"
+            );
 
-        // Test 4: Signed overflow case
-        // Subtracting large negative from positive should overflow
-        // 0x7FFFFFFF (max positive) - 0x80000000 (min negative)
-        // Result wraps to negative, but mathematically should be huge positive
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 0x7FFFFFFF, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, -2147483648i64, 32)); // 0x80000000
-        encoder.encode_op(&cmp_op, &mut state);
+            // Test 4: Signed overflow case
+            // Subtracting large negative from positive should overflow
+            // 0x7FFFFFFF (max positive) - 0x80000000 (min negative)
+            // Result wraps to negative, but mathematically should be huge positive
+            state.set_reg(&Reg::R0, BV::from_i64(0x7FFFFFFF, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(-2147483648i64, 32)); // 0x80000000
+            encoder.encode_op(&cmp_op, &mut state);
 
-        assert_eq!(
-            state.flags.z.simplify().as_bool(),
-            Some(false),
-            "Z flag should be clear"
-        );
-        assert_eq!(
-            state.flags.n.simplify().as_bool(),
-            Some(true),
-            "N flag should be set (wrapped result)"
-        );
-        assert_eq!(
-            state.flags.c.simplify().as_bool(),
-            Some(false),
-            "C flag should be clear"
-        );
-        assert_eq!(
-            state.flags.v.simplify().as_bool(),
-            Some(true),
-            "V flag should be set (overflow)"
-        );
+            assert_eq!(
+                state.flags.z.simplify().as_bool(),
+                Some(false),
+                "Z flag should be clear"
+            );
+            assert_eq!(
+                state.flags.n.simplify().as_bool(),
+                Some(true),
+                "N flag should be set (wrapped result)"
+            );
+            assert_eq!(
+                state.flags.c.simplify().as_bool(),
+                Some(false),
+                "C flag should be clear"
+            );
+            assert_eq!(
+                state.flags.v.simplify().as_bool(),
+                Some(true),
+                "V flag should be set (overflow)"
+            );
 
-        // Test 5: Zero comparison
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 0, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 0, 32));
-        encoder.encode_op(&cmp_op, &mut state);
+            // Test 5: Zero comparison
+            state.set_reg(&Reg::R0, BV::from_i64(0, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(0, 32));
+            encoder.encode_op(&cmp_op, &mut state);
 
-        assert_eq!(
-            state.flags.z.simplify().as_bool(),
-            Some(true),
-            "Z flag should be set (0 - 0 = 0)"
-        );
-        assert_eq!(
-            state.flags.n.simplify().as_bool(),
-            Some(false),
-            "N flag should be clear"
-        );
-        assert_eq!(state.flags.c.simplify().as_bool(), Some(true), "C flag should be set");
-        assert_eq!(
-            state.flags.v.simplify().as_bool(),
-            Some(false),
-            "V flag should be clear"
-        );
+            assert_eq!(
+                state.flags.z.simplify().as_bool(),
+                Some(true),
+                "Z flag should be set (0 - 0 = 0)"
+            );
+            assert_eq!(
+                state.flags.n.simplify().as_bool(),
+                Some(false),
+                "N flag should be clear"
+            );
+            assert_eq!(
+                state.flags.c.simplify().as_bool(),
+                Some(true),
+                "C flag should be set"
+            );
+            assert_eq!(
+                state.flags.v.simplify().as_bool(),
+                Some(false),
+                "V flag should be clear"
+            );
+        });
     }
 
     #[test]
@@ -2730,258 +2709,262 @@ mod tests {
         // Test that flags correctly distinguish all comparison outcomes
         use z3::ast::Ast;
 
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        let cmp_op = ArmOp::Cmp {
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        };
+            let cmp_op = ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            };
 
-        // Test signed comparisons using flags
-        // For signed comparison A vs B (after CMP A, B):
-        // - EQ (equal): Z=1
-        // - NE (not equal): Z=0
-        // - LT (less than): N != V
-        // - LE (less or equal): Z=1 OR (N != V)
-        // - GT (greater than): Z=0 AND (N == V)
-        // - GE (greater or equal): N == V
+            // Test signed comparisons using flags
+            // For signed comparison A vs B (after CMP A, B):
+            // - EQ (equal): Z=1
+            // - NE (not equal): Z=0
+            // - LT (less than): N != V
+            // - LE (less or equal): Z=1 OR (N != V)
+            // - GT (greater than): Z=0 AND (N == V)
+            // - GE (greater or equal): N == V
 
-        // Case: 5 compared to 10 (5 < 10)
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
-        encoder.encode_op(&cmp_op, &mut state);
+            // Case: 5 compared to 10 (5 < 10)
+            state.set_reg(&Reg::R0, BV::from_i64(5, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(10, 32));
+            encoder.encode_op(&cmp_op, &mut state);
 
-        let n = state.flags.n.simplify().as_bool().unwrap();
-        let z = state.flags.z.simplify().as_bool().unwrap();
-        let v = state.flags.v.simplify().as_bool().unwrap();
+            let n = state.flags.n.simplify().as_bool().unwrap();
+            let z = state.flags.z.simplify().as_bool().unwrap();
+            let v = state.flags.v.simplify().as_bool().unwrap();
 
-        assert_eq!(z, false, "Not equal");
-        assert_eq!(n != v, true, "5 < 10 signed (N != V)");
+            assert_eq!(z, false, "Not equal");
+            assert_eq!(n != v, true, "5 < 10 signed (N != V)");
 
-        // Case: -5 compared to 10 (-5 < 10)
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, -5, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
-        encoder.encode_op(&cmp_op, &mut state);
+            // Case: -5 compared to 10 (-5 < 10)
+            state.set_reg(&Reg::R0, BV::from_i64(-5, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(10, 32));
+            encoder.encode_op(&cmp_op, &mut state);
 
-        let n = state.flags.n.simplify().as_bool().unwrap();
-        let v = state.flags.v.simplify().as_bool().unwrap();
-        assert_eq!(n != v, true, "-5 < 10 signed (N != V)");
+            let n = state.flags.n.simplify().as_bool().unwrap();
+            let v = state.flags.v.simplify().as_bool().unwrap();
+            assert_eq!(n != v, true, "-5 < 10 signed (N != V)");
+        });
     }
 
     #[test]
     fn test_arm_setcond_eq() {
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        // Test EQ condition: 10 == 10
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+            // Test EQ condition: 10 == 10
+            state.set_reg(&Reg::R0, BV::from_i64(10, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(10, 32));
 
-        // CMP R0, R1 (sets Z=1 since equal)
-        let cmp_op = ArmOp::Cmp {
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        };
-        encoder.encode_op(&cmp_op, &mut state);
+            // CMP R0, R1 (sets Z=1 since equal)
+            let cmp_op = ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            };
+            encoder.encode_op(&cmp_op, &mut state);
 
-        // SetCond R0, EQ (should set R0 = 1)
-        let setcond_op = ArmOp::SetCond {
-            rd: Reg::R0,
-            cond: synth_synthesis::Condition::EQ,
-        };
-        encoder.encode_op(&setcond_op, &mut state);
+            // SetCond R0, EQ (should set R0 = 1)
+            let setcond_op = ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::EQ,
+            };
+            encoder.encode_op(&setcond_op, &mut state);
 
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(1),
-            "EQ condition (10 == 10) should return 1"
-        );
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(1),
+                "EQ condition (10 == 10) should return 1"
+            );
 
-        // Test NE condition: 10 != 5
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 5, 32));
+            // Test NE condition: 10 != 5
+            state.set_reg(&Reg::R0, BV::from_i64(10, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(5, 32));
 
-        encoder.encode_op(&cmp_op, &mut state);
+            encoder.encode_op(&cmp_op, &mut state);
 
-        let setcond_ne = ArmOp::SetCond {
-            rd: Reg::R0,
-            cond: synth_synthesis::Condition::NE,
-        };
-        encoder.encode_op(&setcond_ne, &mut state);
+            let setcond_ne = ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::NE,
+            };
+            encoder.encode_op(&setcond_ne, &mut state);
 
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(1),
-            "NE condition (10 != 5) should return 1"
-        );
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(1),
+                "NE condition (10 != 5) should return 1"
+            );
+        });
     }
 
     #[test]
     fn test_arm_setcond_signed() {
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        // Test LT signed: 5 < 10
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+            // Test LT signed: 5 < 10
+            state.set_reg(&Reg::R0, BV::from_i64(5, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(10, 32));
 
-        let cmp_op = ArmOp::Cmp {
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        };
-        encoder.encode_op(&cmp_op, &mut state);
+            let cmp_op = ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            };
+            encoder.encode_op(&cmp_op, &mut state);
 
-        let setcond_lt = ArmOp::SetCond {
-            rd: Reg::R0,
-            cond: synth_synthesis::Condition::LT,
-        };
-        encoder.encode_op(&setcond_lt, &mut state);
+            let setcond_lt = ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::LT,
+            };
+            encoder.encode_op(&setcond_lt, &mut state);
 
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(1),
-            "LT signed (5 < 10) should return 1"
-        );
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(1),
+                "LT signed (5 < 10) should return 1"
+            );
 
-        // Test GE signed: 10 >= 5
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 5, 32));
+            // Test GE signed: 10 >= 5
+            state.set_reg(&Reg::R0, BV::from_i64(10, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(5, 32));
 
-        encoder.encode_op(&cmp_op, &mut state);
+            encoder.encode_op(&cmp_op, &mut state);
 
-        let setcond_ge = ArmOp::SetCond {
-            rd: Reg::R0,
-            cond: synth_synthesis::Condition::GE,
-        };
-        encoder.encode_op(&setcond_ge, &mut state);
+            let setcond_ge = ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::GE,
+            };
+            encoder.encode_op(&setcond_ge, &mut state);
 
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(1),
-            "GE signed (10 >= 5) should return 1"
-        );
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(1),
+                "GE signed (10 >= 5) should return 1"
+            );
 
-        // Test GT signed: 10 > 5
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 5, 32));
+            // Test GT signed: 10 > 5
+            state.set_reg(&Reg::R0, BV::from_i64(10, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(5, 32));
 
-        encoder.encode_op(&cmp_op, &mut state);
+            encoder.encode_op(&cmp_op, &mut state);
 
-        let setcond_gt = ArmOp::SetCond {
-            rd: Reg::R0,
-            cond: synth_synthesis::Condition::GT,
-        };
-        encoder.encode_op(&setcond_gt, &mut state);
+            let setcond_gt = ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::GT,
+            };
+            encoder.encode_op(&setcond_gt, &mut state);
 
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(1),
-            "GT signed (10 > 5) should return 1"
-        );
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(1),
+                "GT signed (10 > 5) should return 1"
+            );
 
-        // Test LE signed: 5 <= 10
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+            // Test LE signed: 5 <= 10
+            state.set_reg(&Reg::R0, BV::from_i64(5, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(10, 32));
 
-        encoder.encode_op(&cmp_op, &mut state);
+            encoder.encode_op(&cmp_op, &mut state);
 
-        let setcond_le = ArmOp::SetCond {
-            rd: Reg::R0,
-            cond: synth_synthesis::Condition::LE,
-        };
-        encoder.encode_op(&setcond_le, &mut state);
+            let setcond_le = ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::LE,
+            };
+            encoder.encode_op(&setcond_le, &mut state);
 
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(1),
-            "LE signed (5 <= 10) should return 1"
-        );
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(1),
+                "LE signed (5 <= 10) should return 1"
+            );
+        });
     }
 
     #[test]
     fn test_arm_setcond_unsigned() {
-        let ctx = create_z3_context();
-        let encoder = ArmSemantics::new(&ctx);
-        let mut state = ArmState::new_symbolic(&ctx);
+        with_z3_context(|| {
+            let encoder = ArmSemantics::new();
+            let mut state = ArmState::new_symbolic();
 
-        // Test LO unsigned: 5 < 10
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+            // Test LO unsigned: 5 < 10
+            state.set_reg(&Reg::R0, BV::from_i64(5, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(10, 32));
 
-        let cmp_op = ArmOp::Cmp {
-            rn: Reg::R0,
-            op2: Operand2::Reg(Reg::R1),
-        };
-        encoder.encode_op(&cmp_op, &mut state);
+            let cmp_op = ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            };
+            encoder.encode_op(&cmp_op, &mut state);
 
-        let setcond_lo = ArmOp::SetCond {
-            rd: Reg::R0,
-            cond: synth_synthesis::Condition::LO,
-        };
-        encoder.encode_op(&setcond_lo, &mut state);
+            let setcond_lo = ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::LO,
+            };
+            encoder.encode_op(&setcond_lo, &mut state);
 
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(1),
-            "LO unsigned (5 < 10) should return 1"
-        );
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(1),
+                "LO unsigned (5 < 10) should return 1"
+            );
 
-        // Test HS unsigned: 10 >= 5
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 5, 32));
+            // Test HS unsigned: 10 >= 5
+            state.set_reg(&Reg::R0, BV::from_i64(10, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(5, 32));
 
-        encoder.encode_op(&cmp_op, &mut state);
+            encoder.encode_op(&cmp_op, &mut state);
 
-        let setcond_hs = ArmOp::SetCond {
-            rd: Reg::R0,
-            cond: synth_synthesis::Condition::HS,
-        };
-        encoder.encode_op(&setcond_hs, &mut state);
+            let setcond_hs = ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::HS,
+            };
+            encoder.encode_op(&setcond_hs, &mut state);
 
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(1),
-            "HS unsigned (10 >= 5) should return 1"
-        );
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(1),
+                "HS unsigned (10 >= 5) should return 1"
+            );
 
-        // Test HI unsigned: 10 > 5
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 10, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 5, 32));
+            // Test HI unsigned: 10 > 5
+            state.set_reg(&Reg::R0, BV::from_i64(10, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(5, 32));
 
-        encoder.encode_op(&cmp_op, &mut state);
+            encoder.encode_op(&cmp_op, &mut state);
 
-        let setcond_hi = ArmOp::SetCond {
-            rd: Reg::R0,
-            cond: synth_synthesis::Condition::HI,
-        };
-        encoder.encode_op(&setcond_hi, &mut state);
+            let setcond_hi = ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::HI,
+            };
+            encoder.encode_op(&setcond_hi, &mut state);
 
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(1),
-            "HI unsigned (10 > 5) should return 1"
-        );
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(1),
+                "HI unsigned (10 > 5) should return 1"
+            );
 
-        // Test LS unsigned: 5 <= 10
-        state.set_reg(&Reg::R0, BV::from_i64(&ctx, 5, 32));
-        state.set_reg(&Reg::R1, BV::from_i64(&ctx, 10, 32));
+            // Test LS unsigned: 5 <= 10
+            state.set_reg(&Reg::R0, BV::from_i64(5, 32));
+            state.set_reg(&Reg::R1, BV::from_i64(10, 32));
 
-        encoder.encode_op(&cmp_op, &mut state);
+            encoder.encode_op(&cmp_op, &mut state);
 
-        let setcond_ls = ArmOp::SetCond {
-            rd: Reg::R0,
-            cond: synth_synthesis::Condition::LS,
-        };
-        encoder.encode_op(&setcond_ls, &mut state);
+            let setcond_ls = ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: synth_synthesis::Condition::LS,
+            };
+            encoder.encode_op(&setcond_ls, &mut state);
 
-        assert_eq!(
-            state.get_reg(&Reg::R0).simplify().as_i64(),
-            Some(1),
-            "LS unsigned (5 <= 10) should return 1"
-        );
+            assert_eq!(
+                state.get_reg(&Reg::R0).simplify().as_i64(),
+                Some(1),
+                "LS unsigned (5 <= 10) should return 1"
+            );
+        });
     }
 }

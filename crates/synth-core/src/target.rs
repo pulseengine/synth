@@ -235,3 +235,148 @@ impl HardwareCapabilities {
         }
     }
 }
+
+// ============================================================================
+// Multi-backend target specification
+// ============================================================================
+
+/// Target architecture family (broader than CortexMVariant — spans all ARM + RISC-V)
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ArchFamily {
+    ArmCortexM,
+    ArmCortexR,
+    ArmCortexA,
+    RiscV,
+}
+
+/// ISA variant details — determines instruction encoding
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IsaVariant {
+    /// Cortex-M0 (v6-M, Thumb only)
+    Thumb,
+    /// Cortex-M3/M4/M7 (v7-M, Thumb-2)
+    Thumb2,
+    /// Cortex-R (v7-R, full ARM + Thumb-2)
+    Arm32,
+    /// Cortex-A53+ (v8-A)
+    AArch64,
+    /// RISC-V 32-bit with extension string (e.g. "imac")
+    RiscV32 { extensions: String },
+    /// RISC-V 64-bit with extension string
+    RiscV64 { extensions: String },
+}
+
+/// Memory protection model
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MemProtection {
+    /// ARM MPU (Cortex-M, Cortex-R)
+    Mpu { regions: u8 },
+    /// ARM MMU (Cortex-A)
+    Mmu,
+    /// RISC-V Physical Memory Protection
+    Pmp { entries: u8 },
+    /// No hardware protection
+    SoftwareOnly,
+}
+
+/// Full target specification for multi-backend compilation
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TargetSpec {
+    /// Architecture family
+    pub family: ArchFamily,
+    /// LLVM-style triple (e.g. "thumbv7em-none-eabihf")
+    pub triple: String,
+    /// ISA variant details
+    pub isa: IsaVariant,
+    /// Memory protection model
+    pub mem_protection: MemProtection,
+}
+
+impl TargetSpec {
+    /// Cortex-M4 with 8 MPU regions (most common embedded target)
+    pub fn cortex_m4() -> Self {
+        Self {
+            family: ArchFamily::ArmCortexM,
+            triple: "thumbv7em-none-eabihf".to_string(),
+            isa: IsaVariant::Thumb2,
+            mem_protection: MemProtection::Mpu { regions: 8 },
+        }
+    }
+
+    /// Cortex-M7 with 16 MPU regions
+    pub fn cortex_m7() -> Self {
+        Self {
+            family: ArchFamily::ArmCortexM,
+            triple: "thumbv7em-none-eabihf".to_string(),
+            isa: IsaVariant::Thumb2,
+            mem_protection: MemProtection::Mpu { regions: 16 },
+        }
+    }
+
+    /// Cortex-R5 with 12 MPU regions
+    pub fn cortex_r5() -> Self {
+        Self {
+            family: ArchFamily::ArmCortexR,
+            triple: "armv7r-none-eabihf".to_string(),
+            isa: IsaVariant::Arm32,
+            mem_protection: MemProtection::Mpu { regions: 12 },
+        }
+    }
+
+    /// Cortex-A53 with MMU
+    pub fn cortex_a53() -> Self {
+        Self {
+            family: ArchFamily::ArmCortexA,
+            triple: "aarch64-none-elf".to_string(),
+            isa: IsaVariant::AArch64,
+            mem_protection: MemProtection::Mmu,
+        }
+    }
+
+    /// RISC-V RV32IMAC with 16 PMP entries
+    pub fn riscv32imac() -> Self {
+        Self {
+            family: ArchFamily::RiscV,
+            triple: "riscv32imac-unknown-none-elf".to_string(),
+            isa: IsaVariant::RiscV32 {
+                extensions: "imac".to_string(),
+            },
+            mem_protection: MemProtection::Pmp { entries: 16 },
+        }
+    }
+
+    /// Parse from an LLVM triple or shorthand name
+    pub fn from_triple(triple: &str) -> std::result::Result<Self, String> {
+        match triple {
+            "thumbv7em-none-eabihf" | "cortex-m4" => Ok(Self::cortex_m4()),
+            "cortex-m7" => Ok(Self::cortex_m7()),
+            "armv7r-none-eabihf" | "cortex-r5" => Ok(Self::cortex_r5()),
+            "aarch64-none-elf" | "cortex-a53" => Ok(Self::cortex_a53()),
+            "riscv32imac-unknown-none-elf" | "riscv32imac" => Ok(Self::riscv32imac()),
+            _ => Err(format!("unknown target triple: {}", triple)),
+        }
+    }
+
+    /// Whether this target uses Thumb-2 encoding (Cortex-M)
+    pub fn is_thumb2(&self) -> bool {
+        self.isa == IsaVariant::Thumb2
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_target_spec_from_triple() {
+        let spec = TargetSpec::from_triple("cortex-m4").unwrap();
+        assert_eq!(spec.family, ArchFamily::ArmCortexM);
+        assert!(spec.is_thumb2());
+        assert_eq!(spec.mem_protection, MemProtection::Mpu { regions: 8 });
+    }
+
+    #[test]
+    fn test_target_spec_unknown() {
+        assert!(TargetSpec::from_triple("mips-unknown-none").is_err());
+    }
+}

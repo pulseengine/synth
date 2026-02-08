@@ -308,11 +308,11 @@ impl ProgramHeader {
     pub fn load_nobits(vaddr: u32, memsz: u32, flags: u32) -> Self {
         Self {
             p_type: ProgramType::Load,
-            offset: 0,     // No file offset for NoBits
+            offset: 0, // No file offset for NoBits
             vaddr,
-            paddr: vaddr,  // Physical = virtual
-            filesz: 0,     // No file data
-            memsz,         // Memory size to allocate
+            paddr: vaddr, // Physical = virtual
+            filesz: 0,    // No file data
+            memsz,        // Memory size to allocate
             flags,
             align: 4,
         }
@@ -864,99 +864,6 @@ impl ElfBuilder {
 
         // Section header string table index (little-endian u16)
         output.extend_from_slice(&0u16.to_le_bytes());
-
-        Ok(())
-    }
-
-    /// Write complete ELF header with section information
-    fn write_elf_header_complete(
-        &self,
-        output: &mut [u8],
-        sh_offset: u32,
-        sh_count: u16,
-    ) -> Result<()> {
-        let mut cursor = 0;
-
-        // ELF magic number
-        output[cursor..cursor + 4].copy_from_slice(&[0x7f, b'E', b'L', b'F']);
-        cursor += 4;
-
-        // Class (32-bit)
-        output[cursor] = self.class as u8;
-        cursor += 1;
-
-        // Data (little-endian)
-        output[cursor] = self.data as u8;
-        cursor += 1;
-
-        // Version
-        output[cursor] = 1;
-        cursor += 1;
-
-        // OS/ABI
-        output[cursor] = 0; // System V
-        cursor += 1;
-
-        // ABI version
-        output[cursor] = 0;
-        cursor += 1;
-
-        // Padding (7 bytes)
-        output[cursor..cursor + 7].copy_from_slice(&[0; 7]);
-        cursor += 7;
-
-        // Type (little-endian u16)
-        let etype = self.elf_type as u16;
-        output[cursor..cursor + 2].copy_from_slice(&etype.to_le_bytes());
-        cursor += 2;
-
-        // Machine (little-endian u16)
-        let machine = self.machine as u16;
-        output[cursor..cursor + 2].copy_from_slice(&machine.to_le_bytes());
-        cursor += 2;
-
-        // Version (little-endian u32)
-        output[cursor..cursor + 4].copy_from_slice(&1u32.to_le_bytes());
-        cursor += 4;
-
-        // Entry point (little-endian u32)
-        output[cursor..cursor + 4].copy_from_slice(&self.entry.to_le_bytes());
-        cursor += 4;
-
-        // Program header offset (little-endian u32)
-        output[cursor..cursor + 4].copy_from_slice(&0u32.to_le_bytes());
-        cursor += 4;
-
-        // Section header offset (little-endian u32)
-        output[cursor..cursor + 4].copy_from_slice(&sh_offset.to_le_bytes());
-        cursor += 4;
-
-        // Flags (little-endian u32)
-        output[cursor..cursor + 4].copy_from_slice(&0u32.to_le_bytes());
-        cursor += 4;
-
-        // ELF header size (little-endian u16)
-        output[cursor..cursor + 2].copy_from_slice(&52u16.to_le_bytes());
-        cursor += 2;
-
-        // Program header entry size (little-endian u16)
-        output[cursor..cursor + 2].copy_from_slice(&0u16.to_le_bytes());
-        cursor += 2;
-
-        // Program header count (little-endian u16)
-        output[cursor..cursor + 2].copy_from_slice(&0u16.to_le_bytes());
-        cursor += 2;
-
-        // Section header entry size (little-endian u16)
-        output[cursor..cursor + 2].copy_from_slice(&40u16.to_le_bytes());
-        cursor += 2;
-
-        // Section header count (little-endian u16)
-        output[cursor..cursor + 2].copy_from_slice(&sh_count.to_le_bytes());
-        cursor += 2;
-
-        // Section header string table index (little-endian u16) - .shstrtab is section 1
-        output[cursor..cursor + 2].copy_from_slice(&1u16.to_le_bytes());
 
         Ok(())
     }
