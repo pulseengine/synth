@@ -409,10 +409,10 @@ impl Default for SynthTestConfig {
             synth_cli: PathBuf::from("synth"),
             platform_file: PathBuf::from("synth_cortex_m.repl"),
             output_dir: PathBuf::from("/tmp/synth-tests"),
-            function_address: 0x91, // 0x90 with Thumb bit set
+            function_address: 0xA1, // 0xA0 with Thumb bit (Cortex-M layout)
             function_addresses: HashMap::new(),
-            default_handler_address: 0x8C, // Default_Handler: infinite loop (b .)
-            trap_handler_address: 0x8E,    // Trap_Handler: infinite loop for WASM traps
+            default_handler_address: 0x9C, // Default_Handler (after 28-byte startup at 0x80)
+            trap_handler_address: 0x9E,    // Trap_Handler (after Default_Handler)
         }
     }
 }

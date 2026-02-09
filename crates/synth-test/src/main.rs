@@ -37,7 +37,7 @@ enum Commands {
         platform: String,
 
         /// Function address (with Thumb bit)
-        #[arg(long, default_value_t = 0x91)]
+        #[arg(long, default_value_t = 0xA1)]
         func_addr: u32,
 
         /// Renode monitor port
@@ -60,7 +60,7 @@ enum Commands {
         platform: String,
 
         /// Function address (with Thumb bit) - fallback when --elf not provided
-        #[arg(long, default_value = "0x91")]
+        #[arg(long, default_value = "0xA1")]
         func_addr: String,
 
         /// ELF file to read function addresses from symbol table (multi-function support)

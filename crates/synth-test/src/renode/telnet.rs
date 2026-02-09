@@ -10,7 +10,7 @@ const CFSR_ADDR: u32 = 0xE000ED28;
 /// Bit 25 in CFSR indicates divide by zero
 const CFSR_DIVBYZERO_BIT: u32 = 1 << 25;
 /// Default handler address (infinite loop) for Synth-generated ELFs
-const DEFAULT_HANDLER_ADDR: u32 = 0x8C;
+const DEFAULT_HANDLER_ADDR: u32 = 0x9C;
 use anyhow::{Context, Result};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;

@@ -4,7 +4,7 @@ Documentation     WAST-driven i32 arithmetic tests for Synth
 
 *** Variables ***
 ${PLATFORM}    ${CURDIR}/../renode/synth_cortex_m.repl
-${FUNC_ADDR}    0x91
+${FUNC_ADDR}    0xA1
 
 *** Keywords ***
 Create Cortex-M Machine

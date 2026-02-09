@@ -34,12 +34,12 @@ renode_test(
 # Method 2: Auto-generated from WAST using synth-test (future-proof)
 # =============================================================================
 
-# Generate Robot test from WAST file
+# Generate Robot test from WAST file (reads ELF symbols for correct addresses)
 genrule(
     name = "i32_arithmetic_generated_robot",
-    srcs = ["i32_arithmetic.wast"],
+    srcs = ["i32_arithmetic.wast", ":i32_add_elf"],
     outs = ["i32_arithmetic_generated.robot"],
-    cmd = "$(location //crates:synth-test) generate --wast $(location i32_arithmetic.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --filter-func add",
+    cmd = "$(location //crates:synth-test) generate --wast $(location i32_arithmetic.wast) --robot $@ --platform '\\$${CURDIR}/../renode/synth_cortex_m.repl' --elf $(location :i32_add_elf) --filter-func add",
     tools = ["//crates:synth-test"],
 )
 

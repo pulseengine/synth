@@ -616,7 +616,7 @@ fn compile_command(
 #[cfg(feature = "verify")]
 fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<()> {
     use std::collections::HashSet;
-    use synth_synthesis::{ArmOp, Operand2, Pattern, Reg, Replacement, SynthesisRule};
+    use synth_synthesis::{ArmOp, Condition, Operand2, Pattern, Reg, Replacement, SynthesisRule};
 
     println!("\nRunning translation validation for '{}'...", func_name);
 
@@ -721,6 +721,118 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<()> {
                     code_size: 2,
                     registers: 2,
                 },
+            }),
+            // Comparison ops: CMP + SetCond sequence (two ARM instructions per WASM op)
+            WasmOp::I32Eq => Some(SynthesisRule {
+                name: "i32.eq → CMP + SetCond(EQ)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32Eq),
+                replacement: Replacement::ArmSequence(vec![
+                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
+                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::EQ },
+                ]),
+                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+            }),
+            WasmOp::I32Ne => Some(SynthesisRule {
+                name: "i32.ne → CMP + SetCond(NE)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32Ne),
+                replacement: Replacement::ArmSequence(vec![
+                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
+                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::NE },
+                ]),
+                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+            }),
+            WasmOp::I32LtS => Some(SynthesisRule {
+                name: "i32.lt_s → CMP + SetCond(LT)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32LtS),
+                replacement: Replacement::ArmSequence(vec![
+                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
+                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::LT },
+                ]),
+                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+            }),
+            WasmOp::I32LeS => Some(SynthesisRule {
+                name: "i32.le_s → CMP + SetCond(LE)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32LeS),
+                replacement: Replacement::ArmSequence(vec![
+                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
+                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::LE },
+                ]),
+                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+            }),
+            WasmOp::I32GtS => Some(SynthesisRule {
+                name: "i32.gt_s → CMP + SetCond(GT)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32GtS),
+                replacement: Replacement::ArmSequence(vec![
+                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
+                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::GT },
+                ]),
+                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+            }),
+            WasmOp::I32GeS => Some(SynthesisRule {
+                name: "i32.ge_s → CMP + SetCond(GE)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32GeS),
+                replacement: Replacement::ArmSequence(vec![
+                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
+                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::GE },
+                ]),
+                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+            }),
+            WasmOp::I32LtU => Some(SynthesisRule {
+                name: "i32.lt_u → CMP + SetCond(LO)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32LtU),
+                replacement: Replacement::ArmSequence(vec![
+                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
+                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::LO },
+                ]),
+                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+            }),
+            WasmOp::I32LeU => Some(SynthesisRule {
+                name: "i32.le_u → CMP + SetCond(LS)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32LeU),
+                replacement: Replacement::ArmSequence(vec![
+                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
+                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::LS },
+                ]),
+                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+            }),
+            WasmOp::I32GtU => Some(SynthesisRule {
+                name: "i32.gt_u → CMP + SetCond(HI)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32GtU),
+                replacement: Replacement::ArmSequence(vec![
+                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
+                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::HI },
+                ]),
+                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+            }),
+            WasmOp::I32GeU => Some(SynthesisRule {
+                name: "i32.ge_u → CMP + SetCond(HS)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32GeU),
+                replacement: Replacement::ArmSequence(vec![
+                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
+                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::HS },
+                ]),
+                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+            }),
+            // i32.eqz: unary comparison against zero
+            WasmOp::I32Eqz => Some(SynthesisRule {
+                name: "i32.eqz → CMP #0 + SetCond(EQ)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32Eqz),
+                replacement: Replacement::ArmSequence(vec![
+                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Imm(0) },
+                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::EQ },
+                ]),
+                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 1 },
             }),
             // Shift ops use immediate shift values in the instruction selector,
             // so SMT verification of the variable-shift case requires a different

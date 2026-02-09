@@ -60,7 +60,7 @@ impl Default for RunnerConfig {
             renode_bin: "renode".to_string(),
             platform_file: "synth_cortex_m.repl".to_string(),
             renode: RenodeConfig::default(),
-            func_addr: 0x91,
+            func_addr: 0xA1,
             max_steps: 50,
             output_dir: "/tmp/synth-test".to_string(),
             persistent_renode: true,
