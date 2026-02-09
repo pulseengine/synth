@@ -2,75 +2,82 @@
 
 ## Overview
 
-Synth consists of **14 Rust crates** organized as a Cargo workspace. The crates form a clear compilation pipeline from WebAssembly Component Model input to ARM binary output.
+Synth consists of **18 Rust crates** organized as a Cargo workspace. The crates form a clear compilation pipeline from WebAssembly input to ARM binary output, with a multi-backend architecture and formal verification.
+
+**Last Updated:** 2026-02-09
 
 ## Crate Summary
 
-| Crate | Lines | Purpose | Internal Deps |
-|-------|-------|---------|---------------|
-| synth-core | 821 | Fundamental types, IR, errors | - |
-| synth-wit | 1,786 | WIT parsing and AST | - |
-| synth-cfg | 839 | Control flow graph | - |
-| synth-qemu | 276 | QEMU integration | - |
-| synth-abi | 1,848 | Canonical ABI implementation | synth-wit |
-| synth-frontend | 317 | WASM Component parsing | synth-core |
-| synth-analysis | 511 | Whole-program analysis | synth-core |
-| synth-opt | 3,037 | Optimization passes | synth-cfg |
-| synth-regalloc | 555 | Register allocation | synth-cfg, synth-opt |
-| synth-synthesis | 3,320 | Instruction selection | synth-core, synth-cfg, synth-opt |
-| synth-codegen | 673 | ARM code generation | synth-cfg, synth-opt, synth-regalloc |
-| synth-backend | 4,361 | Binary emission, ELF, startup | synth-core, synth-synthesis |
-| synth-verify | 5,438 | Formal verification (Z3) | synth-core, synth-synthesis, synth-cfg, synth-opt |
-| synth-cli | 249 | Command-line interface | synth-core, synth-frontend |
+| Crate | Purpose | Internal Deps |
+|-------|---------|---------------|
+| synth-core | Fundamental types, IR, Backend trait, BackendRegistry | - |
+| synth-wit | WIT parsing and AST | - |
+| synth-cfg | Control flow graph | - |
+| synth-qemu | QEMU integration | - |
+| synth-memory | Linear memory management | synth-core |
+| synth-abi | Canonical ABI implementation | synth-wit |
+| synth-frontend | WASM Component parsing | synth-core |
+| synth-analysis | Whole-program analysis | synth-core |
+| synth-opt | Optimization passes | synth-cfg |
+| synth-regalloc | Register allocation | synth-cfg, synth-opt |
+| synth-synthesis | Instruction selection + synthesis rules | synth-core, synth-cfg, synth-opt |
+| synth-codegen | ARM code generation | synth-cfg, synth-opt, synth-regalloc |
+| synth-backend | ARM backend, ELF builder, Cortex-M startup | synth-core, synth-synthesis |
+| synth-backend-awsm | aWsm external backend (stub) | synth-core |
+| synth-backend-wasker | wasker external backend (stub) | synth-core |
+| synth-verify | Z3 SMT formal verification | synth-core, synth-synthesis, synth-cfg, synth-opt |
+| synth-test | WAST test infrastructure (parser, Renode runner) | synth-core |
+| synth-cli | Command-line interface | synth-core, synth-frontend, synth-backend, synth-synthesis |
 
-**Total: ~24,031 lines of Rust**
+**Total: ~45,000 lines of Rust**
 
 ## Dependency Graph
 
 ```
-                    ┌─────────────┐
-                    │  synth-cli  │ (entry point)
-                    └──────┬──────┘
-                           │
-              ┌────────────┴────────────┐
-              ▼                         ▼
-      ┌──────────────┐          ┌─────────────┐
-      │synth-frontend│          │ synth-core  │◄──────────────┐
-      └──────────────┘          └─────────────┘               │
-                                       ▲                      │
-                                       │                      │
-       ┌───────────────────────────────┼──────────────────────┤
-       │                               │                      │
-       ▼                               │                      │
-┌─────────────┐    ┌─────────────┐     │              ┌───────┴──────┐
-│synth-analysis│   │synth-backend│─────┘              │ synth-verify │
-└─────────────┘    └──────┬──────┘                    └───────┬──────┘
-                          │                                   │
-                          ▼                                   │
-                  ┌───────────────┐                           │
-                  │synth-synthesis│◄──────────────────────────┘
-                  └───────┬───────┘
-                          │
-         ┌────────────────┼────────────────┐
-         ▼                ▼                ▼
-   ┌──────────┐    ┌───────────┐    ┌───────────┐
-   │synth-cfg │◄───│ synth-opt │    │synth-core │
-   └──────────┘    └─────┬─────┘    └───────────┘
-         ▲               │
-         │               ▼
-         │        ┌────────────┐
-         └────────│synth-regalloc│
-                  └────────────┘
-                         │
-                         ▼
-                  ┌────────────┐
-                  │synth-codegen│
-                  └────────────┘
+                        ┌─────────────┐
+                        │  synth-cli  │ (entry point)
+                        └──────┬──────┘
+                               │
+            ┌──────────────────┼──────────────────┐
+            ▼                  ▼                   ▼
+    ┌──────────────┐   ┌─────────────┐    ┌───────────────┐
+    │synth-frontend│   │synth-backend│    │synth-synthesis│
+    └──────┬───────┘   └──────┬──────┘    └───────┬───────┘
+           │                  │                    │
+           ▼                  ▼                    ▼
+      ┌─────────┐    ┌──────────────┐      ┌───────────┐
+      │synth-core◄───┤  ARM encoder │      │synth-cfg  │
+      └────┬────┘    │  ELF builder │      └───────────┘
+           │         │  Cortex-M    │             ▲
+           │         └──────────────┘             │
+           │                                ┌─────┴─────┐
+           │                                │ synth-opt │
+           │                                └───────────┘
+           ▼
+    ┌──────────────┐     ┌──────────────────┐
+    │Backend trait │────▶│ BackendRegistry   │
+    │BackendCaps   │     └────────┬─────────┘
+    └──────────────┘              │
+           ▲          ┌───────────┼───────────┐
+           │          ▼           ▼           ▼
+           │   synth-backend  backend-awsm  backend-wasker
+           │   (ARM, active)  (stub)        (stub)
+           │
+    ┌──────┴───────┐
+    │ synth-verify │  Z3 SMT verification
+    └──────────────┘
 
-   Independent:
-   ┌──────────┐    ┌──────────┐    ┌──────────┐
-   │synth-wit │───▶│synth-abi │    │synth-qemu│
-   └──────────┘    └──────────┘    └──────────┘
+    Test infrastructure:
+    ┌──────────┐    ┌──────────────┐
+    │synth-test│───▶│ WAST parser  │
+    └──────────┘    │ Robot gen    │
+                    │ Renode runner│
+                    └──────────────┘
+
+    Independent:
+    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌────────────┐
+    │synth-wit │───▶│synth-abi │    │synth-qemu│    │synth-memory│
+    └──────────┘    └──────────┘    └──────────┘    └────────────┘
 ```
 
 ## Compilation Pipeline
@@ -214,13 +221,48 @@ Synth consists of **14 Rust crates** organized as a Cargo workspace. The crates 
 - Semantic equivalence proofs
 - Property-based testing
 
+### Multi-Backend Support
+
+#### synth-backend-awsm
+**Purpose:** aWsm external backend (stub)
+- Implements `Backend` trait from synth-core
+- Would invoke external `awsm` compiler to produce ELF
+- Currently returns "not implemented"
+
+#### synth-backend-wasker
+**Purpose:** wasker external backend (stub)
+- Implements `Backend` trait from synth-core
+- Would invoke external `wasker` to produce ELF
+- Currently returns "not implemented"
+
+### Memory Management
+
+#### synth-memory
+**Purpose:** Linear memory management for WASM
+- Memory region allocation
+- R11-based linear memory addressing for ARM
+- Stack layout management (stack at top of SRAM, linear memory at base)
+
+### Test Infrastructure
+
+#### synth-test
+**Purpose:** WAST test infrastructure
+- `WastParser` - parse WAST files into test cases (assert_return, assert_trap)
+- `RobotGenerator` - generate Robot Framework .robot files from parsed tests
+- `NativeRunner` - direct Renode telnet control (bypassing Robot Framework)
+- `TelnetController` - Renode telnet interface for machine control
+- `synth-test generate` - CLI for WAST → Robot file generation
+- `synth-test run` - CLI for direct test execution via Renode
+
 ### User Interface
 
 #### synth-cli
 **Purpose:** Command-line interface
-- `synth parse` - parse and validate WASM
-- `synth synthesize` - compile to native
-- `synth target-info` - show target capabilities
+- `synth compile` - compile WAT/WASM to ARM ELF
+- `synth verify` - standalone Z3 translation validation
+- `synth disasm` - disassemble generated ELF
+- `synth backends` - list available backends
+- `synth parse` - parse and analyze WASM
 
 ## Key Questions Answered
 
@@ -284,13 +326,16 @@ The crate structure is already well-organized with clear responsibilities. No ma
 
 ## Conclusion
 
-The Synth crate structure is **well-designed** with clear separation of concerns:
+The Synth workspace is organized into **18 crates** with clear separation:
 
-- **Foundation:** synth-core, synth-wit, synth-cfg
+- **Foundation:** synth-core (Backend trait, IR, types), synth-wit, synth-cfg
 - **Frontend:** synth-frontend, synth-abi, synth-analysis
-- **Middle-end:** synth-opt, synth-synthesis
-- **Back-end:** synth-regalloc, synth-codegen, synth-backend
-- **Verification:** synth-verify
+- **Middle-end:** synth-opt (passes), synth-synthesis (rules + instruction selection)
+- **Back-end:** synth-regalloc, synth-codegen, synth-backend (ARM + ELF + Cortex-M)
+- **External backends:** synth-backend-awsm, synth-backend-wasker (stubs)
+- **Memory:** synth-memory
+- **Verification:** synth-verify (Z3 SMT)
+- **Testing:** synth-test (WAST parser, Robot generator, Renode runner)
 - **Tooling:** synth-cli, synth-qemu
 
-**Priority:** Focus on wiring the pipeline together (synth-cli → all stages → binary) rather than restructuring crates.
+The pipeline is fully wired: `synth compile input.wat -o output.elf --cortex-m` works end-to-end.

@@ -1,9 +1,74 @@
 # Synth Architecture Overview
 
 **Project:** Synth - WebAssembly Component Synthesizer for Embedded Systems
-**Version:** 0.1.0
-**Last Updated:** 2025-11-16
-**Status:** Draft
+**Version:** 0.2.0
+**Last Updated:** 2026-02-09
+**Status:** Active Development
+
+---
+
+## 0. Current Implementation Status
+
+> This section reflects what is actually implemented as of February 2026. The remaining sections describe the full architectural vision.
+
+### What Works End-to-End
+
+| Command | Description |
+|---------|-------------|
+| `synth compile input.wat -o output.elf --cortex-m` | Single-function WASM to ARM Cortex-M ELF |
+| `synth compile input.wat --all-exports --cortex-m -o out.elf` | Multi-function compilation |
+| `synth compile --demo add --verify` | Compile + Z3 formal verification |
+| `synth verify input.wat output.elf` | Standalone translation validation |
+| `synth backends` | List available backends with capabilities |
+| `synth compile --backend arm\|w2c2` | Backend selection (ARM functional, others stub) |
+| `synth disasm output.elf` | Disassemble generated ELF |
+
+### Multi-Backend Architecture (Completed)
+
+```
+                          synth-core
+                     ┌────────┴────────┐
+                     │  Backend trait   │
+                     │  BackendRegistry │
+                     └────────┬────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+         synth-backend   backend-awsm    backend-wasker
+         (ARM, active)   (stub)          (stub)
+```
+
+All backends implement `Backend::compile_function()` and `Backend::compile_module()`. The ARM backend is fully functional; aWsm and wasker are stubs.
+
+### Verification Tiers
+
+1. **Rule-level (ASIL D)**: Z3 SMT proves each synthesis rule (WASM op → ARM sequence) is semantically equivalent. 151/151 core ops have rules + unit tests; comparison ops (CMP+SetCond) verified via `ArmSequence` patterns.
+2. **Binary-level (ASIL B)**: `synth verify` disassembles generated ELF and validates against WASM source.
+
+### Key Metrics
+
+- **18 crates**, ~45K lines of Rust
+- **496+ tests** (unit + Z3 verification + WAST integration + Renode emulation)
+- **55+ Renode emulation tests** pass (ARM Cortex-M4, via Bazel rules_renode)
+- **151/151 WASM Core 1.0 ops** have synthesis rules
+
+### Testing Infrastructure
+
+```
+                    ┌─────────────┐
+                    │ tests/wast/ │   22 WAST files
+                    └──────┬──────┘
+                           │  synth-test generate
+                           ▼
+                    ┌─────────────┐
+                    │ .robot files│   Robot Framework
+                    └──────┬──────┘
+                           │  bazel test (rules_renode)
+                           ▼
+                    ┌─────────────┐
+                    │   Renode    │   ARM Cortex-M4 emulation
+                    └─────────────┘
+```
 
 ---
 
@@ -831,61 +896,62 @@ WebAssembly: (i32.load offset=4 align=2 (local.get $addr))
 ### 6.1 Core Dependencies
 
 **WebAssembly Tooling:**
-- `wasmparser` - Parse WebAssembly binaries
+- `wasmparser` 0.222 - Parse WASM binaries
+- `wast` 222.0 - WAST text format parsing (test infrastructure)
+- `wat` 1.222 - WAT to WASM binary conversion
 - `wasm-tools` - Validation and component manipulation
-- `wit-parser` - WIT interface parsing
-- `wit-component` - Component encoding/decoding
+- `wit-parser`, `wit-component` - Component Model support
 
-**Code Generation:**
-- `cranelift-isle` - ISLE DSL compiler
-- `regalloc2` - Register allocation
-- `egg` - Equality saturation / e-graphs
-- `target-lexicon` - Target triple parsing
+**Code Generation (custom — no LLVM/Cranelift dependency):**
+- Custom `ArmEncoder` - ARM Thumb-2 machine code emission
+- Custom `InstructionSelector` - WASM→ARM lowering via pattern matching
+- Custom `ElfBuilder` - ELF32 binary generation
+- Custom `VectorTable`, `ResetHandler` - Cortex-M startup code
 
 **Verification:**
-- `z3` - SMT solver (via z3-sys bindings)
-- `serde` - Serialization for verification artifacts
-
-**Target Backends:**
-- `object` - Object file generation (ELF, etc.)
-- `gimli` - DWARF debug info generation
+- `z3` 0.12 / `z3-sys` 0.8 - SMT solver for translation validation
+- Custom `arm_semantics.rs` (~3000 lines) - ARM instruction SMT encoding
 
 ### 6.2 Development Tools
 
-**Build System:**
-- Cargo (Rust package manager)
-- `cargo-make` for complex build workflows
+**Build Systems:**
+- Cargo (primary: `cargo test --workspace`)
+- Bazel 8.x (Renode integration tests: `bazel test //...`)
+- `rules_renode` (PulseEngine fork with macOS support)
 
-**Testing:**
-- `proptest` - Property-based testing
-- `quickcheck` - Fuzzing
-- WebAssembly test suite integration
+**Testing Infrastructure:**
+- 22 WAST files auto-generate Robot Framework tests
+- `synth-test` crate: WAST parser → Robot generator → Renode execution
+- Bazel hermetic Renode (no system install needed)
 
 **CI/CD:**
-- GitHub Actions
-- OSS-Fuzz integration for continuous fuzzing
-
-**Documentation:**
-- `rustdoc` for API documentation
-- mdBook for user/developer guides
+- GitHub Actions (`cargo test`, `cargo clippy`, Z3 verification)
 
 ---
 
 ## 7. Deployment Architecture
 
-### 7.1 CLI Tool
+### 7.1 CLI Tool (Implemented)
 
 ```
-synth [OPTIONS] <INPUT.wasm> -o <OUTPUT>
+synth compile <INPUT.wat> -o <OUTPUT.elf> [OPTIONS]
+  --cortex-m              Generate complete Cortex-M binary (vector table + startup)
+  --all-exports           Compile all exported functions
+  --backend <NAME>        Select backend (arm, w2c2, awsm, wasker)
+  --verify                Run Z3 formal verification after compilation
+  --no-optimize           Skip optimization passes
 
-Options:
-  --target <TARGET>       Target architecture (e.g., thumbv7em-none-eabi)
-  --opt-level <LEVEL>     Optimization level (0-3, s, z)
-  --verify                Run formal verification
-  --emit-asm              Emit assembly listing
-  --emit-artifacts        Generate certification artifacts
-  --mpu-regions <N>       Number of MPU regions available
-  --xip                   Generate XIP-capable binary
+synth verify <INPUT.wat> <OUTPUT.elf>
+  Standalone translation validation via Z3 SMT
+
+synth disasm <ELF>
+  Disassemble and display generated ARM code
+
+synth backends
+  List available backends and their capabilities
+
+synth parse <INPUT.wasm>
+  Parse and analyze WASM module structure
 ```
 
 ### 7.2 Library API

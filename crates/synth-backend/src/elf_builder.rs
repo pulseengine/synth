@@ -451,9 +451,23 @@ impl ElfBuilder {
         output.extend_from_slice(&section_headers);
 
         // Write program headers (right after ELF header)
+        // Auto-correct p_offset for LOAD segments by matching vaddr to section addrs
         for (i, ph) in self.program_headers.iter().enumerate() {
             let ph_offset = header_size + i * ph_entry_size;
-            self.write_program_header(&mut output[ph_offset..ph_offset + ph_entry_size], ph);
+            let mut corrected_ph = ph.clone();
+            if corrected_ph.filesz > 0 {
+                // Find the section whose addr matches this segment's vaddr
+                for (si, section) in self.sections.iter().enumerate() {
+                    if section.addr == corrected_ph.vaddr && si < section_offsets.len() {
+                        corrected_ph.offset = section_offsets[si] as u32;
+                        break;
+                    }
+                }
+            }
+            self.write_program_header(
+                &mut output[ph_offset..ph_offset + ph_entry_size],
+                &corrected_ph,
+            );
         }
 
         // Now write the actual ELF header at the beginning

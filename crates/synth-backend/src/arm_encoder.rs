@@ -1173,13 +1173,15 @@ impl ArmEncoder {
 
                     // If there's also an immediate offset, we need to ADD it first
                     if addr.offset != 0 {
-                        // ADD Rm, Rm, #offset; LDR Rd, [base, Rm]
+                        // Use R12 (IP) as scratch to avoid clobbering the address register
+                        // ADD R12, Rm, #offset; LDR Rd, [base, R12]
+                        let scratch = Reg::R12;
                         let mut bytes = self.encode_thumb32_add_imm(
-                            offset_reg,
+                            &scratch,
                             offset_reg,
                             addr.offset as u32,
                         )?;
-                        bytes.extend(self.encode_thumb32_ldr_reg(rd, &addr.base, offset_reg)?);
+                        bytes.extend(self.encode_thumb32_ldr_reg(rd, &addr.base, &scratch)?);
                         return Ok(bytes);
                     }
 
@@ -1223,13 +1225,15 @@ impl ArmEncoder {
 
                     // If there's also an immediate offset, we need to ADD it first
                     if addr.offset != 0 {
-                        // ADD Rm, Rm, #offset; STR Rd, [base, Rm]
+                        // Use R12 (IP) as scratch to avoid clobbering the address register
+                        // ADD R12, Rm, #offset; STR Rd, [base, R12]
+                        let scratch = Reg::R12;
                         let mut bytes = self.encode_thumb32_add_imm(
-                            offset_reg,
+                            &scratch,
                             offset_reg,
                             addr.offset as u32,
                         )?;
-                        bytes.extend(self.encode_thumb32_str_reg(rd, &addr.base, offset_reg)?);
+                        bytes.extend(self.encode_thumb32_str_reg(rd, &addr.base, &scratch)?);
                         return Ok(bytes);
                     }
 
