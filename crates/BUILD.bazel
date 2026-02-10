@@ -213,6 +213,18 @@ rust_library(
     ],
 )
 
+# Linear memory management
+rust_library(
+    name = "synth-memory",
+    srcs = glob(["synth-memory/src/**/*.rs"]),
+    crate_root = "synth-memory/src/lib.rs",
+    edition = "2021",
+    crate_features = ["std"],
+    deps = [
+        "@crates//:bitflags",
+    ],
+)
+
 # QEMU integration for testing
 rust_library(
     name = "synth-qemu",
@@ -297,5 +309,6 @@ filegroup(
         ":synth-wit",
         ":synth-verify",
         ":synth-qemu",
+        ":synth-memory",
     ],
 )

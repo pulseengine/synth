@@ -60,6 +60,9 @@ crate.spec(package = "z3", version = "0.12", features = ["static-link-z3"])
 crate.spec(package = "proptest", version = "1.4")
 crate.spec(package = "quickcheck", version = "1.0")
 
+# Bitflags (for synth-memory)
+crate.spec(package = "bitflags", version = "2.4")
+
 # ELF parsing (for symbol table reading)
 crate.spec(package = "object", version = "0.36", default_features = False, features = ["read", "elf"])
 
@@ -90,11 +93,21 @@ use_repo(renode, "renode_toolchains")
 register_toolchains("@renode_toolchains//:all")
 
 # Rocq/Coq theorem proving rules with coq-of-rust integration
-# Provides hermetic Coq toolchain for formal verification
-# TODO: Enable when upstream BUILD file issue is fixed
+# Provides hermetic Rocq 9.0 toolchain via Nix for formal verification
+#
+# BLOCKED: Bazel bzlmod creates repo names with ~~ (e.g. rules_rocq_rust~~rocq~rocq_smpl)
+# which are illegal in Nix store paths. The rocq_smpl nix-build fails with:
+#   "name 'rules_rocq_rust~~rocq~rocq_smpl' contains illegal character '~'"
+# Upstream fix needed in pulseengine/rules_rocq_rust.
+# Until then, use `cd coq && make` (Makefile supports both rocq and coqc).
+#
 # bazel_dep(name = "rules_rocq_rust", version = "0.1.0")
 # git_override(
 #     module_name = "rules_rocq_rust",
 #     remote = "https://github.com/pulseengine/rules_rocq_rust.git",
-#     commit = "f62262c250daaa64e6b67a931b6b1adb944e388d",
+#     commit = "090b875c6e83e32e25918f31b8c58919ff16467e",  # 2026-02-04
 # )
+# rocq = use_extension("@rules_rocq_rust//rocq:extensions.bzl", "rocq")
+# rocq.toolchain(version = "9.0", strategy = "nix", with_rocq_of_rust_deps = True)
+# use_repo(rocq, "rocq_toolchains")
+# register_toolchains("@rocq_toolchains//:all")

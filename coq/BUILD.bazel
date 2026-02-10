@@ -1,59 +1,116 @@
 """
-Coq formal verification proofs for ASIL D qualification
+Rocq 9 formal verification proofs for ASIL D qualification
 
 This directory contains mechanized correctness proofs that:
 1. WebAssembly semantics are correctly implemented
-2. ARM semantics (from Sail/ASL) are correctly integrated
-3. Optimization transformations preserve semantics
-4. End-to-end compiler correctness
+2. ARM semantics are correctly modeled
+3. Compilation transformations preserve semantics
+4. End-to-end compiler correctness (WASM instruction -> ARM instruction)
+
+Proof status: 23 .v files, ~236 theorems, covering all 151 WASM Core 1.0 operations
+
+Build options:
+  - Bazel: Blocked on rules_rocq_rust Nix ~~ path issue (see MODULE.bazel)
+  - Make:  cd coq && make install-deps && make  (works with Rocq 9.0+ or Coq 8.20+)
 """
 
 package(default_visibility = ["//visibility:public"])
 
-# TODO: Add Coq rules once we integrate Sail
-# For now, this is a placeholder structure
-
+# All Rocq source files
 filegroup(
-    name = "coq_sources",
-    srcs = glob([
-        "**/*.v",
-    ]),
+    name = "rocq_sources",
+    srcs = glob(["**/*.v"]),
 )
 
-# Coq proofs will be built when we add Coq toolchain
-# Example structure:
-#
-# coq_library(
-#     name = "wasm_semantics",
-#     srcs = ["WasmSemantics.v"],
-#     deps = [
-#         "@sail_coq_lib//:sail_values",
-#     ],
-# )
-#
-# coq_library(
-#     name = "arm_semantics",
-#     srcs = ["ARMSemantics.v"],
-#     deps = [
-#         "@arm_asl_coq//:arm_generated",
-#     ],
-# )
-#
-# coq_library(
-#     name = "compiler_correctness",
-#     srcs = ["CompilerCorrectness.v"],
-#     deps = [
-#         ":wasm_semantics",
-#         ":arm_semantics",
-#     ],
-# )
+# Foundation theories
+filegroup(
+    name = "common",
+    srcs = [
+        "theories/Common/Base.v",
+        "theories/Common/Integers.v",
+        "theories/Common/StateMonad.v",
+    ],
+)
 
-# Extract Coq proofs to OCaml or Rust
-# This will be used for runtime proof certificate checking
+# ARM machine model
+filegroup(
+    name = "arm",
+    srcs = [
+        "theories/ARM/ArmState.v",
+        "theories/ARM/ArmInstructions.v",
+        "theories/ARM/ArmSemantics.v",
+        "theories/ARM/ArmRefinement.v",
+    ],
+)
+
+# WebAssembly semantics
+filegroup(
+    name = "wasm",
+    srcs = [
+        "theories/WASM/WasmValues.v",
+        "theories/WASM/WasmInstructions.v",
+        "theories/WASM/WasmSemantics.v",
+    ],
+)
+
+# Compilation + correctness proofs
+filegroup(
+    name = "correctness",
+    srcs = [
+        "theories/Synth/Compilation.v",
+        "theories/Synth/Tactics.v",
+        "theories/Synth/Correctness.v",
+        "theories/Synth/CorrectnessSimple.v",
+        "theories/Synth/CorrectnessI32.v",
+        "theories/Synth/CorrectnessI64.v",
+        "theories/Synth/CorrectnessI64Comparisons.v",
+        "theories/Synth/CorrectnessF32.v",
+        "theories/Synth/CorrectnessF64.v",
+        "theories/Synth/CorrectnessConversions.v",
+        "theories/Synth/CorrectnessMemory.v",
+        "theories/Synth/CorrectnessComplete.v",
+    ],
+)
+
+# Extraction
+filegroup(
+    name = "extraction",
+    srcs = [
+        "theories/Extraction/CompilerExtract.v",
+    ],
+)
+
+# When rules_rocq_rust is enabled in MODULE.bazel, replace filegroups above with:
+#
+# load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library", "rocq_proof_test")
+#
+# rocq_library(name = "synth_common", srcs = [":common"], include_path = "Synth")
+# rocq_library(name = "synth_arm", srcs = [":arm"], include_path = "Synth", deps = [":synth_common"])
+# rocq_library(name = "synth_wasm", srcs = [":wasm"], include_path = "Synth", deps = [":synth_common"])
+# rocq_library(name = "synth_compilation", srcs = ["theories/Synth/Compilation.v", "theories/Synth/Tactics.v"],
+#              include_path = "Synth", deps = [":synth_common", ":synth_arm", ":synth_wasm"])
+# rocq_library(name = "synth_correctness", srcs = [":correctness"], include_path = "Synth",
+#              deps = [":synth_common", ":synth_arm", ":synth_wasm", ":synth_compilation"])
+# rocq_library(name = "synth_extraction", srcs = [":extraction"], include_path = "Synth",
+#              deps = [":synth_common", ":synth_arm", ":synth_wasm", ":synth_compilation", ":synth_correctness"])
+# rocq_proof_test(name = "verify_proofs", deps = [":synth_correctness", ":synth_extraction"])
+
+# Validate proofs (lightweight - counts Admitted)
 genrule(
-    name = "extract_proofs",
-    srcs = [":coq_sources"],
-    outs = ["extracted_proofs.ml"],
-    cmd = "echo '(* Placeholder for Coq extraction *)' > $@",
-    tags = ["manual"],  # Don't build by default
+    name = "validate_proofs",
+    srcs = [":rocq_sources"],
+    outs = ["validation_report.txt"],
+    cmd = """
+        echo "Synth Rocq Proof Validation Report" > $@
+        echo "==================================" >> $@
+        echo "" >> $@
+        echo "Source files: $$(echo $(SRCS) | wc -w)" >> $@
+        echo "" >> $@
+        admitted=$$(grep -l "Admitted" $(SRCS) 2>/dev/null || echo "none")
+        echo "Files with Admitted proofs: $$admitted" >> $@
+        echo "" >> $@
+        theorems=$$(grep -c "Theorem\\|Lemma\\|Corollary" $(SRCS) 2>/dev/null | awk -F: '{s+=$$2} END {print s}')
+        echo "Total theorems/lemmas: $$theorems" >> $@
+    """,
+    tags = ["manual"],
 )
