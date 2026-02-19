@@ -259,7 +259,7 @@ calculator.wat → Synth Compiler → calculator.elf → Zephyr board → ✅ Wo
 
 ```bash
 # Navigate to Synth repository
-cd /Users/r/git/Synth
+cd synth
 
 # Create labels and milestones
 ./scripts/setup_github_project.sh

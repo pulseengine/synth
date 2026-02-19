@@ -226,7 +226,7 @@ FINAL DELIVERABLE:
 ╔═══════════════════════════════════════════════════════════════════════════╗
 ║                      READY TO START? RUN THIS:                             ║
 ║                                                                            ║
-║  $ cd /Users/r/git/Synth                                                  ║
+║  $ cd synth                                                  ║
 ║  $ cat START_HERE.md                                                      ║
 ║  $ ./scripts/setup_github_project.sh                                      ║
 ║                                                                            ║

@@ -50,3 +50,6 @@ loom/
 # Bazel local configuration (environment-specific)
 .bazelrc.local
 vendor.log
+
+# Claude Code local settings (environment-specific)
+.claude/settings.local.json

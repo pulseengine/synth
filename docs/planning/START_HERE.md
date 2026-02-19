@@ -44,7 +44,7 @@ Understand what's wrong:
 ### Step 1: Set Up GitHub Infrastructure (10 min)
 
 ```bash
-cd /Users/r/git/Synth
+cd synth
 
 # Create labels (30 labels: P0/P1/P2/P3, types, components)
 ./scripts/setup_github_project.sh
