@@ -1,380 +1,136 @@
-# Synth - WebAssembly Component Synthesizer for Embedded Systems
+<div align="center">
 
-[![License](https://img.shields.io/badge/license-Apache--2.0%2FMIT-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org)
-[![Status](https://img.shields.io/badge/status-research-yellow.svg)](docs/poc/POC_PLAN.md)
+# Synth
 
-> **Synthesize optimal native implementations from WebAssembly components for embedded systems**
+<sup>WebAssembly synthesis for embedded systems</sup>
 
-Synth is a research project developing a **synthesis tool** (not just a compiler) that transforms WebAssembly Component Model applications into optimized native code for embedded targets, with formal verification and safety-critical system qualification in mind.
+&nbsp;
 
----
+![Rust](https://img.shields.io/badge/Rust-CE422B?style=flat-square&logo=rust&logoColor=white&labelColor=1a1b27)
+![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat-square&logo=webassembly&logoColor=white&labelColor=1a1b27)
+![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square&labelColor=1a1b27)
 
-## Vision
+&nbsp;
 
-Traditional compilers perform deterministic transformations. Synth **synthesizes** - exploring the space of equivalent programs to extract provably optimal implementations, similar to how VHDL synthesis optimizes hardware descriptions.
+<h6>
+  <a href="https://github.com/pulseengine/meld">Meld</a>
+  &middot;
+  <a href="https://github.com/pulseengine/loom">Loom</a>
+  &middot;
+  <a href="https://github.com/pulseengine/synth">Synth</a>
+  &middot;
+  <a href="https://github.com/pulseengine/kiln">Kiln</a>
+  &middot;
+  <a href="https://github.com/pulseengine/sigil">Sigil</a>
+</h6>
 
-```
-WebAssembly Components + Target Constraints
-                ↓
-         Synthesis Engine
-   (E-graphs + ISLE + SMT Verification)
-                ↓
-    Optimal Native Implementation
-  (ARM Cortex-M, RISC-V, proven correct)
-```
+</div>
 
----
+&nbsp;
 
-## Key Features (Planned)
+Meld fuses. Loom weaves. Synth transpiles. Kiln fires. Sigil seals.
 
-- **Component-Aware Synthesis:** Whole-program optimization across WebAssembly component boundaries
-- **Hardware-Integrated:** Leverages MPU/PMP for bounds checking, multi-memory for isolation, XIP for flash execution
-- **Formally Verified:** SMT-based translation validation, mechanized proofs of correctness
-- **Target-Optimized:** ISLE-based synthesis rules for ARM Cortex-M and RISC-V embedded systems
-- **Safety-Qualified:** Designed for automotive (ISO 26262), medical (IEC 62304), and industrial certification
+Synth transpiles WebAssembly to native ARM for embedded Cortex-M targets. Not just translation — program synthesis: exploring equivalent implementations for provably optimal native code. Pattern-based instruction selection, AAPCS calling conventions, and ELF generation. Translation validation ensures the transpiled output faithfully preserves WebAssembly semantics.
 
----
+Designed for safety-critical systems with formal verification and certification pathways for automotive (ISO 26262), medical (IEC 62304), and industrial environments.
 
-## Project Status
-
-**Current Phase:** Phase 1 Build System ✅ | Phase 2 Calculator Demo (In Progress)
-
-### Working Features
-
-- ✅ WASM/WAT file parsing and decoding
-- ✅ Pattern-based instruction selection (WASM → ARM)
-- ✅ ARM binary encoding
-- ✅ ELF file generation
-- ✅ CLI: `synth compile input.wat -o output.elf`
-- ✅ CLI: `synth disasm output.elf`
-- ✅ Bazel build system
-
-### In Progress
-
-- 🚧 Register allocation (regalloc2 integration)
-- 🚧 QEMU testing infrastructure
-- 🚧 Full function prologue/epilogue generation
-- 🚧 Zephyr RTOS integration
-
-See [ROADMAP.md](ROADMAP.md) for detailed progress.
-
----
-
-## Documentation
-
-### Quick Navigation
-
-| Directory | Contents |
-|-----------|----------|
-| [docs/status/](docs/status/) | Project status, implementation progress, phase completions |
-| [docs/planning/](docs/planning/) | Roadmaps, reorganization plans, detailed todos |
-| [docs/architecture/](docs/architecture/) | System design, crate structure |
-| [docs/research/](docs/research/) | Literature review, Sail/ARM analysis, formal methods |
-| [docs/analysis/](docs/analysis/) | Technical comparisons, Loom evaluation, reality checks |
-| [docs/build-systems/](docs/build-systems/) | Bazel, Cargo, Coq/Dune setup guides |
-| [docs/validation/](docs/validation/) | Test reports, verification status |
-| [docs/sessions/](docs/sessions/) | Development session notes (archived) |
-
-### Core Documents
-
-- **[Requirements](docs/requirements/REQUIREMENTS.md)** - Functional and non-functional requirements
-- **[Architecture](docs/architecture/ARCHITECTURE.md)** - System architecture and design decisions
-- **[PoC Plan](docs/poc/POC_PLAN.md)** - Proof-of-concept implementation plan
-- **[Project Status](docs/status/PROJECT_STATUS.md)** - Current implementation state
-- **[Changelog](CHANGELOG.md)** - Version history and notable changes
-
-### Research Documents
-
-- **[Component Model](docs/research/00_component_model.md)** - WebAssembly Component Model specifications and optimizations
-- **[Embedded Systems](docs/research/01_embedded_systems.md)** - ARM Cortex-M and RISC-V embedded optimizations
-- **[Safety-Critical](docs/research/02_safety_critical.md)** - Formal verification and safety certification
-- **[Synthesis & Verification](docs/research/03_synthesis_verification.md)** - Compiler synthesis and verification frameworks
-- **[Cranelift & ISLE](docs/research/04_cranelift_isle.md)** - Cranelift code generator and ISLE DSL
-- **[AOT Compilation](docs/research/05_aot_transpilation.md)** - WebAssembly AOT compilation and transpilation
-- **[Sail/ARM/CakeML](docs/research/06_sail_arm_cakeml.md)** - Formal semantics and verified code generation
-
----
-
-## Quick Start (PoC)
-
-### Prerequisites
+## Quick Start
 
 ```bash
-# Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-rustup target add thumbv7em-none-eabihf
-
-# ARM GCC toolchain
-sudo apt install gcc-arm-none-eabi binutils-arm-none-eabi
-
-# OpenOCD (for flashing/debugging)
-sudo apt install openocd
-
-# WebAssembly tools
-cargo install wasm-tools
-```
-
-### Hardware
-
-**Recommended Development Board:**
-- Nordic nRF52840 DK (Cortex-M4F, 256KB RAM, 1MB Flash, MPU)
-- OR STM32F407 Discovery (Cortex-M4F, 192KB RAM, 1MB Flash, MPU)
-
-### Build and Run
-
-```bash
-# Clone repository
-git clone https://github.com/pulseengine/Synth.git
-cd Synth
-
-# Build CLI
+# Clone and build
+git clone https://github.com/pulseengine/synth.git
+cd synth
 cargo build --release -p synth-cli
 
-# Compile WAT/WASM to ARM ELF
-cargo run -p synth-cli -- compile examples/wat/simple_add.wat -o add.elf
+# Transpile WAT/WASM to ARM ELF
+synth compile examples/wat/simple_add.wat -o add.elf
 
 # Disassemble to verify output
-cargo run -p synth-cli -- disasm add.elf
+synth disasm add.elf
 
 # Or use Bazel
 bazel build //crates:synth
-bazel-bin/crates/synth compile examples/wat/simple_add.wat -o add.elf
 ```
 
-### Testing with QEMU (Optional)
+## Current Status
 
-```bash
-# Install QEMU for ARM (macOS)
-brew install qemu
+**Phase 1 Build System complete, Phase 2 Calculator Demo in progress.**
 
-# Install QEMU for ARM (Linux)
-sudo apt install qemu-system-arm
+### Working
 
-# Run in QEMU (requires full ELF with startup code - WIP)
-qemu-system-arm -M stm32f4-discovery -nographic -kernel add.elf
+- WASM/WAT file parsing and decoding
+- Pattern-based instruction selection (WASM to ARM)
+- ARM binary encoding
+- ELF file generation
+- CLI: `synth compile` and `synth disasm`
+- Bazel build system
+
+### In Progress
+
+- Register allocation (regalloc2 integration)
+- QEMU testing infrastructure
+- Full function prologue/epilogue generation
+- Zephyr RTOS integration
+
+See [ROADMAP.md](ROADMAP.md) for detailed progress.
+
+## Synthesis Pipeline
+
 ```
-
----
-
-## Technical Approach
-
-### Synthesis Pipeline
-
-```
-┌────────────────────────────────────────────────────────┐
-│ 1. FRONTEND: Parse & Validate                         │
-│    WebAssembly Components + WIT Interfaces             │
-│    ↓                                                   │
-│ 2. ANALYSIS: Whole-Program Analysis                   │
-│    Component dependencies, memory layout, call graph   │
-│    ↓                                                   │
-│ 3. OPTIMIZATION: E-Graph Synthesis                    │
-│    Equality saturation, ISLE rewrites, cost extraction│
-│    ↓                                                   │
-│ 4. SYNTHESIS: Target-Specific Lowering                │
-│    ISLE instruction selection, MPU/PMP mapping         │
-│    ↓                                                   │
-│ 5. VERIFICATION: Formal Validation                    │
-│    SMT translation validation, memory safety proofs    │
-│    ↓                                                   │
-│ 6. BACKEND: Binary Emission                           │
-│    ELF/binary generation, debug info, certifications  │
-└────────────────────────────────────────────────────────┘
+Frontend: Parse & Validate (WebAssembly Components + WIT)
+    ↓
+Analysis: Whole-Program (dependencies, memory layout, call graph)
+    ↓
+Optimization: E-Graph Synthesis (equality saturation, ISLE rewrites)
+    ↓
+Synthesis: Target-Specific Lowering (ISLE instruction selection, MPU/PMP)
+    ↓
+Verification: Formal Validation (SMT translation validation, memory safety)
+    ↓
+Backend: Binary Emission (ELF generation, debug info)
 ```
 
 ### Key Technologies
 
-- **E-Graphs (egg):** Equality saturation for optimization
-- **ISLE:** Declarative instruction selection and lowering
-- **regalloc2:** Fast register allocation
-- **Z3:** SMT solver for translation validation
-- **w2c2:** WebAssembly-to-C transpilation (PoC baseline)
-- **wasm-tools:** Component Model parsing and validation
-
----
-
-## Performance Goals
-
-| Metric | PoC Target | Production Target |
-|--------|------------|-------------------|
-| **Runtime Performance** | ≥70% of native | ≥80% of native |
-| **Code Size** | <130% of native | <120% of native |
-| **Compilation Time** | <30 seconds | <10 seconds |
-| **Memory Overhead** | <20% | <10% |
-
----
-
-## Comparison with Existing Approaches
-
-| Approach | Compilation Speed | Runtime Performance | Formal Verification | Embedded-Optimized |
-|----------|------------------|---------------------|---------------------|-------------------|
-| **Synth (planned)** | Medium | ≥80% native | ✅ Yes | ✅ Yes |
-| WAMR AOT | Fast | 50-79% native | ❌ No | ⚠️ Partial |
-| wasm2c / w2c2 | Fast | ~93% native | ❌ No | ❌ No |
-| Wasmtime (Cranelift) | Very Fast | ~86% native | ⚠️ Partial | ❌ No |
-| WasmEdge (LLVM) | Slow | ~85-90% native | ❌ No | ❌ No |
-
-**Synth's Differentiators:**
-- Component Model-aware whole-program synthesis
-- Hardware-integrated (MPU/PMP, XIP)
-- Formal verification with proof artifacts
-- Target-specific embedded optimizations
-- Safety certification pathway
-
----
-
-## Use Cases
-
-### Automotive (ISO 26262)
-
-Synthesize safety-critical ECU software from verified WebAssembly components with provable memory isolation and formal correctness proofs.
-
-### Medical Devices (IEC 62304)
-
-Deploy certified medical device firmware with guaranteed bounds checking and control-flow integrity.
-
-### Industrial Automation
-
-High-performance, sandboxed control logic with deterministic real-time behavior.
-
-### IoT / Edge Computing
-
-Secure, efficient WebAssembly components on resource-constrained devices with minimal overhead.
-
----
-
-## Research Background
-
-This project builds on extensive research in:
-
-- **WebAssembly Component Model** (W3C, Bytecode Alliance)
-- **Formal Verification** (CompCert, Vericert, VeriISLE, Crocus)
-- **Code Synthesis** (Equality saturation, superoptimization)
-- **Embedded Optimization** (WAMR, aWsm, OmniWasm)
-- **Hardware Synthesis** (VHDL/Verilog synthesis methodologies)
-
-See [research documents](docs/research/) for comprehensive literature review and technical analysis.
-
----
-
-## Roadmap
-
-### Phase 1: PoC (3 months) - Current
-
-- ✅ Research and planning
-- 🚧 Basic synthesis pipeline (w2c2-based)
-- 🚧 MPU-based memory isolation
-- 🚧 XIP binary generation
-- 🚧 Achieve ≥70% native performance
-- 🚧 SMT translation validation prototype
-
-### Phase 2: Optimization (3-6 months)
-
-- Full ISLE-based synthesis
-- E-graph equality saturation integration
-- Cross-component optimization
-- RISC-V backend
-- Achieve ≥80% native performance
-
-### Phase 3: Verification (6-12 months)
-
-- Mechanized semantics in Coq
-- Verified synthesis rules (VeriISLE approach)
-- End-to-end correctness proofs
-- Certification artifacts generation
-
-### Phase 4: Qualification (12-18 months)
-
-- Safety coding standards compliance
-- Tool qualification (ISO 26262 TCL3)
-- Pilot safety-critical projects
-- Commercial readiness
-
----
-
-## Contributing
-
-Synth is in early research phase. Contributions welcome in:
-
-- Research review and analysis
-- PoC implementation
-- Benchmarking and testing
-- Documentation
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
----
+- **E-Graphs (egg)** — Equality saturation for optimization
+- **ISLE** — Declarative instruction selection and lowering
+- **regalloc2** — Fast register allocation
+- **Z3** — SMT solver for translation validation
+- **wasm-tools** — Component Model parsing and validation
 
 ## Synth and Loom
 
 Synth is part of a two-tier architecture with [Loom](https://github.com/pulseengine/loom):
 
-```
-┌─────────────────────────────────────────┐
-│  LOOM (Open Source)                     │
-│  WebAssembly → Optimized WebAssembly    │
-│  Z3 SMT verification (ASIL B)           │
-└────────────────┬────────────────────────┘
-                 │ optional dependency
-                 ▼
-┌─────────────────────────────────────────┐
-│  SYNTH (This Repository)                │
-│  WebAssembly → Native ARM/RISC-V        │
-│  Coq proofs + Sail semantics (ASIL D)   │
-└─────────────────────────────────────────┘
-```
-
 | Project | Purpose | Safety Level |
 |---------|---------|--------------|
 | **Loom** | WASM optimizer with Z3 verification | ASIL B |
-| **Synth** | Native code synthesizer with Coq proofs | ASIL D |
+| **Synth** | Native code synthesizer with Rocq proofs | ASIL D |
 
 See [docs/architecture/SYNTH_LOOM_RELATIONSHIP.md](docs/architecture/SYNTH_LOOM_RELATIONSHIP.md) for details.
 
----
+## Formal Verification
 
-## Related Projects
+> [!NOTE]
+> **Cross-cutting verification** &mdash; Rocq mechanized proofs, Kani bounded model checking, Z3 SMT verification, and Verus Rust verification are used across the PulseEngine toolchain. Sigil attestation chains bind it all together.
 
-- **[PulseEngine/loom](https://github.com/pulseengine/loom)** - Companion WASM optimizer (see above)
-- **[Bytecode Alliance/wasmtime](https://github.com/bytecodealliance/wasmtime)** - WebAssembly runtime with Cranelift
-- **[Bytecode Alliance/wasm-micro-runtime](https://github.com/bytecodealliance/wasm-micro-runtime)** - Embedded WebAssembly runtime
-- **[turbolent/w2c2](https://github.com/turbolent/w2c2)** - WebAssembly to C transpiler
-- **[egraphs-good/egg](https://github.com/egraphs-good/egg)** - E-graph library for Rust
+## Documentation
 
----
+- [Architecture](docs/architecture/ARCHITECTURE.md) — System design and crate structure
+- [Requirements](docs/requirements/REQUIREMENTS.md) — Functional and non-functional requirements
+- [PoC Plan](docs/poc/POC_PLAN.md) — Proof-of-concept implementation plan
+- [Project Status](docs/status/PROJECT_STATUS.md) — Current implementation state
+- [Research](docs/research/) — Literature review, formal methods, Sail/ARM analysis
+- [Changelog](CHANGELOG.md) — Version history
 
 ## License
 
-Dual-licensed under Apache-2.0 OR MIT at your option.
-
-See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT) for details.
+Apache-2.0
 
 ---
 
-## Acknowledgments
+<div align="center">
 
-This research was conducted with insights from:
+<sub>Part of <a href="https://github.com/pulseengine">PulseEngine</a> &mdash; formally verified WebAssembly toolchain for safety-critical systems</sub>
 
-- Bytecode Alliance (WebAssembly Component Model, Wasmtime, Cranelift)
-- W3C WebAssembly Community Group
-- Formal verification community (CompCert, Vericert, VeriISLE authors)
-- Embedded WebAssembly community (WAMR, aWsm, OmniWasm)
-
-Special thanks to researchers and practitioners advancing WebAssembly for embedded and safety-critical systems.
-
----
-
-## Contact
-
-**Project:** PulseEngine/Synth
-**Status:** Research & Early Development
-**License:** Apache-2.0 OR MIT
-
-For questions, collaboration, or inquiries:
-- Open an issue on GitHub
-- See [discussions](https://github.com/pulseengine/Synth/discussions)
-
----
-
-**Synth** - Provably correct, hardware-optimized WebAssembly synthesis for the embedded future.
+</div>
