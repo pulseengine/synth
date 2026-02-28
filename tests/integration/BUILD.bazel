@@ -1,0 +1,18 @@
+# Integration tests for the Synth compiler pipeline
+#
+# These tests exercise the end-to-end WAT -> ARM ELF compilation
+# without requiring Renode emulation. They validate that the compiler
+# produces structurally correct ELF binaries.
+
+sh_test(
+    name = "synth_elf_integration",
+    srcs = ["synth_elf_integration_test.sh"],
+    data = [
+        "add.wat",
+        "//crates:synth",
+    ],
+    deps = [
+        "@bazel_tools//tools/bash/runfiles",
+    ],
+    tags = ["integration"],
+)

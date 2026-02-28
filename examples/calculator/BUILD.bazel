@@ -1,0 +1,9 @@
+# Calculator example WAT files
+
+exports_files(
+    [
+        "calculator.wat",
+        "control_flow.wat",
+    ],
+    visibility = ["//visibility:public"],
+)
