@@ -94,7 +94,7 @@ bazel build //crates:synth //crates:synth-test
 
 If you're contributing to the Rocq proofs:
 
-- Proofs are in `coq/theories/` organized by domain (Common, ARM, WASM, Synth)
+- Proofs are in `coq/Synth/` organized by domain (Common, ARM, WASM, Synth)
 - All proofs must use `From Stdlib` imports (Rocq 9 style)
 - Prefer `Qed` over `Admitted` — document any remaining admits with a TODO
 - Run `make validate` to check for admitted proofs

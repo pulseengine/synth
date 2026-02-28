@@ -5,7 +5,7 @@
 #
 # Compatible with: Rocq 9.0+, Coq 8.20+
 
-.PHONY: all clean validate theories install-deps check-version
+.PHONY: all clean validate proofs install-deps check-version
 
 # Detect whether rocq or coqc is available
 ROCQ := $(shell command -v rocq 2>/dev/null)
@@ -24,7 +24,7 @@ else
 endif
 
 # Default target
-all: theories
+all: proofs
 
 # Show detected version
 check-version:
@@ -35,14 +35,14 @@ check-version:
 Makefile.coq: _CoqProject
 	$(COQ_MAKEFILE) -f _CoqProject -o Makefile.coq
 
-# Build all theories
-theories: Makefile.coq
+# Build all proofs
+proofs: Makefile.coq
 	$(MAKE) -f Makefile.coq
 
 # Validate all proofs (check for Admitted)
-validate: theories
+validate: proofs
 	@echo "Checking for admitted proofs..."
-	@admitted=$$(grep -r "Admitted" theories/ --include="*.v" | grep -v '^\s*(\*' || true); \
+	@admitted=$$(grep -r "Admitted" Synth/ --include="*.v" | grep -v '^\s*(\*' || true); \
 	if [ -n "$$admitted" ]; then \
 		echo "WARNING: Found admitted proofs:"; \
 		echo "$$admitted"; \
@@ -54,11 +54,11 @@ validate: theories
 clean:
 	$(MAKE) -f Makefile.coq clean || true
 	rm -f Makefile.coq Makefile.coq.conf
-	find theories -name "*.vo" -delete 2>/dev/null || true
-	find theories -name "*.vok" -delete 2>/dev/null || true
-	find theories -name "*.vos" -delete 2>/dev/null || true
-	find theories -name "*.glob" -delete 2>/dev/null || true
-	find theories -name ".*.aux" -delete 2>/dev/null || true
+	find Synth -name "*.vo" -delete 2>/dev/null || true
+	find Synth -name "*.vok" -delete 2>/dev/null || true
+	find Synth -name "*.vos" -delete 2>/dev/null || true
+	find Synth -name "*.glob" -delete 2>/dev/null || true
+	find Synth -name ".*.aux" -delete 2>/dev/null || true
 
 # Install Rocq 9 and dependencies via opam
 install-deps:
@@ -74,8 +74,8 @@ help:
 	@echo "Synth Rocq Verification Makefile"
 	@echo ""
 	@echo "Targets:"
-	@echo "  all           - Build all theories (default)"
-	@echo "  theories      - Build all theories"
+	@echo "  all           - Build all proofs (default)"
+	@echo "  proofs        - Build all proofs"
 	@echo "  validate      - Check that no proofs are admitted"
 	@echo "  clean         - Remove build artifacts"
 	@echo "  check-version - Show detected Rocq/Coq version"

@@ -29,25 +29,29 @@ pub struct LinkerScriptGenerator {
     heap_size: u32,
 }
 
+impl Default for LinkerScriptGenerator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LinkerScriptGenerator {
     /// Create a new linker script generator with default STM32 memory layout
     pub fn new_stm32() -> Self {
-        let mut regions = Vec::new();
-
-        // Default STM32F4 memory layout
-        regions.push(MemoryRegion {
-            name: "FLASH".to_string(),
-            origin: 0x08000000,
-            length: 512 * 1024, // 512KB
-            attributes: "rx".to_string(),
-        });
-
-        regions.push(MemoryRegion {
-            name: "RAM".to_string(),
-            origin: 0x20000000,
-            length: 128 * 1024, // 128KB
-            attributes: "rwx".to_string(),
-        });
+        let regions = vec![
+            MemoryRegion {
+                name: "FLASH".to_string(),
+                origin: 0x08000000,
+                length: 512 * 1024, // 512KB
+                attributes: "rx".to_string(),
+            },
+            MemoryRegion {
+                name: "RAM".to_string(),
+                origin: 0x20000000,
+                length: 128 * 1024, // 128KB
+                attributes: "rwx".to_string(),
+            },
+        ];
 
         Self {
             regions,
@@ -107,7 +111,7 @@ impl LinkerScriptGenerator {
         if self.heap_size > 0 {
             script.push_str(&format!("_heap_size = 0x{:X};\n", self.heap_size));
         }
-        script.push_str("\n");
+        script.push('\n');
 
         // Memory regions
         script.push_str("MEMORY\n{\n");

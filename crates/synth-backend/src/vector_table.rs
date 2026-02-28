@@ -27,6 +27,7 @@ pub struct VectorTable {
 
 impl VectorTable {
     /// Create a new vector table for Cortex-M
+    #[allow(clippy::vec_init_then_push)]
     pub fn new_cortex_m(stack_top: u32) -> Self {
         let mut handlers = Vec::new();
 
@@ -146,14 +147,14 @@ impl VectorTable {
         asm.push_str("    .size g_pfnVectors, .-g_pfnVectors\n\n");
 
         asm.push_str("g_pfnVectors:\n");
-        asm.push_str(&format!("    .word _estack\n"));
+        asm.push_str("    .word _estack\n");
         asm.push_str("    .word Reset_Handler\n");
 
         for handler in &self.handlers {
             asm.push_str(&format!("    .word {}\n", handler.name));
         }
 
-        asm.push_str("\n");
+        asm.push('\n');
 
         // Define weak default handlers
         asm.push_str("    .weak NMI_Handler\n");
@@ -169,7 +170,7 @@ impl VectorTable {
             }
         }
 
-        asm.push_str("\n");
+        asm.push('\n');
         asm.push_str("    .section .text.Default_Handler,\"ax\",%progbits\n");
         asm.push_str("Default_Handler:\n");
         asm.push_str("Infinite_Loop:\n");

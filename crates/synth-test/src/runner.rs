@@ -204,7 +204,7 @@ impl NativeRunner {
                 let passed = test
                     .expected_trap
                     .as_ref()
-                    .map_or(true, |msg| reason.matches_wast_message(msg));
+                    .is_none_or(|msg| reason.matches_wast_message(msg));
 
                 let error_msg = if passed {
                     None

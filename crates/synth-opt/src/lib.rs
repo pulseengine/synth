@@ -584,7 +584,7 @@ impl DeadCodeElimination {
     }
 
     /// Remove instructions in unreachable blocks
-    fn remove_unreachable(&self, cfg: &Cfg, instructions: &mut Vec<Instruction>) -> OptResult {
+    fn remove_unreachable(&self, cfg: &Cfg, instructions: &mut [Instruction]) -> OptResult {
         let reachable = self.mark_reachable_blocks(cfg);
 
         let mut removed = 0;
@@ -640,7 +640,7 @@ impl ConstantFolding {
     }
 
     /// Fold constant operations
-    fn fold_constants(&mut self, instructions: &mut Vec<Instruction>) -> OptResult {
+    fn fold_constants(&mut self, instructions: &mut [Instruction]) -> OptResult {
         // Build a map of registers to their constant values
         let mut const_values: HashMap<Reg, i32> = HashMap::new();
         let mut modified = 0;
@@ -783,7 +783,7 @@ impl CommonSubexpressionElimination {
     }
 
     /// Eliminate common subexpressions
-    fn eliminate_cse(&mut self, instructions: &mut Vec<Instruction>) -> OptResult {
+    fn eliminate_cse(&mut self, instructions: &mut [Instruction]) -> OptResult {
         // Map from expression to the register holding its result
         let mut expr_map: HashMap<ExprKey, Reg> = HashMap::new();
 
@@ -977,11 +977,9 @@ impl CommonSubexpressionElimination {
                     inst.opcode = Opcode::Eqz { dest, src };
                 }
 
-                Opcode::Return { value } => {
-                    if let Some(v) = value {
-                        let v = resolve(v);
-                        inst.opcode = Opcode::Return { value: Some(v) };
-                    }
+                Opcode::Return { value: Some(v) } => {
+                    let v = resolve(v);
+                    inst.opcode = Opcode::Return { value: Some(v) };
                 }
 
                 Opcode::Select {
@@ -1136,7 +1134,7 @@ impl AlgebraicSimplification {
     }
 
     /// Apply algebraic simplifications
-    fn simplify(&mut self, instructions: &mut Vec<Instruction>) -> OptResult {
+    fn simplify(&mut self, instructions: &mut [Instruction]) -> OptResult {
         // Track constant values
         let mut const_values: HashMap<Reg, i32> = HashMap::new();
         let mut modified = 0;
@@ -1293,7 +1291,7 @@ impl PeepholeOptimization {
     }
 
     /// Apply peephole optimizations (local pattern matching)
-    fn optimize(&mut self, instructions: &mut Vec<Instruction>) -> OptResult {
+    fn optimize(&mut self, instructions: &mut [Instruction]) -> OptResult {
         let mut modified = 0;
 
         // Look for patterns in a sliding window
@@ -1337,14 +1335,12 @@ impl PeepholeOptimization {
                 continue;
             }
 
-            let inst1 = instructions[i].opcode.clone();
-            let inst2 = instructions[i + 1].opcode.clone();
-            let inst3 = instructions[i + 2].opcode.clone();
+            let _inst1 = instructions[i].opcode.clone();
+            let _inst2 = instructions[i + 1].opcode.clone();
+            let _inst3 = instructions[i + 2].opcode.clone();
 
             // Pattern: const r0, 0; add r2, r1, r0; -> just mark add as dead (simplified by algebraic)
-            match (&inst1, &inst2, &inst3) {
-                _ => {}
-            }
+            // TODO: implement 3-instruction peephole patterns
 
             i += 1;
         }
@@ -1404,7 +1400,7 @@ impl StrengthReduction {
     }
 
     /// Apply strength reduction optimizations
-    fn reduce(&mut self, instructions: &mut Vec<Instruction>) -> OptResult {
+    fn reduce(&mut self, instructions: &mut [Instruction]) -> OptResult {
         let mut const_values: HashMap<Reg, i32> = HashMap::new();
         let mut modified = 0;
 
@@ -1557,7 +1553,7 @@ impl LoopInvariantCodeMotion {
     }
 
     /// Move loop-invariant code out of loops
-    fn hoist(&mut self, cfg: &mut Cfg, instructions: &mut Vec<Instruction>) -> OptResult {
+    fn hoist(&mut self, cfg: &mut Cfg, instructions: &mut [Instruction]) -> OptResult {
         let invariants = self.detect_invariants(cfg, instructions);
 
         // In a real implementation, would actually move instructions
@@ -1612,7 +1608,7 @@ impl CopyPropagation {
     }
 
     /// Perform copy propagation
-    fn propagate(&mut self, instructions: &mut Vec<Instruction>) -> OptResult {
+    fn propagate(&mut self, instructions: &mut [Instruction]) -> OptResult {
         let copy_map: HashMap<Reg, Reg> = HashMap::new();
         let mut modified = 0;
 
@@ -1764,7 +1760,7 @@ impl InstructionCombining {
     }
 
     /// Combine instructions into simpler forms
-    fn combine(&mut self, instructions: &mut Vec<Instruction>) -> OptResult {
+    fn combine(&mut self, instructions: &mut [Instruction]) -> OptResult {
         let mut const_values: HashMap<Reg, i32> = HashMap::new();
         let mut def_map: HashMap<Reg, usize> = HashMap::new();
         let mut inst_opcodes: HashMap<usize, Opcode> = HashMap::new();
@@ -1803,31 +1799,29 @@ impl InstructionCombining {
                     src2,
                 } => {
                     // Check if src1 is the result of another add with a constant
-                    if let Some(&val2) = const_values.get(&src2) {
+                    if let Some(&val2) = const_values.get(src2) {
                         // src2 is a constant
                         // Check if src1 is also an add with a constant
-                        if let Some(&def_id) = def_map.get(&src1) {
-                            if let Some(def_opcode) = inst_opcodes.get(&def_id) {
-                                if let Opcode::Add {
-                                    dest: _,
-                                    src1: inner_src1,
-                                    src2: inner_src2,
-                                } = def_opcode
-                                {
-                                    if let Some(&val1) = const_values.get(&inner_src2) {
-                                        // Found (x + c1) + c2 pattern
-                                        let combined = val1.wrapping_add(val2);
+                        if let Some(&def_id) = def_map.get(src1) {
+                            if let Some(Opcode::Add {
+                                dest: _,
+                                src1: inner_src1,
+                                src2: inner_src2,
+                            }) = inst_opcodes.get(&def_id)
+                            {
+                                if let Some(&val1) = const_values.get(inner_src2) {
+                                    // Found (x + c1) + c2 pattern
+                                    let combined = val1.wrapping_add(val2);
 
-                                        // Would create a new const and update this add
-                                        // For now, just count the opportunity
-                                        modified += 1;
+                                    // Would create a new const and update this add
+                                    // For now, just count the opportunity
+                                    modified += 1;
 
-                                        if self.verbose {
-                                            eprintln!(
-                                                "Instruction combining: (r{} + {}) + {} => r{} + {}",
-                                                inner_src1.0, val1, val2, inner_src1.0, combined
-                                            );
-                                        }
+                                    if self.verbose {
+                                        eprintln!(
+                                            "Instruction combining: (r{} + {}) + {} => r{} + {}",
+                                            inner_src1.0, val1, val2, inner_src1.0, combined
+                                        );
                                     }
                                 }
                             }

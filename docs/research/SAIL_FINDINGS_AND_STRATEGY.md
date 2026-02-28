@@ -168,7 +168,7 @@ Instead of full formal refinement proofs, use **semantic anchoring via validated
 
 1. **Extract Our Compiler** (2 days)
    ```coq
-   (* theories/Extraction/CompilerExtract.v *)
+   (* Synth/Extraction/CompilerExtract.v *)
    From Coq Require Extraction ExtrOcamlBasic.
    Extraction Language OCaml.
    Extraction "compiler.ml" compile_wasm_to_arm.

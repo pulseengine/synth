@@ -138,7 +138,7 @@ Sail can generate Coq definitions from ARM ISA specifications:
 
 ```bash
 # Generate Coq from Sail ARM specs
-sail -coq arm8_base.sail -o theories/ARM/SailARMGenerated.v
+sail -coq arm8_base.sail -o Synth/ARM/SailARMGenerated.v
 ```
 
 ### What Gets Generated:
@@ -248,7 +248,7 @@ include "arm8_base.sail"
 EOF
 
 # Generate Coq
-sail -coq arm_subset.sail -o ../coq/theories/ARM/SailARMGenerated.v
+sail -coq arm_subset.sail -o ../coq/Synth/ARM/SailARMGenerated.v
 ```
 
 ### Step 5: Import and Prove Refinement

@@ -240,7 +240,7 @@ impl CortexMBuilder {
         let default_handler_size = default_handler.len() as u32;
 
         // User code comes after default handler, aligned to 4 bytes
-        let code_offset = ((default_handler_offset + default_handler_size as usize + 3) / 4) * 4;
+        let code_offset = (default_handler_offset + default_handler_size as usize).div_ceil(4) * 4;
         let code_addr = self.layout.flash_base + code_offset as u32;
 
         // Now regenerate startup with correct entry point

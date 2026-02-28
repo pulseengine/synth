@@ -74,15 +74,15 @@ Our current ARM semantics in `ArmSemantics.v` are **simplified placeholders**:
 3. Clone ARM Sail specs: `git clone https://github.com/ARM-software/sail-arm`
 4. Generate Coq from Sail for ARMv8-A subset:
    ```bash
-   sail -coq arm8_base.sail -o theories/ARM/SailARMGenerated.v
+   sail -coq arm8_base.sail -o Synth/ARM/SailARMGenerated.v
    ```
 5. Import generated definitions into `ArmRefinement.v`
 6. Prove refinement for core instructions (ADD, SUB, MUL, etc.)
 
 **Deliverables**:
-- `theories/ARM/SailARMGenerated.v` - Generated from Sail
-- `theories/ARM/ArmRefinement.v` - Refinement proofs (updated)
-- `theories/ARM/ArmSubset.v` - Prove we use a valid ARM subset
+- `Synth/ARM/SailARMGenerated.v` - Generated from Sail
+- `Synth/ARM/ArmRefinement.v` - Refinement proofs (updated)
+- `Synth/ARM/ArmSubset.v` - Prove we use a valid ARM subset
 
 **Success Criteria**:
 - Can prove: `Theorem add_refines_sail : our_ADD ⊑ sail_ADD`
@@ -100,9 +100,9 @@ Our current ARM semantics in `ArmSemantics.v` are **simplified placeholders**:
 5. Connect to CakeML's verified assembler
 
 **Deliverables**:
-- `theories/CakeML/CakeMLImport.v` - Import CakeML backend
-- `theories/CakeML/ArmToCakeML.v` - Translation layer
-- `theories/CakeML/TranslationCorrect.v` - Correctness proofs
+- `Synth/CakeML/CakeMLImport.v` - Import CakeML backend
+- `Synth/CakeML/ArmToCakeML.v` - Translation layer
+- `Synth/CakeML/TranslationCorrect.v` - Correctness proofs
 
 **Success Criteria**:
 - Can invoke CakeML's verified codegen from our compiler
@@ -125,7 +125,7 @@ Our current ARM semantics in `ArmSemantics.v` are **simplified placeholders**:
 4. Test on WASM conformance suite
 
 **Deliverables**:
-- `theories/EndToEnd/EndToEndCorrectness.v` - Full correctness theorem
+- `Synth/EndToEnd/EndToEndCorrectness.v` - Full correctness theorem
 - `extraction/CompilerExtract.v` - Extraction to OCaml
 - `bin/synth` - Executable verified compiler
 - Test results on WASM conformance suite
@@ -248,7 +248,7 @@ coqc test_arm.v
 3. **Generate Test Coq** (15 minutes)
    ```bash
    cd external/sail-arm
-   sail -coq <some-subset>.sail -o ../../coq/theories/ARM/SailTest.v
+   sail -coq <some-subset>.sail -o ../../coq/Synth/ARM/SailTest.v
    ```
 
 4. **Prove First Refinement** (1-2 days)

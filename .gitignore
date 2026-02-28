@@ -20,6 +20,10 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# Build output artifacts
+build/*.elf
+build/*.bin
+
 # Z3 trace files
 .z3-trace
 **/.z3-trace

@@ -284,7 +284,7 @@ mod tests {
         let options = TranspileOptions::default();
         assert_eq!(options.functions_per_file, None);
         assert_eq!(options.threads, Some(1));
-        assert_eq!(options.debug, false);
+        assert!(!options.debug);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Lowering: Converting Component Model values to core WASM values
 
-use crate::{AbiError, AbiOptions, AbiResult, CoreValue, Memory, StringEncoding};
+use crate::{AbiError, AbiOptions, AbiResult, ComponentResult, CoreValue, Memory, StringEncoding};
 use synth_wit::ast::Type;
 
 /// Lower a string to memory
@@ -108,7 +108,7 @@ pub enum ComponentValue {
     },
     Enum(String),
     Option(Option<Box<ComponentValue>>),
-    Result(Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>>),
+    Result(ComponentResult),
     Flags(Vec<String>),
 }
 
@@ -214,7 +214,7 @@ pub fn lower_option<M: Memory>(
 /// Lower a result value
 pub fn lower_result<M: Memory>(
     mem: &mut M,
-    value: &Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>>,
+    value: &ComponentResult,
     ok_ty: &Option<Box<Type>>,
     err_ty: &Option<Box<Type>>,
     opts: &AbiOptions,
@@ -536,8 +536,7 @@ mod tests {
         let mut mem = SimpleMemory::new(1024);
         let opts = AbiOptions::default();
 
-        let value: Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>> =
-            Ok(Some(Box::new(ComponentValue::U32(100))));
+        let value: ComponentResult = Ok(Some(Box::new(ComponentValue::U32(100))));
 
         let ok_ty = Some(Box::new(Type::U32));
         let err_ty = Some(Box::new(Type::String));
@@ -557,8 +556,7 @@ mod tests {
         let mut mem = SimpleMemory::new(1024);
         let opts = AbiOptions::default();
 
-        let value: Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>> =
-            Err(Some(Box::new(ComponentValue::U32(404))));
+        let value: ComponentResult = Err(Some(Box::new(ComponentValue::U32(404))));
 
         let ok_ty = Some(Box::new(Type::U32));
         let err_ty = Some(Box::new(Type::U32));

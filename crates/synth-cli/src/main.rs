@@ -14,10 +14,8 @@ use synth_backend::{
 use synth_core::backend::{Backend, BackendRegistry, CompileConfig};
 use synth_core::target::TargetSpec;
 use synth_core::HardwareCapabilities;
-use synth_frontend;
 use synth_synthesis::{decode_wasm_functions, decode_wasm_module, WasmMemory, WasmOp};
 use tracing::{info, Level};
-use tracing_subscriber;
 use wast::parser::{self, ParseBuffer};
 use wast::{Wast, WastDirective};
 
@@ -405,6 +403,7 @@ fn build_backend_registry() -> BackendRegistry {
     registry
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_command(
     input: Option<PathBuf>,
     output: PathBuf,
@@ -464,12 +463,12 @@ fn compile_command(
             let file_bytes = std::fs::read(path)
                 .context(format!("Failed to read input file: {}", path.display()))?;
 
-            let wasm_bytes = if path.extension().map_or(false, |ext| ext == "wast") {
+            let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wast") {
                 info!("Parsing WAST to WASM (extracting module)...");
                 let contents =
                     String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
                 extract_module_from_wast(&contents)?
-            } else if path.extension().map_or(false, |ext| ext == "wat") {
+            } else if path.extension().is_some_and(|ext| ext == "wat") {
                 info!("Parsing WAT to WASM...");
                 wat::parse_bytes(&file_bytes)
                     .context("Failed to parse WAT file")?
@@ -546,16 +545,20 @@ fn compile_command(
     info!("WASM operations: {:?}", wasm_ops);
 
     // Build compile config from CLI flags
-    let mut config = CompileConfig::default();
-    config.no_optimize = no_optimize;
-    config.loom_compat = loom_compat;
-    config.bounds_check = bounds_check;
-    if !cortex_m {
-        config.target = TargetSpec {
-            isa: synth_core::target::IsaVariant::Arm32,
-            ..config.target
-        };
-    }
+    let config = CompileConfig {
+        no_optimize,
+        loom_compat,
+        bounds_check,
+        target: if !cortex_m {
+            TargetSpec {
+                isa: synth_core::target::IsaVariant::Arm32,
+                ..TargetSpec::cortex_m4()
+            }
+        } else {
+            TargetSpec::cortex_m4()
+        },
+        ..CompileConfig::default()
+    };
 
     // Compile via the selected backend
     let compiled = backend
@@ -728,100 +731,200 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<()> {
                 priority: 0,
                 pattern: Pattern::WasmInstr(WasmOp::I32Eq),
                 replacement: Replacement::ArmSequence(vec![
-                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
-                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::EQ },
+                    ArmOp::Cmp {
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R1),
+                    },
+                    ArmOp::SetCond {
+                        rd: Reg::R0,
+                        cond: Condition::EQ,
+                    },
                 ]),
-                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 4,
+                    registers: 2,
+                },
             }),
             WasmOp::I32Ne => Some(SynthesisRule {
                 name: "i32.ne → CMP + SetCond(NE)".into(),
                 priority: 0,
                 pattern: Pattern::WasmInstr(WasmOp::I32Ne),
                 replacement: Replacement::ArmSequence(vec![
-                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
-                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::NE },
+                    ArmOp::Cmp {
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R1),
+                    },
+                    ArmOp::SetCond {
+                        rd: Reg::R0,
+                        cond: Condition::NE,
+                    },
                 ]),
-                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 4,
+                    registers: 2,
+                },
             }),
             WasmOp::I32LtS => Some(SynthesisRule {
                 name: "i32.lt_s → CMP + SetCond(LT)".into(),
                 priority: 0,
                 pattern: Pattern::WasmInstr(WasmOp::I32LtS),
                 replacement: Replacement::ArmSequence(vec![
-                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
-                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::LT },
+                    ArmOp::Cmp {
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R1),
+                    },
+                    ArmOp::SetCond {
+                        rd: Reg::R0,
+                        cond: Condition::LT,
+                    },
                 ]),
-                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 4,
+                    registers: 2,
+                },
             }),
             WasmOp::I32LeS => Some(SynthesisRule {
                 name: "i32.le_s → CMP + SetCond(LE)".into(),
                 priority: 0,
                 pattern: Pattern::WasmInstr(WasmOp::I32LeS),
                 replacement: Replacement::ArmSequence(vec![
-                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
-                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::LE },
+                    ArmOp::Cmp {
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R1),
+                    },
+                    ArmOp::SetCond {
+                        rd: Reg::R0,
+                        cond: Condition::LE,
+                    },
                 ]),
-                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 4,
+                    registers: 2,
+                },
             }),
             WasmOp::I32GtS => Some(SynthesisRule {
                 name: "i32.gt_s → CMP + SetCond(GT)".into(),
                 priority: 0,
                 pattern: Pattern::WasmInstr(WasmOp::I32GtS),
                 replacement: Replacement::ArmSequence(vec![
-                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
-                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::GT },
+                    ArmOp::Cmp {
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R1),
+                    },
+                    ArmOp::SetCond {
+                        rd: Reg::R0,
+                        cond: Condition::GT,
+                    },
                 ]),
-                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 4,
+                    registers: 2,
+                },
             }),
             WasmOp::I32GeS => Some(SynthesisRule {
                 name: "i32.ge_s → CMP + SetCond(GE)".into(),
                 priority: 0,
                 pattern: Pattern::WasmInstr(WasmOp::I32GeS),
                 replacement: Replacement::ArmSequence(vec![
-                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
-                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::GE },
+                    ArmOp::Cmp {
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R1),
+                    },
+                    ArmOp::SetCond {
+                        rd: Reg::R0,
+                        cond: Condition::GE,
+                    },
                 ]),
-                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 4,
+                    registers: 2,
+                },
             }),
             WasmOp::I32LtU => Some(SynthesisRule {
                 name: "i32.lt_u → CMP + SetCond(LO)".into(),
                 priority: 0,
                 pattern: Pattern::WasmInstr(WasmOp::I32LtU),
                 replacement: Replacement::ArmSequence(vec![
-                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
-                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::LO },
+                    ArmOp::Cmp {
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R1),
+                    },
+                    ArmOp::SetCond {
+                        rd: Reg::R0,
+                        cond: Condition::LO,
+                    },
                 ]),
-                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 4,
+                    registers: 2,
+                },
             }),
             WasmOp::I32LeU => Some(SynthesisRule {
                 name: "i32.le_u → CMP + SetCond(LS)".into(),
                 priority: 0,
                 pattern: Pattern::WasmInstr(WasmOp::I32LeU),
                 replacement: Replacement::ArmSequence(vec![
-                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
-                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::LS },
+                    ArmOp::Cmp {
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R1),
+                    },
+                    ArmOp::SetCond {
+                        rd: Reg::R0,
+                        cond: Condition::LS,
+                    },
                 ]),
-                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 4,
+                    registers: 2,
+                },
             }),
             WasmOp::I32GtU => Some(SynthesisRule {
                 name: "i32.gt_u → CMP + SetCond(HI)".into(),
                 priority: 0,
                 pattern: Pattern::WasmInstr(WasmOp::I32GtU),
                 replacement: Replacement::ArmSequence(vec![
-                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
-                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::HI },
+                    ArmOp::Cmp {
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R1),
+                    },
+                    ArmOp::SetCond {
+                        rd: Reg::R0,
+                        cond: Condition::HI,
+                    },
                 ]),
-                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 4,
+                    registers: 2,
+                },
             }),
             WasmOp::I32GeU => Some(SynthesisRule {
                 name: "i32.ge_u → CMP + SetCond(HS)".into(),
                 priority: 0,
                 pattern: Pattern::WasmInstr(WasmOp::I32GeU),
                 replacement: Replacement::ArmSequence(vec![
-                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Reg(Reg::R1) },
-                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::HS },
+                    ArmOp::Cmp {
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R1),
+                    },
+                    ArmOp::SetCond {
+                        rd: Reg::R0,
+                        cond: Condition::HS,
+                    },
                 ]),
-                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 2 },
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 4,
+                    registers: 2,
+                },
             }),
             // i32.eqz: unary comparison against zero
             WasmOp::I32Eqz => Some(SynthesisRule {
@@ -829,10 +932,20 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<()> {
                 priority: 0,
                 pattern: Pattern::WasmInstr(WasmOp::I32Eqz),
                 replacement: Replacement::ArmSequence(vec![
-                    ArmOp::Cmp { rn: Reg::R0, op2: Operand2::Imm(0) },
-                    ArmOp::SetCond { rd: Reg::R0, cond: Condition::EQ },
+                    ArmOp::Cmp {
+                        rn: Reg::R0,
+                        op2: Operand2::Imm(0),
+                    },
+                    ArmOp::SetCond {
+                        rd: Reg::R0,
+                        cond: Condition::EQ,
+                    },
                 ]),
-                cost: synth_synthesis::Cost { cycles: 2, code_size: 4, registers: 1 },
+                cost: synth_synthesis::Cost {
+                    cycles: 2,
+                    code_size: 4,
+                    registers: 1,
+                },
             }),
             // Shift ops use immediate shift values in the instruction selector,
             // so SMT verification of the variable-shift case requires a different
@@ -921,6 +1034,7 @@ fn extract_module_from_wast(contents: &str) -> Result<Vec<u8>> {
 }
 
 /// Compile all exported functions into a multi-function ELF
+#[allow(clippy::too_many_arguments)]
 fn compile_all_exports(
     input: Option<PathBuf>,
     output: PathBuf,
@@ -938,11 +1052,11 @@ fn compile_all_exports(
     let file_bytes =
         std::fs::read(&path).context(format!("Failed to read input file: {}", path.display()))?;
 
-    let wasm_bytes = if path.extension().map_or(false, |ext| ext == "wast") {
+    let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST to WASM (extracting module)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
         extract_module_from_wast(&contents)?
-    } else if path.extension().map_or(false, |ext| ext == "wat") {
+    } else if path.extension().is_some_and(|ext| ext == "wat") {
         info!("Parsing WAT to WASM...");
         wat::parse_bytes(&file_bytes)
             .context("Failed to parse WAT file")?
@@ -992,16 +1106,20 @@ fn compile_all_exports(
     }
 
     // Build compile config from CLI flags
-    let mut config = CompileConfig::default();
-    config.no_optimize = no_optimize;
-    config.loom_compat = loom_compat;
-    config.bounds_check = bounds_check;
-    if !cortex_m {
-        config.target = TargetSpec {
-            isa: synth_core::target::IsaVariant::Arm32,
-            ..config.target
-        };
-    }
+    let config = CompileConfig {
+        no_optimize,
+        loom_compat,
+        bounds_check,
+        target: if !cortex_m {
+            TargetSpec {
+                isa: synth_core::target::IsaVariant::Arm32,
+                ..TargetSpec::cortex_m4()
+            }
+        } else {
+            TargetSpec::cortex_m4()
+        },
+        ..CompileConfig::default()
+    };
 
     // Compile each function via the selected backend
     let mut compiled_funcs = Vec::new();

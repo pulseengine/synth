@@ -9,93 +9,168 @@ This directory contains mechanized correctness proofs that:
 
 Proof status: 23 .v files, ~236 theorems, covering all 151 WASM Core 1.0 operations
 
-Build options:
-  - Bazel: Blocked on rules_rocq_rust Nix ~~ path issue (see MODULE.bazel)
-  - Make:  cd coq && make install-deps && make  (works with Rocq 9.0+ or Coq 8.20+)
+Build: bazel build //coq:correctness_complete
+Test:  bazel test //coq:verify_proofs
 """
 
 package(default_visibility = ["//visibility:public"])
 
-# All Rocq source files
+load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library", "rocq_proof_test")
+
+# All Rocq source files (for genrule/validation)
 filegroup(
     name = "rocq_sources",
     srcs = glob(["**/*.v"]),
 )
 
-# Foundation theories
-filegroup(
+# ─── Foundation ───────────────────────────────────────────────────────────────
+
+rocq_library(
+    name = "base",
+    srcs = ["Synth/Common/Base.v"],
+    include_path = "Synth",
+)
+
+# Integers and StateMonad both depend on Base but not on each other
+rocq_library(
     name = "common",
     srcs = [
-        "theories/Common/Base.v",
-        "theories/Common/Integers.v",
-        "theories/Common/StateMonad.v",
+        "Synth/Common/Integers.v",
+        "Synth/Common/StateMonad.v",
     ],
+    include_path = "Synth",
+    deps = [":base"],
 )
 
-# ARM machine model
-filegroup(
-    name = "arm",
+# ─── ARM chain ────────────────────────────────────────────────────────────────
+# Each file imports the previous: State → Instructions → Semantics → Refinement
+
+rocq_library(
+    name = "arm_state",
+    srcs = ["Synth/ARM/ArmState.v"],
+    include_path = "Synth",
+    deps = [":common"],
+)
+
+rocq_library(
+    name = "arm_instructions",
+    srcs = ["Synth/ARM/ArmInstructions.v"],
+    include_path = "Synth",
+    deps = [":arm_state"],
+)
+
+rocq_library(
+    name = "arm_semantics",
+    srcs = ["Synth/ARM/ArmSemantics.v"],
+    include_path = "Synth",
+    deps = [":arm_instructions"],
+)
+
+rocq_library(
+    name = "arm_refinement",
+    srcs = ["Synth/ARM/ArmRefinement.v"],
+    include_path = "Synth",
+    deps = [":arm_semantics"],
+)
+
+# ─── WASM chain ───────────────────────────────────────────────────────────────
+# Each file imports the previous: Values → Instructions → Semantics
+
+rocq_library(
+    name = "wasm_values",
+    srcs = ["Synth/WASM/WasmValues.v"],
+    include_path = "Synth",
+    deps = [":common"],
+)
+
+rocq_library(
+    name = "wasm_instructions",
+    srcs = ["Synth/WASM/WasmInstructions.v"],
+    include_path = "Synth",
+    deps = [":wasm_values"],
+)
+
+rocq_library(
+    name = "wasm_semantics",
+    srcs = ["Synth/WASM/WasmSemantics.v"],
+    include_path = "Synth",
+    deps = [":wasm_instructions"],
+)
+
+# ─── Compilation ──────────────────────────────────────────────────────────────
+# Bridges ARM and WASM: imports ArmInstructions + WasmSemantics (not ArmSemantics)
+
+rocq_library(
+    name = "compilation",
+    srcs = ["Synth/Synth/Compilation.v"],
+    include_path = "Synth",
+    deps = [":arm_instructions", ":wasm_semantics"],
+)
+
+# Tactics depends on Compilation + ArmSemantics
+rocq_library(
+    name = "tactics",
+    srcs = ["Synth/Synth/Tactics.v"],
+    include_path = "Synth",
+    deps = [":compilation", ":arm_semantics"],
+)
+
+# ─── Correctness proofs ──────────────────────────────────────────────────────
+# Split by dependency: some need Tactics, some don't.
+# Files within each group don't import each other.
+
+# Group A: depend on Compilation + ArmSemantics (no Tactics)
+rocq_library(
+    name = "correctness_core",
     srcs = [
-        "theories/ARM/ArmState.v",
-        "theories/ARM/ArmInstructions.v",
-        "theories/ARM/ArmSemantics.v",
-        "theories/ARM/ArmRefinement.v",
+        "Synth/Synth/Correctness.v",
+        "Synth/Synth/CorrectnessSimple.v",
+        "Synth/Synth/CorrectnessF32.v",
+        "Synth/Synth/CorrectnessF64.v",
+        "Synth/Synth/CorrectnessMemory.v",
+        "Synth/Synth/CorrectnessI64Comparisons.v",
     ],
+    include_path = "Synth",
+    deps = [":compilation", ":arm_semantics"],
 )
 
-# WebAssembly semantics
-filegroup(
-    name = "wasm",
+# Group B: depend on Tactics (which transitively provides Compilation)
+rocq_library(
+    name = "correctness_tactics",
     srcs = [
-        "theories/WASM/WasmValues.v",
-        "theories/WASM/WasmInstructions.v",
-        "theories/WASM/WasmSemantics.v",
+        "Synth/Synth/CorrectnessI32.v",
+        "Synth/Synth/CorrectnessI64.v",
+        "Synth/Synth/CorrectnessConversions.v",
     ],
+    include_path = "Synth",
+    deps = [":tactics"],
 )
 
-# Compilation + correctness proofs
-filegroup(
-    name = "correctness",
-    srcs = [
-        "theories/Synth/Compilation.v",
-        "theories/Synth/Tactics.v",
-        "theories/Synth/Correctness.v",
-        "theories/Synth/CorrectnessSimple.v",
-        "theories/Synth/CorrectnessI32.v",
-        "theories/Synth/CorrectnessI64.v",
-        "theories/Synth/CorrectnessI64Comparisons.v",
-        "theories/Synth/CorrectnessF32.v",
-        "theories/Synth/CorrectnessF64.v",
-        "theories/Synth/CorrectnessConversions.v",
-        "theories/Synth/CorrectnessMemory.v",
-        "theories/Synth/CorrectnessComplete.v",
-    ],
+# Master index: imports all correctness proofs
+rocq_library(
+    name = "correctness_complete",
+    srcs = ["Synth/Synth/CorrectnessComplete.v"],
+    include_path = "Synth",
+    deps = [":correctness_core", ":correctness_tactics"],
 )
 
-# Extraction
-filegroup(
+# ─── Extraction ───────────────────────────────────────────────────────────────
+
+rocq_library(
     name = "extraction",
-    srcs = [
-        "theories/Extraction/CompilerExtract.v",
-    ],
+    srcs = ["Synth/Extraction/CompilerExtract.v"],
+    include_path = "Synth",
+    deps = [":compilation", ":arm_semantics"],
 )
 
-# When rules_rocq_rust is enabled in MODULE.bazel, replace filegroups above with:
-#
-# load("@rules_rocq_rust//rocq:defs.bzl", "rocq_library", "rocq_proof_test")
-#
-# rocq_library(name = "synth_common", srcs = [":common"], include_path = "Synth")
-# rocq_library(name = "synth_arm", srcs = [":arm"], include_path = "Synth", deps = [":synth_common"])
-# rocq_library(name = "synth_wasm", srcs = [":wasm"], include_path = "Synth", deps = [":synth_common"])
-# rocq_library(name = "synth_compilation", srcs = ["theories/Synth/Compilation.v", "theories/Synth/Tactics.v"],
-#              include_path = "Synth", deps = [":synth_common", ":synth_arm", ":synth_wasm"])
-# rocq_library(name = "synth_correctness", srcs = [":correctness"], include_path = "Synth",
-#              deps = [":synth_common", ":synth_arm", ":synth_wasm", ":synth_compilation"])
-# rocq_library(name = "synth_extraction", srcs = [":extraction"], include_path = "Synth",
-#              deps = [":synth_common", ":synth_arm", ":synth_wasm", ":synth_compilation", ":synth_correctness"])
-# rocq_proof_test(name = "verify_proofs", deps = [":synth_correctness", ":synth_extraction"])
+# ─── Tests ────────────────────────────────────────────────────────────────────
 
-# Validate proofs (lightweight - counts Admitted)
+rocq_proof_test(
+    name = "verify_proofs",
+    deps = [":correctness_complete", ":extraction", ":arm_refinement"],
+)
+
+# Validate proofs (lightweight — counts Admitted)
 genrule(
     name = "validate_proofs",
     srcs = [":rocq_sources"],

@@ -106,7 +106,7 @@ impl Memory for SimpleMemory {
 
     fn allocate(&mut self, size: usize, align: usize) -> AbiResult<u32> {
         // Align current address
-        let aligned = ((self.next_addr as usize + align - 1) / align) * align;
+        let aligned = (self.next_addr as usize).div_ceil(align) * align;
 
         let new_addr = aligned + size;
         if new_addr > self.data.len() {

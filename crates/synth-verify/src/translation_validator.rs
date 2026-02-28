@@ -71,6 +71,12 @@ pub struct TranslationValidator {
     timeout_ms: u64,
 }
 
+impl Default for TranslationValidator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TranslationValidator {
     /// Create a new translation validator
     pub fn new() -> Self {
@@ -158,7 +164,7 @@ impl TranslationValidator {
         // Assert that results are NOT equal
         // If this is UNSAT, then the results are always equal (proven correct)
         // If this is SAT, we found a counterexample
-        solver.assert(&wasm_result.eq(&arm_result).not());
+        solver.assert(wasm_result.eq(&arm_result).not());
 
         match solver.check() {
             SatResult::Unsat => {

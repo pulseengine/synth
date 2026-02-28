@@ -40,7 +40,7 @@ This document provides an honest assessment of what works, what doesn't, and wha
 >
 > `synth compile --demo add --verify` compiles and formally verifies the translation using Z3.
 >
-> 496 tests pass across 18 crates with 0 failures.
+> 519 tests pass across 18 crates with 0 failures.
 
 ---
 
@@ -109,7 +109,7 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 | ARM semantics encoding | ✅ | 20+ instructions modeled |
 | Counterexample generation | ✅ | Reports failing inputs |
 | Parameterized verification | ✅ | Range-based testing |
-| Coq proofs | 🔬 | Research artifacts, not integrated |
+| Rocq proofs | ✅ | 106 Qed, 122 Admitted; integrated via Bazel (`bazel test //coq:verify_proofs`) |
 | Sail ARM semantics | 🔬 | Evaluated, not implemented |
 
 ---
@@ -145,9 +145,9 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 
 | System | Status | Notes |
 |--------|--------|-------|
-| Cargo | ✅ | 496 tests pass, 18 crates |
-| Bazel | ⚠️ | BUILD files for 17/18 crates, synth-memory missing |
-| CI/CD | ❌ | No GitHub Actions yet |
+| Cargo | ✅ | 519 tests pass, 18 crates |
+| Bazel | ✅ | All crates + Rocq proofs + Renode tests |
+| CI/CD | ✅ | GitHub Actions: clippy, fmt, test |
 
 ---
 
@@ -155,12 +155,12 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 
 | Type | Status | Coverage |
 |------|--------|----------|
-| Unit tests | ✅ | 496 tests, 100% pass |
+| Unit tests | ✅ | 519 tests, 100% pass |
 | Z3 verification tests | ✅ | 53 comprehensive tests |
-| WAST test files | ⚠️ | 22 files exist, runner not wired |
+| WAST compilation tests | ✅ | 23 cargo tests + 22 WAST files |
 | Spec test suite | ⚠️ | 267 files exist, adapter not built |
-| Integration tests | ⚠️ | Binary validation tests exist |
-| QEMU/Renode tests | ❌ | Config files exist, not wired |
+| Integration tests | ✅ | Binary validation tests exist |
+| Renode emulation tests | ✅ | 55+ tests via Bazel rules_renode (ARM Cortex-M4) |
 | Hardware tests | ❌ | Never tested on real device |
 
 ---
@@ -216,14 +216,13 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 4. **Formal verification:** `--verify` proves translation correctness via Z3
 5. **Multi-backend architecture:** Backend trait with registry, ARM backend functional
 6. **CLI:** 8 commands (compile, verify, disasm, backends, parse, synthesize, target-info)
-7. **496 tests pass** across 18 crates
+7. **519 tests pass** across 18 crates
 
 ### What Doesn't Work Yet
 
 1. **End-to-end execution:** No WASM → ELF → execute → verify-result cycle
 2. **External backends:** w2c2/aWsm/wasker stubs not implemented
-3. **CI/CD:** No automated testing pipeline
-4. **Hardware/emulator testing:** No QEMU or Renode integration
+3. **Hardware testing:** No tests on real devices yet
 5. **Control flow end-to-end:** if/else/loop rules exist but untested through compile
 
 ### Next Steps

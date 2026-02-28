@@ -38,6 +38,11 @@ pub use options::*;
 
 use synth_wit::ast::Type;
 
+/// Type alias for the complex result type used in Component Model lifting/lowering.
+///
+/// Represents a `result<T, E>` where both Ok and Err payloads are optional boxed component values.
+pub type ComponentResult = Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>>;
+
 /// Result type for ABI operations
 pub type AbiResult<T> = Result<T, AbiError>;
 
@@ -179,7 +184,7 @@ pub fn size_of(ty: &Type) -> usize {
             let inner_size = size_of(inner);
             let align = alignment_of(inner);
             // Round up inner size to alignment, then add discriminant
-            ((inner_size + align - 1) / align) * align + align_to(1, align)
+            inner_size.div_ceil(align) * align + align_to(1, align)
         }
         Type::Result { ok, err } => {
             let ok_size = ok.as_ref().map(|t| size_of(t)).unwrap_or(0);
@@ -203,7 +208,7 @@ pub fn size_of(ty: &Type) -> usize {
 
 /// Align an offset to the specified alignment
 pub fn align_to(offset: usize, alignment: usize) -> usize {
-    (offset + alignment - 1) / alignment * alignment
+    offset.div_ceil(alignment) * alignment
 }
 
 #[cfg(test)]
@@ -264,8 +269,8 @@ mod tests {
         assert_eq!(v1.as_u32(), Some(42u32));
         assert_eq!(v1.as_i64(), None);
 
-        let v2 = CoreValue::F32(3.14);
-        assert_eq!(v2.as_f32(), Some(3.14));
+        let v2 = CoreValue::F32(3.125);
+        assert_eq!(v2.as_f32(), Some(3.125));
         assert_eq!(v2.as_i32(), None);
     }
 }

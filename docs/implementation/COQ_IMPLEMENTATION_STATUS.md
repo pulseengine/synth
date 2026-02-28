@@ -26,7 +26,7 @@ Created a complete Coq project structure with:
 - Proper directory structure: `Common/`, `ARM/`, `WASM/`, `Synth/`
 - README with build instructions and learning resources
 
-### 2. Common Utilities (`theories/Common/`)
+### 2. Common Utilities (`Synth/Common/`)
 
 #### `Base.v` (151 lines)
 - Decidable equality typeclass
@@ -65,7 +65,7 @@ Theorem mul_commut : forall x y, I32.mul x y = I32.mul y x.
 - Monad operations: `ret`, `bind`, `get`, `put`, `modify`
 - Monad laws proofs
 
-### 3. ARM Formalization (`theories/ARM/`)
+### 3. ARM Formalization (`Synth/ARM/`)
 
 #### `ArmState.v` (245 lines)
 **Based on**: `crates/synth-verify/src/arm_semantics.rs`
@@ -138,7 +138,7 @@ Theorem exec_preserves_other_regs : forall rd rn rm s r,
   end.
 ```
 
-### 4. WASM Formalization (`theories/WASM/`)
+### 4. WASM Formalization (`Synth/WASM/`)
 
 #### `WasmValues.v` (95 lines)
 - WASM value types: VI32, VI64, VF32, VF64
@@ -197,7 +197,7 @@ Theorem local_set_get : forall idx value s stack',
   exec_wasm_instr (LocalGet idx) s' = Some (push_value (VI32 value) s').
 ```
 
-### 5. Compilation and Correctness (`theories/Synth/`)
+### 5. Compilation and Correctness (`Synth/Synth/`)
 
 #### `Compilation.v` (205 lines)
 **Based on**: `crates/synth-synthesis/src/rules.rs`

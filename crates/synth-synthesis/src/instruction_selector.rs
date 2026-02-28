@@ -294,10 +294,9 @@ impl InstructionSelector {
             }
 
             I32Const(val) => {
-                let imm_val = if *val >= 0 { *val as i32 } else { *val };
                 vec![ArmOp::Mov {
                     rd,
-                    op2: Operand2::Imm(imm_val),
+                    op2: Operand2::Imm(*val),
                 }]
             }
 
@@ -601,7 +600,7 @@ impl InstructionSelector {
                     instructions.push(ArmInstruction {
                         op: ArmOp::Mov {
                             rd: dst,
-                            op2: Operand2::Imm(*val as i32),
+                            op2: Operand2::Imm(*val),
                         },
                         source_line: Some(idx),
                     });

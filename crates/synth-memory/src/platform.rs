@@ -35,7 +35,10 @@ pub trait MemoryPlatform {
     fn allocate(&mut self, size: u32, align: u32) -> Result<*mut u8, AllocError>;
 
     /// Free memory region
-    fn deallocate(&mut self, ptr: *mut u8, size: u32);
+    ///
+    /// # Safety
+    /// `ptr` must have been allocated by `allocate` with a compatible size.
+    unsafe fn deallocate(&mut self, ptr: *mut u8, size: u32);
 
     /// Configure MPU region (if available)
     fn configure_mpu_region(
@@ -92,12 +95,16 @@ impl MemoryPlatform for HostPlatform {
         }
     }
 
-    fn deallocate(&mut self, ptr: *mut u8, size: u32) {
+    unsafe fn deallocate(&mut self, ptr: *mut u8, size: u32) {
         use std::alloc::{dealloc, Layout};
+
+        if ptr.is_null() {
+            return;
+        }
 
         // Assume 8-byte alignment for deallocation
         let layout = Layout::from_size_align(size as usize, 8).unwrap();
-        unsafe { dealloc(ptr, layout) };
+        dealloc(ptr, layout);
     }
 
     fn configure_mpu_region(
@@ -136,7 +143,7 @@ mod tests {
         assert!(!ptr.is_null());
         assert_eq!(ptr as usize % 16, 0); // Aligned
 
-        platform.deallocate(ptr, 4096);
+        unsafe { platform.deallocate(ptr, 4096) };
     }
 
     #[test]

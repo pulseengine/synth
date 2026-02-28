@@ -1,6 +1,7 @@
 //! Comprehensive F64 Operations Test Suite
 //!
 //! Tests all 30 f64 operations implemented in Phase 2c Session 1
+#![allow(clippy::approx_constant)]
 
 use synth_backend::ArmEncoder;
 use synth_synthesis::{InstructionSelector, RuleDatabase, WasmOp};
@@ -819,11 +820,11 @@ fn test_f64_special_values() {
 
         let arm_instrs = selector
             .select(&wasm_ops)
-            .expect(&format!("Selection failed for {}", name));
+            .unwrap_or_else(|_| panic!("Selection failed for {}", name));
         let ops: Vec<_> = arm_instrs.iter().map(|i| i.op.clone()).collect();
         let code = encoder
             .encode_sequence(&ops)
-            .expect(&format!("Encoding failed for {}", name));
+            .unwrap_or_else(|_| panic!("Encoding failed for {}", name));
 
         assert!(
             !code.is_empty(),
@@ -881,11 +882,11 @@ fn test_f64_nan_propagation() {
     for (wasm_ops, desc) in test_cases {
         let arm_instrs = selector
             .select(&wasm_ops)
-            .expect(&format!("Selection failed for {}", desc));
+            .unwrap_or_else(|_| panic!("Selection failed for {}", desc));
         let ops: Vec<_> = arm_instrs.iter().map(|i| i.op.clone()).collect();
         let code = encoder
             .encode_sequence(&ops)
-            .expect(&format!("Encoding failed for {}", desc));
+            .unwrap_or_else(|_| panic!("Encoding failed for {}", desc));
 
         assert!(
             !code.is_empty(),
@@ -939,11 +940,11 @@ fn test_f64_infinity_arithmetic() {
     for (wasm_ops, desc) in test_cases {
         let arm_instrs = selector
             .select(&wasm_ops)
-            .expect(&format!("Selection failed for {}", desc));
+            .unwrap_or_else(|_| panic!("Selection failed for {}", desc));
         let ops: Vec<_> = arm_instrs.iter().map(|i| i.op.clone()).collect();
         let code = encoder
             .encode_sequence(&ops)
-            .expect(&format!("Encoding failed for {}", desc));
+            .unwrap_or_else(|_| panic!("Encoding failed for {}", desc));
 
         assert!(
             !code.is_empty(),
@@ -983,11 +984,11 @@ fn test_f64_signed_zero() {
     for (wasm_ops, desc) in test_cases {
         let arm_instrs = selector
             .select(&wasm_ops)
-            .expect(&format!("Selection failed for {}", desc));
+            .unwrap_or_else(|_| panic!("Selection failed for {}", desc));
         let ops: Vec<_> = arm_instrs.iter().map(|i| i.op.clone()).collect();
         let code = encoder
             .encode_sequence(&ops)
-            .expect(&format!("Encoding failed for {}", desc));
+            .unwrap_or_else(|_| panic!("Encoding failed for {}", desc));
 
         assert!(
             !code.is_empty(),

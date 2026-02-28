@@ -227,7 +227,7 @@ calculator.wat → Synth Compiler → calculator.elf → Flash to Zephyr board �
 - **Dependencies**: Issue #11
 - **Tasks**:
   - [ ] Add rules_ocaml to MODULE.bazel
-  - [ ] Create BUILD files for `coq/theories/`
+  - [ ] Create BUILD files for `coq/Synth/`
   - [ ] Add Coq compilation targets
   - [ ] Add OCaml extraction targets
   - [ ] Build extracted OCaml code

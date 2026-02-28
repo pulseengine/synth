@@ -1,7 +1,7 @@
 //! Lifting: Converting core WASM values to Component Model values
 
 use crate::lower::ComponentValue;
-use crate::{AbiError, AbiOptions, AbiResult, CoreValue, Memory, StringEncoding};
+use crate::{AbiError, AbiOptions, AbiResult, ComponentResult, CoreValue, Memory, StringEncoding};
 
 /// Lift a string from memory
 pub fn lift_string<M: Memory>(mem: &M, ptr: u32, len: u32, opts: &AbiOptions) -> AbiResult<String> {
@@ -271,7 +271,7 @@ pub fn lift_result<M: Memory>(
     ok_ty: &Option<Box<synth_wit::ast::Type>>,
     err_ty: &Option<Box<synth_wit::ast::Type>>,
     opts: &AbiOptions,
-) -> AbiResult<Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>>> {
+) -> AbiResult<ComponentResult> {
     use synth_wit::ast::Type;
 
     let discriminant = data[0];
@@ -482,7 +482,7 @@ mod tests {
         assert_eq!(original, lifted);
 
         // Test f32 roundtrip
-        let original = ComponentValue::F32(3.14);
+        let original = ComponentValue::F32(3.125);
         let core_vals = lower_primitive(&original, &synth_wit::ast::Type::F32).unwrap();
         let lifted = lift_primitive(&core_vals, &synth_wit::ast::Type::F32).unwrap();
         assert_eq!(original, lifted);
@@ -548,16 +548,14 @@ mod tests {
         let err_ty = Some(Box::new(synth_wit::ast::Type::U32));
 
         // Test Ok
-        let value: Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>> =
-            Ok(Some(Box::new(ComponentValue::U32(200))));
+        let value: ComponentResult = Ok(Some(Box::new(ComponentValue::U32(200))));
         let data = lower_result(&mut mem, &value, &ok_ty, &err_ty, &opts).unwrap();
         let lifted = lift_result(&mem, &data, &ok_ty, &err_ty, &opts).unwrap();
         assert!(lifted.is_ok());
         assert_eq!(lifted.unwrap(), Some(Box::new(ComponentValue::U32(200))));
 
         // Test Err
-        let value: Result<Option<Box<ComponentValue>>, Option<Box<ComponentValue>>> =
-            Err(Some(Box::new(ComponentValue::U32(404))));
+        let value: ComponentResult = Err(Some(Box::new(ComponentValue::U32(404))));
         let data = lower_result(&mut mem, &value, &ok_ty, &err_ty, &opts).unwrap();
         let lifted = lift_result(&mem, &data, &ok_ty, &err_ty, &opts).unwrap();
         assert!(lifted.is_err());

@@ -102,9 +102,9 @@ Rather than comparing against external reference implementations (which encounte
 
 ### Extraction Process
 
-**Source**: Coq theories in `coq/theories/`
+**Source**: Coq theories in `coq/Synth/`
 **Target**: OCaml modules in `extracted/`
-**Configuration**: `coq/theories/Extraction/CompilerExtract.v`
+**Configuration**: `coq/Synth/Extraction/CompilerExtract.v`
 
 **Extracted Modules** (40 files):
 - `Compilation.ml` - WASM→ARM compiler (1.9KB)

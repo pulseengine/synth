@@ -54,7 +54,7 @@ Qed.
 
 ### 2. All I32 Operations (34 Total)
 
-**File**: `coq/theories/Synth/CorrectnessI32.v`
+**File**: `coq/Synth/Synth/CorrectnessI32.v`
 
 Defined correctness theorems for:
 
@@ -87,7 +87,7 @@ Defined correctness theorems for:
 
 ### 3. All I64 Operations (34 Total)
 
-**File**: `coq/theories/Synth/CorrectnessI64.v`
+**File**: `coq/Synth/Synth/CorrectnessI64.v`
 
 All 34 i64 operations have theorem statements (mirror i32 pattern):
 - Arithmetic: 10 operations
@@ -101,7 +101,7 @@ All 34 i64 operations have theorem statements (mirror i32 pattern):
 
 ### 4. All Conversion Operations (24 Total)
 
-**File**: `coq/theories/Synth/CorrectnessConversions.v`
+**File**: `coq/Synth/Synth/CorrectnessConversions.v`
 
 Defined correctness theorems for:
 
@@ -133,7 +133,7 @@ Defined correctness theorems for:
 
 ### 5. Master Summary (CorrectnessComplete.v)
 
-**File**: `coq/theories/Synth/CorrectnessComplete.v`
+**File**: `coq/Synth/Synth/CorrectnessComplete.v`
 
 Created comprehensive summary file that:
 - Exports all correctness modules

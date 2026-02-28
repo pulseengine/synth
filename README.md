@@ -6,6 +6,7 @@
 
 &nbsp;
 
+[![CI](https://github.com/pulseengine/synth/actions/workflows/ci.yml/badge.svg)](https://github.com/pulseengine/synth/actions/workflows/ci.yml)
 ![Rust](https://img.shields.io/badge/Rust-CE422B?style=flat-square&logo=rust&logoColor=white&labelColor=1a1b27)
 ![WebAssembly](https://img.shields.io/badge/WebAssembly-654FF0?style=flat-square&logo=webassembly&logoColor=white&labelColor=1a1b27)
 ![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square&labelColor=1a1b27)
@@ -116,7 +117,8 @@ See [docs/architecture/SYNTH_LOOM_RELATIONSHIP.md](docs/architecture/SYNTH_LOOM_
 
 ## Documentation
 
-- [Architecture](docs/architecture/ARCHITECTURE.md) — System design and crate structure
+- [Architecture](ARCHITECTURE.md) — Compilation pipeline, ARM instruction mapping, benchmarks
+- [Architecture Vision](docs/architecture/ARCHITECTURE_VISION.md) — Full system design and roadmap
 - [Requirements](docs/requirements/REQUIREMENTS.md) — Functional and non-functional requirements
 - [PoC Plan](docs/poc/POC_PLAN.md) — Proof-of-concept implementation plan
 - [Project Status](docs/status/PROJECT_STATUS.md) — Current implementation state

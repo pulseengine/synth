@@ -77,7 +77,7 @@ Synth/
 │   ├── dune-project               # Dune project definition
 │   ├── synth_verification.opam   # OPAM package metadata
 │   │
-│   ├── theories/                  # Coq theories (.v files)
+│   ├── Synth/                     # Coq theories (.v files)
 │   │   ├── dune                   # Dune build rules for theories
 │   │   │
 │   │   ├── Common.v               # Common definitions and tactics
@@ -90,7 +90,7 @@ Synth/
 │   │   └── Extraction.v           # OCaml extraction configuration
 │   │
 │   ├── _build/                    # Dune build output (gitignored)
-│   │   └── default/theories/
+│   │   └── default/Synth/
 │   │       ├── Compiler.ml        # Extracted OCaml code
 │   │       ├── Compiler.mli       # Extracted interface
 │   │       └── *.vo               # Compiled Coq proofs
@@ -139,7 +139,7 @@ Synth/
 )
 ```
 
-### `coq/theories/dune`
+### `coq/Synth/dune`
 
 ```dune
 ; Coq theory definition
@@ -187,7 +187,7 @@ Synth/
 
 ## Phase 4: Example Coq Files
 
-### `coq/theories/Common.v`
+### `coq/Synth/Common.v`
 
 ```coq
 (** Common definitions and tactics for Synth verification *)
@@ -212,7 +212,7 @@ Ltac crush :=
   repeat (simpl; intuition; try congruence; auto).
 ```
 
-### `coq/theories/WasmSemantics.v`
+### `coq/Synth/WasmSemantics.v`
 
 ```coq
 (** WebAssembly Component Model Semantics *)
@@ -254,7 +254,7 @@ Inductive wasm_step : wasm_state -> wasm_instr -> wasm_state -> Prop :=
 .
 ```
 
-### `coq/theories/ARMSemantics.v`
+### `coq/Synth/ARMSemantics.v`
 
 ```coq
 (** ARM v8-M Semantics (from Sail) *)
@@ -292,7 +292,7 @@ Inductive arm_step : arm_state -> arm_instr -> arm_state -> Prop :=
 (* sail -coq sail-arm/model/prelude.sail sail-arm/model/armv8m.sail *)
 ```
 
-### `coq/theories/Compiler.v`
+### `coq/Synth/Compiler.v`
 
 ```coq
 (** Synth Compiler: WebAssembly → ARM *)
@@ -342,7 +342,7 @@ Proof.
 Admitted.
 ```
 
-### `coq/theories/Extraction.v`
+### `coq/Synth/Extraction.v`
 
 ```coq
 (** Extract compiler to OCaml *)
@@ -391,7 +391,7 @@ dune clean
 After `dune build`, extracted files appear in:
 
 ```
-coq/_build/default/theories/
+coq/_build/default/Synth/
 ├── Compiler.ml      # Extracted compiler code
 ├── Compiler.mli     # Extracted interface
 ├── WasmSemantics.ml # Extracted semantics
@@ -413,12 +413,12 @@ load("@rules_ocaml//ocaml:rules.bzl", "ocaml_library")
 ocaml_library(
     name = "verified_compiler",
     srcs = glob([
-        "_build/default/theories/Compiler.ml",
-        "_build/default/theories/WasmSemantics.ml",
-        "_build/default/theories/ARMSemantics.ml",
+        "_build/default/Synth/Compiler.ml",
+        "_build/default/Synth/WasmSemantics.ml",
+        "_build/default/Synth/ARMSemantics.ml",
     ]),
     interfaces = glob([
-        "_build/default/theories/*.mli",
+        "_build/default/Synth/*.mli",
     ]),
     visibility = ["//visibility:public"],
     deps = [
@@ -509,13 +509,13 @@ cd coq/
 dune build @check > ../qualification/coq_proofs/proof_certificate.txt
 
 # Extract dependencies
-coqdep -R theories Synth theories/*.v > ../qualification/coq_proofs/dependencies.dot
+coqdep -R Synth Synth Synth/*.v > ../qualification/coq_proofs/dependencies.dot
 
 # Count proof obligations
-grep -r "Theorem\|Lemma" theories/ | wc -l > ../qualification/coq_proofs/proof_stats.txt
+grep -r "Theorem\|Lemma" Synth/ | wc -l > ../qualification/coq_proofs/proof_stats.txt
 
 # Document admitted theorems (for auditors)
-grep -r "Admitted" theories/ > ../qualification/coq_proofs/remaining_work.txt
+grep -r "Admitted" Synth/ > ../qualification/coq_proofs/remaining_work.txt
 ```
 
 ### ISO 26262 Evidence

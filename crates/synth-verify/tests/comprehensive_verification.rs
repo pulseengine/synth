@@ -680,10 +680,7 @@ fn verify_i32_clz() {
 
         // CLZ semantics in our implementation are simplified
         // Full verification would require complete CLZ encoding
-        match validator.verify_rule(&rule) {
-            Ok(ValidationResult::Unknown { .. }) => {}
-            _ => {}
-        }
+        if let Ok(ValidationResult::Unknown { .. }) = validator.verify_rule(&rule) {}
     });
 }
 
@@ -700,7 +697,7 @@ fn test_ctz_sequence_concrete() {
         let value = BV::from_i64(12, 32);
 
         // WASM CTZ
-        let wasm_result = wasm_encoder.encode_op(&WasmOp::I32Ctz, &[value.clone()]);
+        let wasm_result = wasm_encoder.encode_op(&WasmOp::I32Ctz, std::slice::from_ref(&value));
         assert_eq!(
             wasm_result.simplify().as_i64(),
             Some(2),
@@ -737,7 +734,7 @@ fn test_ctz_sequence_concrete() {
         // Binary: 8 = 0b1000, trailing zeros = 3
         let value2 = BV::from_i64(8, 32);
 
-        let wasm_result2 = wasm_encoder.encode_op(&WasmOp::I32Ctz, &[value2.clone()]);
+        let wasm_result2 = wasm_encoder.encode_op(&WasmOp::I32Ctz, std::slice::from_ref(&value2));
         assert_eq!(
             wasm_result2.simplify().as_i64(),
             Some(3),

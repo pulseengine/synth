@@ -1287,7 +1287,7 @@ mod tests {
     #[test]
     fn test_standard_rules() {
         let db = RuleDatabase::with_standard_rules();
-        assert!(db.rules().len() > 0);
+        assert!(!db.rules().is_empty());
 
         // Rules should be sorted by priority
         for i in 1..db.rules().len() {

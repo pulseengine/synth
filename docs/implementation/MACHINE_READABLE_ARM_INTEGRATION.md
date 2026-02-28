@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-Currently, we use **hand-written ARM semantics** in `coq/theories/ARM/ArmSemantics.v` based on our understanding of ARM instructions. For ASIL D certification, we need **machine-readable, officially-specified ARM semantics** to maximize trustworthiness and reduce human error.
+Currently, we use **hand-written ARM semantics** in `coq/Synth/ARM/ArmSemantics.v` based on our understanding of ARM instructions. For ASIL D certification, we need **machine-readable, officially-specified ARM semantics** to maximize trustworthiness and reduce human error.
 
 **Solution:** Integrate **Sail-generated ARM semantics** from ARM's official Architecture Specification Language (ASL).
 
@@ -19,7 +19,7 @@ Currently, we use **hand-written ARM semantics** in `coq/theories/ARM/ArmSemanti
 
 ### What We Have Now
 
-**File:** `coq/theories/ARM/ArmSemantics.v` (394 lines)
+**File:** `coq/Synth/ARM/ArmSemantics.v` (394 lines)
 
 ```coq
 Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
@@ -194,7 +194,7 @@ Definition execute_ADD (rd : regnum) (rn : regnum) (op2 : operand2)
 
 4. Test Sail→Coq generation:
    ```bash
-   sail -coq arm.sail -o coq/theories/ARM/Generated/
+   sail -coq arm.sail -o coq/Synth/ARM/Generated/
    ```
 
 5. Review generated Coq:
@@ -208,7 +208,7 @@ Definition execute_ADD (rd : regnum) (rn : regnum) (op2 : operand2)
 
 **File Structure:**
 ```
-coq/theories/ARM/
+coq/Synth/ARM/
 ├── ArmState.v              # Our state (keep)
 ├── ArmInstructions.v       # Our instructions (keep)
 ├── ArmSemantics.v          # Our semantics (keep for now)

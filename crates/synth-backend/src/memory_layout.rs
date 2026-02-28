@@ -423,16 +423,9 @@ impl MemoryLayoutAnalyzer {
     }
 
     /// Estimate stack size
-    fn estimate_stack_size(&self, component: &Component) -> u32 {
-        // Conservative estimate based on recursion depth
-        let max_functions = component
-            .modules
-            .iter()
-            .map(|m| m.functions.len())
-            .sum::<usize>();
-
-        // Assume 256 bytes per stack frame, max depth of 16
-        let stack_size = if max_functions > 0 { 256 * 16 } else { 4096 };
+    fn estimate_stack_size(&self, _component: &Component) -> u32 {
+        // Conservative estimate: 256 bytes per stack frame, max depth of 16
+        let stack_size = 256 * 16;
 
         align_up(stack_size, 8)
     }
@@ -536,7 +529,7 @@ mod tests {
         let layout = analyzer.analyze(&component).unwrap();
 
         // Should have sections allocated
-        assert!(layout.sections().len() > 0);
+        assert!(!layout.sections().is_empty());
 
         // Should have flash usage (text + rodata)
         assert!(layout.flash_usage() > 0);

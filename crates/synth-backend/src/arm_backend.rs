@@ -85,8 +85,7 @@ impl Backend for ArmBackend {
         ops: &[WasmOp],
         config: &CompileConfig,
     ) -> Result<CompiledFunction, BackendError> {
-        let code =
-            compile_wasm_to_arm(ops, config).map_err(|e| BackendError::CompilationFailed(e))?;
+        let code = compile_wasm_to_arm(ops, config).map_err(BackendError::CompilationFailed)?;
 
         Ok(CompiledFunction {
             name: name.to_string(),

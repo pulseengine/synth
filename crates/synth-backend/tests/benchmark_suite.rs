@@ -54,7 +54,7 @@ fn benchmark(name: &str, wasm_ops: Vec<WasmOp>, native_estimate_bytes: usize) ->
         .encode_sequence(&optimized_ops)
         .expect("Encoding failed");
 
-    let optimization_reduction = if arm_instrs.len() > 0 {
+    let optimization_reduction = if !arm_instrs.is_empty() {
         ((arm_instrs.len() - optimized_ops.len()) as f64 / arm_instrs.len() as f64) * 100.0
     } else {
         0.0

@@ -5,6 +5,7 @@
 *)
 
 Require Import Synth.Common.Base.
+From Stdlib Require Import FunctionalExtensionality.
 
 (** ** State Monad Definition *)
 

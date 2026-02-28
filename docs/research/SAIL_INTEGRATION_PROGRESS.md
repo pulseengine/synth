@@ -11,7 +11,7 @@ Integrate official ARM Sail specifications into our verified WebAssembly-to-ARM 
 - **Issue**: Missing `get_flags` function reference
 - **Fix**: Changed `get_flags our` to `our.(flags)` (direct field access)
 - **Result**: File now compiles successfully with Coq 9.1.0
-- **Location**: `/home/user/Synth/coq/theories/ARM/ArmRefinement.v`
+- **Location**: `/home/user/Synth/coq/Synth/ARM/ArmRefinement.v`
 
 #### 2. Installed Sail Toolchain ✅
 - **Version**: Sail 0.20.0
@@ -68,7 +68,7 @@ Integrate official ARM Sail specifications into our verified WebAssembly-to-ARM 
 
 **Command Template**:
 ```bash
-opam exec -- sail -coq model/prelude.sail -o coq/theories/ARM/SailARMPrelude.v
+opam exec -- sail -coq model/prelude.sail -o coq/Synth/ARM/SailARMPrelude.v
 ```
 
 #### 7. Extract ARM Instruction Subset ⏳
@@ -173,11 +173,11 @@ Rather than generate Coq for all 50,000+ lines of Sail specs:
 ## Files Modified/Created
 
 ### Coq Files:
-- ✅ `coq/theories/ARM/ArmRefinement.v` - Fixed and compiling
-- 🔄 `coq/theories/ARM/SailARMPrelude.v` - To be generated
-- ⏳ `coq/theories/ARM/SailARMTypes.v` - To be generated
-- ⏳ `coq/theories/ARM/SailARMInstructions.v` - To be generated
-- ⏳ `coq/theories/ARM/ArmSubset.v` - Prove subset validity
+- ✅ `coq/Synth/ARM/ArmRefinement.v` - Fixed and compiling
+- 🔄 `coq/Synth/ARM/SailARMPrelude.v` - To be generated
+- ⏳ `coq/Synth/ARM/SailARMTypes.v` - To be generated
+- ⏳ `coq/Synth/ARM/SailARMInstructions.v` - To be generated
+- ⏳ `coq/Synth/ARM/ArmSubset.v` - Prove subset validity
 
 ### Documentation:
 - ✅ `SAIL_INTEGRATION.md` - Integration roadmap

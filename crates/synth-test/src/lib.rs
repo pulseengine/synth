@@ -516,7 +516,7 @@ impl RobotGenerator {
             for func_name in &unique_funcs {
                 let addr = config.get_function_address(func_name);
                 // Create Robot-safe variable name (replace special chars)
-                let var_name = func_name.replace('-', "_").replace('.', "_").to_uppercase();
+                let var_name = func_name.replace(['-', '.'], "_").to_uppercase();
                 robot.push_str(&format!("${{FUNC_{}_ADDR}}    0x{:X}\n", var_name, addr));
             }
         } else {
@@ -539,7 +539,7 @@ impl RobotGenerator {
         // Keywords
         robot.push_str("*** Keywords ***\n");
         robot.push_str(Self::generate_keywords());
-        robot.push_str("\n");
+        robot.push('\n');
 
         // Test Cases
         robot.push_str("*** Test Cases ***\n");
@@ -550,12 +550,12 @@ impl RobotGenerator {
                 match test_case.test_type {
                     WastTestType::AssertReturn => {
                         robot.push_str(&Self::generate_test_case_with_config(test_case, config));
-                        robot.push_str("\n");
+                        robot.push('\n');
                         included += 1;
                     }
                     WastTestType::AssertTrap => {
                         robot.push_str(&Self::generate_trap_test_case(test_case, config));
-                        robot.push_str("\n");
+                        robot.push('\n');
                         included += 1;
                     }
                     _ => {
@@ -764,7 +764,7 @@ Execute Function Expect Trap
 
         // Separate arg types from result type for i64 operations
         let args_are_i64 = test_case.args.iter().any(|a| a.is_64bit());
-        let result_is_i64 = test_case.expected.as_ref().map_or(false, |e| e.is_64bit());
+        let result_is_i64 = test_case.expected.as_ref().is_some_and(|e| e.is_64bit());
 
         if args_are_i64 && test_case.args.len() == 2 {
             // Two i64 arguments: split into register pairs
@@ -844,13 +844,11 @@ Execute Function Expect Trap
             }
         } else {
             // Standard i32 function
-            tc.push_str(&format!(
-                "    ${{result}}=    Execute Function    ${{ELF}}    ${{FUNC_ADDR}}"
-            ));
+            tc.push_str("    ${result}=    Execute Function    ${ELF}    ${FUNC_ADDR}");
             for arg in &test_case.args {
                 tc.push_str(&format!("    {}", arg.as_u32() as i32));
             }
-            tc.push_str("\n");
+            tc.push('\n');
 
             // Assert result
             if let Some(expected) = &test_case.expected {
@@ -872,7 +870,7 @@ Execute Function Expect Trap
         if config.function_addresses.is_empty() {
             "${FUNC_ADDR}".to_string()
         } else {
-            let var_name = func_name.replace('-', "_").replace('.', "_").to_uppercase();
+            let var_name = func_name.replace(['-', '.'], "_").to_uppercase();
             format!("${{FUNC_{}_ADDR}}", var_name)
         }
     }
@@ -901,7 +899,7 @@ Execute Function Expect Trap
         for arg in &test_case.args {
             tc.push_str(&format!("    {}", arg.as_u32() as i32));
         }
-        tc.push_str("\n");
+        tc.push('\n');
 
         // Verify trap occurred (PC should be at Trap_Handler)
         tc.push_str(&format!(
@@ -933,7 +931,7 @@ Execute Function Expect Trap
 
         // Separate arg types from result type for i64 operations
         let args_are_i64 = test_case.args.iter().any(|a| a.is_64bit());
-        let result_is_i64 = test_case.expected.as_ref().map_or(false, |e| e.is_64bit());
+        let result_is_i64 = test_case.expected.as_ref().is_some_and(|e| e.is_64bit());
 
         if args_are_i64 && test_case.args.len() == 2 {
             let arg1 = test_case.args[0].as_u64();
@@ -1013,7 +1011,7 @@ Execute Function Expect Trap
             for arg in &test_case.args {
                 tc.push_str(&format!("    {}", arg.as_u32() as i32));
             }
-            tc.push_str("\n");
+            tc.push('\n');
 
             if let Some(expected) = &test_case.expected {
                 tc.push_str(&format!(

@@ -147,10 +147,13 @@ Module I32.
   Qed.
 
   Theorem add_zero : forall x,
-    add x zero = x.
+    add x zero = repr x.
   Proof.
-    (* TODO: Fix this proof for Coq 9.1 *)
-  Admitted.
+    intros. unfold add, zero, repr.
+    rewrite Z.mod_0_l by (unfold modulus; lia).
+    rewrite Z.add_0_r.
+    reflexivity.
+  Qed.
 
   Theorem mul_commut : forall x y,
     mul x y = mul y x.
@@ -342,5 +345,5 @@ Theorem i64_to_i32_to_i64_wrap : forall x,
   I64.unsigned (i32_to_i64_unsigned (i64_to_i32 x)) =
   I64.unsigned x mod I32.modulus.
 Proof.
-  (* TODO: Fix for Coq 9.1 - Zmod_mod behavior changed *)
-Admitted.
+  (* TODO: Z.mod_mod signature differs across Rocq versions *)
+  Admitted.

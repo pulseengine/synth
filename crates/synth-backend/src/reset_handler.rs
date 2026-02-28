@@ -55,6 +55,7 @@ impl ResetHandlerGenerator {
     }
 
     /// Generate ARM instructions for reset handler
+    #[allow(clippy::vec_init_then_push)]
     pub fn generate_instructions(&self) -> Vec<ArmOp> {
         let mut instrs = Vec::new();
 
@@ -136,15 +137,9 @@ impl ResetHandlerGenerator {
 
         // Copy .data section
         asm.push_str("    /* Copy data section from Flash to RAM */\n");
-        asm.push_str(&format!(
-            "    ldr r0, =_sidata      /* start of .data in Flash */\n"
-        ));
-        asm.push_str(&format!(
-            "    ldr r1, =_sdata       /* start of .data in RAM */\n"
-        ));
-        asm.push_str(&format!(
-            "    ldr r2, =_edata       /* end of .data in RAM */\n"
-        ));
+        asm.push_str("    ldr r0, =_sidata      /* start of .data in Flash */\n");
+        asm.push_str("    ldr r1, =_sdata       /* start of .data in RAM */\n");
+        asm.push_str("    ldr r2, =_edata       /* end of .data in RAM */\n");
         asm.push_str("    movs r3, #0\n");
         asm.push_str("    b LoopCopyDataInit\n\n");
 

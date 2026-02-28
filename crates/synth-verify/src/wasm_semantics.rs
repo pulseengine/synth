@@ -17,6 +17,12 @@ pub struct WasmSemantics {
     memory: Vec<BV>,
 }
 
+impl Default for WasmSemantics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WasmSemantics {
     /// Create a new WASM semantics encoder
     pub fn new() -> Self {
@@ -94,35 +100,35 @@ impl WasmSemantics {
             WasmOp::I32Shl => {
                 assert_eq!(inputs.len(), 2, "I32Shl requires 2 inputs");
                 // WASM spec: shift amount is modulo 32
-                let shift_mod = inputs[1].bvurem(&BV::from_i64(32, 32));
+                let shift_mod = inputs[1].bvurem(BV::from_i64(32, 32));
                 inputs[0].bvshl(&shift_mod)
             }
 
             WasmOp::I32ShrS => {
                 assert_eq!(inputs.len(), 2, "I32ShrS requires 2 inputs");
                 // WASM spec: shift amount is modulo 32
-                let shift_mod = inputs[1].bvurem(&BV::from_i64(32, 32));
+                let shift_mod = inputs[1].bvurem(BV::from_i64(32, 32));
                 inputs[0].bvashr(&shift_mod)
             }
 
             WasmOp::I32ShrU => {
                 assert_eq!(inputs.len(), 2, "I32ShrU requires 2 inputs");
                 // WASM spec: shift amount is modulo 32
-                let shift_mod = inputs[1].bvurem(&BV::from_i64(32, 32));
+                let shift_mod = inputs[1].bvurem(BV::from_i64(32, 32));
                 inputs[0].bvlshr(&shift_mod)
             }
 
             WasmOp::I32Rotl => {
                 assert_eq!(inputs.len(), 2, "I32Rotl requires 2 inputs");
                 // WASM spec: rotation amount is modulo 32
-                let shift_mod = inputs[1].bvurem(&BV::from_i64(32, 32));
+                let shift_mod = inputs[1].bvurem(BV::from_i64(32, 32));
                 inputs[0].bvrotl(&shift_mod)
             }
 
             WasmOp::I32Rotr => {
                 assert_eq!(inputs.len(), 2, "I32Rotr requires 2 inputs");
                 // WASM spec: rotation amount is modulo 32
-                let shift_mod = inputs[1].bvurem(&BV::from_i64(32, 32));
+                let shift_mod = inputs[1].bvurem(BV::from_i64(32, 32));
                 inputs[0].bvrotr(&shift_mod)
             }
 
@@ -978,39 +984,39 @@ impl WasmSemantics {
         let top_16_zero = top_16.eq(&zero);
 
         // If top 16 are zero, add 16 to count and shift focus to bottom 16
-        count = top_16_zero.ite(&count.bvadd(&BV::from_i64(16, 32)), &count);
-        remaining = top_16_zero.ite(&remaining.bvshl(&BV::from_i64(16, 32)), &remaining);
+        count = top_16_zero.ite(&count.bvadd(BV::from_i64(16, 32)), &count);
+        remaining = top_16_zero.ite(&remaining.bvshl(BV::from_i64(16, 32)), &remaining);
 
         // Check top 8 bits (of the 16 we're examining)
         let mask_8 = BV::from_u64(0xFF000000, 32);
         let top_8 = remaining.bvand(&mask_8);
         let top_8_zero = top_8.eq(&zero);
 
-        count = top_8_zero.ite(&count.bvadd(&BV::from_i64(8, 32)), &count);
-        remaining = top_8_zero.ite(&remaining.bvshl(&BV::from_i64(8, 32)), &remaining);
+        count = top_8_zero.ite(&count.bvadd(BV::from_i64(8, 32)), &count);
+        remaining = top_8_zero.ite(&remaining.bvshl(BV::from_i64(8, 32)), &remaining);
 
         // Check top 4 bits
         let mask_4 = BV::from_u64(0xF0000000, 32);
         let top_4 = remaining.bvand(&mask_4);
         let top_4_zero = top_4.eq(&zero);
 
-        count = top_4_zero.ite(&count.bvadd(&BV::from_i64(4, 32)), &count);
-        remaining = top_4_zero.ite(&remaining.bvshl(&BV::from_i64(4, 32)), &remaining);
+        count = top_4_zero.ite(&count.bvadd(BV::from_i64(4, 32)), &count);
+        remaining = top_4_zero.ite(&remaining.bvshl(BV::from_i64(4, 32)), &remaining);
 
         // Check top 2 bits
         let mask_2 = BV::from_u64(0xC0000000, 32);
         let top_2 = remaining.bvand(&mask_2);
         let top_2_zero = top_2.eq(&zero);
 
-        count = top_2_zero.ite(&count.bvadd(&BV::from_i64(2, 32)), &count);
-        remaining = top_2_zero.ite(&remaining.bvshl(&BV::from_i64(2, 32)), &remaining);
+        count = top_2_zero.ite(&count.bvadd(BV::from_i64(2, 32)), &count);
+        remaining = top_2_zero.ite(&remaining.bvshl(BV::from_i64(2, 32)), &remaining);
 
         // Check top bit
         let mask_1 = BV::from_u64(0x80000000, 32);
         let top_1 = remaining.bvand(&mask_1);
         let top_1_zero = top_1.eq(&zero);
 
-        count = top_1_zero.ite(&count.bvadd(&BV::from_i64(1, 32)), &count);
+        count = top_1_zero.ite(&count.bvadd(BV::from_i64(1, 32)), &count);
 
         // Return 32 if all zeros, otherwise return count
         all_zero.ite(&result_if_zero, &count)
@@ -1036,39 +1042,39 @@ impl WasmSemantics {
         let bottom_16 = remaining.bvand(&mask_16);
         let bottom_16_zero = bottom_16.eq(&zero);
 
-        count = bottom_16_zero.ite(&count.bvadd(&BV::from_i64(16, 32)), &count);
-        remaining = bottom_16_zero.ite(&remaining.bvlshr(&BV::from_i64(16, 32)), &remaining);
+        count = bottom_16_zero.ite(&count.bvadd(BV::from_i64(16, 32)), &count);
+        remaining = bottom_16_zero.ite(&remaining.bvlshr(BV::from_i64(16, 32)), &remaining);
 
         // Check bottom 8 bits
         let mask_8 = BV::from_u64(0x000000FF, 32);
         let bottom_8 = remaining.bvand(&mask_8);
         let bottom_8_zero = bottom_8.eq(&zero);
 
-        count = bottom_8_zero.ite(&count.bvadd(&BV::from_i64(8, 32)), &count);
-        remaining = bottom_8_zero.ite(&remaining.bvlshr(&BV::from_i64(8, 32)), &remaining);
+        count = bottom_8_zero.ite(&count.bvadd(BV::from_i64(8, 32)), &count);
+        remaining = bottom_8_zero.ite(&remaining.bvlshr(BV::from_i64(8, 32)), &remaining);
 
         // Check bottom 4 bits
         let mask_4 = BV::from_u64(0x0000000F, 32);
         let bottom_4 = remaining.bvand(&mask_4);
         let bottom_4_zero = bottom_4.eq(&zero);
 
-        count = bottom_4_zero.ite(&count.bvadd(&BV::from_i64(4, 32)), &count);
-        remaining = bottom_4_zero.ite(&remaining.bvlshr(&BV::from_i64(4, 32)), &remaining);
+        count = bottom_4_zero.ite(&count.bvadd(BV::from_i64(4, 32)), &count);
+        remaining = bottom_4_zero.ite(&remaining.bvlshr(BV::from_i64(4, 32)), &remaining);
 
         // Check bottom 2 bits
         let mask_2 = BV::from_u64(0x00000003, 32);
         let bottom_2 = remaining.bvand(&mask_2);
         let bottom_2_zero = bottom_2.eq(&zero);
 
-        count = bottom_2_zero.ite(&count.bvadd(&BV::from_i64(2, 32)), &count);
-        remaining = bottom_2_zero.ite(&remaining.bvlshr(&BV::from_i64(2, 32)), &remaining);
+        count = bottom_2_zero.ite(&count.bvadd(BV::from_i64(2, 32)), &count);
+        remaining = bottom_2_zero.ite(&remaining.bvlshr(BV::from_i64(2, 32)), &remaining);
 
         // Check bottom bit
         let mask_1 = BV::from_u64(0x00000001, 32);
         let bottom_1 = remaining.bvand(&mask_1);
         let bottom_1_zero = bottom_1.eq(&zero);
 
-        count = bottom_1_zero.ite(&count.bvadd(&BV::from_i64(1, 32)), &count);
+        count = bottom_1_zero.ite(&count.bvadd(BV::from_i64(1, 32)), &count);
 
         // Return 32 if all zeros, otherwise return count
         all_zero.ite(&result_if_zero, &count)
@@ -1092,7 +1098,7 @@ impl WasmSemantics {
         // Pattern: 01010101... (alternating bits)
         let mask1 = BV::from_u64(0x55555555, 32);
         let masked = x.bvand(&mask1);
-        let shifted = x.bvlshr(&BV::from_i64(1, 32));
+        let shifted = x.bvlshr(BV::from_i64(1, 32));
         let shifted_masked = shifted.bvand(&mask1);
         x = masked.bvadd(&shifted_masked);
 
@@ -1101,7 +1107,7 @@ impl WasmSemantics {
         // Pattern: 00110011... (pairs of bits)
         let mask2 = BV::from_u64(0x33333333, 32);
         let masked = x.bvand(&mask2);
-        let shifted = x.bvlshr(&BV::from_i64(2, 32));
+        let shifted = x.bvlshr(BV::from_i64(2, 32));
         let shifted_masked = shifted.bvand(&mask2);
         x = masked.bvadd(&shifted_masked);
 
@@ -1110,7 +1116,7 @@ impl WasmSemantics {
         // Pattern: 00001111... (nibbles)
         let mask3 = BV::from_u64(0x0F0F0F0F, 32);
         let masked = x.bvand(&mask3);
-        let shifted = x.bvlshr(&BV::from_i64(4, 32));
+        let shifted = x.bvlshr(BV::from_i64(4, 32));
         let shifted_masked = shifted.bvand(&mask3);
         x = masked.bvadd(&shifted_masked);
 
@@ -1119,7 +1125,7 @@ impl WasmSemantics {
         // Multiply effectively sums all bytes, then we extract top byte
         let multiplier = BV::from_u64(0x01010101, 32);
         x = x.bvmul(&multiplier);
-        x = x.bvlshr(&BV::from_i64(24, 32));
+        x = x.bvlshr(BV::from_i64(24, 32));
 
         x
     }

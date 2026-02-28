@@ -691,6 +691,7 @@ impl ElfBuilder {
     }
 
     /// Build section headers
+    #[allow(clippy::too_many_arguments)]
     fn build_section_headers(
         &self,
         section_name_offsets: &[usize],
@@ -788,6 +789,7 @@ impl ElfBuilder {
     }
 
     /// Write a single section header
+    #[allow(clippy::too_many_arguments)]
     fn write_section_header(
         &self,
         output: &mut Vec<u8>,

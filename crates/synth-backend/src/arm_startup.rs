@@ -77,7 +77,7 @@ impl ARMStartupGenerator {
                     i
                 ));
             }
-            code.push_str("\n");
+            code.push('\n');
         }
 
         // Vector table

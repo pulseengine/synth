@@ -85,10 +85,10 @@ Repository: https://github.com/bazelbuild/rules_foreign_cc
 ```python
 genrule(
     name = "compile_coq",
-    srcs = glob(["theories/**/*.v"]),
+    srcs = glob(["Synth/**/*.v"]),
     outs = ["extracted.ml"],
     cmd = """
-        cd $$(dirname $(location theories/Main.v))
+        cd $$(dirname $(location Synth/Main.v))
         coqc -R . MyTheory *.v
         # Extract to OCaml
     """,
@@ -106,7 +106,7 @@ dune install
 # BUILD.bazel
 ocaml_library(
     name = "extracted_proofs",
-    srcs = glob(["_build/default/theories/*.ml"]),
+    srcs = glob(["_build/default/Synth/*.ml"]),
 )
 ```
 
@@ -119,7 +119,7 @@ ocaml_library(
 (lang dune 3.0)
 (name synth_verification)
 
-# coq/theories/dune
+# coq/Synth/dune
 (coq.theory
   (name Synth)
   (theories Stdlib))
@@ -717,8 +717,8 @@ cat > coq/dune-project <<EOF
 (using coq 0.8)
 EOF
 
-# coq/theories/dune
-cat > coq/theories/dune <<EOF
+# coq/Synth/dune
+cat > coq/Synth/dune <<EOF
 (coq.theory
   (name Synth)
   (package synth_verification)
@@ -743,7 +743,7 @@ load("@rules_ocaml//ocaml:rules.bzl", "ocaml_library")
 # Manually copy extracted files from dune build
 ocaml_library(
     name = "extracted_compiler",
-    srcs = glob(["_build/default/theories/extraction/*.ml"]),
+    srcs = glob(["_build/default/Synth/extraction/*.ml"]),
     visibility = ["//visibility:public"],
 )
 ```

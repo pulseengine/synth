@@ -22,7 +22,7 @@ fn test_rotate_left() {
 
     // Should contain ROR instruction (rotl is implemented as ror with 32-shift)
     let has_ror = arm_instrs.iter().any(|i| matches!(i.op, ArmOp::Ror { .. }));
-    assert!(has_ror || arm_instrs.len() > 0); // Either ROR or other valid encoding
+    assert!(has_ror || !arm_instrs.is_empty()); // Either ROR or other valid encoding
 }
 
 #[test]

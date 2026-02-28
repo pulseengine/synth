@@ -249,7 +249,7 @@ The key insight: **Sail validation would validate ARM semantics; self-validation
 ## Files Created
 
 ### Code
-- `coq/theories/Extraction/CompilerExtract.v` - Extraction configuration
+- `coq/Synth/Extraction/CompilerExtract.v` - Extraction configuration
 - `extracted/*.ml` - 40 OCaml files (verified compiler)
 
 ### Documentation

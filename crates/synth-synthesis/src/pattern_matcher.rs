@@ -145,12 +145,17 @@ impl PatternMatcher {
 
     /// Get the length (in instructions) of a pattern
     fn pattern_length(&self, pattern: &Pattern) -> usize {
-        match pattern {
-            Pattern::WasmInstr(_) => 1,
-            Pattern::Var(_, inner) => self.pattern_length(inner),
-            Pattern::Sequence(patterns) => patterns.iter().map(|p| self.pattern_length(p)).sum(),
-            Pattern::Any => 1,
-        }
+        pattern_length(pattern)
+    }
+}
+
+/// Compute the length (in instructions) of a pattern
+fn pattern_length(pattern: &Pattern) -> usize {
+    match pattern {
+        Pattern::WasmInstr(_) => 1,
+        Pattern::Var(_, inner) => pattern_length(inner),
+        Pattern::Sequence(patterns) => patterns.iter().map(pattern_length).sum(),
+        Pattern::Any => 1,
     }
 }
 
@@ -291,13 +296,12 @@ mod tests {
     fn test_pattern_matcher_creation() {
         let db = RuleDatabase::new();
         let matcher = PatternMatcher::new(db.rules().to_vec());
-        assert!(matcher.rules.len() == 0);
+        assert!(matcher.rules.is_empty());
     }
 
     #[test]
     fn test_match_single_operation() {
-        let mut rules = Vec::new();
-        rules.push(SynthesisRule {
+        let rules = vec![SynthesisRule {
             name: "test".to_string(),
             priority: 100,
             pattern: Pattern::WasmInstr(WasmOp::I32Add),
@@ -307,7 +311,7 @@ mod tests {
                 code_size: 2,
                 registers: 1,
             },
-        });
+        }];
 
         let matcher = PatternMatcher::new(rules);
         let ops = vec![WasmOp::I32Add];
@@ -319,8 +323,7 @@ mod tests {
 
     #[test]
     fn test_match_sequence() {
-        let mut rules = Vec::new();
-        rules.push(SynthesisRule {
+        let rules = vec![SynthesisRule {
             name: "add_sequence".to_string(),
             priority: 100,
             pattern: Pattern::Sequence(vec![
@@ -334,7 +337,7 @@ mod tests {
                 code_size: 2,
                 registers: 1,
             },
-        });
+        }];
 
         let matcher = PatternMatcher::new(rules);
         let ops = test_ops();
@@ -370,8 +373,7 @@ mod tests {
 
     #[test]
     fn test_wildcard_matching() {
-        let mut rules = Vec::new();
-        rules.push(SynthesisRule {
+        let rules = vec![SynthesisRule {
             name: "any".to_string(),
             priority: 1,
             pattern: Pattern::Any,
@@ -381,7 +383,7 @@ mod tests {
                 code_size: 1,
                 registers: 1,
             },
-        });
+        }];
 
         let matcher = PatternMatcher::new(rules);
         let ops = vec![WasmOp::I32Add];

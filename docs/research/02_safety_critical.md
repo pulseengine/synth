@@ -265,7 +265,7 @@ Control-Flow Integrity:
 - Compiles from Gallina (Coq programming language) to WebAssembly
 - Works from CertiCoq's minimal lambda calculus in ANF
 - Mechanized with respect to WasmCert-Coq formalization
-- Verified correctness proof in theories/CodegenWasm/
+- Verified correctness proof in Synth/Synth/
 - Implements Coq's primitive integer operations as efficient Wasm instructions
 - Identified corner case leading to unsoundness in primitive operations
 

@@ -112,6 +112,12 @@ pub struct InterferenceGraph {
     degree: HashMap<Reg, usize>,
 }
 
+impl Default for InterferenceGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InterferenceGraph {
     pub fn new() -> Self {
         Self {
@@ -127,17 +133,11 @@ impl InterferenceGraph {
         }
 
         // Add edge vreg1 -> vreg2
-        self.edges
-            .entry(vreg1)
-            .or_insert_with(HashSet::new)
-            .insert(vreg2);
+        self.edges.entry(vreg1).or_default().insert(vreg2);
         *self.degree.entry(vreg1).or_insert(0) += 1;
 
         // Add edge vreg2 -> vreg1 (undirected graph)
-        self.edges
-            .entry(vreg2)
-            .or_insert_with(HashSet::new)
-            .insert(vreg1);
+        self.edges.entry(vreg2).or_default().insert(vreg1);
         *self.degree.entry(vreg2).or_insert(0) += 1;
     }
 

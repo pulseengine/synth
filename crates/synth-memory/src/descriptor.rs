@@ -7,21 +7,17 @@ use bitflags::bitflags;
 /// Memory protection strategy
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum ProtectionStrategy {
     /// No protection (trust WASM code) - fastest but unsafe
     None = 0,
     /// Software bounds check before each access (~25-40% overhead)
+    #[default]
     Software = 1,
     /// Address masking for power-of-2 sizes (~5% overhead)
     Masking = 2,
     /// MPU guard regions (~0% overhead, uses hardware)
     Mpu { region_id: u8 } = 3,
-}
-
-impl Default for ProtectionStrategy {
-    fn default() -> Self {
-        ProtectionStrategy::Software
-    }
 }
 
 bitflags! {

@@ -199,7 +199,7 @@ Starting control loop...
 
 ### 2. Formally Verified Compilation
 
-From `coq/theories/Synth/Compilation.v`:
+From `coq/Synth/Synth/Compilation.v`:
 
 ```coq
 Definition compile_instr (instr : wasm_instr) : list arm_instr :=
@@ -466,7 +466,7 @@ Same as Synth project (see root LICENSE file)
 ## Further Reading
 
 - [Synth Formal Verification](../../coq/README.md) - Coq proofs
-- [ARM Compilation Semantics](../../coq/theories/Synth/Compilation.v) - Compilation function
+- [ARM Compilation Semantics](../../coq/Synth/Synth/Compilation.v) - Compilation function
 - [WASM Specification](https://webassembly.github.io/spec/) - Official WASM semantics
 - [ISO 26262](https://www.iso.org/standard/68383.html) - Automotive safety standard
 - [CompCert](https://compcert.org/) - Other verified compiler

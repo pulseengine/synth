@@ -154,8 +154,8 @@ fn main() -> Result<()> {
             let parsed = WastParser::parse_file(&wast)
                 .with_context(|| format!("Failed to parse WAST file: {}", wast.display()))?;
 
-            let func_addr_num = if func_addr.starts_with("0x") {
-                u32::from_str_radix(&func_addr[2..], 16)?
+            let func_addr_num = if let Some(hex) = func_addr.strip_prefix("0x") {
+                u32::from_str_radix(hex, 16)?
             } else {
                 func_addr.parse()?
             };

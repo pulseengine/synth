@@ -253,22 +253,20 @@ impl ConstantPropagation {
         // Substitute constants
         for block in &mut func.blocks {
             for instr in &mut block.instrs {
-                match instr {
-                    SSAInstr::BinOp {
-                        left,
-                        right,
-                        result,
-                        op,
-                    } => {
-                        // Try to fold constant binary operations
-                        if let (SSAValue::I32(l), SSAValue::I32(r)) = (left, right) {
-                            if let Some(folded) = Self::fold_binop(*op, *l, *r) {
-                                constant_map.insert(result.clone(), SSAValue::I32(folded));
-                                changed += 1;
-                            }
+                if let SSAInstr::BinOp {
+                    left,
+                    right,
+                    result,
+                    op,
+                } = instr
+                {
+                    // Try to fold constant binary operations
+                    if let (SSAValue::I32(l), SSAValue::I32(r)) = (left, right) {
+                        if let Some(folded) = Self::fold_binop(*op, *l, *r) {
+                            constant_map.insert(result.clone(), SSAValue::I32(folded));
+                            changed += 1;
                         }
                     }
-                    _ => {}
                 }
             }
         }
@@ -377,11 +375,13 @@ impl DeadCodeElimination {
                     live.insert(v.clone());
                 }
             }
-            SSAInstr::UnaryOp { value, .. } => {
-                if let SSAValue::Var(v) = value {
-                    live.insert(v.clone());
-                }
+            SSAInstr::UnaryOp {
+                value: SSAValue::Var(v),
+                ..
+            } => {
+                live.insert(v.clone());
             }
+            SSAInstr::UnaryOp { .. } => {}
             SSAInstr::Return {
                 value: Some(SSAValue::Var(v)),
             } => {

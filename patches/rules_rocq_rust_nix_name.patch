@@ -1,0 +1,12 @@
+--- a/rocq/private/smpl_repository.bzl
++++ b/rocq/private/smpl_repository.bzl
+@@ -24,7 +24,8 @@ pkgs.stdenv.mkDerivation {
+   pname = "smpl";
+   version = "rocq-9.0";
+
+-  src = ./.;
++  # Use builtins.path to override the store path name — avoids illegal '~' from Bazel bzlmod repo names
++  src = builtins.path { path = ./.; name = "smpl-source"; };
+
+   nativeBuildInputs = [
+     coq

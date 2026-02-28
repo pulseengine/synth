@@ -61,7 +61,11 @@ fn compile_wast(wast_file: &Path) -> PathBuf {
     );
 
     // Verify the output file exists and looks like an ELF
-    assert!(output.exists(), "Output ELF not created: {}", output.display());
+    assert!(
+        output.exists(),
+        "Output ELF not created: {}",
+        output.display()
+    );
     let data = std::fs::read(&output).unwrap();
     assert!(data.len() > 52, "ELF file too small: {} bytes", data.len());
     assert_eq!(&data[0..4], b"\x7fELF", "Not a valid ELF file");
@@ -188,12 +192,16 @@ fn compile_i64_div() {
 #[test]
 fn all_wast_files_present() {
     let dir = wast_dir();
-    assert!(dir.exists(), "WAST test directory missing: {}", dir.display());
+    assert!(
+        dir.exists(),
+        "WAST test directory missing: {}",
+        dir.display()
+    );
 
     let files: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "wast"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "wast"))
         .collect();
 
     assert!(

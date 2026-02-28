@@ -1,20 +1,15 @@
 //! ABI options and configuration
 
 /// String encoding format
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StringEncoding {
     /// UTF-8 encoding (most common)
+    #[default]
     Utf8,
     /// UTF-16 encoding (for JavaScript, Java interop)
     Utf16,
     /// Latin-1 (ISO 8859-1) encoding
     Latin1,
-}
-
-impl Default for StringEncoding {
-    fn default() -> Self {
-        StringEncoding::Utf8
-    }
 }
 
 /// Options for Canonical ABI operations

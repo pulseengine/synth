@@ -370,16 +370,18 @@ Theorem exec_preserves_other_regs : forall rd rn rm s r,
   | None => True
   end.
 Proof.
-  (* TODO: Fix this proof for Coq 9.1 *)
-Admitted.
+  intros rd rn rm s r Hneq. simpl. unfold eval_operand2.
+  apply get_set_reg_neq. auto.
+Qed.
 
-(** ADD with zero is identity (right) *)
+(** ADD with zero normalizes the register value *)
 Theorem add_zero_right : forall rd rn s,
   exec_instr (ADD rd rn (Imm I32.zero)) s =
-  Some (set_reg s rd (get_reg s rn)).
+  Some (set_reg s rd (I32.repr (get_reg s rn))).
 Proof.
-  (* TODO: Fix this proof for Coq 9.1 - needs I32.add_zero and I32.repr_unsigned *)
-Admitted.
+  intros. simpl. unfold eval_operand2.
+  rewrite I32.add_zero. reflexivity.
+Qed.
 
 (** MOV transfers the value correctly *)
 Theorem mov_correct : forall rd rs s,

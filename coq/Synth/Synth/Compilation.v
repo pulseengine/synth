@@ -546,7 +546,7 @@ Example ex_compile_simple_add :
   ([MOVW R0 (I32.repr 5);
    MOVW R0 (I32.repr 3);
    ADD R0 R0 (Reg R1)]).
-Proof. (* TODO: Fixproof *) Admitted.
+Proof. simpl. reflexivity. Qed.
 
 (** WASM: local.get 0; i32.const 1; i32.add; local.set 0 *)
 Example ex_compile_increment_local :
@@ -555,7 +555,7 @@ Example ex_compile_increment_local :
    MOVW R0 I32.one;
    ADD R0 R0 (Reg R1);
    MOV R4 (Reg R0)]).
-Proof. (* TODO: Fix proof *) Admitted.
+Proof. simpl. reflexivity. Qed.
 
 (** ** Compilation Invariants **)
 

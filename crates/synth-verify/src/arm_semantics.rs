@@ -183,6 +183,12 @@ fn vfp_reg_to_index(reg: &VfpReg) -> usize {
 /// Z3 0.19 uses thread-local context -- no lifetime parameters needed.
 pub struct ArmSemantics;
 
+impl Default for ArmSemantics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ArmSemantics {
     /// Create a new ARM semantics encoder
     pub fn new() -> Self {
@@ -543,7 +549,7 @@ impl ArmSemantics {
                 let all_ones = BV::from_i64(-1, 32);
                 let zero = BV::from_i64(0, 32);
                 // If sign bit is 1, high = 0xFFFFFFFF, else high = 0
-                let high_val = sign_bit.eq(&BV::from_i64(1, 1)).ite(&all_ones, &zero);
+                let high_val = sign_bit.eq(BV::from_i64(1, 1)).ite(&all_ones, &zero);
                 state.set_reg(rdhi, high_val);
             }
 
@@ -979,7 +985,7 @@ impl ArmSemantics {
                 let shift_amt = state.get_reg(rm_lo).clone();
 
                 // Modulo 64: shift_amt = shift_amt & 63
-                let shift_mod = shift_amt.bvand(&BV::from_i64(63, 32));
+                let shift_mod = shift_amt.bvand(BV::from_i64(63, 32));
 
                 // If shift < 32: normal shift with bits moving from low to high
                 // If shift >= 32: low becomes 0, high gets shifted low part
@@ -1023,7 +1029,7 @@ impl ArmSemantics {
                 let n_hi = state.get_reg(rn_hi).clone();
                 let shift_amt = state.get_reg(rm_lo).clone();
 
-                let shift_mod = shift_amt.bvand(&BV::from_i64(63, 32));
+                let shift_mod = shift_amt.bvand(BV::from_i64(63, 32));
                 let shift_32 = BV::from_i64(32, 32);
                 let is_large = shift_mod.bvuge(&shift_32);
 
@@ -1063,7 +1069,7 @@ impl ArmSemantics {
                 let n_hi = state.get_reg(rn_hi).clone();
                 let shift_amt = state.get_reg(rm_lo).clone();
 
-                let shift_mod = shift_amt.bvand(&BV::from_i64(63, 32));
+                let shift_mod = shift_amt.bvand(BV::from_i64(63, 32));
                 let shift_32 = BV::from_i64(32, 32);
                 let is_large = shift_mod.bvuge(&shift_32);
 
@@ -1107,7 +1113,7 @@ impl ArmSemantics {
                 let shift_amt = state.get_reg(shift).clone();
 
                 // Normalize shift to 0-63 range
-                let shift_mod = shift_amt.bvand(&BV::from_i64(63, 32));
+                let shift_mod = shift_amt.bvand(BV::from_i64(63, 32));
                 let shift_32 = BV::from_i64(32, 32);
                 let is_large = shift_mod.bvuge(&shift_32); // shift >= 32
 
@@ -1159,7 +1165,7 @@ impl ArmSemantics {
                 let shift_amt = state.get_reg(shift).clone();
 
                 // Normalize shift to 0-63 range
-                let shift_mod = shift_amt.bvand(&BV::from_i64(63, 32));
+                let shift_mod = shift_amt.bvand(BV::from_i64(63, 32));
                 let shift_32 = BV::from_i64(32, 32);
                 let is_large = shift_mod.bvuge(&shift_32); // shift >= 32
 
@@ -1842,39 +1848,39 @@ impl ArmSemantics {
         let top_16 = remaining.bvand(&mask_16);
         let top_16_zero = top_16.eq(&zero);
 
-        count = top_16_zero.ite(&count.bvadd(&BV::from_i64(16, 32)), &count);
-        remaining = top_16_zero.ite(&remaining.bvshl(&BV::from_i64(16, 32)), &remaining);
+        count = top_16_zero.ite(&count.bvadd(BV::from_i64(16, 32)), &count);
+        remaining = top_16_zero.ite(&remaining.bvshl(BV::from_i64(16, 32)), &remaining);
 
         // Check top 8 bits
         let mask_8 = BV::from_u64(0xFF000000, 32);
         let top_8 = remaining.bvand(&mask_8);
         let top_8_zero = top_8.eq(&zero);
 
-        count = top_8_zero.ite(&count.bvadd(&BV::from_i64(8, 32)), &count);
-        remaining = top_8_zero.ite(&remaining.bvshl(&BV::from_i64(8, 32)), &remaining);
+        count = top_8_zero.ite(&count.bvadd(BV::from_i64(8, 32)), &count);
+        remaining = top_8_zero.ite(&remaining.bvshl(BV::from_i64(8, 32)), &remaining);
 
         // Check top 4 bits
         let mask_4 = BV::from_u64(0xF0000000, 32);
         let top_4 = remaining.bvand(&mask_4);
         let top_4_zero = top_4.eq(&zero);
 
-        count = top_4_zero.ite(&count.bvadd(&BV::from_i64(4, 32)), &count);
-        remaining = top_4_zero.ite(&remaining.bvshl(&BV::from_i64(4, 32)), &remaining);
+        count = top_4_zero.ite(&count.bvadd(BV::from_i64(4, 32)), &count);
+        remaining = top_4_zero.ite(&remaining.bvshl(BV::from_i64(4, 32)), &remaining);
 
         // Check top 2 bits
         let mask_2 = BV::from_u64(0xC0000000, 32);
         let top_2 = remaining.bvand(&mask_2);
         let top_2_zero = top_2.eq(&zero);
 
-        count = top_2_zero.ite(&count.bvadd(&BV::from_i64(2, 32)), &count);
-        remaining = top_2_zero.ite(&remaining.bvshl(&BV::from_i64(2, 32)), &remaining);
+        count = top_2_zero.ite(&count.bvadd(BV::from_i64(2, 32)), &count);
+        remaining = top_2_zero.ite(&remaining.bvshl(BV::from_i64(2, 32)), &remaining);
 
         // Check top bit
         let mask_1 = BV::from_u64(0x80000000, 32);
         let top_1 = remaining.bvand(&mask_1);
         let top_1_zero = top_1.eq(&zero);
 
-        count = top_1_zero.ite(&count.bvadd(&BV::from_i64(1, 32)), &count);
+        count = top_1_zero.ite(&count.bvadd(BV::from_i64(1, 32)), &count);
 
         // Return 32 if all zeros, otherwise return count
         all_zero.ite(&result_if_zero, &count)
@@ -1901,36 +1907,36 @@ impl ArmSemantics {
 
         // Swap 16-bit halves
         let mask_16 = BV::from_u64(0xFFFF0000, 32);
-        let top_16 = result.bvand(&mask_16).bvlshr(&BV::from_i64(16, 32));
-        let bottom_16 = result.bvshl(&BV::from_i64(16, 32));
+        let top_16 = result.bvand(&mask_16).bvlshr(BV::from_i64(16, 32));
+        let bottom_16 = result.bvshl(BV::from_i64(16, 32));
         result = top_16.bvor(&bottom_16);
 
         // Swap 8-bit chunks
         let mask_8_top = BV::from_u64(0xFF00FF00, 32);
         let mask_8_bottom = BV::from_u64(0x00FF00FF, 32);
-        let top_8 = result.bvand(&mask_8_top).bvlshr(&BV::from_i64(8, 32));
-        let bottom_8 = result.bvand(&mask_8_bottom).bvshl(&BV::from_i64(8, 32));
+        let top_8 = result.bvand(&mask_8_top).bvlshr(BV::from_i64(8, 32));
+        let bottom_8 = result.bvand(&mask_8_bottom).bvshl(BV::from_i64(8, 32));
         result = top_8.bvor(&bottom_8);
 
         // Swap 4-bit chunks
         let mask_4_top = BV::from_u64(0xF0F0F0F0, 32);
         let mask_4_bottom = BV::from_u64(0x0F0F0F0F, 32);
-        let top_4 = result.bvand(&mask_4_top).bvlshr(&BV::from_i64(4, 32));
-        let bottom_4 = result.bvand(&mask_4_bottom).bvshl(&BV::from_i64(4, 32));
+        let top_4 = result.bvand(&mask_4_top).bvlshr(BV::from_i64(4, 32));
+        let bottom_4 = result.bvand(&mask_4_bottom).bvshl(BV::from_i64(4, 32));
         result = top_4.bvor(&bottom_4);
 
         // Swap 2-bit chunks
         let mask_2_top = BV::from_u64(0xCCCCCCCC, 32);
         let mask_2_bottom = BV::from_u64(0x33333333, 32);
-        let top_2 = result.bvand(&mask_2_top).bvlshr(&BV::from_i64(2, 32));
-        let bottom_2 = result.bvand(&mask_2_bottom).bvshl(&BV::from_i64(2, 32));
+        let top_2 = result.bvand(&mask_2_top).bvlshr(BV::from_i64(2, 32));
+        let bottom_2 = result.bvand(&mask_2_bottom).bvshl(BV::from_i64(2, 32));
         result = top_2.bvor(&bottom_2);
 
         // Swap 1-bit chunks (individual bits)
         let mask_1_top = BV::from_u64(0xAAAAAAAA, 32);
         let mask_1_bottom = BV::from_u64(0x55555555, 32);
-        let top_1 = result.bvand(&mask_1_top).bvlshr(&BV::from_i64(1, 32));
-        let bottom_1 = result.bvand(&mask_1_bottom).bvshl(&BV::from_i64(1, 32));
+        let top_1 = result.bvand(&mask_1_top).bvlshr(BV::from_i64(1, 32));
+        let bottom_1 = result.bvand(&mask_1_bottom).bvshl(BV::from_i64(1, 32));
         result = top_1.bvor(&bottom_1);
 
         result
@@ -2093,28 +2099,28 @@ impl ArmSemantics {
         // Step 1: Count bits in pairs
         let mask1 = BV::from_u64(0x55555555, 32);
         let masked = x.bvand(&mask1);
-        let shifted = x.bvlshr(&BV::from_i64(1, 32));
+        let shifted = x.bvlshr(BV::from_i64(1, 32));
         let shifted_masked = shifted.bvand(&mask1);
         x = masked.bvadd(&shifted_masked);
 
         // Step 2: Count pairs in nibbles
         let mask2 = BV::from_u64(0x33333333, 32);
         let masked = x.bvand(&mask2);
-        let shifted = x.bvlshr(&BV::from_i64(2, 32));
+        let shifted = x.bvlshr(BV::from_i64(2, 32));
         let shifted_masked = shifted.bvand(&mask2);
         x = masked.bvadd(&shifted_masked);
 
         // Step 3: Count nibbles in bytes
         let mask3 = BV::from_u64(0x0F0F0F0F, 32);
         let masked = x.bvand(&mask3);
-        let shifted = x.bvlshr(&BV::from_i64(4, 32));
+        let shifted = x.bvlshr(BV::from_i64(4, 32));
         let shifted_masked = shifted.bvand(&mask3);
         x = masked.bvadd(&shifted_masked);
 
         // Step 4: Sum all bytes
         let multiplier = BV::from_u64(0x01010101, 32);
         x = x.bvmul(&multiplier);
-        x = x.bvlshr(&BV::from_i64(24, 32));
+        x = x.bvlshr(BV::from_i64(24, 32));
 
         x
     }
@@ -2736,8 +2742,8 @@ mod tests {
             let z = state.flags.z.simplify().as_bool().unwrap();
             let v = state.flags.v.simplify().as_bool().unwrap();
 
-            assert_eq!(z, false, "Not equal");
-            assert_eq!(n != v, true, "5 < 10 signed (N != V)");
+            assert!(!z, "Not equal");
+            assert!(n != v, "5 < 10 signed (N != V)");
 
             // Case: -5 compared to 10 (-5 < 10)
             state.set_reg(&Reg::R0, BV::from_i64(-5, 32));
@@ -2746,7 +2752,7 @@ mod tests {
 
             let n = state.flags.n.simplify().as_bool().unwrap();
             let v = state.flags.v.simplify().as_bool().unwrap();
-            assert_eq!(n != v, true, "-5 < 10 signed (N != V)");
+            assert!(n != v, "-5 < 10 signed (N != V)");
         });
     }
 

@@ -1,0 +1,8 @@
+# Clippy configuration for Synth
+# Matches meld's lint standards
+
+# Maximum cognitive complexity before warning
+cognitive-complexity-threshold = 30
+
+# Warn on functions with too many arguments
+too-many-arguments-threshold = 10

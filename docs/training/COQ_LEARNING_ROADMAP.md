@@ -284,7 +284,7 @@ code --install-extension maximedenes.vscoq
 **Task**: Formalize 10 ARM instructions from `synth-verify/src/arm_semantics.rs`
 
 ```coq
-(* File: synth-coq/theories/ArmSemantics.v *)
+(* File: coq/Synth/ARM/ArmSemantics.v *)
 
 Require Import ZArith.
 Require Import Coqlib.
@@ -362,7 +362,7 @@ Qed.
 **Task**: Formalize 10 WASM instructions from `synth-verify/src/wasm_semantics.rs`
 
 ```coq
-(* File: synth-coq/theories/WasmSemantics.v *)
+(* File: coq/Synth/WASM/WasmSemantics.v *)
 
 Require Import ZArith List.
 Import ListNotations.
@@ -445,7 +445,7 @@ Qed.
 **Task**: Prove 5 WASM→ARM synthesis rules correct
 
 ```coq
-(* File: synth-coq/theories/SynthCorrectness.v *)
+(* File: coq/Synth/Synth/Compilation.v *)
 
 Require Import ArmSemantics WasmSemantics.
 
@@ -724,8 +724,8 @@ Qed.
 - `crates/synth-verify/src/wasm_semantics.rs` (1,461 lines)
 
 **Output**:
-- `synth-coq/theories/ArmSemantics.v` (10 instructions)
-- `synth-coq/theories/WasmSemantics.v` (10 instructions)
+- `coq/Synth/ARM/ArmSemantics.v` (10 instructions)
+- `coq/Synth/WASM/WasmSemantics.v` (10 instructions)
 
 **Success Metrics**:
 - All 20 instructions compile in Coq
@@ -741,7 +741,7 @@ Qed.
 - Choose simplest rules first (I32Add, I32Sub, I32And, I32Or, I32Xor)
 
 **Output**:
-- `synth-coq/theories/SynthCorrectness.v`
+- `coq/Synth/Synth/Compilation.v`
 - 5 theorems of form:
   ```coq
   Theorem compile_X_correct : forall ws as,
@@ -767,7 +767,7 @@ Qed.
 - Sail Coq backend
 
 **Output**:
-- `synth-coq/theories/ArmSpec.v` (generated from Sail)
+- `coq/Synth/ARM/ArmState.v` (generated from Sail)
 - Updated `SynthCorrectness.v` using official ARM semantics
 
 **Success Metrics**:

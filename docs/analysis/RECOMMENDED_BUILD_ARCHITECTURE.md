@@ -81,7 +81,7 @@ bazel build --distdir=$HOME/bazel_distdir //bazel/platforms:all
 (using coq 0.8)
 ```
 
-**Create `coq/theories/dune`:**
+**Create `coq/Synth/dune`:**
 ```dune
 (coq.theory
   (name Synth)
@@ -104,7 +104,7 @@ cd coq/
 dune build
 
 # Extracted OCaml appears in:
-# _build/default/theories/*.ml
+# _build/default/Synth/*.ml
 ```
 
 **Why separate build?**
@@ -133,8 +133,8 @@ load("@rules_ocaml//ocaml:rules.bzl", "ocaml_library")
 ocaml_library(
     name = "verified_compiler",
     srcs = glob([
-        "_build/default/theories/*.ml",
-        "_build/default/theories/*.mli",
+        "_build/default/Synth/*.ml",
+        "_build/default/Synth/*.mli",
     ]),
     visibility = ["//visibility:public"],
 )
@@ -260,12 +260,12 @@ Synth/
 │
 ├── coq/                    # Coq proofs (Dune build - SEPARATE)
 │   ├── dune-project
-│   ├── theories/
+│   ├── Synth/
 │   │   ├── WasmSemantics.v
 │   │   ├── ARMSemantics.v  # From Sail
 │   │   ├── Compiler.v
 │   │   └── Correctness.v
-│   ├── _build/default/theories/*.ml  # Extracted OCaml
+│   ├── _build/default/Synth/*.ml  # Extracted OCaml
 │   └── BUILD.bazel         # Import extracted .ml into Bazel
 │
 ├── external/               # External validation tools

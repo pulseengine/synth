@@ -239,7 +239,9 @@ impl MPURegion {
         }
 
         let alignment = size_bytes as u32;
-        if self.base_address % alignment != 0 {
+        #[allow(clippy::manual_is_multiple_of)]
+        // is_multiple_of unstable in Rust 1.84 (Bazel toolchain)
+        if alignment == 0 || self.base_address % alignment != 0 {
             return Err(Error::HardwareProtectionError(format!(
                 "Base address 0x{:08X} not aligned to region size {} bytes",
                 self.base_address, size_bytes

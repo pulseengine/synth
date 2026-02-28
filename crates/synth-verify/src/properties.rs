@@ -312,8 +312,8 @@ mod optimization_tests {
     fn test_constant_folding_soundness() {
         // Test that constant folding produces correct results
         // Example: (5 + 3) should fold to 8
-        let _original = vec![WasmOp::I32Const(5), WasmOp::I32Const(3), WasmOp::I32Add];
-        let _optimized = vec![WasmOp::I32Const(8)];
+        let _original = [WasmOp::I32Const(5), WasmOp::I32Const(3), WasmOp::I32Add];
+        let _optimized = [WasmOp::I32Const(8)];
 
         // Both should produce the same result
         // (This would require an interpreter to verify properly)
@@ -324,8 +324,8 @@ mod optimization_tests {
     fn test_dead_code_elimination_soundness() {
         // Test that dead code elimination doesn't change observable behavior
         // Example: Removing unreachable code after return
-        let _original = vec![WasmOp::I32Const(42), WasmOp::Return, WasmOp::I32Const(99)];
-        let _optimized = vec![WasmOp::I32Const(42), WasmOp::Return];
+        let _original = [WasmOp::I32Const(42), WasmOp::Return, WasmOp::I32Const(99)];
+        let _optimized = [WasmOp::I32Const(42), WasmOp::Return];
 
         // Both should have identical observable behavior
         // TODO: Implement WASM interpreter for verification

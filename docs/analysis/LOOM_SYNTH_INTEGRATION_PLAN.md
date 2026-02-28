@@ -293,7 +293,7 @@ dune build
 dune runtest
 
 # If proofs break, update them
-vim coq/theories/Compiler.v  # Extend proofs for new opt
+vim coq/Synth/Compiler.v  # Extend proofs for new opt
 dune build @check
 
 # Integration test with Bazel
@@ -580,7 +580,7 @@ bazel build //crates:synth
 cd Synth/coq/
 
 # Extend Coq proofs to cover Loom optimizations
-vim theories/Compiler.v
+vim Synth/Compiler.v
 # Add theorems for each ISLE rule
 
 # Extract to OCaml
