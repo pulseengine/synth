@@ -5,7 +5,7 @@
 //! Requires both `z3-solver` and `arm` features.
 
 use synth_synthesis::{ArmOp, Operand2, Pattern, Reg, Replacement, SynthesisRule, WasmOp};
-use synth_verify::{with_z3_context, TranslationValidator, ValidationResult};
+use synth_verify::{TranslationValidator, ValidationResult, with_z3_context};
 
 fn create_rule(name: &str, wasm_op: WasmOp, arm_op: ArmOp) -> SynthesisRule {
     SynthesisRule {

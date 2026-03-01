@@ -5,7 +5,7 @@
 //! captures its behavior, including register updates and condition flags.
 
 use synth_synthesis::rules::{ArmOp, Operand2, Reg, VfpReg};
-use z3::ast::{Bool, BV};
+use z3::ast::{BV, Bool};
 
 /// ARM processor state representation in SMT
 ///

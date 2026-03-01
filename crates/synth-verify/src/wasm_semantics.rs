@@ -5,7 +5,7 @@
 //! captures its behavior.
 
 use synth_core::WasmOp;
-use z3::ast::{Bool, BV};
+use z3::ast::{BV, Bool};
 
 /// WASM semantics encoder
 ///

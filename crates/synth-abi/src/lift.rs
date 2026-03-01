@@ -252,7 +252,7 @@ pub fn lift_option<M: Memory>(
                     return Err(AbiError::Other(format!(
                         "Unsupported option type: {:?}",
                         inner_ty
-                    )))
+                    )));
                 }
             };
 
@@ -405,7 +405,7 @@ pub fn lift_variant<M: Memory>(
             _ => {
                 return Err(AbiError::Other(
                     "Unsupported variant payload type".to_string(),
-                ))
+                ));
             }
         };
         Some(Box::new(value))

@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use synth_test::renode::RenodeController;
-use synth_test::runner::{print_results, NativeRunner, RunnerConfig};
+use synth_test::runner::{NativeRunner, RunnerConfig, print_results};
 use synth_test::{GenerateOptions, RobotGenerator, SynthTestConfig, WastParser};
 
 #[derive(Parser)]

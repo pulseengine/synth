@@ -33,9 +33,9 @@ fn test_import_dispatch_stub_generation() {
         .expect("instruction selection should succeed");
 
     // Should contain a BL to __meld_dispatch_import
-    let has_dispatch_bl = arm_instrs.iter().any(|instr| {
-        matches!(&instr.op, ArmOp::Bl { label } if label == "__meld_dispatch_import")
-    });
+    let has_dispatch_bl = arm_instrs
+        .iter()
+        .any(|instr| matches!(&instr.op, ArmOp::Bl { label } if label == "__meld_dispatch_import"));
     assert!(
         has_dispatch_bl,
         "expected BL __meld_dispatch_import for import call, got: {:?}",
@@ -79,9 +79,9 @@ fn test_local_function_call_not_dispatch() {
     );
 
     // Should NOT have __meld_dispatch_import
-    let has_dispatch = arm_instrs.iter().any(|instr| {
-        matches!(&instr.op, ArmOp::Bl { label } if label == "__meld_dispatch_import")
-    });
+    let has_dispatch = arm_instrs
+        .iter()
+        .any(|instr| matches!(&instr.op, ArmOp::Bl { label } if label == "__meld_dispatch_import"));
     assert!(
         !has_dispatch,
         "local call should not generate __meld_dispatch_import"
@@ -165,9 +165,7 @@ fn test_full_meld_abi_pipeline() {
         if matches!(&instr.op, ArmOp::Bl { label } if label == "__meld_dispatch_import") {
             bl_offsets.push(code.len() as u32);
         }
-        let encoded = encoder
-            .encode(&instr.op)
-            .expect("ARM encoding failed");
+        let encoded = encoder.encode(&instr.op).expect("ARM encoding failed");
         code.extend_from_slice(&encoded);
     }
 
@@ -223,7 +221,10 @@ fn test_full_meld_abi_pipeline() {
     println!("  - {} import(s) declared", imports.len());
     println!("  - {} ARM instructions generated", arm_instrs.len());
     println!("  - {} bytes of machine code", code.len());
-    println!("  - {} relocation(s) for __meld_dispatch_import", bl_offsets.len());
+    println!(
+        "  - {} relocation(s) for __meld_dispatch_import",
+        bl_offsets.len()
+    );
     println!("  - {} byte ELF with .rel.text section", elf_data.len());
 }
 

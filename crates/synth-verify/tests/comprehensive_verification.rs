@@ -6,7 +6,7 @@
 
 use synth_synthesis::{ArmOp, Operand2, Pattern, Reg, Replacement, SynthesisRule, WasmOp};
 use synth_verify::{
-    with_z3_context, ArmSemantics, ArmState, TranslationValidator, ValidationResult, WasmSemantics,
+    ArmSemantics, ArmState, TranslationValidator, ValidationResult, WasmSemantics, with_z3_context,
 };
 use z3::ast::{Ast, BV};
 

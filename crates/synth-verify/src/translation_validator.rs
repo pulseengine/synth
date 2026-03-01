@@ -217,7 +217,7 @@ impl TranslationValidator {
                     return Err(VerificationError::UnsupportedOperation(format!(
                         "Too many inputs: {}",
                         inputs.len()
-                    )))
+                    )));
                 }
             };
             state.set_reg(&reg, input.clone());

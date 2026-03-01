@@ -18,7 +18,7 @@ pub use error::{Error, Result};
 pub use ir::*;
 pub use target::*;
 pub use wasm_decoder::{
-    decode_wasm_functions, decode_wasm_module, DecodedModule, FunctionOps, ImportEntry, ImportKind,
-    WasmMemory,
+    DecodedModule, FunctionOps, ImportEntry, ImportKind, WasmMemory, decode_wasm_functions,
+    decode_wasm_module,
 };
 pub use wasm_op::WasmOp;

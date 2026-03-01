@@ -232,7 +232,7 @@ impl Lexer {
                     kind: TokenKind::Eof,
                     text: String::new(),
                     location,
-                })
+                });
             }
         };
 

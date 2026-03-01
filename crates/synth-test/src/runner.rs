@@ -4,7 +4,7 @@
 //! via the Renode telnet interface, without Robot Framework overhead.
 
 use crate::renode::telnet::TelnetController;
-use crate::renode::{to_signed, ExecutionResult, RenodeConfig, RenodeController};
+use crate::renode::{ExecutionResult, RenodeConfig, RenodeController, to_signed};
 use crate::{ParsedWast, Value, WastTestCase, WastTestType};
 use anyhow::{Context, Result};
 use std::path::Path;

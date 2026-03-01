@@ -82,7 +82,7 @@ impl Default for HostPlatform {
 #[cfg(feature = "std")]
 impl MemoryPlatform for HostPlatform {
     fn allocate(&mut self, size: u32, align: u32) -> Result<*mut u8, AllocError> {
-        use std::alloc::{alloc, Layout};
+        use std::alloc::{Layout, alloc};
 
         let layout = Layout::from_size_align(size as usize, align as usize)
             .map_err(|_| AllocError::InvalidAlignment)?;
@@ -96,7 +96,7 @@ impl MemoryPlatform for HostPlatform {
     }
 
     unsafe fn deallocate(&mut self, ptr: *mut u8, size: u32) {
-        use std::alloc::{dealloc, Layout};
+        use std::alloc::{Layout, dealloc};
 
         if ptr.is_null() {
             return;

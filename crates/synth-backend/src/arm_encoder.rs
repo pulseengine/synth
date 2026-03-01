@@ -3021,31 +3021,31 @@ impl ArmEncoder {
                 // LSLS R5, R5, #1 (16-bit: 0000 0010 1010 1101 = 0x006D -> actually 0x002D for LSL R5,R5,#1)
                 // LSL Rd, Rm, #imm5: 000 00 imm5 Rm Rd = 000 00 00001 101 101 = 0x006D
                 bytes.extend_from_slice(&0x006Du16.to_le_bytes()); // LSLS R5, R5, #1
-                                                                   // Get carry from R4 into R5: ORR R5, R5, R4 LSR #31
-                                                                   // Thumb-2 ORR with shifted register: EA45 75D4 = ORR.W R5, R5, R4, LSR #31
-                                                                   // 11101010 010 S Rn | 0 imm3 Rd imm2 type Rm
-                                                                   // type=01 (LSR), imm5=31 (imm3=111, imm2=11)
+                // Get carry from R4 into R5: ORR R5, R5, R4 LSR #31
+                // Thumb-2 ORR with shifted register: EA45 75D4 = ORR.W R5, R5, R4, LSR #31
+                // 11101010 010 S Rn | 0 imm3 Rd imm2 type Rm
+                // type=01 (LSR), imm5=31 (imm3=111, imm2=11)
                 bytes.extend_from_slice(&0xEA45u16.to_le_bytes());
                 bytes.extend_from_slice(&0x75D4u16.to_le_bytes()); // ORR.W R5, R5, R4, LSR #31
-                                                                   // LSLS R4, R4, #1: 000 00 00001 100 100 = 0x0064
+                // LSLS R4, R4, #1: 000 00 00001 100 100 = 0x0064
                 bytes.extend_from_slice(&0x0064u16.to_le_bytes()); // LSLS R4, R4, #1
 
                 // 2. Shift remainder R6:R7 left by 1, OR in MSB of dividend R1
                 // LSLS R7, R7, #1
                 bytes.extend_from_slice(&0x007Fu16.to_le_bytes()); // LSLS R7, R7, #1
-                                                                   // ORR.W R7, R7, R6, LSR #31
+                // ORR.W R7, R7, R6, LSR #31
                 bytes.extend_from_slice(&0xEA47u16.to_le_bytes());
                 bytes.extend_from_slice(&0x77D6u16.to_le_bytes());
                 // LSLS R6, R6, #1
                 bytes.extend_from_slice(&0x0076u16.to_le_bytes()); // LSLS R6, R6, #1
-                                                                   // ORR.W R6, R6, R1, LSR #31 (bring in MSB of dividend high)
+                // ORR.W R6, R6, R1, LSR #31 (bring in MSB of dividend high)
                 bytes.extend_from_slice(&0xEA46u16.to_le_bytes());
                 bytes.extend_from_slice(&0x76D1u16.to_le_bytes());
 
                 // 3. Shift dividend R0:R1 left by 1
                 // LSLS R1, R1, #1
                 bytes.extend_from_slice(&0x0049u16.to_le_bytes()); // LSLS R1, R1, #1
-                                                                   // ORR.W R1, R1, R0, LSR #31
+                // ORR.W R1, R1, R0, LSR #31
                 bytes.extend_from_slice(&0xEA41u16.to_le_bytes());
                 bytes.extend_from_slice(&0x71D0u16.to_le_bytes());
                 // LSLS R0, R0, #1
@@ -3055,9 +3055,9 @@ impl ArmEncoder {
                 // Compare high words first: CMP R7, R3
                 // CMP Rn, Rm encoding: 0x4280 | (Rm << 3) | Rn
                 bytes.extend_from_slice(&0x429Fu16.to_le_bytes()); // CMP R7, R3 (16-bit)
-                                                                   // BHI means R7 > R3 (unsigned) - definitely subtract
-                                                                   // BLO means R7 < R3 - definitely don't subtract
-                                                                   // BEQ means need to check low words
+                // BHI means R7 > R3 (unsigned) - definitely subtract
+                // BLO means R7 < R3 - definitely don't subtract
+                // BEQ means need to check low words
 
                 // If high > divisor high: branch to subtract (forward +offset)
                 // BHI.N +6 (skip CMP, skip BLO, do subtract)
@@ -3070,14 +3070,14 @@ impl ArmEncoder {
 
                 // High words equal, compare low: CMP R6, R2
                 bytes.extend_from_slice(&0x4296u16.to_le_bytes()); // CMP R6, R2 (16-bit)
-                                                                   // BLO/BCC past subtract (skip SUBS+SBC.W+ORR.W = 10 bytes = 4 halfwords from PC+4)
+                // BLO/BCC past subtract (skip SUBS+SBC.W+ORR.W = 10 bytes = 4 halfwords from PC+4)
                 bytes.extend_from_slice(&0xD304u16.to_le_bytes()); // BCC +4 halfwords (past subtract)
 
                 // === Subtract block: remainder -= divisor, quotient |= 1 ===
                 // SUBS R6, R6, R2
                 bytes.extend_from_slice(&0x1AB6u16.to_le_bytes()); // SUBS R6, R6, R2 (16-bit)
-                                                                   // SBC R7, R7, R3 (with borrow)
-                                                                   // Thumb-2 SBC.W: EB67 0703 = SBC.W R7, R7, R3
+                // SBC R7, R7, R3 (with borrow)
+                // Thumb-2 SBC.W: EB67 0703 = SBC.W R7, R7, R3
                 bytes.extend_from_slice(&0xEB67u16.to_le_bytes());
                 bytes.extend_from_slice(&0x0703u16.to_le_bytes());
                 // ORR R4, R4, #1 (set bit 0 of quotient low)
@@ -3135,7 +3135,7 @@ impl ArmEncoder {
                 // If dividend negative (R1 MSB set), negate it
                 // TST R1, R1 (check sign)
                 bytes.extend_from_slice(&0x4209u16.to_le_bytes()); // TST R1, R1
-                                                                   // BPL skip_neg_dividend (+10 bytes = 5 halfwords)
+                // BPL skip_neg_dividend (+10 bytes = 5 halfwords)
                 bytes.extend_from_slice(&0xD504u16.to_le_bytes()); // BPL +8
 
                 // Negate R0:R1 (64-bit): RSBS R0, R0, #0; SBC R1, R1, R1 LSL #1

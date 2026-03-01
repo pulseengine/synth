@@ -1,9 +1,9 @@
 //! WIT Parser - Parses tokenized WIT source into AST
 
 use crate::{
+    Location, ParseError,
     ast::*,
     lexer::{Lexer, Token, TokenKind},
-    Location, ParseError,
 };
 
 pub struct Parser {

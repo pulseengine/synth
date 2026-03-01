@@ -22,11 +22,7 @@ pub fn lower_string<M: Memory>(mem: &mut M, s: &str, opts: &AbiOptions) -> AbiRe
                 .chars()
                 .map(|c| {
                     let code = c as u32;
-                    if code <= 0xFF {
-                        code as u8
-                    } else {
-                        b'?'
-                    }
+                    if code <= 0xFF { code as u8 } else { b'?' }
                 })
                 .collect();
             let len = bytes.len();

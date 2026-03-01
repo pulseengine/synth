@@ -11,8 +11,8 @@
 //! 4. IR → ARM lowering
 //! 5. ARM encoding with branch resolution
 
-use crate::rules::ArmOp;
 use crate::Condition;
+use crate::rules::ArmOp;
 use synth_cfg::{Cfg, CfgBuilder};
 use synth_core::Result;
 use synth_core::WasmOp;
@@ -2873,11 +2873,7 @@ impl OptimizerBridge {
                 ArmOp::Sxtb { rd, rm } | ArmOp::Sxth { rd, rm } => {
                     let rd_bits = reg_num(rd);
                     let rm_bits = reg_num(rm);
-                    if rd_bits < 8 && rm_bits < 8 {
-                        2
-                    } else {
-                        4
-                    }
+                    if rd_bits < 8 && rm_bits < 8 { 2 } else { 4 }
                 }
                 // I64SetCond: multi-instruction sequence (12 bytes for all conditions)
                 // EQ/NE: CMP(2) + IT EQ(2) + CMP(2) + ITE(2) + MOV(2) + MOV(2)

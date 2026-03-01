@@ -18,7 +18,7 @@ pub mod platform;
 
 pub use bounds::{BoundsChecker, MaskingBoundsChecker, SoftwareBoundsChecker};
 pub use descriptor::{MemoryDescriptor, MemoryFlags, ProtectionStrategy};
-pub use table::{MemoryTable, MAX_MEMORIES};
+pub use table::{MAX_MEMORIES, MemoryTable};
 
 /// WASM page size (64KB)
 pub const WASM_PAGE_SIZE: u32 = 65536;
