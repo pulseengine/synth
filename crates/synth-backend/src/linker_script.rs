@@ -27,6 +27,10 @@ pub struct LinkerScriptGenerator {
     stack_size: u32,
     /// Heap size
     heap_size: u32,
+    /// WASM linear memory size (0 = disabled)
+    wasm_memory_size: u32,
+    /// Enable Meld runtime integration sections
+    meld_integration: bool,
 }
 
 impl Default for LinkerScriptGenerator {
@@ -58,6 +62,8 @@ impl LinkerScriptGenerator {
             entry_point: "Reset_Handler".to_string(),
             stack_size: 4096, // 4KB stack
             heap_size: 8192,  // 8KB heap
+            wasm_memory_size: 0,
+            meld_integration: false,
         }
     }
 
@@ -68,6 +74,8 @@ impl LinkerScriptGenerator {
             entry_point: "Reset_Handler".to_string(),
             stack_size: 4096,
             heap_size: 0,
+            wasm_memory_size: 0,
+            meld_integration: false,
         }
     }
 
@@ -95,6 +103,18 @@ impl LinkerScriptGenerator {
         self
     }
 
+    /// Set WASM linear memory size (adds a .wasm_linear_memory section)
+    pub fn with_wasm_memory(mut self, size: u32) -> Self {
+        self.wasm_memory_size = size;
+        self
+    }
+
+    /// Enable Meld runtime integration (adds import table and extern symbols)
+    pub fn with_meld_integration(mut self) -> Self {
+        self.meld_integration = true;
+        self
+    }
+
     /// Generate the linker script
     pub fn generate(&self) -> Result<String> {
         let mut script = String::new();
@@ -105,6 +125,13 @@ impl LinkerScriptGenerator {
 
         // Entry point
         script.push_str(&format!("ENTRY({})\n\n", self.entry_point));
+
+        // Meld runtime external symbols
+        if self.meld_integration {
+            script.push_str("/* Meld runtime symbols (provided by meld static library) */\n");
+            script.push_str("EXTERN(__meld_dispatch_import)\n");
+            script.push_str("EXTERN(__meld_get_memory_base)\n\n");
+        }
 
         // Stack and heap symbols
         script.push_str(&format!("_stack_size = 0x{:X};\n", self.stack_size));
@@ -140,6 +167,10 @@ impl LinkerScriptGenerator {
         script.push_str("    . = ALIGN(4);\n");
         script.push_str("    *(.text)\n");
         script.push_str("    *(.text*)\n");
+        if self.meld_integration {
+            script.push_str("    *(.text.synth.*)   /* Synth-compiled component code */\n");
+            script.push_str("    *(.text.meld.*)    /* Meld runtime */\n");
+        }
         script.push_str("    *(.glue_7)         /* ARM/Thumb interworking */\n");
         script.push_str("    *(.glue_7t)\n");
         script.push_str("    *(.eh_frame)\n");
@@ -148,6 +179,17 @@ impl LinkerScriptGenerator {
         script.push_str("    . = ALIGN(4);\n");
         script.push_str("    _etext = .;\n");
         script.push_str("  } >FLASH\n\n");
+
+        // Meld import descriptor table (read-only, in FLASH)
+        if self.meld_integration {
+            script.push_str("  .meld_import_table :\n");
+            script.push_str("  {\n");
+            script.push_str("    . = ALIGN(4);\n");
+            script.push_str("    __meld_import_table_start = .;\n");
+            script.push_str("    KEEP(*(.meld.imports))\n");
+            script.push_str("    __meld_import_table_end = .;\n");
+            script.push_str("  } >FLASH\n\n");
+        }
 
         // .rodata section (read-only data)
         script.push_str("  .rodata :\n");
@@ -222,6 +264,21 @@ impl LinkerScriptGenerator {
         script.push_str("    _ebss = .;         /* End of BSS section */\n");
         script.push_str("    __bss_end__ = _ebss;\n");
         script.push_str("  } >RAM\n\n");
+
+        // WASM linear memory (if configured)
+        if self.wasm_memory_size > 0 {
+            script.push_str(&format!(
+                "  __WASM_MEMORY_SIZE = 0x{:X};\n",
+                self.wasm_memory_size
+            ));
+            script.push_str("  .wasm_linear_memory (NOLOAD) :\n");
+            script.push_str("  {\n");
+            script.push_str("    . = ALIGN(4);\n");
+            script.push_str("    __wasm_memory_start = .;\n");
+            script.push_str("    . = . + __WASM_MEMORY_SIZE;\n");
+            script.push_str("    __wasm_memory_end = .;\n");
+            script.push_str("  } >RAM\n\n");
+        }
 
         // Heap section (if enabled)
         if self.heap_size > 0 {
@@ -356,6 +413,34 @@ mod tests {
         assert!(script.contains(".bss"));
         assert!(script.contains("_sbss"));
         assert!(script.contains("_ebss"));
+    }
+
+    #[test]
+    fn test_meld_integration_sections() {
+        let generator = LinkerScriptGenerator::new_stm32()
+            .with_meld_integration()
+            .with_wasm_memory(64 * 1024); // 64KB WASM linear memory
+
+        let script = generator.generate().expect("Failed to generate");
+
+        // External symbols
+        assert!(script.contains("EXTERN(__meld_dispatch_import)"));
+        assert!(script.contains("EXTERN(__meld_get_memory_base)"));
+
+        // Import table section
+        assert!(script.contains(".meld_import_table"));
+        assert!(script.contains("__meld_import_table_start"));
+        assert!(script.contains("__meld_import_table_end"));
+
+        // Synth/Meld code sections
+        assert!(script.contains("*(.text.synth.*)"));
+        assert!(script.contains("*(.text.meld.*)"));
+
+        // WASM linear memory
+        assert!(script.contains(".wasm_linear_memory"));
+        assert!(script.contains("__wasm_memory_start"));
+        assert!(script.contains("__wasm_memory_end"));
+        assert!(script.contains("__WASM_MEMORY_SIZE = 0x10000")); // 64KB
     }
 
     #[test]

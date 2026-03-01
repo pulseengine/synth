@@ -12,8 +12,9 @@ pub mod mpu_allocator;
 pub mod w2c2_wrapper;
 
 pub use elf_builder::{
-    ElfBuilder, ElfClass, ElfData, ElfMachine, ElfType, ProgramFlags, ProgramHeader, ProgramType,
-    Section, SectionFlags, SectionType as ElfSectionType, Symbol, SymbolBinding, SymbolType,
+    ArmRelocationType, ElfBuilder, ElfClass, ElfData, ElfMachine, ElfType, ProgramFlags,
+    ProgramHeader, ProgramType, Relocation, Section, SectionFlags, SectionType as ElfSectionType,
+    Symbol, SymbolBinding, SymbolType,
 };
 pub use linker_script::{LinkerScriptGenerator, MemoryRegion};
 pub use memory_layout::{MemoryLayout, MemoryLayoutAnalyzer, MemorySection, SectionType};

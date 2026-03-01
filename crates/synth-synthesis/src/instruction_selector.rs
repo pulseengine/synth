@@ -107,6 +107,8 @@ pub struct InstructionSelector {
     regs: RegisterState,
     /// Bounds checking configuration
     bounds_check: BoundsCheckConfig,
+    /// Number of imported functions (calls to func_idx < this go through Meld dispatch)
+    num_imports: u32,
 }
 
 impl InstructionSelector {
@@ -116,6 +118,7 @@ impl InstructionSelector {
             matcher: PatternMatcher::new(rules),
             regs: RegisterState::new(),
             bounds_check: BoundsCheckConfig::None,
+            num_imports: 0,
         }
     }
 
@@ -125,7 +128,13 @@ impl InstructionSelector {
             matcher: PatternMatcher::new(rules),
             regs: RegisterState::new(),
             bounds_check,
+            num_imports: 0,
         }
+    }
+
+    /// Set the number of imported functions for Meld dispatch
+    pub fn set_num_imports(&mut self, num_imports: u32) {
+        self.num_imports = num_imports;
     }
 
     /// Set bounds checking configuration
@@ -319,9 +328,26 @@ impl InstructionSelector {
                 addr: MemAddr::imm(Reg::SP, 0),
             }],
 
-            Call(_func_idx) => vec![ArmOp::Bl {
-                label: "func".to_string(), // Simplified - would use proper target
-            }],
+            Call(func_idx) => {
+                if *func_idx < self.num_imports {
+                    // Import call — dispatch through Meld runtime
+                    // R0 = import index, then BL __meld_dispatch_import
+                    vec![
+                        ArmOp::Mov {
+                            rd: Reg::R0,
+                            op2: Operand2::Imm(*func_idx as i32),
+                        },
+                        ArmOp::Bl {
+                            label: "__meld_dispatch_import".to_string(),
+                        },
+                    ]
+                } else {
+                    // Local function call
+                    vec![ArmOp::Bl {
+                        label: format!("func_{}", func_idx),
+                    }]
+                }
+            }
 
             CallIndirect {
                 type_index,

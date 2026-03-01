@@ -40,6 +40,8 @@ pub struct CompileConfig {
     pub no_optimize: bool,
     /// Use Loom-compatible optimization preset
     pub loom_compat: bool,
+    /// Number of imported functions (calls to indices below this use Meld dispatch)
+    pub num_imports: u32,
 }
 
 impl Default for CompileConfig {
@@ -51,6 +53,7 @@ impl Default for CompileConfig {
             hardware: String::new(),
             no_optimize: false,
             loom_compat: false,
+            num_imports: 0,
         }
     }
 }

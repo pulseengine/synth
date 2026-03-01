@@ -319,6 +319,32 @@ impl ProgramHeader {
     }
 }
 
+/// ARM relocation type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmRelocationType {
+    /// R_ARM_CALL (28) — BL/BLX instruction
+    Call = 28,
+    /// R_ARM_JUMP24 (29) — B/BL<cond> instruction
+    Jump24 = 29,
+    /// R_ARM_ABS32 (2) — Direct 32-bit reference
+    Abs32 = 2,
+    /// R_ARM_MOVW_ABS_NC (43) — MOVW instruction (low 16 bits)
+    MovwAbsNc = 43,
+    /// R_ARM_MOVT_ABS (44) — MOVT instruction (high 16 bits)
+    MovtAbs = 44,
+}
+
+/// ELF relocation entry (REL format, no addend)
+#[derive(Debug, Clone)]
+pub struct Relocation {
+    /// Offset within the section where the relocation applies
+    pub offset: u32,
+    /// Symbol index in the symbol table
+    pub symbol_index: u32,
+    /// Relocation type
+    pub reloc_type: ArmRelocationType,
+}
+
 /// ELF file builder
 pub struct ElfBuilder {
     /// File class (32 or 64 bit)
@@ -337,6 +363,8 @@ pub struct ElfBuilder {
     symbols: Vec<Symbol>,
     /// Program headers (segments)
     program_headers: Vec<ProgramHeader>,
+    /// Relocations for .text section
+    relocations: Vec<Relocation>,
 }
 
 impl ElfBuilder {
@@ -351,6 +379,7 @@ impl ElfBuilder {
             sections: Vec::new(),
             symbols: Vec::new(),
             program_headers: Vec::new(),
+            relocations: Vec::new(),
         }
     }
 
@@ -379,6 +408,26 @@ impl ElfBuilder {
     /// Add a program header (segment)
     pub fn add_program_header(&mut self, ph: ProgramHeader) {
         self.program_headers.push(ph);
+    }
+
+    /// Add a relocation entry for the .text section
+    pub fn add_relocation(&mut self, reloc: Relocation) {
+        self.relocations.push(reloc);
+    }
+
+    /// Add an undefined external symbol (e.g., __meld_dispatch_import)
+    /// Returns the symbol index (1-based, accounting for null symbol)
+    pub fn add_undefined_symbol(&mut self, name: &str) -> u32 {
+        let index = self.symbols.len() as u32 + 1; // +1 for null symbol
+        self.symbols.push(Symbol {
+            name: name.to_string(),
+            value: 0,
+            size: 0,
+            binding: SymbolBinding::Global,
+            symbol_type: SymbolType::Func,
+            section: 0, // SHN_UNDEF
+        });
+        index
     }
 
     /// Build the ELF file to bytes
@@ -424,6 +473,11 @@ impl ElfBuilder {
         let symtab_data = self.build_symbol_table(&symbol_name_offsets);
         current_offset += symtab_data.len();
 
+        // Section 4+ (optional): .rel.text (relocations)
+        let rel_data = self.build_relocation_table();
+        let rel_offset = current_offset;
+        current_offset += rel_data.len();
+
         // Section header table comes at the end
         let sh_offset = current_offset;
 
@@ -436,9 +490,10 @@ impl ElfBuilder {
         }
 
         output.extend_from_slice(&symtab_data);
+        output.extend_from_slice(&rel_data);
 
         // Write section headers
-        let section_headers = self.build_section_headers(
+        let section_headers = self.build_section_headers_with_rel(
             &section_name_offsets,
             shstrtab_offset,
             &shstrtab_data,
@@ -447,6 +502,8 @@ impl ElfBuilder {
             symtab_offset,
             &symtab_data,
             &section_offsets,
+            rel_offset,
+            &rel_data,
         );
         output.extend_from_slice(&section_headers);
 
@@ -471,7 +528,8 @@ impl ElfBuilder {
         }
 
         // Now write the actual ELF header at the beginning
-        let num_sections = 4 + self.sections.len(); // null + shstrtab + strtab + symtab + user sections
+        let has_rel = !self.relocations.is_empty();
+        let num_sections = 4 + self.sections.len() + if has_rel { 1 } else { 0 };
         let ph_offset = if ph_count > 0 { header_size as u32 } else { 0 };
         self.write_elf_header_with_phdrs(
             &mut output[0..header_size],
@@ -634,6 +692,11 @@ impl ElfBuilder {
             strtab.push(0);
         }
 
+        // .rel.text (if relocations exist)
+        if !self.relocations.is_empty() {
+            strtab.extend_from_slice(b".rel.text\0");
+        }
+
         (strtab, offsets)
     }
 
@@ -650,6 +713,23 @@ impl ElfBuilder {
         }
 
         (strtab, offsets)
+    }
+
+    /// Build relocation table (ELF32 REL entries: 8 bytes each)
+    fn build_relocation_table(&self) -> Vec<u8> {
+        if self.relocations.is_empty() {
+            return Vec::new();
+        }
+
+        let mut rel_data = Vec::new();
+        for reloc in &self.relocations {
+            // r_offset (4 bytes)
+            rel_data.extend_from_slice(&reloc.offset.to_le_bytes());
+            // r_info (4 bytes) = (sym_index << 8) | type
+            let r_info = (reloc.symbol_index << 8) | (reloc.reloc_type as u32);
+            rel_data.extend_from_slice(&r_info.to_le_bytes());
+        }
+        rel_data
     }
 
     /// Build symbol table
@@ -690,9 +770,9 @@ impl ElfBuilder {
         symtab
     }
 
-    /// Build section headers
+    /// Build section headers (with optional .rel.text)
     #[allow(clippy::too_many_arguments)]
-    fn build_section_headers(
+    fn build_section_headers_with_rel(
         &self,
         section_name_offsets: &[usize],
         shstrtab_offset: usize,
@@ -702,6 +782,8 @@ impl ElfBuilder {
         symtab_offset: usize,
         symtab_data: &[u8],
         section_offsets: &[usize],
+        rel_offset: usize,
+        rel_data: &[u8],
     ) -> Vec<u8> {
         let mut headers = Vec::new();
 
@@ -785,7 +867,37 @@ impl ElfBuilder {
             );
         }
 
+        // .rel.text section (if relocations exist)
+        if !rel_data.is_empty() {
+            let rel_name_offset = self.rel_text_shstrtab_offset();
+            // sh_link = symtab section index (3), sh_info = .text section index (4, first user section)
+            let text_section_idx = 4u32; // null(0) + shstrtab(1) + strtab(2) + symtab(3) + .text(4)
+            self.write_section_header(
+                &mut headers,
+                rel_name_offset as u32,
+                SectionType::Rel as u32,
+                0,
+                0,
+                rel_offset as u32,
+                rel_data.len() as u32,
+                3,                // sh_link = .symtab section index
+                text_section_idx, // sh_info = section to which relocations apply
+                4,
+                8, // Each REL entry is 8 bytes
+            );
+        }
+
         headers
+    }
+
+    /// Compute the shstrtab offset where .rel.text name begins
+    fn rel_text_shstrtab_offset(&self) -> usize {
+        // Layout: \0 .shstrtab\0 .strtab\0 .symtab\0 [user sections...] .rel.text\0
+        let mut offset = 1 + ".shstrtab\0".len() + ".strtab\0".len() + ".symtab\0".len();
+        for section in &self.sections {
+            offset += section.name.len() + 1;
+        }
+        offset
     }
 
     /// Write a single section header
@@ -1103,6 +1215,53 @@ mod tests {
 
         // Should have offsets for user sections
         assert_eq!(offsets.len(), 2);
+    }
+
+    #[test]
+    fn test_relocation_support() {
+        let mut builder = ElfBuilder::new_arm32()
+            .with_entry(0x8000)
+            .with_type(ElfType::Rel);
+
+        // Add .text section with a BL placeholder
+        let text_code = vec![0x00u8; 16]; // 4 instructions of placeholder
+        let text = Section::new(".text", SectionType::ProgBits)
+            .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
+            .with_addr(0x8000)
+            .with_align(4)
+            .with_data(text_code);
+        builder.add_section(text);
+
+        // Add undefined external symbol
+        let sym_idx = builder.add_undefined_symbol("__meld_dispatch_import");
+        assert!(sym_idx > 0);
+
+        // Add relocation for the BL at offset 4
+        builder.add_relocation(Relocation {
+            offset: 4,
+            symbol_index: sym_idx,
+            reloc_type: ArmRelocationType::Call,
+        });
+
+        let elf = builder.build().unwrap();
+
+        // Verify ELF is valid
+        assert_eq!(&elf[0..4], &[0x7f, b'E', b'L', b'F']);
+
+        // Section count should include .rel.text
+        // null(1) + shstrtab(1) + strtab(1) + symtab(1) + .text(1) + .rel.text(1) = 6
+        let sh_num = u16::from_le_bytes([elf[48], elf[49]]);
+        assert_eq!(sh_num, 6);
+
+        // Verify the symbol table contains the undefined symbol
+        // (section = 0 for SHN_UNDEF)
+        let has_undef = elf
+            .windows(b"__meld_dispatch_import".len())
+            .any(|w| w == b"__meld_dispatch_import");
+        assert!(
+            has_undef,
+            "ELF should contain __meld_dispatch_import symbol name"
+        );
     }
 
     #[test]

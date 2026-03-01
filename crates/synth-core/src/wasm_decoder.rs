@@ -8,6 +8,32 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use wasmparser::{ExternalKind, Parser, Payload};
 
+/// Kind of a WASM import
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportKind {
+    /// Imported function with type index
+    Function(u32),
+    /// Imported memory
+    Memory,
+    /// Imported table
+    Table,
+    /// Imported global
+    Global,
+}
+
+/// A WASM import entry with full metadata
+#[derive(Debug, Clone)]
+pub struct ImportEntry {
+    /// Module name (e.g., "wasi:cli/stdout" or "env")
+    pub module: String,
+    /// Field name (e.g., "write" or "memory")
+    pub name: String,
+    /// Import kind and associated data
+    pub kind: ImportKind,
+    /// Index of this import within its kind (e.g., function import index)
+    pub index: u32,
+}
+
 /// WASM linear memory specification
 #[derive(Debug, Clone)]
 pub struct WasmMemory {
@@ -42,6 +68,10 @@ pub struct DecodedModule {
     pub memories: Vec<WasmMemory>,
     /// Data segments (offset, data) for memory initialization
     pub data_segments: Vec<(u32, Vec<u8>)>,
+    /// Import entries (module name, field name, kind)
+    pub imports: Vec<ImportEntry>,
+    /// Number of imported functions (for distinguishing import calls from local calls)
+    pub num_imported_funcs: u32,
 }
 
 /// Decode a WASM binary and extract functions, memory, and data segments
@@ -49,6 +79,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     let mut functions = Vec::new();
     let mut memories = Vec::new();
     let mut data_segments = Vec::new();
+    let mut imports = Vec::new();
     let mut func_index = 0u32;
     let mut num_imported_funcs = 0u32;
     let mut export_names: HashMap<u32, String> = HashMap::new();
@@ -57,12 +88,26 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         let payload = payload.context("Failed to parse WASM payload")?;
 
         match payload {
-            Payload::ImportSection(imports) => {
-                for import in imports {
+            Payload::ImportSection(reader) => {
+                for import in reader {
                     let import = import.context("Failed to parse import")?;
-                    if matches!(import.ty, wasmparser::TypeRef::Func(_)) {
-                        num_imported_funcs += 1;
-                    }
+                    let (kind, idx) = match import.ty {
+                        wasmparser::TypeRef::Func(type_idx) => {
+                            let idx = num_imported_funcs;
+                            num_imported_funcs += 1;
+                            (ImportKind::Function(type_idx), idx)
+                        }
+                        wasmparser::TypeRef::Memory(_) => (ImportKind::Memory, 0),
+                        wasmparser::TypeRef::Table(_) => (ImportKind::Table, 0),
+                        wasmparser::TypeRef::Global(_) => (ImportKind::Global, 0),
+                        _ => continue,
+                    };
+                    imports.push(ImportEntry {
+                        module: import.module.to_string(),
+                        name: import.name.to_string(),
+                        kind,
+                        index: idx,
+                    });
                 }
             }
             Payload::MemorySection(reader) => {
@@ -119,6 +164,8 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         functions,
         memories,
         data_segments,
+        imports,
+        num_imported_funcs,
     })
 }
 
@@ -428,6 +475,42 @@ mod tests {
         assert_eq!(functions[1].export_name, Some("add".to_string()));
         assert_eq!(functions[2].index, 2);
         assert_eq!(functions[2].export_name, Some("sub".to_string()));
+    }
+
+    #[test]
+    fn test_decode_module_with_imports() {
+        let wat = r#"
+            (module
+                (import "env" "log" (func $log (param i32)))
+                (import "env" "memory" (memory 1))
+                (func (export "run") (param i32)
+                    local.get 0
+                    call 0
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let module = decode_wasm_module(&wasm).expect("Failed to decode");
+
+        // Should have 2 imports (1 func, 1 memory)
+        assert_eq!(module.imports.len(), 2);
+        assert_eq!(module.num_imported_funcs, 1);
+
+        // First import is the function
+        assert_eq!(module.imports[0].module, "env");
+        assert_eq!(module.imports[0].name, "log");
+        assert!(matches!(module.imports[0].kind, ImportKind::Function(_)));
+
+        // Second import is memory
+        assert_eq!(module.imports[1].module, "env");
+        assert_eq!(module.imports[1].name, "memory");
+        assert_eq!(module.imports[1].kind, ImportKind::Memory);
+
+        // Should have 1 local function (index 1, because import is index 0)
+        assert_eq!(module.functions.len(), 1);
+        assert_eq!(module.functions[0].index, 1);
+        assert_eq!(module.functions[0].export_name, Some("run".to_string()));
     }
 
     #[test]

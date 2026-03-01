@@ -144,6 +144,9 @@ fn compile_wasm_to_arm(wasm_ops: &[WasmOp], config: &CompileConfig) -> Result<Ve
         let db = RuleDatabase::with_standard_rules();
         let mut selector =
             InstructionSelector::with_bounds_check(db.rules().to_vec(), bounds_config);
+        if config.num_imports > 0 {
+            selector.set_num_imports(config.num_imports);
+        }
         selector
             .select_with_stack(wasm_ops, num_params)
             .map_err(|e| format!("instruction selection failed: {}", e))?

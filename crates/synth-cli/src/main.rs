@@ -1091,6 +1091,19 @@ fn compile_all_exports(
         }
     }
 
+    // Log import information
+    if module.num_imported_funcs > 0 {
+        info!(
+            "Module imports {} functions (Meld dispatch enabled):",
+            module.num_imported_funcs
+        );
+        for imp in &module.imports {
+            if matches!(imp.kind, synth_core::ImportKind::Function(_)) {
+                info!("  import[{}]: {}::{}", imp.index, imp.module, imp.name);
+            }
+        }
+    }
+
     // Filter to only exported functions
     let exports: Vec<_> = module
         .functions
@@ -1116,6 +1129,7 @@ fn compile_all_exports(
         no_optimize,
         loom_compat,
         bounds_check,
+        num_imports: module.num_imported_funcs,
         target: if !cortex_m {
             TargetSpec {
                 isa: synth_core::target::IsaVariant::Arm32,
