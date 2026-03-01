@@ -102,9 +102,9 @@ enum Commands {
         #[arg(short, long, value_name = "DEMO")]
         demo: Option<String>,
 
-        /// Function index to compile (default: 0, first function)
-        #[arg(short, long, value_name = "INDEX", default_value = "0")]
-        func_index: u32,
+        /// Function index to compile (compiles all exports if neither this nor --func-name is set)
+        #[arg(short, long, value_name = "INDEX")]
+        func_index: Option<u32>,
 
         /// Function name (export name) to compile - overrides func_index
         #[arg(short = 'n', long, value_name = "NAME")]
@@ -408,7 +408,7 @@ fn compile_command(
     input: Option<PathBuf>,
     output: PathBuf,
     demo: Option<String>,
-    func_index: u32,
+    func_index: Option<u32>,
     func_name_arg: Option<String>,
     all_exports: bool,
     cortex_m: bool,
@@ -441,8 +441,13 @@ fn compile_command(
     }
 
     info!("Using backend: {}", backend.name());
-    // Handle --all-exports mode for multi-function compilation
-    if all_exports {
+
+    // Default to multi-function compilation when the user provides a file
+    // but doesn't specify --func-index or --func-name.
+    let use_all_exports =
+        all_exports || (input.is_some() && func_index.is_none() && func_name_arg.is_none());
+
+    if use_all_exports {
         return compile_all_exports(
             input,
             output,
@@ -455,7 +460,8 @@ fn compile_command(
         );
     }
 
-    // Single function compilation (original behavior)
+    // Single function compilation (when --func-index or --func-name is specified)
+    let func_index = func_index.unwrap_or(0);
     let (wasm_ops, func_name): (Vec<WasmOp>, String) = match (&input, &demo) {
         (Some(path), _) => {
             info!("Compiling WASM file: {}", path.display());
