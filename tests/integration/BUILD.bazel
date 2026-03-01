@@ -16,3 +16,16 @@ sh_test(
     ],
     tags = ["integration"],
 )
+
+sh_test(
+    name = "synth_static_link",
+    srcs = ["synth_static_link_test.sh"],
+    data = [
+        "import_call.wat",
+        "//crates:synth",
+    ],
+    deps = [
+        "@bazel_tools//tools/bash/runfiles",
+    ],
+    tags = ["integration"],
+)

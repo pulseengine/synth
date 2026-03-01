@@ -5,14 +5,15 @@
 
 use crate::ArmEncoder;
 use synth_core::backend::{
-    Backend, BackendCapabilities, BackendError, CompilationResult, CompileConfig, CompiledFunction,
+    Backend, BackendCapabilities, BackendError, CodeRelocation, CompilationResult, CompileConfig,
+    CompiledFunction,
 };
 use synth_core::target::{IsaVariant, TargetSpec};
 use synth_core::wasm_decoder::DecodedModule;
 use synth_core::wasm_op::WasmOp;
 use synth_synthesis::{
-    ArmInstruction, BoundsCheckConfig, InstructionSelector, OptimizationConfig, OptimizerBridge,
-    RuleDatabase,
+    ArmInstruction, ArmOp, BoundsCheckConfig, InstructionSelector, OptimizationConfig,
+    OptimizerBridge, RuleDatabase,
 };
 
 /// ARM Cortex-M backend using Synth's custom compiler pipeline
@@ -85,12 +86,14 @@ impl Backend for ArmBackend {
         ops: &[WasmOp],
         config: &CompileConfig,
     ) -> Result<CompiledFunction, BackendError> {
-        let code = compile_wasm_to_arm(ops, config).map_err(BackendError::CompilationFailed)?;
+        let (code, relocations) =
+            compile_wasm_to_arm(ops, config).map_err(BackendError::CompilationFailed)?;
 
         Ok(CompiledFunction {
             name: name.to_string(),
             code,
             wasm_ops: ops.to_vec(),
+            relocations,
         })
     }
 
@@ -118,19 +121,21 @@ fn count_params(wasm_ops: &[WasmOp]) -> u32 {
         .iter()
         .filter_map(
             |(&idx, &is_read_first)| {
-                if is_read_first {
-                    Some(idx + 1)
-                } else {
-                    None
-                }
+                if is_read_first { Some(idx + 1) } else { None }
             },
         )
         .max()
         .unwrap_or(0)
 }
 
-/// Core compilation: WASM ops → ARM machine code bytes
-fn compile_wasm_to_arm(wasm_ops: &[WasmOp], config: &CompileConfig) -> Result<Vec<u8>, String> {
+/// Core compilation: WASM ops → ARM machine code bytes + relocations
+///
+/// Returns (code_bytes, relocations) where relocations record BL instructions
+/// that target external symbols (e.g., `__meld_dispatch_import` for import calls).
+fn compile_wasm_to_arm(
+    wasm_ops: &[WasmOp],
+    config: &CompileConfig,
+) -> Result<(Vec<u8>, Vec<CodeRelocation>), String> {
     let num_params = count_params(wasm_ops);
 
     let bounds_config = if config.bounds_check {
@@ -182,14 +187,27 @@ fn compile_wasm_to_arm(wasm_ops: &[WasmOp], config: &CompileConfig) -> Result<Ve
     };
 
     let mut code = Vec::new();
+    let mut relocations = Vec::new();
+
     for instr in &arm_instrs {
+        // Record relocation for BL instructions targeting external symbols.
+        // The BL is encoded with offset 0; the linker patches it.
+        if let ArmOp::Bl { label } = &instr.op {
+            if label.starts_with("__meld_") {
+                relocations.push(CodeRelocation {
+                    offset: code.len() as u32,
+                    symbol: label.clone(),
+                });
+            }
+        }
+
         let encoded = encoder
             .encode(&instr.op)
             .map_err(|e| format!("ARM encoding failed: {}", e))?;
         code.extend_from_slice(&encoded);
     }
 
-    Ok(code)
+    Ok((code, relocations))
 }
 
 #[cfg(test)]
@@ -242,5 +260,38 @@ mod tests {
         registry.register(Box::new(ArmBackend::new()));
         assert!(registry.get("arm").is_some());
         assert_eq!(registry.available().len(), 1);
+    }
+
+    #[test]
+    fn test_compile_import_call_produces_relocations() {
+        let backend = ArmBackend::new();
+        // Simulate a WASM module where func index 0 is an import.
+        // Call(0) should generate MOV R0, #0; BL __meld_dispatch_import
+        let ops = vec![WasmOp::Call(0)];
+        let config = CompileConfig {
+            num_imports: 1,
+            no_optimize: true, // Direct instruction selection to preserve Call semantics
+            ..CompileConfig::default()
+        };
+
+        let result = backend.compile_function("caller", &ops, &config);
+        assert!(result.is_ok());
+
+        let func = result.unwrap();
+        assert!(!func.code.is_empty());
+        assert_eq!(func.relocations.len(), 1);
+        assert_eq!(func.relocations[0].symbol, "__meld_dispatch_import");
+        // The BL is the second instruction (after MOV R0, #0), so offset should be > 0
+        assert!(func.relocations[0].offset > 0);
+    }
+
+    #[test]
+    fn test_compile_no_imports_no_relocations() {
+        let backend = ArmBackend::new();
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add];
+        let config = CompileConfig::default();
+
+        let func = backend.compile_function("add", &ops, &config).unwrap();
+        assert!(func.relocations.is_empty());
     }
 }

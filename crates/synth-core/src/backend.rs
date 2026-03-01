@@ -58,6 +58,19 @@ impl Default for CompileConfig {
     }
 }
 
+/// A relocation entry produced during compilation
+///
+/// Records that a BL instruction at `offset` bytes into the function's code
+/// targets an external symbol (e.g., `__meld_dispatch_import`). The linker
+/// resolves these when combining the Synth object with the Kiln bridge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeRelocation {
+    /// Byte offset within the function's machine code where the BL resides
+    pub offset: u32,
+    /// Target symbol name (e.g., "__meld_dispatch_import")
+    pub symbol: String,
+}
+
 /// A single compiled function
 #[derive(Debug, Clone)]
 pub struct CompiledFunction {
@@ -67,6 +80,8 @@ pub struct CompiledFunction {
     pub code: Vec<u8>,
     /// Original WASM ops (retained for verification)
     pub wasm_ops: Vec<WasmOp>,
+    /// Relocations for external symbol references (BL to bridge functions)
+    pub relocations: Vec<CodeRelocation>,
 }
 
 /// Result of compiling a full module

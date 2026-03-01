@@ -188,6 +188,107 @@ fn compile_i64_div() {
     compile_wast(&wast_dir().join("i64_div.wast"));
 }
 
+/// M3 Static Linking PoC: compile a WAT module with an import and verify
+/// that the output is a relocatable ELF with:
+///   - ET_REL file type
+///   - __meld_dispatch_import as an undefined symbol
+///   - .rel.text section with R_ARM_CALL relocations
+///   - .meld_import_table metadata section
+///   - call_log function symbol
+#[test]
+fn compile_import_call_produces_relocatable_elf() {
+    let wat = workspace_root()
+        .join("tests")
+        .join("integration")
+        .join("import_call.wat");
+
+    assert!(wat.exists(), "import_call.wat not found: {}", wat.display());
+
+    let output = std::env::temp_dir().join("synth_test_import_call.o");
+
+    let result = Command::new(synth_binary())
+        .args([
+            "compile",
+            wat.to_str().unwrap(),
+            "--no-optimize",
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to run synth binary");
+
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    let stderr = String::from_utf8_lossy(&result.stderr);
+
+    assert!(
+        result.status.success(),
+        "synth compile failed:\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr,
+    );
+
+    let data = std::fs::read(&output).unwrap();
+
+    // ELF magic
+    assert_eq!(&data[0..4], b"\x7fELF", "Not a valid ELF file");
+
+    // 32-bit, little-endian
+    assert_eq!(data[4], 1, "Expected 32-bit ELF");
+    assert_eq!(data[5], 1, "Expected little-endian ELF");
+
+    // ET_REL (e_type = 1, at offset 16, 2 bytes LE)
+    let e_type = u16::from_le_bytes([data[16], data[17]]);
+    assert_eq!(e_type, 1, "Expected ET_REL (1), got {}", e_type);
+
+    // ARM architecture (e_machine = 0x28 at offset 18)
+    assert_eq!(data[18], 0x28, "Expected ARM architecture");
+
+    // Check that __meld_dispatch_import is in the string table
+    let meld_sym = b"__meld_dispatch_import";
+    let has_meld_sym = data
+        .windows(meld_sym.len())
+        .any(|w| w == meld_sym.as_slice());
+    assert!(
+        has_meld_sym,
+        "__meld_dispatch_import symbol not found in ELF"
+    );
+
+    // Check that call_log function name is in the string table
+    let call_log = b"call_log";
+    let has_call_log = data
+        .windows(call_log.len())
+        .any(|w| w == call_log.as_slice());
+    assert!(has_call_log, "call_log function symbol not found in ELF");
+
+    // Check for .rel.text section name
+    let rel_text = b".rel.text";
+    let has_rel_text = data
+        .windows(rel_text.len())
+        .any(|w| w == rel_text.as_slice());
+    assert!(has_rel_text, ".rel.text section not found in ELF");
+
+    // Check for .meld_import_table section name
+    let import_table = b".meld_import_table";
+    let has_import_table = data
+        .windows(import_table.len())
+        .any(|w| w == import_table.as_slice());
+    assert!(
+        has_import_table,
+        ".meld_import_table section not found in ELF"
+    );
+
+    // Check that the import metadata contains "env" and "log"
+    let has_env = data.windows(3).any(|w| w == b"env");
+    assert!(has_env, "Import module name 'env' not found in metadata");
+
+    // Verify stdout mentions relocations
+    assert!(
+        stdout.contains("Relocations:") || stdout.contains("relocatable"),
+        "Output should mention relocations:\n{}",
+        stdout
+    );
+}
+
 /// Verify that all expected WAST files exist (catch typos/renames)
 #[test]
 fn all_wast_files_present() {

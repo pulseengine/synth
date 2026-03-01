@@ -8,14 +8,16 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use synth_backend::{
-    ArmBackend, ElfBuilder, ElfSectionType, ProgramFlags, ProgramHeader, Section, SectionFlags,
-    Symbol, SymbolBinding, SymbolType, VectorTable, W2C2Backend,
+    ArmBackend, ArmRelocationType, ElfBuilder, ElfSectionType, ElfType, ProgramFlags,
+    ProgramHeader, Relocation, Section, SectionFlags, Symbol, SymbolBinding, SymbolType,
+    VectorTable, W2C2Backend,
 };
+use synth_core::HardwareCapabilities;
 use synth_core::backend::{Backend, BackendRegistry, CompileConfig};
 use synth_core::target::TargetSpec;
-use synth_core::HardwareCapabilities;
-use synth_synthesis::{decode_wasm_functions, decode_wasm_module, WasmMemory, WasmOp};
-use tracing::{info, Level};
+use synth_core::wasm_decoder::ImportEntry;
+use synth_synthesis::{WasmMemory, WasmOp, decode_wasm_functions, decode_wasm_module};
+use tracing::{Level, info};
 use wast::parser::{self, ParseBuffer};
 use wast::{Wast, WastDirective};
 
@@ -376,10 +378,12 @@ fn print_hardware_info(caps: &HardwareCapabilities) {
     println!("  RAM: {} KB", caps.ram_size / 1024);
 }
 
-/// Compiled function for ELF building (name + code bytes)
+/// Compiled function for ELF building (name + code bytes + relocations)
 struct ElfFunction {
     name: String,
     code: Vec<u8>,
+    /// Relocations targeting external symbols (from import dispatch stubs)
+    relocations: Vec<synth_core::backend::CodeRelocation>,
 }
 
 /// Build the backend registry with all available backends
@@ -1158,9 +1162,17 @@ fn compile_all_exports(
             })?;
         info!("  {} bytes of machine code", compiled.code.len());
 
+        if !compiled.relocations.is_empty() {
+            info!(
+                "  {} relocations (external symbol references)",
+                compiled.relocations.len()
+            );
+        }
+
         compiled_funcs.push(ElfFunction {
             name: name.clone(),
             code: compiled.code,
+            relocations: compiled.relocations,
         });
 
         // Run verification if requested
@@ -1175,8 +1187,17 @@ fn compile_all_exports(
         }
     }
 
+    // Check if any function has relocations (import calls)
+    let has_relocations = compiled_funcs.iter().any(|f| !f.relocations.is_empty());
+
     // Build multi-function ELF
-    let elf_data = if cortex_m {
+    // When there are relocations, produce a relocatable object (.o) instead of
+    // an executable. This lets the output be linked with the Kiln bridge crate
+    // (which provides __meld_dispatch_import and __meld_get_memory_base).
+    let elf_data = if has_relocations {
+        info!("Module has import calls — producing relocatable object (ET_REL)");
+        build_relocatable_elf(&compiled_funcs, &module.imports)?
+    } else if cortex_m {
         build_multi_func_cortex_m_elf(&compiled_funcs, &module.memories)?
     } else {
         build_multi_func_simple_elf(&compiled_funcs)?
@@ -1193,6 +1214,7 @@ fn compile_all_exports(
         .context("Failed to write ELF data")?;
 
     let total_code: usize = compiled_funcs.iter().map(|f| f.code.len()).sum();
+    let total_relocs: usize = compiled_funcs.iter().map(|f| f.relocations.len()).sum();
     println!(
         "Compiled {} functions to {}",
         compiled_funcs.len(),
@@ -1200,6 +1222,17 @@ fn compile_all_exports(
     );
     println!("  Total code size: {} bytes", total_code);
     println!("  ELF size: {} bytes", elf_data.len());
+    if has_relocations {
+        println!(
+            "  Relocations: {} (requires linking with Kiln bridge)",
+            total_relocs
+        );
+        println!("  ELF type: relocatable object (ET_REL)");
+        println!(
+            "\n  Link with: arm-none-eabi-ld -o firmware.elf {} kiln_bridge.o",
+            output.display()
+        );
+    }
     println!("\nFunction addresses:");
 
     // Calculate and display addresses (will be printed after ELF building sets them)
@@ -1251,6 +1284,121 @@ fn build_multi_func_simple_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
     }
 
     elf_builder.build().context("ELF generation failed")
+}
+
+/// Build a relocatable ELF object (.o) with undefined symbols and relocations.
+///
+/// Produced when the WASM module has imports — the resulting .o needs to be linked
+/// with the Kiln bridge (which provides `__meld_dispatch_import` etc.) to create
+/// a final firmware binary.
+fn build_relocatable_elf(funcs: &[ElfFunction], imports: &[ImportEntry]) -> Result<Vec<u8>> {
+    use std::collections::HashMap;
+
+    let mut elf_builder = ElfBuilder::new_arm32()
+        .with_entry(0)
+        .with_type(ElfType::Rel); // ET_REL: relocatable object
+
+    // Concatenate all function code into a single .text blob
+    let mut all_code = Vec::new();
+    let mut func_offsets = Vec::new();
+
+    for func in funcs {
+        // Align each function to 4 bytes
+        while all_code.len() % 4 != 0 {
+            all_code.push(0);
+        }
+        func_offsets.push(all_code.len() as u32);
+        all_code.extend_from_slice(&func.code);
+    }
+
+    let text_section = Section::new(".text", ElfSectionType::ProgBits)
+        .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
+        .with_addr(0) // Relocatable: addresses start at 0
+        .with_align(4)
+        .with_data(all_code);
+
+    elf_builder.add_section(text_section);
+
+    // Add defined symbols for each compiled function
+    for (i, func) in funcs.iter().enumerate() {
+        let func_sym = Symbol::new(&func.name)
+            .with_value(func_offsets[i])
+            .with_size(func.code.len() as u32)
+            .with_binding(SymbolBinding::Global)
+            .with_type(SymbolType::Func)
+            .with_section(4); // .text is section 4 (null=0, shstrtab=1, strtab=2, symtab=3, .text=4)
+
+        elf_builder.add_symbol(func_sym);
+    }
+
+    // Collect unique external symbol names from all relocations and add as undefined
+    let mut extern_sym_indices: HashMap<String, u32> = HashMap::new();
+    for func in funcs {
+        for reloc in &func.relocations {
+            if !extern_sym_indices.contains_key(&reloc.symbol) {
+                let idx = elf_builder.add_undefined_symbol(&reloc.symbol);
+                extern_sym_indices.insert(reloc.symbol.clone(), idx);
+            }
+        }
+    }
+
+    // Add R_ARM_CALL relocations for each BL to an external symbol
+    for (i, func) in funcs.iter().enumerate() {
+        let func_base = func_offsets[i];
+        for reloc in &func.relocations {
+            let sym_idx = extern_sym_indices[&reloc.symbol];
+            elf_builder.add_relocation(Relocation {
+                offset: func_base + reloc.offset,
+                symbol_index: sym_idx,
+                reloc_type: ArmRelocationType::Call, // R_ARM_CALL (28)
+            });
+        }
+    }
+
+    // Add a .meld_import_table section with import metadata
+    // This is a custom section that the Kiln bridge can read to understand
+    // which module::name each import index corresponds to.
+    if !imports.is_empty() {
+        let mut import_table_data = Vec::new();
+        let mut import_func_count = 0u32;
+        for imp in imports {
+            if matches!(imp.kind, synth_core::ImportKind::Function(_)) {
+                // Format: index(4) | module_len(2) | module | name_len(2) | name
+                import_table_data.extend_from_slice(&imp.index.to_le_bytes());
+                let mod_bytes = imp.module.as_bytes();
+                import_table_data.extend_from_slice(&(mod_bytes.len() as u16).to_le_bytes());
+                import_table_data.extend_from_slice(mod_bytes);
+                let name_bytes = imp.name.as_bytes();
+                import_table_data.extend_from_slice(&(name_bytes.len() as u16).to_le_bytes());
+                import_table_data.extend_from_slice(name_bytes);
+                import_func_count += 1;
+            }
+        }
+
+        if !import_table_data.is_empty() {
+            // Prepend the count
+            let mut header = import_func_count.to_le_bytes().to_vec();
+            header.extend_from_slice(&import_table_data);
+
+            let import_section = Section::new(".meld_import_table", ElfSectionType::ProgBits)
+                .with_flags(0) // Not ALLOC — metadata only
+                .with_align(4)
+                .with_data(header);
+
+            elf_builder.add_section(import_section);
+        }
+    }
+
+    info!(
+        "Relocatable ELF: {} functions, {} external symbols, {} relocations",
+        funcs.len(),
+        extern_sym_indices.len(),
+        funcs.iter().map(|f| f.relocations.len()).sum::<usize>()
+    );
+
+    elf_builder
+        .build()
+        .context("Relocatable ELF generation failed")
 }
 
 /// Build a complete Cortex-M multi-function ELF with vector table
