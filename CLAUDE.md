@@ -86,8 +86,8 @@ sequences (CMP+MOV+conditional-MOV) that require register correspondence lemmas.
 
 ## Conventions
 
-- Rust edition 2021, MSRV 1.84 (pinned by Bazel toolchain)
-- `#[allow(clippy::manual_is_multiple_of)]` needed for Rust 1.84 compatibility
+- Rust edition 2024, MSRV 1.85
+- Edition 2024 notes: `unsafe fn` bodies require explicit inner `unsafe {}` blocks; `#[no_mangle]` must be `#[unsafe(no_mangle)]`; `static mut` access via `&raw const`/`&raw mut`
 - Bazel 8.x with bzlmod (`MODULE.bazel`, not `WORKSPACE`)
 - Renode tests use `rules_renode` (PulseEngine fork with macOS support)
 - All `.v` files use `-Q Synth Synth` logical mapping (see `coq/_CoqProject`)

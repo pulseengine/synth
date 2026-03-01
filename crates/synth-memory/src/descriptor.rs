@@ -126,7 +126,7 @@ impl MemoryDescriptor {
     /// Caller must ensure addr + len <= size
     #[inline]
     pub unsafe fn ptr_at(&self, addr: u32) -> *mut u8 {
-        self.base.add(addr as usize)
+        unsafe { self.base.add(addr as usize) }
     }
 
     /// Grow memory by delta pages

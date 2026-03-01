@@ -104,7 +104,7 @@ impl MemoryPlatform for HostPlatform {
 
         // Assume 8-byte alignment for deallocation
         let layout = Layout::from_size_align(size as usize, 8).unwrap();
-        dealloc(ptr, layout);
+        unsafe { dealloc(ptr, layout) };
     }
 
     fn configure_mpu_region(
