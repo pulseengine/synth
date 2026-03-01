@@ -49,9 +49,9 @@ build --experimental_inmemory_dotd_files
 build:wasm --platforms=//bazel/platforms:wasm32
 build:wasm --@rules_wasm_component//wasm:component_model=true
 
-# Coq verification settings (when we add Coq rules)
-build:coq --define=coq_version=8.18
-build:coq --define=with_proofs=true
+# Rocq verification settings
+build:rocq --define=rocq_version=9.0
+build:rocq --define=with_proofs=true
 
 # ASIL D build (strict flags for certification)
 build:asil_d --copt=-Wall
@@ -59,8 +59,8 @@ build:asil_d --copt=-Werror
 build:asil_d --copt=-Wextra
 build:asil_d --copt=-pedantic
 build:asil_d --define=verification=full
-build:asil_d --define=with_coq_proofs=true
-build:asil_d --config=coq
+build:asil_d --define=with_proofs=true
+build:asil_d --config=rocq
 
 # Debug build
 build:debug --compilation_mode=dbg
