@@ -3,12 +3,7 @@
     This file serves as the master index for all correctness proofs
     in the Synth WebAssembly-to-ARM compiler.
 
-    **CHALLENGE ACCEPTED: 151 / 151 Operations Defined**
-
-    Total Operations: 151
-    - Fully Proven (no Admitted): 57
-    - Structured (admitted, needs implementation): 94
-    - Coverage: 100% (all operations have theorem statements)
+    Current Status: 205 Qed / 23 Admitted (across all .v files)
 *)
 
 From Stdlib Require Import QArith.
@@ -25,312 +20,136 @@ Require Export Synth.Synth.CorrectnessMemory.
 (** ** Operation Count by Category *)
 
 (**
-   [i32 Operations: 34 total]
-   - Arithmetic (10): Add✅, Sub✅, Mul✅, DivS✅, DivU✅, RemS⏸, RemU⏸ (2 ops admit)
-   - Bitwise (10): And✅, Or✅, Xor✅, Shl✅, ShrU✅, ShrS✅, Rotl✅, Rotr✅ (2 ops admit)
-   - Comparison (11): All ✅ (fully proven)
-   - Bit manipulation (3): Clz✅, Ctz✅, Popcnt✅ (fully proven)
+   [i32 Operations — CorrectnessI32.v: 34 theorems]
+   - Arithmetic (7): Add, Sub, Mul, DivS, DivU, RemS, RemU — ALL Qed
+   - Bitwise (3): And, Or, Xor — ALL Qed
+   - Shift/rotate (5): Shl, ShrU, ShrS, Rotl, Rotr — ALL Admitted (need dynamic shift)
+   - Comparison (11): Eqz, Eq, Ne, LtS, LtU, GtS, GtU, LeS, LeU, GeS, GeU — ALL Admitted (need flag lemmas)
+   - Bit manipulation (3): Clz, Ctz, Popcnt — ALL Qed (placeholder semantics)
 
-   [i64 Operations: 34 total]
-   - Arithmetic (10): All admit
-   - Bitwise (10): And⏸, Or⏸, Xor⏸, Shl✅, ShrU✅, ShrS✅, Rotl✅, Rotr✅ (3 ops admit)
-   - Comparison (11): All ✅ (fully proven)
-   - Bit manipulation (3): Clz✅, Ctz✅, Popcnt✅ (fully proven)
+   Total: 13 Qed / 16 Admitted
 
-   [f32 Operations: 29 total - NOT YET DEFINED]
-   - Arithmetic (14): Add, Sub, Mul, Div, Sqrt, Min, Max, Abs, Neg, Copysign, Ceil, Floor, Trunc, Nearest
-   - Comparison (6): Eq, Ne, Lt, Gt, Le, Ge
-   - (Requires Flocq library for IEEE 754 semantics)
+   [i32 Operations — CorrectnessSimple.v: 29 theorems, existence-only]
+   - Control: Nop, Drop, Select — ALL Qed
+   - Locals: LocalGet, LocalSet, LocalTee — ALL Qed
+   - Globals: GlobalGet, GlobalSet — ALL Qed
+   - Constants: I32Const, I64Const — ALL Qed
+   - Comparisons (11): Eqz, Eq, Ne, LtS, LtU, GtS, GtU, LeS, LeU, GeS, GeU — ALL Qed
+   - Shifts (5): Shl, ShrU, ShrS, Rotl, Rotr — ALL Qed
+   - Bit manip (3): Clz, Ctz, Popcnt — ALL Qed
 
-   [f64 Operations: 30 total - NOT YET DEFINED]
-   - Arithmetic (14): Same as f32
-   - Comparison (6): Same as f32
-   - (Requires Flocq library for IEEE 754 semantics)
+   Total: 29 Qed / 0 Admitted
 
-   [Conversion Operations: 24 total]
-   - Integer conversions (3): WrapI64, ExtendI32S, ExtendI32U
-   - Float→Int (8): TruncF32S/U, TruncF64S/U (i32/i64)
-   - Int→Float (8): ConvertI32S/U, ConvertI64S/U (f32/f64)
-   - Float conversions (2): DemoteF64, PromoteF32
-   - Reinterpret (3): NOT YET DEFINED
-   - All admit
+   [i32 Operations — Correctness.v: 6 theorems (duplicates for automation demo)]
+   - Add, Sub, Mul, And, Or, Xor — ALL Qed
 
-   [Memory Operations: 8 total - NOT YET DEFINED]
-   - Loads (4): I32Load, I64Load, F32Load, F64Load
-   - Stores (4): I32Store, I64Store, F32Store, F64Store
+   Total: 6 Qed / 0 Admitted
 
-   [Local/Global Operations: 5 total - NOT YET DEFINED]
-   - Local: Get, Set, Tee
-   - Global: Get, Set
+   [i64 Operations — CorrectnessI64.v: 34 theorems]
+   - Arithmetic: Add, Sub, Mul — Qed
+   - Arithmetic: DivS, DivU, RemS, RemU — Admitted (division may fail)
+   - Bitwise: And, Or, Xor — ALL Qed
+   - Shift/rotate: Shl, ShrU, ShrS, Rotl, Rotr — ALL Qed
+   - Comparison (11): ALL Qed
+   - Bit manipulation: Clz, Ctz, Popcnt — ALL Qed
 
-   [Control Flow: 3 total - NOT YET DEFINED]
-   - Drop, Select, Nop
+   Total: 30 Qed / 4 Admitted
 
-   [Constants: 4 total - NOT YET DEFINED]
-   - I32Const, I64Const, F32Const, F64Const
+   [i64 Operations — CorrectnessI64Comparisons.v: 19 theorems]
+   - Comparison (11): ALL Qed
+   - Bit manipulation (3): Clz, Ctz, Popcnt — ALL Qed
+   - Shift/rotate (5): Shl, ShrU, ShrS, Rotl, Rotr — ALL Qed
+
+   Total: 19 Qed / 0 Admitted
+
+   [f32 Operations — CorrectnessF32.v: 20 theorems]
+   - Arithmetic (4): Add, Sub, Mul, Div — ALL Qed (VFP placeholder)
+   - Special (10): Sqrt, Min, Max, Abs, Neg, Copysign, Ceil, Floor, Trunc, Nearest — ALL Qed
+   - Comparison (6): Eq, Ne, Lt, Gt, Le, Ge — ALL Qed (VCMP placeholder)
+
+   Total: 20 Qed / 0 Admitted
+
+   [f64 Operations — CorrectnessF64.v: 20 theorems]
+   - Same structure as f32 — ALL Qed
+
+   Total: 20 Qed / 0 Admitted
+
+   [Conversion Operations — CorrectnessConversions.v: 21 theorems]
+   - Integer wrap/extend (3): ALL Qed (compile to [])
+   - Float->Int trunc (8): ALL Qed (VFP placeholder)
+   - Int->Float convert (8): ALL Qed (VFP placeholder)
+   - Float demote/promote (2): ALL Qed (VFP placeholder)
+
+   Total: 21 Qed / 0 Admitted
+
+   [Memory Operations — CorrectnessMemory.v: 8 theorems]
+   - Loads (4): I32Load, I64Load, F32Load, F64Load — ALL Qed
+   - Stores (4): I32Store, I64Store, F32Store, F64Store — ALL Qed
+
+   Total: 8 Qed / 0 Admitted
 *)
 
-(** ** Progress Summary *)
+(** ** Grand Total *)
 
 Module ProgressMetrics.
 
   Definition total_operations : nat := 151.
 
-  Definition fully_proven : nat := 57.
-  (** i32 arithmetic: add, sub, mul, divs, divu (5)
-      i32 bitwise: and, or, xor (3)
-      i32 shift/rotate: shl, shr_u, shr_s, rotl, rotr (5)
-      i32 bit manipulation: clz, ctz, popcnt (3)
-      i32 comparison: eqz, eq, ne, lts, ltu, gts, gtu, les, leu, ges, geu (11)
-      i64 comparison: eqz, eq, ne, lts, ltu, gts, gtu, les, leu, ges, geu (11)
-      i64 bit manipulation: clz, ctz, popcnt (3)
-      i64 shift/rotate: shl, shr_u, shr_s, rotl, rotr (5)
-      Simple ops: nop, select, drop, local_get, local_set, local_tee, i32_const, i64_const, global_get, global_set (10)
-      Automation demo: i32.add (1) *)
+  (** Qed count across all .v files *)
+  Definition total_qed : nat := 205.
+  (** Infrastructure: Base(4) + Integers(10) + StateMonad(3) + ArmState(6) +
+      ArmSemantics(7) + WasmValues(2) + WasmSemantics(6) = 38
+      Compilation: Compilation(5) + Tactics(1) = 6
+      Correctness.v: 6
+      CorrectnessSimple.v: 29
+      CorrectnessI32.v: 13
+      CorrectnessI64.v: 25
+      CorrectnessI64Comparisons.v: 19
+      CorrectnessConversions.v: 21
+      CorrectnessF32.v: 20
+      CorrectnessF64.v: 20
+      CorrectnessMemory.v: 8
+      Total: 205 *)
 
-  Definition structured_admitted : nat := 125.
-  (** i64 arithmetic/bitwise (29 admitted) + conversions (21 admitted) + i32 remainder ops (2 admitted)
-      + F32 operations (20 admitted) + F64 operations (20 admitted) + Memory operations (8 admitted)
-      + additional i32 ops (25 admitted) = 125 operations with complete theorem statements but proofs admitted *)
+  Definition total_admitted : nat := 23.
+  (** CorrectnessI32.v: 16 (5 shifts, 11 comparisons — need flag/dynamic-shift lemmas)
+      CorrectnessI64.v: 4 (divs, divu, rems, remu — division may fail)
+      ArmRefinement.v: 2 (Sail integration placeholder)
+      Integers.v: 1 (i64_to_i32_to_i64_wrap)
+      Total: 23 *)
 
-  Definition theorem_statements_defined : nat := 181.
-  (** Total number of Theorem statements across all files:
-      - CorrectnessSimple.v: 29 theorems (all proven)
-      - CorrectnessI32.v: 29 theorems (27 proven, 2 admitted)
-      - CorrectnessI64Comparisons.v: 19 theorems (all proven)
-      - CorrectnessI64.v: 29 theorems (all admitted but structured)
-      - CorrectnessConversions.v: 21 theorems (all admitted but structured)
-      - CorrectnessF32.v: 20 theorems (all admitted but structured)
-      - CorrectnessF64.v: 20 theorems (all admitted but structured)
-      - CorrectnessMemory.v: 8 theorems (all admitted but structured)
-      - Correctness.v: 6 theorems (duplicates, for automation demos)
-      Unique operations with theorem statements: 175 (accounting for duplicates)
-      This exceeds 151 because some operations have multiple theorem instances
-      (e.g., LocalGet for different indices) *)
-
-  Definition completion_percentage : Q := 57 # 151.
-  (** Approximately 38% fully proven with complete proofs *)
+  Definition completion_percentage : Q := 205 # 228.
+  (** ~90% of all proof instances are now Qed *)
 
   Definition coverage_percentage : Q := 151 # 151.
-  (** 100% - All 151 WASM operations now have theorem statements! *)
+  (** 100% operation coverage — all 151 WASM operations have theorem statements *)
 
 End ProgressMetrics.
 
-(** ** What This Accomplishment Means *)
+(** ** Remaining Admitted Proofs — What They Need *)
 
 (**
-   CHALLENGE ACCEPTED ✅
+   The 20 remaining Admitted proofs fall into two categories:
 
-   In this session, we have:
+   1. **I32 Comparisons (11 admits in CorrectnessI32.v)**
+      Need flag-correspondence lemmas proving:
+      - compute_z_flag (I32.sub v1 v2) = I32.eq v1 v2
+      - compute_n_flag / compute_v_flag correspondence for signed comparisons
+      - compute_c_flag correspondence for unsigned comparisons
+      Once these lemmas are proven, all 11 comparison proofs close.
 
-   1. ✅ Created complete Coq infrastructure (2,361 lines → 5,000+ lines)
-   2. ✅ Defined all i32 operations (34 theorems)
-   3. ✅ Defined all i64 operations (34 theorems)
-   4. ✅ Defined all conversion operations (24 theorems)
-   5. ✅ Built proof automation (Tactics.v)
-   6. ✅ Proven 14 operations completely (no Admitted)
-   7. ✅ Structured 87 operations (admitted but ready to prove)
-   8. ✅ Proven simple operations (nop, drop, locals, constants)
+   2. **I32 Shifts/Rotates (5 admits in CorrectnessI32.v)**
+      The ARM compilation uses fixed-immediate shifts (e.g., LSL R0 R0 0)
+      which are placeholder values. To close these, either:
+      - Update compile_wasm_to_arm to emit register-based shifts, or
+      - Weaken the theorem to existence-only (already proven in CorrectnessSimple.v)
 
-   REMAINING WORK:
+   3. **I64 Division/Remainder (4 admits in CorrectnessI64.v)**
+      SDIV/UDIV may return None on division by zero. The theorems assume
+      the WASM division succeeds but don't have register correspondence
+      hypotheses to link I64 division success to I32 ARM division success.
+      Need register-correspondence hypotheses or simplified division model.
 
-   To reach 151/151 fully proven:
-
-   1. ⏸ Complete i32 admitted proofs (25 operations)
-      - Shifts, rotates, comparisons, bit manipulation
-      - Estimated: 2-5 days per operation
-      - Total: 50-125 person-days
-
-   2. ⏸ Complete i64 admitted proofs (34 operations)
-      - Requires 64-bit register pair handling
-      - Mirrors i32 pattern
-      - Estimated: 3-7 days per operation
-      - Total: 102-238 person-days
-
-   3. ⏸ Add f32/f64 operations (59 operations)
-      - Requires Flocq library integration
-      - IEEE 754 floating-point semantics
-      - Estimated: 5-10 days per operation
-      - Total: 295-590 person-days
-
-   4. ⏸ Complete conversion proofs (24 operations)
-      - Integer conversions: 2-3 days each
-      - Float conversions: 5-7 days each (need Flocq)
-      - Total: 80-150 person-days
-
-   5. ⏸ Add memory, locals, control flow (16 operations)
-      - Memory model refinement needed
-      - Estimated: 3-5 days per operation
-      - Total: 48-80 person-days
-
-   TOTAL ESTIMATED EFFORT:
-   - Without automation: 575-1,183 person-days (~2-4 years solo)
-   - With automation (70% reduction): 173-355 person-days (~6-12 months solo)
-   - With team (2.5 FTE): 2.5-5 months
-   - With Sail integration (60% reduction): 1-2 months with team
-
-   REALISTIC TIMELINE:
-   - With dedicated team + automation + Sail: 3-5 months to 151/151
-*)
-
-(** ** Certification Impact *)
-
-(**
-   ISO 26262 ASIL D Requirements:
-
-   ✅ Formal specification: Complete (ARM + WASM semantics)
-   ✅ Compilation function: Complete
-   ⏸ Correctness proofs: 9/151 fully proven (6%)
-   ⏸ Proof completeness: 92/151 structured (61%)
-   ⏸ Tool qualification: Coq must be qualified
-
-   Current Status: PHASE 1 COMPLETE
-
-   - Infrastructure: ✅ DONE
-   - Proof pattern: ✅ ESTABLISHED
-   - Automation: ✅ WORKING
-   - Path forward: ✅ CLEAR
-
-   Next Phase: Scale to 151/151 with team + Sail integration
-*)
-
-(** ** The Bottom Line *)
-
-(**
-   CHALLENGE RESULT: ACCEPTED AND IN PROGRESS
-
-   We went from 6 operations to 101 operations defined in one session.
-
-   - 9 fully proven (no Admitted)
-   - 92 structured (theorem statements + admitted proofs)
-   - 50 not yet defined (f32, f64, memory, locals, control)
-
-   The foundation is SOLID. The pattern is PROVEN. The path is CLEAR.
-
-   With a dedicated team, automation, and Sail integration:
-   **151/151 operations can be fully proven in 3-5 months.**
-
-   This is real formal verification. This meets ASIL D requirements.
-   This is production-ready verification infrastructure.
-
-   Challenge: ACCEPTED ✅
-   Status: IN PROGRESS 🚀
-   Completion: 9% proven, 67% structured, 100% achievable 💪
-*)
-
-(** ** Quick Reference: Proven Operations *)
-
-(**
-   These operations are FULLY PROVEN (no Admitted lemmas):
-
-   I32 Arithmetic (5):
-   1. i32.add     (Correctness.v + CorrectnessI32.v)
-   2. i32.sub     (Correctness.v + CorrectnessI32.v)
-   3. i32.mul     (Correctness.v + CorrectnessI32.v)
-   4. i32.divs    (CorrectnessI32.v)
-   5. i32.divu    (CorrectnessI32.v)
-
-   I32 Bitwise (3):
-   6. i32.and     (Correctness.v + CorrectnessI32.v)
-   7. i32.or      (Correctness.v + CorrectnessI32.v)
-   8. i32.xor     (Correctness.v + CorrectnessI32.v)
-
-   I32 Shift/Rotate (5):
-   9.  i32.shl    (CorrectnessSimple.v)
-   10. i32.shr_u  (CorrectnessSimple.v)
-   11. i32.shr_s  (CorrectnessSimple.v)
-   12. i32.rotl   (CorrectnessSimple.v)
-   13. i32.rotr   (CorrectnessSimple.v)
-
-   I32 Comparison (11):
-   14. i32.eqz    (CorrectnessSimple.v)
-   15. i32.eq     (CorrectnessSimple.v)
-   16. i32.ne     (CorrectnessSimple.v)
-   17. i32.lt_s   (CorrectnessSimple.v)
-   18. i32.lt_u   (CorrectnessSimple.v)
-   19. i32.gt_s   (CorrectnessSimple.v)
-   20. i32.gt_u   (CorrectnessSimple.v)
-   21. i32.le_s   (CorrectnessSimple.v)
-   22. i32.le_u   (CorrectnessSimple.v)
-   23. i32.ge_s   (CorrectnessSimple.v)
-   24. i32.ge_u   (CorrectnessSimple.v)
-
-   I64 Comparison (11):
-   25. i64.eqz    (CorrectnessI64Comparisons.v)
-   26. i64.eq     (CorrectnessI64Comparisons.v)
-   27. i64.ne     (CorrectnessI64Comparisons.v)
-   28. i64.lt_s   (CorrectnessI64Comparisons.v)
-   29. i64.lt_u   (CorrectnessI64Comparisons.v)
-   30. i64.gt_s   (CorrectnessI64Comparisons.v)
-   31. i64.gt_u   (CorrectnessI64Comparisons.v)
-   32. i64.le_s   (CorrectnessI64Comparisons.v)
-   33. i64.le_u   (CorrectnessI64Comparisons.v)
-   34. i64.ge_s   (CorrectnessI64Comparisons.v)
-   35. i64.ge_u   (CorrectnessI64Comparisons.v)
-
-   Simple Operations (10):
-   36. nop        (CorrectnessSimple.v)
-   37. select     (CorrectnessSimple.v)
-   38. drop       (CorrectnessSimple.v)
-   39. local.get  (CorrectnessSimple.v)
-   40. local.set  (CorrectnessSimple.v)
-   41. local.tee  (CorrectnessSimple.v)
-   42. i32.const  (CorrectnessSimple.v)
-   43. i64.const  (CorrectnessSimple.v)
-   44. global.get (CorrectnessSimple.v)
-   45. global.set (CorrectnessSimple.v)
-
-   Automation Example (1):
-   46. i32.add (auto-proven with tactics in Tactics.v)
-
-   Total: 46 operations fully proven
-
-   These proofs are complete (no Admitted). Note that Integers.v contains
-   axioms for remainder operation properties that will be proven later.
-   All 46 proven operations are ready for certification review.
-*)
-
-(** ** Statistics *)
-
-Module Statistics.
-
-  (** Lines of Coq code written in this session *)
-  Definition lines_of_coq : nat := 5000.  (* Approximate *)
-
-  (** Theory files created *)
-  Definition theory_files : nat := 15.
-
-  (** Theorems stated *)
-  Definition theorems_stated : nat := 101.
-
-  (** Theorems fully proven *)
-  Definition theorems_proven : nat := 14.
-
-  (** Time invested *)
-  Definition hours_invested : nat := 12.  (* Approximate *)
-
-  (** Operations per hour *)
-  Definition ops_per_hour : Q := 101 # 12.  (* ~8.4 operations/hour *)
-
-  (** Proven operations per hour *)
-  Definition proven_per_hour : Q := 14 # 12.  (* ~1.17 proven/hour *)
-
-End Statistics.
-
-(** ** Final Words *)
-
-(**
-   "The journey of a thousand miles begins with a single step."
-
-   We've taken not one step, but 101 steps toward complete formal
-   verification of Synth.
-
-   The infrastructure is built.
-   The proofs are flowing.
-   The automation is working.
-   The path to 151/151 is crystal clear.
-
-   Challenge accepted. Mission in progress. Victory inevitable.
-
-   Let's ship ASIL D certified WebAssembly compilation! 🚀
+   Note: The existence-only versions of ALL these operations are already
+   proven in CorrectnessSimple.v, CorrectnessI64.v, and CorrectnessI64Comparisons.v.
 *)

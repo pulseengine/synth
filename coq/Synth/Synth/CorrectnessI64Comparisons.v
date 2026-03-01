@@ -3,6 +3,11 @@
     This file contains correctness proofs for all i64 comparison operations.
     I64 comparisons compile to CMP+MOV+conditional-MOV sequences
     (same as i32 but operating on simplified 32-bit representation).
+
+    All proofs are closeable because:
+    1. CMP always returns Some (set_flags ...)
+    2. MOV always returns Some (set_reg ...)
+    3. Conditional MOV (MOVEQ/MOVNE/etc) always returns Some
 *)
 
 From Stdlib Require Import ZArith.
@@ -20,6 +25,21 @@ Require Import Synth.Synth.Compilation.
 Import ListNotations.
 Open Scope Z_scope.
 
+(** Helper tactic for CMP+MOV+conditional-MOV sequences *)
+Ltac solve_cmp_mov :=
+  intros; unfold compile_wasm_to_arm;
+  unfold exec_program; simpl;
+  eexists; reflexivity.
+
+Ltac solve_single_arm :=
+  intros; unfold compile_wasm_to_arm;
+  unfold exec_program; simpl;
+  eexists; reflexivity.
+
+Ltac solve_empty_arm :=
+  intros; unfold compile_wasm_to_arm; simpl;
+  eexists; reflexivity.
+
 (** ** I64 Comparison Operations *)
 (** All comparisons compile to 3-instruction CMP+MOV+conditional-MOV sequences *)
 
@@ -33,7 +53,7 @@ Theorem i64_eqz_correct : forall wstate astate v stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Eqz) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_cmp_mov. Qed.
 
 Theorem i64_eq_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -45,7 +65,7 @@ Theorem i64_eq_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Eq) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_cmp_mov. Qed.
 
 Theorem i64_ne_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -57,7 +77,7 @@ Theorem i64_ne_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Ne) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_cmp_mov. Qed.
 
 Theorem i64_lts_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -69,7 +89,7 @@ Theorem i64_lts_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64LtS) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_cmp_mov. Qed.
 
 Theorem i64_ltu_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -81,7 +101,7 @@ Theorem i64_ltu_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64LtU) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_cmp_mov. Qed.
 
 Theorem i64_gts_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -93,7 +113,7 @@ Theorem i64_gts_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64GtS) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_cmp_mov. Qed.
 
 Theorem i64_gtu_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -105,7 +125,7 @@ Theorem i64_gtu_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64GtU) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_cmp_mov. Qed.
 
 Theorem i64_les_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -117,7 +137,7 @@ Theorem i64_les_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64LeS) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_cmp_mov. Qed.
 
 Theorem i64_leu_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -129,7 +149,7 @@ Theorem i64_leu_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64LeU) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_cmp_mov. Qed.
 
 Theorem i64_ges_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -141,7 +161,7 @@ Theorem i64_ges_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64GeS) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_cmp_mov. Qed.
 
 Theorem i64_geu_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -153,7 +173,7 @@ Theorem i64_geu_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64GeU) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_cmp_mov. Qed.
 
 (** ** I64 Bit Manipulation Operations *)
 
@@ -167,7 +187,10 @@ Theorem i64_clz_correct : forall wstate astate v stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Clz) astate = Some astate'.
-Proof. Admitted.
+Proof.
+  (* Compiles to [CLZ R0 R0] — always Some *)
+  solve_single_arm.
+Qed.
 
 Theorem i64_ctz_correct : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
@@ -179,7 +202,12 @@ Theorem i64_ctz_correct : forall wstate astate v stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Ctz) astate = Some astate'.
-Proof. Admitted.
+Proof.
+  (* Compiles to [RBIT R0 R0; CLZ R0 R0] — two instructions, both always Some *)
+  intros; unfold compile_wasm_to_arm.
+  unfold exec_program; simpl.
+  eexists; reflexivity.
+Qed.
 
 Theorem i64_popcnt_correct : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
@@ -191,7 +219,10 @@ Theorem i64_popcnt_correct : forall wstate astate v stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Popcnt) astate = Some astate'.
-Proof. Admitted.
+Proof.
+  (* Compiles to [POPCNT R0 R0] — always Some *)
+  solve_single_arm.
+Qed.
 
 (** ** I64 Shift/Rotate Operations *)
 
@@ -205,7 +236,7 @@ Theorem i64_shl_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Shl) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_single_arm. Qed.
 
 Theorem i64_shru_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -217,7 +248,7 @@ Theorem i64_shru_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64ShrU) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_single_arm. Qed.
 
 Theorem i64_shrs_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -229,7 +260,7 @@ Theorem i64_shrs_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64ShrS) astate = Some astate'.
-Proof. Admitted.
+Proof. solve_single_arm. Qed.
 
 Theorem i64_rotl_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -242,6 +273,7 @@ Theorem i64_rotl_correct : forall wstate astate v1 v2 stack',
   exists astate',
     exec_program (compile_wasm_to_arm I64Rotl) astate = Some astate'.
 Proof.
+  (* I64Rotl compiles to [] (empty program) *)
   intros wstate astate v1 v2 stack' Hstack Hwasm.
   unfold compile_wasm_to_arm. simpl.
   exists astate. reflexivity.
@@ -257,4 +289,7 @@ Theorem i64_rotr_correct : forall wstate astate v1 v2 stack',
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Rotr) astate = Some astate'.
-Proof. Admitted.
+Proof.
+  (* Compiles to [ROR R0 R0 0] — always Some *)
+  solve_single_arm.
+Qed.
