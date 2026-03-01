@@ -217,7 +217,7 @@ impl InstructionSelector {
         let rn = self.regs.alloc_reg();
         let rm = self.regs.alloc_reg();
 
-        Ok(match wasm_op {
+        let instrs = match wasm_op {
             I32Add => vec![ArmOp::Add {
                 rd,
                 rn,
@@ -282,15 +282,15 @@ impl InstructionSelector {
 
             I32Ctz => {
                 // Count trailing zeros: RBIT + CLZ
-                // This would need to be a sequence, but for now return RBIT
-                vec![ArmOp::Rbit { rd, rm }]
+                vec![ArmOp::Rbit { rd, rm }, ArmOp::Clz { rd, rm: rd }]
             }
 
             I32Popcnt => {
                 // Population count - no native ARM instruction
-                // Would need to implement with sequence
-                // Placeholder for now
-                vec![ArmOp::Nop]
+                // Requires multi-instruction sequence (shift-and-add or lookup table)
+                return Err(synth_core::Error::synthesis(
+                    "i32.popcnt not yet implemented (no native ARM instruction)",
+                ));
             }
 
             I32Const(val) => {
@@ -391,16 +391,32 @@ impl InstructionSelector {
                 vec![ArmOp::Udiv { rd, rn, rm }]
             }
             I32RemS => {
-                // Signed remainder: quotient = SDIV Rn, Rm
-                // remainder = Rn - (quotient * Rm)
-                // For now, simplified to SDIV (would need sequence)
-                vec![ArmOp::Sdiv { rd, rn, rm }]
+                // Signed remainder: quotient = SDIV tmp, rn, rm
+                // remainder = MLS rd, tmp, rm, rn  (rd = rn - tmp * rm)
+                let rtmp = self.regs.alloc_reg();
+                vec![
+                    ArmOp::Sdiv { rd: rtmp, rn, rm },
+                    ArmOp::Mls {
+                        rd,
+                        rn: rtmp,
+                        rm,
+                        ra: rn,
+                    },
+                ]
             }
             I32RemU => {
-                // Unsigned remainder: quotient = UDIV Rn, Rm
-                // remainder = Rn - (quotient * Rm)
-                // For now, simplified to UDIV (would need sequence)
-                vec![ArmOp::Udiv { rd, rn, rm }]
+                // Unsigned remainder: quotient = UDIV tmp, rn, rm
+                // remainder = MLS rd, tmp, rm, rn  (rd = rn - tmp * rm)
+                let rtmp = self.regs.alloc_reg();
+                vec![
+                    ArmOp::Udiv { rd: rtmp, rn, rm },
+                    ArmOp::Mls {
+                        rd,
+                        rn: rtmp,
+                        rm,
+                        ra: rn,
+                    },
+                ]
             }
 
             // Sign extension operations
@@ -413,8 +429,151 @@ impl InstructionSelector {
                 vec![ArmOp::Sxth { rd, rm }]
             }
 
-            _ => vec![ArmOp::Nop], // Other unsupported operations
-        })
+            // Comparison: equal to zero (unary)
+            I32Eqz => vec![ArmOp::Cmp {
+                rn,
+                op2: Operand2::Imm(0),
+            }],
+
+            // Structural control flow — no ARM code emitted, handled by control flow pass
+            Nop | End | Drop => vec![ArmOp::Nop],
+            If | Else => vec![ArmOp::Nop],
+
+            // Trap: unreachable should generate an undefined instruction
+            Unreachable => vec![ArmOp::Udf { imm: 0 }],
+
+            // --- Unsupported operations: explicit error instead of silent NOP ---
+            BrTable { .. } => {
+                return Err(synth_core::Error::synthesis(
+                    "br_table not yet implemented in instruction selector",
+                ));
+            }
+            GlobalGet(_) | GlobalSet(_) => {
+                return Err(synth_core::Error::synthesis(
+                    "global.get/global.set not yet implemented",
+                ));
+            }
+            Select => {
+                return Err(synth_core::Error::synthesis("select not yet implemented"));
+            }
+
+            // i64 operations — not supported on 32-bit ARM without register pairs
+            op @ (I64Add
+            | I64Sub
+            | I64Mul
+            | I64DivS
+            | I64DivU
+            | I64RemS
+            | I64RemU
+            | I64And
+            | I64Or
+            | I64Xor
+            | I64Shl
+            | I64ShrS
+            | I64ShrU
+            | I64Rotl
+            | I64Rotr
+            | I64Clz
+            | I64Ctz
+            | I64Popcnt
+            | I64Eqz
+            | I64Eq
+            | I64Ne
+            | I64LtS
+            | I64LtU
+            | I64LeS
+            | I64LeU
+            | I64GtS
+            | I64GtU
+            | I64GeS
+            | I64GeU
+            | I64Const(_)
+            | I64Load { .. }
+            | I64Store { .. }
+            | I64ExtendI32S
+            | I64ExtendI32U
+            | I32WrapI64
+            | I64Extend8S
+            | I64Extend16S
+            | I64Extend32S) => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "i64 operation not supported (requires register pairs on 32-bit ARM): {op:?}"
+                )));
+            }
+
+            // f32/f64 operations — requires VFP/NEON, not available on all Cortex-M
+            op @ (F32Add
+            | F32Sub
+            | F32Mul
+            | F32Div
+            | F32Eq
+            | F32Ne
+            | F32Lt
+            | F32Le
+            | F32Gt
+            | F32Ge
+            | F32Abs
+            | F32Neg
+            | F32Ceil
+            | F32Floor
+            | F32Trunc
+            | F32Nearest
+            | F32Sqrt
+            | F32Min
+            | F32Max
+            | F32Copysign
+            | F32Const(_)
+            | F32Load { .. }
+            | F32Store { .. }
+            | F32ConvertI32S
+            | F32ConvertI32U
+            | F32ConvertI64S
+            | F32ConvertI64U
+            | F32DemoteF64
+            | F32ReinterpretI32
+            | I32ReinterpretF32
+            | I32TruncF32S
+            | I32TruncF32U
+            | F64Add
+            | F64Sub
+            | F64Mul
+            | F64Div
+            | F64Eq
+            | F64Ne
+            | F64Lt
+            | F64Le
+            | F64Gt
+            | F64Ge
+            | F64Abs
+            | F64Neg
+            | F64Ceil
+            | F64Floor
+            | F64Trunc
+            | F64Nearest
+            | F64Sqrt
+            | F64Min
+            | F64Max
+            | F64Copysign
+            | F64Const(_)
+            | F64Load { .. }
+            | F64Store { .. }
+            | F64ConvertI32S
+            | F64ConvertI32U
+            | F64ConvertI64S
+            | F64ConvertI64U
+            | F64PromoteF32
+            | F64ReinterpretI64
+            | I64ReinterpretF64
+            | I64TruncF64S
+            | I64TruncF64U
+            | I32TruncF64S
+            | I32TruncF64U) => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "floating-point operation not supported (requires VFP/NEON): {op:?}"
+                )));
+            }
+        };
+        Ok(instrs)
     }
 
     /// Generate a load with optional bounds checking

@@ -187,7 +187,16 @@ impl ResetHandlerGenerator {
 
     /// Generate binary code for reset handler
     pub fn generate_binary(&self) -> Result<Vec<u8>> {
-        let encoder = ArmEncoder::new_arm32();
+        self.generate_binary_for_isa(false)
+    }
+
+    /// Generate binary code for reset handler with ISA selection
+    pub fn generate_binary_for_isa(&self, thumb_mode: bool) -> Result<Vec<u8>> {
+        let encoder = if thumb_mode {
+            ArmEncoder::new_thumb2()
+        } else {
+            ArmEncoder::new_arm32()
+        };
         let instrs = self.generate_instructions();
 
         let mut code = Vec::new();

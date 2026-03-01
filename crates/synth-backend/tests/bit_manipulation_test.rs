@@ -87,7 +87,8 @@ fn test_count_trailing_zeros() {
 
 #[test]
 fn test_population_count() {
-    // Test POPCNT operation - counts number of 1 bits
+    // POPCNT has no native ARM instruction — the transcoder should explicitly
+    // reject it rather than silently emitting a NOP (which produces wrong results).
     let wasm_ops = vec![
         WasmOp::I32Const(0x0F0F0F0F), // Has many 1 bits
         WasmOp::I32Popcnt,
@@ -95,10 +96,12 @@ fn test_population_count() {
 
     let db = RuleDatabase::with_standard_rules();
     let mut selector = InstructionSelector::new(db.rules().to_vec());
-    let arm_instrs = selector.select(&wasm_ops).expect("Failed to select");
+    let result = selector.select(&wasm_ops);
 
-    assert!(!arm_instrs.is_empty());
-    // POPCNT doesn't have native ARM instruction, so will be sequence or NOP
+    assert!(
+        result.is_err(),
+        "i32.popcnt should return an error (no native ARM instruction)"
+    );
 }
 
 #[test]
@@ -183,13 +186,15 @@ fn test_bit_ops_in_real_code() {
 #[test]
 fn test_bit_ops_embedded_use_case() {
     // Common embedded use case: check if value is power of 2
-    // Algorithm: (x != 0) && ((x & (x-1)) == 0)
-    // Equivalent: popcnt(x) == 1
+    // Better approach without popcnt: (x != 0) && ((x & (x-1)) == 0)
+    // This uses only i32 operations that have native ARM support.
     let wasm_ops = vec![
         WasmOp::I32Const(16), // Power of 2
-        WasmOp::I32Popcnt,    // Should return 1
         WasmOp::I32Const(1),
-        WasmOp::I32Eq, // Compare with 1
+        WasmOp::I32Sub,       // x - 1 = 15
+        WasmOp::I32Const(16), // x again
+        WasmOp::I32And,       // x & (x-1) = 16 & 15 = 0
+        WasmOp::I32Eqz,       // == 0 means power of 2
     ];
 
     let db = RuleDatabase::with_standard_rules();
