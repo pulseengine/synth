@@ -12,7 +12,13 @@ module(
 bazel_dep(name = "platforms", version = "0.0.10")
 bazel_dep(name = "bazel_skylib", version = "1.7.1")
 bazel_dep(name = "rules_rust", version = "0.68.1")
+bazel_dep(name = "rules_cc", version = "0.2.17")
 
+
+# CC toolchain (required by Bazel 8 for linking Rust binaries)
+cc_configure = use_extension("@rules_cc//cc:extensions.bzl", "cc_configure_extension")
+use_repo(cc_configure, "local_config_cc", "local_config_cc_toolchains")
+register_toolchains("@local_config_cc_toolchains//:all")
 
 # Rust toolchains
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")

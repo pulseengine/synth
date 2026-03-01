@@ -7,7 +7,7 @@ common --enable_platform_specific_config
 # Build settings
 build --incompatible_strict_action_env
 build --verbose_failures
-build --action_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+# CC toolchain auto-detection via rules_cc in MODULE.bazel
 
 # Network configuration (git gateway proxy)
 # These are set by the environment but Bazel needs them explicitly
