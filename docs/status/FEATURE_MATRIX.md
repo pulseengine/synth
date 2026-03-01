@@ -1,6 +1,6 @@
 # Feature Matrix: Current State
 
-**Last Updated:** February 2026
+**Last Updated:** March 2026
 
 This document provides an honest assessment of what works, what doesn't, and what's planned.
 
@@ -40,7 +40,7 @@ This document provides an honest assessment of what works, what doesn't, and wha
 >
 > `synth compile --demo add --verify` compiles and formally verifies the translation using Z3.
 >
-> 519 tests pass across 18 crates with 0 failures.
+> 526 tests pass across 18 crates with 0 failures.
 
 ---
 
@@ -145,7 +145,7 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 
 | System | Status | Notes |
 |--------|--------|-------|
-| Cargo | ✅ | 519 tests pass, 18 crates |
+| Cargo | ✅ | 526 tests pass, 18 crates |
 | Bazel | ✅ | All crates + Rocq proofs + Renode tests |
 | CI/CD | ✅ | GitHub Actions: clippy, fmt, test |
 
@@ -155,7 +155,7 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 
 | Type | Status | Coverage |
 |------|--------|----------|
-| Unit tests | ✅ | 519 tests, 100% pass |
+| Unit tests | ✅ | 526 tests, 100% pass |
 | Z3 verification tests | ✅ | 53 comprehensive tests |
 | WAST compilation tests | ✅ | 23 cargo tests + 22 WAST files |
 | Spec test suite | ⚠️ | 267 files exist, adapter not built |
@@ -216,7 +216,7 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 4. **Formal verification:** `--verify` proves translation correctness via Z3
 5. **Multi-backend architecture:** Backend trait with registry, ARM backend functional
 6. **CLI:** 8 commands (compile, verify, disasm, backends, parse, synthesize, target-info)
-7. **519 tests pass** across 18 crates
+7. **526 tests pass** across 18 crates
 
 ### What Doesn't Work Yet
 

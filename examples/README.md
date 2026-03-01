@@ -1,6 +1,6 @@
 # Synth Examples
 
-This directory contains example WebAssembly modules for testing the Synth synthesizer.
+This directory contains example WebAssembly modules for testing the Synth compiler.
 
 ## Examples
 
@@ -28,28 +28,37 @@ brew install wabt
 wat2wasm examples/wat/simple_add.wat -o examples/wasm/simple_add.wasm
 ```
 
-### Testing with Synth
+### Compiling with Synth
 
 ```bash
-# Parse a WebAssembly module
-cargo run --bin synth -- parse examples/wasm/simple_add.wasm
+# Compile a WAT file to an ARM ELF binary
+synth compile examples/wat/simple_add.wat -o simple_add.elf
 
-# Parse and output JSON
-cargo run --bin synth -- parse examples/wasm/simple_add.wasm -o output.json
+# Compile with Cortex-M vector table and startup code
+synth compile examples/wat/simple_add.wat --cortex-m -o firmware.elf
 
-# Display target information
-cargo run --bin synth -- target-info nrf52840
+# Compile all exported functions
+synth compile examples/wat/simple_add.wat --all-exports -o multi.elf
 
-# Synthesize for Nordic nRF52840 (when implemented)
-cargo run --bin synth -- synthesize examples/wasm/simple_add.wasm \
-    -o build/simple_add.elf \
-    --hardware nrf52840 \
-    --xip \
-    --verify
+# Compile and verify the translation via Z3
+synth compile examples/wat/simple_add.wat --verify -o verified.elf
+
+# Disassemble the generated ELF
+synth disasm simple_add.elf
+
+# Use a built-in demo (no input file needed)
+synth compile --demo add -o demo.elf
+```
+
+### Running via Cargo (without installing)
+
+```bash
+cargo run -p synth-cli -- compile examples/wat/simple_add.wat -o simple_add.elf
+cargo run -p synth-cli -- disasm simple_add.elf
 ```
 
 ## Creating New Examples
 
 1. Write WebAssembly text format (.wat) in `examples/wat/`
-2. Compile to binary: `wat2wasm input.wat -o output.wasm`
-3. Test with Synth: `cargo run --bin synth -- parse output.wasm`
+2. Compile with Synth: `synth compile examples/wat/your_module.wat -o output.elf`
+3. Inspect: `synth disasm output.elf`

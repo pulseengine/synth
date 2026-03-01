@@ -2,7 +2,7 @@
 
 # Synth
 
-<sup>WebAssembly synthesis for embedded systems</sup>
+<sup>WebAssembly-to-ARM compiler with mechanized correctness proofs</sup>
 
 &nbsp;
 
@@ -29,105 +29,175 @@
 
 &nbsp;
 
-Meld fuses. Loom weaves. Synth transpiles. Kiln fires. Sigil seals.
+Synth compiles WebAssembly to native ARM Cortex-M machine code, producing bare-metal ELF binaries for embedded targets. Pattern-based instruction selection, AAPCS calling conventions, and ELF generation -- with mechanized correctness proofs in [Rocq](https://rocq-prover.org/) (formerly Coq) and SMT-based translation validation via Z3.
 
-Synth transpiles WebAssembly to native ARM for embedded Cortex-M targets. Not just translation — program synthesis: exploring equivalent implementations for provably optimal native code. Pattern-based instruction selection, AAPCS calling conventions, and ELF generation. Translation validation ensures the transpiled output faithfully preserves WebAssembly semantics.
+Part of [PulseEngine](https://github.com/pulseengine) -- a formally verified WebAssembly toolchain for safety-critical systems:
 
-Designed for safety-critical systems with formal verification and certification pathways for automotive (ISO 26262), medical (IEC 62304), and industrial environments.
+| Project | Role |
+|---------|------|
+| [**Synth**](https://github.com/pulseengine/synth) | WASM-to-ARM compiler with Rocq proofs |
+| [**Loom**](https://github.com/pulseengine/loom) | WASM optimizer with Z3 verification |
+| [**Meld**](https://github.com/pulseengine/meld) / [**Kiln**](https://github.com/pulseengine/kiln) | Platform runtime and build orchestration |
+| [**Sigil**](https://github.com/pulseengine/sigil) | Attestation and signing |
 
-## Quick Start
+## Installation
+
+### From source (Cargo)
+
+Requires Rust 1.85+ (edition 2024).
 
 ```bash
-# Clone and build
 git clone https://github.com/pulseengine/synth.git
 cd synth
 cargo build --release -p synth-cli
+```
 
-# Transpile WAT/WASM to ARM ELF
-synth compile examples/wat/simple_add.wat -o add.elf
+The binary is at `target/release/synth`. Add it to your PATH or invoke directly.
 
-# Disassemble to verify output
-synth disasm add.elf
+### With Bazel
 
-# Or use Bazel
+Bazel 8.x builds Rust, Rocq proofs, and Renode emulation tests hermetically via Nix.
+
+```bash
 bazel build //crates:synth
 ```
 
-## Current Status
+## Usage
 
-**Phase 1 Build System complete, Phase 2 Calculator Demo in progress.**
+### Compile WASM/WAT to ARM ELF
 
-### Working
+```bash
+# Compile a WAT file to an ARM ELF binary
+synth compile examples/wat/simple_add.wat -o add.elf
 
-- WASM/WAT file parsing and decoding
-- Pattern-based instruction selection (WASM to ARM)
-- ARM binary encoding
-- ELF file generation
-- CLI: `synth compile` and `synth disasm`
-- Bazel build system
+# Compile with a built-in demo (add, mul, calc, calc-ext)
+synth compile --demo add -o demo.elf
 
-### In Progress
+# Compile a complete Cortex-M binary (vector table, startup code)
+synth compile examples/wat/simple_add.wat --cortex-m -o firmware.elf
 
-- Register allocation (regalloc2 integration)
-- QEMU testing infrastructure
-- Full function prologue/epilogue generation
-- Zephyr RTOS integration
+# Compile all exported functions
+synth compile input.wat --all-exports -o multi.elf
 
-See [ROADMAP.md](ROADMAP.md) for detailed progress.
-
-## Synthesis Pipeline
-
-```
-Frontend: Parse & Validate (WebAssembly Components + WIT)
-    ↓
-Analysis: Whole-Program (dependencies, memory layout, call graph)
-    ↓
-Optimization: E-Graph Synthesis (equality saturation, ISLE rewrites)
-    ↓
-Synthesis: Target-Specific Lowering (ISLE instruction selection, MPU/PMP)
-    ↓
-Verification: Formal Validation (SMT translation validation, memory safety)
-    ↓
-Backend: Binary Emission (ELF generation, debug info)
+# Compile and formally verify the translation
+synth compile input.wat --verify -o verified.elf
 ```
 
-### Key Technologies
+### Disassemble
 
-- **E-Graphs (egg)** — Equality saturation for optimization
-- **ISLE** — Declarative instruction selection and lowering
-- **regalloc2** — Fast register allocation
-- **Z3** — SMT solver for translation validation
-- **wasm-tools** — Component Model parsing and validation
+```bash
+synth disasm add.elf
+```
 
-## Synth and Loom
+### Translation validation
 
-Synth is part of a two-tier architecture with [Loom](https://github.com/pulseengine/loom):
+```bash
+# Standalone verification: check that an ELF faithfully preserves WASM semantics
+synth verify input.wat output.elf
+```
 
-| Project | Purpose | Safety Level |
-|---------|---------|--------------|
-| **Loom** | WASM optimizer with Z3 verification | ASIL B |
-| **Synth** | Native code synthesizer with Rocq proofs | ASIL D |
+### List backends
 
-See [docs/architecture/SYNTH_LOOM_RELATIONSHIP.md](docs/architecture/SYNTH_LOOM_RELATIONSHIP.md) for details.
+```bash
+synth backends
+```
+
+## Compilation Pipeline
+
+```mermaid
+graph LR
+    A["WAT / WASM"] --> B["Parse &<br/>Decode"]
+    B --> C["Instruction<br/>Selection"]
+    C --> D["Peephole<br/>Optimizer"]
+    D --> E["ARM<br/>Encoder"]
+    E --> F["ELF<br/>Builder"]
+    F --> G["ARM ELF<br/>Binary"]
+
+    style A fill:#654FF0,color:#fff
+    style G fill:#CE422B,color:#fff
+```
+
+**Pipeline stages:**
+
+1. **Parse** -- decode WASM binary or WAT text via `wasmparser`/`wat` crates
+2. **Instruction selection** -- pattern-match WASM ops to ARM instruction sequences (151 WASM Core 1.0 ops covered)
+3. **Peephole optimization** -- redundant-op elimination, NOP removal, instruction fusion, constant propagation (0-25% code reduction)
+4. **ARM encoding** -- emit 32-bit ARM / Thumb-2 machine code
+5. **ELF builder** -- produce ELF32 with `.text`, `.isr_vector`, `.data`, `.bss`, symbol table; optional vector table and reset handler for Cortex-M
 
 ## Formal Verification
 
-> [!NOTE]
-> **Cross-cutting verification** &mdash; Rocq mechanized proofs, Kani bounded model checking, Z3 SMT verification, and Verus Rust verification are used across the PulseEngine toolchain. Sigil attestation chains bind it all together.
+Synth employs two complementary verification strategies.
+
+### Rocq proof suite
+
+Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM semantics for each operation. The proof suite lives in `coq/Synth/` and covers ARM instruction semantics, WASM stack-machine semantics, and per-operation correctness theorems.
+
+```
+106 closed proofs (Qed)  /  122 admitted  /  10 modeling axioms
+23 source files  /  6 596 lines
+```
+
+Build the proofs:
+
+```bash
+# Hermetic build via Bazel + Nix
+bazel test //coq:verify_proofs
+
+# Or locally with Rocq 9
+cd coq && make proofs
+```
+
+See [coq/STATUS.md](coq/STATUS.md) for the per-file coverage matrix.
+
+### Z3 SMT translation validation
+
+The `synth-verify` crate encodes WASM and ARM semantics as Z3 formulas and checks per-rule equivalence. The `--verify` CLI flag invokes this after compilation; `synth verify` provides standalone validation. 53 Z3 verification tests pass in CI.
+
+## Crate Map
+
+| Crate | Purpose |
+|-------|---------|
+| `synth-cli` | CLI entry point (`synth compile`, `synth verify`, `synth disasm`) |
+| `synth-core` | Shared types, error handling, `Backend` trait |
+| `synth-backend` | ARM encoder, ELF builder, vector table, linker scripts, MPU |
+| `synth-synthesis` | WASM-to-ARM instruction selection, peephole optimizer |
+| `synth-verify` | Z3 SMT translation validation |
+| `synth-analysis` | SSA, control flow analysis |
+| `synth-abi` | WebAssembly Component Model ABI (lift/lower) |
+| `synth-memory` | Portable memory abstraction (Zephyr, Linux, bare-metal) |
+| `synth-test` | WAST-to-Robot Framework test generator for Renode |
+
+## Testing
+
+```bash
+# Run all Rust tests (526+ tests across 18 crates)
+cargo test --workspace
+
+# Lint
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --check
+
+# Bazel: Rocq proofs + Renode ARM Cortex-M4 emulation tests
+bazel test //coq:verify_proofs
+bazel test //tests/...
+```
 
 ## Documentation
 
-- [Architecture](ARCHITECTURE.md) — Compilation pipeline, ARM instruction mapping, benchmarks
-- [Architecture Vision](docs/architecture/ARCHITECTURE_VISION.md) — Full system design and roadmap
-- [Requirements](docs/requirements/REQUIREMENTS.md) — Functional and non-functional requirements
-- [PoC Plan](docs/poc/POC_PLAN.md) — Proof-of-concept implementation plan
-- [Project Status](docs/status/PROJECT_STATUS.md) — Current implementation state
-- [Research](docs/research/) — Literature review, formal methods, Sail/ARM analysis
-- [Changelog](CHANGELOG.md) — Version history
+- [Architecture](ARCHITECTURE.md) -- compilation pipeline, ARM instruction mapping, benchmarks
+- [Architecture Vision](docs/architecture/ARCHITECTURE_VISION.md) -- full system design and roadmap
+- [Synth & Loom](docs/architecture/SYNTH_LOOM_RELATIONSHIP.md) -- two-tier architecture
+- [Feature Matrix](docs/status/FEATURE_MATRIX.md) -- what works, what doesn't
+- [Requirements](docs/requirements/REQUIREMENTS.md) -- functional and non-functional requirements
+- [Research](docs/research/) -- literature review, formal methods, Sail/ARM analysis
+- [Roadmap](ROADMAP.md) -- development phases
+- [Changelog](CHANGELOG.md) -- version history
+- [Contributing](CONTRIBUTING.md) -- how to contribute
 
 ## License
 
-Apache-2.0
+Apache-2.0 -- see [LICENSE](LICENSE).
 
 ---
 

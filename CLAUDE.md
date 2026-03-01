@@ -10,7 +10,7 @@ Part of [PulseEngine](https://github.com/pulseengine): synth (compiler) + [loom]
 
 ```bash
 # Rust — primary build
-cargo test --workspace             # 519+ tests
+cargo test --workspace             # 526+ tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 

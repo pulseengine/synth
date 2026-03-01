@@ -31,7 +31,7 @@ Synth works alongside [Loom](https://github.com/pulseengine/loom), our open-sour
 | Project | Purpose | Verification | Output |
 |---------|---------|--------------|--------|
 | **Loom** | WASM optimization | Z3 SMT (ASIL B) | Optimized WASM |
-| **Synth** | Native code synthesis | Coq proofs (ASIL D) | ARM/RISC-V ELF |
+| **Synth** | Native code synthesis | Rocq proofs (ASIL D) | ARM ELF |
 
 Synth can optionally use Loom to optimize WASM before native code generation. See [SYNTH_LOOM_RELATIONSHIP.md](docs/architecture/SYNTH_LOOM_RELATIONSHIP.md) for details.
 
@@ -412,28 +412,9 @@ Ready for deployment to ARM Cortex-M!
 
 ### Test Coverage
 
-- **Total tests:** 147 passing tests
-- **Test categories:**
-  - Core functionality (6 tests)
-  - Synthesis engine (55 tests)
-  - Pattern matching (10 tests)
-  - Division support (11 tests)
-  - Vector table (5 tests)
-  - LED blink integration (4 tests)
-  - Linker scripts (19 tests)
-  - Benchmarks (12 tests)
-  - Additional backend tests (25 tests)
-
-### Quality Assurance
-
-All tests verify:
-- ✓ Correct instruction selection
-- ✓ Proper ARM encoding
-- ✓ Optimization correctness
-- ✓ ELF file validity
-- ✓ Memory layout compliance
-- ✓ Code size bounds
-- ✓ Performance benchmarks
+- **Total tests:** 526+ passing across 18 crates
+- **Categories:** instruction selection, ARM encoding, peephole optimization, ELF emission, Z3 verification, register allocation, ABI, WIT, WAST compilation, Renode emulation
+- **Verification:** 53 Z3 SMT tests, 106 closed Rocq proofs, 55+ Renode ARM Cortex-M4 emulation tests
 
 ## Supported Platforms
 
@@ -463,6 +444,6 @@ Synth demonstrates that WebAssembly can be efficiently compiled for embedded ARM
 - **Efficient instruction selection** (1:1 WASM:ARM ratio in many cases)
 - **Effective optimization** (up to 25% reduction)
 - **Complete toolchain** (vector tables, startup code, linker scripts)
-- **Production-ready** (147 passing tests, comprehensive benchmarks)
+- **Production-ready** (526+ passing tests, comprehensive benchmarks)
 
 The architecture is modular, extensible, and suitable for real-world embedded deployment.

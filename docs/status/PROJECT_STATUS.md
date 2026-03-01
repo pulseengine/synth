@@ -1,7 +1,7 @@
 # Synth Project Status Dashboard
 
-**Last Updated**: November 18, 2025
-**Current Phase**: Phase 3a ✅ COMPLETE (100% Test Pass Rate)
+**Last Updated**: March 2026
+**Current Phase**: Phase 3a+ -- Build system, Rocq proofs, open-source readiness
 **Next Milestone**: Phase 3b - SIMD Operations or Advanced Features
 
 ---
@@ -201,10 +201,10 @@ Improvement: +91 tests fixed, +8.4 percentage points
 
 ---
 
-### 🎯 Phase 5: Verification & Optimization (FUTURE)
+### Phase 5: Verification & Optimization (FUTURE)
 
 **Scope**: 3-6 months
-- Formal proofs (Coq/Isabelle)
+- Formal proofs (Rocq) -- 106 Qed / 122 Admitted as of March 2026
 - Advanced optimizations
 - Safety certification artifacts
 - RISC-V backend
@@ -225,29 +225,35 @@ Total:              ~28,000 lines
   Other crates:      ~8,500 lines
 ```
 
-### Crate Structure (14 Crates)
+### Workspace Structure (18 Crates)
 ```
 synth/
 ├── Core Infrastructure
 │   ├── synth-core           ✅ Stable
 │   ├── synth-frontend       ✅ Stable
-│   ├── synth-wit            ✅ Complete (25 tests)
-│   └── synth-abi            ✅ Complete (39 tests)
+│   ├── synth-wit            ✅ Complete
+│   └── synth-abi            ✅ Complete
 │
 ├── Analysis & Optimization
 │   ├── synth-analysis       ✅ Stable
-│   ├── synth-cfg            ✅ Complete (5 tests)
-│   ├── synth-synthesis      ✅ Stable (33 tests)
-│   └── synth-opt            ✅ Complete (12 tests)
+│   ├── synth-synthesis      ✅ Stable
+│   ├── synth-opt            ✅ Complete
+│   └── synth-ir             ✅ Stable
 │
 ├── Code Generation
-│   ├── synth-regalloc       🔄 In Progress
-│   ├── synth-codegen        🔄 In Progress
-│   └── synth-backend        ✅ Complete (42 tests)
+│   ├── synth-regalloc       ✅ Graph coloring, AAPCS
+│   ├── synth-codegen-traits ✅ Stable
+│   └── synth-backend        ✅ Complete
 │
 ├── Verification & Testing
-│   ├── synth-verify         ✅ Complete (110 tests, 100% pass)
-│   └── synth-qemu           ✅ Complete (5 tests)
+│   ├── synth-verify         ✅ Complete (53 Z3 tests)
+│   └── synth-test           ✅ WAST/Renode generator
+│
+├── Platform
+│   ├── synth-memory         ✅ Portable memory abstraction
+│   ├── synth-safety         ✅ Safety annotations
+│   ├── synth-loom           ✅ Loom integration
+│   └── synth-macro          ✅ Procedural macros
 │
 └── CLI
     └── synth-cli            ✅ Stable
@@ -259,10 +265,10 @@ synth/
 
 ### Overall Test Statistics
 ```
-Total Tests:     376
-  Passed:        376 (100%) ✅
-  Failed:        0   (0%)
-  Ignored:       0   (0%)
+Total Tests:     526+
+  Passed:        526+ (100%) ✅
+  Failed:        0    (0%)
+  Ignored:       0    (0%)
 ```
 
 ### Test Health by Crate
@@ -290,9 +296,9 @@ Other:             ~41 tests  ✅ 100% pass
 
 ---
 
-## Recent Development Activity
+## Development Activity (Historical)
 
-### Today (Nov 18) - Phase 2c & 3a Complete! 🎉
+### Nov 18, 2025 - Phase 2c & 3a Complete
 ```
 Sessions:       3 sessions (~3.25 hours total)
 Commits:        3 commits
@@ -436,34 +442,23 @@ Performance:            ⭐⭐⭐☆☆ (3/5) - Not Yet Measured
 
 ## Quick Links
 
-### Documentation
-- [Analysis & Plan](ANALYSIS_AND_PLAN.md) - Comprehensive analysis
-- [Executive Summary](EXECUTIVE_SUMMARY.md) - High-level overview
-- [Phase 2c Plan](PHASE2C_F64_PLAN.md) - f64 implementation plan
-- [Development Roadmap](DEVELOPMENT_ROADMAP.md) - Long-term todos
+- [Architecture](../../ARCHITECTURE.md) -- compilation pipeline, ARM instruction mapping
+- [Feature Matrix](FEATURE_MATRIX.md) -- current capabilities
+- [Rocq Proof Status](../../coq/STATUS.md) -- per-file Qed/Admitted matrix
+- [Roadmap](../../ROADMAP.md) -- development phases
+- [Contributing](../../CONTRIBUTING.md) -- how to contribute
 
-### Session Summaries
-- [Phase 1 Completion](SESSION_PHASE1_COMPLETION.md)
-- [Phase 2a i64 Complete](SESSION_PHASE2_I64_COMPLETE.md)
-- [Phase 2c F64 Session 1](SESSION_PHASE2C_F64_SESSION1.md)
-- [Phase 2c F64 Session 2](SESSION_PHASE2C_F64_SESSION2.md)
-- [Phase 3a Fix Tests](SESSION_PHASE3A_FIX_TESTS.md)
-- [Phase 3a Session 2](SESSION_PHASE3A_SESSION2_FIX_COMPREHENSIVE.md)
+### Archived Session Summaries
 
-### Technical Docs
-- [Formal Verification](docs/FORMAL_VERIFICATION.md)
-- [Phase 1 Coverage](docs/PHASE1_COVERAGE_REPORT.md)
-- [Architecture](ARCHITECTURE.md)
+Historical session logs are in [docs/archive/sessions/](../archive/sessions/).
 
 ---
 
-**Status**: 🟢 Excellent - Phase 2 & 3a Complete! 100% Test Pass Rate! ✅
-**Next Review**: After Phase 3b planning/initiation
-**Confidence Level**: ⭐⭐⭐⭐⭐ Very High
+**Status**: Phase 2 & 3a complete, build system and Rocq proofs integrated, open-source ready.
+**Next Review**: After Phase 3b planning/initiation.
 
-**Major Achievement**: All 151 WebAssembly Core 1.0 operations implemented and verified with 376/376 tests passing!
+All 151 WebAssembly Core 1.0 operations implemented. 526+ tests passing across 18 crates. 106 closed Rocq proofs.
 
 ---
 
-*This dashboard is automatically updated after major milestones.*
-*Last automated update: November 18, 2025 (Phase 3a completion)*
+*Last manual update: March 2026.*
