@@ -20,9 +20,12 @@ fn test_rotate_left() {
 
     assert!(!arm_instrs.is_empty());
 
-    // Should contain ROR instruction (rotl is implemented as ror with 32-shift)
-    let has_ror = arm_instrs.iter().any(|i| matches!(i.op, ArmOp::Ror { .. }));
-    assert!(has_ror || !arm_instrs.is_empty()); // Either ROR or other valid encoding
+    // Should contain RSB (32 - shift) + ROR register (rotl = ror by complement)
+    let has_rsb = arm_instrs.iter().any(|i| matches!(i.op, ArmOp::Rsb { .. }));
+    let has_ror = arm_instrs
+        .iter()
+        .any(|i| matches!(i.op, ArmOp::RorReg { .. }));
+    assert!(has_rsb && has_ror, "ROTL should emit RSB + ROR sequence");
 }
 
 #[test]
@@ -40,8 +43,10 @@ fn test_rotate_right() {
 
     assert!(!arm_instrs.is_empty());
 
-    // Should contain ROR instruction
-    let has_ror = arm_instrs.iter().any(|i| matches!(i.op, ArmOp::Ror { .. }));
+    // Should contain ROR register-based instruction (WASM shift amount is dynamic)
+    let has_ror = arm_instrs
+        .iter()
+        .any(|i| matches!(i.op, ArmOp::RorReg { .. }));
     assert!(has_ror);
 }
 

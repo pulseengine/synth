@@ -250,32 +250,27 @@ impl InstructionSelector {
                 op2: Operand2::Reg(rm),
             }],
 
-            I32Shl => vec![ArmOp::Lsl {
-                rd,
-                rn,
-                shift: 0, // Placeholder - would extract from operand
-            }],
+            // Shifts: WASM pops both value (rn) and shift amount (rm) from stack
+            I32Shl => vec![ArmOp::LslReg { rd, rn, rm }],
+            I32ShrS => vec![ArmOp::AsrReg { rd, rn, rm }],
+            I32ShrU => vec![ArmOp::LsrReg { rd, rn, rm }],
 
-            I32ShrS => vec![ArmOp::Asr { rd, rn, shift: 0 }],
-
-            I32ShrU => vec![ArmOp::Lsr { rd, rn, shift: 0 }],
-
-            // Rotate operations
+            // Rotate operations: shift amount from stack register
             I32Rotl => {
-                // Rotate left: ROR rd, rn, #(32-shift)
-                // For now, simplified with shift=0
-                vec![ArmOp::Ror {
-                    rd,
-                    rn,
-                    shift: 0, // Would be 32 - actual_shift
-                }]
+                // Rotate left by N = Rotate right by (32 - N)
+                // RSB rtmp, rm, #32; ROR rd, rn, rtmp
+                let rtmp = self.regs.alloc_reg();
+                vec![
+                    ArmOp::Rsb {
+                        rd: rtmp,
+                        rn: rm,
+                        imm: 32,
+                    },
+                    ArmOp::RorReg { rd, rn, rm: rtmp },
+                ]
             }
 
-            I32Rotr => vec![ArmOp::Ror {
-                rd,
-                rn,
-                shift: 0, // Placeholder - would extract from operand
-            }],
+            I32Rotr => vec![ArmOp::RorReg { rd, rn, rm }],
 
             // Bit count operations
             I32Clz => vec![ArmOp::Clz { rd, rm }],
@@ -1401,6 +1396,8 @@ mod tests {
         let db = RuleDatabase::new();
         let mut selector = InstructionSelector::new(db.rules().to_vec());
 
+        // WASM shifts take the shift amount from the stack (dynamic),
+        // so we emit register-based shift instructions.
         let wasm_ops = vec![WasmOp::I32Shl, WasmOp::I32ShrS, WasmOp::I32ShrU];
 
         let arm_instrs = selector.select(&wasm_ops).unwrap();
@@ -1408,18 +1405,18 @@ mod tests {
         assert_eq!(arm_instrs.len(), 3);
 
         match &arm_instrs[0].op {
-            ArmOp::Lsl { .. } => {}
-            _ => panic!("Expected Lsl"),
+            ArmOp::LslReg { .. } => {}
+            _ => panic!("Expected LslReg, got {:?}", arm_instrs[0].op),
         }
 
         match &arm_instrs[1].op {
-            ArmOp::Asr { .. } => {}
-            _ => panic!("Expected Asr"),
+            ArmOp::AsrReg { .. } => {}
+            _ => panic!("Expected AsrReg, got {:?}", arm_instrs[1].op),
         }
 
         match &arm_instrs[2].op {
-            ArmOp::Lsr { .. } => {}
-            _ => panic!("Expected Lsr"),
+            ArmOp::LsrReg { .. } => {}
+            _ => panic!("Expected LsrReg, got {:?}", arm_instrs[2].op),
         }
     }
 
