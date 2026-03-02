@@ -25,8 +25,11 @@ fn assert_float_rejected(wasm_ops: Vec<WasmOp>, op_name: &str) {
     );
     let err = result.unwrap_err().to_string();
     assert!(
-        err.contains("floating-point") || err.contains("i64"),
-        "{op_name} error should mention floating-point or i64, got: {err}"
+        err.contains("no FPU")
+            || err.contains("VFP")
+            || err.contains("floating-point")
+            || err.contains("i64"),
+        "{op_name} error should mention FPU/VFP/floating-point or i64, got: {err}"
     );
 }
 

@@ -7,6 +7,7 @@ use crate::{Bindings, PatternMatcher};
 use std::collections::HashMap;
 use synth_core::Result;
 use synth_core::WasmOp;
+use synth_core::target::FPUPrecision;
 
 /// Bounds checking configuration for memory operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +110,10 @@ pub struct InstructionSelector {
     bounds_check: BoundsCheckConfig,
     /// Number of imported functions (calls to func_idx < this go through Meld dispatch)
     num_imports: u32,
+    /// FPU capability of the target (None = soft-float only)
+    fpu: Option<FPUPrecision>,
+    /// Target name for error messages
+    target_name: String,
 }
 
 impl InstructionSelector {
@@ -119,6 +124,8 @@ impl InstructionSelector {
             regs: RegisterState::new(),
             bounds_check: BoundsCheckConfig::None,
             num_imports: 0,
+            fpu: None,
+            target_name: "cortex-m3".to_string(),
         }
     }
 
@@ -129,6 +136,8 @@ impl InstructionSelector {
             regs: RegisterState::new(),
             bounds_check,
             num_imports: 0,
+            fpu: None,
+            target_name: "cortex-m3".to_string(),
         }
     }
 
@@ -140,6 +149,12 @@ impl InstructionSelector {
     /// Set bounds checking configuration
     pub fn set_bounds_check(&mut self, config: BoundsCheckConfig) {
         self.bounds_check = config;
+    }
+
+    /// Set target FPU capability and name (for target-aware error messages)
+    pub fn set_target(&mut self, fpu: Option<FPUPrecision>, target_name: &str) {
+        self.fpu = fpu;
+        self.target_name = target_name.to_string();
     }
 
     /// Select ARM instructions for a sequence of WASM operations
@@ -589,9 +604,18 @@ impl InstructionSelector {
             | I64TruncF64U
             | I32TruncF64S
             | I32TruncF64U) => {
-                return Err(synth_core::Error::synthesis(format!(
-                    "floating-point operation not supported (requires VFP/NEON): {op:?}"
-                )));
+                let msg = if self.fpu.is_some() {
+                    format!(
+                        "VFP encoding not yet implemented for {op:?} (target {} has FPU)",
+                        self.target_name
+                    )
+                } else {
+                    format!(
+                        "target {} has no FPU; cannot compile {op:?}",
+                        self.target_name
+                    )
+                };
+                return Err(synth_core::Error::synthesis(msg));
             }
         };
         Ok(instrs)

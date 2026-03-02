@@ -12,9 +12,9 @@ pub mod mpu_allocator;
 pub mod w2c2_wrapper;
 
 pub use elf_builder::{
-    ArmRelocationType, ElfBuilder, ElfClass, ElfData, ElfMachine, ElfType, ProgramFlags,
-    ProgramHeader, ProgramType, Relocation, Section, SectionFlags, SectionType as ElfSectionType,
-    Symbol, SymbolBinding, SymbolType,
+    ArmRelocationType, EF_ARM_ABI_FLOAT_HARD, EF_ARM_ABI_FLOAT_SOFT, EF_ARM_EABI_VER5, ElfBuilder,
+    ElfClass, ElfData, ElfMachine, ElfType, ProgramFlags, ProgramHeader, ProgramType, Relocation,
+    Section, SectionFlags, SectionType as ElfSectionType, Symbol, SymbolBinding, SymbolType,
 };
 pub use linker_script::{LinkerScriptGenerator, MemoryRegion};
 pub use memory_layout::{MemoryLayout, MemoryLayoutAnalyzer, MemorySection, SectionType};

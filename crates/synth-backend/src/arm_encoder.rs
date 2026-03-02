@@ -3,23 +3,41 @@
 //! Generates ARM32/Thumb-2 machine code from ARM instruction structures
 
 use synth_core::Result;
+use synth_core::target::FPUPrecision;
 use synth_synthesis::{ArmOp, MemAddr, Operand2, Reg};
 
 /// ARM instruction encoding
 pub struct ArmEncoder {
     /// Use Thumb mode (vs ARM mode)
     thumb_mode: bool,
+    /// FPU capability (prep for VFP encoding in Task 4)
+    #[allow(dead_code)]
+    fpu: Option<FPUPrecision>,
 }
 
 impl ArmEncoder {
     /// Create a new ARM encoder in ARM32 mode
     pub fn new_arm32() -> Self {
-        Self { thumb_mode: false }
+        Self {
+            thumb_mode: false,
+            fpu: None,
+        }
     }
 
     /// Create a new ARM encoder in Thumb-2 mode
     pub fn new_thumb2() -> Self {
-        Self { thumb_mode: true }
+        Self {
+            thumb_mode: true,
+            fpu: None,
+        }
+    }
+
+    /// Create a new Thumb-2 encoder with FPU capability
+    pub fn new_thumb2_with_fpu(fpu: Option<FPUPrecision>) -> Self {
+        Self {
+            thumb_mode: true,
+            fpu,
+        }
     }
 
     /// Encode a single ARM instruction to bytes

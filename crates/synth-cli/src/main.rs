@@ -120,6 +120,11 @@ enum Commands {
         #[arg(long)]
         cortex_m: bool,
 
+        /// Target profile (cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp)
+        /// Implies --cortex-m for Cortex-M targets
+        #[arg(short, long, value_name = "TARGET")]
+        target: Option<String>,
+
         /// Disable optimization passes (use direct instruction selection)
         #[arg(long)]
         no_optimize: bool,
@@ -209,12 +214,18 @@ fn main() -> Result<()> {
             func_name,
             all_exports,
             cortex_m,
+            target,
             no_optimize,
             loom_compat,
             bounds_check,
             backend,
             verify,
         } => {
+            // Resolve target spec: --target overrides, --cortex-m is backwards compat
+            let target_spec = resolve_target_spec(target.as_deref(), cortex_m)?;
+            let is_cortex_m =
+                cortex_m || target_spec.family == synth_core::target::ArchFamily::ArmCortexM;
+
             compile_command(
                 input,
                 output,
@@ -222,12 +233,13 @@ fn main() -> Result<()> {
                 func_index,
                 func_name,
                 all_exports,
-                cortex_m,
+                is_cortex_m,
                 no_optimize,
                 loom_compat,
                 bounds_check,
                 &backend,
                 verify,
+                &target_spec,
             )?;
         }
         Commands::Disasm { input } => {
@@ -386,6 +398,25 @@ struct ElfFunction {
     relocations: Vec<synth_core::backend::CodeRelocation>,
 }
 
+/// Resolve --target / --cortex-m into a TargetSpec
+fn resolve_target_spec(target: Option<&str>, cortex_m: bool) -> Result<TargetSpec> {
+    match target {
+        Some(name) => TargetSpec::from_triple(name).map_err(|e| {
+            anyhow::anyhow!(
+                "{e}. Supported: cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp"
+            )
+        }),
+        None if cortex_m => Ok(TargetSpec::cortex_m3()),
+        None => {
+            // Default: Arm32 ISA (non-Cortex-M, no vector table)
+            Ok(TargetSpec {
+                isa: synth_core::target::IsaVariant::Arm32,
+                ..TargetSpec::cortex_m4()
+            })
+        }
+    }
+}
+
 /// Build the backend registry with all available backends
 fn build_backend_registry() -> BackendRegistry {
     let mut registry = BackendRegistry::new();
@@ -421,6 +452,7 @@ fn compile_command(
     bounds_check: bool,
     backend_name: &str,
     verify: bool,
+    target_spec: &TargetSpec,
 ) -> Result<()> {
     // Validate backend exists
     let registry = build_backend_registry();
@@ -461,6 +493,7 @@ fn compile_command(
             bounds_check,
             backend,
             verify,
+            target_spec,
         );
     }
 
@@ -559,14 +592,7 @@ fn compile_command(
         no_optimize,
         loom_compat,
         bounds_check,
-        target: if !cortex_m {
-            TargetSpec {
-                isa: synth_core::target::IsaVariant::Arm32,
-                ..TargetSpec::cortex_m4()
-            }
-        } else {
-            TargetSpec::cortex_m4()
-        },
+        target: target_spec.clone(),
         ..CompileConfig::default()
     };
 
@@ -578,7 +604,7 @@ fn compile_command(
     info!("Encoded {} bytes of machine code", code.len());
 
     let elf_data = if cortex_m {
-        build_cortex_m_elf(&code, &func_name)?
+        build_cortex_m_elf(&code, &func_name, target_spec)?
     } else {
         build_simple_elf(&code, &func_name)?
     };
@@ -1054,6 +1080,7 @@ fn compile_all_exports(
     bounds_check: bool,
     backend: &dyn Backend,
     verify: bool,
+    target_spec: &TargetSpec,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -1134,14 +1161,7 @@ fn compile_all_exports(
         loom_compat,
         bounds_check,
         num_imports: module.num_imported_funcs,
-        target: if !cortex_m {
-            TargetSpec {
-                isa: synth_core::target::IsaVariant::Arm32,
-                ..TargetSpec::cortex_m4()
-            }
-        } else {
-            TargetSpec::cortex_m4()
-        },
+        target: target_spec.clone(),
         ..CompileConfig::default()
     };
 
@@ -1198,7 +1218,7 @@ fn compile_all_exports(
         info!("Module has import calls — producing relocatable object (ET_REL)");
         build_relocatable_elf(&compiled_funcs, &module.imports)?
     } else if cortex_m {
-        build_multi_func_cortex_m_elf(&compiled_funcs, &module.memories)?
+        build_multi_func_cortex_m_elf(&compiled_funcs, &module.memories, target_spec)?
     } else {
         build_multi_func_simple_elf(&compiled_funcs)?
     };
@@ -1405,6 +1425,7 @@ fn build_relocatable_elf(funcs: &[ElfFunction], imports: &[ImportEntry]) -> Resu
 fn build_multi_func_cortex_m_elf(
     funcs: &[ElfFunction],
     memories: &[WasmMemory],
+    target: &TargetSpec,
 ) -> Result<Vec<u8>> {
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
@@ -1548,6 +1569,12 @@ fn build_multi_func_cortex_m_elf(
     // Build ELF
     let flash_size = flash_image.len() as u32;
     let mut elf_builder = ElfBuilder::new_arm32().with_entry(startup_addr | 1);
+
+    // Set hard-float ABI flag if target has FPU
+    if target.has_fpu() {
+        elf_builder
+            .set_flags(synth_backend::EF_ARM_EABI_VER5 | synth_backend::EF_ARM_ABI_FLOAT_HARD);
+    }
 
     // Calculate proper file offset for .text section
     let shstrtab_size = 1 + ".shstrtab\0.strtab\0.symtab\0.text\0".len();
@@ -1837,7 +1864,7 @@ fn build_simple_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
 }
 
 /// Build a complete Cortex-M ELF with vector table and startup code
-fn build_cortex_m_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
+fn build_cortex_m_elf(code: &[u8], func_name: &str, target: &TargetSpec) -> Result<Vec<u8>> {
     // Memory layout for generic Cortex-M (works with QEMU/Renode)
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
@@ -1929,6 +1956,12 @@ fn build_cortex_m_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
     // Build ELF
     let flash_size = flash_image.len() as u32;
     let mut elf_builder = ElfBuilder::new_arm32().with_entry(startup_addr | 1); // Thumb bit
+
+    // Set hard-float ABI flag if target has FPU
+    if target.has_fpu() {
+        elf_builder
+            .set_flags(synth_backend::EF_ARM_EABI_VER5 | synth_backend::EF_ARM_ABI_FLOAT_HARD);
+    }
 
     // Add LOAD program header for the .text section
     // The offset is calculated as: ELF header (52) + program headers (32 * 1) + string tables
@@ -2127,7 +2160,7 @@ mod tests {
             0x1e, 0xff, 0x2f, 0xe1, // BX lr (ARM encoding)
         ];
 
-        let elf_data = build_cortex_m_elf(&code, "test_func").unwrap();
+        let elf_data = build_cortex_m_elf(&code, "test_func", &TargetSpec::cortex_m3()).unwrap();
 
         // Verify ELF magic
         assert_eq!(&elf_data[0..4], b"\x7fELF", "Invalid ELF magic");
@@ -2147,7 +2180,7 @@ mod tests {
     fn test_vector_table_structure() {
         let code = vec![0x00, 0x80, 0x80, 0xe0]; // ADD r0, r0, r1
 
-        let elf_data = build_cortex_m_elf(&code, "test").unwrap();
+        let elf_data = build_cortex_m_elf(&code, "test", &TargetSpec::cortex_m3()).unwrap();
 
         // Find .text section (it starts after ELF headers)
         // For simplicity, look for the vector table pattern
@@ -2198,7 +2231,7 @@ mod tests {
     fn test_startup_code_patching() {
         let code = vec![0x00, 0x80, 0x80, 0xe0];
 
-        let elf_data = build_cortex_m_elf(&code, "patched").unwrap();
+        let elf_data = build_cortex_m_elf(&code, "patched", &TargetSpec::cortex_m3()).unwrap();
 
         // With the new startup code layout (28 bytes with R10/R11 init):
         // - Startup: 0x80 (28 bytes)

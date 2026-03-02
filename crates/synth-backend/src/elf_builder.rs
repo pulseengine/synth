@@ -345,6 +345,13 @@ pub struct Relocation {
     pub reloc_type: ArmRelocationType,
 }
 
+/// ARM EABI version 5 (soft-float)
+pub const EF_ARM_EABI_VER5: u32 = 0x05000000;
+/// ARM hard-float ABI flag
+pub const EF_ARM_ABI_FLOAT_HARD: u32 = 0x00000400;
+/// ARM soft-float ABI flag
+pub const EF_ARM_ABI_FLOAT_SOFT: u32 = 0x00000200;
+
 /// ELF file builder
 pub struct ElfBuilder {
     /// File class (32 or 64 bit)
@@ -357,6 +364,8 @@ pub struct ElfBuilder {
     machine: ElfMachine,
     /// Entry point address
     entry: u32,
+    /// ELF e_flags (EABI version + float ABI)
+    e_flags: u32,
     /// Sections
     sections: Vec<Section>,
     /// Symbols
@@ -376,6 +385,7 @@ impl ElfBuilder {
             elf_type: ElfType::Exec,
             machine: ElfMachine::Arm,
             entry: 0,
+            e_flags: EF_ARM_EABI_VER5,
             sections: Vec::new(),
             symbols: Vec::new(),
             program_headers: Vec::new(),
@@ -387,6 +397,11 @@ impl ElfBuilder {
     pub fn with_entry(mut self, entry: u32) -> Self {
         self.entry = entry;
         self
+    }
+
+    /// Set ELF e_flags (e.g. to add hard-float ABI)
+    pub fn set_flags(&mut self, flags: u32) {
+        self.e_flags = flags;
     }
 
     /// Set file type
@@ -643,8 +658,8 @@ impl ElfBuilder {
         output[cursor..cursor + 4].copy_from_slice(&sh_offset.to_le_bytes());
         cursor += 4;
 
-        // Flags (little-endian u32) - ARM EABI version 5
-        output[cursor..cursor + 4].copy_from_slice(&0x05000000u32.to_le_bytes());
+        // Flags (little-endian u32) - ARM EABI version 5 + float ABI
+        output[cursor..cursor + 4].copy_from_slice(&self.e_flags.to_le_bytes());
         cursor += 4;
 
         // ELF header size (little-endian u16)

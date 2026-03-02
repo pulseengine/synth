@@ -290,26 +290,63 @@ pub struct TargetSpec {
     pub isa: IsaVariant,
     /// Memory protection model
     pub mem_protection: MemProtection,
+    /// Floating-point unit capability (None = soft-float only)
+    pub fpu: Option<FPUPrecision>,
 }
 
 impl TargetSpec {
-    /// Cortex-M4 with 8 MPU regions (most common embedded target)
+    /// Cortex-M3 (ARMv7-M, no FPU, 8 MPU regions)
+    pub fn cortex_m3() -> Self {
+        Self {
+            family: ArchFamily::ArmCortexM,
+            triple: "thumbv7m-none-eabi".to_string(),
+            isa: IsaVariant::Thumb2,
+            mem_protection: MemProtection::Mpu { regions: 8 },
+            fpu: None,
+        }
+    }
+
+    /// Cortex-M4 with 8 MPU regions (no FPU — M4 without F suffix)
     pub fn cortex_m4() -> Self {
+        Self {
+            family: ArchFamily::ArmCortexM,
+            triple: "thumbv7em-none-eabi".to_string(),
+            isa: IsaVariant::Thumb2,
+            mem_protection: MemProtection::Mpu { regions: 8 },
+            fpu: None,
+        }
+    }
+
+    /// Cortex-M4F with single-precision FPU
+    pub fn cortex_m4f() -> Self {
         Self {
             family: ArchFamily::ArmCortexM,
             triple: "thumbv7em-none-eabihf".to_string(),
             isa: IsaVariant::Thumb2,
             mem_protection: MemProtection::Mpu { regions: 8 },
+            fpu: Some(FPUPrecision::Single),
         }
     }
 
-    /// Cortex-M7 with 16 MPU regions
+    /// Cortex-M7 with single-precision FPU and 16 MPU regions
     pub fn cortex_m7() -> Self {
         Self {
             family: ArchFamily::ArmCortexM,
             triple: "thumbv7em-none-eabihf".to_string(),
             isa: IsaVariant::Thumb2,
             mem_protection: MemProtection::Mpu { regions: 16 },
+            fpu: Some(FPUPrecision::Single),
+        }
+    }
+
+    /// Cortex-M7 with double-precision FPU and 16 MPU regions
+    pub fn cortex_m7dp() -> Self {
+        Self {
+            family: ArchFamily::ArmCortexM,
+            triple: "thumbv7em-none-eabihf".to_string(),
+            isa: IsaVariant::Thumb2,
+            mem_protection: MemProtection::Mpu { regions: 16 },
+            fpu: Some(FPUPrecision::Double),
         }
     }
 
@@ -320,6 +357,7 @@ impl TargetSpec {
             triple: "armv7r-none-eabihf".to_string(),
             isa: IsaVariant::Arm32,
             mem_protection: MemProtection::Mpu { regions: 12 },
+            fpu: None,
         }
     }
 
@@ -330,6 +368,7 @@ impl TargetSpec {
             triple: "aarch64-none-elf".to_string(),
             isa: IsaVariant::AArch64,
             mem_protection: MemProtection::Mmu,
+            fpu: None,
         }
     }
 
@@ -342,19 +381,28 @@ impl TargetSpec {
                 extensions: "imac".to_string(),
             },
             mem_protection: MemProtection::Pmp { entries: 16 },
+            fpu: None,
         }
     }
 
     /// Parse from an LLVM triple or shorthand name
     pub fn from_triple(triple: &str) -> std::result::Result<Self, String> {
         match triple {
-            "thumbv7em-none-eabihf" | "cortex-m4" => Ok(Self::cortex_m4()),
+            "thumbv7m-none-eabi" | "cortex-m3" => Ok(Self::cortex_m3()),
+            "thumbv7em-none-eabi" | "cortex-m4" => Ok(Self::cortex_m4()),
+            "thumbv7em-none-eabihf" | "cortex-m4f" => Ok(Self::cortex_m4f()),
             "cortex-m7" => Ok(Self::cortex_m7()),
+            "cortex-m7dp" => Ok(Self::cortex_m7dp()),
             "armv7r-none-eabihf" | "cortex-r5" => Ok(Self::cortex_r5()),
             "aarch64-none-elf" | "cortex-a53" => Ok(Self::cortex_a53()),
             "riscv32imac-unknown-none-elf" | "riscv32imac" => Ok(Self::riscv32imac()),
             _ => Err(format!("unknown target triple: {}", triple)),
         }
+    }
+
+    /// Whether this target has a floating-point unit
+    pub fn has_fpu(&self) -> bool {
+        self.fpu.is_some()
     }
 
     /// Whether this target uses Thumb-2 encoding (Cortex-M)
@@ -373,10 +421,41 @@ mod tests {
         assert_eq!(spec.family, ArchFamily::ArmCortexM);
         assert!(spec.is_thumb2());
         assert_eq!(spec.mem_protection, MemProtection::Mpu { regions: 8 });
+        assert!(!spec.has_fpu());
     }
 
     #[test]
     fn test_target_spec_unknown() {
         assert!(TargetSpec::from_triple("mips-unknown-none").is_err());
+    }
+
+    #[test]
+    fn test_cortex_m3() {
+        let spec = TargetSpec::from_triple("cortex-m3").unwrap();
+        assert_eq!(spec.triple, "thumbv7m-none-eabi");
+        assert!(!spec.has_fpu());
+    }
+
+    #[test]
+    fn test_cortex_m4f() {
+        let spec = TargetSpec::from_triple("cortex-m4f").unwrap();
+        assert_eq!(spec.triple, "thumbv7em-none-eabihf");
+        assert!(spec.has_fpu());
+        assert_eq!(spec.fpu, Some(FPUPrecision::Single));
+    }
+
+    #[test]
+    fn test_cortex_m7dp() {
+        let spec = TargetSpec::from_triple("cortex-m7dp").unwrap();
+        assert!(spec.has_fpu());
+        assert_eq!(spec.fpu, Some(FPUPrecision::Double));
+        assert_eq!(spec.mem_protection, MemProtection::Mpu { regions: 16 });
+    }
+
+    #[test]
+    fn test_cortex_m7_has_fpu() {
+        let spec = TargetSpec::cortex_m7();
+        assert!(spec.has_fpu());
+        assert_eq!(spec.fpu, Some(FPUPrecision::Single));
     }
 }
