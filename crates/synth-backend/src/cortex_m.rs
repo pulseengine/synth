@@ -70,6 +70,8 @@ pub struct StartupCode {
     pub bss_start: u32,
     /// BSS section end
     pub bss_end: u32,
+    /// Enable FPU (set CPACR for CP10+CP11 full access)
+    pub enable_fpu: bool,
 }
 
 impl StartupCode {
@@ -83,21 +85,51 @@ impl StartupCode {
             data_load: 0,
             bss_start: 0,
             bss_end: 0,
+            enable_fpu: false,
         }
     }
 
     /// Generate Thumb-2 startup code (reset handler)
     ///
     /// This generates minimal startup code that:
-    /// 1. Sets up the stack pointer (already done by hardware from vector table)
-    /// 2. Initializes R11 as linear memory base (0x20000000)
-    /// 3. Calls the entry point
-    /// 4. Loops forever if entry returns
+    /// 1. Optionally enables FPU (CPACR setup for CP10+CP11)
+    /// 2. Sets up the stack pointer (already done by hardware from vector table)
+    /// 3. Initializes R11 as linear memory base (0x20000000)
+    /// 4. Calls the entry point
+    /// 5. Loops forever if entry returns
     pub fn generate_thumb(&self) -> Vec<u8> {
         let mut code = Vec::new();
 
         // Reset handler entry point
         // The stack pointer is already set by hardware from vector table[0]
+
+        // Enable FPU: set CP10+CP11 to full access in SCB->CPACR (0xE000ED88)
+        if self.enable_fpu {
+            // MOVW R0, #0xED88 (low 16 bits of CPACR address)
+            // Thumb-2 MOVW encoding: 1111 0 i 10 0 1 0 0 imm4 | 0 imm3 Rd imm8
+            // 0xED88: imm4=0xE, i=1, imm3=0b101, imm8=0x88
+            code.extend_from_slice(&[0x4E, 0xF6, 0x88, 0x50]); // MOVW R0, #0xED88
+
+            // MOVT R0, #0xE000 (high 16 bits of CPACR address)
+            // 0xE000: imm4=0xE, i=0, imm3=0, imm8=0
+            code.extend_from_slice(&[0xCE, 0xF2, 0x00, 0x00]); // MOVT R0, #0xE000
+
+            // LDR R1, [R0]
+            code.extend_from_slice(&[0xD0, 0xF8, 0x00, 0x10]); // LDR R1, [R0, #0]
+
+            // ORR R1, R1, #0x00F00000 (enable CP10+CP11 full access)
+            // Thumb-2 ORR with modified immediate: 0x00F00000
+            code.extend_from_slice(&[0x41, 0xF0, 0xF0, 0x61]); // ORR R1, R1, #0x00F00000
+
+            // STR R1, [R0]
+            code.extend_from_slice(&[0xC0, 0xF8, 0x00, 0x10]); // STR R1, [R0, #0]
+
+            // DSB (data synchronization barrier)
+            code.extend_from_slice(&[0xBF, 0xF3, 0x4F, 0x8F]); // DSB SY
+
+            // ISB (instruction synchronization barrier)
+            code.extend_from_slice(&[0xBF, 0xF3, 0x6F, 0x8F]); // ISB SY
+        }
 
         // Initialize R11 with linear memory base address (0x20000000)
         // This is used for WASM linear memory access: LDR Rd, [R11, Raddr]

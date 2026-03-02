@@ -46,7 +46,13 @@ impl Backend for ArmBackend {
     }
 
     fn supported_targets(&self) -> Vec<TargetSpec> {
-        vec![TargetSpec::cortex_m4(), TargetSpec::cortex_m7()]
+        vec![
+            TargetSpec::cortex_m3(),
+            TargetSpec::cortex_m4(),
+            TargetSpec::cortex_m4f(),
+            TargetSpec::cortex_m7(),
+            TargetSpec::cortex_m7dp(),
+        ]
     }
 
     fn compile_module(
@@ -149,6 +155,7 @@ fn compile_wasm_to_arm(
         let db = RuleDatabase::with_standard_rules();
         let mut selector =
             InstructionSelector::with_bounds_check(db.rules().to_vec(), bounds_config);
+        selector.set_target(config.target.fpu, &config.target.triple);
         if config.num_imports > 0 {
             selector.set_num_imports(config.num_imports);
         }
@@ -181,7 +188,7 @@ fn compile_wasm_to_arm(
     let use_thumb2 = matches!(config.target.isa, IsaVariant::Thumb2 | IsaVariant::Thumb);
 
     let encoder = if use_thumb2 {
-        ArmEncoder::new_thumb2()
+        ArmEncoder::new_thumb2_with_fpu(config.target.fpu)
     } else {
         ArmEncoder::new_arm32()
     };
