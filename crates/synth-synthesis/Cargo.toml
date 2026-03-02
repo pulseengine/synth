@@ -17,3 +17,4 @@ wasmparser.workspace = true
 
 [dev-dependencies]
 wat.workspace = true
+proptest.workspace = true

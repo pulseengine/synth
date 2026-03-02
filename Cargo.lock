@@ -1995,6 +1995,7 @@ name = "synth-synthesis"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "proptest",
  "serde",
  "synth-cfg",
  "synth-core",
