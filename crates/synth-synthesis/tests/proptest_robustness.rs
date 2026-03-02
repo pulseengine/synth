@@ -99,10 +99,10 @@ proptest! {
         let db = RuleDatabase::with_standard_rules();
 
         let mut sel1 = InstructionSelector::new(db.rules().to_vec());
-        let r1 = sel1.select(&[op.clone()]).unwrap();
+        let r1 = sel1.select(std::slice::from_ref(&op)).unwrap();
 
         let mut sel2 = InstructionSelector::new(db.rules().to_vec());
-        let r2 = sel2.select(&[op]).unwrap();
+        let r2 = sel2.select(std::slice::from_ref(&op)).unwrap();
 
         prop_assert_eq!(
             r1.len(), r2.len(),
