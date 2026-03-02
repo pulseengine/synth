@@ -150,11 +150,11 @@ impl Cfg {
                     }
                 }
 
-                if let Some(new_idom) = new_idom {
-                    if doms.get(&block_id) != Some(&new_idom) {
-                        doms.insert(block_id, new_idom);
-                        changed = true;
-                    }
+                if let Some(new_idom) = new_idom
+                    && doms.get(&block_id) != Some(&new_idom)
+                {
+                    doms.insert(block_id, new_idom);
+                    changed = true;
                 }
             }
         }
@@ -475,10 +475,10 @@ impl CfgBuilder {
 
     /// Add an instruction to the current block
     pub fn add_instruction(&mut self) {
-        if let Some(current_id) = self.current_block {
-            if let Some(block) = self.blocks.get_mut(current_id) {
-                block.end = self.instruction_count + 1;
-            }
+        if let Some(current_id) = self.current_block
+            && let Some(block) = self.blocks.get_mut(current_id)
+        {
+            block.end = self.instruction_count + 1;
         }
         self.instruction_count += 1;
     }
@@ -508,16 +508,16 @@ impl CfgBuilder {
     /// Add a branch from current block to target block
     pub fn add_branch(&mut self, target: BlockId) {
         if let Some(current_id) = self.current_block {
-            if let Some(current_block) = self.blocks.iter_mut().find(|b| b.id == current_id) {
-                if !current_block.successors.contains(&target) {
-                    current_block.successors.push(target);
-                }
+            if let Some(current_block) = self.blocks.iter_mut().find(|b| b.id == current_id)
+                && !current_block.successors.contains(&target)
+            {
+                current_block.successors.push(target);
             }
 
-            if let Some(target_block) = self.blocks.iter_mut().find(|b| b.id == target) {
-                if !target_block.predecessors.contains(&current_id) {
-                    target_block.predecessors.push(current_id);
-                }
+            if let Some(target_block) = self.blocks.iter_mut().find(|b| b.id == target)
+                && !target_block.predecessors.contains(&current_id)
+            {
+                target_block.predecessors.push(current_id);
             }
         }
     }

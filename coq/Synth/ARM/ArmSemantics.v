@@ -44,6 +44,21 @@ Definition compute_v_flag_add (x y result : I32.int) : bool :=
     (andb (andb (Z.leb 0 sx) (Z.leb 0 sy)) (Z.ltb sr 0))
     (andb (andb (Z.ltb sx 0) (Z.ltb sy 0)) (Z.leb 0 sr)).
 
+(** Compute carry flag for subtraction (CMP): C = 1 when v1 >= v2 unsigned (no borrow) *)
+Definition compute_c_flag_sub (v1 v2 : I32.int) : bool :=
+  Z.leb (I32.unsigned v2) (I32.unsigned v1).
+
+(** Compute overflow flag for subtraction:
+    Overflow when operands have different signs and result sign differs from first operand.
+    Pos - Neg -> Neg (overflow) OR Neg - Pos -> Pos (overflow) *)
+Definition compute_v_flag_sub (v1 v2 : I32.int) : bool :=
+  let sv1 := I32.signed v1 in
+  let sv2 := I32.signed v2 in
+  let sr := I32.signed (I32.sub v1 v2) in
+  orb
+    (andb (andb (Z.leb 0 sv1) (Z.ltb sv2 0)) (Z.ltb sr 0))
+    (andb (andb (Z.ltb sv1 0) (Z.leb 0 sv2)) (Z.leb 0 sr)).
+
 (** Update flags after arithmetic operation *)
 Definition update_flags_arith (result : I32.int) (c v : bool) : condition_flags :=
   mkFlags
@@ -253,27 +268,23 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       let v2 := eval_operand2 op2 s in
       let result := I32.sub v1 v2 in
       (* Update flags but don't write to register *)
-      let c := compute_c_flag_add v1 (I32.sub I32.zero v2) in
-      let v := compute_v_flag_add v1 (I32.sub I32.zero v2) result in
+      let c := compute_c_flag_sub v1 v2 in
+      let v := compute_v_flag_sub v1 v2 in
       let new_flags := update_flags_arith result c v in
       Some (set_flags s new_flags)
 
-  (* Bit manipulation - simplified implementations *)
+  (* Bit manipulation — axiomatized via I32.clz/rbit/popcnt *)
   | CLZ rd rm =>
-      (* Count leading zeros - placeholder *)
       let v := get_reg s rm in
-      (* Real implementation would count leading zeros *)
-      Some (set_reg s rd I32.zero)
+      Some (set_reg s rd (I32.clz v))
 
   | RBIT rd rm =>
-      (* Reverse bits - placeholder *)
       let v := get_reg s rm in
-      Some (set_reg s rd v)
+      Some (set_reg s rd (I32.rbit v))
 
   | POPCNT rd rm =>
-      (* Population count - placeholder *)
       let v := get_reg s rm in
-      Some (set_reg s rd I32.zero)
+      Some (set_reg s rd (I32.popcnt v))
 
   (* Memory operations *)
   | LDR rd rn offset =>
@@ -308,23 +319,15 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       let target := get_reg s rm in
       Some (set_reg s PC target)
 
-  (* VFP operations - placeholders for now *)
-  | VADD_F32 rd rn rm =>
-      (* Placeholder: would need proper floating-point semantics *)
-      Some s
-
-  | VSUB_F32 rd rn rm =>
-      Some s
-
-  | VMUL_F32 rd rn rm =>
-      Some s
-
-  | VDIV_F32 rd rn rm =>
-      Some s
+  (* VFP operations — no semantics modeled, execution fails honestly *)
+  | VADD_F32 _ _ _ => None
+  | VSUB_F32 _ _ _ => None
+  | VMUL_F32 _ _ _ => None
+  | VDIV_F32 _ _ _ => None
 
   | _ =>
-      (* Not yet implemented *)
-      Some s
+      (* Unmodeled instruction — execution fails *)
+      None
   end.
 
 (** Execute a sequence of instructions *)

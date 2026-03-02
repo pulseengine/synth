@@ -192,13 +192,13 @@ fn compile_wasm_to_arm(
     for instr in &arm_instrs {
         // Record relocation for BL instructions targeting external symbols.
         // The BL is encoded with offset 0; the linker patches it.
-        if let ArmOp::Bl { label } = &instr.op {
-            if label.starts_with("__meld_") {
-                relocations.push(CodeRelocation {
-                    offset: code.len() as u32,
-                    symbol: label.clone(),
-                });
-            }
+        if let ArmOp::Bl { label } = &instr.op
+            && label.starts_with("__meld_")
+        {
+            relocations.push(CodeRelocation {
+                offset: code.len() as u32,
+                symbol: label.clone(),
+            });
         }
 
         let encoded = encoder

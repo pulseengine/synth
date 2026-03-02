@@ -63,13 +63,13 @@ impl ComponentValidator {
         // Validate memories
         for memory in &module.memories {
             // Check that initial size is not larger than maximum
-            if let Some(max) = memory.maximum {
-                if memory.initial > max {
-                    return Err(Error::validation(format!(
-                        "Memory initial size ({}) exceeds maximum ({})",
-                        memory.initial, max
-                    )));
-                }
+            if let Some(max) = memory.maximum
+                && memory.initial > max
+            {
+                return Err(Error::validation(format!(
+                    "Memory initial size ({}) exceeds maximum ({})",
+                    memory.initial, max
+                )));
             }
 
             // Check reasonable limits (e.g., 4GB = 65536 pages for 32-bit)

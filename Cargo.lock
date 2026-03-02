@@ -1946,15 +1946,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "synth-codegen"
-version = "0.1.0"
-dependencies = [
- "synth-cfg",
- "synth-opt",
- "synth-regalloc",
-]
-
-[[package]]
 name = "synth-core"
 version = "0.1.0"
 dependencies = [
@@ -1998,14 +1989,6 @@ dependencies = [
 [[package]]
 name = "synth-qemu"
 version = "0.1.0"
-
-[[package]]
-name = "synth-regalloc"
-version = "0.1.0"
-dependencies = [
- "synth-cfg",
- "synth-opt",
-]
 
 [[package]]
 name = "synth-synthesis"

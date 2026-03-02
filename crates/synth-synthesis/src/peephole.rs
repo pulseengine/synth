@@ -27,32 +27,30 @@ impl PeepholeOptimizer {
             let mut optimized = false;
 
             // Try 3-instruction patterns
-            if i + 2 < instrs.len() {
-                if let Some(replacement) =
+            if i + 2 < instrs.len()
+                && let Some(replacement) =
                     self.try_optimize_3(&instrs[i], &instrs[i + 1], &instrs[i + 2])
-                {
-                    result.extend(replacement);
-                    i += 3;
-                    optimized = true;
-                }
+            {
+                result.extend(replacement);
+                i += 3;
+                optimized = true;
             }
 
             // Try 2-instruction patterns
-            if !optimized && i + 1 < instrs.len() {
-                if let Some(replacement) = self.try_optimize_2(&instrs[i], &instrs[i + 1]) {
-                    result.extend(replacement);
-                    i += 2;
-                    optimized = true;
-                }
+            if !optimized
+                && i + 1 < instrs.len()
+                && let Some(replacement) = self.try_optimize_2(&instrs[i], &instrs[i + 1])
+            {
+                result.extend(replacement);
+                i += 2;
+                optimized = true;
             }
 
             // Try 1-instruction patterns
-            if !optimized {
-                if let Some(replacement) = self.try_optimize_1(&instrs[i]) {
-                    result.extend(replacement);
-                    i += 1;
-                    optimized = true;
-                }
+            if !optimized && let Some(replacement) = self.try_optimize_1(&instrs[i]) {
+                result.extend(replacement);
+                i += 1;
+                optimized = true;
             }
 
             // No optimization found, keep original

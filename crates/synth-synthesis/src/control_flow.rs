@@ -140,20 +140,20 @@ impl ControlFlowManager {
 
     /// Record a conditional branch at the start of an If block
     pub fn record_if_branch(&mut self, instr_index: usize) {
-        if let Some(block) = self.block_stack.last_mut() {
-            if block.block_type == BlockType::If {
-                block.branch_index = Some(instr_index);
-            }
+        if let Some(block) = self.block_stack.last_mut()
+            && block.block_type == BlockType::If
+        {
+            block.branch_index = Some(instr_index);
         }
     }
 
     /// Handle Else - record the jump from then-block and start else-block
     pub fn handle_else(&mut self, jump_instr_index: usize) {
-        if let Some(block) = self.block_stack.last_mut() {
-            if block.block_type == BlockType::If {
-                block.else_branch_index = Some(jump_instr_index);
-                block.else_index = Some(self.current_index);
-            }
+        if let Some(block) = self.block_stack.last_mut()
+            && block.block_type == BlockType::If
+        {
+            block.else_branch_index = Some(jump_instr_index);
+            block.else_index = Some(self.current_index);
         }
     }
 

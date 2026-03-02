@@ -1,160 +1,187 @@
-# Synth Rocq Proof Suite -- Status
+# Rocq Proof Suite — Honest Status
 
-Last audited: 2026-03-01
+**Last Updated:** March 2026
 
-## Numbers at a Glance
+## Overview
 
-| Metric                 | Value   |
-|------------------------|---------|
-| `.v` files             | 23      |
-| Total lines            | ~7 500  |
-| `Qed.` (closed proofs)| 205     |
-| `Admitted.` (open)     | 23      |
-| Axioms (in Integers.v) | 10     |
-| Proof-to-admit ratio   | 8.9:1   |
+Synth's Rocq proof suite verifies that `compile_wasm_to_arm` preserves WASM semantics for
+integer operations. After removing the silent catch-all (`| _ => Some s`) from ARM semantics,
+only proofs backed by real instruction semantics survive.
 
-Note: "Axioms" count the `Axiom` declarations in `Common/Integers.v` for
-`clz`, `ctz`, `popcnt` (I32 and I64), their range properties, and the
-division/remainder formulas.  These are modeling axioms, not proof holes.
+## Proof Tiers
 
-Sprint 3 closed **99 Admitted proofs** (from 122 to 23), improving the
-ratio from 0.87:1 to 8.9:1.
+| Tier | Meaning | Count |
+|------|---------|-------|
+| **T1: Result Correspondence** | ARM output register = WASM result value | 34 |
+| **T2: Existence-Only** | ARM execution succeeds (no result claim) | 95 |
+| **T3: Admitted** | Not yet proven | 55 |
+| **Infrastructure** | Properties of integers, states, flag lemmas | 51 |
 
----
+**Total: 180 Qed / 55 Admitted across all files**
 
-## Per-File Matrix
+## T1: Result Correspondence (34 Qed)
 
-### Infrastructure (no correctness proofs expected)
+These are the crown jewels — they prove the compiled ARM code produces the exact same
+value as the WASM operation.
 
-| File | Lines | Qed | Admitted | Status |
-|------|------:|----:|---------:|--------|
-| `Common/Base.v`              | 128 | 4  | 0 | Complete |
-| `Common/Integers.v`         | 346 | 9  | 2 | Partial -- `add_zero`, `i64_to_i32_to_i64_wrap` admitted; 10 axioms |
-| `Common/StateMonad.v`       |  64 | 3  | 0 | Complete |
-| `ARM/ArmInstructions.v`     | 155 | 0  | 0 | Complete (definitions only) |
-| `ARM/ArmState.v`            | 237 | 6  | 0 | Complete |
-| `ARM/ArmSemantics.v`        | 412 | 5  | 0 | Complete |
-| `ARM/ArmRefinement.v`       | 168 | 0  | 2 | Placeholder -- Sail integration pending |
-| `WASM/WasmInstructions.v`   | 206 | 0  | 0 | Complete (definitions only) |
-| `WASM/WasmSemantics.v`      | 664 | 6  | 0 | Complete |
-| `WASM/WasmValues.v`         | 107 | 2  | 0 | Complete |
-| `Extraction/CompilerExtract.v` | 94 | 0 | 0 | Complete (extraction directives only) |
+### i32 Arithmetic (7)
 
-### Compilation
+| File | Theorem | Operation |
+|------|---------|-----------|
+| Correctness.v | `compile_i32_add_correct` | I32Add |
+| Correctness.v | `compile_i32_sub_correct` | I32Sub |
+| Correctness.v | `compile_i32_mul_correct` | I32Mul |
+| Correctness.v | `compile_i32_and_correct` | I32And |
+| Correctness.v | `compile_i32_or_correct` | I32Or |
+| Correctness.v | `compile_i32_xor_correct` | I32Xor |
 
-| File | Lines | Qed | Admitted | Status |
-|------|------:|----:|---------:|--------|
-| `Synth/Compilation.v`       | 640 | 5  | 0 | Complete |
-| `Synth/Tactics.v`           | 137 | 1  | 0 | Complete |
+(Also duplicated in CorrectnessI32.v: add, sub, mul, and, or, xor)
 
-### Correctness Proofs
+### i32 Division (4)
 
-| File | Lines | Qed | Admitted | Status |
-|------|------:|----:|---------:|--------|
-| `Synth/Correctness.v`               | 280 |  6 |  0 | Complete -- i32 add/sub/mul/and/or/xor |
-| `Synth/CorrectnessSimple.v`         | 400 | 29 |  0 | **Complete** -- all 29 theorems proven (existence-only) |
-| `Synth/CorrectnessI32.v`            | 450 | 13 | 16 | Partial -- 13 Qed, 16 admitted (shifts, comparisons with result corr.) |
-| `Synth/CorrectnessI64.v`            | 350 | 25 |  4 | **Near-complete** -- 25 Qed, 4 admitted (div/rem need register corr.) |
-| `Synth/CorrectnessI64Comparisons.v` | 340 | 19 |  0 | **Complete** -- 11 comparisons + 3 bit-manip + 5 shift/rotate |
-| `Synth/CorrectnessConversions.v`    | 260 | 21 |  0 | **Complete** -- all 21 conversion operations proven |
-| `Synth/CorrectnessF32.v`            | 200 | 20 |  0 | **Complete** -- all 20 f32 ops proven (VFP placeholder semantics) |
-| `Synth/CorrectnessF64.v`            | 200 | 20 |  0 | **Complete** -- all 20 f64 ops proven (VFP placeholder semantics) |
-| `Synth/CorrectnessMemory.v`         | 100 |  8 |  0 | **Complete** -- all 8 memory ops proven |
-| `Synth/CorrectnessComplete.v`       | 170 |  0 |  0 | Index file (no proofs, re-exports other modules) |
+| File | Theorem | Operation |
+|------|---------|-----------|
+| CorrectnessI32.v | `i32_divs_correct` | I32DivS |
+| CorrectnessI32.v | `i32_divu_correct` | I32DivU |
+| CorrectnessI32.v | `i32_rems_correct` | I32RemS |
+| CorrectnessI32.v | `i32_remu_correct` | I32RemU |
 
----
+### i32 Comparison (11) — uses flag-correspondence lemmas
 
-## Sprint 3 Changes (2026-03-01)
+| File | Theorem | Operation | Flag Lemma |
+|------|---------|-----------|------------|
+| CorrectnessI32.v | `i32_eqz_correct` | I32Eqz | `z_flag_sub_eq` |
+| CorrectnessI32.v | `i32_eq_correct` | I32Eq | `z_flag_sub_eq` |
+| CorrectnessI32.v | `i32_ne_correct` | I32Ne | `flags_ne` |
+| CorrectnessI32.v | `i32_lt_s_correct` | I32LtS | `nv_flag_sub_lts` |
+| CorrectnessI32.v | `i32_lt_u_correct` | I32LtU | `flags_ltu` |
+| CorrectnessI32.v | `i32_gt_s_correct` | I32GtS | `flags_gts` |
+| CorrectnessI32.v | `i32_gt_u_correct` | I32GtU | `flags_gtu` |
+| CorrectnessI32.v | `i32_le_s_correct` | I32LeS | `flags_les` |
+| CorrectnessI32.v | `i32_le_u_correct` | I32LeU | `flags_leu` |
+| CorrectnessI32.v | `i32_ge_s_correct` | I32GeS | `flags_ges` |
+| CorrectnessI32.v | `i32_ge_u_correct` | I32GeU | `flags_geu` |
 
-### Proofs Closed (102 total)
+### i32 Bit Manipulation (3) — uses axiomatized operations
 
-- **CorrectnessF32.v**: 20 admits -> 0 admits (all 20 proven)
-- **CorrectnessF64.v**: 20 admits -> 0 admits (all 20 proven)
-- **CorrectnessConversions.v**: 21 admits -> 0 admits (all 21 proven)
-- **CorrectnessMemory.v**: 8 admits -> 0 admits (all 8 proven)
-- **CorrectnessSimple.v**: 24 admits -> 0 admits (all 29 theorems now Qed)
-  - Closed: select, local_get, local_set, local_tee, global_get, global_set
-  - Closed: all 11 i32 comparisons (existence-only form)
-  - Closed: all 5 shift/rotate ops (existence-only form)
-  - Closed: all 3 bit manipulation ops (existence-only form)
-- **CorrectnessI64.v**: 34 admits -> 4 admits (closed 30)
-  - Closed: add, sub, mul, and, or, xor, shl, shru, shrs, rotl, rotr
-  - Closed: all 11 comparisons, all 3 bit manipulation ops
-  - Remaining: divs, divu, rems, remu (division may fail without register corr.)
-- **CorrectnessI64Comparisons.v**: all admits closed (was already partially done)
-- **CorrectnessI32.v**: 25 admits -> 16 admits (closed 9)
-  - Closed: rems, remu (full proof with register read-after-write reasoning)
-  - Closed: clz, ctz, popcnt (placeholder result I32.zero)
-  - Remaining: 5 shifts (need dynamic shift in ARM), 11 comparisons (need flag lemmas)
+| File | Theorem | Operation |
+|------|---------|-----------|
+| CorrectnessI32.v | `i32_clz_correct` | I32Clz |
+| CorrectnessI32.v | `i32_ctz_correct` | I32Ctz |
+| CorrectnessI32.v | `i32_popcnt_correct` | I32Popcnt |
 
-### Key Techniques Used
+### i64 Division (4) — uses I32 division (32-bit register limitation)
 
-1. **VFP placeholder semantics**: All VFP instructions return `Some s` via the
-   catch-all case in `exec_instr`, making existence proofs trivial.
-2. **Empty program proofs**: Operations compiled to `[]` (like I32WrapI64,
-   I64ExtendI32S/U, I32Rotl, I64Rotl) are immediate from `exec_program [] s = Some s`.
-3. **CMP+MOV+MOVcc existence**: All three instructions in comparison sequences
-   always return `Some`, so existence is provable without flag reasoning.
-4. **Register read-after-write**: Used `get_set_reg_eq` and `get_set_reg_neq`
-   to trace through multi-instruction sequences (SDIV+MLS for remainder ops).
-5. **Case analysis on idx**: LocalGet/LocalSet/LocalTee proofs closed by
-   destructing the nat index (0-3) and applying `get_set_reg_eq`.
+| File | Theorem | Operation |
+|------|---------|-----------|
+| CorrectnessI64.v | `i64_divs_correct` | I64DivS |
+| CorrectnessI64.v | `i64_divu_correct` | I64DivU |
+| CorrectnessI64.v | `i64_rems_correct` | I64RemS |
+| CorrectnessI64.v | `i64_remu_correct` | I64RemU |
 
----
+Note: i64 div/rem proofs use `I32.divs`/`I32.divu` hypotheses (what ARM actually computes
+with 32-bit registers), not `I64.divs`/`I64.divu`.
 
-## Remaining 20 Admitted Proofs
+Each T1 proof proves: `get_reg astate' R0 = <result>` after executing the compiled ARM program.
 
-### Category 1 -- I32 Comparisons with Result Correspondence (11 admits)
+## T2: Existence-Only (95 Qed)
 
-File: `CorrectnessI32.v`
+These prove the ARM program executes successfully but don't claim the result value is correct.
+Named `*_executes` to distinguish from T1 `*_correct` proofs.
 
-These theorems claim `get_reg astate' R0 = (if I32.cmp v1 v2 then I32.one else I32.zero)`,
-which requires proving that ARM condition flags after `CMP` correctly reflect
-the I32 comparison result. Specifically:
+| File | Count | Operations |
+|------|-------|------------|
+| CorrectnessSimple.v | 29 | Nop, Drop, Select, LocalGet/Set/Tee, GlobalGet/Set, I32Const, I64Const, 11 comparisons, 5 shifts, 3 bit-manip |
+| CorrectnessI64.v | 25 | Add, Sub, Mul, And, Or, Xor, 5 shifts, 11 comparisons, 3 bit-manip |
+| CorrectnessI64Comparisons.v | 19 | 11 comparisons, 3 bit-manip, 5 shifts |
+| CorrectnessF32.v | 7 | Min, Max, Copysign, Ceil, Floor, Trunc, Nearest (compile to `[]`) |
+| CorrectnessF64.v | 7 | Min, Max, Copysign, Ceil, Floor, Trunc, Nearest (compile to `[]`) |
+| CorrectnessConversions.v | 3 | I32WrapI64, I64ExtendI32S, I64ExtendI32U (compile to `[]`) |
+| CorrectnessMemory.v | 4 | I32Load, I64Load, I32Store, I64Store |
+| CorrectnessComplete.v | 1 | Master compilation theorem |
 
-- `compute_z_flag (I32.sub v1 v2) = I32.eq v1 v2` (for eq/ne)
-- N!=V correspondence for signed comparisons (lt_s, gt_s, le_s, ge_s)
-- C flag correspondence for unsigned comparisons (lt_u, gt_u, le_u, ge_u)
+## T3: Admitted (55)
 
-**Unblocking**: Write flag-correspondence lemmas in a new `ARM/ArmFlagLemmas.v`.
+| Category | Count | Root Cause | Unblocking Strategy |
+|----------|-------|------------|---------------------|
+| VFP unmodeled | 44 | No floating-point semantics | Integrate Flocq IEEE 754 library |
+| Fixed-immediate shifts | 5 | Compilation uses LSL/ROR with constant 0 | Add register-based shift instructions |
+| Memory correspondence | 4 | Memory ops need load/store semantics | Model memory in ArmSemantics |
+| Other | 2 | ArmRefinement (1), CorrectnessComplete (1) | Low priority |
 
-### Category 2 -- I32 Shifts/Rotates with Result Correspondence (5 admits)
+## Axioms
 
-File: `CorrectnessI32.v`
+### Integers.v (12 axioms, 6 function + 6 property)
 
-The ARM compilation uses fixed-immediate shifts (e.g., `LSL R0 R0 0`) which
-are placeholder values. The result does not match the dynamic WASM shift.
+| Axiom | Purpose |
+|-------|---------|
+| `I32.clz` | Count leading zeros function |
+| `I32.ctz` | Count trailing zeros function |
+| `I32.popcnt` | Population count function |
+| `I32.rbit` | Reverse bits function (ARM RBIT) |
+| `I32.clz_rbit` | `clz(rbit(v)) = ctz(v)` — connects RBIT+CLZ to CTZ |
+| `I32.clz_range` | `0 <= clz(x) <= 32` |
+| `I32.ctz_range` | `0 <= ctz(x) <= 32` |
+| `I32.popcnt_range` | `0 <= popcnt(x) <= 32` |
+| `I32.div_mul_rem_unsigned` | Division/remainder relationship (unsigned) |
+| `I32.div_mul_rem_signed` | Division/remainder relationship (signed) |
+| `I32.remu_formula` | `r = a - (a/b) * b` (unsigned) |
+| `I32.rems_formula` | `r = a - (a/b) * b` (signed) |
 
-**Unblocking**: Either update `compile_wasm_to_arm` to emit register-based
-shifts (e.g., using `LSL_reg` instruction), or accept the existence-only
-proofs already in `CorrectnessSimple.v`.
+### ArmFlagLemmas.v (1 axiom)
 
-### Category 3 -- I64 Division/Remainder (4 admits)
+| Axiom | Purpose |
+|-------|---------|
+| `nv_flag_sub_lts` | N≠V flag after CMP ↔ signed less-than (ARM architecture property) |
 
-File: `CorrectnessI64.v`
+## Flag-Correspondence Lemmas (ArmFlagLemmas.v)
 
-`SDIV`/`UDIV` may return `None` on division by zero. The theorems assume
-WASM division succeeds but lack register correspondence to guarantee the
-ARM division also succeeds.
+10 lemmas connecting ARM condition flags to WASM comparison operations:
 
-**Unblocking**: Add register-correspondence hypotheses matching the pattern
-in `CorrectnessI32.v` (where divs/divu are already proven).
+| Lemma | Meaning |
+|-------|---------|
+| `z_flag_sub_eq` | Z flag ↔ I32.eq (fully proved) |
+| `c_flag_sub_geu` | C flag ↔ negb (I32.ltu) (fully proved) |
+| `nv_flag_sub_lts` | N≠V ↔ I32.lts (axiomatized — ARM architecture fact) |
+| `flags_ne` | negb Z ↔ I32.ne (derived) |
+| `flags_ltu` | negb C ↔ I32.ltu (derived) |
+| `flags_ges` | N=V ↔ I32.ges (derived) |
+| `flags_geu` | C ↔ I32.geu (derived) |
+| `flags_gts` | !Z && N=V ↔ I32.gts (derived) |
+| `flags_gtu` | C && !Z ↔ I32.gtu (derived) |
+| `flags_les` | Z || N≠V ↔ I32.les (derived) |
+| `flags_leu` | !C || Z ↔ I32.leu (derived) |
 
----
+## Catch-All Removal
 
-## Next Targets (recommended order)
+The original `exec_instr` in `ArmSemantics.v` had:
+```coq
+| _ => Some s  (* Not yet implemented *)
+```
 
-1. **Write flag-correspondence lemmas** to close 11 i32 comparison admits.
-   Estimated: 3-5 days.
+This made every unmodeled instruction a silent no-op, allowing ~48 proofs to pass
+vacuously. It has been replaced with:
+```coq
+| _ => None  (* Unmodeled instruction — execution fails *)
+```
 
-2. **Fix shift compilation** to use register-based shifts, then close 5
-   i32 shift/rotate admits. Estimated: 2-3 days.
+Additionally, the four explicit VFP placeholders (`VADD_F32 => Some s`, etc.)
+were changed to `None`.
 
-3. **Add register correspondence to i64 div/rem** theorems, then close 4
-   i64 admits. Estimated: 1 day.
+## Per-File Breakdown
 
-4. **Close remaining infrastructure admits** (I32.add_zero, Integers.v).
-
-5. **Sail integration** for real VFP semantics (long-term).
-
-6. **Flocq integration** for IEEE 754 result correspondence (long-term).
+| File | Qed | Admitted | Tier |
+|------|-----|----------|------|
+| Correctness.v | 6 | 0 | T1 |
+| CorrectnessSimple.v | 29 | 0 | T2 |
+| CorrectnessI32.v | 24 | 5 | T1+T3 |
+| CorrectnessI64.v | 29 | 0 | T1+T2 |
+| CorrectnessI64Comparisons.v | 19 | 0 | T2 |
+| CorrectnessF32.v | 7 | 13 | T2+T3 |
+| CorrectnessF64.v | 7 | 13 | T2+T3 |
+| CorrectnessConversions.v | 3 | 18 | T2+T3 |
+| CorrectnessMemory.v | 4 | 4 | T2+T3 |
+| CorrectnessComplete.v | 1 | 1 | T2+T3 |
+| ArmFlagLemmas.v | 10 | 0 | Infra |
+| Tactics.v | 1 | 0 | Infra |
+| Infrastructure (7 files) | 40 | 1 | Infra |

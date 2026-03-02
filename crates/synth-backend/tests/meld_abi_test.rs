@@ -134,7 +134,7 @@ fn test_elf_relocation_for_meld_dispatch() {
 #[test]
 fn test_full_meld_abi_pipeline() {
     // Simulate a WASM module that imports "env.log" and calls it
-    let imports = vec![ImportEntry {
+    let imports = [ImportEntry {
         module: "env".to_string(),
         name: "log".to_string(),
         kind: ImportKind::Function(0), // type index 0

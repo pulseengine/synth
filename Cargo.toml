@@ -11,8 +11,6 @@ members = [
     "crates/synth-abi",
     "crates/synth-cfg",
     "crates/synth-opt",
-    "crates/synth-regalloc",
-    "crates/synth-codegen",
     "crates/synth-verify",
     "crates/synth-test",
     "crates/synth-memory",

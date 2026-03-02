@@ -30,10 +30,10 @@ impl AwsmBackend {
     }
 
     fn find_executable(&self) -> Option<String> {
-        if let Some(ref path) = self.awsm_path {
-            if Path::new(path).exists() {
-                return Some(path.clone());
-            }
+        if let Some(ref path) = self.awsm_path
+            && Path::new(path).exists()
+        {
+            return Some(path.clone());
         }
         // Search PATH
         Command::new("which")

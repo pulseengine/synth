@@ -197,17 +197,17 @@ pub fn extract_gpio_writes(result: &QemuResult) -> Vec<(u32, u32)> {
     for line in result.stdout.lines() {
         if line.contains("GPIO write") {
             // Parse GPIO write: "GPIO write: addr=0x40020018, value=0x00000020"
-            if let Some(addr_start) = line.find("addr=") {
-                if let Some(val_start) = line.find("value=") {
-                    let addr_str = &line[addr_start + 5..addr_start + 15];
-                    let val_str = &line[val_start + 6..val_start + 16];
+            if let Some(addr_start) = line.find("addr=")
+                && let Some(val_start) = line.find("value=")
+            {
+                let addr_str = &line[addr_start + 5..addr_start + 15];
+                let val_str = &line[val_start + 6..val_start + 16];
 
-                    if let (Ok(addr), Ok(val)) = (
-                        u32::from_str_radix(&addr_str[2..], 16),
-                        u32::from_str_radix(&val_str[2..], 16),
-                    ) {
-                        writes.push((addr, val));
-                    }
+                if let (Ok(addr), Ok(val)) = (
+                    u32::from_str_radix(&addr_str[2..], 16),
+                    u32::from_str_radix(&val_str[2..], 16),
+                ) {
+                    writes.push((addr, val));
                 }
             }
         }

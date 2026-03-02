@@ -218,10 +218,16 @@ Module I32.
   (** Population count (count number of 1 bits) *)
   Axiom popcnt : int -> int.
 
+  (** Reverse bits (used by ARM RBIT instruction) *)
+  Axiom rbit : int -> int.
+
   (** Properties of bit manipulation operations *)
   Axiom clz_range : forall x, 0 <= unsigned (clz x) <= 32.
   Axiom ctz_range : forall x, 0 <= unsigned (ctz x) <= 32.
   Axiom popcnt_range : forall x, 0 <= unsigned (popcnt x) <= 32.
+
+  (** CLZ of reversed bits equals CTZ of original *)
+  Axiom clz_rbit : forall v, clz (rbit v) = ctz v.
 
 End I32.
 

@@ -3005,17 +3005,15 @@ impl OptimizerBridge {
         }
 
         // Ensure return value is in R0 (skip for i64 results which are already in R0:R1)
-        if !is_i64_result {
-            if let Some(result_vreg) = last_result_vreg {
-                if let Some(&result_reg) = vreg_to_arm.get(&result_vreg) {
-                    if result_reg != Reg::R0 {
-                        arm_instrs.push(ArmOp::Mov {
-                            rd: Reg::R0,
-                            op2: Operand2::Reg(result_reg),
-                        });
-                    }
-                }
-            }
+        if !is_i64_result
+            && let Some(result_vreg) = last_result_vreg
+            && let Some(&result_reg) = vreg_to_arm.get(&result_vreg)
+            && result_reg != Reg::R0
+        {
+            arm_instrs.push(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(result_reg),
+            });
         }
 
         // Add return if not present

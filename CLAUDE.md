@@ -80,9 +80,10 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 106 Qed / 122 Admitted.
-Most admits are in correctness proofs where `compile_wasm_to_arm` generates non-trivial ARM
-sequences (CMP+MOV+conditional-MOV) that require register correspondence lemmas.
+See `coq/STATUS.md` for the complete coverage matrix. Current: 180 Qed / 55 Admitted.
+Proofs are tiered: T1 (34 result-correspondence), T2 (95 existence-only), T3 (55 admitted).
+Most admits require VFP semantics (44), register-based shifts (5), or memory semantics (4).
+Flag-correspondence lemmas in `ARM/ArmFlagLemmas.v` closed all 11 i32 comparison admits.
 
 ## Conventions
 

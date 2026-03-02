@@ -1,15 +1,15 @@
 (** * I32 Operations Correctness
 
     This file contains correctness proofs for all i32 WebAssembly operations.
-    Total: 34 operations
+    Total: 34 operations — 24 Qed, 5 Admitted
 
     Strategy:
     - Arithmetic (add, sub, mul, and, or, xor): synth_binop_proof tactic
     - Division (divs, divu): manual proof with Option handling
-    - Remainder (rems, remu): Admitted — need multi-instruction ARM reasoning
-    - Shifts: Admitted — ARM uses fixed immediate, WASM uses dynamic shift amount
-    - Comparisons: Admitted — need flag-aware ARM execution model tracing
-    - Bit manipulation: Admitted — CLZ/CTZ/POPCNT have placeholder ARM semantics
+    - Remainder (rems, remu): manual proof tracing SDIV/UDIV + MLS
+    - Comparisons: flag-correspondence lemmas from ArmFlagLemmas.v
+    - Bit manipulation: axiom-based (I32.clz/rbit/popcnt)
+    - Shifts: Admitted — ARM compilation uses fixed immediate, not register shift
 *)
 
 From Stdlib Require Import ZArith.
@@ -23,6 +23,7 @@ Require Import Synth.WASM.WasmInstructions.
 Require Import Synth.WASM.WasmSemantics.
 Require Import Synth.Synth.Compilation.
 Require Import Synth.Synth.Tactics.
+Require Import Synth.ARM.ArmFlagLemmas.
 
 Open Scope Z_scope.
 
@@ -81,11 +82,11 @@ Theorem i32_divs_correct : forall wstate astate v1 v2 stack' result,
     get_reg astate' R0 = result.
 Proof.
   intros. unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
+  simpl.
   rewrite H0, H1, H2.
   eexists. split.
   - reflexivity.
-  - simpl. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
 Qed.
 
 Theorem i32_divu_correct : forall wstate astate v1 v2 stack' result,
@@ -101,11 +102,11 @@ Theorem i32_divu_correct : forall wstate astate v1 v2 stack' result,
     get_reg astate' R0 = result.
 Proof.
   intros. unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
+  simpl.
   rewrite H0, H1, H2.
   eexists. split.
   - reflexivity.
-  - simpl. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
 Qed.
 
 Theorem i32_rems_correct : forall wstate astate v1 v2 stack' result quotient,
@@ -125,33 +126,19 @@ Proof.
   (* Remainder: a % b = a - (a/b) * b *)
   (* Compiled as: SDIV R2, R0, R1; MLS R0, R2, R1, R0 *)
   intros wstate astate v1 v2 stack' result quotient Hstack HR0 HR1 Hquot Hresult Hrems Hwasm.
-  unfold compile_wasm_to_arm.
-  unfold exec_program. simpl.
-  unfold exec_instr. simpl.
-  (* After SDIV: R2 = quotient, R0 and R1 unchanged *)
-  rewrite HR0, HR1, Hquot.
-  (* Now we need to evaluate MLS on the intermediate state *)
-  (* MLS rd rn rm ra: rd = ra - (rn * rm) *)
-  (* After SDIV, state has R2=quotient, R0=v1 (from set_reg for R2), R1=v2 *)
-  simpl.
-  (* get_reg (set_reg astate R2 quotient) R2 = quotient *)
-  (* get_reg (set_reg astate R2 quotient) R1 = v2 *)
-  (* get_reg (set_reg astate R2 quotient) R0 = v1 *)
-  (* MLS R0 R2 R1 R0 computes: R0 - (R2 * R1) = v1 - (quotient * v2) *)
+  unfold compile_wasm_to_arm. simpl.
+  rewrite HR0, HR1, Hquot. simpl.
   eexists. split.
   - reflexivity.
-  - simpl.
-    (* Final state: set_reg (set_reg astate R2 quotient) R0 (I32.sub va (I32.mul vn vm)) *)
-    (* where vn = get_reg ... R2 = quotient, vm = get_reg ... R1 = v2, va = get_reg ... R0 = v1 *)
-    rewrite get_set_reg_eq.
-    (* Need: I32.sub (get_reg (set_reg astate R2 quotient) R0)
-                     (I32.mul (get_reg (set_reg astate R2 quotient) R2)
-                              (get_reg (set_reg astate R2 quotient) R1)) = result *)
-    rewrite get_set_reg_neq by discriminate.
-    rewrite get_set_reg_eq.
-    rewrite get_set_reg_neq by discriminate.
+  - rewrite get_set_reg_eq.
+    unfold get_reg, set_reg. simpl.
+    rewrite update_neq by discriminate.
+    rewrite update_eq.
+    rewrite update_neq by discriminate.
+    change ((regs astate) R0) with (get_reg astate R0).
+    change ((regs astate) R1) with (get_reg astate R1).
     rewrite HR0, HR1.
-    exact Hresult.
+    symmetry. exact Hresult.
 Qed.
 
 Theorem i32_remu_correct : forall wstate astate v1 v2 stack' result quotient,
@@ -170,20 +157,19 @@ Theorem i32_remu_correct : forall wstate astate v1 v2 stack' result quotient,
 Proof.
   (* Same pattern as rems but using UDIV *)
   intros wstate astate v1 v2 stack' result quotient Hstack HR0 HR1 Hquot Hresult Hremu Hwasm.
-  unfold compile_wasm_to_arm.
-  unfold exec_program. simpl.
-  unfold exec_instr. simpl.
-  rewrite HR0, HR1, Hquot.
-  simpl.
+  unfold compile_wasm_to_arm. simpl.
+  rewrite HR0, HR1, Hquot. simpl.
   eexists. split.
   - reflexivity.
-  - simpl.
-    rewrite get_set_reg_eq.
-    rewrite get_set_reg_neq by discriminate.
-    rewrite get_set_reg_eq.
-    rewrite get_set_reg_neq by discriminate.
+  - rewrite get_set_reg_eq.
+    unfold get_reg, set_reg. simpl.
+    rewrite update_neq by discriminate.
+    rewrite update_eq.
+    rewrite update_neq by discriminate.
+    change ((regs astate) R0) with (get_reg astate R0).
+    change ((regs astate) R1) with (get_reg astate R1).
     rewrite HR0, HR1.
-    exact Hresult.
+    symmetry. exact Hresult.
 Qed.
 
 (** ** I32 Bitwise Operations (10 total) *)
@@ -319,11 +305,7 @@ Theorem i32_eqz_correct : forall wstate astate v stack',
   exists astate',
     exec_program (compile_wasm_to_arm I32Eqz) astate = Some astate' /\
     get_reg astate' R0 = (if I32.eq v I32.zero then I32.one else I32.zero).
-Proof.
-  (* CMP R0 #0; MOV R0 #0; MOVEQ R0 #1
-     Need: compute_z_flag (I32.sub v I32.zero) = I32.eq v I32.zero *)
-  admit.
-Admitted.
+Proof. synth_cmp_unop_proof z_flag_sub_eq. Qed.
 
 Theorem i32_eq_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -336,9 +318,7 @@ Theorem i32_eq_correct : forall wstate astate v1 v2 stack',
   exists astate',
     exec_program (compile_wasm_to_arm I32Eq) astate = Some astate' /\
     get_reg astate' R0 = (if I32.eq v1 v2 then I32.one else I32.zero).
-Proof.
-  admit.
-Admitted.
+Proof. synth_cmp_binop_proof z_flag_sub_eq. Qed.
 
 Theorem i32_ne_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -352,8 +332,13 @@ Theorem i32_ne_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32Ne) astate = Some astate' /\
     get_reg astate' R0 = (if I32.ne v1 v2 then I32.one else I32.zero).
 Proof.
-  admit.
-Admitted.
+  intros wstate astate v1 v2 stack' Hstack HR0 HR1 Hwasm.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1; simpl.
+  rewrite <- flags_ne.
+  destruct (compute_z_flag (I32.sub v1 v2));
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+Qed.
 
 Theorem i32_lts_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -367,8 +352,13 @@ Theorem i32_lts_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32LtS) astate = Some astate' /\
     get_reg astate' R0 = (if I32.lts v1 v2 then I32.one else I32.zero).
 Proof.
-  admit.
-Admitted.
+  intros wstate astate v1 v2 stack' Hstack HR0 HR1 Hwasm.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1; simpl.
+  rewrite <- nv_flag_sub_lts.
+  destruct (Bool.eqb (compute_n_flag (I32.sub v1 v2)) (compute_v_flag_sub v1 v2));
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+Qed.
 
 Theorem i32_ltu_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -382,8 +372,13 @@ Theorem i32_ltu_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32LtU) astate = Some astate' /\
     get_reg astate' R0 = (if I32.ltu v1 v2 then I32.one else I32.zero).
 Proof.
-  admit.
-Admitted.
+  intros wstate astate v1 v2 stack' Hstack HR0 HR1 Hwasm.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1; simpl.
+  rewrite <- flags_ltu.
+  destruct (compute_c_flag_sub v1 v2);
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+Qed.
 
 Theorem i32_gts_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -396,9 +391,7 @@ Theorem i32_gts_correct : forall wstate astate v1 v2 stack',
   exists astate',
     exec_program (compile_wasm_to_arm I32GtS) astate = Some astate' /\
     get_reg astate' R0 = (if I32.gts v1 v2 then I32.one else I32.zero).
-Proof.
-  admit.
-Admitted.
+Proof. synth_cmp_binop_proof flags_gts. Qed.
 
 Theorem i32_gtu_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -411,9 +404,7 @@ Theorem i32_gtu_correct : forall wstate astate v1 v2 stack',
   exists astate',
     exec_program (compile_wasm_to_arm I32GtU) astate = Some astate' /\
     get_reg astate' R0 = (if I32.gtu v1 v2 then I32.one else I32.zero).
-Proof.
-  admit.
-Admitted.
+Proof. synth_cmp_binop_proof flags_gtu. Qed.
 
 Theorem i32_les_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -426,9 +417,7 @@ Theorem i32_les_correct : forall wstate astate v1 v2 stack',
   exists astate',
     exec_program (compile_wasm_to_arm I32LeS) astate = Some astate' /\
     get_reg astate' R0 = (if I32.les v1 v2 then I32.one else I32.zero).
-Proof.
-  admit.
-Admitted.
+Proof. synth_cmp_binop_proof flags_les. Qed.
 
 Theorem i32_leu_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -441,9 +430,7 @@ Theorem i32_leu_correct : forall wstate astate v1 v2 stack',
   exists astate',
     exec_program (compile_wasm_to_arm I32LeU) astate = Some astate' /\
     get_reg astate' R0 = (if I32.leu v1 v2 then I32.one else I32.zero).
-Proof.
-  admit.
-Admitted.
+Proof. synth_cmp_binop_proof flags_leu. Qed.
 
 Theorem i32_ges_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -456,9 +443,7 @@ Theorem i32_ges_correct : forall wstate astate v1 v2 stack',
   exists astate',
     exec_program (compile_wasm_to_arm I32GeS) astate = Some astate' /\
     get_reg astate' R0 = (if I32.ges v1 v2 then I32.one else I32.zero).
-Proof.
-  admit.
-Admitted.
+Proof. synth_cmp_binop_proof flags_ges. Qed.
 
 Theorem i32_geu_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -471,84 +456,86 @@ Theorem i32_geu_correct : forall wstate astate v1 v2 stack',
   exists astate',
     exec_program (compile_wasm_to_arm I32GeU) astate = Some astate' /\
     get_reg astate' R0 = (if I32.geu v1 v2 then I32.one else I32.zero).
-Proof.
-  admit.
-Admitted.
+Proof. synth_cmp_binop_proof flags_geu. Qed.
 
 (** ** I32 Bit Manipulation (3 total) *)
-(** These proofs claim result correspondence but CLZ/CTZ/POPCNT have
-    placeholder ARM semantics (always return I32.zero), so they cannot
-    establish correct result correspondence. *)
+(** CLZ/CTZ/POPCNT now use proper axiomatized semantics from I32.clz/rbit/popcnt *)
 
 Theorem i32_clz_correct : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
   get_reg astate R0 = v ->
   exec_wasm_instr I32Clz wstate =
-    Some (mkWasmState (VI32 (I32.repr (Z.of_nat 0)) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI32 (I32.clz v) :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I32Clz) astate = Some astate' /\
-    get_reg astate' R0 = I32.repr (Z.of_nat 0).  (* Placeholder *)
+    get_reg astate' R0 = I32.clz v.
 Proof.
-  (* CLZ compiles to [CLZ R0 R0], ARM semantics returns I32.zero (placeholder) *)
+  (* CLZ compiles to [CLZ R0 R0], ARM semantics: I32.clz (get_reg s R0) *)
   intros wstate astate v stack' Hstack HR0 Hwasm.
   unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
+  simpl.
+  rewrite HR0.
   eexists. split.
   - reflexivity.
-  - simpl. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
 Qed.
 
 Theorem i32_ctz_correct : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
   get_reg astate R0 = v ->
   exec_wasm_instr I32Ctz wstate =
-    Some (mkWasmState (VI32 (I32.repr (Z.of_nat 0)) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI32 (I32.ctz v) :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I32Ctz) astate = Some astate' /\
-    get_reg astate' R0 = I32.repr (Z.of_nat 0).  (* Placeholder *)
+    get_reg astate' R0 = I32.ctz v.
 Proof.
   (* CTZ compiles to [RBIT R0 R0; CLZ R0 R0] *)
-  (* RBIT: set_reg s R0 v (placeholder, returns input) *)
-  (* CLZ: set_reg s R0 I32.zero (placeholder) *)
+  (* After RBIT: R0 = I32.rbit v *)
+  (* After CLZ: R0 = I32.clz (I32.rbit v) = I32.ctz v (by clz_rbit axiom) *)
   intros wstate astate v stack' Hstack HR0 Hwasm.
   unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
+  simpl.
+  rewrite HR0.
   eexists. split.
   - reflexivity.
-  - simpl. apply get_set_reg_eq.
+  - rewrite get_set_reg_eq.
+    apply I32.clz_rbit.
 Qed.
 
 Theorem i32_popcnt_correct : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
   get_reg astate R0 = v ->
   exec_wasm_instr I32Popcnt wstate =
-    Some (mkWasmState (VI32 (I32.repr (Z.of_nat 0)) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI32 (I32.popcnt v) :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I32Popcnt) astate = Some astate' /\
-    get_reg astate' R0 = I32.repr (Z.of_nat 0).  (* Placeholder *)
+    get_reg astate' R0 = I32.popcnt v.
 Proof.
-  (* POPCNT compiles to [POPCNT R0 R0], ARM semantics returns I32.zero (placeholder) *)
+  (* POPCNT compiles to [POPCNT R0 R0], ARM semantics: I32.popcnt (get_reg s R0) *)
   intros wstate astate v stack' Hstack HR0 Hwasm.
   unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
+  simpl.
+  rewrite HR0.
   eexists. split.
   - reflexivity.
-  - simpl. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
 Qed.
 
 (** ** Summary
 
     I32 Operations: 34 total
-    - Arithmetic: 10 (Add, Sub, Mul, DivS, DivU, RemS, RemU = 7 Qed, 0 Admitted)
+    - Arithmetic: 7 Qed (Add, Sub, Mul, DivS, DivU, RemS, RemU)
     - Bitwise: 3 Qed (And, Or, Xor), 5 Admitted (shifts/rotates — ARM uses fixed imm)
-    - Comparison: 11 Admitted (need flag-correspondence lemmas)
-    - Bit manipulation: 3 Qed (using placeholder I32.zero result)
+    - Comparison: 11 Qed (EQZ, EQ, NE, LtS, LtU, GtS, GtU, LeS, LeU, GeS, GeU)
+    - Bit manipulation: 3 Qed (CLZ/CTZ/POPCNT using axiomatized I32.clz/ctz/popcnt)
 
-    Completed (no Admitted): 13 / 34 (38%)
-    Admitted (needs implementation): 16 / 34 (47%)
-      — 5 shifts/rotates: need register-based shift in ARM compilation
-      — 11 comparisons: need flag-correspondence lemmas
+    Completed (Qed): 24 / 34 (71%)
+    Admitted: 5 / 34 (15%) — shifts/rotates need register-based shift in ARM compilation
+
+    The 11 comparison proofs use flag-correspondence lemmas from ArmFlagLemmas.v.
+    The signed comparison proofs (LtS, GtS, LeS, GeS) depend on the nv_flag_sub_lts
+    axiom (N≠V ↔ signed less-than), a standard ARM architecture property.
 *)

@@ -44,14 +44,14 @@ pub fn read_elf_symbols(elf_path: &Path) -> Result<HashMap<String, u32>> {
 
     for symbol in file.symbols() {
         // Only include function symbols
-        if symbol.kind() == object::SymbolKind::Text {
-            if let Ok(name) = symbol.name() {
-                // Skip internal symbols (starting with $ or .)
-                if !name.starts_with('$') && !name.starts_with('.') && !name.is_empty() {
-                    let addr = symbol.address() as u32;
-                    symbols.insert(name.to_string(), addr);
-                }
-            }
+        if symbol.kind() == object::SymbolKind::Text
+            && let Ok(name) = symbol.name()
+            && !name.starts_with('$')
+            && !name.starts_with('.')
+            && !name.is_empty()
+        {
+            let addr = symbol.address() as u32;
+            symbols.insert(name.to_string(), addr);
         }
     }
 

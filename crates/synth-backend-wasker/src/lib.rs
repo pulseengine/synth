@@ -30,10 +30,10 @@ impl WaskerBackend {
     }
 
     fn find_executable(&self) -> Option<String> {
-        if let Some(ref path) = self.wasker_path {
-            if Path::new(path).exists() {
-                return Some(path.clone());
-            }
+        if let Some(ref path) = self.wasker_path
+            && Path::new(path).exists()
+        {
+            return Some(path.clone());
         }
         Command::new("which")
             .arg("wasker")

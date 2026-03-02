@@ -15,6 +15,7 @@ Synth/Common/StateMonad.v
 Synth/ARM/ArmState.v
 Synth/ARM/ArmInstructions.v
 Synth/ARM/ArmSemantics.v
+Synth/ARM/ArmFlagLemmas.v
 Synth/ARM/ArmRefinement.v
 
 # WebAssembly semantics

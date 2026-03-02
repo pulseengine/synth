@@ -180,10 +180,10 @@ impl TranslationValidator {
 
                 let mut counterexample = Vec::new();
                 for (i, input) in inputs.iter().enumerate() {
-                    if let Some(value) = model.eval(input, true) {
-                        if let Some(int_val) = value.as_i64() {
-                            counterexample.push((format!("input_{}", i), int_val));
-                        }
+                    if let Some(value) = model.eval(input, true)
+                        && let Some(int_val) = value.as_i64()
+                    {
+                        counterexample.push((format!("input_{}", i), int_val));
                     }
                 }
 

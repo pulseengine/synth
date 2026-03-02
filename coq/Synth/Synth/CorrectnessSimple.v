@@ -42,11 +42,12 @@ Ltac solve_single_instr :=
 (** Solve proofs for CMP+MOV+conditional-MOV sequences (3 instructions).
     All three instructions always return Some. *)
 Ltac solve_cmp_mov_sequence :=
-  intros; unfold compile_wasm_to_arm;
-  unfold exec_program; simpl;
-  (* CMP always returns Some (set_flags ...) *)
-  (* MOV always returns Some (set_reg ...) *)
-  (* MOVEQ/MOVNE/etc always return Some (either set_reg or identity) *)
+  intros; unfold compile_wasm_to_arm, exec_program, exec_instr; simpl;
+  (* After full unfolding, the goal may contain if-expressions from
+     conditional MOVs. Destruct all boolean conditions. *)
+  repeat match goal with
+  | |- context [if ?b then _ else _] => destruct b
+  end;
   eexists; reflexivity.
 
 (** ** Control Flow Operations *)
@@ -116,28 +117,13 @@ Proof.
   (* LocalGet compiles to [MOV R0 (Reg Rn)] where Rn is R4-R7 *)
   (* MOV always returns Some (set_reg s rd v) *)
   intros wstate astate idx Hlt Hwasm Hregs.
-  unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
-  (* Destruct idx to resolve the match *)
+  unfold compile_wasm_to_arm. simpl.
   destruct idx as [|[|[|[|n]]]].
-  - (* idx = 0 => R4 *)
-    eexists. split.
-    + reflexivity.
-    + simpl. rewrite get_set_reg_eq. apply Hregs. lia.
-  - (* idx = 1 => R5 *)
-    eexists. split.
-    + reflexivity.
-    + simpl. rewrite get_set_reg_eq. apply Hregs. lia.
-  - (* idx = 2 => R6 *)
-    eexists. split.
-    + reflexivity.
-    + simpl. rewrite get_set_reg_eq. apply Hregs. lia.
-  - (* idx = 3 => R7 *)
-    eexists. split.
-    + reflexivity.
-    + simpl. rewrite get_set_reg_eq. apply Hregs. lia.
-  - (* idx >= 4, contradicts lt idx 4 *)
-    lia.
+  - eexists. split. reflexivity. rewrite get_set_reg_eq. apply (Hregs 0%nat). lia.
+  - eexists. split. reflexivity. rewrite get_set_reg_eq. apply (Hregs 1%nat). lia.
+  - eexists. split. reflexivity. rewrite get_set_reg_eq. apply (Hregs 2%nat). lia.
+  - eexists. split. reflexivity. rewrite get_set_reg_eq. apply (Hregs 3%nat). lia.
+  - lia.
 Qed.
 
 (** LocalSet stores to a local variable *)
@@ -163,25 +149,10 @@ Proof.
   (* LocalSet compiles to [MOV Rn (Reg R0)] where Rn is R4-R7 *)
   intros wstate astate v stack' idx Hlt Hstack HR0 Hwasm.
   unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
-  destruct idx as [|[|[|[|n]]]].
-  - (* idx = 0 => MOV R4 (Reg R0) *)
-    eexists. split.
-    + reflexivity.
-    + simpl. rewrite get_set_reg_eq. exact HR0.
-  - (* idx = 1 => MOV R5 (Reg R0) *)
-    eexists. split.
-    + reflexivity.
-    + simpl. rewrite get_set_reg_eq. exact HR0.
-  - (* idx = 2 => MOV R6 (Reg R0) *)
-    eexists. split.
-    + reflexivity.
-    + simpl. rewrite get_set_reg_eq. exact HR0.
-  - (* idx = 3 => MOV R7 (Reg R0) *)
-    eexists. split.
-    + reflexivity.
-    + simpl. rewrite get_set_reg_eq. exact HR0.
-  - lia.
+  destruct idx as [|[|[|[|n]]]];
+  try (simpl; eexists; split; [reflexivity |
+    rewrite get_set_reg_eq; exact HR0]).
+  lia.
 Qed.
 
 (** ** Constants *)
@@ -198,12 +169,10 @@ Theorem i32_const_correct : forall wstate astate n,
     get_reg astate' R0 = n.
 Proof.
   intros wstate astate n Hwasm.
-  unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
-  exists (set_reg astate R0 n).
-  split.
+  unfold compile_wasm_to_arm. simpl.
+  eexists. split.
   - reflexivity.
-  - simpl. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
 Qed.
 
 Theorem i64_const_correct : forall wstate astate n,
@@ -218,12 +187,10 @@ Theorem i64_const_correct : forall wstate astate n,
     get_reg astate' R0 = I32.repr ((I64.unsigned n) mod I32.modulus).
 Proof.
   intros wstate astate n Hwasm.
-  unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
-  exists (set_reg astate R0 (I32.repr ((I64.unsigned n) mod I32.modulus))).
-  split.
+  unfold compile_wasm_to_arm. simpl.
+  eexists. split.
   - reflexivity.
-  - simpl. apply get_set_reg_eq.
+  - apply get_set_reg_eq.
 Qed.
 
 (** LocalTee sets local and keeps value on stack *)
@@ -242,8 +209,7 @@ Theorem local_tee_correct : forall wstate astate v stack' (idx : nat),
 Proof.
   (* LocalTee compiles to [MOV Rn (Reg R0)] — single MOV always returns Some *)
   intros wstate astate v stack' idx Hlt Hstack HR0 Hwasm.
-  unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
+  unfold compile_wasm_to_arm. simpl.
   destruct idx as [|[|[|[|n]]]]; try lia;
   eexists; reflexivity.
 Qed.
@@ -261,10 +227,8 @@ Theorem global_get_correct : forall wstate astate (idx : nat),
   exists astate',
     exec_program (compile_wasm_to_arm (GlobalGet idx)) astate = Some astate'.
 Proof.
-  (* GlobalGet compiles to [MOV R0 (Reg Rn)] where Rn is R8-R11 *)
   intros wstate astate idx Hlt Hwasm.
-  unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
+  unfold compile_wasm_to_arm. simpl.
   destruct idx as [|[|[|[|n]]]]; try lia;
   eexists; reflexivity.
 Qed.
@@ -281,10 +245,8 @@ Theorem global_set_correct : forall wstate astate v stack' (idx : nat),
   exists astate',
     exec_program (compile_wasm_to_arm (GlobalSet idx)) astate = Some astate'.
 Proof.
-  (* GlobalSet compiles to [MOV Rn (Reg R0)] where Rn is R8-R11 *)
   intros wstate astate v stack' idx Hlt Hstack Hwasm.
-  unfold compile_wasm_to_arm.
-  unfold exec_program, exec_instr. simpl.
+  unfold compile_wasm_to_arm. simpl.
   destruct idx as [|[|[|[|n]]]]; try lia;
   eexists; reflexivity.
 Qed.
@@ -293,7 +255,7 @@ Qed.
 (** All comparisons compile to CMP + MOV + conditional MOV sequences.
     All three instructions always return Some, so existence is trivial. *)
 
-Theorem i32_eqz_correct : forall wstate astate v stack',
+Theorem i32_eqz_executes : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
   exec_wasm_instr I32Eqz wstate =
     Some (mkWasmState
@@ -305,7 +267,7 @@ Theorem i32_eqz_correct : forall wstate astate v stack',
     exec_program (compile_wasm_to_arm I32Eqz) astate = Some astate'.
 Proof. solve_cmp_mov_sequence. Qed.
 
-Theorem i32_eq_correct : forall wstate astate v1 v2 stack',
+Theorem i32_eq_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32Eq wstate =
     Some (mkWasmState
@@ -317,7 +279,7 @@ Theorem i32_eq_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32Eq) astate = Some astate'.
 Proof. solve_cmp_mov_sequence. Qed.
 
-Theorem i32_ne_correct : forall wstate astate v1 v2 stack',
+Theorem i32_ne_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32Ne wstate =
     Some (mkWasmState
@@ -329,7 +291,7 @@ Theorem i32_ne_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32Ne) astate = Some astate'.
 Proof. solve_cmp_mov_sequence. Qed.
 
-Theorem i32_lts_correct : forall wstate astate v1 v2 stack',
+Theorem i32_lts_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32LtS wstate =
     Some (mkWasmState
@@ -341,7 +303,7 @@ Theorem i32_lts_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32LtS) astate = Some astate'.
 Proof. solve_cmp_mov_sequence. Qed.
 
-Theorem i32_ltu_correct : forall wstate astate v1 v2 stack',
+Theorem i32_ltu_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32LtU wstate =
     Some (mkWasmState
@@ -353,7 +315,7 @@ Theorem i32_ltu_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32LtU) astate = Some astate'.
 Proof. solve_cmp_mov_sequence. Qed.
 
-Theorem i32_gts_correct : forall wstate astate v1 v2 stack',
+Theorem i32_gts_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32GtS wstate =
     Some (mkWasmState
@@ -365,7 +327,7 @@ Theorem i32_gts_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32GtS) astate = Some astate'.
 Proof. solve_cmp_mov_sequence. Qed.
 
-Theorem i32_gtu_correct : forall wstate astate v1 v2 stack',
+Theorem i32_gtu_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32GtU wstate =
     Some (mkWasmState
@@ -377,7 +339,7 @@ Theorem i32_gtu_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32GtU) astate = Some astate'.
 Proof. solve_cmp_mov_sequence. Qed.
 
-Theorem i32_les_correct : forall wstate astate v1 v2 stack',
+Theorem i32_les_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32LeS wstate =
     Some (mkWasmState
@@ -389,7 +351,7 @@ Theorem i32_les_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32LeS) astate = Some astate'.
 Proof. solve_cmp_mov_sequence. Qed.
 
-Theorem i32_leu_correct : forall wstate astate v1 v2 stack',
+Theorem i32_leu_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32LeU wstate =
     Some (mkWasmState
@@ -401,7 +363,7 @@ Theorem i32_leu_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32LeU) astate = Some astate'.
 Proof. solve_cmp_mov_sequence. Qed.
 
-Theorem i32_ges_correct : forall wstate astate v1 v2 stack',
+Theorem i32_ges_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32GeS wstate =
     Some (mkWasmState
@@ -413,7 +375,7 @@ Theorem i32_ges_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32GeS) astate = Some astate'.
 Proof. solve_cmp_mov_sequence. Qed.
 
-Theorem i32_geu_correct : forall wstate astate v1 v2 stack',
+Theorem i32_geu_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32GeU wstate =
     Some (mkWasmState
@@ -428,7 +390,7 @@ Proof. solve_cmp_mov_sequence. Qed.
 (** ** I32 Shift Operations *)
 (** Shift/rotate ops compile to single ARM shift instructions, which always return Some *)
 
-Theorem i32_shl_correct : forall wstate astate v1 v2 stack',
+Theorem i32_shl_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32Shl wstate =
     Some (mkWasmState
@@ -443,7 +405,7 @@ Proof.
   solve_single_instr.
 Qed.
 
-Theorem i32_shru_correct : forall wstate astate v1 v2 stack',
+Theorem i32_shru_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32ShrU wstate =
     Some (mkWasmState
@@ -457,7 +419,7 @@ Proof.
   solve_single_instr.
 Qed.
 
-Theorem i32_shrs_correct : forall wstate astate v1 v2 stack',
+Theorem i32_shrs_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32ShrS wstate =
     Some (mkWasmState
@@ -471,7 +433,7 @@ Proof.
   solve_single_instr.
 Qed.
 
-Theorem i32_rotl_correct : forall wstate astate v1 v2 stack',
+Theorem i32_rotl_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32Rotl wstate =
     Some (mkWasmState
@@ -488,7 +450,7 @@ Proof.
   exists astate. reflexivity.
 Qed.
 
-Theorem i32_rotr_correct : forall wstate astate v1 v2 stack',
+Theorem i32_rotr_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   exec_wasm_instr I32Rotr wstate =
     Some (mkWasmState
@@ -505,7 +467,7 @@ Qed.
 
 (** ** I32 Bit Manipulation Operations *)
 
-Theorem i32_clz_correct : forall wstate astate v stack',
+Theorem i32_clz_executes : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
   exec_wasm_instr I32Clz wstate =
     Some (mkWasmState
@@ -520,7 +482,7 @@ Proof.
   solve_single_instr.
 Qed.
 
-Theorem i32_ctz_correct : forall wstate astate v stack',
+Theorem i32_ctz_executes : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
   exec_wasm_instr I32Ctz wstate =
     Some (mkWasmState
@@ -537,7 +499,7 @@ Proof.
   eexists; reflexivity.
 Qed.
 
-Theorem i32_popcnt_correct : forall wstate astate v stack',
+Theorem i32_popcnt_executes : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
   exec_wasm_instr I32Popcnt wstate =
     Some (mkWasmState

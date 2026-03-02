@@ -1426,33 +1426,33 @@ impl StrengthReduction {
                     let val1 = const_values.get(&src1);
                     let val2 = const_values.get(&src2);
 
-                    if let Some(&val) = val2 {
-                        if Self::is_power_of_2(val) {
-                            // Replace mul with left shift (represented as mul for now)
-                            // In real implementation, would use shift opcode
-                            modified += 1;
-                            if self.verbose {
-                                eprintln!(
-                                    "Strength reduction: r{} * {} -> r{} << {}",
-                                    src1.0,
-                                    val,
-                                    src1.0,
-                                    Self::log2(val)
-                                );
-                            }
+                    if let Some(&val) = val2
+                        && Self::is_power_of_2(val)
+                    {
+                        // Replace mul with left shift (represented as mul for now)
+                        // In real implementation, would use shift opcode
+                        modified += 1;
+                        if self.verbose {
+                            eprintln!(
+                                "Strength reduction: r{} * {} -> r{} << {}",
+                                src1.0,
+                                val,
+                                src1.0,
+                                Self::log2(val)
+                            );
                         }
-                    } else if let Some(&val) = val1 {
-                        if Self::is_power_of_2(val) {
-                            modified += 1;
-                            if self.verbose {
-                                eprintln!(
-                                    "Strength reduction: {} * r{} -> r{} << {}",
-                                    val,
-                                    src2.0,
-                                    src2.0,
-                                    Self::log2(val)
-                                );
-                            }
+                    } else if let Some(&val) = val1
+                        && Self::is_power_of_2(val)
+                    {
+                        modified += 1;
+                        if self.verbose {
+                            eprintln!(
+                                "Strength reduction: {} * r{} -> r{} << {}",
+                                val,
+                                src2.0,
+                                src2.0,
+                                Self::log2(val)
+                            );
                         }
                     }
                 }
@@ -1799,32 +1799,27 @@ impl InstructionCombining {
                     src2,
                 } => {
                     // Check if src1 is the result of another add with a constant
-                    if let Some(&val2) = const_values.get(src2) {
-                        // src2 is a constant
-                        // Check if src1 is also an add with a constant
-                        if let Some(&def_id) = def_map.get(src1) {
-                            if let Some(Opcode::Add {
-                                dest: _,
-                                src1: inner_src1,
-                                src2: inner_src2,
-                            }) = inst_opcodes.get(&def_id)
-                            {
-                                if let Some(&val1) = const_values.get(inner_src2) {
-                                    // Found (x + c1) + c2 pattern
-                                    let combined = val1.wrapping_add(val2);
+                    if let Some(&val2) = const_values.get(src2)
+                        && let Some(&def_id) = def_map.get(src1)
+                        && let Some(Opcode::Add {
+                            dest: _,
+                            src1: inner_src1,
+                            src2: inner_src2,
+                        }) = inst_opcodes.get(&def_id)
+                        && let Some(&val1) = const_values.get(inner_src2)
+                    {
+                        // Found (x + c1) + c2 pattern
+                        let combined = val1.wrapping_add(val2);
 
-                                    // Would create a new const and update this add
-                                    // For now, just count the opportunity
-                                    modified += 1;
+                        // Would create a new const and update this add
+                        // For now, just count the opportunity
+                        modified += 1;
 
-                                    if self.verbose {
-                                        eprintln!(
-                                            "Instruction combining: (r{} + {}) + {} => r{} + {}",
-                                            inner_src1.0, val1, val2, inner_src1.0, combined
-                                        );
-                                    }
-                                }
-                            }
+                        if self.verbose {
+                            eprintln!(
+                                "Instruction combining: (r{} + {}) + {} => r{} + {}",
+                                inner_src1.0, val1, val2, inner_src1.0, combined
+                            );
                         }
                     }
                 }

@@ -64,6 +64,31 @@ Ltac synth_unop_proof :=
   [ reflexivity
   | simpl; apply get_set_reg_eq ].
 
+(** ** Tactic: synth_cmp_binop_proof
+
+    Automates comparison proofs: CMP + MOV + conditional-MOV pattern.
+    Takes a flag lemma as argument to rewrite the flag condition. *)
+
+Ltac synth_cmp_binop_proof flag_lemma :=
+  intros wstate astate v1 v2 stack' Hstack HR0 HR1 Hwasm;
+  unfold compile_wasm_to_arm; simpl;
+  rewrite HR0, HR1; simpl;
+  rewrite flag_lemma;
+  destruct (_ v1 v2);
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+
+(** ** Tactic: synth_cmp_unop_proof
+
+    Automates unary comparison proofs (eqz): CMP + MOV + conditional-MOV. *)
+
+Ltac synth_cmp_unop_proof flag_lemma :=
+  intros wstate astate v stack' Hstack HR0 Hwasm;
+  unfold compile_wasm_to_arm; simpl;
+  rewrite HR0; simpl;
+  rewrite flag_lemma;
+  destruct (I32.eq v I32.zero);
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+
 (** ** Tactic: synth_simplify
 
     Standard simplification for Synth proofs.

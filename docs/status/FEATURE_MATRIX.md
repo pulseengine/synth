@@ -10,10 +10,10 @@ This document provides an honest assessment of what works, what doesn't, and wha
 
 | Symbol | Meaning |
 |--------|---------|
-| ✅ | Working - tested and functional |
-| ⚠️ | Partial - implemented but incomplete or untested end-to-end |
-| ❌ | Not implemented |
-| 🔬 | Research/experimental |
+| Y | Working - tested and functional |
+| P | Partial - implemented but incomplete or untested end-to-end |
+| N | Not implemented |
+| R | Research/experimental |
 
 ---
 
@@ -21,26 +21,24 @@ This document provides an honest assessment of what works, what doesn't, and wha
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| WASM/WAT parsing | ✅ | wasmparser + wat crate integration |
-| WIT parsing | ✅ | Custom parser implemented |
-| Instruction selection | ✅ | 151/151 WASM Core 1.0 ops → ARM |
-| Optimizer bridge | ✅ | Wires instruction selection into pipeline |
-| Peephole optimizer | ✅ | Strength reduction, constant folding |
-| Register allocation | ✅ | Graph coloring, AAPCS-compliant |
-| ARM code generation | ✅ | Thumb-2 encoding, conditional execution |
-| ELF emission | ✅ | Valid ARM ELF with sections, symbols |
-| Cortex-M support | ✅ | Vector table, startup code, AAPCS ABI |
-| **End-to-end CLI** | ✅ | **`synth compile input.wat -o output.elf` works** |
-| Multi-backend arch | ✅ | Backend trait, registry, 4 backends registered |
-| Z3 formal verification | ✅ | SMT-based translation validation |
+| WASM/WAT parsing | Y | wasmparser + wat crate integration |
+| WIT parsing | Y | Custom parser implemented |
+| Instruction selection | P | i32 integer ops compile to ARM; f32/f64/i64 rejected |
+| Optimizer bridge | Y | Wires instruction selection into pipeline |
+| Peephole optimizer | Y | Strength reduction, constant folding |
+| ARM code generation | Y | Thumb-2 encoding, conditional execution |
+| ELF emission | Y | Valid ARM ELF with sections, symbols |
+| Cortex-M support | Y | Vector table, startup code, AAPCS ABI |
+| **End-to-end CLI** | Y | **`synth compile input.wat -o output.elf` works** |
+| Z3 formal verification | Y | SMT-based translation validation |
 
 ### What Works End-to-End
 
-> `synth compile input.wat -o output.elf` takes a WAT file and produces a valid ARM ELF binary.
+> `synth compile input.wat -o output.elf` takes a WAT file with i32 functions and produces a valid ARM ELF binary.
 >
 > `synth compile --demo add --verify` compiles and formally verifies the translation using Z3.
 >
-> 526 tests pass across 18 crates with 0 failures.
+> 521 tests pass across the workspace with 0 failures.
 
 ---
 
@@ -48,53 +46,61 @@ This document provides an honest assessment of what works, what doesn't, and wha
 
 | Command | Status | Notes |
 |---------|--------|-------|
-| `synth compile input.wat -o output.elf` | ✅ | Single-function WASM → ARM ELF |
-| `synth compile --all-exports -o output.elf` | ✅ | Multi-function compilation |
-| `synth compile --cortex-m -o output.elf` | ✅ | Complete Cortex-M binary (vector table, startup) |
-| `synth compile --demo add` | ✅ | Built-in demos: add, calc, calc-ext |
-| `synth compile --verify` | ✅ | Compile + Z3 formal verification |
-| `synth compile --backend arm\|w2c2` | ⚠️ | ARM functional, others return stubs |
-| `synth verify input.wat output.elf` | ✅ | Standalone translation validation |
-| `synth disasm output.elf` | ✅ | Disassemble generated ELF |
-| `synth parse input.wasm` | ✅ | Parse and analyze WASM components |
-| `synth backends` | ✅ | List backends with capabilities |
-| `synth synthesize` | ⚠️ | Scaffold only, pipeline not wired |
-| `synth target-info` | ⚠️ | Basic target information |
+| `synth compile input.wat -o output.elf` | Y | i32 integer WASM to ARM ELF |
+| `synth compile --all-exports -o output.elf` | Y | Multi-function compilation |
+| `synth compile --cortex-m -o output.elf` | Y | Complete Cortex-M binary (vector table, startup) |
+| `synth compile --demo add` | Y | Built-in demos: add, calc, calc-ext |
+| `synth compile --verify` | Y | Compile + Z3 formal verification |
+| `synth verify input.wat output.elf` | Y | Standalone translation validation |
+| `synth disasm output.elf` | Y | Disassemble generated ELF |
+| `synth parse input.wasm` | Y | Parse and analyze WASM components |
+| `synth backends` | Y | List backends with capabilities |
 
 ---
 
-## WebAssembly Operations
+## WebAssembly Operation Coverage
 
-| Category | Operations | Unit Tests | Synthesis Rules | Verified (Z3) |
-|----------|------------|------------|-----------------|----------------|
-| i32 arithmetic | 52 | ✅ 100% | ✅ 100% | ✅ core ops |
-| i64 arithmetic | 40 | ✅ 100% | ✅ 100% | ⚠️ partial |
-| f32 operations | 29 | ✅ 100% | ✅ 100% | ❌ |
-| f64 operations | 30 | ✅ 100% | ✅ 100% | ❌ |
-| **Total** | **151** | **✅ 100%** | **✅ 100%** | **⚠️ i32 core** |
+### Rust Instruction Selector (what actually compiles)
 
-### Coverage Details
+| Category | Ops | Compiles | Notes |
+|----------|-----|----------|-------|
+| i32 arithmetic | 14 | 14 | ADD, SUB, MUL, DIV_S/U, REM_S/U, AND, OR, XOR, SHL, SHR_S/U, ROTL, ROTR |
+| i32 comparison | 11 | 11 | EQZ, EQ, NE, LT_S/U, GT_S/U, LE_S/U, GE_S/U |
+| i32 bit manipulation | 3 | 3 | CLZ, CTZ, POPCNT |
+| i32 other | ~8 | ~8 | CONST, EXTEND8S/16S, LOAD, STORE, etc. |
+| i64 operations | 26 | 0 | **Rejected** - no register-pair support |
+| f32 operations | 20 | 0 | **Rejected** - no VFP support |
+| f64 operations | 20 | 0 | **Rejected** - no VFP support |
+| Control flow | varies | P | Basic blocks; if/else/loop/br partially |
+| Memory | 8 | P | i32 load/store; float load/store rejected |
+| **Total** | **~151** | **~36** | **i32 integer ops only** |
 
-- ✅ All 151 WASM Core 1.0 operations have synthesis rules with unit tests
-- ✅ Core i32 operations verified via Z3 SMT solver (add, sub, mul, and, or, xor)
-- ✅ 53 comprehensive Z3 verification tests pass
-- ⚠️ Not all operations tested through full compile → ELF → execute path
-- ⚠️ Control flow (if/else, loop, br) has rules but not tested end-to-end
+### Rocq Proof Coverage (formal verification model)
 
----
+The Rocq model in `Compilation.v` covers more ops than the Rust compiler.
+Some ops compile to `[]` (empty program) in the model, which is honest but trivial.
 
-## Multi-Backend Architecture
+| Category | T1 (Result) | T2 (Exists) | T3 (Admitted) | Notes |
+|----------|-------------|-------------|---------------|-------|
+| i32 arithmetic | 6 | 0 | 0 | ADD, SUB, MUL, AND, OR, XOR |
+| i32 division | 4 | 0 | 0 | DIV_S/U, REM_S/U |
+| i32 bit manipulation | 3 | 0 | 0 | CLZ, CTZ, POPCNT |
+| i32 comparisons | 0 | 11 | 11 | T2 in Simple.v, T3 needs flag lemmas |
+| i32 shifts | 0 | 5 | 5 | T2 in Simple.v, T3 needs register shifts |
+| i64 operations | 0 | 26 | 4 | T2 existence only; T3 for div/rem |
+| f32 operations | 0 | 7 | 13 | T2: compile to `[]`; T3: VFP unmodeled |
+| f64 operations | 0 | 7 | 13 | T2: compile to `[]`; T3: VFP unmodeled |
+| Conversions | 0 | 3 | 18 | T2: compile to `[]`; T3: VFP unmodeled |
+| Memory | 0 | 4 | 4 | T2: LDR/STR; T3: VLDR/VSTR |
+| Control/other | 6 | 32 | 3 | Simple ops, nop, drop, locals, globals |
+| **Total** | **19** | **95** | **71** | **154 Qed / 71 Admitted** |
 
-| Backend | Status | `compile_function()` | `compile_module()` |
-|---------|--------|---------------------|--------------------|
-| ARM (built-in) | ✅ | ✅ Works | ✅ Works |
-| w2c2 | ⚠️ | ❌ Stub | ❌ Stub |
-| aWsm | ⚠️ | ❌ Stub | ❌ Stub |
-| wasker | ⚠️ | ❌ Stub | ❌ Stub |
+Tier definitions:
+- **T1: Result Correspondence** -- ARM output register = WASM result value (strongest)
+- **T2: Existence-Only** -- ARM execution succeeds, no claim about result value
+- **T3: Admitted** -- Not yet proven (requires unmodeled semantics)
 
-### Backend Trait
-
-All backends implement `Backend` trait with: `name()`, `version()`, `is_available()`, `capabilities()`, `compile_function()`, `compile_module()`. BackendRegistry provides centralized discovery.
+See [coq/STATUS.md](/coq/STATUS.md) for the full breakdown.
 
 ---
 
@@ -102,15 +108,14 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Z3 SMT translation validation | ✅ | Per-rule equivalence proofs |
-| `--verify` CLI flag | ✅ | Invokes Z3 after compilation |
-| `synth verify` command | ✅ | Standalone WASM ↔ ELF validation |
-| WASM semantics encoding | ✅ | 30+ operations modeled |
-| ARM semantics encoding | ✅ | 20+ instructions modeled |
-| Counterexample generation | ✅ | Reports failing inputs |
-| Parameterized verification | ✅ | Range-based testing |
-| Rocq proofs | ✅ | 106 Qed, 122 Admitted; integrated via Bazel (`bazel test //coq:verify_proofs`) |
-| Sail ARM semantics | 🔬 | Evaluated, not implemented |
+| Z3 SMT translation validation | Y | Per-rule equivalence proofs |
+| `--verify` CLI flag | Y | Invokes Z3 after compilation |
+| `synth verify` command | Y | Standalone WASM <-> ELF validation |
+| WASM semantics encoding | Y | 30+ operations modeled |
+| ARM semantics encoding | Y | 20+ instructions modeled |
+| Counterexample generation | Y | Reports failing inputs |
+| Rocq proof suite | P | 154 Qed, 71 Admitted; 19 result-correspondence proofs |
+| Sail ARM semantics | R | Evaluated, not implemented |
 
 ---
 
@@ -118,11 +123,10 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 
 | Target | Status | Notes |
 |--------|--------|-------|
-| ARM Cortex-M4 (Thumb-2) | ✅ | Primary target, code generation works |
-| ARM Cortex-M (generic) | ✅ | Vector table, startup, AAPCS ABI |
-| ARM Cortex-M4F (FPU) | ⚠️ | FPU rules exist, not tested end-to-end |
-| ARM Cortex-M7 | ❌ | Not implemented |
-| RISC-V | ❌ | Not implemented |
+| ARM Cortex-M4 (Thumb-2) | Y | Primary target, code generation works |
+| ARM Cortex-M (generic) | Y | Vector table, startup, AAPCS ABI |
+| ARM Cortex-M4F (FPU) | N | No VFP instruction support |
+| RISC-V | N | Not implemented |
 
 ---
 
@@ -130,24 +134,13 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Vector table generation | ✅ | Tested in Cortex-M binaries |
-| Reset handler / startup code | ✅ | Stack setup, function dispatch |
-| AAPCS calling convention | ✅ | Params in r0-r3, return in r0 |
-| ELF with proper sections | ✅ | .text, .symtab, .strtab, .shstrtab |
-| Linker script generation | ⚠️ | Implemented, not tested with linker |
-| MPU configuration | ⚠️ | Implemented, not tested on hardware |
-| Bounds-checked memory | ⚠️ | `--bounds-check` flag, synthesis rules exist |
-| XIP (execute in place) | ❌ | Not implemented |
-
----
-
-## Build System
-
-| System | Status | Notes |
-|--------|--------|-------|
-| Cargo | ✅ | 526 tests pass, 18 crates |
-| Bazel | ✅ | All crates + Rocq proofs + Renode tests |
-| CI/CD | ✅ | GitHub Actions: clippy, fmt, test |
+| Vector table generation | Y | Tested in Cortex-M binaries |
+| Reset handler / startup code | Y | Stack setup, function dispatch |
+| AAPCS calling convention | Y | Params in r0-r3, return in r0 |
+| ELF with proper sections | Y | .text, .symtab, .strtab, .shstrtab |
+| Relocatable ELF (ET_REL) | Y | For linking with Kiln runtime |
+| Linker script generation | P | Implemented, not tested with linker |
+| MPU configuration | P | Implemented, not tested on hardware |
 
 ---
 
@@ -155,54 +148,12 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 
 | Type | Status | Coverage |
 |------|--------|----------|
-| Unit tests | ✅ | 526 tests, 100% pass |
-| Z3 verification tests | ✅ | 53 comprehensive tests |
-| WAST compilation tests | ✅ | 23 cargo tests + 22 WAST files |
-| Spec test suite | ⚠️ | 267 files exist, adapter not built |
-| Integration tests | ✅ | Binary validation tests exist |
-| Renode emulation tests | ✅ | 55+ tests via Bazel rules_renode (ARM Cortex-M4) |
-| Hardware tests | ❌ | Never tested on real device |
-
----
-
-## Workspace Structure
-
-18 crates:
-
-| Crate | Purpose |
-|-------|---------|
-| synth-core | WasmOp, Backend trait, TargetSpec |
-| synth-frontend | WASM/WIT parsing |
-| synth-synthesis | Instruction selection, rules, optimizer bridge |
-| synth-backend | ARM encoding, ELF emission, Cortex-M |
-| synth-regalloc | Graph coloring register allocation |
-| synth-opt | Optimization passes |
-| synth-verify | Z3 SMT translation validation |
-| synth-cli | CLI (compile, verify, disasm, backends) |
-| synth-test | Test infrastructure |
-| synth-memory | Memory architecture (new) |
-| synth-wit | WIT type system |
-| synth-component | Component model |
-| synth-types | Type definitions |
-| synth-ir | Intermediate representation |
-| synth-safety | Safety annotations |
-| synth-loom | Loom integration |
-| synth-codegen-traits | Code generation traits |
-| synth-macro | Procedural macros |
-
----
-
-## Documentation
-
-| Category | Count | Notes |
-|----------|-------|-------|
-| Architecture docs | 10+ | Crate structure, Loom relationship |
-| Design docs | 5+ | Memory architecture, WAST test design |
-| Research docs | 7+ | Cranelift, Sail ARM, verification ecosystem |
-| Analysis docs | 5+ | Build system, QEMU vs Renode, LLVM strategy |
-| Status docs | 3 | Feature matrix, progress, project status |
-| Validation docs | 2 | Formal verification, validation report |
-| **Total** | **91+** | Well-organized under docs/ |
+| Unit tests | Y | 521 tests, 100% pass |
+| Z3 verification tests | Y | 53 tests |
+| WAST compilation tests | Y | 23 cargo tests + 22 WAST files |
+| Renode emulation tests | P | 3 robot files via Bazel rules_renode |
+| Spec test suite | P | 267 files exist, adapter not built |
+| Hardware tests | N | Never tested on real device |
 
 ---
 
@@ -210,21 +161,19 @@ All backends implement `Backend` trait with: `name()`, `version()`, `is_availabl
 
 ### What Works
 
-1. **End-to-end compilation:** `synth compile input.wat -o output.elf` produces valid ARM ELF
+1. **End-to-end compilation:** `synth compile input.wat -o output.elf` for i32 integer functions
 2. **Multi-function compilation:** `--all-exports` compiles all exported functions
 3. **Cortex-M binaries:** `--cortex-m` generates complete embedded binaries
-4. **Formal verification:** `--verify` proves translation correctness via Z3
-5. **Multi-backend architecture:** Backend trait with registry, ARM backend functional
-6. **CLI:** 8 commands (compile, verify, disasm, backends, parse, synthesize, target-info)
-7. **526 tests pass** across 18 crates
+4. **Formal verification:** 19 result-correspondence proofs in Rocq, 53 Z3 verification tests
+5. **521 tests pass** across the workspace
 
-### What Doesn't Work Yet
+### What Doesn't Work
 
-1. **End-to-end execution:** No WASM → ELF → execute → verify-result cycle
-2. **External backends:** w2c2/aWsm/wasker stubs not implemented
-3. **Hardware testing:** No tests on real devices yet
-5. **Control flow end-to-end:** if/else/loop rules exist but untested through compile
+1. **Float operations:** All f32/f64 ops rejected (no VFP support)
+2. **64-bit integer ops:** All i64 ops rejected (no register-pair support)
+3. **Hardware testing:** No tests on real devices
+4. **End-to-end execution validation:** No WASM -> ELF -> execute -> verify-result cycle
 
-### Next Steps
+### Honest Framing
 
-See [ROADMAP.md](/ROADMAP.md) for the plan.
+Synth is an early-stage WASM-to-ARM compiler with genuine formal verification of its i32 integer compilation path. The 19 result-correspondence proofs in Rocq are real and cover all core i32 arithmetic and bitwise operations. This is a strong foundation for a research compiler, not a production tool.

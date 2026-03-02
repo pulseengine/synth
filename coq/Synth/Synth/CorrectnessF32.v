@@ -1,10 +1,11 @@
 (** * F32 Operations Correctness
 
-    This file contains correctness proofs for all F32 WebAssembly operations.
-    Total: 23 operations (17 arithmetic/special + 6 comparisons)
+    This file contains correctness proofs for F32 WebAssembly operations.
+    Total: 20 operations (14 arithmetic/special + 6 comparisons)
 
-    All proofs are closeable because VFP instructions use placeholder semantics
-    (exec_instr returns Some s for all VFP ops).
+    Status after catch-all removal:
+    - 7 Qed: operations compiling to [] (empty program), trivially proven
+    - 13 Admitted: VFP instructions have no modeled semantics
 *)
 
 From Stdlib Require Import ZArith.
@@ -18,211 +19,242 @@ Require Import Synth.WASM.WasmInstructions.
 Require Import Synth.WASM.WasmSemantics.
 Require Import Synth.Synth.Compilation.
 
-(** ** Helper: VFP single-instruction programs always produce a result *)
-(** All VFP instructions in exec_instr return Some s (placeholder semantics). *)
+(** ** F32 Arithmetic Operations — VFP, no semantics *)
+(** ADMITTED: Requires VFP floating-point semantics (Flocq integration) *)
 
-Ltac solve_vfp_single :=
-  intros; unfold compile_wasm_to_arm;
-  unfold exec_program; simpl;
-  eexists; reflexivity.
-
-Ltac solve_vfp_empty :=
-  intros; unfold compile_wasm_to_arm;
-  simpl; eexists; reflexivity.
-
-(** ** F32 Arithmetic Operations (5 total) *)
-
-Theorem f32_add_correct : forall wstate astate v1 v2 stack',
+Theorem f32_add_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Add wstate =
-    Some (mkWasmState (VF32 I32.zero :: stack')  (* Placeholder - needs IEEE 754 *)
+    Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Add) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VADD_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-Theorem f32_sub_correct : forall wstate astate v1 v2 stack',
+Theorem f32_sub_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Sub wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Sub) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VSUB_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-Theorem f32_mul_correct : forall wstate astate v1 v2 stack',
+Theorem f32_mul_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Mul wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Mul) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VMUL_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-Theorem f32_div_correct : forall wstate astate v1 v2 stack',
+Theorem f32_div_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Div wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Div) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VDIV_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-(** ** F32 Special Operations (12 total) *)
+(** ** F32 Special Operations *)
 
-Theorem f32_sqrt_correct : forall wstate astate v stack',
+Theorem f32_sqrt_executes : forall wstate astate v stack',
   wstate.(stack) = VF32 v :: stack' ->
   exec_wasm_instr F32Sqrt wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Sqrt) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VSQRT_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-Theorem f32_min_correct : forall wstate astate v1 v2 stack',
+(** These 7 compile to [] (empty program) — trivially proven *)
+
+Theorem f32_min_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Min wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Min) astate = Some astate'.
-Proof. solve_vfp_empty. Qed.
+Proof.
+  intros; unfold compile_wasm_to_arm; simpl; eexists; reflexivity.
+Qed.
 
-Theorem f32_max_correct : forall wstate astate v1 v2 stack',
+Theorem f32_max_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Max wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Max) astate = Some astate'.
-Proof. solve_vfp_empty. Qed.
+Proof.
+  intros; unfold compile_wasm_to_arm; simpl; eexists; reflexivity.
+Qed.
 
-Theorem f32_abs_correct : forall wstate astate v stack',
+Theorem f32_abs_executes : forall wstate astate v stack',
   wstate.(stack) = VF32 v :: stack' ->
   exec_wasm_instr F32Abs wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Abs) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VABS_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-Theorem f32_neg_correct : forall wstate astate v stack',
+Theorem f32_neg_executes : forall wstate astate v stack',
   wstate.(stack) = VF32 v :: stack' ->
   exec_wasm_instr F32Neg wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Neg) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VNEG_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-Theorem f32_copysign_correct : forall wstate astate v1 v2 stack',
+Theorem f32_copysign_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Copysign wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Copysign) astate = Some astate'.
-Proof. solve_vfp_empty. Qed.
+Proof.
+  intros; unfold compile_wasm_to_arm; simpl; eexists; reflexivity.
+Qed.
 
-Theorem f32_ceil_correct : forall wstate astate v stack',
+Theorem f32_ceil_executes : forall wstate astate v stack',
   wstate.(stack) = VF32 v :: stack' ->
   exec_wasm_instr F32Ceil wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Ceil) astate = Some astate'.
-Proof. solve_vfp_empty. Qed.
+Proof.
+  intros; unfold compile_wasm_to_arm; simpl; eexists; reflexivity.
+Qed.
 
-Theorem f32_floor_correct : forall wstate astate v stack',
+Theorem f32_floor_executes : forall wstate astate v stack',
   wstate.(stack) = VF32 v :: stack' ->
   exec_wasm_instr F32Floor wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Floor) astate = Some astate'.
-Proof. solve_vfp_empty. Qed.
+Proof.
+  intros; unfold compile_wasm_to_arm; simpl; eexists; reflexivity.
+Qed.
 
-Theorem f32_trunc_correct : forall wstate astate v stack',
+Theorem f32_trunc_executes : forall wstate astate v stack',
   wstate.(stack) = VF32 v :: stack' ->
   exec_wasm_instr F32Trunc wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Trunc) astate = Some astate'.
-Proof. solve_vfp_empty. Qed.
+Proof.
+  intros; unfold compile_wasm_to_arm; simpl; eexists; reflexivity.
+Qed.
 
-Theorem f32_nearest_correct : forall wstate astate v stack',
+Theorem f32_nearest_executes : forall wstate astate v stack',
   wstate.(stack) = VF32 v :: stack' ->
   exec_wasm_instr F32Nearest wstate =
     Some (mkWasmState (VF32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Nearest) astate = Some astate'.
-Proof. solve_vfp_empty. Qed.
+Proof.
+  intros; unfold compile_wasm_to_arm; simpl; eexists; reflexivity.
+Qed.
 
-(** ** F32 Comparison Operations (6 total) *)
+(** ** F32 Comparison Operations *)
+(** ADMITTED: VCMP_F32 has no modeled semantics *)
 
-Theorem f32_eq_correct : forall wstate astate v1 v2 stack',
+Theorem f32_eq_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Eq wstate =
     Some (mkWasmState (VI32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Eq) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VCMP_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-Theorem f32_ne_correct : forall wstate astate v1 v2 stack',
+Theorem f32_ne_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Ne wstate =
     Some (mkWasmState (VI32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Ne) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VCMP_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-Theorem f32_lt_correct : forall wstate astate v1 v2 stack',
+Theorem f32_lt_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Lt wstate =
     Some (mkWasmState (VI32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Lt) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VCMP_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-Theorem f32_gt_correct : forall wstate astate v1 v2 stack',
+Theorem f32_gt_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Gt wstate =
     Some (mkWasmState (VI32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Gt) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VCMP_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-Theorem f32_le_correct : forall wstate astate v1 v2 stack',
+Theorem f32_le_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Le wstate =
     Some (mkWasmState (VI32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Le) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VCMP_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-Theorem f32_ge_correct : forall wstate astate v1 v2 stack',
+Theorem f32_ge_executes : forall wstate astate v1 v2 stack',
   wstate.(stack) = VF32 v2 :: VF32 v1 :: stack' ->
   exec_wasm_instr F32Ge wstate =
     Some (mkWasmState (VI32 I32.zero :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32Ge) astate = Some astate'.
-Proof. solve_vfp_single. Qed.
+Proof.
+  (* ADMITTED: VCMP_F32 has no modeled semantics — requires Flocq *)
+Admitted.
 
-(** ** Summary: 23 F32 Operations — ALL PROVEN (Qed)
-    - Arithmetic: Add, Sub, Mul, Div (4) — VFP single instruction
-    - Special: Sqrt, Min, Max, Abs, Neg, Copysign, Ceil, Floor, Trunc, Nearest (10)
-      - Min, Max, Copysign, Ceil, Floor, Trunc, Nearest compile to []
-      - Sqrt, Abs, Neg compile to single VFP instruction
-    - Comparisons: Eq, Ne, Lt, Gt, Le, Ge (6) — VCMP_F32
-    - Constants: F32Const (handled in CorrectnessSimple)
+(** ** Summary: 20 F32 Operations
+    - 7 Qed: Min, Max, Copysign, Ceil, Floor, Trunc, Nearest (compile to [])
+    - 13 Admitted: VFP instructions with no modeled semantics
+      - 4 arithmetic (VADD/VSUB/VMUL/VDIV_F32)
+      - 3 unary (VSQRT/VABS/VNEG_F32)
+      - 6 comparisons (VCMP_F32)
 
-    All proofs rely on VFP placeholder semantics (exec_instr returns Some s).
+    To close: integrate Flocq IEEE 754 library for VFP semantics
 *)

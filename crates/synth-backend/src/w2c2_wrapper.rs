@@ -187,10 +187,10 @@ impl W2C2Backend {
     }
 
     fn find_w2c2(&self) -> Option<String> {
-        if let Some(ref path) = self.w2c2_path {
-            if Path::new(path).exists() {
-                return Some(path.clone());
-            }
+        if let Some(ref path) = self.w2c2_path
+            && Path::new(path).exists()
+        {
+            return Some(path.clone());
         }
         W2C2Transpiler::from_path()
             .ok()
@@ -198,10 +198,10 @@ impl W2C2Backend {
     }
 
     fn find_gcc(&self) -> Option<String> {
-        if let Some(ref path) = self.gcc_path {
-            if Path::new(path).exists() {
-                return Some(path.clone());
-            }
+        if let Some(ref path) = self.gcc_path
+            && Path::new(path).exists()
+        {
+            return Some(path.clone());
         }
         Command::new("which")
             .arg("arm-none-eabi-gcc")

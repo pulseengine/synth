@@ -67,6 +67,13 @@ rocq_library(
 )
 
 rocq_library(
+    name = "arm_flag_lemmas",
+    srcs = ["Synth/ARM/ArmFlagLemmas.v"],
+    include_path = "Synth",
+    deps = [":arm_semantics"],
+)
+
+rocq_library(
     name = "arm_refinement",
     srcs = ["Synth/ARM/ArmRefinement.v"],
     include_path = "Synth",
@@ -143,7 +150,7 @@ rocq_library(
         "Synth/Synth/CorrectnessConversions.v",
     ],
     include_path = "Synth",
-    deps = [":tactics"],
+    deps = [":tactics", ":arm_flag_lemmas"],
 )
 
 # Master index: imports all correctness proofs

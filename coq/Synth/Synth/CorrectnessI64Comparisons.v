@@ -27,8 +27,10 @@ Open Scope Z_scope.
 
 (** Helper tactic for CMP+MOV+conditional-MOV sequences *)
 Ltac solve_cmp_mov :=
-  intros; unfold compile_wasm_to_arm;
-  unfold exec_program; simpl;
+  intros; unfold compile_wasm_to_arm, exec_program, exec_instr; simpl;
+  repeat match goal with
+  | |- context [if ?b then _ else _] => destruct b
+  end;
   eexists; reflexivity.
 
 Ltac solve_single_arm :=

@@ -242,10 +242,10 @@ impl ConstantPropagation {
         // Collect constant assignments
         for block in &func.blocks {
             for instr in &block.instrs {
-                if let SSAInstr::Assign { result, value } = instr {
-                    if matches!(value, SSAValue::I32(_) | SSAValue::I64(_)) {
-                        constant_map.insert(result.clone(), value.clone());
-                    }
+                if let SSAInstr::Assign { result, value } = instr
+                    && matches!(value, SSAValue::I32(_) | SSAValue::I64(_))
+                {
+                    constant_map.insert(result.clone(), value.clone());
                 }
             }
         }
@@ -261,11 +261,11 @@ impl ConstantPropagation {
                 } = instr
                 {
                     // Try to fold constant binary operations
-                    if let (SSAValue::I32(l), SSAValue::I32(r)) = (left, right) {
-                        if let Some(folded) = Self::fold_binop(*op, *l, *r) {
-                            constant_map.insert(result.clone(), SSAValue::I32(folded));
-                            changed += 1;
-                        }
+                    if let (SSAValue::I32(l), SSAValue::I32(r)) = (left, right)
+                        && let Some(folded) = Self::fold_binop(*op, *l, *r)
+                    {
+                        constant_map.insert(result.clone(), SSAValue::I32(folded));
+                        changed += 1;
                     }
                 }
             }
