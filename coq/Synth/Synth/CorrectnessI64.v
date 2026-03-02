@@ -226,7 +226,7 @@ Theorem i64_shl_correct : forall wstate astate v1 v2 stack',
   exists astate',
     exec_program (compile_wasm_to_arm I64Shl) astate = Some astate'.
 Proof.
-  (* Compiles to [LSL R0 R0 0] — always Some *)
+  (* Compiles to [LSL_reg R0 R0 R1] — always Some *)
   solve_single_arm.
 Qed.
 
@@ -255,24 +255,24 @@ Qed.
 Theorem i64_rotl_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
   exec_wasm_instr I64Rotl wstate =
-    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI64 (I64.rotl v1 v2) :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Rotl) astate = Some astate'.
 Proof.
-  (* I64Rotl compiles to [] (empty program) *)
-  solve_empty_arm.
+  (* Compiles to [RSB R2 R1 (Imm 32); ROR_reg R0 R0 R2] — always Some *)
+  intros; unfold compile_wasm_to_arm; simpl; eexists; reflexivity.
 Qed.
 
 Theorem i64_rotr_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
   exec_wasm_instr I64Rotr wstate =
-    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
+    Some (mkWasmState (VI64 (I64.rotr v1 v2) :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64Rotr) astate = Some astate'.
 Proof.
-  (* Compiles to [ROR R0 R0 0] — always Some *)
+  (* Compiles to [ROR_reg R0 R0 R1] — always Some *)
   solve_single_arm.
 Qed.
 

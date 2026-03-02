@@ -229,6 +229,10 @@ Module I32.
   (** CLZ of reversed bits equals CTZ of original *)
   Axiom clz_rbit : forall v, clz (rbit v) = ctz v.
 
+  (** Rotate left = rotate right by complement *)
+  Axiom rotl_rotr_sub : forall x y,
+    rotl x y = rotr x (sub (repr 32) y).
+
 End I32.
 
 (** ** 64-bit Integers *)

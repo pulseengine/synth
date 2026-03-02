@@ -80,10 +80,10 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 180 Qed / 55 Admitted.
-Proofs are tiered: T1 (34 result-correspondence), T2 (95 existence-only), T3 (55 admitted).
-Most admits require VFP semantics (44), register-based shifts (5), or memory semantics (4).
-Flag-correspondence lemmas in `ARM/ArmFlagLemmas.v` closed all 11 i32 comparison admits.
+See `coq/STATUS.md` for the complete coverage matrix. Current: 188 Qed / 52 Admitted.
+Proofs are tiered: T1 (39 result-correspondence), T2 (95 existence-only), T3 (52 admitted).
+All 52 admits require VFP/float semantics (48) or are low-priority infrastructure (4).
+All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have T1 proofs.
 
 ## Conventions
 

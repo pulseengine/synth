@@ -1,6 +1,6 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated:** March 2026
+**Last Updated:** March 2026 (after Phase 4: register-based shifts)
 
 ## Overview
 
@@ -12,19 +12,19 @@ only proofs backed by real instruction semantics survive.
 
 | Tier | Meaning | Count |
 |------|---------|-------|
-| **T1: Result Correspondence** | ARM output register = WASM result value | 34 |
+| **T1: Result Correspondence** | ARM output register = WASM result value | 39 |
 | **T2: Existence-Only** | ARM execution succeeds (no result claim) | 95 |
-| **T3: Admitted** | Not yet proven | 55 |
-| **Infrastructure** | Properties of integers, states, flag lemmas | 51 |
+| **T3: Admitted** | Not yet proven | 52 |
+| **Infrastructure** | Properties of integers, states, flag lemmas | 54 |
 
-**Total: 180 Qed / 55 Admitted across all files**
+**Total: 188 Qed / 52 Admitted across all files**
 
-## T1: Result Correspondence (34 Qed)
+## T1: Result Correspondence (39 Qed)
 
 These are the crown jewels — they prove the compiled ARM code produces the exact same
 value as the WASM operation.
 
-### i32 Arithmetic (7)
+### i32 Arithmetic (6)
 
 | File | Theorem | Operation |
 |------|---------|-----------|
@@ -70,6 +70,16 @@ value as the WASM operation.
 | CorrectnessI32.v | `i32_ctz_correct` | I32Ctz |
 | CorrectnessI32.v | `i32_popcnt_correct` | I32Popcnt |
 
+### i32 Shift/Rotate (5) — uses register-based shift instructions
+
+| File | Theorem | Operation | ARM Instruction |
+|------|---------|-----------|-----------------|
+| CorrectnessI32.v | `i32_shl_correct` | I32Shl | `LSL_reg R0 R0 R1` |
+| CorrectnessI32.v | `i32_shru_correct` | I32ShrU | `LSR_reg R0 R0 R1` |
+| CorrectnessI32.v | `i32_shrs_correct` | I32ShrS | `ASR_reg R0 R0 R1` |
+| CorrectnessI32.v | `i32_rotl_correct` | I32Rotl | `RSB R2 R1 #32; ROR_reg R0 R0 R2` |
+| CorrectnessI32.v | `i32_rotr_correct` | I32Rotr | `ROR_reg R0 R0 R1` |
+
 ### i64 Division (4) — uses I32 division (32-bit register limitation)
 
 | File | Theorem | Operation |
@@ -100,18 +110,19 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 | CorrectnessMemory.v | 4 | I32Load, I64Load, I32Store, I64Store |
 | CorrectnessComplete.v | 1 | Master compilation theorem |
 
-## T3: Admitted (55)
+## T3: Admitted (52)
 
 | Category | Count | Root Cause | Unblocking Strategy |
 |----------|-------|------------|---------------------|
-| VFP unmodeled | 44 | No floating-point semantics | Integrate Flocq IEEE 754 library |
-| Fixed-immediate shifts | 5 | Compilation uses LSL/ROR with constant 0 | Add register-based shift instructions |
-| Memory correspondence | 4 | Memory ops need load/store semantics | Model memory in ArmSemantics |
-| Other | 2 | ArmRefinement (1), CorrectnessComplete (1) | Low priority |
+| VFP float ops | 26 | No floating-point semantics | Integrate Flocq IEEE 754 library |
+| Float conversions | 18 | No VFP conversion semantics | Integrate Flocq IEEE 754 library |
+| Float memory | 4 | VLDR/VSTR unmodeled | Model VFP load/store in ArmSemantics |
+| ArmRefinement | 2 | Needs simulation relation | Low priority |
+| Other | 2 | CorrectnessComplete (1), Integers (1) | Low priority |
 
 ## Axioms
 
-### Integers.v (12 axioms, 6 function + 6 property)
+### Integers.v — I32 Module (13 axioms)
 
 | Axiom | Purpose |
 |-------|---------|
@@ -127,6 +138,7 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 | `I32.div_mul_rem_signed` | Division/remainder relationship (signed) |
 | `I32.remu_formula` | `r = a - (a/b) * b` (unsigned) |
 | `I32.rems_formula` | `r = a - (a/b) * b` (signed) |
+| `I32.rotl_rotr_sub` | `rotl x y = rotr x (sub (repr 32) y)` — rotl via rotr |
 
 ### ArmFlagLemmas.v (1 axiom)
 
@@ -168,13 +180,28 @@ vacuously. It has been replaced with:
 Additionally, the four explicit VFP placeholders (`VADD_F32 => Some s`, etc.)
 were changed to `None`.
 
+## Register-Based Shift Instructions (Phase 4)
+
+Compilation.v previously used fixed-immediate shifts (`LSL R0 R0 0`) which didn't
+match the Rust instruction selector. Phase 4 added register-based shift variants
+to `ArmInstructions.v` and `ArmSemantics.v`:
+
+- `LSL_reg Rd Rn Rm` — logical shift left by register
+- `LSR_reg Rd Rn Rm` — logical shift right by register
+- `ASR_reg Rd Rn Rm` — arithmetic shift right by register
+- `ROR_reg Rd Rn Rm` — rotate right by register
+- `RSB Rd Rn Op2` — reverse subtract (`Op2 - Rn`)
+
+This closed the 5 i32 shift/rotate admits and aligned Compilation.v with the Rust
+`instruction_selector.rs` for these operations.
+
 ## Per-File Breakdown
 
 | File | Qed | Admitted | Tier |
 |------|-----|----------|------|
 | Correctness.v | 6 | 0 | T1 |
 | CorrectnessSimple.v | 29 | 0 | T2 |
-| CorrectnessI32.v | 24 | 5 | T1+T3 |
+| CorrectnessI32.v | 29 | 0 | T1 |
 | CorrectnessI64.v | 29 | 0 | T1+T2 |
 | CorrectnessI64Comparisons.v | 19 | 0 | T2 |
 | CorrectnessF32.v | 7 | 13 | T2+T3 |
@@ -184,4 +211,4 @@ were changed to `None`.
 | CorrectnessComplete.v | 1 | 1 | T2+T3 |
 | ArmFlagLemmas.v | 10 | 0 | Infra |
 | Tactics.v | 1 | 0 | Infra |
-| Infrastructure (7 files) | 40 | 1 | Infra |
+| Infrastructure (8 files) | 43 | 3 | Infra |

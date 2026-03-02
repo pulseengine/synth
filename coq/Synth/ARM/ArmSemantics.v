@@ -140,7 +140,7 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       let result := I32.repr (Z.lnot (I32.unsigned v)) in
       Some (set_reg s rd result)
 
-  (* Shift operations *)
+  (* Shift operations — immediate *)
   | LSL rd rn shift =>
       let v := get_reg s rn in
       let shift_amt := I32.repr (Z.of_nat shift) in
@@ -164,6 +164,33 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       let shift_amt := I32.repr (Z.of_nat shift) in
       let result := I32.rotr v shift_amt in
       Some (set_reg s rd result)
+
+  (* Shift operations — register (shift amount in Rm, masked to 0-31 by I32.shl etc.) *)
+  | LSL_reg rd rn rm =>
+      let v := get_reg s rn in
+      let shift_amt := get_reg s rm in
+      Some (set_reg s rd (I32.shl v shift_amt))
+
+  | LSR_reg rd rn rm =>
+      let v := get_reg s rn in
+      let shift_amt := get_reg s rm in
+      Some (set_reg s rd (I32.shru v shift_amt))
+
+  | ASR_reg rd rn rm =>
+      let v := get_reg s rn in
+      let shift_amt := get_reg s rm in
+      Some (set_reg s rd (I32.shrs v shift_amt))
+
+  | ROR_reg rd rn rm =>
+      let v := get_reg s rn in
+      let shift_amt := get_reg s rm in
+      Some (set_reg s rd (I32.rotr v shift_amt))
+
+  (* Reverse subtract: RSB Rd, Rn, Op2 = Op2 - Rn *)
+  | RSB rd rn op2 =>
+      let v1 := get_reg s rn in
+      let v2 := eval_operand2 op2 s in
+      Some (set_reg s rd (I32.sub v2 v1))
 
   (* Move operations *)
   | MOV rd op2 =>

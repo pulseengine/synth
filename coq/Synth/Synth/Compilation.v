@@ -72,32 +72,28 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
   | I32Xor =>
       [EOR R0 R0 (Reg R1)]
 
-  (* i32 shift operations *)
+  (* i32 shift operations — register-based, matching Rust instruction_selector.rs *)
   | I32Shl =>
-      (* Logical shift left: R0 = R0 << (R1 & 31) *)
-      (* ARM: AND R1, R1, #31 to mask shift amount, then LSL *)
-      (* Simplified: use fixed immediate for now, real impl needs variable shift *)
-      (* For now: implement using repeated shifts in validation layer *)
-      (* Here we emit a single instruction that validation will interpret *)
-      [LSL R0 R0 0]  (* Placeholder: shift amount comes from R1 in semantics *)
+      (* Logical shift left: R0 = R0 << R1 (I32.shl masks mod 32 internally) *)
+      [LSL_reg R0 R0 R1]
 
   | I32ShrU =>
-      (* Logical shift right (unsigned): R0 = R0 >> (R1 & 31) *)
-      [LSR R0 R0 0]  (* Placeholder: shift amount comes from R1 in semantics *)
+      (* Logical shift right (unsigned): R0 = R0 >> R1 *)
+      [LSR_reg R0 R0 R1]
 
   | I32ShrS =>
-      (* Arithmetic shift right (signed): R0 = R0 >> (R1 & 31) *)
-      [ASR R0 R0 0]  (* Placeholder: shift amount comes from R1 in semantics *)
+      (* Arithmetic shift right (signed): R0 = R0 >> R1 *)
+      [ASR_reg R0 R0 R1]
 
   | I32Rotl =>
-      (* Rotate left: R0 = R0 rotl (R1 & 31) *)
-      (* ARM doesn't have ROTL, implement as: ROR R0, R0, (32 - (R1 & 31)) *)
-      (* Simplified: return placeholder, implement in semantics *)
-      []  (* TODO: Requires computing 32-shift, then ROR *)
+      (* Rotate left = rotate right by (32 - shift) *)
+      (* RSB R2, R1, #32; ROR_reg R0, R0, R2 *)
+      [RSB R2 R1 (Imm (I32.repr 32));
+       ROR_reg R0 R0 R2]
 
   | I32Rotr =>
-      (* Rotate right: R0 = R0 rotr (R1 & 31) *)
-      [ROR R0 R0 0]  (* Placeholder: shift amount comes from R1 in semantics *)
+      (* Rotate right: R0 = R0 rotr R1 *)
+      [ROR_reg R0 R0 R1]
 
   (* i32 bit manipulation *)
   | I32Clz =>
@@ -277,21 +273,22 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
        MOV R0 (Imm I32.zero);
        MOVHS R0 (Imm I32.one)]
 
-  (* i64 shift/rotate - simplified *)
+  (* i64 shift/rotate — register-based, matching i32 pattern *)
   | I64Shl =>
-      [LSL R0 R0 0]
+      [LSL_reg R0 R0 R1]
 
   | I64ShrU =>
-      [LSR R0 R0 0]
+      [LSR_reg R0 R0 R1]
 
   | I64ShrS =>
-      [ASR R0 R0 0]
+      [ASR_reg R0 R0 R1]
 
   | I64Rotl =>
-      []  (* TODO *)
+      [RSB R2 R1 (Imm (I32.repr 32));
+       ROR_reg R0 R0 R2]
 
   | I64Rotr =>
-      [ROR R0 R0 0]
+      [ROR_reg R0 R0 R1]
 
   (* i64 bit manipulation - simplified *)
   | I64Clz =>

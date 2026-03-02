@@ -42,11 +42,20 @@ Inductive arm_instr : Type :=
   | EOR : arm_reg -> arm_reg -> operand2 -> arm_instr
   | MVN : arm_reg -> operand2 -> arm_instr
 
-  (* Shift and rotate operations *)
+  (* Shift and rotate operations — immediate *)
   | LSL : arm_reg -> arm_reg -> nat -> arm_instr  (* Logical shift left *)
   | LSR : arm_reg -> arm_reg -> nat -> arm_instr  (* Logical shift right *)
   | ASR : arm_reg -> arm_reg -> nat -> arm_instr  (* Arithmetic shift right *)
   | ROR : arm_reg -> arm_reg -> nat -> arm_instr  (* Rotate right *)
+
+  (* Shift and rotate operations — register *)
+  | LSL_reg : arm_reg -> arm_reg -> arm_reg -> arm_instr  (* LSL Rd, Rn, Rm *)
+  | LSR_reg : arm_reg -> arm_reg -> arm_reg -> arm_instr  (* LSR Rd, Rn, Rm *)
+  | ASR_reg : arm_reg -> arm_reg -> arm_reg -> arm_instr  (* ASR Rd, Rn, Rm *)
+  | ROR_reg : arm_reg -> arm_reg -> arm_reg -> arm_instr  (* ROR Rd, Rn, Rm *)
+
+  (* Reverse subtract: RSB Rd, Rn, Op2 = Op2 - Rn *)
+  | RSB : arm_reg -> arm_reg -> operand2 -> arm_instr
 
   (* Move operations *)
   | MOV : arm_reg -> operand2 -> arm_instr

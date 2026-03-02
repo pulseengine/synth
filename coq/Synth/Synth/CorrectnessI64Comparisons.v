@@ -275,10 +275,8 @@ Theorem i64_rotl_correct : forall wstate astate v1 v2 stack',
   exists astate',
     exec_program (compile_wasm_to_arm I64Rotl) astate = Some astate'.
 Proof.
-  (* I64Rotl compiles to [] (empty program) *)
-  intros wstate astate v1 v2 stack' Hstack Hwasm.
-  unfold compile_wasm_to_arm. simpl.
-  exists astate. reflexivity.
+  (* I64Rotl compiles to [RSB R2 R1 (Imm 32); ROR_reg R0 R0 R2] *)
+  intros; unfold compile_wasm_to_arm; simpl; eexists; reflexivity.
 Qed.
 
 Theorem i64_rotr_correct : forall wstate astate v1 v2 stack',
