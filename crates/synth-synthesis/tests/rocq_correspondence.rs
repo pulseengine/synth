@@ -7,9 +7,7 @@
 //! implementations agree. The Rocq proofs verify `compile_wasm_to_arm` preserves
 //! semantics; these tests verify the Rust code matches `compile_wasm_to_arm`.
 
-use synth_synthesis::{
-    ArmOp, InstructionSelector, Operand2, RuleDatabase, WasmOp,
-};
+use synth_synthesis::{ArmOp, InstructionSelector, Operand2, RuleDatabase, WasmOp};
 
 /// Helper: extract opcode names from an ARM instruction sequence,
 /// abstracting away register allocation.
@@ -53,7 +51,9 @@ fn opcode_names(ops: &[ArmOp]) -> Vec<&'static str> {
 /// which has no peephole optimizations.
 fn select_single(wasm_op: WasmOp) -> Vec<ArmOp> {
     let mut selector = InstructionSelector::new(vec![]);
-    let result = selector.select(&[wasm_op]).expect("selection should succeed");
+    let result = selector
+        .select(&[wasm_op])
+        .expect("selection should succeed");
     result.into_iter().map(|instr| instr.op).collect()
 }
 
@@ -317,10 +317,10 @@ fn instruction_counts_match_rocq() {
         (WasmOp::I32DivS, 1),
         (WasmOp::I32DivU, 1),
         // Two-instruction ops
-        (WasmOp::I32Rotl, 2),  // RSB + ROR_reg
-        (WasmOp::I32Ctz, 2),   // RBIT + CLZ
-        (WasmOp::I32RemS, 2),  // SDIV + MLS
-        (WasmOp::I32RemU, 2),  // UDIV + MLS
+        (WasmOp::I32Rotl, 2), // RSB + ROR_reg
+        (WasmOp::I32Ctz, 2),  // RBIT + CLZ
+        (WasmOp::I32RemS, 2), // SDIV + MLS
+        (WasmOp::I32RemU, 2), // UDIV + MLS
     ];
 
     for (wasm_op, expected_count) in &expected {

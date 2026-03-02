@@ -87,7 +87,7 @@ All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) h
 
 ## Conventions
 
-- Rust edition 2024, MSRV 1.85
+- Rust edition 2024, MSRV 1.88
 - Edition 2024 notes: `unsafe fn` bodies require explicit inner `unsafe {}` blocks; `#[no_mangle]` must be `#[unsafe(no_mangle)]`; `static mut` access via `&raw const`/`&raw mut`
 - Bazel 8.x with bzlmod (`MODULE.bazel`, not `WORKSPACE`)
 - Renode tests use `rules_renode` (PulseEngine fork with macOS support)
