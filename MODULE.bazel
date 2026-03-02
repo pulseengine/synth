@@ -23,8 +23,8 @@ register_toolchains("@local_config_cc_toolchains//:all")
 # Rust toolchains
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(
-    edition = "2021",
-    versions = ["1.84.0"],
+    edition = "2024",
+    versions = ["1.88.0"],
 )
 use_repo(rust, "rust_toolchains")
 register_toolchains("@rust_toolchains//:all")

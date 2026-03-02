@@ -11,7 +11,7 @@ rust_library(
     name = "synth-core",
     srcs = glob(["synth-core/src/**/*.rs"]),
     crate_root = "synth-core/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         "@crates//:anyhow",
         "@crates//:serde",
@@ -26,7 +26,7 @@ rust_library(
     name = "synth-frontend",
     srcs = glob(["synth-frontend/src/**/*.rs"]),
     crate_root = "synth-frontend/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-core",
         "@crates//:anyhow",
@@ -41,7 +41,7 @@ rust_library(
     name = "synth-analysis",
     srcs = glob(["synth-analysis/src/**/*.rs"]),
     crate_root = "synth-analysis/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-core",
         ":synth-cfg",
@@ -54,7 +54,7 @@ rust_library(
     name = "synth-cfg",
     srcs = glob(["synth-cfg/src/**/*.rs"]),
     crate_root = "synth-cfg/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-core",
         "@crates//:anyhow",
@@ -66,7 +66,7 @@ rust_library(
     name = "synth-opt",
     srcs = glob(["synth-opt/src/**/*.rs"]),
     crate_root = "synth-opt/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-cfg",
         "@crates//:anyhow",
@@ -78,7 +78,7 @@ rust_library(
     name = "synth-synthesis",
     srcs = glob(["synth-synthesis/src/**/*.rs"]),
     crate_root = "synth-synthesis/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-core",
         ":synth-opt",
@@ -91,34 +91,19 @@ rust_library(
     ],
 )
 
-# Register allocation
-rust_library(
-    name = "synth-regalloc",
-    srcs = glob(["synth-regalloc/src/**/*.rs"]),
-    crate_root = "synth-regalloc/src/lib.rs",
-    edition = "2021",
-    deps = [
-        ":synth-core",
-        ":synth-opt",
-        "@crates//:anyhow",
-        # TODO: Add regalloc2 dependency
-    ],
-)
-
 # Code generation backend (ELF builder, linker scripts, ARM encoder)
 # ARM-specific modules require synth-synthesis (arm-cortex-m feature in Cargo)
 rust_library(
     name = "synth-backend",
     srcs = glob(["synth-backend/src/**/*.rs"]),
     crate_root = "synth-backend/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     rustc_flags = ["--cfg", "feature=\"arm-cortex-m\""],
     deps = [
         ":synth-core",
-        ":synth-codegen",
-        ":synth-regalloc",
         ":synth-synthesis",
         "@crates//:anyhow",
+        "@crates//:thiserror",
     ],
 )
 
@@ -127,7 +112,7 @@ rust_library(
     name = "synth-backend-awsm",
     srcs = glob(["synth-backend-awsm/src/**/*.rs"]),
     crate_root = "synth-backend-awsm/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-core",
         "@crates//:anyhow",
@@ -140,25 +125,11 @@ rust_library(
     name = "synth-backend-wasker",
     srcs = glob(["synth-backend-wasker/src/**/*.rs"]),
     crate_root = "synth-backend-wasker/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-core",
         "@crates//:anyhow",
         "@crates//:thiserror",
-    ],
-)
-
-# Machine code generation
-rust_library(
-    name = "synth-codegen",
-    srcs = glob(["synth-codegen/src/**/*.rs"]),
-    crate_root = "synth-codegen/src/lib.rs",
-    edition = "2021",
-    deps = [
-        ":synth-core",
-        ":synth-opt",
-        ":synth-regalloc",
-        "@crates//:anyhow",
     ],
 )
 
@@ -167,7 +138,7 @@ rust_library(
     name = "synth-abi",
     srcs = glob(["synth-abi/src/**/*.rs"]),
     crate_root = "synth-abi/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-wit",
         "@crates//:anyhow",
@@ -179,7 +150,7 @@ rust_library(
     name = "synth-wit",
     srcs = glob(["synth-wit/src/**/*.rs"]),
     crate_root = "synth-wit/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-core",
         "@crates//:anyhow",
@@ -193,7 +164,7 @@ rust_library(
     name = "synth-verify",
     srcs = glob(["synth-verify/src/**/*.rs"]),
     crate_root = "synth-verify/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     rustc_flags = [
         "--cfg", "feature=\"z3-solver\"",
         "--cfg", "feature=\"arm\"",
@@ -218,7 +189,7 @@ rust_library(
     name = "synth-memory",
     srcs = glob(["synth-memory/src/**/*.rs"]),
     crate_root = "synth-memory/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     crate_features = ["std"],
     deps = [
         "@crates//:bitflags",
@@ -230,7 +201,7 @@ rust_library(
     name = "synth-qemu",
     srcs = glob(["synth-qemu/src/**/*.rs"]),
     crate_root = "synth-qemu/src/lib.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-core",
         "@crates//:anyhow",
@@ -242,7 +213,7 @@ rust_binary(
     name = "synth",
     srcs = glob(["synth-cli/src/**/*.rs"]),
     crate_root = "synth-cli/src/main.rs",
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-core",
         ":synth-frontend",
@@ -264,7 +235,7 @@ rust_library(
     srcs = glob(["synth-test/src/**/*.rs"], exclude = ["synth-test/src/main.rs"]),
     crate_root = "synth-test/src/lib.rs",
     crate_name = "synth_test",
-    edition = "2021",
+    edition = "2024",
     deps = [
         "@crates//:anyhow",
         "@crates//:clap",
@@ -282,7 +253,7 @@ rust_library(
 rust_binary(
     name = "synth-test",
     srcs = ["synth-test/src/main.rs"],
-    edition = "2021",
+    edition = "2024",
     deps = [
         ":synth-test-lib",
         "@crates//:anyhow",
@@ -300,11 +271,9 @@ filegroup(
         ":synth-cfg",
         ":synth-opt",
         ":synth-synthesis",
-        ":synth-regalloc",
         ":synth-backend",
         ":synth-backend-awsm",
         ":synth-backend-wasker",
-        ":synth-codegen",
         ":synth-abi",
         ":synth-wit",
         ":synth-verify",
