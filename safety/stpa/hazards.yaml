@@ -1,0 +1,122 @@
+# STPA Step 1b: System-Level Hazards
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+
+hazards:
+  - id: H-1
+    title: Instruction selection maps WASM op to semantically wrong ARM sequence
+    description: >
+      The pattern-matching instruction selector maps a WasmOp to an
+      ArmInstruction sequence that does not preserve the operation's
+      semantics. This includes wrong arithmetic (e.g., signed vs unsigned
+      shift), wrong comparison (e.g., condition code confusion), wrong
+      conversion (e.g., float-to-int truncation vs saturation), or
+      missing side effects (e.g., trap on division by zero).
+    losses: [L-1]
+
+  - id: H-2
+    title: Peephole optimization changes program semantics
+    description: >
+      The peephole optimizer transforms an instruction sequence in a way
+      that changes observable behavior. Constant propagation uses wrong
+      value, dead code elimination removes a side-effecting instruction,
+      instruction fusion changes evaluation order, or strength reduction
+      produces a different result for edge-case inputs.
+    losses: [L-1]
+
+  - id: H-3
+    title: Bounds check generation is incorrect or missing
+    description: >
+      Memory access instructions are compiled without bounds checks
+      (when --bounds-check is enabled), or the generated CMP/BHS
+      sequence uses the wrong memory size, wrong offset calculation,
+      or wrong branch target. Out-of-bounds access silently succeeds.
+    losses: [L-1, L-2]
+
+  - id: H-4
+    title: ARM encoding produces invalid machine code for target
+    description: >
+      The ARM encoder generates an instruction encoding that is invalid
+      for the target ISA variant. Thumb-2 encoding on Thumb-1-only core,
+      VFP instruction without FPU, unaligned LDR/STR without UAL support,
+      or incorrect condition code encoding.
+    losses: [L-5]
+
+  - id: H-5
+    title: Control flow translation loses structured control flow semantics
+    description: >
+      The block/loop/if/br/br_if translation to ARM labels and branches
+      produces incorrect branch targets. A br targets the wrong label,
+      a loop back-edge jumps to the wrong address, or an if/else branch
+      falls through to the wrong arm.
+    losses: [L-1]
+
+  - id: H-6
+    title: Register allocator corrupts live value
+    description: >
+      The register allocator spills or restores a value incorrectly,
+      overwrites a live register, or uses a register that is still needed
+      by a subsequent instruction. The virtual stack model diverges from
+      the physical register state.
+    losses: [L-1]
+
+  - id: H-7
+    title: ELF builder produces malformed binary
+    description: >
+      The ELF output has incorrect section headers, wrong program header
+      load addresses, incorrect symbol table entries, wrong relocations,
+      or a malformed vector table. The binary loads at the wrong address,
+      the reset handler jumps to wrong code, or the HardFault handler is
+      missing.
+    losses: [L-4, L-5]
+
+  - id: H-8
+    title: Meld dispatch ABI is misimplemented
+    description: >
+      The __meld_dispatch_import calling convention disagrees between
+      Synth (which generates the BL + relocation) and Kiln (which provides
+      the handler). Import index is placed in the wrong register, arguments
+      are in the wrong order, or the return value convention is wrong.
+    losses: [L-4]
+
+  - id: H-9
+    title: Verification gap between proven rules and actual codegen
+    description: >
+      A Rocq proof or Z3 check covers a specification of the rule, but
+      the Rust implementation diverges from that specification. The proof
+      assumes properties that the implementation does not guarantee. The
+      52 Admitted proofs hide unsound assumptions. The OCaml-extracted
+      validator is not used in the production pipeline.
+    losses: [L-3]
+
+  - id: H-10
+    title: Canonical ABI lowering disagrees with Meld/Kiln
+    description: >
+      Synth's synth-abi crate computes different canonical ABI layouts
+      than Meld's parser.rs or Kiln's kiln-component. When a meld-fused
+      component is compiled by Synth, the compiled import dispatch
+      passes arguments with wrong offsets or sizes.
+    losses: [L-1, L-4]
+
+sub-hazards:
+  - id: H-1.1
+    parent: H-1
+    title: Float-to-int conversion uses wrong ARM instruction
+    description: >
+      VCVT vs VCVTR confusion, or missing saturation for wasm's
+      i32.trunc_sat_f32_s vs i32.trunc_f32_s semantics.
+
+  - id: H-1.2
+    parent: H-1
+    title: Signed/unsigned confusion in shift or division
+    description: >
+      ASR used where LSR needed, or SDIV where UDIV needed, producing
+      wrong results for negative operands.
+
+  - id: H-5.1
+    parent: H-5
+    title: Loop back-edge offset calculated incorrectly
+    description: >
+      The branch offset for a loop's back-edge is wrong because
+      instruction sizes were miscounted (ARM vs Thumb-2 encoding
+      widths vary per instruction).
