@@ -18,7 +18,7 @@ pub use pattern_matcher::{
 pub use peephole::{OptimizationStats as PeepholeStats, PeepholeOptimizer};
 pub use rules::{
     ArmOp, Condition, Cost, MemAddr, Operand2, Pattern, Reg, Replacement, RuleDatabase, ShiftType,
-    SynthesisRule, WasmOp,
+    SynthesisRule, VfpReg, WasmOp,
 };
 pub use wasm_decoder::{
     DecodedModule, FunctionOps, WasmMemory, decode_wasm_functions, decode_wasm_module,

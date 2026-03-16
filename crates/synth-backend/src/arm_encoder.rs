@@ -4,13 +4,13 @@
 
 use synth_core::Result;
 use synth_core::target::FPUPrecision;
-use synth_synthesis::{ArmOp, MemAddr, Operand2, Reg};
+use synth_synthesis::{ArmOp, MemAddr, Operand2, Reg, VfpReg};
 
 /// ARM instruction encoding
 pub struct ArmEncoder {
     /// Use Thumb mode (vs ARM mode)
     thumb_mode: bool,
-    /// FPU capability (prep for VFP encoding in Task 4)
+    /// FPU capability for VFP instruction encoding
     #[allow(dead_code)]
     fpu: Option<FPUPrecision>,
 }
@@ -554,39 +554,76 @@ impl ArmEncoder {
             ArmOp::I64Extend32S { .. } => 0xE1A00000,  // NOP (Thumb-2 only)
             ArmOp::I32WrapI64 { .. } => 0xE1A00000,    // NOP
 
-            // f32 pseudo-instructions (Phase 2) - encode as NOP for now
-            // Real compiler would expand to VFP instructions
-            ArmOp::F32Add { .. } => 0xE1A00000, // NOP (real: VADD.F32)
-            ArmOp::F32Sub { .. } => 0xE1A00000, // NOP (real: VSUB.F32)
-            ArmOp::F32Mul { .. } => 0xE1A00000, // NOP (real: VMUL.F32)
-            ArmOp::F32Div { .. } => 0xE1A00000, // NOP (real: VDIV.F32)
-            ArmOp::F32Abs { .. } => 0xE1A00000, // NOP (real: VABS.F32)
-            ArmOp::F32Neg { .. } => 0xE1A00000, // NOP (real: VNEG.F32)
-            ArmOp::F32Sqrt { .. } => 0xE1A00000, // NOP (real: VSQRT.F32)
-            ArmOp::F32Ceil { .. } => 0xE1A00000, // NOP (pseudo)
-            ArmOp::F32Floor { .. } => 0xE1A00000, // NOP (pseudo)
-            ArmOp::F32Trunc { .. } => 0xE1A00000, // NOP (pseudo)
-            ArmOp::F32Nearest { .. } => 0xE1A00000, // NOP (pseudo)
-            ArmOp::F32Min { .. } => 0xE1A00000, // NOP (pseudo)
-            ArmOp::F32Max { .. } => 0xE1A00000, // NOP (pseudo)
-            ArmOp::F32Copysign { .. } => 0xE1A00000, // NOP (pseudo)
-            ArmOp::F32Eq { .. } => 0xE1A00000,  // NOP (real: VCMP.F32 + VMRS)
-            ArmOp::F32Ne { .. } => 0xE1A00000,  // NOP
-            ArmOp::F32Lt { .. } => 0xE1A00000,  // NOP
-            ArmOp::F32Le { .. } => 0xE1A00000,  // NOP
-            ArmOp::F32Gt { .. } => 0xE1A00000,  // NOP
-            ArmOp::F32Ge { .. } => 0xE1A00000,  // NOP
-            ArmOp::F32Const { .. } => 0xE1A00000, // NOP (real: VMOV.F32 or literal pool)
-            ArmOp::F32Load { .. } => 0xE1A00000, // NOP (real: VLDR.32)
-            ArmOp::F32Store { .. } => 0xE1A00000, // NOP (real: VSTR.32)
-            ArmOp::F32ConvertI32S { .. } => 0xE1A00000, // NOP (real: VMOV + VCVT.F32.S32)
-            ArmOp::F32ConvertI32U { .. } => 0xE1A00000, // NOP (real: VMOV + VCVT.F32.U32)
-            ArmOp::F32ConvertI64S { .. } => 0xE1A00000, // NOP (complex)
-            ArmOp::F32ConvertI64U { .. } => 0xE1A00000, // NOP (complex)
-            ArmOp::F32ReinterpretI32 { .. } => 0xE1A00000, // NOP (real: VMOV Sd, Rm)
-            ArmOp::I32ReinterpretF32 { .. } => 0xE1A00000, // NOP (real: VMOV Rd, Sm)
-            ArmOp::I32TruncF32S { .. } => 0xE1A00000, // NOP (real: VCVT.S32.F32 + VMOV)
-            ArmOp::I32TruncF32U { .. } => 0xE1A00000, // NOP (real: VCVT.U32.F32 + VMOV)
+            // f32 VFP single-precision instructions
+            ArmOp::F32Add { sd, sn, sm } => encode_vfp_3reg(0xEE300A00, sd, sn, sm),
+            ArmOp::F32Sub { sd, sn, sm } => encode_vfp_3reg(0xEE300A40, sd, sn, sm),
+            ArmOp::F32Mul { sd, sn, sm } => encode_vfp_3reg(0xEE200A00, sd, sn, sm),
+            ArmOp::F32Div { sd, sn, sm } => encode_vfp_3reg(0xEE800A00, sd, sn, sm),
+            ArmOp::F32Abs { sd, sm } => encode_vfp_2reg(0xEEB00AC0, sd, sm),
+            ArmOp::F32Neg { sd, sm } => encode_vfp_2reg(0xEEB10A40, sd, sm),
+            ArmOp::F32Sqrt { sd, sm } => encode_vfp_2reg(0xEEB10AC0, sd, sm),
+
+            // f32 pseudo-ops — not yet implemented, need ARMv8-M or software fallback
+            ArmOp::F32Ceil { .. }
+            | ArmOp::F32Floor { .. }
+            | ArmOp::F32Trunc { .. }
+            | ArmOp::F32Nearest { .. }
+            | ArmOp::F32Min { .. }
+            | ArmOp::F32Max { .. }
+            | ArmOp::F32Copysign { .. } => {
+                return Err(synth_core::Error::synthesis(
+                    "F32 pseudo-op not yet implemented (needs ARMv8-M VRINT* or software fallback)",
+                ));
+            }
+
+            // f32 comparisons — multi-instruction: VCMP + VMRS + conditional MOV
+            ArmOp::F32Eq { rd, sn, sm } => {
+                return self.encode_arm_f32_compare(rd, sn, sm, 0x0); // EQ
+            }
+            ArmOp::F32Ne { rd, sn, sm } => {
+                return self.encode_arm_f32_compare(rd, sn, sm, 0x1); // NE
+            }
+            ArmOp::F32Lt { rd, sn, sm } => {
+                return self.encode_arm_f32_compare(rd, sn, sm, 0x4); // MI (less than)
+            }
+            ArmOp::F32Le { rd, sn, sm } => {
+                return self.encode_arm_f32_compare(rd, sn, sm, 0x9); // LS (less or same)
+            }
+            ArmOp::F32Gt { rd, sn, sm } => {
+                return self.encode_arm_f32_compare(rd, sn, sm, 0xC); // GT
+            }
+            ArmOp::F32Ge { rd, sn, sm } => {
+                return self.encode_arm_f32_compare(rd, sn, sm, 0xA); // GE
+            }
+
+            // f32 const — multi-instruction: MOVW + MOVT + VMOV
+            ArmOp::F32Const { sd, value } => {
+                return self.encode_arm_f32_const(sd, *value);
+            }
+
+            ArmOp::F32Load { sd, addr } => encode_vfp_ldst(0xED900A00, sd, addr),
+            ArmOp::F32Store { sd, addr } => encode_vfp_ldst(0xED800A00, sd, addr),
+
+            // f32 conversions — multi-instruction sequences
+            ArmOp::F32ConvertI32S { sd, rm } => {
+                return self.encode_arm_f32_convert_i32(sd, rm, true);
+            }
+            ArmOp::F32ConvertI32U { sd, rm } => {
+                return self.encode_arm_f32_convert_i32(sd, rm, false);
+            }
+            ArmOp::F32ConvertI64S { .. } | ArmOp::F32ConvertI64U { .. } => {
+                return Err(synth_core::Error::synthesis(
+                    "F32 i64 conversion not supported (requires register pairs on 32-bit ARM)",
+                ));
+            }
+            ArmOp::F32ReinterpretI32 { sd, rm } => encode_vmov_core_sreg(true, sd, rm),
+            ArmOp::I32ReinterpretF32 { rd, sm } => encode_vmov_core_sreg(false, sm, rd),
+            ArmOp::I32TruncF32S { rd, sm } => {
+                return self.encode_arm_i32_trunc_f32(rd, sm, true);
+            }
+            ArmOp::I32TruncF32U { rd, sm } => {
+                return self.encode_arm_i32_trunc_f32(rd, sm, false);
+            }
 
             // f64 pseudo-instructions (Phase 2c) - encode as NOP for now
             // Real compiler would expand to VFP double-precision instructions
@@ -637,6 +674,106 @@ impl ArmEncoder {
 
         // ARM32 instructions are little-endian
         Ok(instr.to_le_bytes().to_vec())
+    }
+
+    // === ARM32 VFP multi-instruction helpers ===
+
+    /// Encode F32 comparison as ARM32: VCMP.F32 + VMRS + MOV rd,#0 + MOVcond rd,#1
+    fn encode_arm_f32_compare(
+        &self,
+        rd: &Reg,
+        sn: &VfpReg,
+        sm: &VfpReg,
+        cond_code: u32,
+    ) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+
+        // VCMP.F32 Sn, Sm: 0xEEB40A40 with Sn in Vd position, Sm in Vm position
+        let sn_num = vfp_sreg_to_num(sn);
+        let sm_num = vfp_sreg_to_num(sm);
+        let (vd, d) = encode_sreg(sn_num);
+        let (vm, m) = encode_sreg(sm_num);
+        let vcmp = 0xEEB40A40 | (d << 22) | (vd << 12) | (m << 5) | vm;
+        bytes.extend_from_slice(&vcmp.to_le_bytes());
+
+        // VMRS APSR_nzcv, FPSCR: 0xEEF1FA10
+        bytes.extend_from_slice(&0xEEF1FA10u32.to_le_bytes());
+
+        // MOV rd, #0: 0xE3A0_0000 | (rd << 12)
+        let rd_bits = reg_to_bits(rd);
+        let mov_zero = 0xE3A00000 | (rd_bits << 12);
+        bytes.extend_from_slice(&mov_zero.to_le_bytes());
+
+        // MOVcond rd, #1: cond(4) | 0011 1010 0000 rd(4) 0000 0000 0001
+        let mov_one = (cond_code << 28) | 0x03A00001 | (rd_bits << 12);
+        bytes.extend_from_slice(&mov_one.to_le_bytes());
+
+        Ok(bytes)
+    }
+
+    /// Encode F32 constant load as ARM32: MOVW Rt,#lo16 + MOVT Rt,#hi16 + VMOV Sd,Rt
+    fn encode_arm_f32_const(&self, sd: &VfpReg, value: f32) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        let bits = value.to_bits();
+
+        // Use R12 as temp register for constant loading
+        let rt: u32 = 12; // R12/IP
+
+        // MOVW R12, #lo16: 0xE300_C000 | (imm4 << 16) | imm12
+        let lo16 = bits & 0xFFFF;
+        let movw = 0xE3000000 | (rt << 12) | ((lo16 >> 12) << 16) | (lo16 & 0xFFF);
+        bytes.extend_from_slice(&movw.to_le_bytes());
+
+        // MOVT R12, #hi16: 0xE340_C000 | (imm4 << 16) | imm12
+        let hi16 = (bits >> 16) & 0xFFFF;
+        let movt = 0xE3400000 | (rt << 12) | ((hi16 >> 12) << 16) | (hi16 & 0xFFF);
+        bytes.extend_from_slice(&movt.to_le_bytes());
+
+        // VMOV Sd, R12
+        let vmov = encode_vmov_core_sreg(true, sd, &Reg::R12);
+        bytes.extend_from_slice(&vmov.to_le_bytes());
+
+        Ok(bytes)
+    }
+
+    /// Encode VMOV + VCVT.F32.S32/U32 as ARM32
+    fn encode_arm_f32_convert_i32(&self, sd: &VfpReg, rm: &Reg, signed: bool) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+
+        // VMOV Sd, Rm — move integer to VFP register
+        let vmov = encode_vmov_core_sreg(true, sd, rm);
+        bytes.extend_from_slice(&vmov.to_le_bytes());
+
+        // VCVT.F32.S32 Sd, Sd (signed) or VCVT.F32.U32 Sd, Sd (unsigned)
+        // Base: 0xEEB80A40 (signed) or 0xEEB80AC0 (unsigned)
+        let sd_num = vfp_sreg_to_num(sd);
+        let (vd, d) = encode_sreg(sd_num);
+        let (vm, m) = encode_sreg(sd_num); // same register as source
+        let base = if signed { 0xEEB80A40 } else { 0xEEB80AC0 };
+        let vcvt = base | (d << 22) | (vd << 12) | (m << 5) | vm;
+        bytes.extend_from_slice(&vcvt.to_le_bytes());
+
+        Ok(bytes)
+    }
+
+    /// Encode VCVT.S32/U32.F32 + VMOV as ARM32
+    fn encode_arm_i32_trunc_f32(&self, rd: &Reg, sm: &VfpReg, signed: bool) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+
+        // VCVT.S32.F32 Sd, Sm (toward zero) or VCVT.U32.F32 Sd, Sm
+        // We use Sm as both source and destination for the intermediate result
+        let sm_num = vfp_sreg_to_num(sm);
+        let (vd, d) = encode_sreg(sm_num);
+        let (vm, m) = encode_sreg(sm_num);
+        let base = if signed { 0xEEBD0AC0 } else { 0xEEBC0AC0 };
+        let vcvt = base | (d << 22) | (vd << 12) | (m << 5) | vm;
+        bytes.extend_from_slice(&vcvt.to_le_bytes());
+
+        // VMOV Rd, Sm — move result back to core register
+        let vmov = encode_vmov_core_sreg(false, sm, rd);
+        bytes.extend_from_slice(&vmov.to_le_bytes());
+
+        Ok(bytes)
     }
 
     /// Encode an ARM instruction in Thumb-2 mode (16-bit or 32-bit instructions)
@@ -3461,12 +3598,272 @@ impl ArmEncoder {
                 Ok(bytes)
             }
 
-            // Default: NOP for unsupported ops
+            // === F32 VFP single-precision Thumb-2 encodings ===
+            // VFP instruction words are identical to ARM32; emit as two LE halfwords.
+            ArmOp::F32Add { sd, sn, sm } => {
+                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE300A00, sd, sn, sm)))
+            }
+            ArmOp::F32Sub { sd, sn, sm } => {
+                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE300A40, sd, sn, sm)))
+            }
+            ArmOp::F32Mul { sd, sn, sm } => {
+                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE200A00, sd, sn, sm)))
+            }
+            ArmOp::F32Div { sd, sn, sm } => {
+                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE800A00, sd, sn, sm)))
+            }
+            ArmOp::F32Abs { sd, sm } => Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB00AC0, sd, sm))),
+            ArmOp::F32Neg { sd, sm } => Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB10A40, sd, sm))),
+            ArmOp::F32Sqrt { sd, sm } => {
+                Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB10AC0, sd, sm)))
+            }
+
+            // f32 pseudo-ops — not yet implemented
+            ArmOp::F32Ceil { .. }
+            | ArmOp::F32Floor { .. }
+            | ArmOp::F32Trunc { .. }
+            | ArmOp::F32Nearest { .. }
+            | ArmOp::F32Min { .. }
+            | ArmOp::F32Max { .. }
+            | ArmOp::F32Copysign { .. } => Err(synth_core::Error::synthesis(
+                "F32 pseudo-op not yet implemented (needs ARMv8-M VRINT* or software fallback)",
+            )),
+
+            // f32 comparisons — VCMP + VMRS + MOV #0 + IT + MOV #1
+            ArmOp::F32Eq { rd, sn, sm } => self.encode_thumb_f32_compare(rd, sn, sm, 0x0),
+            ArmOp::F32Ne { rd, sn, sm } => self.encode_thumb_f32_compare(rd, sn, sm, 0x1),
+            ArmOp::F32Lt { rd, sn, sm } => self.encode_thumb_f32_compare(rd, sn, sm, 0x4),
+            ArmOp::F32Le { rd, sn, sm } => self.encode_thumb_f32_compare(rd, sn, sm, 0x9),
+            ArmOp::F32Gt { rd, sn, sm } => self.encode_thumb_f32_compare(rd, sn, sm, 0xC),
+            ArmOp::F32Ge { rd, sn, sm } => self.encode_thumb_f32_compare(rd, sn, sm, 0xA),
+
+            ArmOp::F32Const { sd, value } => self.encode_thumb_f32_const(sd, *value),
+
+            ArmOp::F32Load { sd, addr } => {
+                Ok(vfp_to_thumb_bytes(encode_vfp_ldst(0xED900A00, sd, addr)))
+            }
+            ArmOp::F32Store { sd, addr } => {
+                Ok(vfp_to_thumb_bytes(encode_vfp_ldst(0xED800A00, sd, addr)))
+            }
+
+            ArmOp::F32ConvertI32S { sd, rm } => self.encode_thumb_f32_convert_i32(sd, rm, true),
+            ArmOp::F32ConvertI32U { sd, rm } => self.encode_thumb_f32_convert_i32(sd, rm, false),
+            ArmOp::F32ConvertI64S { .. } | ArmOp::F32ConvertI64U { .. } => {
+                Err(synth_core::Error::synthesis(
+                    "F32 i64 conversion not supported (requires register pairs on 32-bit ARM)",
+                ))
+            }
+            ArmOp::F32ReinterpretI32 { sd, rm } => {
+                Ok(vfp_to_thumb_bytes(encode_vmov_core_sreg(true, sd, rm)))
+            }
+            ArmOp::I32ReinterpretF32 { rd, sm } => {
+                Ok(vfp_to_thumb_bytes(encode_vmov_core_sreg(false, sm, rd)))
+            }
+            ArmOp::I32TruncF32S { rd, sm } => self.encode_thumb_i32_trunc_f32(rd, sm, true),
+            ArmOp::I32TruncF32U { rd, sm } => self.encode_thumb_i32_trunc_f32(rd, sm, false),
+
+            // F64 ops — still NOP stubs (deferred to double-precision task)
+            ArmOp::F64Add { .. }
+            | ArmOp::F64Sub { .. }
+            | ArmOp::F64Mul { .. }
+            | ArmOp::F64Div { .. }
+            | ArmOp::F64Abs { .. }
+            | ArmOp::F64Neg { .. }
+            | ArmOp::F64Sqrt { .. }
+            | ArmOp::F64Ceil { .. }
+            | ArmOp::F64Floor { .. }
+            | ArmOp::F64Trunc { .. }
+            | ArmOp::F64Nearest { .. }
+            | ArmOp::F64Min { .. }
+            | ArmOp::F64Max { .. }
+            | ArmOp::F64Copysign { .. }
+            | ArmOp::F64Eq { .. }
+            | ArmOp::F64Ne { .. }
+            | ArmOp::F64Lt { .. }
+            | ArmOp::F64Le { .. }
+            | ArmOp::F64Gt { .. }
+            | ArmOp::F64Ge { .. }
+            | ArmOp::F64Const { .. }
+            | ArmOp::F64Load { .. }
+            | ArmOp::F64Store { .. }
+            | ArmOp::F64ConvertI32S { .. }
+            | ArmOp::F64ConvertI32U { .. }
+            | ArmOp::F64ConvertI64S { .. }
+            | ArmOp::F64ConvertI64U { .. }
+            | ArmOp::F64PromoteF32 { .. }
+            | ArmOp::F64ReinterpretI64 { .. }
+            | ArmOp::I64ReinterpretF64 { .. }
+            | ArmOp::I64TruncF64S { .. }
+            | ArmOp::I64TruncF64U { .. }
+            | ArmOp::I32TruncF64S { .. }
+            | ArmOp::I32TruncF64U { .. } => {
+                let instr: u16 = 0xBF00; // NOP
+                Ok(instr.to_le_bytes().to_vec())
+            }
+
+            // i64 ops that are only stubs in Thumb mode
+            ArmOp::I64Add { .. }
+            | ArmOp::I64Sub { .. }
+            | ArmOp::I64And { .. }
+            | ArmOp::I64Or { .. }
+            | ArmOp::I64Xor { .. }
+            | ArmOp::I64Eqz { .. }
+            | ArmOp::I64Eq { .. }
+            | ArmOp::I64Ne { .. }
+            | ArmOp::I64LtS { .. }
+            | ArmOp::I64LtU { .. }
+            | ArmOp::I64LeS { .. }
+            | ArmOp::I64LeU { .. }
+            | ArmOp::I64GtS { .. }
+            | ArmOp::I64GtU { .. }
+            | ArmOp::I64GeS { .. }
+            | ArmOp::I64GeU { .. }
+            | ArmOp::I64Const { .. }
+            | ArmOp::I64Ldr { .. }
+            | ArmOp::I64Str { .. }
+            | ArmOp::I64ExtendI32S { .. }
+            | ArmOp::I64ExtendI32U { .. }
+            | ArmOp::I32WrapI64 { .. } => {
+                let instr: u16 = 0xBF00; // NOP
+                Ok(instr.to_le_bytes().to_vec())
+            }
+
+            // Catch-all for any remaining ops
             _ => {
                 let instr: u16 = 0xBF00; // NOP
                 Ok(instr.to_le_bytes().to_vec())
             }
         }
+    }
+
+    // === Thumb-2 VFP multi-instruction helpers ===
+
+    /// Encode F32 comparison as Thumb-2: VCMP.F32 + VMRS + MOVS rd,#0 + IT + MOV rd,#1
+    fn encode_thumb_f32_compare(
+        &self,
+        rd: &Reg,
+        sn: &VfpReg,
+        sm: &VfpReg,
+        cond_code: u32,
+    ) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        let rd_bits = reg_to_bits(rd);
+
+        // VCMP.F32 Sn, Sm
+        let sn_num = vfp_sreg_to_num(sn);
+        let sm_num = vfp_sreg_to_num(sm);
+        let (vd, d) = encode_sreg(sn_num);
+        let (vm, m) = encode_sreg(sm_num);
+        let vcmp = 0xEEB40A40 | (d << 22) | (vd << 12) | (m << 5) | vm;
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vcmp));
+
+        // VMRS APSR_nzcv, FPSCR: 0xEEF1FA10
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(0xEEF1FA10));
+
+        // MOVS Rd, #0 (16-bit): 0010 0 Rd(3) 0000 0000
+        if rd_bits < 8 {
+            let movs_zero: u16 = 0x2000 | ((rd_bits as u16) << 8);
+            bytes.extend_from_slice(&movs_zero.to_le_bytes());
+        } else {
+            // MOV.W Rd, #0 (32-bit Thumb-2)
+            let hw1: u16 = 0xF04F;
+            let hw2: u16 = (rd_bits as u16) << 8;
+            bytes.extend_from_slice(&hw1.to_le_bytes());
+            bytes.extend_from_slice(&hw2.to_le_bytes());
+        }
+
+        // IT<cond> — If-Then for conditional MOV
+        // IT encoding: 1011 1111 cond(4) mask(4)
+        // mask = 0x8 for single "then" (IT)
+        let it: u16 = 0xBF00 | ((cond_code as u16) << 4) | 0x8;
+        bytes.extend_from_slice(&it.to_le_bytes());
+
+        // MOV Rd, #1 (16-bit, conditional due to IT): 0010 0 Rd(3) 0000 0001
+        if rd_bits < 8 {
+            let mov_one: u16 = 0x2001 | ((rd_bits as u16) << 8);
+            bytes.extend_from_slice(&mov_one.to_le_bytes());
+        } else {
+            // MOV.W Rd, #1 (32-bit)
+            let hw1: u16 = 0xF04F;
+            let hw2: u16 = ((rd_bits as u16) << 8) | 0x01;
+            bytes.extend_from_slice(&hw1.to_le_bytes());
+            bytes.extend_from_slice(&hw2.to_le_bytes());
+        }
+
+        Ok(bytes)
+    }
+
+    /// Encode F32 constant load as Thumb-2: MOVW + MOVT + VMOV
+    fn encode_thumb_f32_const(&self, sd: &VfpReg, value: f32) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        let bits = value.to_bits();
+        let rt: u32 = 12; // R12/IP as temp
+
+        // MOVW R12, #lo16
+        // Thumb-2 MOVW: 11110 i 10 0100 imm4 | 0 imm3 Rd imm8
+        let lo16 = bits & 0xFFFF;
+        let imm4 = (lo16 >> 12) & 0xF;
+        let i_bit = (lo16 >> 11) & 1;
+        let imm3 = (lo16 >> 8) & 0x7;
+        let imm8 = lo16 & 0xFF;
+        let hw1: u16 = (0xF240 | (i_bit << 10) | imm4) as u16;
+        let hw2: u16 = ((imm3 << 12) | (rt << 8) | imm8) as u16;
+        bytes.extend_from_slice(&hw1.to_le_bytes());
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+
+        // MOVT R12, #hi16
+        let hi16 = (bits >> 16) & 0xFFFF;
+        let imm4 = (hi16 >> 12) & 0xF;
+        let i_bit = (hi16 >> 11) & 1;
+        let imm3 = (hi16 >> 8) & 0x7;
+        let imm8 = hi16 & 0xFF;
+        let hw1: u16 = (0xF2C0 | (i_bit << 10) | imm4) as u16;
+        let hw2: u16 = ((imm3 << 12) | (rt << 8) | imm8) as u16;
+        bytes.extend_from_slice(&hw1.to_le_bytes());
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+
+        // VMOV Sd, R12
+        let vmov = encode_vmov_core_sreg(true, sd, &Reg::R12);
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
+
+        Ok(bytes)
+    }
+
+    /// Encode VMOV + VCVT.F32.xS32 as Thumb-2
+    fn encode_thumb_f32_convert_i32(&self, sd: &VfpReg, rm: &Reg, signed: bool) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+
+        // VMOV Sd, Rm
+        let vmov = encode_vmov_core_sreg(true, sd, rm);
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
+
+        // VCVT.F32.S32/U32 Sd, Sd
+        let sd_num = vfp_sreg_to_num(sd);
+        let (vd, d) = encode_sreg(sd_num);
+        let (vm, m) = encode_sreg(sd_num);
+        let base = if signed { 0xEEB80A40 } else { 0xEEB80AC0 };
+        let vcvt = base | (d << 22) | (vd << 12) | (m << 5) | vm;
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt));
+
+        Ok(bytes)
+    }
+
+    /// Encode VCVT.S32/U32.F32 + VMOV as Thumb-2
+    fn encode_thumb_i32_trunc_f32(&self, rd: &Reg, sm: &VfpReg, signed: bool) -> Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+
+        let sm_num = vfp_sreg_to_num(sm);
+        let (vd, d) = encode_sreg(sm_num);
+        let (vm, m) = encode_sreg(sm_num);
+        let base = if signed { 0xEEBD0AC0 } else { 0xEEBC0AC0 };
+        let vcvt = base | (d << 22) | (vd << 12) | (m << 5) | vm;
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt));
+
+        // VMOV Rd, Sm
+        let vmov = encode_vmov_core_sreg(false, sm, rd);
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
+
+        Ok(bytes)
     }
 
     // === Thumb-2 32-bit encoding helpers ===
@@ -3899,6 +4296,117 @@ fn encode_mem_addr(addr: &MemAddr) -> (u32, u32) {
     let base_bits = reg_to_bits(&addr.base);
     let offset_bits = (addr.offset as u32) & 0xFFF; // 12-bit offset
     (base_bits, offset_bits)
+}
+
+/// S-register number: S0=0, S1=1, ..., S31=31
+fn vfp_sreg_to_num(reg: &VfpReg) -> u32 {
+    match reg {
+        VfpReg::S0 => 0,
+        VfpReg::S1 => 1,
+        VfpReg::S2 => 2,
+        VfpReg::S3 => 3,
+        VfpReg::S4 => 4,
+        VfpReg::S5 => 5,
+        VfpReg::S6 => 6,
+        VfpReg::S7 => 7,
+        VfpReg::S8 => 8,
+        VfpReg::S9 => 9,
+        VfpReg::S10 => 10,
+        VfpReg::S11 => 11,
+        VfpReg::S12 => 12,
+        VfpReg::S13 => 13,
+        VfpReg::S14 => 14,
+        VfpReg::S15 => 15,
+        VfpReg::S16 => 16,
+        VfpReg::S17 => 17,
+        VfpReg::S18 => 18,
+        VfpReg::S19 => 19,
+        VfpReg::S20 => 20,
+        VfpReg::S21 => 21,
+        VfpReg::S22 => 22,
+        VfpReg::S23 => 23,
+        VfpReg::S24 => 24,
+        VfpReg::S25 => 25,
+        VfpReg::S26 => 26,
+        VfpReg::S27 => 27,
+        VfpReg::S28 => 28,
+        VfpReg::S29 => 29,
+        VfpReg::S30 => 30,
+        VfpReg::S31 => 31,
+        // D-registers are not used in F32 single-precision encodings
+        _ => panic!("D-registers not supported in single-precision VFP encoding"),
+    }
+}
+
+/// Split S-register into (Vx[3:0], qualifier_bit) for VFP encoding.
+/// For an S-register number s: Vx = s >> 1, qualifier = s & 1.
+/// The qualifier bit goes to D (bit 22), N (bit 7), or M (bit 5) depending on role.
+fn encode_sreg(s: u32) -> (u32, u32) {
+    (s >> 1, s & 1)
+}
+
+/// Encode a VFP 3-register arithmetic instruction (VADD.F32, VSUB.F32, VMUL.F32, VDIV.F32).
+/// Returns the full 32-bit instruction word.
+///
+/// VFP encoding: [cond 1110] [D opc1 Vn] [Vd 101 sz] [N opc2 M 0 Vm]
+/// For single-precision (sz=0), coprocessor = 0xA (bits[11:8]).
+fn encode_vfp_3reg(base: u32, sd: &VfpReg, sn: &VfpReg, sm: &VfpReg) -> u32 {
+    let sd_num = vfp_sreg_to_num(sd);
+    let sn_num = vfp_sreg_to_num(sn);
+    let sm_num = vfp_sreg_to_num(sm);
+    let (vd, d) = encode_sreg(sd_num);
+    let (vn, n) = encode_sreg(sn_num);
+    let (vm, m) = encode_sreg(sm_num);
+
+    base | (d << 22) | (vn << 16) | (vd << 12) | (n << 7) | (m << 5) | vm
+}
+
+/// Encode a VFP 2-register instruction (VNEG.F32, VABS.F32, VSQRT.F32).
+/// Returns the full 32-bit instruction word.
+fn encode_vfp_2reg(base: u32, sd: &VfpReg, sm: &VfpReg) -> u32 {
+    let sd_num = vfp_sreg_to_num(sd);
+    let sm_num = vfp_sreg_to_num(sm);
+    let (vd, d) = encode_sreg(sd_num);
+    let (vm, m) = encode_sreg(sm_num);
+
+    base | (d << 22) | (vd << 12) | (m << 5) | vm
+}
+
+/// Encode a VFP load/store (VLDR.F32 / VSTR.F32).
+/// offset is in bytes and must be word-aligned; encoded as imm8 = offset/4.
+/// U bit (bit 23) controls add/subtract offset.
+fn encode_vfp_ldst(base: u32, sd: &VfpReg, addr: &MemAddr) -> u32 {
+    let sd_num = vfp_sreg_to_num(sd);
+    let (vd, d) = encode_sreg(sd_num);
+    let rn = reg_to_bits(&addr.base);
+
+    let offset = addr.offset;
+    let u_bit = if offset >= 0 { 1u32 } else { 0u32 };
+    let abs_offset = offset.unsigned_abs();
+    let imm8 = (abs_offset / 4) & 0xFF;
+
+    base | (u_bit << 23) | (d << 22) | (rn << 16) | (vd << 12) | imm8
+}
+
+/// Encode VMOV between core register and S-register.
+/// VMOV Sn, Rt: 0xEE00_0A10 | (Vn << 16) | (N << 7) | (Rt << 12)
+/// VMOV Rt, Sn: 0xEE10_0A10 | (Vn << 16) | (N << 7) | (Rt << 12)
+fn encode_vmov_core_sreg(to_sreg: bool, sreg: &VfpReg, core: &Reg) -> u32 {
+    let s_num = vfp_sreg_to_num(sreg);
+    let (vn, n) = encode_sreg(s_num);
+    let rt = reg_to_bits(core);
+
+    let base = if to_sreg { 0xEE000A10 } else { 0xEE100A10 };
+    base | (vn << 16) | (rt << 12) | (n << 7)
+}
+
+/// Emit a VFP 32-bit instruction as Thumb-2 bytes (two LE halfwords).
+fn vfp_to_thumb_bytes(instr: u32) -> Vec<u8> {
+    let hw1 = ((instr >> 16) & 0xFFFF) as u16;
+    let hw2 = (instr & 0xFFFF) as u16;
+    let mut bytes = hw1.to_le_bytes().to_vec();
+    bytes.extend_from_slice(&hw2.to_le_bytes());
+    bytes
 }
 
 #[cfg(test)]
