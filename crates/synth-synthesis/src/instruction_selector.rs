@@ -2,7 +2,7 @@
 //!
 //! Uses pattern matching to select optimal ARM instruction sequences
 
-use crate::rules::{ArmOp, Condition, MemAddr, Operand2, Reg, Replacement, SynthesisRule};
+use crate::rules::{ArmOp, Condition, MemAddr, Operand2, Reg, Replacement, SynthesisRule, VfpReg};
 use crate::{Bindings, PatternMatcher};
 use std::collections::HashMap;
 use synth_core::Result;
@@ -100,6 +100,28 @@ impl Default for RegisterState {
     }
 }
 
+/// Convert VFP register index to VfpReg enum (S0-S15 for linear allocation)
+fn index_to_vfp_reg(index: u8) -> VfpReg {
+    match index % 16 {
+        0 => VfpReg::S0,
+        1 => VfpReg::S1,
+        2 => VfpReg::S2,
+        3 => VfpReg::S3,
+        4 => VfpReg::S4,
+        5 => VfpReg::S5,
+        6 => VfpReg::S6,
+        7 => VfpReg::S7,
+        8 => VfpReg::S8,
+        9 => VfpReg::S9,
+        10 => VfpReg::S10,
+        11 => VfpReg::S11,
+        12 => VfpReg::S12,
+        13 => VfpReg::S13,
+        14 => VfpReg::S14,
+        _ => VfpReg::S15,
+    }
+}
+
 /// Instruction selector
 pub struct InstructionSelector {
     /// Pattern matcher with synthesis rules
@@ -114,6 +136,8 @@ pub struct InstructionSelector {
     fpu: Option<FPUPrecision>,
     /// Target name for error messages
     target_name: String,
+    /// Next available VFP S-register (S0-S15, wrapping)
+    next_vfp_reg: u8,
 }
 
 impl InstructionSelector {
@@ -126,6 +150,7 @@ impl InstructionSelector {
             num_imports: 0,
             fpu: None,
             target_name: "cortex-m3".to_string(),
+            next_vfp_reg: 0,
         }
     }
 
@@ -138,6 +163,7 @@ impl InstructionSelector {
             num_imports: 0,
             fpu: None,
             target_name: "cortex-m3".to_string(),
+            next_vfp_reg: 0,
         }
     }
 
@@ -155,6 +181,13 @@ impl InstructionSelector {
     pub fn set_target(&mut self, fpu: Option<FPUPrecision>, target_name: &str) {
         self.fpu = fpu;
         self.target_name = target_name.to_string();
+    }
+
+    /// Allocate a VFP S-register (S0-S15, wrapping)
+    fn alloc_vfp_reg(&mut self) -> VfpReg {
+        let reg = index_to_vfp_reg(self.next_vfp_reg);
+        self.next_vfp_reg = (self.next_vfp_reg + 1) % 16;
+        reg
     }
 
     /// Select ARM instructions for a sequence of WASM operations
@@ -537,7 +570,154 @@ impl InstructionSelector {
                 )));
             }
 
-            // f32/f64 operations — requires VFP/NEON, not available on all Cortex-M
+            // ===== F32 operations =====
+            // Path A: no FPU → error
+            // Path B: FPU present → generate VFP instructions
+            // Path C: unsupported ops → specific error
+            F32Add if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Add { sd, sn, sm }]
+            }
+            F32Sub if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Sub { sd, sn, sm }]
+            }
+            F32Mul if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Mul { sd, sn, sm }]
+            }
+            F32Div if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Div { sd, sn, sm }]
+            }
+
+            F32Abs if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Abs { sd, sm }]
+            }
+            F32Neg if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Neg { sd, sm }]
+            }
+            F32Sqrt if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Sqrt { sd, sm }]
+            }
+
+            F32Eq if self.fpu.is_some() => {
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Eq { rd, sn, sm }]
+            }
+            F32Ne if self.fpu.is_some() => {
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Ne { rd, sn, sm }]
+            }
+            F32Lt if self.fpu.is_some() => {
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Lt { rd, sn, sm }]
+            }
+            F32Le if self.fpu.is_some() => {
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Le { rd, sn, sm }]
+            }
+            F32Gt if self.fpu.is_some() => {
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Gt { rd, sn, sm }]
+            }
+            F32Ge if self.fpu.is_some() => {
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Ge { rd, sn, sm }]
+            }
+
+            F32Const(val) if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                vec![ArmOp::F32Const { sd, value: *val }]
+            }
+
+            F32Load { offset, .. } if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let addr_reg = self.regs.alloc_reg();
+                vec![ArmOp::F32Load {
+                    sd,
+                    addr: MemAddr::reg_imm(Reg::R11, addr_reg, *offset as i32),
+                }]
+            }
+            F32Store { offset, .. } if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let addr_reg = self.regs.alloc_reg();
+                vec![ArmOp::F32Store {
+                    sd,
+                    addr: MemAddr::reg_imm(Reg::R11, addr_reg, *offset as i32),
+                }]
+            }
+
+            F32ConvertI32S if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                vec![ArmOp::F32ConvertI32S { sd, rm }]
+            }
+            F32ConvertI32U if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                vec![ArmOp::F32ConvertI32U { sd, rm }]
+            }
+
+            F32ReinterpretI32 if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                vec![ArmOp::F32ReinterpretI32 { sd, rm }]
+            }
+            I32ReinterpretF32 if self.fpu.is_some() => {
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::I32ReinterpretF32 { rd, sm }]
+            }
+
+            I32TruncF32S if self.fpu.is_some() => {
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::I32TruncF32S { rd, sm }]
+            }
+            I32TruncF32U if self.fpu.is_some() => {
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::I32TruncF32U { rd, sm }]
+            }
+
+            // F32 ops that have FPU but are unsupported pseudo-ops or need i64/f64
+            op @ (F32Ceil | F32Floor | F32Trunc | F32Nearest | F32Min | F32Max | F32Copysign)
+                if self.fpu.is_some() =>
+            {
+                return Err(synth_core::Error::synthesis(format!(
+                    "F32 pseudo-op {op:?} not yet implemented (needs ARMv8-M or software fallback)"
+                )));
+            }
+
+            op @ (F32ConvertI64S | F32ConvertI64U) if self.fpu.is_some() => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "{op:?} not supported (requires i64 register pairs on 32-bit ARM)"
+                )));
+            }
+
+            op @ F32DemoteF64 if self.fpu.is_some() => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "{op:?} not supported on single-precision target {}",
+                    self.target_name
+                )));
+            }
+
+            // Path A: all F32 ops with no FPU → error
             op @ (F32Add
             | F32Sub
             | F32Mul
@@ -569,8 +749,16 @@ impl InstructionSelector {
             | F32ReinterpretI32
             | I32ReinterpretF32
             | I32TruncF32S
-            | I32TruncF32U
-            | F64Add
+            | I32TruncF32U) => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "target {} has no FPU; cannot compile {op:?}",
+                    self.target_name
+                )));
+            }
+
+            // F64 ops — always rejected (single-precision targets don't support F64,
+            // and no-FPU targets don't support any float)
+            op @ (F64Add
             | F64Sub
             | F64Mul
             | F64Div
@@ -606,7 +794,7 @@ impl InstructionSelector {
             | I32TruncF64U) => {
                 let msg = if self.fpu.is_some() {
                     format!(
-                        "VFP encoding not yet implemented for {op:?} (target {} has FPU)",
+                        "F64 not supported on single-precision target {} for {op:?}",
                         self.target_name
                     )
                 } else {

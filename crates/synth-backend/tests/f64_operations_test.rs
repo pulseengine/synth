@@ -389,9 +389,80 @@ fn test_f64_complex_expression() {
 
 #[test]
 fn test_f64_mixed_with_f32() {
-    // F32 operations should also be rejected
+    // F32 operations should also be rejected on cortex-m3 (no FPU)
     assert_float_rejected(
         vec![WasmOp::F32Const(1.0), WasmOp::F32Const(2.0), WasmOp::F32Add],
         "f32.add",
     );
+}
+
+// ============================================================================
+// F64 REJECTION ON CORTEX-M4F (single-precision target)
+// F64 ops should still be rejected even when the target has a single-precision FPU
+// ============================================================================
+
+use synth_core::target::FPUPrecision;
+
+fn assert_f64_rejected_on_m4f(wasm_ops: Vec<WasmOp>, op_name: &str) {
+    let db = RuleDatabase::with_standard_rules();
+    let mut selector = InstructionSelector::new(db.rules().to_vec());
+    selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
+    let result = selector.select(&wasm_ops);
+    assert!(
+        result.is_err(),
+        "{op_name} should be rejected on cortex-m4f (single-precision only)"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("F64") || err.contains("single-precision") || err.contains("i64"),
+        "{op_name} error should mention F64/single-precision/i64, got: {err}"
+    );
+}
+
+#[test]
+fn test_f64_add_rejected_on_m4f() {
+    assert_f64_rejected_on_m4f(
+        vec![WasmOp::F64Const(1.0), WasmOp::F64Const(2.0), WasmOp::F64Add],
+        "f64.add",
+    );
+}
+
+#[test]
+fn test_f64_mul_rejected_on_m4f() {
+    assert_f64_rejected_on_m4f(
+        vec![WasmOp::F64Const(2.0), WasmOp::F64Const(3.0), WasmOp::F64Mul],
+        "f64.mul",
+    );
+}
+
+#[test]
+fn test_f64_eq_rejected_on_m4f() {
+    assert_f64_rejected_on_m4f(
+        vec![WasmOp::F64Const(1.0), WasmOp::F64Const(1.0), WasmOp::F64Eq],
+        "f64.eq",
+    );
+}
+
+#[test]
+fn test_f64_sqrt_rejected_on_m4f() {
+    assert_f64_rejected_on_m4f(vec![WasmOp::F64Const(4.0), WasmOp::F64Sqrt], "f64.sqrt");
+}
+
+#[test]
+fn test_f64_load_rejected_on_m4f() {
+    assert_f64_rejected_on_m4f(
+        vec![
+            WasmOp::I32Const(0),
+            WasmOp::F64Load {
+                offset: 0,
+                align: 8,
+            },
+        ],
+        "f64.load",
+    );
+}
+
+#[test]
+fn test_f64_const_rejected_on_m4f() {
+    assert_f64_rejected_on_m4f(vec![WasmOp::F64Const(3.125)], "f64.const");
 }
