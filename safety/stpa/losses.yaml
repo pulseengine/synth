@@ -1,0 +1,78 @@
+# STPA Step 1a: Losses
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+# System boundary: Synth accepts .wasm/.wat files and produces bare-metal
+#   ARM ELF binaries. The system boundary includes parsing, instruction
+#   selection, peephole optimization, ARM encoding, and ELF generation.
+#   It excludes upstream tools (meld, loom), the runtime (kiln, gale),
+#   and hardware.
+#
+# Stakeholders:
+#   - Developers building safety-critical embedded systems
+#   - End-users of systems running Synth-compiled code
+#   - Certification authorities (ISO 26262, DO-178C, IEC 61508)
+#   - PulseEngine toolchain (Meld, Loom, Kiln, Gale, Sigil)
+#
+# Relation to BA RFC #46: Synth provides an alternative execution path
+#   to the RFC's runtime-based approach. Where the RFC proposes a
+#   core module running on a host runtime, Synth compiles directly to
+#   native ARM code with __meld_dispatch_import for Kiln bridge calls.
+#   This eliminates the runtime interpretation overhead but shifts
+#   correctness responsibility to the compiler.
+
+losses:
+  - id: L-1
+    title: Loss of compilation correctness
+    description: >
+      The compiled ARM code produces different results than the WebAssembly
+      specification requires. Instructions compute wrong values, control
+      flow diverges, or traps are missing/spurious. The compiled program
+      silently computes incorrect results on the target hardware.
+    stakeholders: [developers, end-users, certification-authorities]
+
+  - id: L-2
+    title: Loss of memory safety in compiled code
+    description: >
+      The compiled ARM code accesses memory outside the WebAssembly linear
+      memory bounds. Bounds checks are missing, incorrectly generated, or
+      optimized away. Stack overflow in compiled code corrupts adjacent
+      memory. MPU regions are misconfigured for the compiled binary.
+    stakeholders: [developers, end-users, certification-authorities]
+
+  - id: L-3
+    title: Loss of verification validity
+    description: >
+      The Z3 SMT validation or Rocq proofs do not cover the actual code
+      path executed. A rule is proven correct but the implementation
+      diverges from the proven specification. Admitted proofs hide
+      unsound assumptions. The OCaml-extracted validator disagrees with
+      the Rust implementation.
+    stakeholders: [certification-authorities, developers]
+
+  - id: L-4
+    title: Loss of ABI compatibility
+    description: >
+      The generated ELF binary uses a calling convention, memory layout,
+      or import dispatch mechanism that is incompatible with the Kiln
+      runtime bridge. The __meld_dispatch_import ABI is misimplemented.
+      Relocations are incorrect. The vector table is malformed.
+    stakeholders: [developers, end-users]
+
+  - id: L-5
+    title: Loss of target fidelity
+    description: >
+      The generated ARM instructions are invalid for the target core
+      (e.g., Thumb-2 instruction on Cortex-M0 which only supports Thumb-1,
+      VFP instruction on core without FPU, unaligned access on strict-
+      alignment core). The binary crashes or produces wrong results on
+      the physical hardware despite passing emulation tests.
+    stakeholders: [developers, end-users]
+
+  - id: L-6
+    title: Loss of build reproducibility
+    description: >
+      Identical .wasm input produces different ARM ELF output across
+      builds, machines, or compiler versions. Non-determinism in
+      instruction selection, register allocation, or ELF layout breaks
+      hermetic build guarantees.
+    stakeholders: [developers, certification-authorities]
