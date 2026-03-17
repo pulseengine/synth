@@ -13,7 +13,7 @@ use synth_core::wasm_decoder::DecodedModule;
 use synth_core::wasm_op::WasmOp;
 use synth_synthesis::{
     ArmInstruction, ArmOp, BoundsCheckConfig, InstructionSelector, OptimizationConfig,
-    OptimizerBridge, RuleDatabase,
+    OptimizerBridge, RuleDatabase, validate_instructions,
 };
 
 /// ARM Cortex-M backend using Synth's custom compiler pipeline
@@ -184,6 +184,12 @@ fn compile_wasm_to_arm(
             .collect()
     };
 
+    // ISA feature gate: validate that all generated instructions are supported
+    // by the target. This catches FPU instructions on no-FPU targets, double-precision
+    // instructions on single-precision targets, etc.
+    validate_instructions(&arm_instrs, config.target.fpu, &config.target.triple)
+        .map_err(|e| format!("ISA validation failed: {}", e))?;
+
     // Encode to binary — use Thumb-2 for Cortex-M targets
     let use_thumb2 = matches!(config.target.isa, IsaVariant::Thumb2 | IsaVariant::Thumb);
 
@@ -300,5 +306,102 @@ mod tests {
 
         let func = backend.compile_function("add", &ops, &config).unwrap();
         assert!(func.relocations.is_empty());
+    }
+
+    // ========================================================================
+    // ISA feature gate tests — ensure the compiler never emits unsupported
+    // instructions for a given target
+    // ========================================================================
+
+    #[test]
+    fn test_f32_rejected_on_cortex_m3_no_fpu() {
+        let backend = ArmBackend::new();
+        let ops = vec![WasmOp::F32Const(1.0), WasmOp::F32Const(2.0), WasmOp::F32Add];
+        let config = CompileConfig {
+            target: TargetSpec::cortex_m3(),
+            no_optimize: true,
+            ..CompileConfig::default()
+        };
+
+        let result = backend.compile_function("fadd", &ops, &config);
+        assert!(
+            result.is_err(),
+            "f32 operations should fail on Cortex-M3 (no FPU)"
+        );
+    }
+
+    #[test]
+    fn test_f32_accepted_on_cortex_m4f() {
+        let backend = ArmBackend::new();
+        let ops = vec![WasmOp::F32Const(1.0), WasmOp::F32Const(2.0), WasmOp::F32Add];
+        let config = CompileConfig {
+            target: TargetSpec::cortex_m4f(),
+            no_optimize: true,
+            ..CompileConfig::default()
+        };
+
+        let result = backend.compile_function("fadd", &ops, &config);
+        assert!(
+            result.is_ok(),
+            "f32 operations should succeed on Cortex-M4F, got: {:?}",
+            result.unwrap_err()
+        );
+    }
+
+    #[test]
+    fn test_i32_works_on_all_targets() {
+        let backend = ArmBackend::new();
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add];
+
+        // Cortex-M3 (no FPU)
+        let config_m3 = CompileConfig {
+            target: TargetSpec::cortex_m3(),
+            no_optimize: true,
+            ..CompileConfig::default()
+        };
+        assert!(
+            backend.compile_function("add", &ops, &config_m3).is_ok(),
+            "i32 ops should work on Cortex-M3"
+        );
+
+        // Cortex-M4F (single FPU)
+        let config_m4f = CompileConfig {
+            target: TargetSpec::cortex_m4f(),
+            no_optimize: true,
+            ..CompileConfig::default()
+        };
+        assert!(
+            backend.compile_function("add", &ops, &config_m4f).is_ok(),
+            "i32 ops should work on Cortex-M4F"
+        );
+
+        // Cortex-M7DP (double FPU)
+        let config_m7dp = CompileConfig {
+            target: TargetSpec::cortex_m7dp(),
+            no_optimize: true,
+            ..CompileConfig::default()
+        };
+        assert!(
+            backend.compile_function("add", &ops, &config_m7dp).is_ok(),
+            "i32 ops should work on Cortex-M7DP"
+        );
+    }
+
+    #[test]
+    fn test_f32_rejected_on_cortex_m4_no_fpu() {
+        // Cortex-M4 (without F suffix) has no FPU
+        let backend = ArmBackend::new();
+        let ops = vec![WasmOp::F32Const(1.5), WasmOp::F32Const(2.5), WasmOp::F32Mul];
+        let config = CompileConfig {
+            target: TargetSpec::cortex_m4(),
+            no_optimize: true,
+            ..CompileConfig::default()
+        };
+
+        let result = backend.compile_function("fmul", &ops, &config);
+        assert!(
+            result.is_err(),
+            "f32 operations should fail on Cortex-M4 (no FPU)"
+        );
     }
 }

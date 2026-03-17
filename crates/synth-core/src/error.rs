@@ -22,6 +22,10 @@ pub enum Error {
     #[error("Target not supported: {0}")]
     UnsupportedTarget(String),
 
+    /// Instruction not supported on target
+    #[error("Unsupported instruction for target: {0}")]
+    UnsupportedInstruction(String),
+
     /// Memory layout error
     #[error("Memory layout error: {0}")]
     MemoryLayoutError(String),

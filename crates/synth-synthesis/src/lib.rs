@@ -10,6 +10,7 @@ pub mod wasm_decoder;
 
 pub use instruction_selector::{
     ArmInstruction, BoundsCheckConfig, InstructionSelector, RegisterState, SelectionStats,
+    validate_instructions,
 };
 pub use optimizer_bridge::{OptimizationConfig, OptimizationStats, OptimizerBridge};
 pub use pattern_matcher::{
