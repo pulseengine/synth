@@ -1,0 +1,108 @@
+# SW Verification Artifacts (ASPICE SWE.6)
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Software-level verification measures tracing to technical requirements (sw-req).
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  - id: SWVER-001
+    type: sw-verification
+    title: WASM/WAT/WIT input parsing tests
+    description: >
+      Unit and integration tests verifying correct parsing of WebAssembly
+      binary (.wasm), text format (.wat), and WIT interface definition
+      (.wit) files. Includes tests for malformed input rejection with
+      descriptive error messages, Component Model binary validation, and
+      target specification file parsing (TOML/YAML).
+    status: implemented
+    tags: [parsing, input-formats, unit-tests]
+    links:
+      - type: verifies
+        target: TR-001
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-cli -p synth-core -p synth-abi"
+        coverage: "Input format parsing and validation"
+
+  - id: SWVER-002
+    type: sw-verification
+    title: ELF output and binary format validation
+    description: >
+      Tests verifying ELF binary generation, including readelf validation
+      of generated files, vector table layout correctness, linker script
+      processing, DWARF debug information generation, and Renode boot
+      tests confirming binaries execute on Cortex-M4 targets. Also covers
+      disassembly output and verification artifact generation.
+    status: implemented
+    tags: [elf, output-formats, integration-tests]
+    links:
+      - type: verifies
+        target: TR-002
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend && bazel test //tests/..."
+        coverage: "ELF generation, binary formats, Renode boot"
+
+  - id: SWVER-003
+    type: sw-verification
+    title: Toolchain integration and CLI tests
+    description: >
+      Tests verifying CLI interface compatibility with standard embedded
+      workflows, including synth compile/verify/disasm subcommands, output
+      file compatibility with ARM toolchain utilities (objdump, readelf),
+      and Bazel build system integration tests that exercise the full
+      build pipeline.
+    status: implemented
+    tags: [toolchain, cli, integration]
+    links:
+      - type: verifies
+        target: TR-003
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-cli && bazel build //crates:synth"
+        coverage: "CLI interface and toolchain compatibility"
+
+  - id: SWVER-004
+    type: sw-verification
+    title: Target configuration and synthesis settings tests
+    description: >
+      Tests verifying target architecture configuration including CPU
+      variant selection, FPU capability detection, MPU region mapping,
+      memory layout configuration (flash/RAM sizes, stack sizes),
+      optimization level settings, and safety mode configuration
+      (hardware vs software bounds checking, trap handling strategy).
+    status: implemented
+    tags: [configuration, targets, settings]
+    links:
+      - type: verifies
+        target: TR-004
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend -p synth-synthesis -p synth-memory"
+        coverage: "Target profiles, MPU config, memory layout"
+
+  - id: SWVER-005
+    type: sw-verification
+    title: Verification infrastructure integration tests
+    description: >
+      Tests verifying the verification infrastructure itself: Z3 SMT
+      translation validation with bit-vector reasoning and configurable
+      timeouts, Rocq proof compilation (188 Qed), and proptest
+      property-based testing integration. Ensures all three verification
+      backends produce correct results and integrate into the build.
+    status: implemented
+    tags: [z3, rocq, proptest, verification-infra]
+    links:
+      - type: verifies
+        target: TR-005
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-verify && bazel test //coq:verify_proofs"
+        coverage: "Z3 SMT suite, Rocq proof compilation, proptest"

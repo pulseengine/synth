@@ -1,0 +1,207 @@
+# SW Architecture Components (ASPICE SWE.2)
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Software architecture decomposition mapping to the Rust crate structure.
+# Each component is allocated from one or more technical requirements (sw-req).
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  - id: SWA-001
+    type: sw-arch-component
+    title: synth-cli (CLI entry point)
+    description: >
+      CLI entry point providing synth compile, synth verify, and synth disasm
+      subcommands. Parses command-line arguments, reads input files (.wasm,
+      .wat, .wit, TOML/YAML configuration), orchestrates the synthesis
+      pipeline, and writes output artifacts.
+    status: implemented
+    tags: [cli, entry-point]
+    links:
+      - type: allocated-from
+        target: TR-001
+      - type: allocated-from
+        target: TR-003
+    fields:
+      component-type: software
+      crate: synth-cli
+
+  - id: SWA-002
+    type: sw-arch-component
+    title: synth-core (shared types and error handling)
+    description: >
+      Shared types, error handling, and the Backend trait used across
+      all crates. Defines the internal IR, target profile structures,
+      and common configuration types for input/output format support.
+    status: implemented
+    tags: [core, types, shared]
+    links:
+      - type: allocated-from
+        target: TR-001
+      - type: allocated-from
+        target: TR-004
+    fields:
+      component-type: software
+      crate: synth-core
+
+  - id: SWA-003
+    type: sw-arch-component
+    title: synth-frontend (WASM/WAT parsing)
+    description: >
+      WebAssembly and WAT input parsing, validation, and IR construction.
+      Handles Component Model binary format, core module extraction,
+      and WIT interface type definitions. Validates input files and
+      produces descriptive error messages for malformed inputs.
+    status: implemented
+    tags: [frontend, parsing, wasm]
+    links:
+      - type: allocated-from
+        target: TR-001
+    fields:
+      component-type: software
+      crate: synth-frontend
+
+  - id: SWA-004
+    type: sw-arch-component
+    title: synth-synthesis (WASM to ARM instruction selection)
+    description: >
+      Pattern-matching instruction selector that maps WebAssembly operations
+      to ARM Thumb-2 instruction sequences. Includes register allocation
+      using the virtual stack model and integration with the verification
+      infrastructure for per-compilation validation.
+    status: implemented
+    tags: [synthesis, instruction-selection]
+    links:
+      - type: allocated-from
+        target: TR-001
+      - type: allocated-from
+        target: TR-005
+    fields:
+      component-type: software
+      crate: synth-synthesis
+
+  - id: SWA-005
+    type: sw-arch-component
+    title: synth-backend (ARM encoding and ELF generation)
+    description: >
+      ARM Thumb-2 machine code encoder, ELF binary builder, vector table
+      generator, linker script support, and MPU configuration. Produces
+      bare-metal ELF binaries, raw binary, HEX/BIN, and disassembly
+      output formats.
+    status: implemented
+    tags: [backend, arm-encoding, elf]
+    links:
+      - type: allocated-from
+        target: TR-001
+      - type: allocated-from
+        target: TR-002
+      - type: allocated-from
+        target: TR-004
+    fields:
+      component-type: software
+      crate: synth-backend
+
+  - id: SWA-006
+    type: sw-arch-component
+    title: synth-verify (Z3 SMT translation validation)
+    description: >
+      Z3 SMT-based translation validation using bit-vector reasoning with
+      configurable timeouts. Verifies each compilation preserves WebAssembly
+      semantics by checking that the ARM instruction sequence produces
+      results equivalent to the WASM specification.
+    status: implemented
+    tags: [verification, z3, smt]
+    links:
+      - type: allocated-from
+        target: TR-005
+    fields:
+      component-type: software
+      crate: synth-verify
+
+  - id: SWA-007
+    type: sw-arch-component
+    title: synth-analysis (SSA and control flow analysis)
+    description: >
+      Static analysis passes including SSA construction, control flow
+      analysis, dependency graph building, and data flow analysis.
+      Provides analysis results consumed by the synthesis and optimization
+      stages.
+    status: implemented
+    tags: [analysis, ssa, control-flow]
+    links:
+      - type: allocated-from
+        target: TR-001
+    fields:
+      component-type: software
+      crate: synth-analysis
+
+  - id: SWA-008
+    type: sw-arch-component
+    title: synth-abi (Component Model ABI)
+    description: >
+      WebAssembly Component Model canonical ABI implementation for
+      lift/lower operations. Handles WIT interface type definitions
+      and ensures ABI compatibility for component composition.
+    status: implemented
+    tags: [abi, component-model]
+    links:
+      - type: allocated-from
+        target: TR-001
+    fields:
+      component-type: software
+      crate: synth-abi
+
+  - id: SWA-009
+    type: sw-arch-component
+    title: synth-memory (portable memory abstraction)
+    description: >
+      Portable memory abstraction layer supporting Zephyr RTOS, Linux,
+      and bare-metal environments. Handles linear memory allocation,
+      bounds check generation, MPU region mapping, and memory layout
+      configuration for target-specific flash/RAM sizes.
+    status: implemented
+    tags: [memory, abstraction, mpu]
+    links:
+      - type: allocated-from
+        target: TR-001
+      - type: allocated-from
+        target: TR-004
+    fields:
+      component-type: software
+      crate: synth-memory
+
+  - id: SWA-010
+    type: sw-arch-component
+    title: synth-opt (peephole optimizer)
+    description: >
+      Peephole optimization framework for local instruction sequence
+      optimization. Implements pattern-based rewrites that preserve
+      semantics (verified via Z3 SMT) while reducing code size and
+      improving execution performance.
+    status: implemented
+    tags: [optimization, peephole]
+    links:
+      - type: allocated-from
+        target: TR-001
+    fields:
+      component-type: software
+      crate: synth-opt
+
+  - id: SWA-011
+    type: sw-arch-component
+    title: synth-test (WAST to Robot Framework test generator)
+    description: >
+      WAST-to-Robot-Framework test generator for Renode ARM emulation
+      tests. Generates test cases from WebAssembly test suite files
+      and integrates with the Bazel build system via rules_renode.
+    status: implemented
+    tags: [test-generation, renode, bazel]
+    links:
+      - type: allocated-from
+        target: TR-002
+      - type: allocated-from
+        target: TR-003
+    fields:
+      component-type: software
+      crate: synth-test

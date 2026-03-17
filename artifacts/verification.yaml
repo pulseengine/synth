@@ -70,6 +70,10 @@ artifacts:
         target: FR-006
       - type: verifies
         target: FR-002
+      - type: verifies
+        target: FR-003
+      - type: verifies
+        target: FR-007
     fields:
       method: formal-verification
       preconditions:
@@ -86,16 +90,29 @@ artifacts:
       instruction encoding, integration tests for the synthesis pipeline,
       and end-to-end tests compiling WASM to ARM and verifying output.
       Includes tests for ELF generation, vector table layout, MPU
-      configuration, and calling convention correctness.
+      configuration, calling convention correctness, ABI lift/lower,
+      memory management, peephole optimization, and function call synthesis.
     status: implemented
     tags: [cargo, unit-tests, integration-tests]
     links:
       - type: verifies
+        target: FR-001
+      - type: verifies
         target: FR-002
+      - type: verifies
+        target: FR-003
+      - type: verifies
+        target: FR-004
       - type: verifies
         target: FR-005
       - type: verifies
+        target: FR-007
+      - type: verifies
         target: FR-008
+      - type: verifies
+        target: NFR-002
+      - type: verifies
+        target: NFR-005
     fields:
       method: automated-test
       steps:
@@ -110,16 +127,24 @@ artifacts:
       execute them on an emulated Cortex-M4 target using Renode. Validates
       that compiled code boots correctly, produces expected output, and
       handles traps properly on realistic hardware emulation. Uses the
-      WAST-to-Robot-Framework test generator (synth-test crate).
+      WAST-to-Robot-Framework test generator (synth-test crate). Exercises
+      memory management, function call dispatch, and target-specific code
+      generation end-to-end.
     status: implemented
     tags: [renode, emulation, end-to-end, cortex-m4]
     links:
       - type: verifies
         target: FR-002
       - type: verifies
+        target: FR-003
+      - type: verifies
+        target: FR-004
+      - type: verifies
         target: FR-005
       - type: verifies
         target: FR-008
+      - type: verifies
+        target: NFR-001
     fields:
       method: simulation
       preconditions:
@@ -136,7 +161,8 @@ artifacts:
       Property-based testing using proptest to verify instruction encoding
       correctness, synthesis rule semantics, and edge-case handling with
       randomly generated inputs. Covers instruction encoding round-trips,
-      arithmetic overflow behavior, and bounds check generation.
+      arithmetic overflow behavior, bounds check generation, and input
+      validation for WebAssembly modules.
     status: implemented
     tags: [proptest, property-based, fuzzing]
     links:
@@ -144,8 +170,51 @@ artifacts:
         target: FR-002
       - type: verifies
         target: FR-005
+      - type: verifies
+        target: NFR-002
+      - type: verifies
+        target: NFR-005
     fields:
       method: automated-test
       steps:
         run: "cargo test --workspace (proptest cases included)"
         coverage: "Property-based verification of instruction semantics"
+
+  - id: VER-007
+    type: sys-verification
+    title: CI quality gates (clippy, fmt, deny warnings)
+    description: >
+      Continuous integration pipeline enforcing code quality through
+      cargo clippy with deny-warnings, cargo fmt --check for consistent
+      formatting, and workspace-wide compilation with no warnings. Ensures
+      maintainability standards are met on every pull request.
+    status: implemented
+    tags: [ci, clippy, fmt, quality]
+    links:
+      - type: verifies
+        target: NFR-003
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --check"
+        coverage: "All crates, all targets"
+
+  - id: VER-008
+    type: sys-verification
+    title: Cross-platform CI and Bazel hermetic build
+    description: >
+      CI builds and tests running on Linux and macOS, combined with Bazel
+      hermetic builds that ensure reproducibility across platforms. Bazel
+      bzlmod configuration pins all toolchain versions (Rust 1.88, Rocq 9)
+      for deterministic cross-platform builds. Cross-compilation tests
+      verify ARM target code generation from both host platforms.
+    status: implemented
+    tags: [ci, portability, bazel, cross-platform]
+    links:
+      - type: verifies
+        target: NFR-004
+    fields:
+      method: automated-test
+      steps:
+        run: "bazel build //crates:synth && bazel test //tests/..."
+        coverage: "Hermetic build on Linux and macOS"
