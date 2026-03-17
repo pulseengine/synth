@@ -425,7 +425,8 @@ fn test_f32_ceil_encodes_successfully() {
         sm: VfpReg::S0,
     });
     assert!(result.is_ok(), "F32Ceil should encode successfully");
-    assert_eq!(result.unwrap().len(), 8); // VCVT.S32.F32 + VCVT.F32.S32
+    // VMRS + BIC.W + ORR.W + VMSR + VCVT + VMRS + BIC.W + VMSR + VCVT.F32.S32
+    assert_eq!(result.unwrap().len(), 36);
 }
 
 #[test]
