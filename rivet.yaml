@@ -1,0 +1,52 @@
+project:
+  name: synth
+  version: "0.1.0"
+  description: >
+    WebAssembly-to-ARM Cortex-M AOT compiler with mechanized correctness
+    proofs in Rocq. Produces bare-metal ELF binaries for embedded targets
+    with formal verification via Z3 SMT and Rocq proof suites.
+  schemas:
+    - common
+    - stpa
+    - aspice
+    - dev
+
+sources:
+  - path: artifacts
+    format: generic-yaml
+  - path: safety/stpa
+    format: stpa-yaml
+
+docs:
+  - docs
+
+commits:
+  format: trailers
+  trailers:
+    Implements: satisfies
+    Fixes: fixes
+    Verifies: verifies
+    Trace: traces-to
+  exempt-types:
+    - chore
+    - style
+    - ci
+    - docs
+    - build
+  traced-paths:
+    - crates/
+    - coq/
+    - safety/
+
+externals:
+  kiln:
+    git: https://github.com/pulseengine/kiln.git
+    path: /Volumes/Home/git/pulseengine/kiln
+    ref: main
+    prefix: kiln
+
+  meld:
+    git: https://github.com/pulseengine/meld.git
+    path: /Volumes/Home/git/pulseengine/meld
+    ref: main
+    prefix: meld

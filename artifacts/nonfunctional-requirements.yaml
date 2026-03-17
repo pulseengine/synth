@@ -1,0 +1,110 @@
+# Non-Functional Requirements (ASPICE SYS.2)
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Derived from: docs/requirements/REQUIREMENTS.md Section 4 (Non-Functional Requirements)
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  - id: NFR-001
+    type: system-req
+    title: Performance targets
+    description: >
+      Synth shall achieve compilation speed no worse than 10x slower than
+      LLVM, generated code at least 80% of native performance, code size
+      less than 120% of native equivalent, startup time under 100ms for
+      typical embedded applications, and memory footprint under 512KB for
+      the synthesizer runtime.
+    status: draft
+    tags: [performance, nonfunctional]
+    links:
+      - type: derives-from
+        target: BR-002
+    fields:
+      req-type: performance
+      priority: must
+      verification-criteria: >
+        Benchmark suite comparing generated code against hand-written native;
+        code size measurement on reference embedded applications.
+
+  - id: NFR-002
+    type: system-req
+    title: Reliability
+    description: >
+      Synth shall handle all valid WebAssembly inputs without crashing,
+      produce deterministic output (same input yields same output), provide
+      comprehensive error handling, achieve greater than 99% correctness on
+      the WebAssembly test suite, and support continuous fuzzing integration.
+    status: draft
+    tags: [reliability, determinism, nonfunctional]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: derives-from
+        target: BR-002
+    fields:
+      req-type: constraint
+      priority: must
+      verification-criteria: >
+        No panics on fuzzed inputs; deterministic output verified by
+        compiling same input on different machines and comparing ELF bytes.
+
+  - id: NFR-003
+    type: system-req
+    title: Maintainability
+    description: >
+      Synth shall be written in Rust for memory safety, use a modular
+      architecture with pluggable backends, have a comprehensive test suite
+      (unit, integration, end-to-end), clear code documentation, and a
+      CI/CD pipeline with automated testing.
+    status: draft
+    tags: [maintainability, nonfunctional]
+    links:
+      - type: derives-from
+        target: BR-004
+    fields:
+      req-type: constraint
+      priority: should
+      verification-criteria: >
+        Workspace builds with zero clippy warnings; test suite covers
+        all crates; CI pipeline runs on every PR.
+
+  - id: NFR-004
+    type: system-req
+    title: Portability
+    description: >
+      Synth shall run on Linux, macOS, and Windows, support cross-compilation,
+      have minimal dependencies, and provide a container-based distribution
+      option.
+    status: draft
+    tags: [portability, nonfunctional]
+    links:
+      - type: derives-from
+        target: BR-004
+    fields:
+      req-type: constraint
+      priority: should
+      verification-criteria: >
+        CI builds and tests pass on Linux and macOS; Bazel hermetic
+        build reproduces on both platforms.
+
+  - id: NFR-005
+    type: system-req
+    title: Security
+    description: >
+      Synth shall minimize unsafe Rust to isolated audited modules, validate
+      all WebAssembly input files, perform bounds checking in the synthesizer
+      itself, support regular security audits, and maintain a CVE response
+      process.
+    status: draft
+    tags: [security, nonfunctional]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: safety
+      priority: must
+      verification-criteria: >
+        Cargo clippy with deny warnings; no unsafe outside of clearly
+        marked modules; input validation fuzz testing.

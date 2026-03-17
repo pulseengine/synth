@@ -1,0 +1,188 @@
+# System Requirements (ASPICE SYS.2)
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Derived from: docs/requirements/REQUIREMENTS.md Section 3 (Functional Requirements)
+#
+# Each system requirement derives from one or more stakeholder requirements.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  - id: FR-001
+    type: system-req
+    title: Component Model support
+    description: >
+      Synth shall parse WebAssembly Component Model binary format, validate
+      component structure and interfaces, support WIT definitions, handle
+      component composition (shared-everything and shared-nothing), support
+      canonical ABI lowering and lifting, and multi-memory proposal support
+      for isolation.
+    status: draft
+    tags: [component-model, parsing]
+    links:
+      - type: derives-from
+        target: BR-003
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Parse and validate Component Model binaries; round-trip canonical
+        ABI lowering and lifting for all WIT interface types.
+
+  - id: FR-002
+    type: system-req
+    title: Synthesis pipeline
+    description: >
+      Synth shall implement a multi-phase synthesis pipeline consisting of
+      analysis (dependency graph, memory layout, call graph, data flow,
+      hardware capability detection), optimization (dead code elimination,
+      inlining, constant propagation, bounds check optimization), synthesis
+      (instruction selection, register allocation, MPU/PMP mapping, XIP
+      binary generation), and verification (SMT translation validation,
+      bounds checking verification, CFI verification).
+    status: draft
+    tags: [synthesis, pipeline, core]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: derives-from
+        target: BR-003
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        End-to-end compilation of WASM modules to ARM ELF binaries;
+        generated code passes Renode emulation tests.
+
+  - id: FR-003
+    type: system-req
+    title: Memory management
+    description: >
+      Synth shall synthesize linear memory allocation and bounds checking
+      code, support multi-memory with hardware protection region mapping
+      (MPU for ARM, PMP for RISC-V), generate MPU/PMP configuration code,
+      and fall back to software checks when hardware protection is
+      unavailable.
+    status: draft
+    tags: [memory, mpu, safety]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: derives-from
+        target: BR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Memory bounds checks verified via Z3 SMT; MPU configuration
+        validated on Cortex-M4 target via Renode emulation.
+
+  - id: FR-004
+    type: system-req
+    title: Direct function calls
+    description: >
+      Synth should devirtualize component imports/exports when possible,
+      replace indirect calls with direct calls for known targets, inline
+      component boundaries for shared-everything linking, and optimize
+      calling conventions for the target architecture.
+    status: draft
+    tags: [optimization, calling-convention]
+    links:
+      - type: derives-from
+        target: BR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        Benchmark showing call overhead reduction compared to indirect
+        dispatch.
+
+  - id: FR-005
+    type: system-req
+    title: Target-specific optimizations
+    description: >
+      Synth shall implement target-specific optimizations including
+      Thumb-2 instruction selection, FPU detection and optimization,
+      MPU configuration, and XIP support for ARM Cortex-M targets.
+      Future targets include RISC-V with compressed instructions,
+      bit manipulation, vector extension, and PMP configuration.
+    status: draft
+    tags: [arm, optimization, thumb2]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: derives-from
+        target: BR-003
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Generated Thumb-2 code executes correctly on Cortex-M4 target;
+        FPU instructions used when target profile includes VFP.
+
+  - id: FR-006
+    type: system-req
+    title: Formal verification
+    description: >
+      Synth shall support formal verification of synthesis correctness
+      through mechanized proofs in Rocq (Coq), SMT-based translation
+      validation via Z3, and memory safety proofs covering linear memory
+      bounds, component isolation, and MPU/PMP configuration correctness.
+    status: draft
+    tags: [verification, formal-methods, rocq, z3]
+    links:
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        All i32 operations have T1 result-correspondence proofs in Rocq;
+        Z3 translation validation passes for all compiled test cases.
+
+  - id: FR-007
+    type: system-req
+    title: Optimization framework
+    description: >
+      Synth should implement peephole optimization and link-time
+      optimization including cross-component optimization, dead code
+      elimination across boundaries, constant propagation through
+      component interfaces, and function specialization.
+    status: draft
+    tags: [optimization, peephole, lto]
+    links:
+      - type: derives-from
+        target: BR-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        Peephole optimizations preserve semantics (verified by Z3 SMT);
+        code size reduction measurable on benchmark suite.
+
+  - id: FR-008
+    type: system-req
+    title: Safety guarantees
+    description: >
+      Synth shall maintain WebAssembly safety properties in generated code
+      including memory bounds checking (explicit or hardware-assisted),
+      control-flow integrity (typed indirect calls), module/component
+      isolation, stack protection, and deterministic traps. For embedded
+      targets, WCET analysis support, real-time determinism (no GC, no JIT),
+      stack overflow detection, and hardware fault integration shall be
+      provided.
+    status: draft
+    tags: [safety, bounds-checking, cfi]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: derives-from
+        target: BR-002
+    fields:
+      req-type: safety
+      priority: must
+      verification-criteria: >
+        Bounds checks present for all memory access instructions;
+        CFI preserved through control flow translation; stack overflow
+        detection verified on Cortex-M4 via Renode.
