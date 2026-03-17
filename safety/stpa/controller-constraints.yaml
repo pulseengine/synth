@@ -1,0 +1,209 @@
+# STPA Step 3b: Controller Constraints
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Each controller constraint is derived from one or more UCAs. It specifies
+# the required behavior of a controller to prevent the unsafe control action.
+
+controller-constraints:
+  # =========================================================================
+  # Instruction Selector constraints
+  # =========================================================================
+  - id: CC-IS-1
+    controller: CTRL-1
+    constraint: >
+      Instruction selector shall consult the target profile before emitting
+      any VFP/FPU instruction. If the target profile does not include FPU
+      capability, the selector shall emit a software floating-point sequence
+      or report an error. No hardware FPU instruction shall appear in output
+      for a non-FPU target.
+    ucas: [UCA-1]
+    hazards: [H-4]
+
+  - id: CC-IS-2
+    controller: CTRL-1
+    constraint: >
+      Instruction selector shall emit a bounds check sequence (CMP + BHS to
+      trap) before every memory load and store instruction when bounds
+      checking is enabled. The check shall compare the effective address
+      plus access size against the linear memory size.
+    ucas: [UCA-2]
+    hazards: [H-3]
+
+  - id: CC-IS-3
+    controller: CTRL-1
+    constraint: >
+      Instruction selector shall use the correct signed/unsigned variant
+      for all division (SDIV vs UDIV) and shift (ASR vs LSR) instructions.
+      The variant shall be determined by the WASM operation's signedness
+      (div_s vs div_u, shr_s vs shr_u).
+    ucas: [UCA-8]
+    hazards: [H-1]
+
+  - id: CC-IS-4
+    controller: CTRL-1
+    constraint: >
+      Instruction selector shall emit complete multi-instruction sequences.
+      For division, this includes the divide-by-zero check, the division
+      instruction, and (for signed division) the INT_MIN/-1 overflow check.
+      No partial sequence shall be emitted.
+    ucas: [UCA-11]
+    hazards: [H-1]
+
+  - id: CC-IS-5
+    controller: CTRL-1
+    constraint: >
+      Instruction selector shall preserve all callee-saved registers
+      (r4-r11, lr) by emitting PUSH at function entry and POP at function
+      exit for any registers used within the function body.
+    ucas: [UCA-14]
+    hazards: [H-6]
+
+  - id: CC-IS-6
+    controller: CTRL-1
+    constraint: >
+      Instruction selector shall complete all label fixups for block, loop,
+      and if constructs. Every forward branch shall have its offset resolved
+      before the function is finalized. Every loop back-edge shall target the
+      correct loop header label.
+    ucas: [UCA-11b]
+    hazards: [H-5]
+
+  - id: CC-IS-7
+    controller: CTRL-1
+    constraint: >
+      Instruction selector shall emit __meld_dispatch_import call stubs
+      with the correct calling convention: import index in the register
+      specified by the ABI, arguments in the correct order per AAPCS,
+      and return value read from R0. The ABI shall match Kiln's
+      dispatch handler implementation.
+    ucas: [UCA-13]
+    hazards: [H-8]
+
+  # =========================================================================
+  # Peephole Optimizer constraints
+  # =========================================================================
+  - id: CC-PO-1
+    controller: CTRL-2
+    constraint: >
+      Peephole optimizer shall only apply rewrites that are proven to
+      preserve semantics for all possible input values. Each rewrite
+      pattern shall be covered by a Rocq proof or Z3 equivalence check.
+      Rewrites that change flag-setting behavior shall be rejected.
+    ucas: [UCA-3]
+    hazards: [H-2]
+
+  - id: CC-PO-2
+    controller: CTRL-2
+    constraint: >
+      Peephole optimizer shall not reorder instructions that have memory
+      side effects or that set/read condition flags. Instruction
+      dependencies (data, control, and memory) shall be tracked and
+      respected during rewriting.
+    ucas: [UCA-10]
+    hazards: [H-1]
+
+  # =========================================================================
+  # ARM Encoder constraints
+  # =========================================================================
+  - id: CC-AE-1
+    controller: CTRL-3
+    constraint: >
+      ARM encoder shall produce correct condition code encoding for all
+      conditional instructions. The condition code field shall match the
+      ARM Architecture Reference Manual's encoding table. Condition codes
+      shall be tested with both taken and not-taken branches.
+    ucas: [UCA-4]
+    hazards: [H-5]
+
+  - id: CC-AE-2
+    controller: CTRL-3
+    constraint: >
+      ARM encoder shall reject immediate values that do not fit the
+      instruction's encoding format. When an immediate is out of range,
+      the encoder shall return an error (not silently truncate). The
+      instruction selector shall then emit a multi-instruction sequence
+      to materialize the constant.
+    ucas: [UCA-12]
+    hazards: [H-4]
+
+  - id: CC-AE-3
+    controller: CTRL-3
+    constraint: >
+      ARM encoder shall compute branch offsets after all instructions in
+      the function are finalized. Offset calculation shall account for
+      Thumb instruction alignment (PC + 4 bias) and variable-width
+      instruction sizes.
+    ucas: [UCA-12b]
+    hazards: [H-5]
+
+  # =========================================================================
+  # ELF Builder constraints
+  # =========================================================================
+  - id: CC-EB-1
+    controller: CTRL-4
+    constraint: >
+      ELF builder shall generate a correct vector table for the target
+      Cortex-M variant. The reset handler address shall have the Thumb
+      bit set (LSB = 1). The HardFault handler shall always be present.
+      Vector table entries shall point to valid .text addresses.
+    ucas: [UCA-5]
+    hazards: [H-7]
+
+  - id: CC-EB-2
+    controller: CTRL-4
+    constraint: >
+      ELF builder shall place code in flash and data in RAM according to
+      the linker script memory map. Section load addresses shall be
+      validated against the target's physical memory regions. No section
+      shall be placed outside the declared memory regions.
+    ucas: [UCA-9]
+    hazards: [H-7]
+
+  - id: CC-EB-3
+    controller: CTRL-4
+    constraint: >
+      ELF builder shall verify that all memory regions in the linker
+      script are non-overlapping. If any two sections (including stack,
+      heap, .text, .data, .bss) overlap in address space, the build
+      shall fail with a diagnostic error.
+    ucas: [UCA-15]
+    hazards: [H-7]
+
+  # =========================================================================
+  # ISA Validator constraints
+  # =========================================================================
+  - id: CC-IV-1
+    controller: CTRL-5
+    constraint: >
+      ISA validator shall reject any instruction that is not in the
+      target profile's supported instruction set. The feature database
+      shall cover all supported Cortex-M variants (M0, M0+, M3, M4,
+      M4F, M7, M23, M33). Each instruction shall be mapped to the
+      minimum ISA feature level that supports it.
+    ucas: [UCA-6]
+    hazards: [H-4]
+
+  # =========================================================================
+  # Z3 Verifier constraints
+  # =========================================================================
+  - id: CC-Z3-1
+    controller: CTRL-6
+    constraint: >
+      Z3 verifier shall run for every synthesis rule before the rule is
+      included in a release build. CI shall enforce that no unverified
+      rules are merged. A Z3 timeout shall be treated as "unverified"
+      (not as "valid").
+    ucas: [UCA-7]
+    hazards: [H-9]
+
+  - id: CC-Z3-2
+    controller: CTRL-6
+    constraint: >
+      Z3 verifier's SMT encoding shall accurately model the full
+      semantics of both the WASM operation and the ARM instruction
+      sequence, including flag side effects, bit-width, and overflow
+      behavior. The encoding shall be reviewed against the ARM
+      Architecture Reference Manual and WebAssembly spec.
+    ucas: [UCA-7b]
+    hazards: [H-9]

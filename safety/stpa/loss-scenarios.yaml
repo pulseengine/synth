@@ -1,0 +1,221 @@
+# STPA Step 4: Loss Scenarios
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Each scenario explains WHY a specific UCA might occur. Scenarios identify
+# causal factors that can be addressed through design, testing, or verification.
+
+loss-scenarios:
+  # =========================================================================
+  # Instruction Selector scenarios
+  # =========================================================================
+  - id: LS-1
+    title: Target capability check has incomplete ISA feature database
+    uca: UCA-1
+    hazards: [H-4]
+    type: inadequate-process-model
+    scenario: >
+      The instruction selector's target profile database does not include
+      all Cortex-M variants. A new target (e.g., Cortex-M23) is added as
+      "Cortex-M class" without specifying that it lacks VFP. The selector
+      emits VADD.F32 for an f32.add operation. The instruction causes a
+      UsageFault on the target hardware because the M23 has no FPU.
+    causal-factors:
+      - Target profile database uses coarse-grained "Cortex-M" classification
+      - New target variants added without reviewing FPU capability
+      - No compile-time assertion that float ops require FPU feature flag
+    process-model-flaw: >
+      Selector assumes all Cortex-M4 and above have FPU; some M4 SKUs lack it
+
+  - id: LS-2
+    title: Bounds check omitted for memory access with constant zero offset
+    uca: UCA-2
+    hazards: [H-3]
+    type: inadequate-control-algorithm
+    scenario: >
+      The instruction selector has an optimization that skips bounds checks
+      for memory accesses with a static offset of zero, assuming the base
+      address was already validated. However, the base address comes from
+      an i32.add that can overflow, producing a small address from two
+      large operands. The bounds check is needed but not emitted.
+    causal-factors:
+      - Optimization assumes zero-offset accesses are always safe
+      - Integer overflow in address computation not considered
+      - Bounds check elision logic does not account for all address sources
+
+  - id: LS-3
+    title: Peephole optimizer pattern matches without checking flag side effects
+    uca: UCA-3
+    hazards: [H-2]
+    type: inadequate-control-algorithm
+    scenario: >
+      The peephole optimizer matches a pattern "MOVS Rd, #0; ADDS Rd, Rn, Rm"
+      and rewrites it to "ADD Rd, Rn, Rm" (removing the redundant MOV).
+      However, the original ADDS sets the condition flags (N, Z, C, V) which
+      are read by a subsequent BEQ instruction. The replacement ADD does not
+      set flags. The conditional branch now reads stale flags from a prior
+      instruction, branching on the wrong condition.
+    causal-factors:
+      - Pattern matcher checks opcode and operands but not flag-setting behavior
+      - No liveness analysis for condition flags across rewrite boundaries
+      - Test suite does not cover flag-dependent control flow after optimization
+
+  - id: LS-4
+    title: ARM encoder uses wrong condition code encoding table
+    uca: UCA-4
+    hazards: [H-5]
+    type: inadequate-control-algorithm
+    scenario: >
+      The ARM encoder's condition code table maps the abstract condition
+      "less than (signed)" to the ARM condition code LO (unsigned lower)
+      instead of LT (signed less than). For positive operands, LO and LT
+      produce the same result. For negative operands, LO (which tests C=0)
+      gives the wrong answer. The bug is not caught by tests that only use
+      positive test values.
+    causal-factors:
+      - Condition code table has a transposition error between LT and LO
+      - Test values do not include negative numbers for comparison operations
+      - LO and LT produce identical results for the most common test cases
+
+  - id: LS-5
+    title: Rocq proof model does not distinguish Cortex-M variants
+    uca: UCA-6
+    hazards: [H-4]
+    type: inadequate-process-model
+    scenario: >
+      The Rocq proof suite models ARM semantics with a single instruction
+      set that includes all Thumb-2 instructions. The proofs establish
+      correctness for the full instruction set but do not model the
+      per-variant instruction availability. A proof for i32.clz using CLZ
+      (Thumb-2) is valid, but CLZ is not available on Cortex-M0. The ISA
+      validator should reject it, but the proof gives false confidence.
+    causal-factors:
+      - Rocq ARM semantics model is variant-agnostic
+      - Proofs establish semantic correctness but not target compatibility
+      - No formal model of ISA feature levels in the proof suite
+    process-model-flaw: >
+      Proof suite assumes a single ARM ISA; does not model per-variant subsets
+
+  - id: LS-6
+    title: Z3 verification timeout treated as success
+    uca: UCA-7
+    hazards: [H-9]
+    type: sensor-failure
+    scenario: >
+      The Z3 verifier is configured with a 30-second timeout. A complex
+      synthesis rule involving 64-bit multiplication times out. The CI
+      script interprets the exit code as "no counterexample found" (success)
+      rather than "inconclusive." The rule is merged and deployed. Later,
+      a user discovers that the rule produces wrong results for specific
+      inputs that Z3 would have found with more time.
+    causal-factors:
+      - CI script does not distinguish timeout from valid/unsat
+      - Z3 timeout exit code is 0 with "unknown" result, not checked
+      - No secondary verification (e.g., property-based testing) as fallback
+
+  - id: LS-7
+    title: Signed division sequence omits INT_MIN/-1 overflow check
+    uca: UCA-8
+    hazards: [H-1]
+    type: inadequate-control-algorithm
+    scenario: >
+      The instruction selector emits a signed division sequence: check
+      divisor != 0, then SDIV. It omits the check for INT_MIN / -1 which
+      overflows in two's complement (the result would be INT_MAX + 1, which
+      is not representable). The WASM spec requires a trap for this case.
+      ARM's SDIV instruction silently returns INT_MIN. The compiled code
+      returns -2147483648 instead of trapping.
+    causal-factors:
+      - Division sequence template only checks for zero divisor
+      - WASM i32.div_s overflow trap requirement not in the code comments
+      - ARM SDIV does not trap on overflow (implementation-defined behavior)
+
+  - id: LS-8
+    title: Vector table reset handler missing Thumb bit
+    uca: UCA-5
+    hazards: [H-7]
+    type: inadequate-control-algorithm
+    scenario: >
+      The ELF builder writes the reset handler address into the vector
+      table without setting bit 0 (the Thumb interworking bit). On
+      Cortex-M, all code executes in Thumb mode and the vector table
+      entries must have bit 0 set. The MCU reads the reset vector,
+      sees bit 0 = 0, attempts to enter ARM mode (which Cortex-M does
+      not support), and immediately takes a HardFault. The device
+      fails to boot.
+    causal-factors:
+      - Vector table address calculation does not OR with 1
+      - Cortex-M always executes in Thumb mode (no ARM mode)
+      - Bug only manifests on real hardware, not in some emulators
+
+  - id: LS-9
+    title: Peephole optimizer reorders load across store to same address
+    uca: UCA-10
+    hazards: [H-1]
+    type: inadequate-control-algorithm
+    scenario: >
+      The peephole optimizer moves a load instruction before a store to
+      the same memory address to improve pipeline utilization. The
+      original program stores a value then loads it back (a common
+      pattern for WASM local variables via linear memory). After
+      reordering, the load reads the old value before the store writes
+      the new value, producing incorrect results.
+    causal-factors:
+      - Reordering pass does not check for memory address aliasing
+      - WASM linear memory accesses all alias through a single base pointer
+      - Alias analysis is absent or overly optimistic
+
+  - id: LS-10
+    title: Meld dispatch stub passes import index in wrong register
+    uca: UCA-13
+    hazards: [H-8]
+    type: inadequate-process-model
+    scenario: >
+      The instruction selector's __meld_dispatch_import stub places the
+      WASM import function index in R1 (the second argument register per
+      AAPCS). Kiln's dispatch handler expects the import index in R0
+      (the first argument). The handler reads R0 which contains the
+      first WASM argument, interprets it as an import index, and
+      dispatches to the wrong function.
+    causal-factors:
+      - Synth and Kiln ABI documentation disagrees on register assignment
+      - No shared ABI definition file or header between the projects
+      - Integration tests mock the dispatch handler instead of using real Kiln
+    process-model-flaw: >
+      Synth's model of the Kiln dispatch ABI is out of sync with Kiln's implementation
+
+  - id: LS-11
+    title: Immediate value truncation produces wrong constant
+    uca: UCA-12
+    hazards: [H-4]
+    type: inadequate-control-algorithm
+    scenario: >
+      The ARM encoder receives a MOV instruction with immediate value
+      0x1FF (511). The Thumb-1 MOV immediate format supports only 8-bit
+      immediates (0-255). Instead of returning an error, the encoder
+      takes the low 8 bits (0xFF = 255) and encodes MOV Rd, #255. The
+      instruction appears valid but loads the wrong constant. Downstream
+      computation uses 255 instead of 511.
+    causal-factors:
+      - Encoder masks immediate to field width without range check
+      - No assertion that immediate fits before encoding
+      - Thumb-1 immediate range is 0-255 but this is not validated
+
+  - id: LS-12
+    title: Overlapping linker script regions not detected
+    uca: UCA-15
+    hazards: [H-7]
+    type: inadequate-control-algorithm
+    scenario: >
+      The linker script for a custom board defines flash at 0x08000000
+      (256K) and RAM at 0x20000000 (64K). A user modifies the flash
+      size to 512K without updating the RAM start address. On a device
+      where flash and RAM are not contiguous, this is fine. But on a
+      device where flash extends to 0x20000000, the .data section
+      (placed in RAM) overlaps with the end of .text (in flash). The
+      ELF builder does not detect the overlap. At runtime, writing to
+      .data corrupts code in flash.
+    causal-factors:
+      - ELF builder does not validate that sections are non-overlapping
+      - Linker script memory regions are trusted without cross-checking
+      - Overlap detection requires knowledge of the physical memory map

@@ -1,0 +1,190 @@
+# STPA Step 2: Control Structure
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Synth is a build-time tool (like Meld). Its control structure models the
+# compilation pipeline where each stage controls the transformation of
+# WebAssembly input into ARM Cortex-M ELF output. The "controlled processes"
+# are the intermediate and final representations being constructed.
+#
+# Unlike a runtime (Kiln), Synth has no real-time feedback loops. The
+# controllers operate sequentially during a single compilation pass.
+# Feedback is immediate: each stage observes the result of the previous
+# stage's transformation.
+#
+# Reference: STPA Handbook (Leveson & Thomas, 2018), Chapter 2
+
+controllers:
+  - id: CTRL-1
+    name: Instruction Selector
+    type: automated
+    description: >
+      The pattern-matching instruction selector in synth-synthesis. Maps each
+      WebAssembly operation (WasmOp) to an ARM Cortex-M instruction sequence.
+      Handles arithmetic, comparisons, conversions, memory access, control flow
+      (block/loop/if/br/br_if), and function calls. Consults the target profile
+      to determine available instructions (Thumb-1 vs Thumb-2, VFP, etc.).
+    source-file: crates/synth-synthesis/src/lib.rs
+    control-actions:
+      - ca: CA-1
+        target: CP-1
+        action: Emit ARM instruction sequence for a WASM operation
+      - ca: CA-7
+        target: CP-1
+        action: Emit bounds check sequence for memory access
+      - ca: CA-8
+        target: CP-1
+        action: Emit multi-instruction division sequence with trap
+    feedback:
+      - from: CP-1
+        info: Current instruction stream state, label offsets
+    process-model:
+      - WASM operation semantics are correctly understood
+      - Target ISA capabilities are accurately known
+      - Virtual register state tracks physical register availability
+      - Stack depth matches WASM operand stack model
+
+  - id: CTRL-2
+    name: Peephole Optimizer
+    type: automated
+    description: >
+      The peephole optimizer in synth-synthesis. Scans the emitted ARM
+      instruction stream for patterns that can be simplified or fused.
+      Performs constant propagation, strength reduction, redundant load
+      elimination, and instruction fusion. Must preserve the semantics
+      of the original instruction sequence.
+    source-file: crates/synth-synthesis/src/peephole.rs
+    control-actions:
+      - ca: CA-2
+        target: CP-1
+        action: Rewrite instruction sequence to optimized equivalent
+    feedback:
+      - from: CP-1
+        info: Instruction patterns available for optimization
+    process-model:
+      - Rewritten sequences produce identical results for all inputs
+      - Flag-setting side effects are preserved
+      - Memory ordering constraints are respected
+      - Instruction dependencies are correctly tracked
+
+  - id: CTRL-3
+    name: ARM Encoder
+    type: automated
+    description: >
+      The ARM instruction encoder in synth-backend. Converts abstract ARM
+      instruction representations into concrete Thumb/Thumb-2 machine code
+      bytes. Handles encoding selection (narrow vs wide Thumb), immediate
+      value fitting, condition code encoding, and branch offset calculation.
+    source-file: crates/synth-backend/src/arm.rs
+    control-actions:
+      - ca: CA-3
+        target: CP-1
+        action: Encode abstract ARM instruction to machine code bytes
+    feedback:
+      - from: CP-1
+        info: Encoding result (success, immediate-out-of-range, invalid-for-target)
+      - from: CP-2
+        info: Current code section offset for branch calculations
+    process-model:
+      - Instruction encoding matches ARM Architecture Reference Manual
+      - Immediate values fit within the encoding format
+      - Branch offsets are within the encodable range
+      - Target ISA variant supports the instruction
+
+  - id: CTRL-4
+    name: ELF Builder
+    type: automated
+    description: >
+      The ELF binary constructor in synth-backend. Assembles encoded machine
+      code into ELF sections (.text, .data, .bss, .rodata), generates the
+      vector table, computes section addresses from linker script, writes
+      ELF headers, program headers, and symbol table.
+    source-file: crates/synth-backend/src/elf.rs
+    control-actions:
+      - ca: CA-4
+        target: CP-2
+        action: Build ELF section with correct load address and alignment
+      - ca: CA-9
+        target: CP-2
+        action: Generate vector table with reset and fault handlers
+      - ca: CA-10
+        target: CP-3
+        action: Assign memory regions from linker script
+    feedback:
+      - from: CP-2
+        info: Section sizes, symbol addresses, relocation results
+      - from: CP-3
+        info: Available memory regions, address ranges
+    process-model:
+      - Linker script memory regions are non-overlapping
+      - Vector table entries point to valid code addresses
+      - Section load addresses match the target's memory map
+      - ELF headers conform to the ELF specification
+
+  - id: CTRL-5
+    name: ISA Validator
+    type: automated
+    description: >
+      The target capability validator in synth-synthesis. Gates each
+      instruction against the target profile's ISA feature set. Rejects
+      Thumb-2 instructions on Cortex-M0 (Thumb-1 only), VFP instructions
+      on cores without FPU, DSP instructions on non-DSP cores. Uses the
+      target profile system from synth-backend.
+    source-file: crates/synth-synthesis/src/target.rs
+    control-actions:
+      - ca: CA-5
+        target: CP-1
+        action: Validate instruction against target ISA capabilities
+    feedback:
+      - from: CP-1
+        info: Validation pass/fail with reason
+    process-model:
+      - Target profile accurately describes the hardware capabilities
+      - ISA feature database is complete for all supported cores
+      - Instruction-to-feature mapping is correct
+
+  - id: CTRL-6
+    name: Z3 Verifier
+    type: automated
+    description: >
+      The Z3 SMT translation validator in synth-verify. Encodes each
+      synthesis rule as a pair of SMT formulas (WASM semantics, ARM
+      semantics) and checks equivalence. Reports counterexamples when
+      a rule is unsound. Operates offline or as part of CI.
+    source-file: crates/synth-verify/src/lib.rs
+    control-actions:
+      - ca: CA-6
+        target: CP-1
+        action: Verify synthesis rule via SMT equivalence check
+    feedback:
+      - from: CP-1
+        info: Verification result (valid, counterexample, timeout, unknown)
+    process-model:
+      - SMT encoding accurately models WASM and ARM semantics
+      - Verification covers all synthesis rules in use
+      - Timeout does not mean the rule is correct
+
+controlled-processes:
+  - id: CP-1
+    name: ARM Instruction Stream
+    description: >
+      The sequence of abstract and concrete ARM instructions being built
+      during compilation. Starts as abstract WasmOp-to-ARM mappings from
+      the instruction selector, is refined by the peephole optimizer,
+      validated by the ISA validator, verified by Z3, and finally encoded
+      to machine code bytes by the ARM encoder.
+
+  - id: CP-2
+    name: ELF Binary
+    description: >
+      The output ELF binary being assembled. Contains .text (machine code),
+      .data (initialized data), .bss (zero-initialized data), .rodata
+      (constants), vector table, section headers, program headers, and
+      symbol table. The final artifact delivered to the target hardware.
+
+  - id: CP-3
+    name: Memory Layout
+    description: >
+      The target memory map: flash and RAM regions, their addresses and
+      sizes, stack placement, heap placement, and WebAssembly linear memory
+      allocation. Derived from the linker script and target profile.
