@@ -115,8 +115,10 @@ jobs:
             ${{ runner.os }}-rivet-
       - name: Install rivet
         run: cargo install --git https://github.com/pulseengine/rivet --branch main rivet-cli
-      - name: Sync external dependencies
-        run: rivet sync
+      - name: Sync external dependencies (strip local paths for CI)
+        run: |
+          sed -i '/^    path:/d' rivet.yaml
+          rivet sync
       - name: Validate artifacts
         run: rivet validate
       - name: Check coverage
