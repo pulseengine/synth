@@ -36,6 +36,8 @@ artifacts:
       produce deterministic output (same input yields same output), provide
       comprehensive error handling, achieve greater than 99% correctness on
       the WebAssembly test suite, and support continuous fuzzing integration.
+      Deterministic output is critical for sigil's attestation chain integrity
+      (sigil:L-7, sigil:DF-13).
     status: draft
     tags: [reliability, determinism, nonfunctional]
     links:
@@ -43,6 +45,10 @@ artifacts:
         target: BR-001
       - type: derives-from
         target: BR-002
+      - type: traces-to
+        target: sigil:L-7
+      - type: traces-to
+        target: sigil:SC-14
     fields:
       req-type: constraint
       priority: must

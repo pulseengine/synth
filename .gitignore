@@ -57,3 +57,6 @@ vendor.log
 
 # Claude Code local settings (environment-specific)
 .claude/settings.local.json
+
+# Rivet external project cache
+.rivet/

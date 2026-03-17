@@ -50,3 +50,9 @@ externals:
     path: /Volumes/Home/git/pulseengine/meld
     ref: main
     prefix: meld
+
+  sigil:
+    git: https://github.com/pulseengine/sigil.git
+    path: /Volumes/Home/git/pulseengine/sigil
+    ref: main
+    prefix: sigil

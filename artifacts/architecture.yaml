@@ -61,6 +61,7 @@ artifacts:
       ARM Thumb-2 machine code encoder, ELF binary builder, vector table
       generator, linker script support, and MPU configuration. Produces
       bare-metal ELF binaries ready for flashing to Cortex-M targets.
+      ELF output is the input to sigil for supply chain signing (sigil:FEAT-2).
     status: implemented
     tags: [backend, arm-encoding, elf]
     links:
@@ -72,6 +73,12 @@ artifacts:
         target: FR-005
       - type: allocated-from
         target: FR-008
+      - type: traces-to
+        target: sigil:CR-12
+      - type: traces-to
+        target: sigil:CD-14
+      - type: traces-to
+        target: sigil:FEAT-2
     fields:
       component-type: software
       interfaces:
