@@ -1,0 +1,215 @@
+# STPA Step 3: Unsafe Control Actions
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Format: UCAs grouped by controller, categorized by type:
+#   not-providing: Action needed but not taken
+#   providing: Action taken when it shouldn't be, or taken incorrectly
+#   too-early-too-late: Action timing or ordering incorrect
+#   stopped-too-soon: Action duration too short / incomplete
+
+instruction-selector-ucas:
+  control-action: "Emit ARM instruction sequence for WASM operation"
+  controller: CTRL-1
+
+  providing:
+    - id: UCA-1
+      description: >
+        Instruction selector emits a VFP floating-point instruction (VADD,
+        VMUL, VCVT, etc.) for a target profile that lacks an FPU. The
+        instruction is invalid on the target core and causes an
+        UsageFault/HardFault at runtime.
+      context: "Compiling float operation for Cortex-M0/M0+ or M4 without FPU"
+      hazards: [H-4]
+
+    - id: UCA-8
+      description: >
+        Instruction selector emits UDIV where SDIV is needed (or vice versa)
+        for a division operation, producing wrong results for negative
+        operands. Similarly, emits LSR where ASR is needed for signed
+        right shift.
+      context: "i32.div_s, i32.shr_s with negative operands"
+      hazards: [H-1]
+
+    - id: UCA-11
+      description: >
+        Instruction selector stops emitting a multi-instruction sequence
+        before all instructions are produced. For example, a division
+        sequence that requires a divide-by-zero check, the division itself,
+        and an overflow check emits only the division instruction without
+        the trap checks.
+      context: "i32.div_s which requires check for zero and INT_MIN/-1"
+      hazards: [H-1]
+
+  not-providing:
+    - id: UCA-2
+      description: >
+        Instruction selector does not emit a bounds check (CMP + conditional
+        branch) before a memory load or store instruction when bounds
+        checking is enabled. The compiled code accesses memory beyond the
+        WebAssembly linear memory bounds.
+      context: "i32.load, i32.store with --bounds-check enabled"
+      hazards: [H-3]
+
+    - id: UCA-14
+      description: >
+        Instruction selector does not emit callee-save register
+        preservation (PUSH/POP of r4-r11, lr) at function entry/exit.
+        When the compiled function calls another function or returns,
+        the caller's register state is corrupted.
+      context: "Function that uses more than r0-r3 scratch registers"
+      hazards: [H-6]
+
+  stopped-too-soon:
+    - id: UCA-11b
+      description: >
+        Instruction selector emits a partial multi-instruction sequence
+        for a block/loop/if construct. For example, a loop back-edge
+        branch is emitted but the label fixup is not completed, leaving
+        the branch offset as zero (branch to self = infinite loop) or
+        pointing to wrong code.
+      context: "Nested block/loop with forward and backward branches"
+      hazards: [H-5]
+
+peephole-optimizer-ucas:
+  control-action: "Rewrite instruction sequence to optimized equivalent"
+  controller: CTRL-2
+
+  providing:
+    - id: UCA-3
+      description: >
+        Peephole optimizer rewrites an instruction sequence in a way that
+        changes the program's observable behavior. For example, replacing
+        a MUL with a shift-and-add that produces a different result for
+        edge-case inputs (INT_MIN), or eliminating a CMP that sets flags
+        needed by a subsequent conditional branch.
+      context: "Strength reduction, dead code elimination, instruction fusion"
+      hazards: [H-2]
+
+    - id: UCA-10
+      description: >
+        Peephole optimizer reorders instructions across a memory barrier
+        or across instructions with side effects (flag-setting, memory
+        access). The reordered sequence executes memory operations in a
+        different order than the WASM semantics require.
+      context: "Load-store reordering near conditional branches"
+      hazards: [H-1]
+
+arm-encoder-ucas:
+  control-action: "Encode abstract ARM instruction to machine code bytes"
+  controller: CTRL-3
+
+  providing:
+    - id: UCA-4
+      description: >
+        ARM encoder produces wrong encoding for a conditional instruction.
+        Condition code bits (EQ/NE/LT/GE/GT/LE) are mapped incorrectly,
+        causing the branch or conditional execution to trigger on the
+        wrong condition.
+      context: "Encoding BEQ, BNE, BLT, BGE with condition code field"
+      hazards: [H-5]
+
+    - id: UCA-12
+      description: >
+        ARM encoder silently truncates an immediate value that does not
+        fit the instruction's encoding format. For example, a Thumb-2
+        modified immediate constant that requires rotation is instead
+        truncated to 8 bits, producing a different constant value in
+        the encoded instruction.
+      context: "MOV with large immediate, ADD with immediate > 255"
+      hazards: [H-4]
+
+  too-early-too-late:
+    - id: UCA-12b
+      description: >
+        ARM encoder calculates branch offsets before all instructions are
+        emitted, then instruction insertion or deletion by the peephole
+        optimizer changes the offsets. The branch target is now wrong
+        because the offset was computed too early.
+      context: "Forward branch to end-of-block after peephole optimization pass"
+      hazards: [H-5]
+
+elf-builder-ucas:
+  control-action: "Build ELF section with correct load address"
+  controller: CTRL-4
+
+  providing:
+    - id: UCA-5
+      description: >
+        ELF builder generates an incorrect vector table entry. The reset
+        handler address is wrong (off by one for Thumb bit, or points to
+        data instead of code), or the HardFault handler is missing. The
+        target MCU jumps to wrong code on reset or fault.
+      context: "Vector table generation for Cortex-M4 with FPU"
+      hazards: [H-7]
+
+    - id: UCA-9
+      description: >
+        ELF builder places code in the wrong memory region for the target.
+        Code is placed in RAM instead of flash, or data is placed at an
+        address that overlaps the vector table. The binary fails to boot
+        or corrupts its own code at runtime.
+      context: "Linker script with flash at 0x08000000, RAM at 0x20000000"
+      hazards: [H-7]
+
+    - id: UCA-15
+      description: >
+        ELF builder assigns overlapping memory regions in the linker
+        script output. The .text and .data sections overlap, or the
+        stack region overlaps with the heap region. Code or data is
+        silently overwritten at runtime.
+      context: "Target with small flash/RAM where sections are tightly packed"
+      hazards: [H-7]
+
+isa-validator-ucas:
+  control-action: "Validate instruction against target ISA capabilities"
+  controller: CTRL-5
+
+  not-providing:
+    - id: UCA-6
+      description: >
+        ISA validator does not reject an instruction that is unsupported
+        on the target core. For example, a Thumb-2 wide instruction
+        (32-bit encoding) passes validation for a Cortex-M0 target
+        that only supports Thumb-1 (16-bit) instructions.
+      context: "Compiling for Cortex-M0 with Thumb-2 instruction in output"
+      hazards: [H-4]
+
+z3-verifier-ucas:
+  control-action: "Verify synthesis rule via SMT equivalence check"
+  controller: CTRL-6
+
+  not-providing:
+    - id: UCA-7
+      description: >
+        Z3 verifier does not run for a newly added or modified synthesis
+        rule. The rule is deployed without verification, and it may
+        contain a semantic error that produces wrong ARM code for
+        certain inputs.
+      context: "New instruction selection rule added without CI verification"
+      hazards: [H-9]
+
+  providing:
+    - id: UCA-7b
+      description: >
+        Z3 verifier reports "valid" for a rule that is actually unsound
+        because the SMT encoding of the ARM or WASM semantics is
+        incomplete or wrong. The encoding omits flag side effects,
+        uses wrong bit-width, or models the wrong instruction variant.
+      context: "Z3 check for rule involving flag-setting arithmetic"
+      hazards: [H-9]
+
+meld-dispatch-ucas:
+  control-action: "Emit Meld dispatch import stub"
+  controller: CTRL-1
+
+  providing:
+    - id: UCA-13
+      description: >
+        Instruction selector generates a __meld_dispatch_import call stub
+        that uses the wrong calling convention. Import index is placed
+        in the wrong register, arguments are passed in the wrong order,
+        or the return value is read from the wrong register. The Kiln
+        runtime bridge receives garbled arguments.
+      context: "Compiled WASM module calling an imported function via Kiln"
+      hazards: [H-8]
