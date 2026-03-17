@@ -122,6 +122,28 @@ fn index_to_vfp_reg(index: u8) -> VfpReg {
     }
 }
 
+/// Convert VFP D-register index to VfpReg enum (D0-D15 for linear allocation)
+fn index_to_dreg(index: u8) -> VfpReg {
+    match index % 16 {
+        0 => VfpReg::D0,
+        1 => VfpReg::D1,
+        2 => VfpReg::D2,
+        3 => VfpReg::D3,
+        4 => VfpReg::D4,
+        5 => VfpReg::D5,
+        6 => VfpReg::D6,
+        7 => VfpReg::D7,
+        8 => VfpReg::D8,
+        9 => VfpReg::D9,
+        10 => VfpReg::D10,
+        11 => VfpReg::D11,
+        12 => VfpReg::D12,
+        13 => VfpReg::D13,
+        14 => VfpReg::D14,
+        _ => VfpReg::D15,
+    }
+}
+
 /// Instruction selector
 pub struct InstructionSelector {
     /// Pattern matcher with synthesis rules
@@ -138,6 +160,8 @@ pub struct InstructionSelector {
     target_name: String,
     /// Next available VFP S-register (S0-S15, wrapping)
     next_vfp_reg: u8,
+    /// Next available VFP D-register (D0-D15, wrapping)
+    next_dreg: u8,
 }
 
 impl InstructionSelector {
@@ -151,6 +175,7 @@ impl InstructionSelector {
             fpu: None,
             target_name: "cortex-m3".to_string(),
             next_vfp_reg: 0,
+            next_dreg: 0,
         }
     }
 
@@ -164,6 +189,7 @@ impl InstructionSelector {
             fpu: None,
             target_name: "cortex-m3".to_string(),
             next_vfp_reg: 0,
+            next_dreg: 0,
         }
     }
 
@@ -188,6 +214,18 @@ impl InstructionSelector {
         let reg = index_to_vfp_reg(self.next_vfp_reg);
         self.next_vfp_reg = (self.next_vfp_reg + 1) % 16;
         reg
+    }
+
+    /// Allocate a VFP D-register (D0-D15, wrapping)
+    fn alloc_dreg(&mut self) -> VfpReg {
+        let reg = index_to_dreg(self.next_dreg);
+        self.next_dreg = (self.next_dreg + 1) % 16;
+        reg
+    }
+
+    /// Check if target has double-precision FPU
+    fn has_double_precision(&self) -> bool {
+        matches!(self.fpu, Some(FPUPrecision::Double))
     }
 
     /// Select ARM instructions for a sequence of WASM operations
@@ -695,13 +733,44 @@ impl InstructionSelector {
                 vec![ArmOp::I32TruncF32U { rd, sm }]
             }
 
-            // F32 ops that have FPU but are unsupported pseudo-ops or need i64/f64
-            op @ (F32Ceil | F32Floor | F32Trunc | F32Nearest | F32Min | F32Max | F32Copysign)
-                if self.fpu.is_some() =>
-            {
-                return Err(synth_core::Error::synthesis(format!(
-                    "F32 pseudo-op {op:?} not yet implemented (needs ARMv8-M or software fallback)"
-                )));
+            // F32 pseudo-ops with FPU — generate VFP sequences
+            F32Ceil if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Ceil { sd, sm }]
+            }
+            F32Floor if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Floor { sd, sm }]
+            }
+            F32Trunc if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Trunc { sd, sm }]
+            }
+            F32Nearest if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Nearest { sd, sm }]
+            }
+            F32Min if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Min { sd, sn, sm }]
+            }
+            F32Max if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Max { sd, sn, sm }]
+            }
+            F32Copysign if self.fpu.is_some() => {
+                let sd = self.alloc_vfp_reg();
+                let sn = self.alloc_vfp_reg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F32Copysign { sd, sn, sm }]
             }
 
             op @ (F32ConvertI64S | F32ConvertI64U) if self.fpu.is_some() => {
@@ -710,6 +779,14 @@ impl InstructionSelector {
                 )));
             }
 
+            F32DemoteF64 if self.has_double_precision() => {
+                // VCVT.F32.F64 Sd, Dm — needs a dedicated ArmOp.
+                // For now, return an error until the ArmOp variant is added.
+                return Err(synth_core::Error::synthesis(format!(
+                    "F32DemoteF64 not yet supported on target {} (needs VCVT.F32.F64 encoding)",
+                    self.target_name
+                )));
+            }
             op @ F32DemoteF64 if self.fpu.is_some() => {
                 return Err(synth_core::Error::synthesis(format!(
                     "{op:?} not supported on single-precision target {}",
@@ -756,8 +833,185 @@ impl InstructionSelector {
                 )));
             }
 
-            // F64 ops — always rejected (single-precision targets don't support F64,
-            // and no-FPU targets don't support any float)
+            // ===== F64 operations (double-precision FPU required) =====
+            F64Add if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Add { dd, dn, dm }]
+            }
+            F64Sub if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Sub { dd, dn, dm }]
+            }
+            F64Mul if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Mul { dd, dn, dm }]
+            }
+            F64Div if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Div { dd, dn, dm }]
+            }
+
+            F64Abs if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Abs { dd, dm }]
+            }
+            F64Neg if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Neg { dd, dm }]
+            }
+            F64Sqrt if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Sqrt { dd, dm }]
+            }
+            F64Ceil if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Ceil { dd, dm }]
+            }
+            F64Floor if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Floor { dd, dm }]
+            }
+            F64Trunc if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Trunc { dd, dm }]
+            }
+            F64Nearest if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Nearest { dd, dm }]
+            }
+            F64Min if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Min { dd, dn, dm }]
+            }
+            F64Max if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Max { dd, dn, dm }]
+            }
+            F64Copysign if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Copysign { dd, dn, dm }]
+            }
+
+            F64Eq if self.has_double_precision() => {
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Eq { rd, dn, dm }]
+            }
+            F64Ne if self.has_double_precision() => {
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Ne { rd, dn, dm }]
+            }
+            F64Lt if self.has_double_precision() => {
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Lt { rd, dn, dm }]
+            }
+            F64Le if self.has_double_precision() => {
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Le { rd, dn, dm }]
+            }
+            F64Gt if self.has_double_precision() => {
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Gt { rd, dn, dm }]
+            }
+            F64Ge if self.has_double_precision() => {
+                let dn = self.alloc_dreg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::F64Ge { rd, dn, dm }]
+            }
+
+            F64Const(val) if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                vec![ArmOp::F64Const { dd, value: *val }]
+            }
+
+            F64Load { offset, .. } if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let addr_reg = self.regs.alloc_reg();
+                vec![ArmOp::F64Load {
+                    dd,
+                    addr: MemAddr::reg_imm(Reg::R11, addr_reg, *offset as i32),
+                }]
+            }
+            F64Store { offset, .. } if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let addr_reg = self.regs.alloc_reg();
+                vec![ArmOp::F64Store {
+                    dd,
+                    addr: MemAddr::reg_imm(Reg::R11, addr_reg, *offset as i32),
+                }]
+            }
+
+            F64ConvertI32S if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                vec![ArmOp::F64ConvertI32S { dd, rm }]
+            }
+            F64ConvertI32U if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                vec![ArmOp::F64ConvertI32U { dd, rm }]
+            }
+            F64PromoteF32 if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F64PromoteF32 { dd, sm }]
+            }
+
+            F64ReinterpretI64 if self.has_double_precision() => {
+                let dd = self.alloc_dreg();
+                let rmlo = self.regs.alloc_reg();
+                let rmhi = self.regs.alloc_reg();
+                vec![ArmOp::F64ReinterpretI64 { dd, rmlo, rmhi }]
+            }
+            I64ReinterpretF64 if self.has_double_precision() => {
+                let rdlo = self.regs.alloc_reg();
+                let rdhi = self.regs.alloc_reg();
+                let dm = self.alloc_dreg();
+                vec![ArmOp::I64ReinterpretF64 { rdlo, rdhi, dm }]
+            }
+
+            I32TruncF64S if self.has_double_precision() => {
+                let dm = self.alloc_dreg();
+                vec![ArmOp::I32TruncF64S { rd, dm }]
+            }
+            I32TruncF64U if self.has_double_precision() => {
+                let dm = self.alloc_dreg();
+                vec![ArmOp::I32TruncF64U { rd, dm }]
+            }
+
+            // Complex i64↔f64 conversions — require multi-step sequences
+            op @ (F64ConvertI64S | F64ConvertI64U | I64TruncF64S | I64TruncF64U)
+                if self.has_double_precision() =>
+            {
+                return Err(synth_core::Error::synthesis(format!(
+                    "{op:?} not supported (requires i64 register pairs on 32-bit ARM)"
+                )));
+            }
+
+            // F64 ops on non-double-precision targets
             op @ (F64Add
             | F64Sub
             | F64Mul

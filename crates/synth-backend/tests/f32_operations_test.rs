@@ -258,47 +258,39 @@ fn test_i32_trunc_f32_u_compiles() {
 }
 
 // ============================================================================
-// F32 PSEUDO-OPS — unsupported even on cortex-m4f (for now)
+// F32 PSEUDO-OPS — now supported on cortex-m4f via VFP sequences
 // ============================================================================
 
 #[test]
-fn test_f32_ceil_unsupported_on_m4f() {
+fn test_f32_ceil_compiles_on_m4f() {
     let mut selector = selector_with_fpu();
     let result = selector.select(&[WasmOp::F32Const(1.5), WasmOp::F32Ceil]);
-    assert!(
-        result.is_err(),
-        "f32.ceil should be unsupported on cortex-m4f"
-    );
-    let err = result.unwrap_err().to_string();
-    assert!(
-        err.contains("pseudo-op") || err.contains("not yet implemented"),
-        "Error should explain it's a pseudo-op, got: {err}"
-    );
+    assert!(result.is_ok(), "f32.ceil should compile on cortex-m4f");
 }
 
 #[test]
-fn test_f32_floor_unsupported_on_m4f() {
+fn test_f32_floor_compiles_on_m4f() {
     let mut selector = selector_with_fpu();
     let result = selector.select(&[WasmOp::F32Const(1.5), WasmOp::F32Floor]);
-    assert!(result.is_err());
+    assert!(result.is_ok(), "f32.floor should compile on cortex-m4f");
 }
 
 #[test]
-fn test_f32_min_unsupported_on_m4f() {
+fn test_f32_min_compiles_on_m4f() {
     let mut selector = selector_with_fpu();
     let result = selector.select(&[WasmOp::F32Const(1.0), WasmOp::F32Const(2.0), WasmOp::F32Min]);
-    assert!(result.is_err());
+    assert!(result.is_ok(), "f32.min should compile on cortex-m4f");
 }
 
 #[test]
-fn test_f32_copysign_unsupported_on_m4f() {
+fn test_f32_copysign_compiles_on_m4f() {
     let mut selector = selector_with_fpu();
     let result = selector.select(&[
         WasmOp::F32Const(1.0),
         WasmOp::F32Const(-1.0),
         WasmOp::F32Copysign,
     ]);
-    assert!(result.is_err());
+    assert!(result.is_ok(), "f32.copysign should compile on cortex-m4f");
 }
 
 // ============================================================================

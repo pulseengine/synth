@@ -414,28 +414,31 @@ fn test_vmov_s0_r0_arm32() {
 }
 
 // ============================================================================
-// Pseudo-ops return errors
+// Pseudo-ops now generate real instruction sequences
 // ============================================================================
 
 #[test]
-fn test_f32_ceil_returns_error() {
+fn test_f32_ceil_encodes_successfully() {
     let enc = thumb_encoder();
     let result = enc.encode(&ArmOp::F32Ceil {
         sd: VfpReg::S0,
         sm: VfpReg::S0,
     });
-    assert!(result.is_err(), "F32Ceil should return an error");
+    assert!(result.is_ok(), "F32Ceil should encode successfully");
+    assert_eq!(result.unwrap().len(), 8); // VCVT.S32.F32 + VCVT.F32.S32
 }
 
 #[test]
-fn test_f32_min_returns_error() {
+fn test_f32_min_encodes_successfully() {
     let enc = thumb_encoder();
     let result = enc.encode(&ArmOp::F32Min {
         sd: VfpReg::S0,
         sn: VfpReg::S0,
         sm: VfpReg::S0,
     });
-    assert!(result.is_err(), "F32Min should return an error");
+    assert!(result.is_ok(), "F32Min should encode successfully");
+    // VMOV(4) + VCMP(4) + VMRS(4) + IT(2) + VMOV(4) = 18
+    assert_eq!(result.unwrap().len(), 18);
 }
 
 // ============================================================================
