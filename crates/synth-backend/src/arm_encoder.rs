@@ -647,11 +647,12 @@ impl ArmEncoder {
             ArmOp::F64Sqrt { dd, dm } => encode_vfp_2reg_f64(0xEEB10BC0, dd, dm),
 
             // f64 pseudo-ops
+            // FPSCR RMode: 00=nearest, 01=+inf(ceil), 10=-inf(floor), 11=zero(trunc)
             ArmOp::F64Ceil { dd, dm } => {
-                return self.encode_arm_f64_rounding(dd, dm, 0b10);
+                return self.encode_arm_f64_rounding(dd, dm, 0b01);
             }
             ArmOp::F64Floor { dd, dm } => {
-                return self.encode_arm_f64_rounding(dd, dm, 0b01);
+                return self.encode_arm_f64_rounding(dd, dm, 0b10);
             }
             ArmOp::F64Trunc { dd, dm } => {
                 return self.encode_arm_f64_rounding(dd, dm, 0b11);
@@ -1075,21 +1076,56 @@ impl ArmEncoder {
     }
 
     /// Encode F64 rounding pseudo-op as ARM32 via VCVT to integer and back.
-    fn encode_arm_f64_rounding(&self, dd: &VfpReg, dm: &VfpReg, _mode: u8) -> Result<Vec<u8>> {
+    /// Encode F64 rounding as ARM32.
+    /// `mode`: FPSCR RMode — 0b00=nearest, 0b01=+inf(ceil), 0b10=-inf(floor), 0b11=zero(trunc)
+    ///
+    /// For trunc: uses VCVTR.S32.F64 (always truncates).
+    /// For ceil/floor/nearest: sets FPSCR rounding mode, uses VCVT.S32.F64 (non-R variant),
+    /// then restores FPSCR.
+    fn encode_arm_f64_rounding(&self, dd: &VfpReg, dm: &VfpReg, mode: u8) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         let dm_num = vfp_dreg_to_num(dm);
         let dd_num = vfp_dreg_to_num(dd);
         let (vm, m) = encode_dreg(dm_num);
         let (vd, d) = encode_dreg(dd_num);
 
-        // VCVT.S32.F64 S0, Dm (truncate toward zero)
-        // S0: Vd=0, D=0
-        let vcvt_to_int = 0xEEBD0BC0 | (m << 5) | vm;
-        bytes.extend_from_slice(&vcvt_to_int.to_le_bytes());
+        if mode == 0b11 {
+            // Trunc (toward zero): VCVTR.S32.F64 — bit[7]=1, always truncates
+            let vcvt_to_int = 0xEEBD0BC0 | (m << 5) | vm;
+            bytes.extend_from_slice(&vcvt_to_int.to_le_bytes());
+        } else {
+            // ceil/floor/nearest: manipulate FPSCR rounding mode
+            let rt: u32 = 12;
+
+            // VMRS R12, FPSCR
+            let vmrs = 0xEEF10A10 | (rt << 12);
+            bytes.extend_from_slice(&vmrs.to_le_bytes());
+
+            // BIC R12, R12, #(3 << 22)
+            let bic = 0xE3CC0000 | (rt << 12) | (0x05 << 8) | 0x03;
+            bytes.extend_from_slice(&bic.to_le_bytes());
+
+            // ORR R12, R12, #(mode << 22)
+            if mode != 0 {
+                let orr = 0xE38C0000 | (rt << 12) | (0x05 << 8) | (mode as u32);
+                bytes.extend_from_slice(&orr.to_le_bytes());
+            }
+
+            // VMSR FPSCR, R12
+            let vmsr = 0xEEE10A10 | (rt << 12);
+            bytes.extend_from_slice(&vmsr.to_le_bytes());
+
+            // VCVT.S32.F64 S0, Dm — non-R variant (bit[7]=0), uses FPSCR rmode
+            let vcvt_to_int = 0xEEBD0B40 | (m << 5) | vm;
+            bytes.extend_from_slice(&vcvt_to_int.to_le_bytes());
+
+            // Restore FPSCR
+            bytes.extend_from_slice(&vmrs.to_le_bytes());
+            bytes.extend_from_slice(&bic.to_le_bytes());
+            bytes.extend_from_slice(&vmsr.to_le_bytes());
+        }
 
         // VCVT.F64.S32 Dd, S0 (convert back to double)
-        // 0xEEB80B40 | D << 22 | Vd << 12 | M << 5 | Vm
-        // S0: Vm=0, M=0
         let vcvt_to_float = 0xEEB80B40 | (d << 22) | (vd << 12);
         bytes.extend_from_slice(&vcvt_to_float.to_le_bytes());
 
@@ -4092,8 +4128,9 @@ impl ArmEncoder {
             }
 
             // f64 pseudo-ops
-            ArmOp::F64Ceil { dd, dm } => self.encode_thumb_f64_rounding(dd, dm, 0b10),
-            ArmOp::F64Floor { dd, dm } => self.encode_thumb_f64_rounding(dd, dm, 0b01),
+            // FPSCR RMode: 00=nearest, 01=+inf(ceil), 10=-inf(floor), 11=zero(trunc)
+            ArmOp::F64Ceil { dd, dm } => self.encode_thumb_f64_rounding(dd, dm, 0b01),
+            ArmOp::F64Floor { dd, dm } => self.encode_thumb_f64_rounding(dd, dm, 0b10),
             ArmOp::F64Trunc { dd, dm } => self.encode_thumb_f64_rounding(dd, dm, 0b11),
             ArmOp::F64Nearest { dd, dm } => self.encode_thumb_f64_rounding(dd, dm, 0b00),
             ArmOp::F64Min { dd, dn, dm } => self.encode_thumb_f64_minmax(dd, dn, dm, true),
@@ -4574,16 +4611,54 @@ impl ArmEncoder {
     }
 
     /// Encode F64 rounding pseudo-op as Thumb-2 via VCVT to integer and back
-    fn encode_thumb_f64_rounding(&self, dd: &VfpReg, dm: &VfpReg, _mode: u8) -> Result<Vec<u8>> {
+    /// Encode F64 rounding as Thumb-2.
+    /// `mode`: FPSCR RMode — 0b00=nearest, 0b01=+inf(ceil), 0b10=-inf(floor), 0b11=zero(trunc)
+    fn encode_thumb_f64_rounding(&self, dd: &VfpReg, dm: &VfpReg, mode: u8) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
         let dm_num = vfp_dreg_to_num(dm);
         let dd_num = vfp_dreg_to_num(dd);
         let (vm, m) = encode_dreg(dm_num);
         let (vd, d) = encode_dreg(dd_num);
 
-        // VCVT.S32.F64 S0, Dm
-        let vcvt_to_int = 0xEEBD0BC0 | (m << 5) | vm;
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt_to_int));
+        if mode == 0b11 {
+            // Trunc: VCVTR.S32.F64 — bit[7]=1, always truncates
+            let vcvt_to_int = 0xEEBD0BC0 | (m << 5) | vm;
+            bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt_to_int));
+        } else {
+            let rt: u32 = 12;
+
+            // VMRS R12, FPSCR
+            let vmrs = 0xEEF10A10 | (rt << 12);
+            bytes.extend_from_slice(&vfp_to_thumb_bytes(vmrs));
+
+            // BIC.W R12, R12, #(3 << 22)
+            let bic_hw1: u16 = 0xF020 | ((rt as u16) & 0xF);
+            let bic_hw2: u16 = (0x05 << 12) | ((rt as u16) << 8) | 0x03;
+            bytes.extend_from_slice(&bic_hw1.to_le_bytes());
+            bytes.extend_from_slice(&bic_hw2.to_le_bytes());
+
+            // ORR.W R12, R12, #(mode << 22)
+            if mode != 0 {
+                let orr_hw1: u16 = 0xF040 | ((rt as u16) & 0xF);
+                let orr_hw2: u16 = (0x05 << 12) | ((rt as u16) << 8) | (mode as u16);
+                bytes.extend_from_slice(&orr_hw1.to_le_bytes());
+                bytes.extend_from_slice(&orr_hw2.to_le_bytes());
+            }
+
+            // VMSR FPSCR, R12
+            let vmsr = 0xEEE10A10 | (rt << 12);
+            bytes.extend_from_slice(&vfp_to_thumb_bytes(vmsr));
+
+            // VCVT.S32.F64 S0, Dm — non-R variant (bit[7]=0)
+            let vcvt_to_int = 0xEEBD0B40 | (m << 5) | vm;
+            bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt_to_int));
+
+            // Restore FPSCR
+            bytes.extend_from_slice(&vfp_to_thumb_bytes(vmrs));
+            bytes.extend_from_slice(&bic_hw1.to_le_bytes());
+            bytes.extend_from_slice(&bic_hw2.to_le_bytes());
+            bytes.extend_from_slice(&vfp_to_thumb_bytes(vmsr));
+        }
 
         // VCVT.F64.S32 Dd, S0
         let vcvt_to_float = 0xEEB80B40 | (d << 22) | (vd << 12);
