@@ -1461,6 +1461,46 @@ impl InstructionSelector {
     }
 }
 
+/// Validate that all ARM instructions in the sequence are supported by the target.
+///
+/// This is the ISA feature gate: it checks each generated ARM instruction against
+/// the target's FPU capabilities and returns an error for the first unsupported
+/// instruction encountered. This must be called AFTER instruction selection but
+/// BEFORE encoding, to ensure the compiler never emits an instruction that the
+/// target platform cannot execute.
+pub fn validate_instructions(
+    instructions: &[ArmInstruction],
+    fpu: Option<FPUPrecision>,
+    target_name: &str,
+) -> Result<()> {
+    for instr in instructions {
+        // Check FPU requirement (single-precision or higher)
+        if instr.op.requires_fpu() && fpu.is_none() {
+            return Err(synth_core::Error::UnsupportedInstruction(format!(
+                "instruction {} requires FPU, but target {} has no FPU",
+                instr.op.instruction_name(),
+                target_name,
+            )));
+        }
+
+        // Check double-precision FPU requirement
+        if instr.op.requires_double_precision_fpu() && !matches!(fpu, Some(FPUPrecision::Double)) {
+            let reason = if fpu.is_some() {
+                "only has single-precision FPU"
+            } else {
+                "has no FPU"
+            };
+            return Err(synth_core::Error::UnsupportedInstruction(format!(
+                "instruction {} requires double-precision FPU, but target {} {}",
+                instr.op.instruction_name(),
+                target_name,
+                reason,
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Statistics from instruction selection
 #[derive(Debug, Clone, Default)]
 pub struct SelectionStats {
@@ -1741,6 +1781,131 @@ mod tests {
             ArmOp::Ldr { .. } => {}
             other => panic!("Expected Ldr instruction, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_validate_instructions_rejects_fpu_on_no_fpu_target() {
+        // Simulate FPU instructions being generated, then validate against a no-FPU target
+        let instrs = vec![ArmInstruction {
+            op: ArmOp::F32Add {
+                sd: VfpReg::S0,
+                sn: VfpReg::S1,
+                sm: VfpReg::S2,
+            },
+            source_line: Some(0),
+        }];
+        let result = super::validate_instructions(&instrs, None, "cortex-m3");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("requires FPU"),
+            "Error should mention FPU requirement, got: {err}"
+        );
+        assert!(
+            err.contains("cortex-m3"),
+            "Error should mention target name, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_instructions_allows_fpu_on_fpu_target() {
+        let instrs = vec![ArmInstruction {
+            op: ArmOp::F32Add {
+                sd: VfpReg::S0,
+                sn: VfpReg::S1,
+                sm: VfpReg::S2,
+            },
+            source_line: Some(0),
+        }];
+        let result =
+            super::validate_instructions(&instrs, Some(FPUPrecision::Single), "cortex-m4f");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_instructions_rejects_f64_on_single_precision() {
+        let instrs = vec![ArmInstruction {
+            op: ArmOp::F64Add {
+                dd: VfpReg::D0,
+                dn: VfpReg::D1,
+                dm: VfpReg::D2,
+            },
+            source_line: Some(0),
+        }];
+        let result =
+            super::validate_instructions(&instrs, Some(FPUPrecision::Single), "cortex-m4f");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("double-precision"),
+            "Error should mention double-precision, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_validate_instructions_allows_f64_on_double_precision() {
+        let instrs = vec![ArmInstruction {
+            op: ArmOp::F64Add {
+                dd: VfpReg::D0,
+                dn: VfpReg::D1,
+                dm: VfpReg::D2,
+            },
+            source_line: Some(0),
+        }];
+        let result =
+            super::validate_instructions(&instrs, Some(FPUPrecision::Double), "cortex-m7dp");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_validate_instructions_allows_integer_ops_on_all_targets() {
+        let instrs = vec![
+            ArmInstruction {
+                op: ArmOp::Add {
+                    rd: Reg::R0,
+                    rn: Reg::R1,
+                    op2: Operand2::Reg(Reg::R2),
+                },
+                source_line: Some(0),
+            },
+            ArmInstruction {
+                op: ArmOp::Mul {
+                    rd: Reg::R0,
+                    rn: Reg::R1,
+                    rm: Reg::R2,
+                },
+                source_line: Some(1),
+            },
+            ArmInstruction {
+                op: ArmOp::Sdiv {
+                    rd: Reg::R0,
+                    rn: Reg::R1,
+                    rm: Reg::R2,
+                },
+                source_line: Some(2),
+            },
+            ArmInstruction {
+                op: ArmOp::Clz {
+                    rd: Reg::R0,
+                    rm: Reg::R1,
+                },
+                source_line: Some(3),
+            },
+        ];
+
+        // Should pass on M3 (no FPU)
+        let result = super::validate_instructions(&instrs, None, "cortex-m3");
+        assert!(result.is_ok(), "Integer ops should pass on cortex-m3");
+
+        // Should pass on M4F (with FPU)
+        let result =
+            super::validate_instructions(&instrs, Some(FPUPrecision::Single), "cortex-m4f");
+        assert!(result.is_ok(), "Integer ops should pass on cortex-m4f");
+
+        // Should pass on M7DP (with double FPU)
+        let result =
+            super::validate_instructions(&instrs, Some(FPUPrecision::Double), "cortex-m7dp");
+        assert!(result.is_ok(), "Integer ops should pass on cortex-m7dp");
     }
 
     #[test]

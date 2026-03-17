@@ -294,6 +294,53 @@ pub struct TargetSpec {
     pub fpu: Option<FPUPrecision>,
 }
 
+// ============================================================================
+// ISA feature gating — determines which instructions each variant supports
+// ============================================================================
+
+impl CortexMVariant {
+    /// Returns whether this variant supports DSP instructions (SSAT, USAT, SMLAL, etc.)
+    /// Only ARMv7E-M (Cortex-M4+) and above have DSP extensions.
+    pub fn has_dsp(&self) -> bool {
+        !matches!(self, Self::M3)
+    }
+
+    /// Returns whether this variant has a single-precision FPU
+    pub fn has_single_precision_fpu(&self) -> bool {
+        matches!(self, Self::M4F | Self::M7 | Self::M7DP | Self::M55)
+    }
+
+    /// Returns whether this variant has a double-precision FPU
+    pub fn has_double_precision_fpu(&self) -> bool {
+        matches!(self, Self::M7DP)
+    }
+
+    /// Returns whether this variant supports TrustZone security extensions
+    pub fn has_trustzone(&self) -> bool {
+        matches!(self, Self::M33 | Self::M55)
+    }
+
+    /// Returns whether this variant supports Helium MVE (M-Profile Vector Extension)
+    pub fn has_helium(&self) -> bool {
+        matches!(self, Self::M55)
+    }
+}
+
+impl TargetSpec {
+    /// Returns whether this target has a single-precision FPU
+    pub fn has_single_precision_fpu(&self) -> bool {
+        matches!(
+            self.fpu,
+            Some(FPUPrecision::Single) | Some(FPUPrecision::Double)
+        )
+    }
+
+    /// Returns whether this target has a double-precision FPU
+    pub fn has_double_precision_fpu(&self) -> bool {
+        matches!(self.fpu, Some(FPUPrecision::Double))
+    }
+}
+
 impl TargetSpec {
     /// Cortex-M3 (ARMv7-M, no FPU, 8 MPU regions)
     pub fn cortex_m3() -> Self {
@@ -457,5 +504,102 @@ mod tests {
         let spec = TargetSpec::cortex_m7();
         assert!(spec.has_fpu());
         assert_eq!(spec.fpu, Some(FPUPrecision::Single));
+    }
+
+    // ========================================================================
+    // ISA feature gating tests
+    // ========================================================================
+
+    #[test]
+    fn test_cortex_m3_isa_features() {
+        let m3 = CortexMVariant::M3;
+        assert!(!m3.has_dsp(), "M3 should not have DSP");
+        assert!(!m3.has_single_precision_fpu(), "M3 should not have FPU");
+        assert!(
+            !m3.has_double_precision_fpu(),
+            "M3 should not have double FPU"
+        );
+        assert!(!m3.has_trustzone(), "M3 should not have TrustZone");
+        assert!(!m3.has_helium(), "M3 should not have Helium");
+    }
+
+    #[test]
+    fn test_cortex_m4_isa_features() {
+        let m4 = CortexMVariant::M4;
+        assert!(m4.has_dsp(), "M4 should have DSP");
+        assert!(
+            !m4.has_single_precision_fpu(),
+            "M4 (no F) should not have FPU"
+        );
+        assert!(
+            !m4.has_double_precision_fpu(),
+            "M4 should not have double FPU"
+        );
+    }
+
+    #[test]
+    fn test_cortex_m4f_isa_features() {
+        let m4f = CortexMVariant::M4F;
+        assert!(m4f.has_dsp(), "M4F should have DSP");
+        assert!(
+            m4f.has_single_precision_fpu(),
+            "M4F should have single-precision FPU"
+        );
+        assert!(
+            !m4f.has_double_precision_fpu(),
+            "M4F should not have double FPU"
+        );
+    }
+
+    #[test]
+    fn test_cortex_m7dp_isa_features() {
+        let m7dp = CortexMVariant::M7DP;
+        assert!(m7dp.has_dsp(), "M7DP should have DSP");
+        assert!(
+            m7dp.has_single_precision_fpu(),
+            "M7DP should have single-precision FPU"
+        );
+        assert!(
+            m7dp.has_double_precision_fpu(),
+            "M7DP should have double-precision FPU"
+        );
+    }
+
+    #[test]
+    fn test_cortex_m33_isa_features() {
+        let m33 = CortexMVariant::M33;
+        assert!(m33.has_dsp(), "M33 should have DSP");
+        assert!(m33.has_trustzone(), "M33 should have TrustZone");
+        assert!(!m33.has_helium(), "M33 should not have Helium");
+    }
+
+    #[test]
+    fn test_cortex_m55_isa_features() {
+        let m55 = CortexMVariant::M55;
+        assert!(m55.has_dsp(), "M55 should have DSP");
+        assert!(
+            m55.has_single_precision_fpu(),
+            "M55 should have single-precision FPU"
+        );
+        assert!(m55.has_trustzone(), "M55 should have TrustZone");
+        assert!(m55.has_helium(), "M55 should have Helium");
+    }
+
+    #[test]
+    fn test_target_spec_fpu_precision_queries() {
+        let m3 = TargetSpec::cortex_m3();
+        assert!(!m3.has_single_precision_fpu(), "M3 spec has no FPU");
+        assert!(!m3.has_double_precision_fpu(), "M3 spec has no double FPU");
+
+        let m4f = TargetSpec::cortex_m4f();
+        assert!(m4f.has_single_precision_fpu(), "M4F spec has single FPU");
+        assert!(
+            !m4f.has_double_precision_fpu(),
+            "M4F spec has no double FPU"
+        );
+
+        let m7dp = TargetSpec::cortex_m7dp();
+        assert!(m7dp.has_single_precision_fpu(), "M7DP spec has single FPU");
+        assert!(m7dp.has_double_precision_fpu(), "M7DP spec has double FPU");
     }
 }

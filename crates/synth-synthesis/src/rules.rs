@@ -987,6 +987,201 @@ pub enum ArmOp {
     }, // VCVT.U32.F64 Sd, Dm + VMOV Rd, Sd
 }
 
+impl ArmOp {
+    /// Returns `true` if this instruction requires a single-precision (or higher) FPU.
+    ///
+    /// All VFP instructions (VADD, VSUB, VLDR, VCVT, etc.) require FPU hardware.
+    /// Targets without an FPU (e.g., Cortex-M3, Cortex-M4 without F suffix) cannot
+    /// execute these instructions.
+    pub fn requires_fpu(&self) -> bool {
+        matches!(
+            self,
+            ArmOp::F32Add { .. }
+                | ArmOp::F32Sub { .. }
+                | ArmOp::F32Mul { .. }
+                | ArmOp::F32Div { .. }
+                | ArmOp::F32Abs { .. }
+                | ArmOp::F32Neg { .. }
+                | ArmOp::F32Sqrt { .. }
+                | ArmOp::F32Ceil { .. }
+                | ArmOp::F32Floor { .. }
+                | ArmOp::F32Trunc { .. }
+                | ArmOp::F32Nearest { .. }
+                | ArmOp::F32Min { .. }
+                | ArmOp::F32Max { .. }
+                | ArmOp::F32Copysign { .. }
+                | ArmOp::F32Eq { .. }
+                | ArmOp::F32Ne { .. }
+                | ArmOp::F32Lt { .. }
+                | ArmOp::F32Le { .. }
+                | ArmOp::F32Gt { .. }
+                | ArmOp::F32Ge { .. }
+                | ArmOp::F32Const { .. }
+                | ArmOp::F32Load { .. }
+                | ArmOp::F32Store { .. }
+                | ArmOp::F32ConvertI32S { .. }
+                | ArmOp::F32ConvertI32U { .. }
+                | ArmOp::F32ConvertI64S { .. }
+                | ArmOp::F32ConvertI64U { .. }
+                | ArmOp::F32ReinterpretI32 { .. }
+                | ArmOp::I32ReinterpretF32 { .. }
+                | ArmOp::I32TruncF32S { .. }
+                | ArmOp::I32TruncF32U { .. }
+                | ArmOp::F64Add { .. }
+                | ArmOp::F64Sub { .. }
+                | ArmOp::F64Mul { .. }
+                | ArmOp::F64Div { .. }
+                | ArmOp::F64Abs { .. }
+                | ArmOp::F64Neg { .. }
+                | ArmOp::F64Sqrt { .. }
+                | ArmOp::F64Ceil { .. }
+                | ArmOp::F64Floor { .. }
+                | ArmOp::F64Trunc { .. }
+                | ArmOp::F64Nearest { .. }
+                | ArmOp::F64Min { .. }
+                | ArmOp::F64Max { .. }
+                | ArmOp::F64Copysign { .. }
+                | ArmOp::F64Eq { .. }
+                | ArmOp::F64Ne { .. }
+                | ArmOp::F64Lt { .. }
+                | ArmOp::F64Le { .. }
+                | ArmOp::F64Gt { .. }
+                | ArmOp::F64Ge { .. }
+                | ArmOp::F64Const { .. }
+                | ArmOp::F64Load { .. }
+                | ArmOp::F64Store { .. }
+                | ArmOp::F64ConvertI32S { .. }
+                | ArmOp::F64ConvertI32U { .. }
+                | ArmOp::F64ConvertI64S { .. }
+                | ArmOp::F64ConvertI64U { .. }
+                | ArmOp::F64PromoteF32 { .. }
+                | ArmOp::F64ReinterpretI64 { .. }
+                | ArmOp::I64ReinterpretF64 { .. }
+                | ArmOp::I64TruncF64S { .. }
+                | ArmOp::I64TruncF64U { .. }
+                | ArmOp::I32TruncF64S { .. }
+                | ArmOp::I32TruncF64U { .. }
+        )
+    }
+
+    /// Returns `true` if this instruction requires a double-precision FPU.
+    ///
+    /// Only targets with `FPUPrecision::Double` (e.g., Cortex-M7DP) can execute
+    /// double-precision VFP instructions. Single-precision FPU targets (M4F, M7)
+    /// cannot execute these.
+    pub fn requires_double_precision_fpu(&self) -> bool {
+        matches!(
+            self,
+            ArmOp::F64Add { .. }
+                | ArmOp::F64Sub { .. }
+                | ArmOp::F64Mul { .. }
+                | ArmOp::F64Div { .. }
+                | ArmOp::F64Abs { .. }
+                | ArmOp::F64Neg { .. }
+                | ArmOp::F64Sqrt { .. }
+                | ArmOp::F64Ceil { .. }
+                | ArmOp::F64Floor { .. }
+                | ArmOp::F64Trunc { .. }
+                | ArmOp::F64Nearest { .. }
+                | ArmOp::F64Min { .. }
+                | ArmOp::F64Max { .. }
+                | ArmOp::F64Copysign { .. }
+                | ArmOp::F64Eq { .. }
+                | ArmOp::F64Ne { .. }
+                | ArmOp::F64Lt { .. }
+                | ArmOp::F64Le { .. }
+                | ArmOp::F64Gt { .. }
+                | ArmOp::F64Ge { .. }
+                | ArmOp::F64Const { .. }
+                | ArmOp::F64Load { .. }
+                | ArmOp::F64Store { .. }
+                | ArmOp::F64ConvertI32S { .. }
+                | ArmOp::F64ConvertI32U { .. }
+                | ArmOp::F64ConvertI64S { .. }
+                | ArmOp::F64ConvertI64U { .. }
+                | ArmOp::F64PromoteF32 { .. }
+                | ArmOp::F64ReinterpretI64 { .. }
+                | ArmOp::I64ReinterpretF64 { .. }
+                | ArmOp::I64TruncF64S { .. }
+                | ArmOp::I64TruncF64U { .. }
+                | ArmOp::I32TruncF64S { .. }
+                | ArmOp::I32TruncF64U { .. }
+        )
+    }
+
+    /// Returns a human-readable name for this instruction (for error messages).
+    pub fn instruction_name(&self) -> &'static str {
+        match self {
+            ArmOp::F32Add { .. } => "VADD.F32",
+            ArmOp::F32Sub { .. } => "VSUB.F32",
+            ArmOp::F32Mul { .. } => "VMUL.F32",
+            ArmOp::F32Div { .. } => "VDIV.F32",
+            ArmOp::F32Abs { .. } => "VABS.F32",
+            ArmOp::F32Neg { .. } => "VNEG.F32",
+            ArmOp::F32Sqrt { .. } => "VSQRT.F32",
+            ArmOp::F32Ceil { .. } => "VRINTP.F32",
+            ArmOp::F32Floor { .. } => "VRINTM.F32",
+            ArmOp::F32Trunc { .. } => "VRINTZ.F32",
+            ArmOp::F32Nearest { .. } => "VRINTN.F32",
+            ArmOp::F32Min { .. } => "VMIN.F32",
+            ArmOp::F32Max { .. } => "VMAX.F32",
+            ArmOp::F32Copysign { .. } => "F32Copysign",
+            ArmOp::F32Eq { .. } => "VCMP.F32 (EQ)",
+            ArmOp::F32Ne { .. } => "VCMP.F32 (NE)",
+            ArmOp::F32Lt { .. } => "VCMP.F32 (LT)",
+            ArmOp::F32Le { .. } => "VCMP.F32 (LE)",
+            ArmOp::F32Gt { .. } => "VCMP.F32 (GT)",
+            ArmOp::F32Ge { .. } => "VCMP.F32 (GE)",
+            ArmOp::F32Const { .. } => "VMOV.F32",
+            ArmOp::F32Load { .. } => "VLDR.32",
+            ArmOp::F32Store { .. } => "VSTR.32",
+            ArmOp::F32ConvertI32S { .. } => "VCVT.F32.S32",
+            ArmOp::F32ConvertI32U { .. } => "VCVT.F32.U32",
+            ArmOp::F32ConvertI64S { .. } => "VCVT.F32.S64",
+            ArmOp::F32ConvertI64U { .. } => "VCVT.F32.U64",
+            ArmOp::F32ReinterpretI32 { .. } => "VMOV (F32<-I32)",
+            ArmOp::I32ReinterpretF32 { .. } => "VMOV (I32<-F32)",
+            ArmOp::I32TruncF32S { .. } => "VCVT.S32.F32",
+            ArmOp::I32TruncF32U { .. } => "VCVT.U32.F32",
+            ArmOp::F64Add { .. } => "VADD.F64",
+            ArmOp::F64Sub { .. } => "VSUB.F64",
+            ArmOp::F64Mul { .. } => "VMUL.F64",
+            ArmOp::F64Div { .. } => "VDIV.F64",
+            ArmOp::F64Abs { .. } => "VABS.F64",
+            ArmOp::F64Neg { .. } => "VNEG.F64",
+            ArmOp::F64Sqrt { .. } => "VSQRT.F64",
+            ArmOp::F64Ceil { .. } => "VRINTP.F64",
+            ArmOp::F64Floor { .. } => "VRINTM.F64",
+            ArmOp::F64Trunc { .. } => "VRINTZ.F64",
+            ArmOp::F64Nearest { .. } => "VRINTN.F64",
+            ArmOp::F64Min { .. } => "VMIN.F64",
+            ArmOp::F64Max { .. } => "VMAX.F64",
+            ArmOp::F64Copysign { .. } => "F64Copysign",
+            ArmOp::F64Eq { .. } => "VCMP.F64 (EQ)",
+            ArmOp::F64Ne { .. } => "VCMP.F64 (NE)",
+            ArmOp::F64Lt { .. } => "VCMP.F64 (LT)",
+            ArmOp::F64Le { .. } => "VCMP.F64 (LE)",
+            ArmOp::F64Gt { .. } => "VCMP.F64 (GT)",
+            ArmOp::F64Ge { .. } => "VCMP.F64 (GE)",
+            ArmOp::F64Const { .. } => "VMOV.F64",
+            ArmOp::F64Load { .. } => "VLDR.64",
+            ArmOp::F64Store { .. } => "VSTR.64",
+            ArmOp::F64ConvertI32S { .. } => "VCVT.F64.S32",
+            ArmOp::F64ConvertI32U { .. } => "VCVT.F64.U32",
+            ArmOp::F64ConvertI64S { .. } => "VCVT.F64.S64",
+            ArmOp::F64ConvertI64U { .. } => "VCVT.F64.U64",
+            ArmOp::F64PromoteF32 { .. } => "VCVT.F64.F32",
+            ArmOp::F64ReinterpretI64 { .. } => "VMOV (F64<-I64)",
+            ArmOp::I64ReinterpretF64 { .. } => "VMOV (I64<-F64)",
+            ArmOp::I64TruncF64S { .. } => "VCVT.S64.F64",
+            ArmOp::I64TruncF64U { .. } => "VCVT.U64.F64",
+            ArmOp::I32TruncF64S { .. } => "VCVT.S32.F64",
+            ArmOp::I32TruncF64U { .. } => "VCVT.U32.F64",
+            _ => "ARM",
+        }
+    }
+}
+
 /// ARM condition codes (based on NZCV flags)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Condition {
