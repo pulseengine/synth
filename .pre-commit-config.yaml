@@ -1,29 +1,38 @@
 repos:
+  # ── Generic file hygiene ──────────────────────────────────────────────
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
+    rev: v5.0.0
     hooks:
       - id: trailing-whitespace
       - id: end-of-file-fixer
       - id: check-yaml
+        args: ['--allow-multiple-documents']
+      - id: check-toml
       - id: check-added-large-files
         args: ['--maxkb=500']
+      - id: check-merge-conflict
+      - id: detect-private-key
 
+  # ── Rust checks ───────────────────────────────────────────────────────
   - repo: local
     hooks:
+      # ── Formatting ─────────────────────────────────────────────────
       - id: cargo-fmt
         name: cargo fmt
-        entry: cargo fmt --check
+        entry: cargo fmt --all -- --check
         language: system
         types: [rust]
         pass_filenames: false
 
+      # ── Linting ────────────────────────────────────────────────────
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --all-targets -- -D warnings
+        entry: cargo clippy --workspace --all-targets -- -D warnings
         language: system
         types: [rust]
         pass_filenames: false
 
+      # ── Tests (pre-push only — too slow for every commit) ──────────
       - id: cargo-test
         name: cargo test
         entry: cargo test --workspace
@@ -31,3 +40,19 @@ repos:
         types: [rust]
         pass_filenames: false
         stages: [pre-push]
+
+      # ── Rivet artifact validation ──────────────────────────────────
+      - id: rivet-validate
+        name: rivet validate
+        entry: rivet validate
+        language: system
+        files: '(rivet\.yaml|artifacts/.*\.yaml|safety/.*\.yaml)'
+        pass_filenames: false
+
+      # ── Rivet commit-message traceability check ────────────────────
+      - id: rivet-commit-msg
+        name: rivet commit-msg check
+        entry: rivet commit-msg-check
+        language: system
+        stages: [commit-msg]
+        always_run: true
