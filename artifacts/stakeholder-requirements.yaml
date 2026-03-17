@@ -1,0 +1,68 @@
+# Stakeholder Requirements (ASPICE SYS.1)
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Derived from: docs/requirements/REQUIREMENTS.md Section 2 (Business Requirements)
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  - id: BR-001
+    type: stakeholder-req
+    title: Safety-critical qualification
+    description: >
+      Synth shall support qualification for safety-critical domains
+      including automotive (ISO 26262), medical (IEC 62304), and industrial
+      (IEC 61508). This includes generating qualification artifacts, supporting
+      formal verification of synthesis correctness, providing traceability from
+      WebAssembly to native code, enabling deterministic reproducible builds,
+      and supporting qualified tool chain integration.
+    status: draft
+    tags: [safety, qualification, certification]
+    fields:
+      priority: must
+      source: REQUIREMENTS.md
+
+  - id: BR-002
+    type: stakeholder-req
+    title: Competitive performance
+    description: >
+      Synth shall synthesize code achieving at least 80% of hand-written
+      native performance. This includes AOT compilation for deterministic
+      execution, hardware-accelerated bounds checking (MPU/PMP), XIP
+      (execute-in-place) for flash-constrained systems, and minimal code
+      size overhead (less than 20% vs native).
+    status: draft
+    tags: [performance, optimization]
+    fields:
+      priority: must
+      source: REQUIREMENTS.md
+
+  - id: BR-003
+    type: stakeholder-req
+    title: Multi-target support
+    description: >
+      Synth shall support major embedded architectures including ARM
+      Cortex-M (M3, M4, M7, M33, M55) and RISC-V (RV32IMAC, RV32GC,
+      RV64GC). The architecture shall be extensible for additional targets
+      with target-specific optimization opportunities and hardware feature
+      detection.
+    status: draft
+    tags: [targets, arm, riscv]
+    fields:
+      priority: must
+      source: REQUIREMENTS.md
+
+  - id: BR-004
+    type: stakeholder-req
+    title: Developer experience
+    description: >
+      Synth shall provide a simple CLI interface for synthesis, integration
+      with standard toolchains (Clang, Rust, GCC), clear error messages and
+      diagnostics, documentation and examples, and profiling and optimization
+      guidance.
+    status: draft
+    tags: [usability, tooling]
+    fields:
+      priority: should
+      source: REQUIREMENTS.md

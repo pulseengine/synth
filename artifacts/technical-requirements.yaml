@@ -1,0 +1,118 @@
+# Technical Requirements (ASPICE SWE.1)
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Derived from: docs/requirements/REQUIREMENTS.md Section 5 (Technical Requirements)
+#
+# These are software-level requirements derived from system requirements.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  - id: TR-001
+    type: sw-req
+    title: Input format support
+    description: >
+      Synth shall accept WebAssembly Component Model binary (.wasm),
+      WebAssembly text format (.wat), WIT interface definitions (.wit),
+      and configuration files for synthesis options (TOML/YAML) as inputs.
+      Target specification files shall define the target architecture and
+      available hardware features.
+    status: draft
+    tags: [input, formats]
+    links:
+      - type: derives-from
+        target: FR-001
+      - type: derives-from
+        target: FR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Successfully parse .wasm, .wat, and .wit files; reject malformed
+        inputs with descriptive error messages.
+
+  - id: TR-002
+    type: sw-req
+    title: Output format support
+    description: >
+      Synth shall produce ELF binaries for bare-metal targets, raw binary
+      and HEX/BIN formats for flash programming, textual assembly (.s files),
+      DWARF debug information, and verification artifacts (Rocq proof
+      traces, SMT validation logs).
+    status: draft
+    tags: [output, elf, formats]
+    links:
+      - type: derives-from
+        target: FR-002
+      - type: derives-from
+        target: FR-005
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Generated ELF files pass readelf validation; binaries boot on
+        Cortex-M4 target via Renode emulation.
+
+  - id: TR-003
+    type: sw-req
+    title: Toolchain integration
+    description: >
+      Synth should integrate with Clang/LLVM and Rust toolchains, support
+      CMake and Cargo build systems, and provide a CLI interface compatible
+      with standard embedded development workflows.
+    status: draft
+    tags: [toolchain, integration]
+    links:
+      - type: derives-from
+        target: FR-002
+    fields:
+      req-type: interface
+      priority: should
+      verification-criteria: >
+        CLI interface documented; output compatible with standard
+        ARM toolchain (objdump, readelf, gdb).
+
+  - id: TR-004
+    type: sw-req
+    title: Synthesis configuration
+    description: >
+      Synth shall accept configuration specifying target architecture
+      (CPU, variant, features), memory configuration (flash/RAM sizes,
+      MPU/PMP regions, stack sizes), optimization settings (size/speed/
+      balanced, inline threshold, unroll limits), and safety settings
+      (hardware/software bounds checking, stack overflow detection, trap
+      handling strategy).
+    status: draft
+    tags: [configuration, targets]
+    links:
+      - type: derives-from
+        target: FR-005
+      - type: derives-from
+        target: FR-003
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Target profiles correctly select instruction sets; MPU region
+        count matches target specification.
+
+  - id: TR-005
+    type: sw-req
+    title: Verification infrastructure
+    description: >
+      Synth shall integrate Z3 for SMT-based translation validation with
+      bit-vector reasoning and configurable timeouts, Rocq for mechanized
+      correctness proofs of synthesis rules, and property-based testing
+      (proptest) for randomized verification of instruction semantics.
+    status: draft
+    tags: [verification, z3, rocq, proptest]
+    links:
+      - type: derives-from
+        target: FR-006
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Z3 validation passes for all compiled test cases; Rocq proofs
+        compile without errors (188 Qed); proptest suites pass.

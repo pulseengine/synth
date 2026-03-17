@@ -1,0 +1,147 @@
+# Architecture Components (ASPICE SYS.3)
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Key architectural components mapping to the crate structure.
+# Each component is allocated from one or more system requirements.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  - id: ARCH-001
+    type: system-arch-component
+    title: Frontend (WASM/WAT parsing)
+    description: >
+      WebAssembly and WAT input parsing, validation, and IR construction.
+      Handles Component Model binary format, core module extraction,
+      and WIT interface type definitions. Entry point for the synthesis
+      pipeline.
+    status: implemented
+    tags: [frontend, parsing, wasm]
+    links:
+      - type: allocated-from
+        target: FR-001
+      - type: allocated-from
+        target: FR-002
+    fields:
+      component-type: software
+      interfaces:
+        inputs: [".wasm files", ".wat files", ".wit files"]
+        outputs: ["internal IR"]
+        crates: ["synth-cli", "synth-core"]
+
+  - id: ARCH-002
+    type: system-arch-component
+    title: Synthesis (WASM to ARM instruction selection)
+    description: >
+      Pattern-matching instruction selector that maps WebAssembly operations
+      to ARM Thumb-2 instruction sequences. Includes peephole optimizer
+      for local optimizations and register allocation using the virtual
+      stack model.
+    status: implemented
+    tags: [synthesis, instruction-selection, arm]
+    links:
+      - type: allocated-from
+        target: FR-002
+      - type: allocated-from
+        target: FR-005
+      - type: allocated-from
+        target: FR-007
+    fields:
+      component-type: software
+      interfaces:
+        inputs: ["internal IR", "target profile"]
+        outputs: ["ARM instruction sequences"]
+        crates: ["synth-synthesis"]
+
+  - id: ARCH-003
+    type: system-arch-component
+    title: Backend (ARM encoding, ELF generation)
+    description: >
+      ARM Thumb-2 machine code encoder, ELF binary builder, vector table
+      generator, linker script support, and MPU configuration. Produces
+      bare-metal ELF binaries ready for flashing to Cortex-M targets.
+    status: implemented
+    tags: [backend, arm-encoding, elf]
+    links:
+      - type: allocated-from
+        target: FR-002
+      - type: allocated-from
+        target: FR-003
+      - type: allocated-from
+        target: FR-005
+      - type: allocated-from
+        target: FR-008
+    fields:
+      component-type: software
+      interfaces:
+        inputs: ["ARM instruction sequences", "memory layout", "linker script"]
+        outputs: ["ELF binary", "raw binary", "disassembly"]
+        crates: ["synth-backend"]
+
+  - id: ARCH-004
+    type: system-arch-component
+    title: Verification (Z3 SMT + Rocq proofs)
+    description: >
+      Dual verification strategy combining runtime Z3 SMT translation
+      validation (53 tests) with mechanized Rocq proofs (188 Qed / 52
+      Admitted). Z3 validates per-compilation correctness of instruction
+      selection. Rocq proofs provide once-and-for-all correctness
+      guarantees for synthesis rules.
+    status: implemented
+    tags: [verification, z3, rocq, formal-methods]
+    links:
+      - type: allocated-from
+        target: FR-006
+      - type: allocated-from
+        target: FR-008
+    fields:
+      component-type: software
+      interfaces:
+        inputs: ["WASM ops", "ARM instruction sequences", "synthesis rules"]
+        outputs: ["verification verdicts", "proof artifacts"]
+        crates: ["synth-verify"]
+        proof-directory: "coq/Synth/"
+
+  - id: ARCH-005
+    type: system-arch-component
+    title: Memory (portable memory abstraction)
+    description: >
+      Portable memory abstraction layer supporting Zephyr RTOS, Linux,
+      and bare-metal environments. Handles linear memory allocation,
+      bounds check generation, and MPU region mapping for hardware-
+      assisted memory protection.
+    status: implemented
+    tags: [memory, abstraction, mpu]
+    links:
+      - type: allocated-from
+        target: FR-003
+      - type: allocated-from
+        target: FR-008
+    fields:
+      component-type: software
+      interfaces:
+        inputs: ["memory configuration", "target profile"]
+        outputs: ["memory layout", "bounds check code", "MPU configuration"]
+        crates: ["synth-memory"]
+
+  - id: ARCH-006
+    type: system-arch-component
+    title: ABI (Component Model ABI)
+    description: >
+      WebAssembly Component Model canonical ABI implementation for
+      lift/lower operations. Ensures ABI compatibility with Meld (fuser)
+      and Kiln (runtime) for the __meld_dispatch_import bridge interface.
+    status: implemented
+    tags: [abi, component-model, interop]
+    links:
+      - type: allocated-from
+        target: FR-001
+      - type: allocated-from
+        target: FR-004
+    fields:
+      component-type: software
+      interfaces:
+        inputs: ["WIT interface types", "component imports/exports"]
+        outputs: ["lowered ABI calls", "import dispatch stubs"]
+        crates: ["synth-abi"]

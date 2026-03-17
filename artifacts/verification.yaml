@@ -1,0 +1,151 @@
+# Verification Artifacts (ASPICE SYS.5)
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Key verification activities and their traceability to system requirements.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  - id: VER-001
+    type: sys-verification
+    title: Rocq T1 result-correspondence proofs
+    description: >
+      39 Qed proofs in Rocq establishing result-correspondence between
+      WebAssembly instruction semantics and the compiled ARM instruction
+      sequences. Each proof shows that for a given WASM operation, the
+      compiled ARM code produces the exact same result value. Covers all
+      i32 arithmetic, division, comparison, bit-manipulation, and
+      shift/rotate operations.
+    status: implemented
+    tags: [rocq, formal-verification, t1-proofs]
+    links:
+      - type: verifies
+        target: FR-006
+      - type: verifies
+        target: FR-008
+    fields:
+      method: formal-verification
+      preconditions:
+        - Rocq 9 installed (via Nix or local)
+        - coq/Synth/ proof suite compiles
+      steps:
+        build: "bazel test //coq:verify_proofs"
+        coverage: "39 Qed — see coq/STATUS.md for full matrix"
+
+  - id: VER-002
+    type: sys-verification
+    title: Rocq T2 existence proofs
+    description: >
+      95 Qed proofs in Rocq establishing existence — that the compiled ARM
+      instruction sequence terminates and produces some result for each
+      covered WASM operation. Weaker than T1 (no value correspondence) but
+      covers more operations including i64 and conversion instructions.
+    status: implemented
+    tags: [rocq, formal-verification, t2-proofs]
+    links:
+      - type: verifies
+        target: FR-006
+    fields:
+      method: formal-verification
+      preconditions:
+        - Rocq 9 installed (via Nix or local)
+      steps:
+        build: "bazel test //coq:verify_proofs"
+        coverage: "95 Qed — see coq/STATUS.md for full matrix"
+
+  - id: VER-003
+    type: sys-verification
+    title: Z3 SMT translation validation
+    description: >
+      53 Z3 SMT-based translation validation tests that verify each
+      compilation preserves WebAssembly semantics. Uses bit-vector
+      reasoning to check that the ARM instruction sequence produces
+      results equivalent to the WASM specification for all possible
+      input values.
+    status: implemented
+    tags: [z3, smt, translation-validation]
+    links:
+      - type: verifies
+        target: FR-006
+      - type: verifies
+        target: FR-002
+    fields:
+      method: formal-verification
+      preconditions:
+        - Z3 solver available
+      steps:
+        run: "cargo test -p synth-verify"
+        coverage: "53 SMT verification tests"
+
+  - id: VER-004
+    type: sys-verification
+    title: Cargo workspace tests
+    description: >
+      526+ tests across the Rust workspace covering unit tests for
+      instruction encoding, integration tests for the synthesis pipeline,
+      and end-to-end tests compiling WASM to ARM and verifying output.
+      Includes tests for ELF generation, vector table layout, MPU
+      configuration, and calling convention correctness.
+    status: implemented
+    tags: [cargo, unit-tests, integration-tests]
+    links:
+      - type: verifies
+        target: FR-002
+      - type: verifies
+        target: FR-005
+      - type: verifies
+        target: FR-008
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test --workspace"
+        coverage: "526+ tests across all crates"
+
+  - id: VER-005
+    type: sys-verification
+    title: Renode ARM emulation tests
+    description: >
+      End-to-end tests that compile WASM modules to ARM ELF binaries and
+      execute them on an emulated Cortex-M4 target using Renode. Validates
+      that compiled code boots correctly, produces expected output, and
+      handles traps properly on realistic hardware emulation. Uses the
+      WAST-to-Robot-Framework test generator (synth-test crate).
+    status: implemented
+    tags: [renode, emulation, end-to-end, cortex-m4]
+    links:
+      - type: verifies
+        target: FR-002
+      - type: verifies
+        target: FR-005
+      - type: verifies
+        target: FR-008
+    fields:
+      method: simulation
+      preconditions:
+        - Renode emulator available
+        - Bazel with rules_renode configured
+      steps:
+        run: "bazel test //tests/..."
+        coverage: "End-to-end ARM Cortex-M4 emulation"
+
+  - id: VER-006
+    type: sys-verification
+    title: Proptest property-based testing
+    description: >
+      Property-based testing using proptest to verify instruction encoding
+      correctness, synthesis rule semantics, and edge-case handling with
+      randomly generated inputs. Covers instruction encoding round-trips,
+      arithmetic overflow behavior, and bounds check generation.
+    status: implemented
+    tags: [proptest, property-based, fuzzing]
+    links:
+      - type: verifies
+        target: FR-002
+      - type: verifies
+        target: FR-005
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test --workspace (proptest cases included)"
+        coverage: "Property-based verification of instruction semantics"
