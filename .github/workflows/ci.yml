@@ -96,6 +96,33 @@ jobs:
       - name: Run comprehensive verification
         run: cargo test -p synth-verify --test comprehensive_verification --features z3-solver,arm
 
+  rivet:
+    name: Rivet Validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.cargo/bin
+            target/
+          key: ${{ runner.os }}-rivet-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rivet-
+      - name: Install rivet
+        run: cargo install --git https://github.com/pulseengine/rivet --branch main rivet-cli
+      - name: Validate artifacts
+        continue-on-error: true
+        run: |
+          sed -i '/^externals:/,$d' rivet.yaml
+          rivet validate
+      - name: Check coverage
+        run: rivet coverage
+
   bazel:
     name: Bazel Build & Proofs
     runs-on: ubuntu-latest

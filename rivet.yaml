@@ -27,6 +27,7 @@ commits:
     Fixes: fixes
     Verifies: verifies
     Trace: traces-to
+  skip-trailer: "Trace: skip"
   exempt-types:
     - chore
     - style
