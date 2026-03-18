@@ -8,6 +8,10 @@ pub mod peephole;
 pub mod rules;
 pub mod wasm_decoder;
 
+pub use control_flow::{
+    BlockType, BranchableInstruction, ControlBlock, ControlFlowManager, Label, PendingBranch,
+    resolve_branches,
+};
 pub use instruction_selector::{
     ArmInstruction, BoundsCheckConfig, InstructionSelector, RegisterState, SelectionStats,
     validate_instructions,

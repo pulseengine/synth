@@ -360,11 +360,35 @@ impl ArmEncoder {
                 0xE5800000 | (base_bits << 16) | (rd_bits << 12) | offset_bits
             }
 
+            // Label pseudo-instruction: emits no machine code
+            ArmOp::Label { .. } => {
+                return Ok(Vec::new());
+            }
+
             // Branch instructions
             ArmOp::B { label: _ } => {
                 // B encoding: cond(4) | 1010 | offset(24)
-                // Simplified: branch to offset 0
+                // Simplified: branch to offset 0 (will be patched by linker/resolver)
                 0xEA000000
+            }
+
+            // Conditional branch to label (generic)
+            ArmOp::Bcc { cond, label: _ } => {
+                use synth_synthesis::Condition;
+                let cond_bits: u32 = match cond {
+                    Condition::EQ => 0x0,
+                    Condition::NE => 0x1,
+                    Condition::HS => 0x2,
+                    Condition::LO => 0x3,
+                    Condition::HI => 0x8,
+                    Condition::LS => 0x9,
+                    Condition::GE => 0xA,
+                    Condition::LT => 0xB,
+                    Condition::GT => 0xC,
+                    Condition::LE => 0xD,
+                };
+                // B<cond> with offset 0 (will be patched)
+                (cond_bits << 28) | 0x0A000000
             }
 
             // BHS (Branch if Higher or Same) - used for bounds checking
@@ -1917,6 +1941,29 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&blx.to_le_bytes());
 
                 Ok(bytes)
+            }
+
+            // Label pseudo-instruction: emits no machine code
+            ArmOp::Label { .. } => Ok(Vec::new()),
+
+            // Conditional branch to label (generic) - offset 0, will be patched
+            ArmOp::Bcc { cond, label: _ } => {
+                use synth_synthesis::Condition;
+                let cond_bits: u16 = match cond {
+                    Condition::EQ => 0x0,
+                    Condition::NE => 0x1,
+                    Condition::HS => 0x2,
+                    Condition::LO => 0x3,
+                    Condition::HI => 0x8,
+                    Condition::LS => 0x9,
+                    Condition::GE => 0xA,
+                    Condition::LT => 0xB,
+                    Condition::GT => 0xC,
+                    Condition::LE => 0xD,
+                };
+                // 16-bit B<cond> with offset 0: 1101 cond imm8
+                let instr: u16 = 0xD000 | (cond_bits << 8);
+                Ok(instr.to_le_bytes().to_vec())
             }
 
             // Branch instructions
@@ -6074,5 +6121,95 @@ mod tests {
         // Verify the register encoding worked (instruction is valid)
         let instr = u32::from_le_bytes([code[0], code[1], code[2], code[3]]);
         assert_eq!((instr >> 8) & 0xF, 0xB); // cp11
+    }
+
+    // ========================================================================
+    // Control flow encoding tests
+    // ========================================================================
+
+    #[test]
+    fn test_encode_label_emits_no_bytes() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Label {
+            name: ".Lblock_end_0".to_string(),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert!(code.is_empty(), "Label should emit zero bytes");
+
+        let encoder32 = ArmEncoder::new_arm32();
+        let code32 = encoder32.encode(&op).unwrap();
+        assert!(
+            code32.is_empty(),
+            "Label should emit zero bytes in ARM32 too"
+        );
+    }
+
+    #[test]
+    fn test_encode_bcc_eq_thumb2() {
+        use synth_synthesis::Condition;
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Bcc {
+            cond: Condition::EQ,
+            label: "target".to_string(),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 2); // 16-bit conditional branch
+
+        // BEQ with offset 0: 0xD000 in little-endian
+        assert_eq!(code, vec![0x00, 0xD0]);
+    }
+
+    #[test]
+    fn test_encode_bcc_ne_thumb2() {
+        use synth_synthesis::Condition;
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Bcc {
+            cond: Condition::NE,
+            label: "target".to_string(),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 2);
+
+        // BNE with offset 0: 0xD100 in little-endian
+        assert_eq!(code, vec![0x00, 0xD1]);
+    }
+
+    #[test]
+    fn test_encode_bcc_arm32() {
+        use synth_synthesis::Condition;
+        let encoder = ArmEncoder::new_arm32();
+        let op = ArmOp::Bcc {
+            cond: Condition::EQ,
+            label: "target".to_string(),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 4); // 32-bit ARM instruction
+
+        let instr = u32::from_le_bytes([code[0], code[1], code[2], code[3]]);
+        // BEQ: cond=0x0, opcode=0xA, offset=0
+        assert_eq!(instr & 0xF0000000, 0x00000000); // EQ condition
+        assert_eq!(instr & 0x0F000000, 0x0A000000); // Branch opcode
+    }
+
+    #[test]
+    fn test_encode_udf_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Udf { imm: 0 };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 2); // 16-bit
+
+        // UDF #0: 0xDE00 in little-endian
+        assert_eq!(code, vec![0x00, 0xDE]);
+    }
+
+    #[test]
+    fn test_encode_nop_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Nop;
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 2); // 16-bit
+
+        // NOP: 0xBF00 in little-endian
+        assert_eq!(code, vec![0x00, 0xBF]);
     }
 }

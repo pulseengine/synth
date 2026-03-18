@@ -2,6 +2,7 @@
 //!
 //! Uses pattern matching to select optimal ARM instruction sequences
 
+use crate::control_flow::{BlockType, BranchableInstruction, ControlFlowManager};
 use crate::rules::{ArmOp, Condition, MemAddr, Operand2, Reg, Replacement, SynthesisRule, VfpReg};
 use crate::{Bindings, PatternMatcher};
 use std::collections::HashMap;
@@ -29,6 +30,48 @@ pub struct ArmInstruction {
     pub op: ArmOp,
     /// Source line (for debugging)
     pub source_line: Option<usize>,
+}
+
+impl BranchableInstruction for ArmInstruction {
+    fn set_branch_offset(&mut self, offset: i32) {
+        match &self.op {
+            ArmOp::B { .. } => {
+                self.op = ArmOp::BOffset { offset };
+            }
+            ArmOp::Bcc { cond, .. } => {
+                self.op = ArmOp::BCondOffset {
+                    cond: *cond,
+                    offset,
+                };
+            }
+            ArmOp::Bhs { .. } => {
+                self.op = ArmOp::BCondOffset {
+                    cond: Condition::HS,
+                    offset,
+                };
+            }
+            ArmOp::Blo { .. } => {
+                self.op = ArmOp::BCondOffset {
+                    cond: Condition::LO,
+                    offset,
+                };
+            }
+            _ => {} // Not a branch instruction
+        }
+    }
+
+    fn is_branch(&self) -> bool {
+        matches!(
+            self.op,
+            ArmOp::B { .. }
+                | ArmOp::Bcc { .. }
+                | ArmOp::Bhs { .. }
+                | ArmOp::Blo { .. }
+                | ArmOp::Bl { .. }
+                | ArmOp::BOffset { .. }
+                | ArmOp::BCondOffset { .. }
+        )
+    }
 }
 
 /// Convert register index to Reg enum
@@ -122,28 +165,6 @@ fn index_to_vfp_reg(index: u8) -> VfpReg {
     }
 }
 
-/// Convert VFP D-register index to VfpReg enum (D0-D15 for linear allocation)
-fn index_to_dreg(index: u8) -> VfpReg {
-    match index % 16 {
-        0 => VfpReg::D0,
-        1 => VfpReg::D1,
-        2 => VfpReg::D2,
-        3 => VfpReg::D3,
-        4 => VfpReg::D4,
-        5 => VfpReg::D5,
-        6 => VfpReg::D6,
-        7 => VfpReg::D7,
-        8 => VfpReg::D8,
-        9 => VfpReg::D9,
-        10 => VfpReg::D10,
-        11 => VfpReg::D11,
-        12 => VfpReg::D12,
-        13 => VfpReg::D13,
-        14 => VfpReg::D14,
-        _ => VfpReg::D15,
-    }
-}
-
 /// Instruction selector
 pub struct InstructionSelector {
     /// Pattern matcher with synthesis rules
@@ -160,8 +181,8 @@ pub struct InstructionSelector {
     target_name: String,
     /// Next available VFP S-register (S0-S15, wrapping)
     next_vfp_reg: u8,
-    /// Next available VFP D-register (D0-D15, wrapping)
-    next_dreg: u8,
+    /// Label counter for generating unique label names
+    label_counter: u32,
 }
 
 impl InstructionSelector {
@@ -175,7 +196,7 @@ impl InstructionSelector {
             fpu: None,
             target_name: "cortex-m3".to_string(),
             next_vfp_reg: 0,
-            next_dreg: 0,
+            label_counter: 0,
         }
     }
 
@@ -189,7 +210,7 @@ impl InstructionSelector {
             fpu: None,
             target_name: "cortex-m3".to_string(),
             next_vfp_reg: 0,
-            next_dreg: 0,
+            label_counter: 0,
         }
     }
 
@@ -209,23 +230,18 @@ impl InstructionSelector {
         self.target_name = target_name.to_string();
     }
 
+    /// Generate a unique label name with the given prefix
+    fn alloc_label(&mut self, prefix: &str) -> String {
+        let id = self.label_counter;
+        self.label_counter += 1;
+        format!(".L{}_{}", prefix, id)
+    }
+
     /// Allocate a VFP S-register (S0-S15, wrapping)
     fn alloc_vfp_reg(&mut self) -> VfpReg {
         let reg = index_to_vfp_reg(self.next_vfp_reg);
         self.next_vfp_reg = (self.next_vfp_reg + 1) % 16;
         reg
-    }
-
-    /// Allocate a VFP D-register (D0-D15, wrapping)
-    fn alloc_dreg(&mut self) -> VfpReg {
-        let reg = index_to_dreg(self.next_dreg);
-        self.next_dreg = (self.next_dreg + 1) % 16;
-        reg
-    }
-
-    /// Check if target has double-precision FPU
-    fn has_double_precision(&self) -> bool {
-        matches!(self.fpu, Some(FPUPrecision::Double))
     }
 
     /// Select ARM instructions for a sequence of WASM operations
@@ -448,20 +464,34 @@ impl InstructionSelector {
                 }]
             }
 
-            // Control flow (simplified - structural control flow)
-            Block => vec![ArmOp::Nop], // Block is a label
-            Loop => vec![ArmOp::Nop],  // Loop is a label
-            Br(_label) => vec![ArmOp::B {
-                label: "br_target".to_string(),
-            }],
-            BrIf(_label) => {
-                // Conditional branch - would pop condition from stack
-                // For now, placeholder
-                vec![ArmOp::B {
-                    label: "br_if_target".to_string(),
-                }]
+            // Control flow — labels and branches are emitted here.
+            // Full structured control flow is handled in select_with_stack;
+            // select_default emits a reasonable per-instruction lowering.
+            Block => {
+                let label = self.alloc_label("block_end");
+                vec![ArmOp::Label { name: label }]
             }
-            Return => vec![ArmOp::Bx { rm: Reg::LR }], // Return via link register
+            Loop => {
+                let label = self.alloc_label("loop_start");
+                vec![ArmOp::Label { name: label }]
+            }
+            Br(depth) => vec![ArmOp::B {
+                label: format!("br_target_{}", depth),
+            }],
+            BrIf(depth) => {
+                // Pop condition from stack (in rn), branch if non-zero
+                vec![
+                    ArmOp::Cmp {
+                        rn,
+                        op2: Operand2::Imm(0),
+                    },
+                    ArmOp::Bcc {
+                        cond: Condition::NE,
+                        label: format!("br_if_target_{}", depth),
+                    },
+                ]
+            }
+            Return => vec![ArmOp::Bx { rm: Reg::LR }],
 
             // Locals
             LocalTee(_index) => {
@@ -542,18 +572,60 @@ impl InstructionSelector {
                 op2: Operand2::Imm(0),
             }],
 
-            // Structural control flow — no ARM code emitted, handled by control flow pass
-            Nop | End | Drop => vec![ArmOp::Nop],
-            If | Else => vec![ArmOp::Nop],
+            // Structural control flow delimiters — handled structurally in select_with_stack
+            Nop => vec![ArmOp::Nop],
+            End => vec![ArmOp::Nop],
+            Drop => vec![ArmOp::Nop],
+            If => {
+                // In select_default (non-stack mode), emit a placeholder CMP + BEQ
+                let else_label = self.alloc_label("else");
+                vec![
+                    ArmOp::Cmp {
+                        rn,
+                        op2: Operand2::Imm(0),
+                    },
+                    ArmOp::Bcc {
+                        cond: Condition::EQ,
+                        label: else_label,
+                    },
+                ]
+            }
+            Else => {
+                // Jump over else block (end of then block)
+                let end_label = self.alloc_label("if_end");
+                vec![
+                    ArmOp::B {
+                        label: end_label.clone(),
+                    },
+                    ArmOp::Label { name: end_label },
+                ]
+            }
 
             // Trap: unreachable should generate an undefined instruction
             Unreachable => vec![ArmOp::Udf { imm: 0 }],
 
-            // --- Unsupported operations: explicit error instead of silent NOP ---
-            BrTable { .. } => {
-                return Err(synth_core::Error::synthesis(
-                    "br_table not yet implemented in instruction selector",
-                ));
+            // br_table: emit a jump table via TBB/TBH or cascading branches
+            BrTable { targets, default } => {
+                // Emit a cascading compare-and-branch sequence
+                // index is in rn (from stack)
+                let mut instrs = Vec::new();
+                for (i, target) in targets.iter().enumerate() {
+                    // CMP rn, #i
+                    instrs.push(ArmOp::Cmp {
+                        rn,
+                        op2: Operand2::Imm(i as i32),
+                    });
+                    // BEQ to target label
+                    instrs.push(ArmOp::Bcc {
+                        cond: Condition::EQ,
+                        label: format!("br_table_target_{}", target),
+                    });
+                }
+                // Default: unconditional branch
+                instrs.push(ArmOp::B {
+                    label: format!("br_table_target_{}", default),
+                });
+                instrs
             }
             GlobalGet(_) | GlobalSet(_) => {
                 return Err(synth_core::Error::synthesis(
@@ -733,7 +805,8 @@ impl InstructionSelector {
                 vec![ArmOp::I32TruncF32U { rd, sm }]
             }
 
-            // F32 pseudo-ops with FPU — generate VFP sequences
+            // F32 rounding pseudo-ops — emit ArmOp variants, encoder expands to
+            // multi-instruction sequences using FPSCR rounding-mode manipulation
             F32Ceil if self.fpu.is_some() => {
                 let sd = self.alloc_vfp_reg();
                 let sm = self.alloc_vfp_reg();
@@ -754,6 +827,7 @@ impl InstructionSelector {
                 let sm = self.alloc_vfp_reg();
                 vec![ArmOp::F32Nearest { sd, sm }]
             }
+            // F32 min/max — emit ArmOp variants, encoder expands to VCMP + conditional VMOV
             F32Min if self.fpu.is_some() => {
                 let sd = self.alloc_vfp_reg();
                 let sn = self.alloc_vfp_reg();
@@ -766,6 +840,7 @@ impl InstructionSelector {
                 let sm = self.alloc_vfp_reg();
                 vec![ArmOp::F32Max { sd, sn, sm }]
             }
+            // F32 copysign — emit ArmOp variant, encoder expands to VABS + sign extraction
             F32Copysign if self.fpu.is_some() => {
                 let sd = self.alloc_vfp_reg();
                 let sn = self.alloc_vfp_reg();
@@ -779,14 +854,6 @@ impl InstructionSelector {
                 )));
             }
 
-            F32DemoteF64 if self.has_double_precision() => {
-                // VCVT.F32.F64 Sd, Dm — needs a dedicated ArmOp.
-                // For now, return an error until the ArmOp variant is added.
-                return Err(synth_core::Error::synthesis(format!(
-                    "F32DemoteF64 not yet supported on target {} (needs VCVT.F32.F64 encoding)",
-                    self.target_name
-                )));
-            }
             op @ F32DemoteF64 if self.fpu.is_some() => {
                 return Err(synth_core::Error::synthesis(format!(
                     "{op:?} not supported on single-precision target {}",
@@ -833,185 +900,8 @@ impl InstructionSelector {
                 )));
             }
 
-            // ===== F64 operations (double-precision FPU required) =====
-            F64Add if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Add { dd, dn, dm }]
-            }
-            F64Sub if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Sub { dd, dn, dm }]
-            }
-            F64Mul if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Mul { dd, dn, dm }]
-            }
-            F64Div if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Div { dd, dn, dm }]
-            }
-
-            F64Abs if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Abs { dd, dm }]
-            }
-            F64Neg if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Neg { dd, dm }]
-            }
-            F64Sqrt if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Sqrt { dd, dm }]
-            }
-            F64Ceil if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Ceil { dd, dm }]
-            }
-            F64Floor if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Floor { dd, dm }]
-            }
-            F64Trunc if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Trunc { dd, dm }]
-            }
-            F64Nearest if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Nearest { dd, dm }]
-            }
-            F64Min if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Min { dd, dn, dm }]
-            }
-            F64Max if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Max { dd, dn, dm }]
-            }
-            F64Copysign if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Copysign { dd, dn, dm }]
-            }
-
-            F64Eq if self.has_double_precision() => {
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Eq { rd, dn, dm }]
-            }
-            F64Ne if self.has_double_precision() => {
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Ne { rd, dn, dm }]
-            }
-            F64Lt if self.has_double_precision() => {
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Lt { rd, dn, dm }]
-            }
-            F64Le if self.has_double_precision() => {
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Le { rd, dn, dm }]
-            }
-            F64Gt if self.has_double_precision() => {
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Gt { rd, dn, dm }]
-            }
-            F64Ge if self.has_double_precision() => {
-                let dn = self.alloc_dreg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::F64Ge { rd, dn, dm }]
-            }
-
-            F64Const(val) if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                vec![ArmOp::F64Const { dd, value: *val }]
-            }
-
-            F64Load { offset, .. } if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let addr_reg = self.regs.alloc_reg();
-                vec![ArmOp::F64Load {
-                    dd,
-                    addr: MemAddr::reg_imm(Reg::R11, addr_reg, *offset as i32),
-                }]
-            }
-            F64Store { offset, .. } if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let addr_reg = self.regs.alloc_reg();
-                vec![ArmOp::F64Store {
-                    dd,
-                    addr: MemAddr::reg_imm(Reg::R11, addr_reg, *offset as i32),
-                }]
-            }
-
-            F64ConvertI32S if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                vec![ArmOp::F64ConvertI32S { dd, rm }]
-            }
-            F64ConvertI32U if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                vec![ArmOp::F64ConvertI32U { dd, rm }]
-            }
-            F64PromoteF32 if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let sm = self.alloc_vfp_reg();
-                vec![ArmOp::F64PromoteF32 { dd, sm }]
-            }
-
-            F64ReinterpretI64 if self.has_double_precision() => {
-                let dd = self.alloc_dreg();
-                let rmlo = self.regs.alloc_reg();
-                let rmhi = self.regs.alloc_reg();
-                vec![ArmOp::F64ReinterpretI64 { dd, rmlo, rmhi }]
-            }
-            I64ReinterpretF64 if self.has_double_precision() => {
-                let rdlo = self.regs.alloc_reg();
-                let rdhi = self.regs.alloc_reg();
-                let dm = self.alloc_dreg();
-                vec![ArmOp::I64ReinterpretF64 { rdlo, rdhi, dm }]
-            }
-
-            I32TruncF64S if self.has_double_precision() => {
-                let dm = self.alloc_dreg();
-                vec![ArmOp::I32TruncF64S { rd, dm }]
-            }
-            I32TruncF64U if self.has_double_precision() => {
-                let dm = self.alloc_dreg();
-                vec![ArmOp::I32TruncF64U { rd, dm }]
-            }
-
-            // Complex i64↔f64 conversions — require multi-step sequences
-            op @ (F64ConvertI64S | F64ConvertI64U | I64TruncF64S | I64TruncF64U)
-                if self.has_double_precision() =>
-            {
-                return Err(synth_core::Error::synthesis(format!(
-                    "{op:?} not supported (requires i64 register pairs on 32-bit ARM)"
-                )));
-            }
-
-            // F64 ops on non-double-precision targets
+            // F64 ops — always rejected (single-precision targets don't support F64,
+            // and no-FPU targets don't support any float)
             op @ (F64Add
             | F64Sub
             | F64Mul
@@ -1191,12 +1081,14 @@ impl InstructionSelector {
     /// Reset the selector state
     pub fn reset(&mut self) {
         self.regs.reset();
+        self.label_counter = 0;
     }
 
     /// Select ARM instructions using a stack-based approach with AAPCS calling convention
     ///
     /// This method properly tracks the WASM virtual stack and generates code that
-    /// uses r0-r3 for the first 4 parameters per AAPCS.
+    /// uses r0-r3 for the first 4 parameters per AAPCS. Handles WASM structured
+    /// control flow (block, loop, if/else, br, br_if, br_table, return, call).
     pub fn select_with_stack(
         &mut self,
         wasm_ops: &[WasmOp],
@@ -1209,6 +1101,15 @@ impl InstructionSelector {
         let mut stack: Vec<Reg> = Vec::new();
         // Next available register for temporaries (start after params)
         let mut next_temp = num_params.min(4) as u8;
+
+        // Control flow tracking
+        let mut cf = ControlFlowManager::new();
+        cf.enter_function();
+        // Stack of (label, is_loop) for branch target resolution
+        // For blocks: label is the end label; for loops: label is the start label
+        let mut block_labels: Vec<(String, bool)> = Vec::new();
+        // Stack of (else_label, end_label) for if/else blocks
+        let mut if_labels: Vec<(String, String)> = Vec::new();
 
         // Map of local index -> register
         let mut local_to_reg: std::collections::HashMap<u32, Reg> =
@@ -1692,6 +1593,411 @@ impl InstructionSelector {
                     // Store doesn't push anything to stack
                 }
 
+                // =========================================================
+                // Control flow operations
+                // =========================================================
+                Block => {
+                    let label = self.alloc_label("block_end");
+                    // Push block info so br can find the end label
+                    cf.enter_block(BlockType::Block);
+                    block_labels.push((label.clone(), false)); // (end_label, is_loop)
+                    // No ARM code emitted at block entry (label at end)
+                }
+
+                Loop => {
+                    let label = self.alloc_label("loop_start");
+                    cf.enter_block(BlockType::Loop);
+                    block_labels.push((label.clone(), true)); // (start_label, is_loop)
+                    // Emit loop start label
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Label { name: label },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                }
+
+                If => {
+                    // Pop condition from stack
+                    let cond_reg = stack.pop().unwrap_or(Reg::R0);
+                    let else_label = self.alloc_label("else");
+                    let end_label = self.alloc_label("if_end");
+
+                    cf.enter_block(BlockType::If);
+                    // Store both labels: else_label for the if-branch, end_label for the end
+                    if_labels.push((else_label.clone(), end_label.clone()));
+                    block_labels.push((end_label, false));
+
+                    // CMP cond_reg, #0
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Cmp {
+                            rn: cond_reg,
+                            op2: Operand2::Imm(0),
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+
+                    // BEQ else_label (skip then-block if condition is zero)
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Bcc {
+                            cond: Condition::EQ,
+                            label: else_label,
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                }
+
+                Else => {
+                    // End of then-block: jump to end of if
+                    if let Some((_, end_label)) = if_labels.last() {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::B {
+                                label: end_label.clone(),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
+                    // Emit else label
+                    if let Some((else_label, _)) = if_labels.last() {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Label {
+                                name: else_label.clone(),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
+                }
+
+                End => {
+                    cf.exit_block();
+                    // If this closes an if-block, emit the end label
+                    // and possibly the else label (if no else was present)
+                    if let Some((else_label, end_label)) = if_labels.last().cloned() {
+                        // Check if the else label was already emitted
+                        // by looking for it in the instructions
+                        let else_emitted = instructions
+                            .iter()
+                            .any(|i| matches!(&i.op, ArmOp::Label { name } if *name == else_label));
+                        if !else_emitted {
+                            // No else clause: emit else label (same as end)
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Label { name: else_label },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Label { name: end_label },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        if_labels.pop();
+                        block_labels.pop();
+                    } else if let Some((label, is_loop)) = block_labels.pop()
+                        && !is_loop
+                    {
+                        // Block end: emit end label
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Label { name: label },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        // Loop end: no label at end (label is at start)
+                    }
+                    // else: function-level end, nothing to emit
+                }
+
+                Br(depth) => {
+                    // Branch to the Nth enclosing block/loop
+                    // block_labels + if_labels are combined into the block_labels stack
+                    let target_idx = block_labels.len().saturating_sub(1 + *depth as usize);
+                    if target_idx < block_labels.len() {
+                        let (label, is_loop) = &block_labels[target_idx];
+                        if *is_loop {
+                            // Loop: branch back to start
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::B {
+                                    label: label.clone(),
+                                },
+                                source_line: Some(idx),
+                            });
+                        } else {
+                            // Block: branch forward to end
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::B {
+                                    label: label.clone(),
+                                },
+                                source_line: Some(idx),
+                            });
+                        }
+                    } else {
+                        // Depth exceeds stack — branch to function return
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Bx { rm: Reg::LR },
+                            source_line: Some(idx),
+                        });
+                    }
+                    cf.add_instruction();
+                }
+
+                BrIf(depth) => {
+                    // Pop condition from stack
+                    let cond_reg = stack.pop().unwrap_or(Reg::R0);
+
+                    // CMP cond_reg, #0
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Cmp {
+                            rn: cond_reg,
+                            op2: Operand2::Imm(0),
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+
+                    // BNE target_label (branch if non-zero)
+                    let target_idx = block_labels.len().saturating_sub(1 + *depth as usize);
+                    if target_idx < block_labels.len() {
+                        let (label, _) = &block_labels[target_idx];
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Bcc {
+                                cond: Condition::NE,
+                                label: label.clone(),
+                            },
+                            source_line: Some(idx),
+                        });
+                    }
+                    cf.add_instruction();
+                }
+
+                BrTable { targets, default } => {
+                    // Pop index from stack
+                    let index_reg = stack.pop().unwrap_or(Reg::R0);
+
+                    // Emit cascading CMP + BEQ for each target
+                    for (i, target) in targets.iter().enumerate() {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Cmp {
+                                rn: index_reg,
+                                op2: Operand2::Imm(i as i32),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+
+                        let target_idx = block_labels.len().saturating_sub(1 + *target as usize);
+                        if target_idx < block_labels.len() {
+                            let (label, _) = &block_labels[target_idx];
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Bcc {
+                                    cond: Condition::EQ,
+                                    label: label.clone(),
+                                },
+                                source_line: Some(idx),
+                            });
+                        }
+                        cf.add_instruction();
+                    }
+
+                    // Default branch
+                    let default_idx = block_labels.len().saturating_sub(1 + *default as usize);
+                    if default_idx < block_labels.len() {
+                        let (label, _) = &block_labels[default_idx];
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::B {
+                                label: label.clone(),
+                            },
+                            source_line: Some(idx),
+                        });
+                    }
+                    cf.add_instruction();
+                }
+
+                Return => {
+                    // Move top-of-stack to R0 for return value (AAPCS)
+                    if let Some(val) = stack.last()
+                        && *val != Reg::R0
+                    {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Mov {
+                                rd: Reg::R0,
+                                op2: Operand2::Reg(*val),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Bx { rm: Reg::LR },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                }
+
+                Call(func_idx) => {
+                    if *func_idx < self.num_imports {
+                        // Import call — dispatch through Meld runtime
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Mov {
+                                rd: Reg::R0,
+                                op2: Operand2::Imm(*func_idx as i32),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Bl {
+                                label: "__meld_dispatch_import".to_string(),
+                            },
+                            source_line: Some(idx),
+                        });
+                    } else {
+                        // Local function call
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Bl {
+                                label: format!("func_{}", func_idx),
+                            },
+                            source_line: Some(idx),
+                        });
+                    }
+                    cf.add_instruction();
+                    // Push R0 as return value
+                    stack.push(Reg::R0);
+                }
+
+                CallIndirect { type_index, .. } => {
+                    let table_idx_reg = stack.pop().unwrap_or(Reg::R0);
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::CallIndirect {
+                            rd: Reg::R0,
+                            type_idx: *type_index,
+                            table_index_reg: table_idx_reg,
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(Reg::R0);
+                }
+
+                Unreachable => {
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Udf { imm: 0 },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                }
+
+                Nop => {
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Nop,
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                }
+
+                Drop => {
+                    // Just pop a value from the stack and discard it
+                    stack.pop();
+                }
+
+                Select => {
+                    // Select: pop condition, val2, val1; push val1 if cond != 0, else val2
+                    let cond_reg = stack.pop().unwrap_or(Reg::R2);
+                    let val2 = stack.pop().unwrap_or(Reg::R1);
+                    let val1 = stack.pop().unwrap_or(Reg::R0);
+                    let dst = index_to_reg(next_temp);
+                    next_temp = (next_temp + 1) % 13;
+
+                    // CMP cond, #0
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Cmp {
+                            rn: cond_reg,
+                            op2: Operand2::Imm(0),
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+
+                    // MOV dst, val1 (default: pick val1)
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Mov {
+                            rd: dst,
+                            op2: Operand2::Reg(val1),
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+
+                    // If cond == 0, overwrite with val2 using IT EQ + MOV
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::SelectMove {
+                            rd: dst,
+                            rm: val2,
+                            cond: Condition::EQ,
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                LocalSet(local_idx) => {
+                    let val = stack.pop().unwrap_or(Reg::R0);
+                    if *local_idx < num_params.min(4) {
+                        let target = index_to_reg(*local_idx as u8);
+                        if val != target {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Mov {
+                                    rd: target,
+                                    op2: Operand2::Reg(val),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                        local_to_reg.insert(*local_idx, target);
+                    } else {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: val,
+                                addr: MemAddr::imm(Reg::SP, (*local_idx as i32 - 4) * 4),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
+                }
+
+                LocalTee(local_idx) => {
+                    // Like local.set but keeps value on stack
+                    let val = stack.last().copied().unwrap_or(Reg::R0);
+                    if *local_idx < num_params.min(4) {
+                        let target = index_to_reg(*local_idx as u8);
+                        if val != target {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Mov {
+                                    rd: target,
+                                    op2: Operand2::Reg(val),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                        local_to_reg.insert(*local_idx, target);
+                    } else {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: val,
+                                addr: MemAddr::imm(Reg::SP, (*local_idx as i32 - 4) * 4),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
+                }
+
                 // For other operations, fall back to default behavior
                 _ => {
                     let arm_ops = self.select_default(op)?;
@@ -1700,6 +2006,7 @@ impl InstructionSelector {
                             op: arm_op,
                             source_line: Some(idx),
                         });
+                        cf.add_instruction();
                     }
                 }
             }
@@ -2193,5 +2500,518 @@ mod tests {
             ArmOp::Str { .. } => {}
             other => panic!("Expected Str instruction, got {:?}", other),
         }
+    }
+
+    // =========================================================================
+    // Control flow tests
+    // =========================================================================
+
+    #[test]
+    fn test_control_flow_simple_block() {
+        // block ... end — should emit a label at the end
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::Block, WasmOp::I32Const(42), WasmOp::End];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should contain a Label instruction for block end
+        let has_label = arm_instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Label { .. }));
+        assert!(has_label, "Block should emit an end label");
+
+        // Should contain a MOV for the constant
+        let has_mov = arm_instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Mov { .. }));
+        assert!(has_mov, "Should emit MOV for i32.const");
+    }
+
+    #[test]
+    fn test_control_flow_loop_with_br() {
+        // loop ... br 0 ... end — should emit a label at loop start and branch back
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::Loop,
+            WasmOp::I32Const(1),
+            WasmOp::Br(0), // Branch back to loop start
+            WasmOp::End,
+        ];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should contain a Label for loop start
+        let label_instrs: Vec<_> = arm_instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Label { name } if name.contains("loop_start")))
+            .collect();
+        assert_eq!(
+            label_instrs.len(),
+            1,
+            "Should have exactly one loop_start label"
+        );
+
+        // Should contain a B (branch) instruction targeting the loop label
+        let has_branch = arm_instrs.iter().any(|i| matches!(&i.op, ArmOp::B { .. }));
+        assert!(has_branch, "Loop with br should emit a B instruction");
+    }
+
+    #[test]
+    fn test_control_flow_if_else() {
+        // if ... else ... end — conditional execution
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(1),  // Push condition
+            WasmOp::If,           // Start if block
+            WasmOp::I32Const(10), // Then body
+            WasmOp::Else,         // Else
+            WasmOp::I32Const(20), // Else body
+            WasmOp::End,          // End if
+        ];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should contain a CMP (condition test)
+        let has_cmp = arm_instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Cmp {
+                    op2: Operand2::Imm(0),
+                    ..
+                }
+            )
+        });
+        assert!(has_cmp, "If should emit CMP for condition check");
+
+        // Should contain a conditional branch (BEQ to else)
+        let has_beq = arm_instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Bcc {
+                    cond: Condition::EQ,
+                    ..
+                }
+            )
+        });
+        assert!(has_beq, "If should emit BEQ to else label");
+
+        // Should contain an unconditional branch (B to end, at end of then-block)
+        let has_b = arm_instrs.iter().any(|i| matches!(&i.op, ArmOp::B { .. }));
+        assert!(has_b, "Else should emit B to end label");
+
+        // Should contain labels for else and end
+        let labels: Vec<_> = arm_instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Label { .. }))
+            .collect();
+        assert!(
+            labels.len() >= 2,
+            "Should have at least else and end labels, got {}",
+            labels.len()
+        );
+    }
+
+    #[test]
+    fn test_control_flow_if_without_else() {
+        // if ... end — no else clause
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(1),  // Push condition
+            WasmOp::If,           // Start if block
+            WasmOp::I32Const(10), // Then body
+            WasmOp::End,          // End if (no else)
+        ];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should still emit else label (same as end) and end label
+        let labels: Vec<_> = arm_instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Label { .. }))
+            .collect();
+        assert!(
+            labels.len() >= 2,
+            "If without else should emit both else (=end) and end labels"
+        );
+    }
+
+    #[test]
+    fn test_control_flow_br_if() {
+        // br_if — conditional branch
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::Block,
+            WasmOp::I32Const(1),  // Push condition
+            WasmOp::BrIf(0),      // Conditional branch to block end
+            WasmOp::I32Const(42), // Code after br_if (only reached if condition was 0)
+            WasmOp::End,
+        ];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should contain CMP and BNE
+        let has_cmp = arm_instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Cmp {
+                    op2: Operand2::Imm(0),
+                    ..
+                }
+            )
+        });
+        assert!(has_cmp, "br_if should emit CMP");
+
+        let has_bne = arm_instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Bcc {
+                    cond: Condition::NE,
+                    ..
+                }
+            )
+        });
+        assert!(has_bne, "br_if should emit BNE (branch if non-zero)");
+    }
+
+    #[test]
+    fn test_control_flow_nested_blocks() {
+        // Nested blocks with br to outer block
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::Block,        // Outer block (depth 1 from inner)
+            WasmOp::Block,        // Inner block (depth 0)
+            WasmOp::Br(1),        // Branch to outer block end
+            WasmOp::End,          // End inner
+            WasmOp::I32Const(99), // This is skipped by br 1
+            WasmOp::End,          // End outer
+        ];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // The br(1) should target the outer block's end label
+        let branch_instrs: Vec<_> = arm_instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::B { .. }))
+            .collect();
+        assert!(
+            !branch_instrs.is_empty(),
+            "br(1) should emit a B instruction targeting outer block"
+        );
+    }
+
+    #[test]
+    fn test_control_flow_call() {
+        // Call a local function
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::Call(5)];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        let has_bl = arm_instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Bl { label } if label == "func_5"));
+        assert!(has_bl, "Call(5) should emit BL func_5");
+    }
+
+    #[test]
+    fn test_control_flow_call_import() {
+        // Call an imported function via Meld dispatch
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_num_imports(3);
+
+        let wasm_ops = vec![WasmOp::Call(1)]; // Import index 1 (< 3)
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should emit MOV R0, #1 (import index) then BL __meld_dispatch_import
+        let has_mov = arm_instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Mov {
+                    rd: Reg::R0,
+                    op2: Operand2::Imm(1)
+                }
+            )
+        });
+        assert!(has_mov, "Import call should set R0 to import index");
+
+        let has_bl = arm_instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Bl { label } if label == "__meld_dispatch_import"));
+        assert!(has_bl, "Import call should BL to __meld_dispatch_import");
+    }
+
+    #[test]
+    fn test_control_flow_return() {
+        // Return from function
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I32Const(42), WasmOp::Return];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should contain BX LR for the return
+        let bx_count = arm_instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Bx { rm: Reg::LR }))
+            .count();
+        assert!(bx_count >= 1, "Return should emit BX LR");
+    }
+
+    #[test]
+    fn test_control_flow_unreachable() {
+        // Unreachable trap
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::Unreachable];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        let has_udf = arm_instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Udf { imm: 0 }));
+        assert!(has_udf, "Unreachable should emit UDF");
+    }
+
+    #[test]
+    fn test_control_flow_nop() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::Nop];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        let has_nop = arm_instrs.iter().any(|i| matches!(&i.op, ArmOp::Nop));
+        assert!(has_nop, "Nop should emit NOP");
+    }
+
+    #[test]
+    fn test_control_flow_drop() {
+        // Drop should pop from virtual stack without emitting code
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I32Const(42), WasmOp::Drop, WasmOp::I32Const(10)];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should emit MOVs for the consts but no instruction for Drop
+        let mov_count = arm_instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Mov { .. }))
+            .count();
+        assert_eq!(mov_count, 2, "Should have two MOVs for the two consts");
+    }
+
+    #[test]
+    fn test_control_flow_select() {
+        // Select: pick between two values based on condition
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(10), // val1
+            WasmOp::I32Const(20), // val2
+            WasmOp::I32Const(1),  // condition
+            WasmOp::Select,
+        ];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should contain CMP for condition check
+        let has_cmp = arm_instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Cmp {
+                    op2: Operand2::Imm(0),
+                    ..
+                }
+            )
+        });
+        assert!(has_cmp, "Select should emit CMP for condition");
+
+        // Should contain SelectMove for conditional assignment
+        let has_select_move = arm_instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::SelectMove {
+                    cond: Condition::EQ,
+                    ..
+                }
+            )
+        });
+        assert!(has_select_move, "Select should emit SelectMove");
+    }
+
+    #[test]
+    fn test_control_flow_br_table() {
+        // br_table — indexed branch
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::Block,       // Target for case 0 (depth 0)
+            WasmOp::Block,       // Target for case 1 (depth 0)
+            WasmOp::I32Const(0), // index
+            WasmOp::BrTable {
+                targets: vec![1, 0], // case 0 -> depth 1, case 1 -> depth 0
+                default: 1,          // default -> depth 1
+            },
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should contain multiple CMP instructions (one per target)
+        let cmp_count = arm_instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Cmp { .. }))
+            .count();
+        assert!(
+            cmp_count >= 2,
+            "br_table should emit CMP for each target, got {}",
+            cmp_count
+        );
+
+        // Should contain conditional branches (BEQ)
+        let beq_count = arm_instrs
+            .iter()
+            .filter(|i| {
+                matches!(
+                    &i.op,
+                    ArmOp::Bcc {
+                        cond: Condition::EQ,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert!(
+            beq_count >= 2,
+            "br_table should emit BEQ for each target, got {}",
+            beq_count
+        );
+
+        // Should contain a default unconditional branch (B)
+        let has_default_b = arm_instrs.iter().any(|i| matches!(&i.op, ArmOp::B { .. }));
+        assert!(has_default_b, "br_table should emit B for default target");
+    }
+
+    #[test]
+    fn test_control_flow_local_set_get() {
+        // local.set and local.get round-trip
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(42),
+            WasmOp::LocalSet(0), // Set local 0 (param r0)
+            WasmOp::LocalGet(0), // Get local 0
+        ];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // Should contain instructions (MOV for const, MOV for set, then get is register reuse)
+        assert!(
+            !arm_instrs.is_empty(),
+            "local.set/get sequence should emit instructions"
+        );
+    }
+
+    #[test]
+    fn test_branchable_instruction_trait() {
+        // Test the BranchableInstruction trait implementation
+        let mut instr = ArmInstruction {
+            op: ArmOp::B {
+                label: "target".to_string(),
+            },
+            source_line: Some(0),
+        };
+
+        assert!(instr.is_branch());
+        instr.set_branch_offset(10);
+        assert_eq!(instr.op, ArmOp::BOffset { offset: 10 });
+
+        // Test conditional branch
+        let mut cond_instr = ArmInstruction {
+            op: ArmOp::Bcc {
+                cond: Condition::EQ,
+                label: "target".to_string(),
+            },
+            source_line: Some(0),
+        };
+
+        assert!(cond_instr.is_branch());
+        cond_instr.set_branch_offset(5);
+        assert_eq!(
+            cond_instr.op,
+            ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: 5,
+            }
+        );
+    }
+
+    #[test]
+    fn test_label_emits_no_code() {
+        // Verify that Label pseudo-instruction doesn't produce any encoding
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::Block, WasmOp::End];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Labels should be present in instructions
+        let label_count = arm_instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Label { .. }))
+            .count();
+        assert!(
+            label_count >= 1,
+            "Block/end should produce at least one label"
+        );
+    }
+
+    #[test]
+    fn test_loop_backward_branch_label() {
+        // Verify loop emits label at start and br(0) branches back to it
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::Loop,
+            WasmOp::Br(0), // Back to loop start
+            WasmOp::End,
+        ];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Get the loop start label name
+        let loop_label = arm_instrs.iter().find_map(|i| {
+            if let ArmOp::Label { name } = &i.op
+                && name.contains("loop_start")
+            {
+                return Some(name.clone());
+            }
+            None
+        });
+        assert!(loop_label.is_some(), "Loop should emit loop_start label");
+        let loop_label = loop_label.unwrap();
+
+        // The branch should target the same label
+        let branch_target = arm_instrs.iter().find_map(|i| {
+            if let ArmOp::B { label } = &i.op {
+                return Some(label.clone());
+            }
+            None
+        });
+        assert_eq!(
+            branch_target.as_deref(),
+            Some(loop_label.as_str()),
+            "br(0) in loop should branch back to loop_start label"
+        );
     }
 }
