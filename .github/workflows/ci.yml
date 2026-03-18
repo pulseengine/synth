@@ -114,7 +114,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-rivet-
       - name: Install rivet
-        run: cargo install --git https://github.com/pulseengine/rivet --branch main rivet-cli
+        run: cargo install --force --git https://github.com/pulseengine/rivet --branch main rivet-cli
       - name: Validate artifacts
         continue-on-error: true
         run: |

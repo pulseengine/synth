@@ -248,6 +248,12 @@ pub enum ArmOp {
         addr: MemAddr,
     },
 
+    /// Label pseudo-instruction — marks a branch target position.
+    /// Emits no machine code; used for branch offset resolution.
+    Label {
+        name: String,
+    },
+
     // Branch
     B {
         label: String,
@@ -270,6 +276,11 @@ pub enum ArmOp {
     },
     /// Branch if Lower (unsigned <) - complementary to BHS
     Blo {
+        label: String,
+    },
+    /// Conditional branch to label (generic)
+    Bcc {
+        cond: Condition,
         label: String,
     },
     Bl {
