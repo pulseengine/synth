@@ -627,57 +627,453 @@ impl InstructionSelector {
                 });
                 instrs
             }
-            GlobalGet(_) | GlobalSet(_) => {
-                return Err(synth_core::Error::synthesis(
-                    "global.get/global.set not yet implemented",
-                ));
+            GlobalGet(index) => {
+                // WASM globals are stored in a globals table in memory.
+                // R9 is the dedicated globals base register (set up by runtime startup).
+                // Each i32 global occupies 4 bytes: globals_base + index * 4.
+                vec![ArmOp::Ldr {
+                    rd,
+                    addr: MemAddr::imm(Reg::R9, (*index as i32) * 4),
+                }]
+            }
+            GlobalSet(index) => {
+                // Store value from source register to globals_base + index * 4.
+                // R9 is the dedicated globals base register.
+                vec![ArmOp::Str {
+                    rd,
+                    addr: MemAddr::imm(Reg::R9, (*index as i32) * 4),
+                }]
             }
             Select => {
-                return Err(synth_core::Error::synthesis("select not yet implemented"));
+                // WASM select: pops condition, val2, val1 from stack;
+                // pushes val1 if condition != 0, else val2.
+                // In select_default (non-stack mode), we emit:
+                //   CMP rcond, #0
+                //   MOV rd, rval1     (default: pick val1)
+                //   IT EQ; MOVEQ rd, rval2  (override if cond == 0)
+                let rcond = self.regs.alloc_reg();
+                vec![
+                    ArmOp::Cmp {
+                        rn: rcond,
+                        op2: Operand2::Imm(0),
+                    },
+                    ArmOp::Mov {
+                        rd,
+                        op2: Operand2::Reg(rn),
+                    },
+                    ArmOp::SelectMove {
+                        rd,
+                        rm,
+                        cond: Condition::EQ,
+                    },
+                ]
             }
 
-            // i64 operations — not supported on 32-bit ARM without register pairs
-            op @ (I64Add
-            | I64Sub
-            | I64Mul
-            | I64DivS
-            | I64DivU
-            | I64RemS
-            | I64RemU
-            | I64And
-            | I64Or
-            | I64Xor
-            | I64Shl
-            | I64ShrS
-            | I64ShrU
-            | I64Rotl
-            | I64Rotr
-            | I64Clz
-            | I64Ctz
-            | I64Popcnt
-            | I64Eqz
-            | I64Eq
-            | I64Ne
-            | I64LtS
-            | I64LtU
-            | I64LeS
-            | I64LeU
-            | I64GtS
-            | I64GtU
-            | I64GeS
-            | I64GeU
-            | I64Const(_)
-            | I64Load { .. }
-            | I64Store { .. }
-            | I64ExtendI32S
-            | I64ExtendI32U
-            | I32WrapI64
-            | I64Extend8S
-            | I64Extend16S
-            | I64Extend32S) => {
-                return Err(synth_core::Error::synthesis(format!(
-                    "i64 operation not supported (requires register pairs on 32-bit ARM): {op:?}"
-                )));
+            // ===== i64 operations using register pairs on 32-bit ARM =====
+            // Convention: i64 operand 1 in (R0,R1), operand 2 in (R2,R3), result in (R0,R1)
+            I64Const(val) => {
+                vec![ArmOp::I64Const {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    value: *val,
+                }]
+            }
+
+            I64ExtendI32S => {
+                vec![ArmOp::I64ExtendI32S {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    rn: Reg::R0,
+                }]
+            }
+
+            I64ExtendI32U => {
+                vec![ArmOp::I64ExtendI32U {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    rn: Reg::R0,
+                }]
+            }
+
+            I32WrapI64 => {
+                // Just take the low 32 bits (R0) — effectively a no-op if result is in R0
+                vec![ArmOp::I32WrapI64 {
+                    rd: Reg::R0,
+                    rnlo: Reg::R0,
+                }]
+            }
+
+            I64Extend8S => {
+                vec![ArmOp::I64Extend8S {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    rnlo: Reg::R0,
+                }]
+            }
+
+            I64Extend16S => {
+                vec![ArmOp::I64Extend16S {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    rnlo: Reg::R0,
+                }]
+            }
+
+            I64Extend32S => {
+                vec![ArmOp::I64Extend32S {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    rnlo: Reg::R0,
+                }]
+            }
+
+            // i64 arithmetic: ADDS/ADC for add, SUBS/SBC for sub
+            I64Add => {
+                vec![
+                    ArmOp::Adds {
+                        rd: Reg::R0,
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R2),
+                    },
+                    ArmOp::Adc {
+                        rd: Reg::R1,
+                        rn: Reg::R1,
+                        op2: Operand2::Reg(Reg::R3),
+                    },
+                ]
+            }
+
+            I64Sub => {
+                vec![
+                    ArmOp::Subs {
+                        rd: Reg::R0,
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R2),
+                    },
+                    ArmOp::Sbc {
+                        rd: Reg::R1,
+                        rn: Reg::R1,
+                        op2: Operand2::Reg(Reg::R3),
+                    },
+                ]
+            }
+
+            // i64 bitwise: operate on each half independently
+            I64And => {
+                vec![
+                    ArmOp::And {
+                        rd: Reg::R0,
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R2),
+                    },
+                    ArmOp::And {
+                        rd: Reg::R1,
+                        rn: Reg::R1,
+                        op2: Operand2::Reg(Reg::R3),
+                    },
+                ]
+            }
+
+            I64Or => {
+                vec![
+                    ArmOp::Orr {
+                        rd: Reg::R0,
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R2),
+                    },
+                    ArmOp::Orr {
+                        rd: Reg::R1,
+                        rn: Reg::R1,
+                        op2: Operand2::Reg(Reg::R3),
+                    },
+                ]
+            }
+
+            I64Xor => {
+                vec![
+                    ArmOp::Eor {
+                        rd: Reg::R0,
+                        rn: Reg::R0,
+                        op2: Operand2::Reg(Reg::R2),
+                    },
+                    ArmOp::Eor {
+                        rd: Reg::R1,
+                        rn: Reg::R1,
+                        op2: Operand2::Reg(Reg::R3),
+                    },
+                ]
+            }
+
+            // i64 comparisons: compare register pairs, result 0/1 in R0
+            I64Eqz => {
+                vec![ArmOp::I64SetCondZ {
+                    rd: Reg::R0,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                }]
+            }
+
+            I64Eq => {
+                vec![ArmOp::I64SetCond {
+                    rd: Reg::R0,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                    cond: Condition::EQ,
+                }]
+            }
+
+            I64Ne => {
+                vec![ArmOp::I64SetCond {
+                    rd: Reg::R0,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                    cond: Condition::NE,
+                }]
+            }
+
+            I64LtS => {
+                vec![ArmOp::I64SetCond {
+                    rd: Reg::R0,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                    cond: Condition::LT,
+                }]
+            }
+
+            I64LtU => {
+                vec![ArmOp::I64SetCond {
+                    rd: Reg::R0,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                    cond: Condition::LO,
+                }]
+            }
+
+            I64LeS => {
+                vec![ArmOp::I64SetCond {
+                    rd: Reg::R0,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                    cond: Condition::LE,
+                }]
+            }
+
+            I64LeU => {
+                vec![ArmOp::I64SetCond {
+                    rd: Reg::R0,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                    cond: Condition::LS,
+                }]
+            }
+
+            I64GtS => {
+                vec![ArmOp::I64SetCond {
+                    rd: Reg::R0,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                    cond: Condition::GT,
+                }]
+            }
+
+            I64GtU => {
+                vec![ArmOp::I64SetCond {
+                    rd: Reg::R0,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                    cond: Condition::HI,
+                }]
+            }
+
+            I64GeS => {
+                vec![ArmOp::I64SetCond {
+                    rd: Reg::R0,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                    cond: Condition::GE,
+                }]
+            }
+
+            I64GeU => {
+                vec![ArmOp::I64SetCond {
+                    rd: Reg::R0,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                    cond: Condition::HS,
+                }]
+            }
+
+            // i64 multiply: UMULL + MLA cross products
+            I64Mul => {
+                vec![ArmOp::I64Mul {
+                    rd_lo: Reg::R0,
+                    rd_hi: Reg::R1,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                }]
+            }
+
+            // i64 shifts: multi-instruction funnel shifts
+            I64Shl => {
+                vec![ArmOp::I64Shl {
+                    rd_lo: Reg::R0,
+                    rd_hi: Reg::R1,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                }]
+            }
+
+            I64ShrU => {
+                vec![ArmOp::I64ShrU {
+                    rd_lo: Reg::R0,
+                    rd_hi: Reg::R1,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                }]
+            }
+
+            I64ShrS => {
+                vec![ArmOp::I64ShrS {
+                    rd_lo: Reg::R0,
+                    rd_hi: Reg::R1,
+                    rn_lo: Reg::R0,
+                    rn_hi: Reg::R1,
+                    rm_lo: Reg::R2,
+                    rm_hi: Reg::R3,
+                }]
+            }
+
+            I64Rotl => {
+                vec![ArmOp::I64Rotl {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                    shift: Reg::R2,
+                }]
+            }
+
+            I64Rotr => {
+                vec![ArmOp::I64Rotr {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                    shift: Reg::R2,
+                }]
+            }
+
+            // i64 bit manipulation
+            I64Clz => {
+                vec![ArmOp::I64Clz {
+                    rd: Reg::R0,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                }]
+            }
+
+            I64Ctz => {
+                vec![ArmOp::I64Ctz {
+                    rd: Reg::R0,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                }]
+            }
+
+            I64Popcnt => {
+                vec![ArmOp::I64Popcnt {
+                    rd: Reg::R0,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                }]
+            }
+
+            // i64 division/remainder
+            I64DivS => {
+                vec![ArmOp::I64DivS {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                    rmlo: Reg::R2,
+                    rmhi: Reg::R3,
+                }]
+            }
+
+            I64DivU => {
+                vec![ArmOp::I64DivU {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                    rmlo: Reg::R2,
+                    rmhi: Reg::R3,
+                }]
+            }
+
+            I64RemS => {
+                vec![ArmOp::I64RemS {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                    rmlo: Reg::R2,
+                    rmhi: Reg::R3,
+                }]
+            }
+
+            I64RemU => {
+                vec![ArmOp::I64RemU {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                    rmlo: Reg::R2,
+                    rmhi: Reg::R3,
+                }]
+            }
+
+            // i64 memory operations
+            I64Load { offset, .. } => {
+                vec![ArmOp::I64Ldr {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    addr: MemAddr::reg_imm(Reg::R11, rn, *offset as i32),
+                }]
+            }
+
+            I64Store { offset, .. } => {
+                vec![ArmOp::I64Str {
+                    rdlo: Reg::R0,
+                    rdhi: Reg::R1,
+                    addr: MemAddr::reg_imm(Reg::R11, rn, *offset as i32),
+                }]
             }
 
             // ===== F32 operations =====
@@ -1996,6 +2392,35 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     }
+                }
+
+                GlobalGet(global_idx) => {
+                    // Load global value from globals table (R9 = globals base).
+                    // Each i32 global occupies 4 bytes at offset index * 4.
+                    let dst = index_to_reg(next_temp);
+                    next_temp = (next_temp + 1) % 13;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Ldr {
+                            rd: dst,
+                            addr: MemAddr::imm(Reg::R9, (*global_idx as i32) * 4),
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                GlobalSet(global_idx) => {
+                    // Pop value from stack and store to globals table (R9 = globals base).
+                    let val = stack.pop().unwrap_or(Reg::R0);
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Str {
+                            rd: val,
+                            addr: MemAddr::imm(Reg::R9, (*global_idx as i32) * 4),
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
                 }
 
                 // For other operations, fall back to default behavior
@@ -4140,5 +4565,956 @@ mod tests {
             "Simple loop+br should produce <= 5 ARM instructions, got {}",
             instrs.len()
         );
+    }
+
+    // =========================================================================
+    // GlobalGet / GlobalSet tests
+    // =========================================================================
+
+    #[test]
+    fn test_global_get_select_default() {
+        // global.get should generate LDR from globals base (R9)
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::GlobalGet(0)];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::Ldr { rd: _, addr } => {
+                assert_eq!(addr.base, Reg::R9, "Globals base should be R9");
+                assert_eq!(addr.offset, 0, "Global 0 should have offset 0");
+                assert!(addr.offset_reg.is_none(), "No offset register");
+            }
+            other => panic!("Expected Ldr for global.get, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_global_get_nonzero_index_select_default() {
+        // global.get with index 3 should use offset 12 (3 * 4)
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::GlobalGet(3)];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::Ldr { rd: _, addr } => {
+                assert_eq!(addr.base, Reg::R9);
+                assert_eq!(addr.offset, 12, "Global 3 should have offset 3*4=12");
+            }
+            other => panic!("Expected Ldr for global.get(3), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_global_set_select_default() {
+        // global.set should generate STR to globals base (R9)
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::GlobalSet(0)];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::Str { rd: _, addr } => {
+                assert_eq!(addr.base, Reg::R9, "Globals base should be R9");
+                assert_eq!(addr.offset, 0, "Global 0 should have offset 0");
+            }
+            other => panic!("Expected Str for global.set, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_global_set_nonzero_index_select_default() {
+        // global.set with index 5 should use offset 20 (5 * 4)
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::GlobalSet(5)];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::Str { rd: _, addr } => {
+                assert_eq!(addr.base, Reg::R9);
+                assert_eq!(addr.offset, 20, "Global 5 should have offset 5*4=20");
+            }
+            other => panic!("Expected Str for global.set(5), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_global_get_stack_mode() {
+        // global.get in stack mode should push result register onto virtual stack
+        let mut selector = fresh_selector();
+
+        let wasm_ops = vec![
+            WasmOp::GlobalGet(2), // Load global 2
+            WasmOp::I32Const(1),
+            WasmOp::I32Add, // Add 1 to global value
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should have LDR from R9+8 (global index 2, offset 2*4=8)
+        let has_global_ldr = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Ldr { addr, .. }
+                if addr.base == Reg::R9 && addr.offset == 8
+            )
+        });
+        assert!(
+            has_global_ldr,
+            "global.get(2) should emit LDR from [R9, #8]"
+        );
+
+        // Should have ADD (from the i32.add)
+        let has_add = instrs.iter().any(|i| matches!(&i.op, ArmOp::Add { .. }));
+        assert!(has_add, "Should emit ADD for i32.add after global.get");
+    }
+
+    #[test]
+    fn test_global_set_stack_mode() {
+        // global.set in stack mode should pop value and store to globals table
+        let mut selector = fresh_selector();
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(42), // Push value
+            WasmOp::GlobalSet(1), // Store to global 1
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should have STR to R9+4 (global index 1, offset 1*4=4)
+        let has_global_str = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Str { addr, .. }
+                if addr.base == Reg::R9 && addr.offset == 4
+            )
+        });
+        assert!(has_global_str, "global.set(1) should emit STR to [R9, #4]");
+    }
+
+    #[test]
+    fn test_global_get_set_roundtrip() {
+        // global.get + modify + global.set should work correctly
+        let mut selector = fresh_selector();
+
+        let wasm_ops = vec![
+            WasmOp::GlobalGet(0), // Load global 0
+            WasmOp::I32Const(10), // Push 10
+            WasmOp::I32Add,       // global_0 + 10
+            WasmOp::GlobalSet(0), // Store back to global 0
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should have LDR from R9 (global.get 0)
+        let has_load = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Ldr { addr, .. }
+                if addr.base == Reg::R9 && addr.offset == 0
+            )
+        });
+        assert!(has_load, "Should have LDR from [R9, #0] for global.get(0)");
+
+        // Should have STR to R9 (global.set 0)
+        let has_store = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Str { addr, .. }
+                if addr.base == Reg::R9 && addr.offset == 0
+            )
+        });
+        assert!(has_store, "Should have STR to [R9, #0] for global.set(0)");
+
+        // Should have ADD for the increment
+        let has_add = instrs.iter().any(|i| matches!(&i.op, ArmOp::Add { .. }));
+        assert!(has_add, "Should have ADD for i32.add");
+    }
+
+    // =========================================================================
+    // Select instruction tests
+    // =========================================================================
+
+    #[test]
+    fn test_select_default_mode() {
+        // Select in select_default should emit CMP + MOV + SelectMove
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::Select];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 3, "Select should emit 3 instructions");
+
+        // First: CMP rcond, #0
+        match &arm_instrs[0].op {
+            ArmOp::Cmp {
+                op2: Operand2::Imm(0),
+                ..
+            } => {}
+            other => panic!("Expected CMP rcond, #0, got {:?}", other),
+        }
+
+        // Second: MOV rd, rval1 (default)
+        match &arm_instrs[1].op {
+            ArmOp::Mov { .. } => {}
+            other => panic!("Expected MOV rd, rval1, got {:?}", other),
+        }
+
+        // Third: SelectMove (conditional override)
+        match &arm_instrs[2].op {
+            ArmOp::SelectMove {
+                cond: Condition::EQ,
+                ..
+            } => {}
+            other => panic!("Expected SelectMove with EQ condition, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_select_stack_mode_with_constants() {
+        // Select with three constant operands
+        let mut selector = fresh_selector();
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(10), // val1
+            WasmOp::I32Const(20), // val2
+            WasmOp::I32Const(1),  // condition (nonzero -> pick val1)
+            WasmOp::Select,
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should have CMP for condition
+        let has_cmp = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Cmp {
+                    op2: Operand2::Imm(0),
+                    ..
+                }
+            )
+        });
+        assert!(has_cmp, "Select should emit CMP condition, #0");
+
+        // Should have SelectMove EQ (conditional override)
+        let has_select_move = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::SelectMove {
+                    cond: Condition::EQ,
+                    ..
+                }
+            )
+        });
+        assert!(has_select_move, "Select should emit SelectMove with EQ");
+    }
+
+    #[test]
+    fn test_select_with_global_values() {
+        // Combine global.get with select: select between two globals based on condition
+        let mut selector = fresh_selector();
+
+        let wasm_ops = vec![
+            WasmOp::GlobalGet(0), // val1 = global 0
+            WasmOp::GlobalGet(1), // val2 = global 1
+            WasmOp::LocalGet(0),  // condition from param
+            WasmOp::Select,       // pick val1 if cond != 0, else val2
+            WasmOp::GlobalSet(2), // store result to global 2
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // Should load from globals 0 and 1
+        let global_loads: Vec<_> = instrs
+            .iter()
+            .filter(|i| {
+                matches!(
+                    &i.op,
+                    ArmOp::Ldr { addr, .. }
+                    if addr.base == Reg::R9
+                )
+            })
+            .collect();
+        assert_eq!(
+            global_loads.len(),
+            2,
+            "Should have 2 LDR from globals (indices 0 and 1), got {}",
+            global_loads.len()
+        );
+
+        // Should store to global 2
+        let global_stores: Vec<_> = instrs
+            .iter()
+            .filter(|i| {
+                matches!(
+                    &i.op,
+                    ArmOp::Str { addr, .. }
+                    if addr.base == Reg::R9 && addr.offset == 8
+                )
+            })
+            .collect();
+        assert_eq!(
+            global_stores.len(),
+            1,
+            "Should have 1 STR to global 2 at [R9, #8]"
+        );
+
+        // Should have select logic
+        let has_select_move = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::SelectMove {
+                    cond: Condition::EQ,
+                    ..
+                }
+            )
+        });
+        assert!(has_select_move, "Should have SelectMove for the select op");
+    }
+
+    // =========================================================================
+    // i64 instruction selection tests
+    // =========================================================================
+
+    #[test]
+    fn test_i64_const() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64Const(0x0000_0001_0000_0002)];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64Const { rdlo, rdhi, value } => {
+                assert_eq!(*rdlo, Reg::R0);
+                assert_eq!(*rdhi, Reg::R1);
+                assert_eq!(*value, 0x0000_0001_0000_0002);
+            }
+            other => panic!("Expected I64Const, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_const_negative() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64Const(-1)];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64Const { value, .. } => {
+                assert_eq!(*value, -1);
+            }
+            other => panic!("Expected I64Const, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_extend_i32_s() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64ExtendI32S];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64ExtendI32S { rdlo, rdhi, rn } => {
+                assert_eq!(*rdlo, Reg::R0);
+                assert_eq!(*rdhi, Reg::R1);
+                assert_eq!(*rn, Reg::R0);
+            }
+            other => panic!("Expected I64ExtendI32S, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_extend_i32_u() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64ExtendI32U];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64ExtendI32U { rdlo, rdhi, rn } => {
+                assert_eq!(*rdlo, Reg::R0);
+                assert_eq!(*rdhi, Reg::R1);
+                assert_eq!(*rn, Reg::R0);
+            }
+            other => panic!("Expected I64ExtendI32U, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i32_wrap_i64() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I32WrapI64];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I32WrapI64 { rd, rnlo } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(*rnlo, Reg::R0);
+            }
+            other => panic!("Expected I32WrapI64, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_add() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64Add];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        // i64 add generates ADDS + ADC (two instructions)
+        assert_eq!(arm_instrs.len(), 2);
+        match &arm_instrs[0].op {
+            ArmOp::Adds { rd, rn, op2 } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(*rn, Reg::R0);
+                assert_eq!(*op2, Operand2::Reg(Reg::R2));
+            }
+            other => panic!("Expected Adds, got {other:?}"),
+        }
+        match &arm_instrs[1].op {
+            ArmOp::Adc { rd, rn, op2 } => {
+                assert_eq!(*rd, Reg::R1);
+                assert_eq!(*rn, Reg::R1);
+                assert_eq!(*op2, Operand2::Reg(Reg::R3));
+            }
+            other => panic!("Expected Adc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_sub() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64Sub];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 2);
+        match &arm_instrs[0].op {
+            ArmOp::Subs { rd, rn, op2 } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(*rn, Reg::R0);
+                assert_eq!(*op2, Operand2::Reg(Reg::R2));
+            }
+            other => panic!("Expected Subs, got {other:?}"),
+        }
+        match &arm_instrs[1].op {
+            ArmOp::Sbc { rd, rn, op2 } => {
+                assert_eq!(*rd, Reg::R1);
+                assert_eq!(*rn, Reg::R1);
+                assert_eq!(*op2, Operand2::Reg(Reg::R3));
+            }
+            other => panic!("Expected Sbc, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_and() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64And];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 2);
+        match &arm_instrs[0].op {
+            ArmOp::And { rd, rn, op2 } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(*rn, Reg::R0);
+                assert_eq!(*op2, Operand2::Reg(Reg::R2));
+            }
+            other => panic!("Expected And (lo), got {other:?}"),
+        }
+        match &arm_instrs[1].op {
+            ArmOp::And { rd, rn, op2 } => {
+                assert_eq!(*rd, Reg::R1);
+                assert_eq!(*rn, Reg::R1);
+                assert_eq!(*op2, Operand2::Reg(Reg::R3));
+            }
+            other => panic!("Expected And (hi), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_or() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64Or];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 2);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::Orr { .. }));
+        assert!(matches!(&arm_instrs[1].op, ArmOp::Orr { .. }));
+    }
+
+    #[test]
+    fn test_i64_xor() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64Xor];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 2);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::Eor { .. }));
+        assert!(matches!(&arm_instrs[1].op, ArmOp::Eor { .. }));
+    }
+
+    #[test]
+    fn test_i64_eqz() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64Eqz];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64SetCondZ { rd, rn_lo, rn_hi } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(*rn_lo, Reg::R0);
+                assert_eq!(*rn_hi, Reg::R1);
+            }
+            other => panic!("Expected I64SetCondZ, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_eq() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64Eq];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64SetCond {
+                rd,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
+                cond,
+            } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(*rn_lo, Reg::R0);
+                assert_eq!(*rn_hi, Reg::R1);
+                assert_eq!(*rm_lo, Reg::R2);
+                assert_eq!(*rm_hi, Reg::R3);
+                assert_eq!(*cond, Condition::EQ);
+            }
+            other => panic!("Expected I64SetCond EQ, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_ne() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64Ne];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64SetCond { cond, .. } => {
+                assert_eq!(*cond, Condition::NE);
+            }
+            other => panic!("Expected I64SetCond NE, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_lt_s() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64LtS];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64SetCond { cond, .. } => assert_eq!(*cond, Condition::LT),
+            other => panic!("Expected I64SetCond LT, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_lt_u() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64LtU];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64SetCond { cond, .. } => assert_eq!(*cond, Condition::LO),
+            other => panic!("Expected I64SetCond LO, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_le_s() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64LeS];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64SetCond { cond, .. } => assert_eq!(*cond, Condition::LE),
+            other => panic!("Expected I64SetCond LE, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_gt_s() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64GtS];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64SetCond { cond, .. } => assert_eq!(*cond, Condition::GT),
+            other => panic!("Expected I64SetCond GT, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_ge_s() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64GeS];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64SetCond { cond, .. } => assert_eq!(*cond, Condition::GE),
+            other => panic!("Expected I64SetCond GE, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_unsigned_comparisons() {
+        let db = RuleDatabase::new();
+
+        // Test all unsigned comparison conditions
+        let tests = vec![
+            (WasmOp::I64LeU, Condition::LS),
+            (WasmOp::I64GtU, Condition::HI),
+            (WasmOp::I64GeU, Condition::HS),
+        ];
+
+        for (op, expected_cond) in tests {
+            let mut selector = InstructionSelector::new(db.rules().to_vec());
+            let arm_instrs = selector.select(std::slice::from_ref(&op)).unwrap();
+            assert_eq!(arm_instrs.len(), 1);
+            match &arm_instrs[0].op {
+                ArmOp::I64SetCond { cond, .. } => {
+                    assert_eq!(*cond, expected_cond, "Wrong condition for {op:?}");
+                }
+                other => panic!("Expected I64SetCond for {op:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn test_i64_mul() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64Mul];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::I64Mul {
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
+            } => {
+                assert_eq!(*rd_lo, Reg::R0);
+                assert_eq!(*rd_hi, Reg::R1);
+                assert_eq!(*rn_lo, Reg::R0);
+                assert_eq!(*rn_hi, Reg::R1);
+                assert_eq!(*rm_lo, Reg::R2);
+                assert_eq!(*rm_hi, Reg::R3);
+            }
+            other => panic!("Expected I64Mul, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_shifts() {
+        let db = RuleDatabase::new();
+
+        // Shift left
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let arm_instrs = selector.select(&[WasmOp::I64Shl]).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64Shl { .. }));
+
+        // Shift right unsigned
+        selector.reset();
+        let arm_instrs = selector.select(&[WasmOp::I64ShrU]).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64ShrU { .. }));
+
+        // Shift right signed
+        selector.reset();
+        let arm_instrs = selector.select(&[WasmOp::I64ShrS]).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64ShrS { .. }));
+    }
+
+    #[test]
+    fn test_i64_rotations() {
+        let db = RuleDatabase::new();
+
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let arm_instrs = selector.select(&[WasmOp::I64Rotl]).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64Rotl { .. }));
+
+        selector.reset();
+        let arm_instrs = selector.select(&[WasmOp::I64Rotr]).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64Rotr { .. }));
+    }
+
+    #[test]
+    fn test_i64_bit_manipulation() {
+        let db = RuleDatabase::new();
+
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let arm_instrs = selector.select(&[WasmOp::I64Clz]).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64Clz { .. }));
+
+        selector.reset();
+        let arm_instrs = selector.select(&[WasmOp::I64Ctz]).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64Ctz { .. }));
+
+        selector.reset();
+        let arm_instrs = selector.select(&[WasmOp::I64Popcnt]).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64Popcnt { .. }));
+    }
+
+    #[test]
+    fn test_i64_division_remainder() {
+        let db = RuleDatabase::new();
+
+        let ops = vec![
+            (WasmOp::I64DivS, "I64DivS"),
+            (WasmOp::I64DivU, "I64DivU"),
+            (WasmOp::I64RemS, "I64RemS"),
+            (WasmOp::I64RemU, "I64RemU"),
+        ];
+
+        for (op, name) in ops {
+            let mut selector = InstructionSelector::new(db.rules().to_vec());
+            let arm_instrs = selector.select(&[op]).unwrap();
+            assert_eq!(arm_instrs.len(), 1, "Failed for {name}");
+            // Each should emit the corresponding i64 pseudo-op
+        }
+    }
+
+    #[test]
+    fn test_i64_extend_sign_operations() {
+        let db = RuleDatabase::new();
+
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let arm_instrs = selector.select(&[WasmOp::I64Extend8S]).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64Extend8S { .. }));
+
+        selector.reset();
+        let arm_instrs = selector.select(&[WasmOp::I64Extend16S]).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64Extend16S { .. }));
+
+        selector.reset();
+        let arm_instrs = selector.select(&[WasmOp::I64Extend32S]).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64Extend32S { .. }));
+    }
+
+    #[test]
+    fn test_i64_add_sequence() {
+        // Test a full i64 add sequence: const + const + add
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64Const(1), WasmOp::I64Const(2), WasmOp::I64Add];
+
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+        // I64Const(1) -> 1 instr
+        // I64Const(2) -> 1 instr
+        // I64Add -> 2 instrs (ADDS + ADC)
+        assert_eq!(arm_instrs.len(), 4);
+
+        // First two are I64Const
+        assert!(matches!(
+            &arm_instrs[0].op,
+            ArmOp::I64Const { value: 1, .. }
+        ));
+        assert!(matches!(
+            &arm_instrs[1].op,
+            ArmOp::I64Const { value: 2, .. }
+        ));
+        // Then ADDS + ADC
+        assert!(matches!(&arm_instrs[2].op, ArmOp::Adds { .. }));
+        assert!(matches!(&arm_instrs[3].op, ArmOp::Adc { .. }));
+    }
+
+    #[test]
+    fn test_i64_wrap_extend_roundtrip() {
+        // extend_i32_u followed by wrap_i64 should produce two instructions
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I64ExtendI32U, WasmOp::I32WrapI64];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 2);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::I64ExtendI32U { .. }));
+        assert!(matches!(&arm_instrs[1].op, ArmOp::I32WrapI64 { .. }));
+    }
+
+    #[test]
+    fn test_i64_load_store() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::I64Load {
+                offset: 8,
+                align: 8,
+            },
+            WasmOp::I64Store {
+                offset: 16,
+                align: 8,
+            },
+        ];
+
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+        assert_eq!(arm_instrs.len(), 2);
+
+        match &arm_instrs[0].op {
+            ArmOp::I64Ldr { rdlo, rdhi, addr } => {
+                assert_eq!(*rdlo, Reg::R0);
+                assert_eq!(*rdhi, Reg::R1);
+                assert_eq!(addr.offset, 8);
+            }
+            other => panic!("Expected I64Ldr, got {other:?}"),
+        }
+
+        match &arm_instrs[1].op {
+            ArmOp::I64Str { rdlo, rdhi, addr } => {
+                assert_eq!(*rdlo, Reg::R0);
+                assert_eq!(*rdhi, Reg::R1);
+                assert_eq!(addr.offset, 16);
+            }
+            other => panic!("Expected I64Str, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i64_all_ops_no_error() {
+        // Verify that ALL i64 operations now succeed (no more "requires register pairs" error)
+        let db = RuleDatabase::new();
+
+        let all_i64_ops: Vec<WasmOp> = vec![
+            WasmOp::I64Const(42),
+            WasmOp::I64Add,
+            WasmOp::I64Sub,
+            WasmOp::I64Mul,
+            WasmOp::I64DivS,
+            WasmOp::I64DivU,
+            WasmOp::I64RemS,
+            WasmOp::I64RemU,
+            WasmOp::I64And,
+            WasmOp::I64Or,
+            WasmOp::I64Xor,
+            WasmOp::I64Shl,
+            WasmOp::I64ShrS,
+            WasmOp::I64ShrU,
+            WasmOp::I64Rotl,
+            WasmOp::I64Rotr,
+            WasmOp::I64Clz,
+            WasmOp::I64Ctz,
+            WasmOp::I64Popcnt,
+            WasmOp::I64Eqz,
+            WasmOp::I64Eq,
+            WasmOp::I64Ne,
+            WasmOp::I64LtS,
+            WasmOp::I64LtU,
+            WasmOp::I64LeS,
+            WasmOp::I64LeU,
+            WasmOp::I64GtS,
+            WasmOp::I64GtU,
+            WasmOp::I64GeS,
+            WasmOp::I64GeU,
+            WasmOp::I64ExtendI32S,
+            WasmOp::I64ExtendI32U,
+            WasmOp::I32WrapI64,
+            WasmOp::I64Extend8S,
+            WasmOp::I64Extend16S,
+            WasmOp::I64Extend32S,
+            WasmOp::I64Load {
+                offset: 0,
+                align: 8,
+            },
+            WasmOp::I64Store {
+                offset: 0,
+                align: 8,
+            },
+        ];
+
+        // Each should succeed individually (no error)
+        for op in &all_i64_ops {
+            let mut selector = InstructionSelector::new(db.rules().to_vec());
+            let result = selector.select(std::slice::from_ref(op));
+            assert!(
+                result.is_ok(),
+                "i64 operation {op:?} should succeed but got error: {:?}",
+                result.err()
+            );
+        }
     }
 }

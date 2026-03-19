@@ -4223,31 +4223,392 @@ impl ArmEncoder {
             ArmOp::I32TruncF64S { rd, dm } => self.encode_thumb_i32_trunc_f64(rd, dm, true),
             ArmOp::I32TruncF64U { rd, dm } => self.encode_thumb_i32_trunc_f64(rd, dm, false),
 
-            // i64 ops that are only stubs in Thumb mode
-            ArmOp::I64Add { .. }
-            | ArmOp::I64Sub { .. }
-            | ArmOp::I64And { .. }
-            | ArmOp::I64Or { .. }
-            | ArmOp::I64Xor { .. }
-            | ArmOp::I64Eqz { .. }
-            | ArmOp::I64Eq { .. }
-            | ArmOp::I64Ne { .. }
-            | ArmOp::I64LtS { .. }
-            | ArmOp::I64LtU { .. }
-            | ArmOp::I64LeS { .. }
-            | ArmOp::I64LeU { .. }
-            | ArmOp::I64GtS { .. }
-            | ArmOp::I64GtU { .. }
-            | ArmOp::I64GeS { .. }
-            | ArmOp::I64GeU { .. }
-            | ArmOp::I64Const { .. }
-            | ArmOp::I64Ldr { .. }
-            | ArmOp::I64Str { .. }
-            | ArmOp::I64ExtendI32S { .. }
-            | ArmOp::I64ExtendI32U { .. }
-            | ArmOp::I32WrapI64 { .. } => {
-                let instr: u16 = 0xBF00; // NOP
-                Ok(instr.to_le_bytes().to_vec())
+            // ===== i64 operations: encode as multi-instruction Thumb-2 sequences =====
+
+            // I64Add: ADDS rdlo, rnlo, rmlo; ADC.W rdhi, rnhi, rmhi
+            ArmOp::I64Add {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                let mut bytes = Vec::new();
+                // ADDS rdlo, rnlo, rmlo (16-bit)
+                bytes.extend_from_slice(&self.encode_thumb(&ArmOp::Adds {
+                    rd: *rdlo,
+                    rn: *rnlo,
+                    op2: Operand2::Reg(*rmlo),
+                })?);
+                // ADC.W rdhi, rnhi, rmhi (32-bit)
+                bytes.extend_from_slice(&self.encode_thumb(&ArmOp::Adc {
+                    rd: *rdhi,
+                    rn: *rnhi,
+                    op2: Operand2::Reg(*rmhi),
+                })?);
+                Ok(bytes)
+            }
+
+            // I64Sub: SUBS rdlo, rnlo, rmlo; SBC.W rdhi, rnhi, rmhi
+            ArmOp::I64Sub {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                let mut bytes = Vec::new();
+                // SUBS rdlo, rnlo, rmlo (16-bit)
+                bytes.extend_from_slice(&self.encode_thumb(&ArmOp::Subs {
+                    rd: *rdlo,
+                    rn: *rnlo,
+                    op2: Operand2::Reg(*rmlo),
+                })?);
+                // SBC.W rdhi, rnhi, rmhi (32-bit)
+                bytes.extend_from_slice(&self.encode_thumb(&ArmOp::Sbc {
+                    rd: *rdhi,
+                    rn: *rnhi,
+                    op2: Operand2::Reg(*rmhi),
+                })?);
+                Ok(bytes)
+            }
+
+            // I64And: AND rdlo, rnlo, rmlo; AND rdhi, rnhi, rmhi
+            ArmOp::I64And {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                let mut bytes = Vec::new();
+                bytes.extend_from_slice(&self.encode_thumb(&ArmOp::And {
+                    rd: *rdlo,
+                    rn: *rnlo,
+                    op2: Operand2::Reg(*rmlo),
+                })?);
+                bytes.extend_from_slice(&self.encode_thumb(&ArmOp::And {
+                    rd: *rdhi,
+                    rn: *rnhi,
+                    op2: Operand2::Reg(*rmhi),
+                })?);
+                Ok(bytes)
+            }
+
+            // I64Or: ORR rdlo, rnlo, rmlo; ORR rdhi, rnhi, rmhi
+            ArmOp::I64Or {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                let mut bytes = Vec::new();
+                bytes.extend_from_slice(&self.encode_thumb(&ArmOp::Orr {
+                    rd: *rdlo,
+                    rn: *rnlo,
+                    op2: Operand2::Reg(*rmlo),
+                })?);
+                bytes.extend_from_slice(&self.encode_thumb(&ArmOp::Orr {
+                    rd: *rdhi,
+                    rn: *rnhi,
+                    op2: Operand2::Reg(*rmhi),
+                })?);
+                Ok(bytes)
+            }
+
+            // I64Xor: EOR rdlo, rnlo, rmlo; EOR rdhi, rnhi, rmhi
+            ArmOp::I64Xor {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                let mut bytes = Vec::new();
+                bytes.extend_from_slice(&self.encode_thumb(&ArmOp::Eor {
+                    rd: *rdlo,
+                    rn: *rnlo,
+                    op2: Operand2::Reg(*rmlo),
+                })?);
+                bytes.extend_from_slice(&self.encode_thumb(&ArmOp::Eor {
+                    rd: *rdhi,
+                    rn: *rnhi,
+                    op2: Operand2::Reg(*rmhi),
+                })?);
+                Ok(bytes)
+            }
+
+            // I64Eqz: ORR scratch, lo, hi; ITE EQ; MOV rd, #1; MOV rd, #0
+            ArmOp::I64Eqz { rd, rnlo, rnhi } => self.encode_thumb(&ArmOp::I64SetCondZ {
+                rd: *rd,
+                rn_lo: *rnlo,
+                rn_hi: *rnhi,
+            }),
+
+            // I64 comparisons: delegate to I64SetCond
+            ArmOp::I64Eq {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => self.encode_thumb(&ArmOp::I64SetCond {
+                rd: *rd,
+                rn_lo: *rnlo,
+                rn_hi: *rnhi,
+                rm_lo: *rmlo,
+                rm_hi: *rmhi,
+                cond: synth_synthesis::Condition::EQ,
+            }),
+
+            ArmOp::I64Ne {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => self.encode_thumb(&ArmOp::I64SetCond {
+                rd: *rd,
+                rn_lo: *rnlo,
+                rn_hi: *rnhi,
+                rm_lo: *rmlo,
+                rm_hi: *rmhi,
+                cond: synth_synthesis::Condition::NE,
+            }),
+
+            ArmOp::I64LtS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => self.encode_thumb(&ArmOp::I64SetCond {
+                rd: *rd,
+                rn_lo: *rnlo,
+                rn_hi: *rnhi,
+                rm_lo: *rmlo,
+                rm_hi: *rmhi,
+                cond: synth_synthesis::Condition::LT,
+            }),
+
+            ArmOp::I64LtU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => self.encode_thumb(&ArmOp::I64SetCond {
+                rd: *rd,
+                rn_lo: *rnlo,
+                rn_hi: *rnhi,
+                rm_lo: *rmlo,
+                rm_hi: *rmhi,
+                cond: synth_synthesis::Condition::LO,
+            }),
+
+            ArmOp::I64LeS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => self.encode_thumb(&ArmOp::I64SetCond {
+                rd: *rd,
+                rn_lo: *rnlo,
+                rn_hi: *rnhi,
+                rm_lo: *rmlo,
+                rm_hi: *rmhi,
+                cond: synth_synthesis::Condition::LE,
+            }),
+
+            ArmOp::I64LeU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => self.encode_thumb(&ArmOp::I64SetCond {
+                rd: *rd,
+                rn_lo: *rnlo,
+                rn_hi: *rnhi,
+                rm_lo: *rmlo,
+                rm_hi: *rmhi,
+                cond: synth_synthesis::Condition::LS,
+            }),
+
+            ArmOp::I64GtS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => self.encode_thumb(&ArmOp::I64SetCond {
+                rd: *rd,
+                rn_lo: *rnlo,
+                rn_hi: *rnhi,
+                rm_lo: *rmlo,
+                rm_hi: *rmhi,
+                cond: synth_synthesis::Condition::GT,
+            }),
+
+            ArmOp::I64GtU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => self.encode_thumb(&ArmOp::I64SetCond {
+                rd: *rd,
+                rn_lo: *rnlo,
+                rn_hi: *rnhi,
+                rm_lo: *rmlo,
+                rm_hi: *rmhi,
+                cond: synth_synthesis::Condition::HI,
+            }),
+
+            ArmOp::I64GeS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => self.encode_thumb(&ArmOp::I64SetCond {
+                rd: *rd,
+                rn_lo: *rnlo,
+                rn_hi: *rnhi,
+                rm_lo: *rmlo,
+                rm_hi: *rmhi,
+                cond: synth_synthesis::Condition::GE,
+            }),
+
+            ArmOp::I64GeU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => self.encode_thumb(&ArmOp::I64SetCond {
+                rd: *rd,
+                rn_lo: *rnlo,
+                rn_hi: *rnhi,
+                rm_lo: *rmlo,
+                rm_hi: *rmhi,
+                cond: synth_synthesis::Condition::HS,
+            }),
+
+            // I64Const: MOVW rdlo, lo16; MOVT rdlo, hi16; MOVW rdhi, lo16_hi; MOVT rdhi, hi16_hi
+            ArmOp::I64Const { rdlo, rdhi, value } => {
+                let lo32 = *value as u32;
+                let hi32 = (*value >> 32) as u32;
+                let mut bytes = Vec::new();
+                // Load low 32 bits into rdlo
+                bytes.extend_from_slice(
+                    &self.encode_thumb32_movw_raw(reg_to_bits(rdlo), lo32 & 0xFFFF)?,
+                );
+                if lo32 > 0xFFFF {
+                    bytes.extend_from_slice(
+                        &self.encode_thumb32_movt_raw(reg_to_bits(rdlo), lo32 >> 16)?,
+                    );
+                }
+                // Load high 32 bits into rdhi
+                bytes.extend_from_slice(
+                    &self.encode_thumb32_movw_raw(reg_to_bits(rdhi), hi32 & 0xFFFF)?,
+                );
+                if hi32 > 0xFFFF {
+                    bytes.extend_from_slice(
+                        &self.encode_thumb32_movt_raw(reg_to_bits(rdhi), hi32 >> 16)?,
+                    );
+                }
+                Ok(bytes)
+            }
+
+            // I64Ldr: LDR rdlo, [base, offset]; LDR rdhi, [base, offset+4]
+            ArmOp::I64Ldr { rdlo, rdhi, addr } => {
+                let mut bytes = Vec::new();
+                let offset = if addr.offset < 0 {
+                    0u32
+                } else {
+                    addr.offset as u32
+                };
+                bytes.extend_from_slice(&self.encode_thumb32_ldr(rdlo, &addr.base, offset)?);
+                bytes.extend_from_slice(&self.encode_thumb32_ldr(
+                    rdhi,
+                    &addr.base,
+                    offset.wrapping_add(4),
+                )?);
+                Ok(bytes)
+            }
+
+            // I64Str: STR rdlo, [base, offset]; STR rdhi, [base, offset+4]
+            ArmOp::I64Str { rdlo, rdhi, addr } => {
+                let mut bytes = Vec::new();
+                let offset = if addr.offset < 0 {
+                    0u32
+                } else {
+                    addr.offset as u32
+                };
+                bytes.extend_from_slice(&self.encode_thumb32_str(rdlo, &addr.base, offset)?);
+                bytes.extend_from_slice(&self.encode_thumb32_str(
+                    rdhi,
+                    &addr.base,
+                    offset.wrapping_add(4),
+                )?);
+                Ok(bytes)
+            }
+
+            // I64ExtendI32S: MOV rdlo, rn; ASR rdhi, rdlo, #31 (sign-extend)
+            ArmOp::I64ExtendI32S { rdlo, rdhi, rn } => {
+                let mut bytes = Vec::new();
+                if rdlo != rn {
+                    // MOV rdlo, rn (16-bit)
+                    bytes.extend_from_slice(&self.encode_thumb(&ArmOp::Mov {
+                        rd: *rdlo,
+                        op2: Operand2::Reg(*rn),
+                    })?);
+                }
+                // ASR rdhi, rdlo, #31 (sign-extend: fill high word with sign bit)
+                bytes.extend_from_slice(
+                    &self.encode_thumb32_shift(rdhi, rdlo, 31, 0b10)?, // ASR type
+                );
+                Ok(bytes)
+            }
+
+            // I64ExtendI32U: MOV rdlo, rn; MOV rdhi, #0
+            ArmOp::I64ExtendI32U { rdlo, rdhi, rn } => {
+                let mut bytes = Vec::new();
+                if rdlo != rn {
+                    // MOV rdlo, rn
+                    bytes.extend_from_slice(&self.encode_thumb(&ArmOp::Mov {
+                        rd: *rdlo,
+                        op2: Operand2::Reg(*rn),
+                    })?);
+                }
+                // MOV rdhi, #0 (16-bit: MOVS Rd, #0)
+                let rdhi_bits = reg_to_bits(rdhi) as u16;
+                let instr: u16 = 0x2000 | (rdhi_bits << 8);
+                bytes.extend_from_slice(&instr.to_le_bytes());
+                Ok(bytes)
+            }
+
+            // I32WrapI64: MOV rd, rnlo (just take low 32 bits)
+            ArmOp::I32WrapI64 { rd, rnlo } => {
+                if rd == rnlo {
+                    // No-op: already in the right register
+                    let instr: u16 = 0xBF00; // NOP
+                    Ok(instr.to_le_bytes().to_vec())
+                } else {
+                    // MOV rd, rnlo
+                    self.encode_thumb(&ArmOp::Mov {
+                        rd: *rd,
+                        op2: Operand2::Reg(*rnlo),
+                    })
+                }
             }
 
             // Catch-all for any remaining ops
@@ -6211,5 +6572,361 @@ mod tests {
 
         // NOP: 0xBF00 in little-endian
         assert_eq!(code, vec![0x00, 0xBF]);
+    }
+
+    // =========================================================================
+    // i64 Thumb-2 encoding tests
+    // =========================================================================
+
+    #[test]
+    fn test_encode_i64_add_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64Add {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rnlo: Reg::R0,
+            rnhi: Reg::R1,
+            rmlo: Reg::R2,
+            rmhi: Reg::R3,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // Should emit ADDS (2 bytes) + ADC.W (4 bytes) = 6 bytes
+        assert_eq!(code.len(), 6, "I64Add should be 6 bytes (ADDS + ADC.W)");
+    }
+
+    #[test]
+    fn test_encode_i64_sub_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64Sub {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rnlo: Reg::R0,
+            rnhi: Reg::R1,
+            rmlo: Reg::R2,
+            rmhi: Reg::R3,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // Should emit SUBS (2 bytes) + SBC.W (4 bytes) = 6 bytes
+        assert_eq!(code.len(), 6, "I64Sub should be 6 bytes (SUBS + SBC.W)");
+    }
+
+    #[test]
+    fn test_encode_i64_and_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64And {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rnlo: Reg::R0,
+            rnhi: Reg::R1,
+            rmlo: Reg::R2,
+            rmhi: Reg::R3,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // AND.W (4 bytes) + AND.W (4 bytes) = 8 bytes
+        assert!(code.len() >= 4, "I64And should emit at least 4 bytes");
+    }
+
+    #[test]
+    fn test_encode_i64_or_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64Or {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rnlo: Reg::R0,
+            rnhi: Reg::R1,
+            rmlo: Reg::R2,
+            rmhi: Reg::R3,
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert!(code.len() >= 4, "I64Or should emit at least 4 bytes");
+    }
+
+    #[test]
+    fn test_encode_i64_xor_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64Xor {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rnlo: Reg::R0,
+            rnhi: Reg::R1,
+            rmlo: Reg::R2,
+            rmhi: Reg::R3,
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert!(code.len() >= 4, "I64Xor should emit at least 4 bytes");
+    }
+
+    #[test]
+    fn test_encode_i64_const_small_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        // Small constant: only needs MOVW for each half
+        let op = ArmOp::I64Const {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            value: 42,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // MOVW R0, #42 (4 bytes) + MOVW R1, #0 (4 bytes) = 8 bytes minimum
+        assert!(code.len() >= 8, "I64Const should emit at least 8 bytes");
+    }
+
+    #[test]
+    fn test_encode_i64_const_large_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        // Large constant: needs MOVW+MOVT for each half
+        let op = ArmOp::I64Const {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            value: 0x1234_5678_9ABC_DEF0_u64 as i64,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // MOVW + MOVT for lo (8 bytes) + MOVW + MOVT for hi (8 bytes) = 16 bytes
+        assert_eq!(
+            code.len(),
+            16,
+            "I64Const with large value should be 16 bytes"
+        );
+    }
+
+    #[test]
+    fn test_encode_i64_extend_i32_s_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64ExtendI32S {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rn: Reg::R0,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // When rdlo == rn, only ASR (4 bytes) is emitted
+        assert_eq!(
+            code.len(),
+            4,
+            "I64ExtendI32S (same reg) should be 4 bytes (ASR only)"
+        );
+    }
+
+    #[test]
+    fn test_encode_i64_extend_i32_s_diff_reg_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64ExtendI32S {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rn: Reg::R2,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // MOV rdlo, rn (2 bytes for low regs) + ASR rdhi, rdlo, #31 (4 bytes) = 6 bytes
+        assert!(
+            code.len() >= 6,
+            "I64ExtendI32S (diff reg) should be at least 6 bytes"
+        );
+    }
+
+    #[test]
+    fn test_encode_i64_extend_i32_u_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64ExtendI32U {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rn: Reg::R0,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // When rdlo == rn, only MOV rdhi, #0 (2 bytes) is emitted
+        assert_eq!(
+            code.len(),
+            2,
+            "I64ExtendI32U (same reg) should be 2 bytes (MOV #0 only)"
+        );
+    }
+
+    #[test]
+    fn test_encode_i32_wrap_i64_nop_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        // When rd == rnlo, should be a NOP
+        let op = ArmOp::I32WrapI64 {
+            rd: Reg::R0,
+            rnlo: Reg::R0,
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 2, "I32WrapI64 same reg should be NOP (2 bytes)");
+        assert_eq!(code, vec![0x00, 0xBF]); // NOP
+    }
+
+    #[test]
+    fn test_encode_i32_wrap_i64_diff_reg_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I32WrapI64 {
+            rd: Reg::R2,
+            rnlo: Reg::R0,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // MOV R2, R0 (2 or 4 bytes)
+        assert!(
+            code.len() >= 2,
+            "I32WrapI64 diff reg should emit at least 2 bytes"
+        );
+    }
+
+    #[test]
+    fn test_encode_i64_eqz_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64Eqz {
+            rd: Reg::R0,
+            rnlo: Reg::R0,
+            rnhi: Reg::R1,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // Delegates to I64SetCondZ which is already encoded
+        assert!(
+            code.len() >= 6,
+            "I64Eqz should emit at least 6 bytes for ORR+ITE+MOV+MOV"
+        );
+    }
+
+    #[test]
+    fn test_encode_i64_eq_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64Eq {
+            rd: Reg::R0,
+            rnlo: Reg::R0,
+            rnhi: Reg::R1,
+            rmlo: Reg::R2,
+            rmhi: Reg::R3,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // Delegates to I64SetCond EQ: CMP lo + IT EQ + CMPEQ hi + ITE EQ + MOV 1 + MOV 0
+        assert!(code.len() >= 10, "I64Eq should emit at least 10 bytes");
+    }
+
+    #[test]
+    fn test_encode_i64_ldr_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64Ldr {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            addr: MemAddr::imm(Reg::SP, 0),
+        };
+        let code = encoder.encode(&op).unwrap();
+        // Two LDR instructions (lo at offset, hi at offset+4)
+        assert!(code.len() >= 4, "I64Ldr should emit at least 4 bytes");
+    }
+
+    #[test]
+    fn test_encode_i64_str_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64Str {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            addr: MemAddr::imm(Reg::SP, 0),
+        };
+        let code = encoder.encode(&op).unwrap();
+        // Two STR instructions (lo at offset, hi at offset+4)
+        assert!(code.len() >= 4, "I64Str should emit at least 4 bytes");
+    }
+
+    #[test]
+    fn test_encode_i64_all_comparisons_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+
+        let ops = vec![
+            ArmOp::I64Ne {
+                rd: Reg::R0,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            },
+            ArmOp::I64LtS {
+                rd: Reg::R0,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            },
+            ArmOp::I64LtU {
+                rd: Reg::R0,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            },
+            ArmOp::I64LeS {
+                rd: Reg::R0,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            },
+            ArmOp::I64LeU {
+                rd: Reg::R0,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            },
+            ArmOp::I64GtS {
+                rd: Reg::R0,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            },
+            ArmOp::I64GtU {
+                rd: Reg::R0,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            },
+            ArmOp::I64GeS {
+                rd: Reg::R0,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            },
+            ArmOp::I64GeU {
+                rd: Reg::R0,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            },
+        ];
+
+        for op in &ops {
+            let code = encoder.encode(op).unwrap();
+            assert!(
+                code.len() >= 8,
+                "i64 comparison {:?} should emit at least 8 bytes, got {}",
+                op,
+                code.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_encode_i64_const_zero_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64Const {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            value: 0,
+        };
+        let code = encoder.encode(&op).unwrap();
+        // MOVW R0, #0 (4 bytes) + MOVW R1, #0 (4 bytes) = 8 bytes
+        assert_eq!(code.len(), 8, "I64Const(0) should be 8 bytes");
+    }
+
+    #[test]
+    fn test_encode_i64_const_negative_one_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::I64Const {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            value: -1, // 0xFFFF_FFFF_FFFF_FFFF
+        };
+        let code = encoder.encode(&op).unwrap();
+        // MOVW + MOVT for lo (8 bytes) + MOVW + MOVT for hi (8 bytes) = 16 bytes
+        assert_eq!(code.len(), 16, "I64Const(-1) should be 16 bytes");
     }
 }
