@@ -115,11 +115,17 @@ jobs:
             ${{ runner.os }}-rivet-
       - name: Install rivet
         run: cargo install --force --git https://github.com/pulseengine/rivet --branch main rivet-cli
-      - name: Validate artifacts
-        continue-on-error: true
+      - name: Prepare rivet config for CI
         run: |
-          sed -i '/^externals:/,$d' rivet.yaml
-          rivet validate
+          python3 -c "
+lines = open('rivet.yaml').readlines()
+out = [l for l in lines if not l.lstrip().startswith('path: ')]
+open('rivet.yaml', 'w').writelines(out)
+"
+      - name: Sync external repos
+        run: rivet sync
+      - name: Validate artifacts
+        run: rivet validate
       - name: Check coverage
         run: rivet coverage
 
