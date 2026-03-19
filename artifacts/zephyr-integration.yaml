@@ -1,0 +1,341 @@
+# Zephyr RTOS Integration Requirements (ASPICE SYS.2 / SWE.1)
+#
+# System: Synth -- WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Defines how synth-generated ELF binaries integrate with Zephyr RTOS,
+# covering the build system interface, memory model, platform abstraction,
+# and application patterns. Addresses open issues #21 (Create Zephyr
+# calculator application) and #22 (Test calculator on real hardware).
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # ---------------------------------------------------------------------------
+  # Zephyr build system integration
+  # ---------------------------------------------------------------------------
+
+  - id: ZI-001
+    type: system-req
+    title: Zephyr CMake build integration
+    description: >
+      Synth-compiled WASM functions shall be linkable with Zephyr
+      applications via the standard Zephyr CMake build system.
+      The integration pattern is: synth produces an ARM assembly file
+      (.s) from a WASM module; the Zephyr CMakeLists.txt includes this
+      assembly file via target_sources(app PRIVATE src/function.s).
+      The assembly file shall use .syntax unified, .thumb, .global
+      directives compatible with the arm-none-eabi-gcc assembler
+      shipped with the Zephyr SDK. Demonstrated in
+      examples/zephyr-poc/CMakeLists.txt.
+    status: implemented
+    tags: [zephyr, cmake, build-system]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-002
+      - type: refines
+        target: TR-003
+      - type: traces-to
+        target: ARCH-003
+    fields:
+      req-type: interface
+      priority: must
+      verification-criteria: >
+        examples/zephyr-poc/ builds with west build for at least one
+        Zephyr-supported board (nrf52840dk/nrf52840 or qemu_cortex_m3);
+        synth-compiled assembly links without undefined symbol errors.
+
+  - id: ZI-002
+    type: system-req
+    title: Zephyr AAPCS calling convention compliance
+    description: >
+      Synth-generated functions shall use the ARM Architecture Procedure
+      Call Standard (AAPCS) calling convention: arguments in R0-R3,
+      return value in R0, callee-saved registers R4-R11 preserved.
+      This allows Zephyr C code to call synth-compiled WASM functions
+      via extern declarations (e.g., extern int32_t synth_add(int32_t a,
+      int32_t b)) without ABI glue. The R11 register is reserved by
+      synth as the WASM linear memory base pointer; when integrating
+      with Zephyr, R11 must be saved/restored across calls if Zephyr
+      code uses it as the frame pointer.
+    status: implemented
+    tags: [zephyr, abi, calling-convention, aapcs]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-004
+      - type: refines
+        target: FR-005
+      - type: traces-to
+        target: ARCH-002
+      - type: traces-to
+        target: ARCH-006
+    fields:
+      req-type: interface
+      priority: must
+      verification-criteria: >
+        Renode test executes add(5,3)=8 with R0/R1 arguments and R0
+        result; Zephyr POC calls synth_add() successfully from C.
+
+  - id: ZI-003
+    type: system-req
+    title: Zephyr Memory Domain integration
+    description: >
+      The synth-memory crate's MemoryPlatform trait shall support a
+      Zephyr backend that maps WASM linear memories to Zephyr Memory
+      Domains (k_mem_domain). On Zephyr, the MPU region configuration
+      shall delegate to Zephyr's memory management APIs
+      (k_mem_domain_add_partition, k_mem_partition) rather than
+      writing MPU registers directly. The MemoryDescriptor.platform_data
+      field stores the Zephyr partition pointer. The "zephyr" cargo
+      feature in synth-memory enables this backend.
+    status: draft
+    tags: [zephyr, memory-domains, mpu, platform-abstraction]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: FR-003
+      - type: refines
+        target: FR-008
+      - type: traces-to
+        target: ARCH-005
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        synth-memory compiles with --features=zephyr;
+        MemoryPlatform::configure_mpu_region maps to Zephyr
+        k_mem_partition API; platform_data stores partition pointer.
+
+  - id: ZI-004
+    type: system-req
+    title: Zephyr prj.conf configuration for synth modules
+    description: >
+      Synth shall document the minimal Zephyr Kconfig settings required
+      for running synth-compiled WASM modules. The base configuration
+      requires CONFIG_PRINTK=y and CONFIG_CONSOLE=y for output.
+      For MPU-protected memories, CONFIG_ARM_MPU=y and
+      CONFIG_MPU_ALLOW_FLASH_WRITE=n are required. For multi-threaded
+      WASM execution, CONFIG_USERSPACE=y enables Zephyr Memory Domains.
+      Demonstrated in examples/zephyr-poc/prj.conf.
+    status: draft
+    tags: [zephyr, configuration, kconfig]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: TR-004
+      - type: refines
+        target: FR-003
+    fields:
+      req-type: interface
+      priority: should
+      verification-criteria: >
+        examples/zephyr-poc/prj.conf contains required Kconfig settings;
+        application builds with west build using these settings.
+
+  # ---------------------------------------------------------------------------
+  # Zephyr application patterns
+  # ---------------------------------------------------------------------------
+
+  - id: ZI-005
+    type: system-req
+    title: Zephyr calculator application (issue #21)
+    description: >
+      Synth shall provide a Zephyr calculator application example that
+      compiles examples/calculator/calculator.wat to ARM assembly and
+      links it with a Zephyr application. The calculator module exports
+      add, subtract, multiply, divide, and modulo functions. The Zephyr
+      application shall call each function, display results via printk,
+      and demonstrate that synth-compiled WASM functions integrate
+      seamlessly with Zephyr RTOS. The application shall build for
+      both qemu_cortex_m3 (CI) and nrf52840dk/nrf52840 (hardware).
+    status: draft
+    tags: [zephyr, calculator, example, issue-21]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-002
+      - type: refines
+        target: FR-005
+      - type: refines
+        target: TR-003
+      - type: traces-to
+        target: SWA-001
+    fields:
+      req-type: functional
+      priority: must
+      github-issue: 21
+      verification-criteria: >
+        west build -b qemu_cortex_m3 examples/calculator-zephyr succeeds;
+        west build -b nrf52840dk/nrf52840 examples/calculator-zephyr succeeds;
+        QEMU run produces correct arithmetic results via printk.
+
+  - id: ZI-006
+    type: system-req
+    title: Hardware testing on real Cortex-M board (issue #22)
+    description: >
+      Synth-compiled binaries shall be tested on real ARM Cortex-M
+      hardware via Zephyr's west flash and west debug workflows.
+      The primary hardware target is the nRF52840-DK. Testing shall
+      verify that synth-compiled calculator functions produce correct
+      results when executed on physical silicon, not just emulation.
+      J-Link or OpenOCD debug probes shall be used for flashing.
+    status: draft
+    tags: [zephyr, hardware-testing, nrf52840, issue-22]
+    links:
+      - type: refines
+        target: FR-005
+      - type: derives-from
+        target: BR-003
+      - type: traces-to
+        target: VER-005
+    fields:
+      req-type: functional
+      priority: should
+      github-issue: 22
+      verification-criteria: >
+        west flash succeeds on nRF52840-DK;
+        serial console output shows correct calculator results;
+        synth_add(5, 42) returns 47 on real hardware.
+
+  - id: ZI-007
+    type: system-req
+    title: PID controller Zephyr demonstration
+    description: >
+      Synth shall provide a PID controller demonstration running on
+      Zephyr that showcases formally verified WASM compilation for
+      safety-critical control loops. The PID demo uses synth-compiled
+      f32 operations (synth_pid_error, synth_pid_integral,
+      synth_pid_simple) called from a Zephyr application at 10 Hz
+      update rate. This demonstrates synth's value for safety-critical
+      embedded systems where provably correct arithmetic is required.
+      Demonstrated in examples/pid-controller/.
+    status: draft
+    tags: [zephyr, pid-controller, safety-critical, demo]
+    links:
+      - type: refines
+        target: FR-005
+      - type: refines
+        target: FR-006
+      - type: refines
+        target: FR-008
+      - type: derives-from
+        target: BR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        PID controller demo builds for qemu_cortex_m3;
+        temperature converges to setpoint within 50 seconds of
+        simulated time; all PID operations use synth-compiled functions.
+
+  # ---------------------------------------------------------------------------
+  # Linker integration
+  # ---------------------------------------------------------------------------
+
+  - id: ZI-008
+    type: system-req
+    title: Zephyr-compatible linker script generation
+    description: >
+      When generating standalone ELF binaries for Zephyr targets, synth's
+      LinkerScriptGenerator shall produce GNU ld scripts compatible with
+      Zephyr's linking requirements. For linked-with-Zephyr mode (assembly
+      integration), synth output shall be position-independent or use
+      symbols that Zephyr's linker resolves. For standalone mode,
+      the generated linker script shall define standard ARM startup symbols
+      (_estack, _sidata, _sdata, _edata, _sbss, _ebss) that the synth
+      Reset_Handler references for .data copy and .bss zero-fill.
+      The .isr_vector section shall use KEEP() and 128-byte alignment.
+    status: implemented
+    tags: [zephyr, linker-script, elf]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: TR-002
+      - type: refines
+        target: FR-002
+      - type: traces-to
+        target: ARCH-003
+      - type: traces-to
+        target: SWA-005
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Generated linker scripts contain ENTRY(Reset_Handler);
+        .isr_vector section with KEEP and ALIGN(128);
+        .data with AT> FLASH for flash-to-RAM copy at startup.
+
+  - id: ZI-009
+    type: system-req
+    title: Meld runtime integration with Zephyr
+    description: >
+      Synth shall support Meld runtime integration within Zephyr
+      applications, enabling WASM component import dispatch via the
+      __meld_dispatch_import and __meld_get_memory_base bridge
+      functions. The linker script shall include .meld_import_table and
+      .meld.imports sections with EXTERN declarations for meld symbols.
+      This enables synth-compiled components to call Zephyr subsystems
+      (e.g., sensor drivers, networking) through Meld's component
+      composition layer.
+    status: draft
+    tags: [zephyr, meld, runtime, component-model]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-001
+      - type: refines
+        target: FR-004
+      - type: traces-to
+        target: ARCH-003
+      - type: traces-to
+        target: ARCH-006
+    fields:
+      req-type: interface
+      priority: should
+      verification-criteria: >
+        LinkerScriptGenerator::with_meld_integration() produces sections
+        with __meld_dispatch_import and __meld_get_memory_base EXTERNs;
+        .meld_import_table section placed in FLASH.
+
+  # ---------------------------------------------------------------------------
+  # Bounds checking integration
+  # ---------------------------------------------------------------------------
+
+  - id: ZI-010
+    type: system-req
+    title: Bounds checking strategy selection for Zephyr targets
+    description: >
+      Synth shall select the appropriate bounds checking strategy based
+      on the Zephyr target's hardware capabilities. On targets with MPU
+      (Cortex-M3/M4/M7/M33), MpuBoundsChecker shall be preferred for
+      zero-overhead hardware protection. On targets without MPU or when
+      MPU regions are exhausted, SoftwareBoundsChecker shall be used as
+      fallback (25-40% overhead). MaskingBoundsChecker is available for
+      power-of-2 memory sizes where wrapping is acceptable (5% overhead).
+      The ProtectionStrategy enum encodes this choice per-memory.
+    status: implemented
+    tags: [bounds-checking, mpu, safety, zephyr]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: FR-003
+      - type: refines
+        target: FR-008
+      - type: traces-to
+        target: ARCH-005
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        SoftwareBoundsChecker traps on out-of-bounds access;
+        MaskingBoundsChecker wraps addresses for power-of-2 sizes;
+        MpuBoundsChecker delegates to hardware fault handling.
