@@ -1,0 +1,261 @@
+# Target Platform Requirements (ASPICE SYS.2 / SWE.1)
+#
+# System: Synth -- WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Defines target hardware platforms, board support, and memory maps.
+# These requirements capture the concrete hardware targets synth must
+# support for Zephyr-based and bare-metal deployments.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # ---------------------------------------------------------------------------
+  # Target Cortex-M variant requirements
+  # ---------------------------------------------------------------------------
+
+  - id: TP-001
+    type: system-req
+    title: Cortex-M4F primary target support
+    description: >
+      Synth shall produce correct bare-metal ELF binaries for ARM Cortex-M4F
+      targets (ARMv7E-M architecture, Thumb-2 ISA, single-precision FPU,
+      8 MPU regions). This is the primary compilation target for both Renode
+      emulation testing and Zephyr RTOS deployment. The Renode test platform
+      emulates a Cortex-M4 at 0x0 flash / 0x20000000 SRAM with 72 MHz
+      SysTick (synth_cortex_m.repl).
+    status: implemented
+    tags: [cortex-m4, target, primary]
+    links:
+      - type: refines
+        target: FR-005
+      - type: derives-from
+        target: BR-003
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Cortex-M4 Renode emulation tests pass (bazel test //tests/...);
+        generated ELF boots and executes add(5,3)=8 on emulated target.
+
+  - id: TP-002
+    type: system-req
+    title: STM32F407 board profile
+    description: >
+      Synth shall include an STM32F407 board profile with correct memory
+      map (flash at 0x08000000, 1 MB; SRAM at 0x20000000, 128 KB + 64 KB
+      CCM), 8 MPU regions, single-precision VFP, and STM32-standard linker
+      script generation (ENTRY(Reset_Handler), .isr_vector, .text, .data
+      AT> FLASH, .bss, .stack, .heap sections). This covers STM32F4-Discovery
+      and Nucleo-F407ZG boards used with Zephyr.
+    status: implemented
+    tags: [stm32f407, board-profile, zephyr]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-005
+      - type: refines
+        target: FR-003
+      - type: traces-to
+        target: ARCH-003
+      - type: traces-to
+        target: ARCH-005
+    fields:
+      req-type: functional
+      priority: must
+      board: STM32F407
+      cpu: cortex-m4f
+      flash-base: "0x08000000"
+      flash-size: "1 MB"
+      ram-base: "0x20000000"
+      ram-size: "192 KB (128 KB SRAM + 64 KB CCM)"
+      mpu-regions: 8
+      fpu: single-precision
+      verification-criteria: >
+        HardwareCapabilities::stm32f407() returns correct values;
+        LinkerScriptGenerator::new_stm32() produces valid linker script
+        with 0x08000000 flash origin.
+
+  - id: TP-003
+    type: system-req
+    title: Nordic nRF52840 board profile
+    description: >
+      Synth shall include a Nordic nRF52840 board profile with correct
+      memory map (flash at 0x00000000, 1 MB; SRAM at 0x20000000, 256 KB),
+      8 MPU regions, single-precision VFP, and BLE-friendly memory layout.
+      The nRF52840-DK is a primary Zephyr development board for PulseEngine
+      hardware testing (issue #22).
+    status: implemented
+    tags: [nrf52840, board-profile, zephyr, ble]
+    links:
+      - type: refines
+        target: FR-005
+      - type: derives-from
+        target: BR-003
+      - type: traces-to
+        target: ARCH-003
+      - type: traces-to
+        target: ARCH-005
+    fields:
+      req-type: functional
+      priority: must
+      board: nRF52840-DK
+      cpu: cortex-m4f
+      flash-base: "0x00000000"
+      flash-size: "1 MB"
+      ram-base: "0x20000000"
+      ram-size: "256 KB"
+      mpu-regions: 8
+      fpu: single-precision
+      verification-criteria: >
+        HardwareCapabilities::nrf52840() returns correct values;
+        MPUAllocator with nrf52840 config allocates regions correctly
+        (test_nrf52840_configuration test).
+
+  - id: TP-004
+    type: system-req
+    title: Cortex-M7 extended target support
+    description: >
+      Synth shall support ARM Cortex-M7 targets (ARMv7E-M, Thumb-2 ISA)
+      with both single-precision and double-precision FPU variants (M7
+      and M7DP in CortexMVariant), 16 MPU regions, and higher-performance
+      memory configurations. Targets include STM32H7 and i.MX RT series.
+    status: draft
+    tags: [cortex-m7, target, extended]
+    links:
+      - type: refines
+        target: FR-005
+      - type: derives-from
+        target: BR-003
+    fields:
+      req-type: functional
+      priority: should
+      cpu: cortex-m7
+      mpu-regions: 16
+      fpu: "single or double precision"
+      verification-criteria: >
+        TargetSpec::cortex_m7() and cortex_m7dp() return correct specs;
+        double-precision FPU flag correctly set for M7DP variant.
+
+  - id: TP-005
+    type: system-req
+    title: Cortex-M33 TrustZone target support
+    description: >
+      Synth shall support ARM Cortex-M33 targets (ARMv8-M Mainline) with
+      TrustZone security extensions (SAU, IDAU) for secure/non-secure
+      partitioning. The M33 variant in CortexMVariant shall report
+      has_trustzone()=true. This enables future integration with Zephyr's
+      TF-M (Trusted Firmware-M) support for secure WASM module isolation.
+    status: draft
+    tags: [cortex-m33, trustzone, target, security]
+    links:
+      - type: refines
+        target: FR-005
+      - type: refines
+        target: FR-008
+      - type: derives-from
+        target: BR-003
+    fields:
+      req-type: functional
+      priority: should
+      cpu: cortex-m33
+      triple: "thumbv8m.main-none-eabi"
+      verification-criteria: >
+        CortexMVariant::M33.has_trustzone() returns true;
+        TargetSpec from_triple("thumbv8m.main-none-eabi") succeeds
+        (currently not in from_triple -- needs implementation).
+
+  - id: TP-006
+    type: system-req
+    title: Vector table and startup code generation
+    description: >
+      Synth shall generate correct ARM Cortex-M vector tables and startup
+      code for all supported target variants. The vector table shall
+      include initial stack pointer, Reset_Handler, and 14 standard
+      exception handlers (NMI, HardFault, MemManage, BusFault,
+      UsageFault, SVC, DebugMon, PendSV, SysTick) plus configurable
+      external IRQ handlers. Reset handler startup code shall initialize
+      R11 as WASM linear memory base (0x20000000), optionally enable FPU
+      (CPACR CP10+CP11), and transfer control to user code. All handler
+      addresses shall have Thumb bit (bit 0) set.
+    status: implemented
+    tags: [vector-table, startup, cortex-m]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-005
+      - type: refines
+        target: FR-002
+      - type: traces-to
+        target: ARCH-003
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Vector table binary has correct Thumb-mode addresses;
+        startup code initializes R11 to 0x20000000;
+        FPU enable code writes CPACR at 0xE000ED88 with DSB+ISB barriers.
+
+  - id: TP-007
+    type: system-req
+    title: MPU region allocation for WASM memories
+    description: >
+      Synth shall generate MPU region configurations that map WASM linear
+      memories to power-of-2 sized hardware protection regions. The MPU
+      allocator shall respect the target's available region count (8 for
+      M3/M4, 16 for M7), validate base address alignment to region size,
+      detect overlapping regions, and generate C initialization code
+      (MPU_TYPE, MPU_CTRL, MPU_RNR, MPU_RBAR, MPU_RASR register writes).
+      Subregion disable masks shall be supported for finer-grained
+      protection within a region.
+    status: implemented
+    tags: [mpu, memory-protection, cortex-m]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: FR-003
+      - type: refines
+        target: FR-008
+      - type: traces-to
+        target: ARCH-003
+      - type: traces-to
+        target: ARCH-005
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        MPUAllocator allocates correct region sizes for 64KB WASM pages;
+        RBAR and RASR register values encode permissions and attributes;
+        overlapping allocation is rejected with error.
+
+  - id: TP-008
+    type: system-req
+    title: Generic Cortex-M emulation platform
+    description: >
+      Synth shall support a generic Cortex-M memory layout (flash at 0x0,
+      256 KB; RAM at 0x20000000, 64 KB) suitable for QEMU and Renode
+      emulation testing. The Renode platform description (synth_cortex_m.repl)
+      uses this layout with NVIC at 0xE000E000 and 72 MHz SysTick frequency.
+      This is the default target when --cortex-m is specified without a
+      board name.
+    status: implemented
+    tags: [emulation, renode, qemu, testing]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-002
+      - type: refines
+        target: FR-005
+    fields:
+      req-type: functional
+      priority: must
+      flash-base: "0x00000000"
+      flash-size: "256 KB"
+      ram-base: "0x20000000"
+      ram-size: "64 KB"
+      verification-criteria: >
+        MemoryLayout::generic() returns correct values;
+        Renode cortex_m_test.robot passes with synth_cortex_m.repl platform.

@@ -1,0 +1,436 @@
+# Component Model Integration (ASPICE SYS.2 / SWE.1)
+#
+# System: Synth -- WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Defines the WASI Component Model integration between synth (AOT compiler)
+# and kiln (runtime). Captures the dependency on kiln for Component Model
+# runtime support, the BA RFC #46 lower-component architecture, and the
+# canonical ABI contract that synth-abi must satisfy.
+#
+# References:
+#   - BA RFC #46: https://github.com/bytecodealliance/rfcs/pull/46
+#   - Component Model Canonical ABI: https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
+#   - WIT specification: https://github.com/WebAssembly/component-model/blob/main/design/mvp/WIT.md
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # ---------------------------------------------------------------------------
+  # System-level requirements for Component Model integration
+  # ---------------------------------------------------------------------------
+
+  - id: CM-001
+    type: system-req
+    title: Canonical ABI compatibility with kiln runtime
+    description: >
+      Synth's canonical ABI implementation (synth-abi crate) shall produce
+      lift/lower sequences that are byte-compatible with kiln's canonical ABI
+      implementation (kiln-component canonical_abi module). This covers type
+      sizes, field alignment, string encoding (UTF-8, UTF-16, Latin-1),
+      discriminant layout for variants/options/results, and list (ptr, len)
+      representation. Disagreement between synth-abi and kiln's canonical ABI
+      on any type layout is a blocking defect (per kiln:SR-11 cross-toolchain
+      requirement).
+    status: draft
+    tags: [component-model, canonical-abi, cross-toolchain, kiln-dependency]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: traces-to
+        target: FR-001
+      - type: traces-to
+        target: kiln:SR-11
+      - type: traces-to
+        target: kiln:SR-10
+      - type: traces-to
+        target: kiln:SR-9
+    fields:
+      req-type: interface
+      priority: must
+      spec-reference: "Component Model Canonical ABI specification"
+      verification-criteria: >
+        Shared type layout fixtures exercised through both synth-abi and
+        kiln canonical_abi produce identical byte sequences for all WIT
+        type families (primitives, records, variants, options, results,
+        lists, strings, enums, flags).
+
+  - id: CM-002
+    type: system-req
+    title: Component lowering to core module (BA RFC #46 architecture)
+    description: >
+      Synth shall support the BA RFC #46 lower-component architecture where
+      WebAssembly components are lowered to core modules before AOT compilation.
+      In this architecture, component imports/exports are resolved to core
+      module imports/exports with canonical ABI wrappers, and host intrinsics
+      (memory management, stream I/O, resource lifecycle) are provided by
+      kiln-builtins or meld's fuser. Synth's role is to AOT-compile the
+      resulting core module to ARM machine code; kiln provides the runtime
+      host intrinsics that the compiled code calls via the __meld_dispatch_import
+      bridge interface.
+    status: draft
+    tags: [component-model, rfc46, lower-component, kiln-dependency]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: derives-from
+        target: BR-003
+      - type: traces-to
+        target: FR-001
+      - type: traces-to
+        target: FR-004
+      - type: traces-to
+        target: kiln:REQ_FUNC_014
+      - type: traces-to
+        target: kiln:REQ_HELPER_ABI_001
+    fields:
+      req-type: functional
+      priority: must
+      spec-reference: "BA RFC #46 — lower-component tool"
+      verification-criteria: >
+        A WASM component lowered via meld's fuser compiles through synth
+        to an ARM ELF binary that successfully calls kiln-builtins host
+        intrinsics at runtime.
+
+  - id: CM-003
+    type: system-req
+    title: Host intrinsic ABI stability contract with kiln
+    description: >
+      Synth-compiled code shall call kiln-builtins host intrinsics using
+      the stable C ABI defined by kiln:SR-BUILTIN-ABI. The function
+      signatures for memory operations (kiln_memory_copy, kiln_memory_fill,
+      kiln_memory_grow), atomic operations (kiln_atomic_wait,
+      kiln_atomic_notify), and Component Model runtime operations (resource
+      new/rep/drop, stream read/write, waitable set operations) shall be
+      consumed from a machine-readable ABI definition (WIT or C header)
+      at synth build time. ABI version mismatches shall be detected at
+      link time, not at runtime.
+    status: draft
+    tags: [component-model, abi-stability, kiln-dependency, rfc46]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: derives-from
+        target: BR-003
+      - type: traces-to
+        target: FR-001
+      - type: traces-to
+        target: FR-004
+      - type: traces-to
+        target: kiln:SR-BUILTIN-ABI
+      - type: traces-to
+        target: kiln:SR-MELD-COMPAT
+    fields:
+      req-type: interface
+      priority: must
+      spec-reference: "BA RFC #46 — Host-Guest C API"
+      verification-criteria: >
+        Integration test compiles a component through meld+synth and
+        executes against kiln-builtins; CI detects ABI signature
+        mismatches between synth codegen and kiln-builtins declarations.
+
+  - id: CM-004
+    type: system-req
+    title: WASI Preview 2 dispatch compatibility
+    description: >
+      Synth-compiled modules calling WASI Preview 2 interfaces shall use
+      the same canonical ABI lowered calling convention as kiln's unified
+      WASI dispatcher (kiln:REQ_FUNC_034). WASI calls from synth-compiled
+      code pass through the HostImportHandler trait interface, which kiln's
+      WasiDispatcher implements. The dispatch path shall support both
+      dispatch_core (canonical ABI lowered i32/i64 + memory pointers) and
+      dispatch_core_v2 (two-phase allocation for host-side cabi_realloc).
+    status: draft
+    tags: [component-model, wasi, canonical-abi, kiln-dependency]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: traces-to
+        target: FR-001
+      - type: traces-to
+        target: kiln:REQ_FUNC_034
+      - type: traces-to
+        target: kiln:AC-WASI
+    fields:
+      req-type: interface
+      priority: must
+      spec-reference: "WASI Preview 2"
+      verification-criteria: >
+        Synth-compiled module calling wasi:cli/stdout produces output
+        when executed with kiln's WasiDispatcher as the host import
+        handler.
+
+  - id: CM-005
+    type: system-req
+    title: RFC #46 async intrinsic support for AOT compilation
+    description: >
+      Synth shall support AOT compilation of modules that use RFC #46 async
+      intrinsics (thread management, stream/future I/O, waitable sets).
+      For AOT-compiled code on embedded targets, async operations shall be
+      backed by kiln-builtins host intrinsics that delegate to the target
+      RTOS (e.g., gale tasks on gale targets, Zephyr threads on Zephyr
+      targets). Synth generates the call stubs; kiln provides the runtime
+      implementation.
+    status: planned
+    tags: [component-model, rfc46, async, kiln-dependency]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: derives-from
+        target: BR-003
+      - type: traces-to
+        target: FR-001
+      - type: traces-to
+        target: FR-004
+      - type: traces-to
+        target: kiln:FR-RFC46-THREAD
+      - type: traces-to
+        target: kiln:FR-RFC46-STREAM
+      - type: traces-to
+        target: kiln:FR-RFC46-RESOURCE
+      - type: traces-to
+        target: kiln:FR-RFC46-WAITABLE
+    fields:
+      req-type: functional
+      priority: should
+      spec-reference: "BA RFC #46 — Thread/Stream/Future/Waitable intrinsics"
+      verification-criteria: >
+        Synth-compiled module using thread_new and stream_read/write
+        compiles to ARM code containing correct host intrinsic call
+        sequences; execution verified on Renode with kiln-builtins stub.
+
+  # ---------------------------------------------------------------------------
+  # Software-level requirements for synth-abi canonical ABI implementation
+  # ---------------------------------------------------------------------------
+
+  - id: CM-TR-001
+    type: sw-req
+    title: Canonical ABI type layout computation
+    description: >
+      synth-abi shall compute type sizes and alignments for all WIT type
+      families exactly matching the Component Model Canonical ABI
+      specification: primitives (bool=1, s8/u8=1, s16/u16=2, s32/u32/f32/
+      char=4, s64/u64/f64=8), strings and lists (ptr+len = 8 bytes, align 4),
+      records (field offsets via align_up, total size rounded to max
+      alignment), variants/options/results (discriminant + aligned payload),
+      tuples, enums, and flags. The align_to function shall use
+      ceiling division: align_to(x, a) = ((x + a - 1) / a) * a.
+    status: implemented
+    tags: [canonical-abi, type-layout, synth-abi]
+    links:
+      - type: derives-from
+        target: CM-001
+      - type: refines
+        target: FR-001
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-abi
+      verification-criteria: >
+        Unit tests verify size_of and alignment_of for all WIT type
+        families; cross-validation against kiln canonical_abi sizes.
+
+  - id: CM-TR-002
+    type: sw-req
+    title: Canonical ABI lift/lower for primitive types
+    description: >
+      synth-abi shall implement lift (core WASM values to Component Model
+      values) and lower (Component Model values to core WASM values) for
+      all primitive types: bool, s8, u8, s16, u16, s32, u32, s64, u64,
+      f32, f64. Roundtrip identity shall hold: lift(lower(v)) == v for
+      all valid values.
+    status: implemented
+    tags: [canonical-abi, lift-lower, primitives, synth-abi]
+    links:
+      - type: derives-from
+        target: CM-001
+      - type: refines
+        target: FR-001
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-abi
+      verification-criteria: >
+        Roundtrip tests for all primitive types; edge cases (min/max
+        values, NaN for floats) verified.
+
+  - id: CM-TR-003
+    type: sw-req
+    title: Canonical ABI lift/lower for compound types
+    description: >
+      synth-abi shall implement lift/lower for compound types: strings
+      (UTF-8, UTF-16, Latin-1 encodings via AbiOptions), lists (element
+      size and alignment-aware), records (field-by-field with alignment),
+      variants (discriminant + payload), options (None/Some discriminant),
+      results (Ok/Err discriminant), enums (case index), and flags
+      (bitset). All compound type operations use the Memory trait for
+      linear memory access.
+    status: implemented
+    tags: [canonical-abi, lift-lower, compound-types, synth-abi]
+    links:
+      - type: derives-from
+        target: CM-001
+      - type: refines
+        target: FR-001
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-abi
+      verification-criteria: >
+        Roundtrip tests for all compound types; string encoding
+        roundtrips (UTF-8, UTF-16, Latin-1); record alignment verified;
+        variant/option/result discriminant layout verified.
+
+  - id: CM-TR-004
+    type: sw-req
+    title: Memory trait for portable linear memory access
+    description: >
+      synth-abi shall define a Memory trait abstracting linear memory
+      operations (read, write, allocate, free) with bounds-checked access.
+      Out-of-bounds access shall return AbiError::Trap. The trait shall
+      be implementable by both synth's test harness (SimpleMemory) and
+      kiln's runtime memory (via adapter). The allocator shall support
+      alignment-aware allocation for the canonical ABI realloc pattern.
+    status: implemented
+    tags: [canonical-abi, memory, synth-abi]
+    links:
+      - type: derives-from
+        target: CM-001
+      - type: refines
+        target: FR-003
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-abi
+      verification-criteria: >
+        Memory trait operations are bounds-checked; SimpleMemory tests
+        verify alignment-aware allocation; out-of-bounds access produces
+        AbiError::Trap.
+
+  # ---------------------------------------------------------------------------
+  # SW-level requirements for component lowering codegen (planned)
+  # ---------------------------------------------------------------------------
+
+  - id: CM-TR-005
+    type: sw-req
+    title: Import dispatch stub generation for lowered components
+    description: >
+      synth-synthesis shall generate ARM call stubs for component import
+      dispatch via the __meld_dispatch_import bridge. Each component import
+      shall be lowered to: (1) canonical ABI lower of arguments into linear
+      memory, (2) a BL (branch-and-link) call to the host intrinsic import
+      stub, (3) canonical ABI lift of return values. The stub generation
+      shall be driven by the WIT interface type signatures extracted during
+      frontend parsing.
+    status: planned
+    tags: [component-model, codegen, import-dispatch, synth-synthesis]
+    links:
+      - type: derives-from
+        target: CM-002
+      - type: derives-from
+        target: CM-003
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-synthesis
+      verification-criteria: >
+        Generated ARM stubs for a test WIT interface contain correct
+        BL instruction to import dispatch; argument lowering verified
+        by Z3 SMT or Renode execution.
+
+  - id: CM-TR-006
+    type: sw-req
+    title: Host intrinsic signature validation at compile time
+    description: >
+      synth-cli shall validate that all host intrinsic imports in a
+      meld-fused core module match the expected kiln-builtins ABI
+      signatures before beginning synthesis. Signature mismatches
+      (parameter count, parameter types, return types) shall produce
+      a compile-time error with the expected vs actual signature.
+    status: planned
+    tags: [component-model, validation, abi-stability, synth-cli]
+    links:
+      - type: derives-from
+        target: CM-003
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-cli
+      verification-criteria: >
+        Module with mismatched host intrinsic signature rejected at
+        compile time; valid signatures accepted.
+
+  # ---------------------------------------------------------------------------
+  # Verification artifacts for Component Model integration
+  # ---------------------------------------------------------------------------
+
+  - id: CM-VER-001
+    type: sw-verification
+    title: Canonical ABI roundtrip tests
+    description: >
+      Tests verifying that lift(lower(v)) == v for all supported WIT type
+      families in synth-abi. Covers primitives, strings (all three
+      encodings), records, variants, options, results, enums, flags, and
+      lists. These tests exercise the same code paths that synth-compiled
+      modules use for component boundary crossings.
+    status: implemented
+    tags: [canonical-abi, roundtrip, synth-abi]
+    links:
+      - type: verifies
+        target: CM-TR-001
+      - type: verifies
+        target: CM-TR-002
+      - type: verifies
+        target: CM-TR-003
+      - type: verifies
+        target: CM-TR-004
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-abi"
+        coverage: "Roundtrip tests for all WIT type families; Memory trait tests"
+
+  - id: CM-VER-002
+    type: sw-verification
+    title: Cross-toolchain canonical ABI compatibility tests
+    description: >
+      Integration tests verifying that synth-abi and kiln's canonical ABI
+      produce identical byte layouts for shared type fixtures. Tests
+      exercise type size computation, field alignment, string encoding,
+      and discriminant layout across both implementations. Required by
+      kiln:SR-24 (shared wit-bindgen fixtures).
+    status: planned
+    tags: [canonical-abi, cross-toolchain, integration]
+    links:
+      - type: verifies
+        target: CM-TR-001
+    fields:
+      method: automated-test
+      steps:
+        run: "Shared fixture suite (planned)"
+        coverage: "Type layout compatibility across synth-abi and kiln canonical_abi"
+
+  - id: CM-VER-003
+    type: sw-verification
+    title: Component lowering end-to-end test
+    description: >
+      End-to-end test verifying that a WASM component, lowered via meld's
+      fuser to a core module, compiles through synth to an ARM ELF binary
+      that successfully executes with kiln-builtins host intrinsics on a
+      Cortex-M4 target (Renode emulation). Validates the full BA RFC #46
+      pipeline: component -> meld fuse -> synth compile -> kiln execute.
+    status: planned
+    tags: [rfc46, end-to-end, integration, cross-toolchain]
+    links:
+      - type: verifies
+        target: CM-TR-005
+      - type: verifies
+        target: CM-TR-006
+    fields:
+      method: simulation
+      preconditions:
+        - Meld fuser available
+        - Kiln-builtins compiled for ARM target
+        - Renode emulator available
+      steps:
+        run: "bazel test //tests/component-model/... (planned)"
+        coverage: "Component -> core lowering -> AOT compile -> execute"

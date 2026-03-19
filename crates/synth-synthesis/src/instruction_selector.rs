@@ -3014,4 +3014,1131 @@ mod tests {
             "br(0) in loop should branch back to loop_start label"
         );
     }
+
+    // =========================================================================
+    // Complex control flow tests (GitHub issue #36)
+    //
+    // These exercise the control flow compilation paths landed in PR #52:
+    // nested blocks, loops with conditional exit, if/else with nested blocks,
+    // br_table dispatch, and realistic multi-construct programs like
+    // factorial and fibonacci.
+    // =========================================================================
+
+    /// Helper: create a fresh InstructionSelector with no optimization rules
+    fn fresh_selector() -> InstructionSelector {
+        InstructionSelector::new(vec![])
+    }
+
+    /// Helper: collect all Label names from an instruction sequence
+    fn collect_labels(instrs: &[ArmInstruction]) -> Vec<String> {
+        instrs
+            .iter()
+            .filter_map(|i| {
+                if let ArmOp::Label { name } = &i.op {
+                    Some(name.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Helper: collect all unconditional branch targets (B { label })
+    fn collect_branch_targets(instrs: &[ArmInstruction]) -> Vec<String> {
+        instrs
+            .iter()
+            .filter_map(|i| {
+                if let ArmOp::B { label } = &i.op {
+                    Some(label.clone())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Helper: collect all conditional branch targets (Bcc { label, .. })
+    fn collect_cond_branch_targets(instrs: &[ArmInstruction]) -> Vec<(Condition, String)> {
+        instrs
+            .iter()
+            .filter_map(|i| {
+                if let ArmOp::Bcc { cond, label } = &i.op {
+                    Some((*cond, label.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Helper: count instructions of a given kind
+    fn count_op<F: Fn(&ArmOp) -> bool>(instrs: &[ArmInstruction], pred: F) -> usize {
+        instrs.iter().filter(|i| pred(&i.op)).count()
+    }
+
+    // ----- Test 1: Nested blocks with branch-out (br to outer block) -----
+
+    #[test]
+    fn test_complex_nested_blocks_br_to_outer() {
+        // WASM equivalent:
+        //   (block $outer            ;; depth 2 from innermost
+        //     (block $middle         ;; depth 1 from innermost
+        //       (block $inner        ;; depth 0
+        //         i32.const 1
+        //         br 2               ;; jump to $outer end
+        //       )
+        //       i32.const 2          ;; skipped by br 2
+        //     )
+        //     i32.const 3            ;; also skipped by br 2
+        //   )
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::Block, // $outer
+            WasmOp::Block, // $middle
+            WasmOp::Block, // $inner
+            WasmOp::I32Const(1),
+            WasmOp::Br(2), // jump to $outer end
+            WasmOp::End,   // end $inner
+            WasmOp::I32Const(2),
+            WasmOp::End, // end $middle
+            WasmOp::I32Const(3),
+            WasmOp::End, // end $outer
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should have 3 block end labels (one per block)
+        let labels = collect_labels(&instrs);
+        assert!(
+            labels.len() >= 3,
+            "Three nested blocks should produce at least 3 end labels, got {}",
+            labels.len()
+        );
+
+        // The br(2) should generate a B instruction
+        let branches = collect_branch_targets(&instrs);
+        assert!(
+            !branches.is_empty(),
+            "br(2) should generate an unconditional branch"
+        );
+
+        // The branch target should be the outer block's end label (the first
+        // label pushed on block_labels, which is the outermost block end)
+        let outer_end_label = &labels[labels.len() - 1]; // last label emitted is outermost end
+        assert!(
+            branches.contains(outer_end_label),
+            "br(2) should target the outermost block end label '{}', targets: {:?}",
+            outer_end_label,
+            branches
+        );
+    }
+
+    // ----- Test 2: Loop with conditional exit (br_if) -----
+
+    #[test]
+    fn test_complex_loop_with_conditional_exit() {
+        // WASM equivalent (countdown loop):
+        //   (block $exit
+        //     (loop $loop
+        //       local.get 0          ;; counter
+        //       i32.eqz
+        //       br_if 1              ;; if counter == 0, exit block
+        //       local.get 0
+        //       i32.const 1
+        //       i32.sub
+        //       local.set 0          ;; counter -= 1
+        //       br 0                 ;; loop back
+        //     )
+        //   )
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::Block,       // $exit
+            WasmOp::Loop,        // $loop
+            WasmOp::LocalGet(0), // counter
+            WasmOp::I32Eqz,      // counter == 0?
+            WasmOp::BrIf(1),     // if zero, exit to $exit end
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(1),
+            WasmOp::I32Sub,      // counter - 1
+            WasmOp::LocalSet(0), // counter = counter - 1
+            WasmOp::Br(0),       // loop back to $loop start
+            WasmOp::End,         // end $loop
+            WasmOp::End,         // end $exit
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // Should have a loop_start label
+        let loop_labels: Vec<_> = collect_labels(&instrs)
+            .into_iter()
+            .filter(|l| l.contains("loop_start"))
+            .collect();
+        assert_eq!(
+            loop_labels.len(),
+            1,
+            "Should have exactly one loop_start label"
+        );
+
+        // Should have an unconditional branch back to loop_start (br 0)
+        let branches = collect_branch_targets(&instrs);
+        assert!(
+            branches.contains(&loop_labels[0]),
+            "br(0) should branch back to loop_start label"
+        );
+
+        // Should have a conditional branch (br_if 1) targeting exit block end
+        let cond_branches = collect_cond_branch_targets(&instrs);
+        let ne_branches: Vec<_> = cond_branches
+            .iter()
+            .filter(|(c, _)| *c == Condition::NE)
+            .collect();
+        assert!(
+            !ne_branches.is_empty(),
+            "br_if should generate a BNE conditional branch"
+        );
+
+        // Should emit a SUB for counter decrement
+        let has_sub = instrs.iter().any(|i| matches!(&i.op, ArmOp::Sub { .. }));
+        assert!(has_sub, "Should emit SUB for i32.sub (counter -= 1)");
+    }
+
+    // ----- Test 3: If/else with computation in both arms -----
+
+    #[test]
+    fn test_complex_if_else_with_computation() {
+        // WASM equivalent:
+        //   local.get 0              ;; condition from param
+        //   (if
+        //     (then
+        //       local.get 1
+        //       i32.const 10
+        //       i32.add
+        //       local.set 1          ;; x += 10
+        //       local.get 1
+        //       i32.const 100
+        //       i32.mul
+        //       local.set 1          ;; x *= 100
+        //     )
+        //     (else
+        //       local.get 1
+        //       i32.const 20
+        //       i32.sub
+        //       local.set 1          ;; x -= 20
+        //       local.get 1
+        //       i32.const 2
+        //       i32.mul
+        //       local.set 1          ;; x *= 2
+        //     )
+        //   )
+        //   local.get 1              ;; return x
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0), // condition
+            WasmOp::If,
+            // then-arm: x += 10, x *= 100
+            WasmOp::LocalGet(1),
+            WasmOp::I32Const(10),
+            WasmOp::I32Add,
+            WasmOp::LocalSet(1),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Const(100),
+            WasmOp::I32Mul,
+            WasmOp::LocalSet(1),
+            WasmOp::Else,
+            // else-arm: x -= 20, x *= 2
+            WasmOp::LocalGet(1),
+            WasmOp::I32Const(20),
+            WasmOp::I32Sub,
+            WasmOp::LocalSet(1),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Const(2),
+            WasmOp::I32Mul,
+            WasmOp::LocalSet(1),
+            WasmOp::End,         // end if
+            WasmOp::LocalGet(1), // return x
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 2).unwrap();
+
+        // Should have CMP for condition
+        let cmp_count = count_op(&instrs, |op| matches!(op, ArmOp::Cmp { .. }));
+        assert!(cmp_count >= 1, "If should emit CMP for condition");
+
+        // Should have conditional branch to else (BEQ)
+        let beq_count = count_op(&instrs, |op| {
+            matches!(
+                op,
+                ArmOp::Bcc {
+                    cond: Condition::EQ,
+                    ..
+                }
+            )
+        });
+        assert!(beq_count >= 1, "If should emit BEQ to skip to else");
+
+        // Should have unconditional branch to skip else at end of then
+        let b_count = count_op(&instrs, |op| matches!(op, ArmOp::B { .. }));
+        assert!(
+            b_count >= 1,
+            "End of then-arm should emit B to skip else, got {}",
+            b_count
+        );
+
+        // Should have labels for else and if_end
+        let labels = collect_labels(&instrs);
+        let else_labels: Vec<_> = labels.iter().filter(|l| l.contains("else")).collect();
+        let end_labels: Vec<_> = labels.iter().filter(|l| l.contains("if_end")).collect();
+        assert!(!else_labels.is_empty(), "Should have an else label");
+        assert!(!end_labels.is_empty(), "Should have an if_end label");
+
+        // Should have ADD for then-arm and SUB for else-arm
+        let add_count = count_op(&instrs, |op| matches!(op, ArmOp::Add { .. }));
+        assert!(add_count >= 1, "Then-arm should have ADD");
+        let sub_count = count_op(&instrs, |op| matches!(op, ArmOp::Sub { .. }));
+        assert!(sub_count >= 1, "Else-arm should have SUB");
+
+        // Should have MUL instructions for both arms
+        let mul_count = count_op(&instrs, |op| matches!(op, ArmOp::Mul { .. }));
+        assert_eq!(
+            mul_count, 2,
+            "Should have 2 MUL instructions (one per arm), got {}",
+            mul_count
+        );
+    }
+
+    // ----- Test 4: br_table (switch-like dispatch) -----
+
+    #[test]
+    fn test_complex_br_table_switch_dispatch() {
+        // WASM equivalent (switch with 3 cases + default):
+        //   (block $case2
+        //     (block $case1
+        //       (block $case0
+        //         (block $default
+        //           local.get 0          ;; switch index
+        //           br_table 0 1 2 3     ;; targets=[0,1,2], default=3
+        //         )
+        //         ;; default body
+        //         i32.const 99
+        //         br 2
+        //       )
+        //       ;; case 0 body
+        //       i32.const 0
+        //       br 1
+        //     )
+        //     ;; case 1 body
+        //     i32.const 1
+        //     br 0
+        //   )
+        //   ;; case 2 falls through here
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::Block,       // $case2
+            WasmOp::Block,       // $case1
+            WasmOp::Block,       // $case0
+            WasmOp::Block,       // $default
+            WasmOp::LocalGet(0), // switch index
+            WasmOp::BrTable {
+                targets: vec![0, 1, 2], // case 0->$default, 1->$case0, 2->$case1
+                default: 3,             // default->$case2
+            },
+            WasmOp::End,          // end $default
+            WasmOp::I32Const(99), // default body
+            WasmOp::Br(2),        // skip to $case2 end
+            WasmOp::End,          // end $case0
+            WasmOp::I32Const(0),  // case 0 body
+            WasmOp::Br(1),        // skip to $case2 end
+            WasmOp::End,          // end $case1
+            WasmOp::I32Const(1),  // case 1 body
+            WasmOp::Br(0),        // skip to $case2 end
+            WasmOp::End,          // end $case2
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // br_table should emit CMP+BEQ for each target (3 targets)
+        let cmp_count = count_op(&instrs, |op| matches!(op, ArmOp::Cmp { .. }));
+        assert!(
+            cmp_count >= 3,
+            "br_table with 3 targets should emit at least 3 CMPs, got {}",
+            cmp_count
+        );
+
+        let beq_count = count_op(&instrs, |op| {
+            matches!(
+                op,
+                ArmOp::Bcc {
+                    cond: Condition::EQ,
+                    ..
+                }
+            )
+        });
+        assert!(
+            beq_count >= 3,
+            "br_table with 3 targets should emit at least 3 BEQs, got {}",
+            beq_count
+        );
+
+        // Should emit a default unconditional branch
+        let b_count = count_op(&instrs, |op| matches!(op, ArmOp::B { .. }));
+        assert!(
+            b_count >= 4,
+            "Should have at least 4 B instructions (1 default + 3 case br), got {}",
+            b_count
+        );
+
+        // Should have 4 block end labels
+        let labels = collect_labels(&instrs);
+        let block_end_labels: Vec<_> = labels.iter().filter(|l| l.contains("block_end")).collect();
+        assert_eq!(
+            block_end_labels.len(),
+            4,
+            "Should have 4 block_end labels for 4 blocks, got {}",
+            block_end_labels.len()
+        );
+    }
+
+    // ----- Test 5: Factorial (loop + if + arithmetic) -----
+
+    #[test]
+    fn test_complex_factorial() {
+        // WASM equivalent of iterative factorial:
+        //   (func $factorial (param $n i32) (result i32)
+        //     (local $result i32)
+        //     i32.const 1
+        //     local.set 1             ;; result = 1
+        //     (block $exit
+        //       (loop $loop
+        //         local.get 0         ;; n
+        //         i32.const 1
+        //         i32.le_s
+        //         br_if 1             ;; if n <= 1, exit
+        //         local.get 1         ;; result
+        //         local.get 0         ;; n
+        //         i32.mul
+        //         local.set 1         ;; result *= n
+        //         local.get 0
+        //         i32.const 1
+        //         i32.sub
+        //         local.set 0         ;; n -= 1
+        //         br 0                ;; loop
+        //       )
+        //     )
+        //     local.get 1             ;; return result
+        //   )
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::LocalSet(1), // result = 1
+            WasmOp::Block,       // $exit
+            WasmOp::Loop,        // $loop
+            WasmOp::LocalGet(0), // n
+            WasmOp::I32Const(1),
+            WasmOp::I32LeS,      // n <= 1?
+            WasmOp::BrIf(1),     // exit if true
+            WasmOp::LocalGet(1), // result
+            WasmOp::LocalGet(0), // n
+            WasmOp::I32Mul,      // result * n
+            WasmOp::LocalSet(1), // result = result * n
+            WasmOp::LocalGet(0), // n
+            WasmOp::I32Const(1),
+            WasmOp::I32Sub,      // n - 1
+            WasmOp::LocalSet(0), // n = n - 1
+            WasmOp::Br(0),       // loop back
+            WasmOp::End,         // end $loop
+            WasmOp::End,         // end $exit
+            WasmOp::LocalGet(1), // return result
+        ];
+
+        // 2 params: $n in r0, $result in r1 (via local.set 1)
+        let instrs = selector.select_with_stack(&wasm_ops, 2).unwrap();
+
+        // Should have a loop_start label
+        let labels = collect_labels(&instrs);
+        let loop_starts: Vec<_> = labels.iter().filter(|l| l.contains("loop_start")).collect();
+        assert_eq!(loop_starts.len(), 1, "Should have exactly one loop_start");
+
+        // Should have backward branch (br 0) to loop
+        let branches = collect_branch_targets(&instrs);
+        assert!(
+            branches.contains(loop_starts[0]),
+            "br(0) should branch back to loop_start"
+        );
+
+        // Should have conditional exit (br_if 1)
+        let cond_branches = collect_cond_branch_targets(&instrs);
+        assert!(
+            !cond_branches.is_empty(),
+            "br_if(1) should emit conditional branch to exit"
+        );
+
+        // Should have MUL for result * n
+        let mul_count = count_op(&instrs, |op| matches!(op, ArmOp::Mul { .. }));
+        assert_eq!(mul_count, 1, "Should have exactly one MUL for result * n");
+
+        // Should have SUB for n - 1
+        let sub_count = count_op(&instrs, |op| matches!(op, ArmOp::Sub { .. }));
+        assert_eq!(sub_count, 1, "Should have exactly one SUB for n - 1");
+
+        // Should have BX LR at the end for function return
+        let has_bx_lr = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Bx { rm: Reg::LR }));
+        assert!(has_bx_lr, "Function should end with BX LR");
+    }
+
+    // ----- Test 6: Fibonacci (loop + if + arithmetic) -----
+
+    #[test]
+    fn test_complex_fibonacci() {
+        // WASM equivalent of iterative fibonacci:
+        //   (func $fib (param $n i32) (result i32)
+        //     (local $a i32)   ;; local 1 = 0
+        //     (local $b i32)   ;; local 2 = 1
+        //     (local $tmp i32) ;; local 3
+        //     i32.const 0
+        //     local.set 1         ;; a = 0
+        //     i32.const 1
+        //     local.set 2         ;; b = 1
+        //     (block $exit
+        //       (loop $loop
+        //         local.get 0     ;; n
+        //         i32.eqz
+        //         br_if 1         ;; if n == 0, exit
+        //         local.get 1     ;; a
+        //         local.get 2     ;; b
+        //         i32.add
+        //         local.set 3     ;; tmp = a + b
+        //         local.get 2
+        //         local.set 1     ;; a = b
+        //         local.get 3
+        //         local.set 2     ;; b = tmp
+        //         local.get 0
+        //         i32.const 1
+        //         i32.sub
+        //         local.set 0     ;; n -= 1
+        //         br 0            ;; loop
+        //       )
+        //     )
+        //     local.get 1         ;; return a
+        //   )
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::I32Const(0),
+            WasmOp::LocalSet(1), // a = 0
+            WasmOp::I32Const(1),
+            WasmOp::LocalSet(2), // b = 1
+            WasmOp::Block,       // $exit
+            WasmOp::Loop,        // $loop
+            WasmOp::LocalGet(0), // n
+            WasmOp::I32Eqz,      // n == 0?
+            WasmOp::BrIf(1),     // exit if n == 0
+            WasmOp::LocalGet(1), // a
+            WasmOp::LocalGet(2), // b
+            WasmOp::I32Add,      // a + b
+            WasmOp::LocalSet(3), // tmp = a + b
+            WasmOp::LocalGet(2), // b
+            WasmOp::LocalSet(1), // a = b
+            WasmOp::LocalGet(3), // tmp
+            WasmOp::LocalSet(2), // b = tmp
+            WasmOp::LocalGet(0), // n
+            WasmOp::I32Const(1),
+            WasmOp::I32Sub,      // n - 1
+            WasmOp::LocalSet(0), // n = n - 1
+            WasmOp::Br(0),       // loop
+            WasmOp::End,         // end $loop
+            WasmOp::End,         // end $exit
+            WasmOp::LocalGet(1), // return a
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 4).unwrap();
+
+        // Should have loop_start label
+        let labels = collect_labels(&instrs);
+        let loop_starts: Vec<_> = labels.iter().filter(|l| l.contains("loop_start")).collect();
+        assert_eq!(loop_starts.len(), 1, "Should have one loop_start");
+
+        // Should have backward branch
+        let branches = collect_branch_targets(&instrs);
+        assert!(
+            branches.contains(loop_starts[0]),
+            "Should branch back to loop_start"
+        );
+
+        // Should have ADD for a + b
+        let add_count = count_op(&instrs, |op| matches!(op, ArmOp::Add { .. }));
+        assert!(add_count >= 1, "Should have ADD for a + b");
+
+        // Should have SUB for n - 1
+        let sub_count = count_op(&instrs, |op| matches!(op, ArmOp::Sub { .. }));
+        assert!(sub_count >= 1, "Should have SUB for n - 1");
+
+        // Should have conditional branch for br_if
+        let cond_branches = collect_cond_branch_targets(&instrs);
+        let ne_branches: Vec<_> = cond_branches
+            .iter()
+            .filter(|(c, _)| *c == Condition::NE)
+            .collect();
+        assert!(
+            !ne_branches.is_empty(),
+            "br_if should generate BNE for conditional exit"
+        );
+    }
+
+    // ----- Test 7: Empty blocks -----
+
+    #[test]
+    fn test_complex_empty_blocks() {
+        // Empty blocks should compile without error and produce minimal code
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::Block,
+            WasmOp::End,
+            WasmOp::Block,
+            WasmOp::Block,
+            WasmOp::End,
+            WasmOp::End,
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should succeed and produce labels
+        let labels = collect_labels(&instrs);
+        assert!(
+            labels.len() >= 3,
+            "Three empty blocks should produce at least 3 labels, got {}",
+            labels.len()
+        );
+
+        // No branches should be emitted (no br instructions)
+        let b_count = count_op(&instrs, |op| matches!(op, ArmOp::B { .. }));
+        assert_eq!(
+            b_count, 0,
+            "Empty blocks should not emit branches, got {}",
+            b_count
+        );
+    }
+
+    // ----- Test 8: Deeply nested blocks (5 levels) -----
+
+    #[test]
+    fn test_complex_deeply_nested_blocks() {
+        // 5 levels of nesting with br from innermost to outermost
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::Block, // depth 4 from innermost
+            WasmOp::Block, // depth 3
+            WasmOp::Block, // depth 2
+            WasmOp::Block, // depth 1
+            WasmOp::Block, // depth 0 (innermost)
+            WasmOp::I32Const(42),
+            WasmOp::Br(4), // jump to outermost block end
+            WasmOp::End,   // end depth 0
+            WasmOp::End,   // end depth 1
+            WasmOp::End,   // end depth 2
+            WasmOp::End,   // end depth 3
+            WasmOp::End,   // end depth 4
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should have 5 block end labels
+        let labels = collect_labels(&instrs);
+        let block_end_labels: Vec<_> = labels.iter().filter(|l| l.contains("block_end")).collect();
+        assert_eq!(
+            block_end_labels.len(),
+            5,
+            "5 nested blocks should have 5 end labels, got {}",
+            block_end_labels.len()
+        );
+
+        // The br(4) should branch to the outermost block's end
+        let branches = collect_branch_targets(&instrs);
+        assert_eq!(branches.len(), 1, "Should have exactly one branch (br 4)");
+
+        // The target should be the last label emitted (outermost end)
+        let outermost_label = block_end_labels.last().unwrap();
+        assert_eq!(
+            &branches[0], *outermost_label,
+            "br(4) should target outermost block end"
+        );
+    }
+
+    // ----- Test 9: Loop re-entry via br 0 -----
+
+    #[test]
+    fn test_complex_loop_reentry() {
+        // Multiple br 0 in a loop body (different code paths re-enter the loop)
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::Loop,        // $loop
+            WasmOp::LocalGet(0), // condition
+            WasmOp::If,
+            WasmOp::I32Const(1),
+            WasmOp::LocalSet(0),
+            WasmOp::Br(1), // re-enter loop from then-arm
+            WasmOp::Else,
+            WasmOp::I32Const(0),
+            WasmOp::LocalSet(0),
+            WasmOp::Br(1), // re-enter loop from else-arm
+            WasmOp::End,   // end if
+            WasmOp::End,   // end loop
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // Should have loop_start label
+        let labels = collect_labels(&instrs);
+        let loop_labels: Vec<_> = labels.iter().filter(|l| l.contains("loop_start")).collect();
+        assert_eq!(loop_labels.len(), 1, "Should have one loop_start label");
+
+        // Should have two unconditional branches targeting loop_start (br 1 from both arms)
+        // Plus the B that skips else at end of then-arm
+        let branches = collect_branch_targets(&instrs);
+        let loop_branches: Vec<_> = branches
+            .iter()
+            .filter(|b| b.contains("loop_start"))
+            .collect();
+        assert_eq!(
+            loop_branches.len(),
+            2,
+            "Both br(1) should branch to loop_start, got {} branches to loop_start",
+            loop_branches.len()
+        );
+    }
+
+    // ----- Test 10: Mixed control flow — block containing loop containing if/else -----
+
+    #[test]
+    fn test_complex_block_loop_if_combined() {
+        // WASM equivalent:
+        //   (block $outer
+        //     (loop $loop
+        //       local.get 0
+        //       i32.const 10
+        //       i32.gt_s
+        //       (if
+        //         (then
+        //           br 2            ;; exit $outer
+        //         )
+        //         (else
+        //           local.get 0
+        //           i32.const 1
+        //           i32.add
+        //           local.set 0
+        //           br 1            ;; re-enter $loop
+        //         )
+        //       )
+        //     )
+        //   )
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::Block,       // $outer
+            WasmOp::Loop,        // $loop
+            WasmOp::LocalGet(0), // counter
+            WasmOp::I32Const(10),
+            WasmOp::I32GtS, // counter > 10?
+            WasmOp::If,
+            // then: exit outer
+            WasmOp::Br(2), // exit $outer
+            WasmOp::Else,
+            // else: increment and loop
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(1),
+            WasmOp::I32Add,
+            WasmOp::LocalSet(0),
+            WasmOp::Br(1), // re-enter $loop
+            WasmOp::End,   // end if
+            WasmOp::End,   // end loop
+            WasmOp::End,   // end outer
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // Verify structural elements
+        let labels = collect_labels(&instrs);
+
+        // Should have loop_start
+        let loop_starts: Vec<_> = labels.iter().filter(|l| l.contains("loop_start")).collect();
+        assert_eq!(loop_starts.len(), 1, "Should have one loop_start");
+
+        // Should have block_end for outer block
+        let block_ends: Vec<_> = labels.iter().filter(|l| l.contains("block_end")).collect();
+        assert!(
+            !block_ends.is_empty(),
+            "Should have block_end label for outer block"
+        );
+
+        // Should have else and if_end labels
+        let else_labels: Vec<_> = labels.iter().filter(|l| l.contains("else")).collect();
+        assert!(!else_labels.is_empty(), "Should have an else label");
+
+        let if_end_labels: Vec<_> = labels.iter().filter(|l| l.contains("if_end")).collect();
+        assert!(!if_end_labels.is_empty(), "Should have an if_end label");
+
+        // Verify branches
+        let branches = collect_branch_targets(&instrs);
+
+        // br(2) should target outer block end
+        assert!(
+            branches.iter().any(|b| b.contains("block_end")),
+            "br(2) should target outer block_end, branches: {:?}",
+            branches
+        );
+
+        // br(1) should target loop_start
+        assert!(
+            branches.iter().any(|b| b.contains("loop_start")),
+            "br(1) should target loop_start, branches: {:?}",
+            branches
+        );
+
+        // Should have ADD for counter + 1
+        let add_count = count_op(&instrs, |op| matches!(op, ArmOp::Add { .. }));
+        assert!(add_count >= 1, "Should have ADD for counter + 1");
+    }
+
+    // ----- Test 11: br_table within a loop -----
+
+    #[test]
+    fn test_complex_br_table_in_loop() {
+        // State machine pattern: loop with br_table dispatch
+        //   (loop $loop
+        //     (block $state2
+        //       (block $state1
+        //         (block $state0
+        //           local.get 0       ;; state variable
+        //           br_table 0 1 2    ;; dispatch to state blocks
+        //         )
+        //         ;; state 0 body
+        //         i32.const 1
+        //         local.set 0          ;; state = 1
+        //         br 2                 ;; continue loop
+        //       )
+        //       ;; state 1 body
+        //       i32.const 2
+        //       local.set 0            ;; state = 2
+        //       br 1                   ;; continue loop
+        //     )
+        //     ;; state 2: exit (fall through to end)
+        //   )
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::Loop,        // $loop
+            WasmOp::Block,       // $state2
+            WasmOp::Block,       // $state1
+            WasmOp::Block,       // $state0
+            WasmOp::LocalGet(0), // state
+            WasmOp::BrTable {
+                targets: vec![0, 1, 2], // dispatch per state
+                default: 2,             // default -> $state2 (exit)
+            },
+            WasmOp::End, // end $state0
+            WasmOp::I32Const(1),
+            WasmOp::LocalSet(0), // state = 1
+            WasmOp::Br(2),       // back to $loop
+            WasmOp::End,         // end $state1
+            WasmOp::I32Const(2),
+            WasmOp::LocalSet(0), // state = 2
+            WasmOp::Br(1),       // back to $loop
+            WasmOp::End,         // end $state2
+            WasmOp::End,         // end $loop
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // Should have loop_start label
+        let labels = collect_labels(&instrs);
+        let loop_labels: Vec<_> = labels.iter().filter(|l| l.contains("loop_start")).collect();
+        assert_eq!(loop_labels.len(), 1, "Should have one loop_start");
+
+        // br_table should emit 3 CMP + BEQ pairs
+        let cmp_count = count_op(&instrs, |op| matches!(op, ArmOp::Cmp { .. }));
+        assert!(
+            cmp_count >= 3,
+            "br_table should emit at least 3 CMPs, got {}",
+            cmp_count
+        );
+
+        // Should have branches back to loop_start (br 2 and br 1 target loop)
+        let branches = collect_branch_targets(&instrs);
+        let to_loop: Vec<_> = branches
+            .iter()
+            .filter(|b| b.contains("loop_start"))
+            .collect();
+        assert!(
+            to_loop.len() >= 2,
+            "Should have at least 2 branches back to loop_start (from state 0 and 1), got {}",
+            to_loop.len()
+        );
+    }
+
+    // ----- Test 12: Nested if/else without inner else clause -----
+
+    #[test]
+    fn test_complex_nested_if_no_else() {
+        // Nested if without else exercises the else-label dedup path
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::I32Const(1), // outer condition
+            WasmOp::If,
+            WasmOp::I32Const(1), // inner condition
+            WasmOp::If,
+            WasmOp::I32Const(42), // deeply nested body
+            WasmOp::End,          // end inner if (no else)
+            WasmOp::End,          // end outer if (no else)
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Each if-without-else should emit both else label and if_end label
+        let labels = collect_labels(&instrs);
+        let else_labels: Vec<_> = labels.iter().filter(|l| l.contains("else")).collect();
+        let end_labels: Vec<_> = labels.iter().filter(|l| l.contains("if_end")).collect();
+
+        assert!(
+            else_labels.len() >= 2,
+            "Two if-without-else should emit at least 2 else labels, got {}",
+            else_labels.len()
+        );
+        assert!(
+            end_labels.len() >= 2,
+            "Two if blocks should emit at least 2 if_end labels, got {}",
+            end_labels.len()
+        );
+
+        // Should have 2 BEQ instructions (one per if)
+        let beq_count = count_op(&instrs, |op| {
+            matches!(
+                op,
+                ArmOp::Bcc {
+                    cond: Condition::EQ,
+                    ..
+                }
+            )
+        });
+        assert_eq!(
+            beq_count, 2,
+            "Two if blocks should emit 2 BEQ, got {}",
+            beq_count
+        );
+    }
+
+    // ----- Test 13: Function call within loop -----
+
+    #[test]
+    fn test_complex_call_in_loop() {
+        // Loop that calls a function each iteration
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::Block,       // $exit
+            WasmOp::Loop,        // $loop
+            WasmOp::LocalGet(0), // counter
+            WasmOp::I32Eqz,      // counter == 0?
+            WasmOp::BrIf(1),     // exit if zero
+            WasmOp::LocalGet(0), // pass counter as arg
+            WasmOp::Call(5),     // call func_5
+            WasmOp::Drop,        // discard return value
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(1),
+            WasmOp::I32Sub,
+            WasmOp::LocalSet(0), // counter -= 1
+            WasmOp::Br(0),       // loop
+            WasmOp::End,         // end loop
+            WasmOp::End,         // end block
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // Should have a BL func_5 call
+        let has_bl = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Bl { label } if label == "func_5"));
+        assert!(has_bl, "Should emit BL func_5 for Call(5)");
+
+        // Should have loop_start and backward branch
+        let labels = collect_labels(&instrs);
+        let loop_labels: Vec<_> = labels.iter().filter(|l| l.contains("loop_start")).collect();
+        assert_eq!(loop_labels.len(), 1, "Should have one loop_start");
+
+        let branches = collect_branch_targets(&instrs);
+        assert!(
+            branches.contains(loop_labels[0]),
+            "Should branch back to loop_start"
+        );
+    }
+
+    // ----- Test 14: Early return from nested control flow -----
+
+    #[test]
+    fn test_complex_return_from_nested() {
+        // Return from inside a nested block+loop+if
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::Block,
+            WasmOp::Loop,
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(0),
+            WasmOp::I32Eq,
+            WasmOp::If,
+            WasmOp::I32Const(42),
+            WasmOp::Return, // early return from inside if inside loop inside block
+            WasmOp::End,    // end if
+            WasmOp::Br(0),  // loop
+            WasmOp::End,    // end loop
+            WasmOp::End,    // end block
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // Should have BX LR for the Return instruction (plus the one at function end)
+        let bx_count = count_op(&instrs, |op| matches!(op, ArmOp::Bx { rm: Reg::LR }));
+        assert!(
+            bx_count >= 2,
+            "Should have at least 2 BX LR (early return + function epilogue), got {}",
+            bx_count
+        );
+
+        // Should have loop_start
+        let labels = collect_labels(&instrs);
+        assert!(
+            labels.iter().any(|l| l.contains("loop_start")),
+            "Should have loop_start label"
+        );
+
+        // Should have if-related labels
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.contains("if_end") || l.contains("else")),
+            "Should have if-related labels"
+        );
+    }
+
+    // ----- Test 15: Unreachable inside control flow -----
+
+    #[test]
+    fn test_complex_unreachable_in_block() {
+        // Unreachable trap inside a conditional block
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::I32Const(0),
+            WasmOp::If,
+            WasmOp::Unreachable, // trap if condition is true
+            WasmOp::Else,
+            WasmOp::I32Const(1), // normal path
+            WasmOp::End,
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // Should have UDF for unreachable
+        let udf_count = count_op(&instrs, |op| matches!(op, ArmOp::Udf { .. }));
+        assert_eq!(udf_count, 1, "Should have exactly one UDF for unreachable");
+
+        // Should still have proper if/else structure
+        let labels = collect_labels(&instrs);
+        assert!(
+            labels.iter().any(|l| l.contains("else")),
+            "Should have else label"
+        );
+        assert!(
+            labels.iter().any(|l| l.contains("if_end")),
+            "Should have if_end label"
+        );
+    }
+
+    // ----- Test 16: Multiple loops (sequential, not nested) -----
+
+    #[test]
+    fn test_complex_sequential_loops() {
+        // Two loops in sequence (not nested)
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            // First loop: count up
+            WasmOp::Block,
+            WasmOp::Loop,
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(10),
+            WasmOp::I32GeS,
+            WasmOp::BrIf(1), // exit if >= 10
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(1),
+            WasmOp::I32Add,
+            WasmOp::LocalSet(0),
+            WasmOp::Br(0), // loop
+            WasmOp::End,
+            WasmOp::End,
+            // Second loop: count down
+            WasmOp::Block,
+            WasmOp::Loop,
+            WasmOp::LocalGet(0),
+            WasmOp::I32Eqz,
+            WasmOp::BrIf(1), // exit if == 0
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(1),
+            WasmOp::I32Sub,
+            WasmOp::LocalSet(0),
+            WasmOp::Br(0), // loop
+            WasmOp::End,
+            WasmOp::End,
+        ];
+
+        let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // Should have 2 loop_start labels
+        let labels = collect_labels(&instrs);
+        let loop_labels: Vec<_> = labels.iter().filter(|l| l.contains("loop_start")).collect();
+        assert_eq!(
+            loop_labels.len(),
+            2,
+            "Should have 2 loop_start labels for sequential loops, got {}",
+            loop_labels.len()
+        );
+
+        // Each loop should have a backward branch
+        let branches = collect_branch_targets(&instrs);
+        for ll in &loop_labels {
+            assert!(
+                branches.contains(ll),
+                "Should branch back to loop_start '{}', branches: {:?}",
+                ll,
+                branches
+            );
+        }
+    }
+
+    // ----- Test 17: Instruction count sanity checks -----
+
+    #[test]
+    fn test_complex_instruction_count_sanity() {
+        // Verify that control flow constructs produce a reasonable number of
+        // instructions (not zero, not explosively large)
+        let mut selector = fresh_selector();
+
+        // Simple block with one instruction
+        let wasm_ops = vec![WasmOp::Block, WasmOp::I32Const(1), WasmOp::End];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+        // MOV for const + Label for block end + BX LR
+        assert!(
+            instrs.len() <= 5,
+            "Simple block should produce <= 5 ARM instructions, got {}",
+            instrs.len()
+        );
+        assert!(
+            instrs.len() >= 2,
+            "Simple block should produce >= 2 ARM instructions, got {}",
+            instrs.len()
+        );
+
+        // Loop with br should produce bounded output
+        selector.reset();
+        let wasm_ops = vec![WasmOp::Loop, WasmOp::Br(0), WasmOp::End];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+        assert!(
+            instrs.len() <= 5,
+            "Simple loop+br should produce <= 5 ARM instructions, got {}",
+            instrs.len()
+        );
+    }
 }
