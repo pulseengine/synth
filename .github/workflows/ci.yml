@@ -116,12 +116,7 @@ jobs:
       - name: Install rivet
         run: cargo install --force --git https://github.com/pulseengine/rivet --branch main rivet-cli
       - name: Prepare rivet config for CI
-        run: |
-          python3 -c "
-lines = open('rivet.yaml').readlines()
-out = [l for l in lines if not l.lstrip().startswith('path: ')]
-open('rivet.yaml', 'w').writelines(out)
-"
+        run: sed -i '/^\s*path: \//d' rivet.yaml
       - name: Sync external repos
         run: rivet sync
       - name: Validate artifacts
