@@ -106,3 +106,55 @@ artifacts:
       steps:
         run: "cargo test -p synth-verify && bazel test //coq:verify_proofs"
         coverage: "Z3 SMT suite, Rocq proof compilation, proptest"
+
+  - id: SWVER-006
+    type: sw-verification
+    title: GlobalGet/GlobalSet instruction selection tests
+    description: >
+      Unit tests verifying correct instruction selection for WASM global
+      variable access (global.get and global.set). R9 is the dedicated
+      globals base register. GlobalGet loads from [R9, #index*4] into a
+      destination register; GlobalSet stores from a source register to
+      [R9, #index*4]. Tests cover both select_default (non-stack) and
+      select_with_stack (stack-tracking) code paths, including index
+      offset calculation, round-trip get-modify-set, and composition
+      with other instructions.
+    status: implemented
+    tags: [globals, instruction-selection, unit-tests]
+    links:
+      - type: verifies
+        target: TR-001
+      - type: verifies
+        target: TR-004
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-synthesis -- test_global"
+        coverage: >
+          8 tests: select_default (get index 0, get index 3, set index 0,
+          set index 5), stack mode (get, set, get-set roundtrip),
+          composition with select
+
+  - id: SWVER-007
+    type: sw-verification
+    title: Select instruction selection tests
+    description: >
+      Unit tests verifying correct instruction selection for the WASM
+      select instruction. Select pops condition, val2, val1 from the
+      stack and pushes val1 if condition != 0, else val2. ARM lowering
+      uses CMP + MOV (default) + IT EQ; MOVEQ (conditional override).
+      Tests cover both select_default and select_with_stack code paths,
+      and composition with GlobalGet/GlobalSet.
+    status: implemented
+    tags: [select, instruction-selection, unit-tests]
+    links:
+      - type: verifies
+        target: TR-001
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-synthesis -- test_select"
+        coverage: >
+          5 tests: select_default mode, stack mode with constants,
+          stack mode already tested in control_flow_select,
+          composition with global values
