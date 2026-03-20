@@ -92,8 +92,8 @@ fn test_count_trailing_zeros() {
 
 #[test]
 fn test_population_count() {
-    // POPCNT has no native ARM instruction — the transcoder should explicitly
-    // reject it rather than silently emitting a NOP (which produces wrong results).
+    // i32.popcnt is implemented via the Popcnt pseudo-instruction which the
+    // encoder expands to a parallel bit-count algorithm (shift-and-add with masks).
     let wasm_ops = vec![
         WasmOp::I32Const(0x0F0F0F0F), // Has many 1 bits
         WasmOp::I32Popcnt,
@@ -104,9 +104,15 @@ fn test_population_count() {
     let result = selector.select(&wasm_ops);
 
     assert!(
-        result.is_err(),
-        "i32.popcnt should return an error (no native ARM instruction)"
+        result.is_ok(),
+        "i32.popcnt should succeed via Popcnt pseudo-instruction"
     );
+    let arm_instrs = result.unwrap();
+    // Should contain a Popcnt pseudo-op
+    let has_popcnt = arm_instrs
+        .iter()
+        .any(|i| matches!(&i.op, ArmOp::Popcnt { .. }));
+    assert!(has_popcnt, "Should emit Popcnt pseudo-instruction");
 }
 
 #[test]

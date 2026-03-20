@@ -246,17 +246,15 @@ fn i32_eq_corresponds_to_rocq() {
 // ─────────────────────────────────────────────────────────────────────
 
 #[test]
-fn i32_popcnt_is_rejected_by_rust() {
-    // Rocq models POPCNT as a single pseudo-instruction with axiomatized semantics.
-    // Rust rejects it — no native ARM instruction.
-    // This is a KNOWN divergence: Rocq models the abstract operation,
-    // Rust would need a multi-instruction sequence.
+fn i32_popcnt_emits_popcnt_pseudo_op() {
+    // Both Rocq and Rust model POPCNT as a single pseudo-instruction.
+    // The encoder expands it to a parallel bit-count algorithm.
     let db = RuleDatabase::with_standard_rules();
     let mut selector = InstructionSelector::new(db.rules().to_vec());
     let result = selector.select(&[WasmOp::I32Popcnt]);
     assert!(
-        result.is_err(),
-        "Rust should reject I32Popcnt (no native ARM instruction)"
+        result.is_ok(),
+        "I32Popcnt should succeed via Popcnt pseudo-instruction"
     );
 }
 

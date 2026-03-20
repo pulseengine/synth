@@ -1,0 +1,540 @@
+load("//build:wast_test.bzl", "wast_multi_func_test")
+
+# =============================================================================
+# Official WebAssembly Spec Test Suite — Bazel integration
+#
+# These targets compile spec-testsuite .wast files with synth and run them
+# on the Renode Cortex-M4 emulator. Files are grouped by category.
+#
+# Only files that synth can compile (single-module with exports, no SIMD/GC)
+# are included. Files marked no_optimize = True previously required the
+# optimizer bypass due to register allocation pressure.
+#
+# To run all spec tests:
+#   bazel test //tests/spec/...
+#
+# To run a specific category:
+#   bazel test //tests/spec/... --test_tag_filters=i32
+# =============================================================================
+
+# Export all .wast files so they can be referenced from other packages
+# .wast files live in //tests/spec-testsuite (git submodule)
+
+# =============================================================================
+# i32 — Core 32-bit integer operations
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_i32",
+    wast = "//tests/spec-testsuite:i32.wast",
+    tags = ["spec", "i32"],
+)
+
+wast_multi_func_test(
+    name = "spec_int_exprs",
+    wast = "//tests/spec-testsuite:int_exprs.wast",
+    tags = ["spec", "i32", "i64", "expressions"],
+)
+
+wast_multi_func_test(
+    name = "spec_int_literals",
+    wast = "//tests/spec-testsuite:int_literals.wast",
+    tags = ["spec", "i32", "i64", "literals"],
+)
+
+# =============================================================================
+# i64 — Core 64-bit integer operations
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_i64",
+    wast = "//tests/spec-testsuite:i64.wast",
+    tags = ["spec", "i64"],
+)
+
+# =============================================================================
+# f32 — 32-bit floating point operations
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_f32",
+    wast = "//tests/spec-testsuite:f32.wast",
+    tags = ["spec", "f32", "float"],
+    timeout = "moderate",
+)
+
+wast_multi_func_test(
+    name = "spec_f32_bitwise",
+    wast = "//tests/spec-testsuite:f32_bitwise.wast",
+    tags = ["spec", "f32", "float", "bitwise"],
+)
+
+wast_multi_func_test(
+    name = "spec_f32_cmp",
+    wast = "//tests/spec-testsuite:f32_cmp.wast",
+    tags = ["spec", "f32", "float", "comparison"],
+    timeout = "moderate",
+)
+
+# =============================================================================
+# f64 — 64-bit floating point operations
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_f64",
+    wast = "//tests/spec-testsuite:f64.wast",
+    tags = ["spec", "f64", "float"],
+    timeout = "moderate",
+)
+
+wast_multi_func_test(
+    name = "spec_f64_bitwise",
+    wast = "//tests/spec-testsuite:f64_bitwise.wast",
+    tags = ["spec", "f64", "float", "bitwise"],
+)
+
+wast_multi_func_test(
+    name = "spec_f64_cmp",
+    wast = "//tests/spec-testsuite:f64_cmp.wast",
+    tags = ["spec", "f64", "float", "comparison"],
+    timeout = "moderate",
+)
+
+# =============================================================================
+# Float — Expressions, literals, memory, misc, conversions
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_float_exprs",
+    wast = "//tests/spec-testsuite:float_exprs.wast",
+    tags = ["spec", "float", "expressions"],
+    timeout = "moderate",
+)
+
+wast_multi_func_test(
+    name = "spec_float_literals",
+    wast = "//tests/spec-testsuite:float_literals.wast",
+    tags = ["spec", "float", "literals"],
+)
+
+wast_multi_func_test(
+    name = "spec_float_memory",
+    wast = "//tests/spec-testsuite:float_memory.wast",
+    tags = ["spec", "float", "memory"],
+)
+
+wast_multi_func_test(
+    name = "spec_float_misc",
+    wast = "//tests/spec-testsuite:float_misc.wast",
+    tags = ["spec", "float", "misc"],
+)
+
+wast_multi_func_test(
+    name = "spec_conversions",
+    wast = "//tests/spec-testsuite:conversions.wast",
+    tags = ["spec", "float", "conversions"],
+)
+
+# =============================================================================
+# Control flow — Blocks, loops, branches, calls
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_block",
+    wast = "//tests/spec-testsuite:block.wast",
+    tags = ["spec", "control", "block"],
+    timeout = "moderate",
+)
+
+wast_multi_func_test(
+    name = "spec_loop",
+    wast = "//tests/spec-testsuite:loop.wast",
+    tags = ["spec", "control", "loop"],
+    timeout = "moderate",
+)
+
+wast_multi_func_test(
+    name = "spec_if",
+    wast = "//tests/spec-testsuite:if.wast",
+    tags = ["spec", "control", "if"],
+    timeout = "moderate",
+)
+
+wast_multi_func_test(
+    name = "spec_br",
+    wast = "//tests/spec-testsuite:br.wast",
+    tags = ["spec", "control", "br"],
+)
+
+wast_multi_func_test(
+    name = "spec_br_if",
+    wast = "//tests/spec-testsuite:br_if.wast",
+    tags = ["spec", "control", "br_if"],
+)
+
+wast_multi_func_test(
+    name = "spec_br_table",
+    wast = "//tests/spec-testsuite:br_table.wast",
+    tags = ["spec", "control", "br_table"],
+    timeout = "moderate",
+)
+
+wast_multi_func_test(
+    name = "spec_call",
+    wast = "//tests/spec-testsuite:call.wast",
+    tags = ["spec", "control", "call"],
+)
+
+wast_multi_func_test(
+    name = "spec_call_indirect",
+    wast = "//tests/spec-testsuite:call_indirect.wast",
+    tags = ["spec", "control", "call_indirect"],
+)
+
+wast_multi_func_test(
+    name = "spec_return",
+    wast = "//tests/spec-testsuite:return.wast",
+    tags = ["spec", "control", "return"],
+)
+
+wast_multi_func_test(
+    name = "spec_return_call",
+    wast = "//tests/spec-testsuite:return_call.wast",
+    tags = ["spec", "control", "return_call"],
+)
+
+wast_multi_func_test(
+    name = "spec_return_call_indirect",
+    wast = "//tests/spec-testsuite:return_call_indirect.wast",
+    tags = ["spec", "control", "return_call_indirect"],
+)
+
+wast_multi_func_test(
+    name = "spec_select",
+    wast = "//tests/spec-testsuite:select.wast",
+    tags = ["spec", "control", "select"],
+)
+
+wast_multi_func_test(
+    name = "spec_switch",
+    wast = "//tests/spec-testsuite:switch.wast",
+    tags = ["spec", "control", "switch"],
+)
+
+wast_multi_func_test(
+    name = "spec_fac",
+    wast = "//tests/spec-testsuite:fac.wast",
+    tags = ["spec", "control", "factorial"],
+)
+
+wast_multi_func_test(
+    name = "spec_forward",
+    wast = "//tests/spec-testsuite:forward.wast",
+    tags = ["spec", "control", "forward"],
+)
+
+wast_multi_func_test(
+    name = "spec_labels",
+    wast = "//tests/spec-testsuite:labels.wast",
+    tags = ["spec", "control", "labels"],
+)
+
+wast_multi_func_test(
+    name = "spec_nop",
+    wast = "//tests/spec-testsuite:nop.wast",
+    tags = ["spec", "control", "nop"],
+)
+
+wast_multi_func_test(
+    name = "spec_unreachable",
+    wast = "//tests/spec-testsuite:unreachable.wast",
+    tags = ["spec", "control", "unreachable"],
+)
+
+wast_multi_func_test(
+    name = "spec_unwind",
+    wast = "//tests/spec-testsuite:unwind.wast",
+    tags = ["spec", "control", "unwind"],
+)
+
+wast_multi_func_test(
+    name = "spec_left_to_right",
+    wast = "//tests/spec-testsuite:left-to-right.wast",
+    tags = ["spec", "control", "left-to-right"],
+)
+
+# =============================================================================
+# Locals and globals
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_local_get",
+    wast = "//tests/spec-testsuite:local_get.wast",
+    tags = ["spec", "locals"],
+)
+
+wast_multi_func_test(
+    name = "spec_local_set",
+    wast = "//tests/spec-testsuite:local_set.wast",
+    tags = ["spec", "locals"],
+)
+
+wast_multi_func_test(
+    name = "spec_local_tee",
+    wast = "//tests/spec-testsuite:local_tee.wast",
+    tags = ["spec", "locals"],
+)
+
+wast_multi_func_test(
+    name = "spec_local_init",
+    wast = "//tests/spec-testsuite:local_init.wast",
+    tags = ["spec", "locals"],
+)
+
+wast_multi_func_test(
+    name = "spec_global",
+    wast = "//tests/spec-testsuite:global.wast",
+    tags = ["spec", "globals"],
+)
+
+# =============================================================================
+# Memory — Load, store, size, grow, fill, copy, init
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_load",
+    wast = "//tests/spec-testsuite:load.wast",
+    tags = ["spec", "memory", "load"],
+    timeout = "moderate",
+)
+
+wast_multi_func_test(
+    name = "spec_store",
+    wast = "//tests/spec-testsuite:store.wast",
+    tags = ["spec", "memory", "store"],
+    timeout = "moderate",
+)
+
+wast_multi_func_test(
+    name = "spec_memory",
+    wast = "//tests/spec-testsuite:memory.wast",
+    tags = ["spec", "memory"],
+)
+
+wast_multi_func_test(
+    name = "spec_memory_size",
+    wast = "//tests/spec-testsuite:memory_size.wast",
+    tags = ["spec", "memory", "size"],
+)
+
+wast_multi_func_test(
+    name = "spec_memory_grow",
+    wast = "//tests/spec-testsuite:memory_grow.wast",
+    tags = ["spec", "memory", "grow"],
+)
+
+wast_multi_func_test(
+    name = "spec_memory_fill",
+    wast = "//tests/spec-testsuite:memory_fill.wast",
+    tags = ["spec", "memory", "fill"],
+)
+
+wast_multi_func_test(
+    name = "spec_memory_copy",
+    wast = "//tests/spec-testsuite:memory_copy.wast",
+    tags = ["spec", "memory", "copy"],
+)
+
+wast_multi_func_test(
+    name = "spec_memory_init",
+    wast = "//tests/spec-testsuite:memory_init.wast",
+    tags = ["spec", "memory", "init"],
+)
+
+wast_multi_func_test(
+    name = "spec_memory_trap",
+    wast = "//tests/spec-testsuite:memory_trap.wast",
+    tags = ["spec", "memory", "trap"],
+)
+
+wast_multi_func_test(
+    name = "spec_memory_redundancy",
+    wast = "//tests/spec-testsuite:memory_redundancy.wast",
+    tags = ["spec", "memory", "redundancy"],
+)
+
+wast_multi_func_test(
+    name = "spec_endianness",
+    wast = "//tests/spec-testsuite:endianness.wast",
+    tags = ["spec", "memory", "endianness"],
+)
+
+wast_multi_func_test(
+    name = "spec_address",
+    wast = "//tests/spec-testsuite:address.wast",
+    tags = ["spec", "memory", "address"],
+)
+
+wast_multi_func_test(
+    name = "spec_align",
+    wast = "//tests/spec-testsuite:align.wast",
+    tags = ["spec", "memory", "align"],
+)
+
+# =============================================================================
+# Table and function references
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_table",
+    wast = "//tests/spec-testsuite:table.wast",
+    tags = ["spec", "table"],
+)
+
+wast_multi_func_test(
+    name = "spec_table_copy",
+    wast = "//tests/spec-testsuite:table_copy.wast",
+    tags = ["spec", "table", "copy"],
+)
+
+wast_multi_func_test(
+    name = "spec_table_fill",
+    wast = "//tests/spec-testsuite:table_fill.wast",
+    tags = ["spec", "table", "fill"],
+)
+
+wast_multi_func_test(
+    name = "spec_table_get",
+    wast = "//tests/spec-testsuite:table_get.wast",
+    tags = ["spec", "table", "get"],
+)
+
+wast_multi_func_test(
+    name = "spec_table_grow",
+    wast = "//tests/spec-testsuite:table_grow.wast",
+    tags = ["spec", "table", "grow"],
+)
+
+wast_multi_func_test(
+    name = "spec_table_init",
+    wast = "//tests/spec-testsuite:table_init.wast",
+    tags = ["spec", "table", "init"],
+)
+
+wast_multi_func_test(
+    name = "spec_table_set",
+    wast = "//tests/spec-testsuite:table_set.wast",
+    tags = ["spec", "table", "set"],
+)
+
+wast_multi_func_test(
+    name = "spec_table_size",
+    wast = "//tests/spec-testsuite:table_size.wast",
+    tags = ["spec", "table", "size"],
+)
+
+wast_multi_func_test(
+    name = "spec_elem",
+    wast = "//tests/spec-testsuite:elem.wast",
+    tags = ["spec", "table", "elem"],
+)
+
+# =============================================================================
+# Functions, types, and module structure
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_func",
+    wast = "//tests/spec-testsuite:func.wast",
+    tags = ["spec", "func"],
+)
+
+wast_multi_func_test(
+    name = "spec_func_ptrs",
+    wast = "//tests/spec-testsuite:func_ptrs.wast",
+    tags = ["spec", "func", "pointers"],
+)
+
+wast_multi_func_test(
+    name = "spec_type",
+    wast = "//tests/spec-testsuite:type.wast",
+    tags = ["spec", "type"],
+)
+
+wast_multi_func_test(
+    name = "spec_stack",
+    wast = "//tests/spec-testsuite:stack.wast",
+    tags = ["spec", "stack"],
+)
+
+wast_multi_func_test(
+    name = "spec_start",
+    wast = "//tests/spec-testsuite:start.wast",
+    tags = ["spec", "start"],
+)
+
+wast_multi_func_test(
+    name = "spec_exports",
+    wast = "//tests/spec-testsuite:exports.wast",
+    tags = ["spec", "exports"],
+)
+
+# =============================================================================
+# Data segments, bulk operations, constants
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_data",
+    wast = "//tests/spec-testsuite:data.wast",
+    tags = ["spec", "data"],
+)
+
+wast_multi_func_test(
+    name = "spec_bulk",
+    wast = "//tests/spec-testsuite:bulk.wast",
+    tags = ["spec", "bulk", "memory"],
+)
+
+wast_multi_func_test(
+    name = "spec_const",
+    wast = "//tests/spec-testsuite:const.wast",
+    tags = ["spec", "const"],
+)
+
+# =============================================================================
+# Traps and edge cases
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_traps",
+    wast = "//tests/spec-testsuite:traps.wast",
+    tags = ["spec", "traps"],
+)
+
+wast_multi_func_test(
+    name = "spec_skip_stack_guard_page",
+    wast = "//tests/spec-testsuite:skip-stack-guard-page.wast",
+    tags = ["spec", "stack", "guard"],
+)
+
+# =============================================================================
+# Reference types (subset that compiles without GC)
+# =============================================================================
+
+wast_multi_func_test(
+    name = "spec_ref_func",
+    wast = "//tests/spec-testsuite:ref_func.wast",
+    tags = ["spec", "ref", "func"],
+)
+
+wast_multi_func_test(
+    name = "spec_ref_is_null",
+    wast = "//tests/spec-testsuite:ref_is_null.wast",
+    tags = ["spec", "ref", "null"],
+)
+
+wast_multi_func_test(
+    name = "spec_ref_null",
+    wast = "//tests/spec-testsuite:ref_null.wast",
+    tags = ["spec", "ref", "null"],
+)

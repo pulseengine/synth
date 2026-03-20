@@ -393,10 +393,9 @@ impl InstructionSelector {
 
             I32Popcnt => {
                 // Population count - no native ARM instruction
-                // Requires multi-instruction sequence (shift-and-add or lookup table)
-                return Err(synth_core::Error::synthesis(
-                    "i32.popcnt not yet implemented (no native ARM instruction)",
-                ));
+                // Use Popcnt pseudo-op which the encoder expands to a parallel
+                // bit-count algorithm (shift-and-add with masks)
+                vec![ArmOp::Popcnt { rd, rm }]
             }
 
             I32Const(val) => {
