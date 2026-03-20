@@ -84,6 +84,7 @@ def wast_multi_func_test(
     wast,
     wat_src = None,
     platform = "//tests/renode:synth_cortex_m.repl",
+    no_optimize = False,
     tags = [],
     **kwargs):
     """
@@ -101,6 +102,7 @@ def wast_multi_func_test(
         wast: WAST file with test assertions (may contain module definition)
         wat_src: Optional separate WAT source file (if module is in WAST, leave None)
         platform: Renode platform description file
+        no_optimize: If True, pass --no-optimize to disable optimizer (avoids regalloc issues)
         tags: Additional tags
         **kwargs: Additional arguments passed to renode_test
     """
@@ -108,13 +110,18 @@ def wast_multi_func_test(
     # Use WAST as source if no separate WAT provided (module embedded in WAST)
     src_file = wat_src if wat_src else wast
 
+    # Build compile command with optional --no-optimize
+    compile_flags = "--cortex-m --all-exports"
+    if no_optimize:
+        compile_flags += " --no-optimize"
+
     # Generate multi-function ELF from WAT/WAST
     elf_name = name + "_elf"
     native.genrule(
         name = elf_name,
         srcs = [src_file],
         outs = [name + ".elf"],
-        cmd = "$(location //crates:synth) compile $(location {}) -o $@ --cortex-m --all-exports".format(src_file),
+        cmd = "$(location //crates:synth) compile $(location {}) -o $@ {}".format(src_file, compile_flags),
         tools = ["//crates:synth"],
     )
 
