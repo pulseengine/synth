@@ -1,0 +1,317 @@
+# Compilation Chain Architecture (ASPICE SYS.2 / SYS.3)
+#
+# System: Synth -- WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Defines the end-to-end compilation chain from WASM Component through
+# Meld fusing to core WASM, Synth AOT compilation to relocatable object,
+# static linking with kiln-builtins.a, and final firmware.elf for Cortex-M.
+#
+# Pipeline:
+#   WASM Component --> Meld fuse --> Core WASM --> Synth AOT --> module.o
+#   --> link with kiln-builtins.a --> firmware.elf --> Cortex-M
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # ---------------------------------------------------------------------------
+  # System-level requirements for the compilation chain
+  # ---------------------------------------------------------------------------
+
+  - id: CC-001
+    type: system-req
+    title: End-to-end compilation chain from WASM Component to firmware.elf
+    description: >
+      Synth shall support a complete compilation chain that transforms a
+      WebAssembly Component into a firmware.elf suitable for flashing to
+      ARM Cortex-M targets. The chain consists of five stages: (1) Meld
+      fuses the WASM Component into a core WASM module, resolving component
+      imports/exports via BA RFC #46 lowering; (2) Synth AOT-compiles the
+      core WASM to ARM Thumb-2 machine code, emitting a relocatable ELF
+      object (module.o) with undefined symbols for host intrinsics;
+      (3) kiln-builtins.a provides the static library resolving those
+      symbols (import dispatch, memory base, cabi_realloc); (4) the ARM
+      cross-linker combines module.o + kiln-builtins.a + linker script
+      into firmware.elf; (5) firmware.elf is flashed or loaded into the
+      target. Each stage has defined inputs, outputs, and system
+      requirements.
+    status: draft
+    tags: [compilation-chain, pipeline, end-to-end]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-002
+      - type: traces-to
+        target: CM-002
+      - type: traces-to
+        target: ARCH-003
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        A WASM component completes all five pipeline stages and produces
+        a firmware.elf that boots on a Cortex-M4 Renode emulation target.
+
+  - id: CC-002
+    type: system-req
+    title: Stage 1 -- Meld component fusing to core WASM
+    description: >
+      The first pipeline stage uses Meld to fuse a WASM Component into a
+      core WASM module. Meld resolves component-level imports and exports,
+      lowers the Component Model binary format per BA RFC #46, and produces
+      a core module with canonical ABI wrappers for host intrinsic calls.
+      The output core module contains import declarations for host functions
+      that will be resolved by kiln-builtins at link time. Meld is an
+      external tool (meld: prefix) not built by synth.
+    status: draft
+    tags: [compilation-chain, meld, fusing, stage-1]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-001
+      - type: traces-to
+        target: CM-002
+    fields:
+      req-type: functional
+      priority: must
+      stage: 1
+      inputs: ["WASM Component (.wasm)", "WIT interface definitions (.wit)"]
+      outputs: ["Core WASM module (.wasm) with host import declarations"]
+      tool: meld
+      verification-criteria: >
+        Meld-fused core module validates with wasm-tools validate;
+        import declarations match kiln-builtins ABI signatures.
+
+  - id: CC-003
+    type: system-req
+    title: Stage 2 -- Synth AOT compilation to relocatable object
+    description: >
+      The second pipeline stage uses Synth to AOT-compile the core WASM
+      module to ARM Thumb-2 machine code, producing a relocatable ELF
+      object file (module.o). The object contains: .text section with
+      compiled functions, .wasm_linear_memory reservation, undefined
+      symbols for each host import (BL __meld_dispatch_import or per-import
+      BL __meld_import_N), and a .meld_import_table section encoding the
+      import metadata. The output is a standard ELF relocatable (ET_REL)
+      that any ARM toolchain linker can process.
+    status: draft
+    tags: [compilation-chain, synth, aot, stage-2, relocatable]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-002
+      - type: refines
+        target: FR-005
+      - type: traces-to
+        target: ARCH-002
+      - type: traces-to
+        target: ARCH-003
+    fields:
+      req-type: functional
+      priority: must
+      stage: 2
+      inputs: ["Core WASM module (.wasm)", "Target profile (--cortex-m4)"]
+      outputs: ["Relocatable ELF object (module.o) with undefined host symbols"]
+      tool: synth
+      crate: synth-cli
+      verification-criteria: >
+        readelf -h module.o shows ET_REL type; readelf -s shows UND symbols
+        for __meld_dispatch_import or __meld_import_N; .meld_import_table
+        section present in readelf -S output.
+
+  - id: CC-004
+    type: system-req
+    title: Stage 3 -- kiln-builtins static library provides host runtime
+    description: >
+      The third pipeline stage requires kiln-builtins.a, a no_std static
+      library cross-compiled for the ARM Cortex-M target. kiln-builtins.a
+      provides the extern "C" symbols that synth-compiled code references:
+      __meld_dispatch_import (or per-import __meld_import_N),
+      __meld_get_memory_base, and cabi_realloc. The library is built from
+      the kiln repository using the ARM cross-compilation toolchain
+      (arm-none-eabi-gcc or rust target thumbv7em-none-eabihf). This is
+      an external dependency (kiln: prefix).
+    status: draft
+    tags: [compilation-chain, kiln-builtins, static-library, stage-3]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-004
+      - type: traces-to
+        target: CM-002
+      - type: traces-to
+        target: CM-003
+      - type: traces-to
+        target: kiln:REQ_FUNC_014
+      - type: traces-to
+        target: kiln:REQ_HELPER_ABI_001
+    fields:
+      req-type: interface
+      priority: must
+      stage: 3
+      inputs: ["kiln-builtins source (Rust, no_std)", "ARM target triple"]
+      outputs: ["kiln-builtins.a (static library for ARM Cortex-M)"]
+      tool: "cargo build --target thumbv7em-none-eabihf (in kiln repo)"
+      verification-criteria: >
+        arm-none-eabi-nm kiln-builtins.a shows defined symbols for
+        __meld_dispatch_import, __meld_get_memory_base, cabi_realloc;
+        library compiled with no_std, no unwinding, thumb-2 ISA.
+
+  - id: CC-005
+    type: system-req
+    title: Stage 4 -- ARM cross-linker produces firmware.elf
+    description: >
+      The fourth pipeline stage uses the ARM cross-linker
+      (arm-none-eabi-ld or lld) to combine module.o + kiln-builtins.a
+      using a linker script that defines the memory layout for the target
+      board. The linker resolves all undefined symbols from module.o
+      against kiln-builtins.a, places .text in FLASH, .wasm_linear_memory
+      in RAM, .meld_import_table in FLASH (read-only), and produces the
+      final firmware.elf (ET_EXEC). The linker script is generated by
+      synth's LinkerScriptGenerator or provided externally. This stage
+      ties to issue #27 (ARM cross-compilation toolchain).
+    status: draft
+    tags: [compilation-chain, linker, firmware, stage-4, issue-27]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-002
+      - type: refines
+        target: TR-002
+      - type: traces-to
+        target: ARCH-003
+      - type: traces-to
+        target: ZI-008
+    fields:
+      req-type: functional
+      priority: must
+      stage: 4
+      github-issue: 27
+      inputs:
+        - "module.o (from stage 2)"
+        - "kiln-builtins.a (from stage 3)"
+        - "linker script (.ld)"
+      outputs: ["firmware.elf (ET_EXEC, loadable)"]
+      tool: arm-none-eabi-ld or lld
+      verification-criteria: >
+        readelf -h firmware.elf shows ET_EXEC; no undefined symbols
+        (readelf -s | grep UND shows only expected libc/startup symbols);
+        LOAD segments map to target memory regions (FLASH at board flash
+        base, RAM at 0x20000000).
+
+  - id: CC-006
+    type: system-req
+    title: Stage 5 -- Firmware deployment to Cortex-M target
+    description: >
+      The fifth pipeline stage deploys firmware.elf to the target
+      Cortex-M device via flashing (J-Link, OpenOCD, west flash) or
+      loading into an emulator (Renode). For Renode testing, the ELF
+      is loaded via sysbus LoadELF. For Zephyr targets, west flash
+      handles the deployment via the board's configured runner. The
+      deployed firmware shall boot from the vector table, execute the
+      Reset_Handler, initialize WASM linear memory, and begin executing
+      compiled WASM functions.
+    status: draft
+    tags: [compilation-chain, deployment, flash, stage-5]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-002
+      - type: refines
+        target: FR-005
+      - type: traces-to
+        target: VER-005
+      - type: traces-to
+        target: TP-006
+      - type: traces-to
+        target: ZI-006
+    fields:
+      req-type: functional
+      priority: must
+      stage: 5
+      inputs: ["firmware.elf"]
+      outputs: ["Running firmware on Cortex-M target"]
+      tool: "Renode (emulation) or J-Link/OpenOCD (hardware)"
+      verification-criteria: >
+        Renode boots firmware.elf and reaches user code;
+        hardware test on nRF52840-DK produces expected output via UART.
+
+  # ---------------------------------------------------------------------------
+  # Pipeline orchestration requirements
+  # ---------------------------------------------------------------------------
+
+  - id: CC-007
+    type: sw-req
+    title: Synth CLI pipeline orchestration for multi-stage build
+    description: >
+      synth-cli shall support a pipeline mode (synth build or synth pipeline)
+      that orchestrates stages 2-4 in a single invocation when provided with
+      a core WASM module, a kiln-builtins.a path, and a target profile.
+      The CLI shall invoke the synthesis engine, emit module.o to a temporary
+      location, invoke the ARM linker with the generated linker script, and
+      produce firmware.elf as output. This reduces the manual steps from
+      three commands to one. Stage 1 (meld fuse) and stage 5 (deployment)
+      remain external.
+    status: planned
+    tags: [compilation-chain, cli, orchestration, pipeline]
+    links:
+      - type: derives-from
+        target: CC-001
+      - type: derives-from
+        target: CC-003
+      - type: derives-from
+        target: CC-005
+      - type: refines
+        target: TR-003
+    fields:
+      req-type: functional
+      priority: should
+      crate: synth-cli
+      verification-criteria: >
+        synth build --input module.wasm --builtins kiln-builtins.a
+        --target cortex-m4 -o firmware.elf produces a valid ELF;
+        equivalent to manual synth compile + arm-none-eabi-ld invocation.
+
+  - id: CC-008
+    type: sw-req
+    title: Relocatable ELF emission with Meld integration sections
+    description: >
+      synth-backend shall emit relocatable ELF objects (ET_REL) containing
+      the following sections when compiling modules with host imports:
+      .text (compiled ARM Thumb-2 code), .symtab/.strtab (symbol table
+      with UND entries for host imports), .meld_import_table (binary
+      table mapping import indices to symbol names), and .rel.text
+      (relocation entries for BL instructions targeting import symbols).
+      The ELF shall be linkable by any ARM ELF-compatible linker without
+      requiring synth-specific tooling.
+    status: planned
+    tags: [compilation-chain, elf, relocatable, meld-sections]
+    links:
+      - type: derives-from
+        target: CC-003
+      - type: derives-from
+        target: CM-002
+      - type: refines
+        target: TR-002
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-backend
+      verification-criteria: >
+        readelf -S module.o shows .meld_import_table section;
+        readelf -r module.o shows R_ARM_THM_CALL relocations for import
+        BL instructions; arm-none-eabi-ld resolves all symbols when
+        linked with kiln-builtins.a.

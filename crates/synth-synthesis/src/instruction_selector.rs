@@ -419,6 +419,134 @@ impl InstructionSelector {
                 self.generate_store_with_bounds_check(rd, rn, *offset as i32, 4)
             }
 
+            // Sub-word loads (i32)
+            I32Load8S { offset, .. } => {
+                self.generate_subword_load_with_bounds_check(rd, rn, *offset as i32, 1, true)
+            }
+            I32Load8U { offset, .. } => {
+                self.generate_subword_load_with_bounds_check(rd, rn, *offset as i32, 1, false)
+            }
+            I32Load16S { offset, .. } => {
+                self.generate_subword_load_with_bounds_check(rd, rn, *offset as i32, 2, true)
+            }
+            I32Load16U { offset, .. } => {
+                self.generate_subword_load_with_bounds_check(rd, rn, *offset as i32, 2, false)
+            }
+
+            // Sub-word stores (i32)
+            I32Store8 { offset, .. } => {
+                self.generate_subword_store_with_bounds_check(rd, rn, *offset as i32, 1)
+            }
+            I32Store16 { offset, .. } => {
+                self.generate_subword_store_with_bounds_check(rd, rn, *offset as i32, 2)
+            }
+
+            // i64 sub-word loads — load sub-word, extend to i64 register pair
+            I64Load8S { offset, .. } => {
+                // LDRSB R0, [R11, rn, #offset]; ASR R1, R0, #31 (sign-extend to hi)
+                let mut ops = self.generate_subword_load_with_bounds_check(
+                    Reg::R0,
+                    rn,
+                    *offset as i32,
+                    1,
+                    true,
+                );
+                ops.push(ArmOp::Asr {
+                    rd: Reg::R1,
+                    rn: Reg::R0,
+                    shift: 31,
+                });
+                ops
+            }
+            I64Load8U { offset, .. } => {
+                // LDRB R0, [R11, rn, #offset]; MOV R1, #0
+                let mut ops = self.generate_subword_load_with_bounds_check(
+                    Reg::R0,
+                    rn,
+                    *offset as i32,
+                    1,
+                    false,
+                );
+                ops.push(ArmOp::Mov {
+                    rd: Reg::R1,
+                    op2: Operand2::Imm(0),
+                });
+                ops
+            }
+            I64Load16S { offset, .. } => {
+                let mut ops = self.generate_subword_load_with_bounds_check(
+                    Reg::R0,
+                    rn,
+                    *offset as i32,
+                    2,
+                    true,
+                );
+                ops.push(ArmOp::Asr {
+                    rd: Reg::R1,
+                    rn: Reg::R0,
+                    shift: 31,
+                });
+                ops
+            }
+            I64Load16U { offset, .. } => {
+                let mut ops = self.generate_subword_load_with_bounds_check(
+                    Reg::R0,
+                    rn,
+                    *offset as i32,
+                    2,
+                    false,
+                );
+                ops.push(ArmOp::Mov {
+                    rd: Reg::R1,
+                    op2: Operand2::Imm(0),
+                });
+                ops
+            }
+            I64Load32S { offset, .. } => {
+                // LDR R0, [R11, rn, #offset]; ASR R1, R0, #31
+                let mut ops = self.generate_load_with_bounds_check(Reg::R0, rn, *offset as i32, 4);
+                ops.push(ArmOp::Asr {
+                    rd: Reg::R1,
+                    rn: Reg::R0,
+                    shift: 31,
+                });
+                ops
+            }
+            I64Load32U { offset, .. } => {
+                // LDR R0, [R11, rn, #offset]; MOV R1, #0
+                let mut ops = self.generate_load_with_bounds_check(Reg::R0, rn, *offset as i32, 4);
+                ops.push(ArmOp::Mov {
+                    rd: Reg::R1,
+                    op2: Operand2::Imm(0),
+                });
+                ops
+            }
+
+            // i64 sub-word stores — store low N bits from i64 register pair
+            I64Store8 { offset, .. } => {
+                // STRB R0, [R11, rn, #offset] (low byte of low word)
+                self.generate_subword_store_with_bounds_check(Reg::R0, rn, *offset as i32, 1)
+            }
+            I64Store16 { offset, .. } => {
+                // STRH R0, [R11, rn, #offset] (low halfword of low word)
+                self.generate_subword_store_with_bounds_check(Reg::R0, rn, *offset as i32, 2)
+            }
+            I64Store32 { offset, .. } => {
+                // STR R0, [R11, rn, #offset] (low word)
+                self.generate_store_with_bounds_check(Reg::R0, rn, *offset as i32, 4)
+            }
+
+            // Memory management
+            MemorySize(_mem_idx) => {
+                // On embedded with fixed memory, return memory size in pages.
+                // R10 holds memory size in bytes; divide by 65536 (page size) via LSR #16.
+                vec![ArmOp::MemorySize { rd }]
+            }
+            MemoryGrow(_mem_idx) => {
+                // On embedded with fixed memory, always return -1 (cannot grow).
+                vec![ArmOp::MemoryGrow { rd, rn }]
+            }
+
             LocalGet(_index) => vec![ArmOp::Ldr {
                 rd,
                 addr: MemAddr::imm(Reg::SP, 0), // Simplified - would use proper frame offset
@@ -1465,6 +1593,117 @@ impl InstructionSelector {
         }
     }
 
+    /// Generate a sub-word load with optional bounds checking.
+    /// `access_size`: 1 for byte, 2 for halfword.
+    /// `sign_extend`: true for sign-extending loads (LDRSB/LDRSH), false for zero-extending (LDRB/LDRH).
+    fn generate_subword_load_with_bounds_check(
+        &self,
+        rd: Reg,
+        addr_reg: Reg,
+        offset: i32,
+        access_size: u32,
+        sign_extend: bool,
+    ) -> Vec<ArmOp> {
+        let addr = MemAddr::reg_imm(Reg::R11, addr_reg, offset);
+        let load_op = match (access_size, sign_extend) {
+            (1, false) => ArmOp::Ldrb { rd, addr },
+            (1, true) => ArmOp::Ldrsb { rd, addr },
+            (2, false) => ArmOp::Ldrh { rd, addr },
+            (2, true) => ArmOp::Ldrsh { rd, addr },
+            _ => ArmOp::Ldr { rd, addr }, // fallback to word load
+        };
+
+        match self.bounds_check {
+            BoundsCheckConfig::None => vec![load_op],
+            BoundsCheckConfig::Software => {
+                let temp = Reg::R12;
+                vec![
+                    ArmOp::Add {
+                        rd: temp,
+                        rn: addr_reg,
+                        op2: Operand2::Imm(offset),
+                    },
+                    ArmOp::Cmp {
+                        rn: temp,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    ArmOp::Bhs {
+                        label: "Trap_Handler".to_string(),
+                    },
+                    load_op,
+                ]
+            }
+            BoundsCheckConfig::Masking => {
+                vec![
+                    ArmOp::And {
+                        rd: addr_reg,
+                        rn: addr_reg,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    load_op,
+                ]
+            }
+        }
+    }
+
+    /// Generate a sub-word store with optional bounds checking.
+    /// `access_size`: 1 for byte (STRB), 2 for halfword (STRH).
+    fn generate_subword_store_with_bounds_check(
+        &self,
+        value_reg: Reg,
+        addr_reg: Reg,
+        offset: i32,
+        access_size: u32,
+    ) -> Vec<ArmOp> {
+        let addr = MemAddr::reg_imm(Reg::R11, addr_reg, offset);
+        let store_op = match access_size {
+            1 => ArmOp::Strb {
+                rd: value_reg,
+                addr,
+            },
+            2 => ArmOp::Strh {
+                rd: value_reg,
+                addr,
+            },
+            _ => ArmOp::Str {
+                rd: value_reg,
+                addr,
+            },
+        };
+
+        match self.bounds_check {
+            BoundsCheckConfig::None => vec![store_op],
+            BoundsCheckConfig::Software => {
+                let temp = Reg::R12;
+                vec![
+                    ArmOp::Add {
+                        rd: temp,
+                        rn: addr_reg,
+                        op2: Operand2::Imm(offset),
+                    },
+                    ArmOp::Cmp {
+                        rn: temp,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    ArmOp::Bhs {
+                        label: "Trap_Handler".to_string(),
+                    },
+                    store_op,
+                ]
+            }
+            BoundsCheckConfig::Masking => {
+                vec![
+                    ArmOp::And {
+                        rd: addr_reg,
+                        rn: addr_reg,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    store_op,
+                ]
+            }
+        }
+    }
+
     /// Get statistics about instruction selection
     pub fn get_stats(&self) -> SelectionStats {
         SelectionStats {
@@ -1986,6 +2225,239 @@ impl InstructionSelector {
                         });
                     }
                     // Store doesn't push anything to stack
+                }
+
+                // Sub-word loads (i32) — like I32Load but with LDRB/LDRSB/LDRH/LDRSH
+                I32Load8S { offset, .. }
+                | I32Load8U { offset, .. }
+                | I32Load16S { offset, .. }
+                | I32Load16U { offset, .. } => {
+                    let addr = stack.pop().unwrap_or(Reg::R0);
+                    let is_return_value = idx == wasm_ops.len() - 1
+                        || (idx + 1 < wasm_ops.len() && matches!(wasm_ops[idx + 1], End));
+                    let dst = if is_return_value {
+                        Reg::R0
+                    } else {
+                        let t = index_to_reg(next_temp);
+                        next_temp = (next_temp + 1) % 13;
+                        t
+                    };
+
+                    let (access_size, sign_extend) = match op {
+                        I32Load8S { .. } => (1, true),
+                        I32Load8U { .. } => (1, false),
+                        I32Load16S { .. } => (2, true),
+                        I32Load16U { .. } => (2, false),
+                        _ => unreachable!(),
+                    };
+
+                    let load_ops = self.generate_subword_load_with_bounds_check(
+                        dst,
+                        addr,
+                        *offset as i32,
+                        access_size,
+                        sign_extend,
+                    );
+                    for arm_op in load_ops {
+                        instructions.push(ArmInstruction {
+                            op: arm_op,
+                            source_line: Some(idx),
+                        });
+                    }
+                    stack.push(dst);
+                }
+
+                // Sub-word stores (i32) — like I32Store but with STRB/STRH
+                I32Store8 { offset, .. } | I32Store16 { offset, .. } => {
+                    let value = stack.pop().unwrap_or(Reg::R1);
+                    let addr = stack.pop().unwrap_or(Reg::R0);
+
+                    let access_size = match op {
+                        I32Store8 { .. } => 1,
+                        I32Store16 { .. } => 2,
+                        _ => unreachable!(),
+                    };
+
+                    let store_ops = self.generate_subword_store_with_bounds_check(
+                        value,
+                        addr,
+                        *offset as i32,
+                        access_size,
+                    );
+                    for arm_op in store_ops {
+                        instructions.push(ArmInstruction {
+                            op: arm_op,
+                            source_line: Some(idx),
+                        });
+                    }
+                }
+
+                // i64 sub-word loads — load sub-word, extend to i64 (register pair)
+                I64Load8S { offset, .. }
+                | I64Load8U { offset, .. }
+                | I64Load16S { offset, .. }
+                | I64Load16U { offset, .. }
+                | I64Load32S { offset, .. }
+                | I64Load32U { offset, .. } => {
+                    let addr = stack.pop().unwrap_or(Reg::R0);
+                    let dst_lo = Reg::R0;
+                    let dst_hi = Reg::R1;
+
+                    let ops: Vec<ArmOp> = match op {
+                        I64Load8S { .. } => {
+                            let mut v = self.generate_subword_load_with_bounds_check(
+                                dst_lo,
+                                addr,
+                                *offset as i32,
+                                1,
+                                true,
+                            );
+                            v.push(ArmOp::Asr {
+                                rd: dst_hi,
+                                rn: dst_lo,
+                                shift: 31,
+                            });
+                            v
+                        }
+                        I64Load8U { .. } => {
+                            let mut v = self.generate_subword_load_with_bounds_check(
+                                dst_lo,
+                                addr,
+                                *offset as i32,
+                                1,
+                                false,
+                            );
+                            v.push(ArmOp::Mov {
+                                rd: dst_hi,
+                                op2: Operand2::Imm(0),
+                            });
+                            v
+                        }
+                        I64Load16S { .. } => {
+                            let mut v = self.generate_subword_load_with_bounds_check(
+                                dst_lo,
+                                addr,
+                                *offset as i32,
+                                2,
+                                true,
+                            );
+                            v.push(ArmOp::Asr {
+                                rd: dst_hi,
+                                rn: dst_lo,
+                                shift: 31,
+                            });
+                            v
+                        }
+                        I64Load16U { .. } => {
+                            let mut v = self.generate_subword_load_with_bounds_check(
+                                dst_lo,
+                                addr,
+                                *offset as i32,
+                                2,
+                                false,
+                            );
+                            v.push(ArmOp::Mov {
+                                rd: dst_hi,
+                                op2: Operand2::Imm(0),
+                            });
+                            v
+                        }
+                        I64Load32S { .. } => {
+                            let mut v = self.generate_load_with_bounds_check(
+                                dst_lo,
+                                addr,
+                                *offset as i32,
+                                4,
+                            );
+                            v.push(ArmOp::Asr {
+                                rd: dst_hi,
+                                rn: dst_lo,
+                                shift: 31,
+                            });
+                            v
+                        }
+                        I64Load32U { .. } => {
+                            let mut v = self.generate_load_with_bounds_check(
+                                dst_lo,
+                                addr,
+                                *offset as i32,
+                                4,
+                            );
+                            v.push(ArmOp::Mov {
+                                rd: dst_hi,
+                                op2: Operand2::Imm(0),
+                            });
+                            v
+                        }
+                        _ => unreachable!(),
+                    };
+
+                    for arm_op in ops {
+                        instructions.push(ArmInstruction {
+                            op: arm_op,
+                            source_line: Some(idx),
+                        });
+                    }
+                    // i64 on 32-bit ARM uses register pair; push low register
+                    stack.push(dst_lo);
+                }
+
+                // i64 sub-word stores
+                I64Store8 { offset, .. }
+                | I64Store16 { offset, .. }
+                | I64Store32 { offset, .. } => {
+                    // Pop i64 value (lo register) and address
+                    let value_lo = stack.pop().unwrap_or(Reg::R1);
+                    let addr = stack.pop().unwrap_or(Reg::R0);
+
+                    let ops: Vec<ArmOp> = match op {
+                        I64Store8 { .. } => self.generate_subword_store_with_bounds_check(
+                            value_lo,
+                            addr,
+                            *offset as i32,
+                            1,
+                        ),
+                        I64Store16 { .. } => self.generate_subword_store_with_bounds_check(
+                            value_lo,
+                            addr,
+                            *offset as i32,
+                            2,
+                        ),
+                        I64Store32 { .. } => {
+                            self.generate_store_with_bounds_check(value_lo, addr, *offset as i32, 4)
+                        }
+                        _ => unreachable!(),
+                    };
+
+                    for arm_op in ops {
+                        instructions.push(ArmInstruction {
+                            op: arm_op,
+                            source_line: Some(idx),
+                        });
+                    }
+                }
+
+                // Memory management
+                MemorySize(_mem_idx) => {
+                    let dst = index_to_reg(next_temp);
+                    next_temp = (next_temp + 1) % 13;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::MemorySize { rd: dst },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
+                }
+
+                MemoryGrow(_mem_idx) => {
+                    // Pop the requested number of pages from stack
+                    let pages = stack.pop().unwrap_or(Reg::R0);
+                    let dst = index_to_reg(next_temp);
+                    next_temp = (next_temp + 1) % 13;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::MemoryGrow { rd: dst, rn: pages },
+                        source_line: Some(idx),
+                    });
+                    stack.push(dst);
                 }
 
                 // =========================================================
@@ -5515,5 +5987,474 @@ mod tests {
                 result.err()
             );
         }
+    }
+
+    // =========================================================================
+    // Sub-word load/store tests
+    // =========================================================================
+
+    #[test]
+    fn test_i32_load8_u() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I32Load8U {
+            offset: 0,
+            align: 1,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::Ldrb { rd, addr } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(addr.base, Reg::R11);
+                assert_eq!(addr.offset, 0);
+            }
+            other => panic!("Expected Ldrb, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i32_load8_s() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I32Load8S {
+            offset: 4,
+            align: 1,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::Ldrsb { rd, addr } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(addr.base, Reg::R11);
+                assert_eq!(addr.offset, 4);
+            }
+            other => panic!("Expected Ldrsb, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i32_load16_u() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I32Load16U {
+            offset: 8,
+            align: 2,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::Ldrh { rd, addr } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(addr.base, Reg::R11);
+                assert_eq!(addr.offset, 8);
+            }
+            other => panic!("Expected Ldrh, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i32_load16_s() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I32Load16S {
+            offset: 0,
+            align: 2,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::Ldrsh { rd, addr } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(addr.base, Reg::R11);
+            }
+            other => panic!("Expected Ldrsh, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i32_store8() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I32Store8 {
+            offset: 0,
+            align: 1,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::Strb { rd, addr } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(addr.base, Reg::R11);
+            }
+            other => panic!("Expected Strb, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i32_store16() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::I32Store16 {
+            offset: 4,
+            align: 2,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        match &arm_instrs[0].op {
+            ArmOp::Strh { rd, addr } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(addr.base, Reg::R11);
+                assert_eq!(addr.offset, 4);
+            }
+            other => panic!("Expected Strh, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_i32_subword_loads_with_bounds_checking() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::with_bounds_check(
+            db.rules().to_vec(),
+            BoundsCheckConfig::Software,
+        );
+
+        let wasm_ops = vec![WasmOp::I32Load8U {
+            offset: 4,
+            align: 1,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        // With software bounds checking: ADD + CMP + BHS + LDRB
+        assert_eq!(arm_instrs.len(), 4);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::Add { .. }));
+        assert!(matches!(&arm_instrs[1].op, ArmOp::Cmp { .. }));
+        assert!(matches!(&arm_instrs[2].op, ArmOp::Bhs { .. }));
+        assert!(matches!(&arm_instrs[3].op, ArmOp::Ldrb { .. }));
+    }
+
+    #[test]
+    fn test_i32_subword_stores_with_bounds_checking() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::with_bounds_check(
+            db.rules().to_vec(),
+            BoundsCheckConfig::Software,
+        );
+
+        let wasm_ops = vec![WasmOp::I32Store16 {
+            offset: 0,
+            align: 2,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        // With software bounds checking: ADD + CMP + BHS + STRH
+        assert_eq!(arm_instrs.len(), 4);
+        assert!(matches!(&arm_instrs[3].op, ArmOp::Strh { .. }));
+    }
+
+    #[test]
+    fn test_i64_subword_loads() {
+        let db = RuleDatabase::new();
+
+        // i64.load8_s: LDRSB + ASR (sign-extend hi from lo)
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![WasmOp::I64Load8S {
+            offset: 0,
+            align: 1,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+        assert_eq!(arm_instrs.len(), 2);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::Ldrsb { .. }));
+        assert!(matches!(
+            &arm_instrs[1].op,
+            ArmOp::Asr {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                shift: 31
+            }
+        ));
+
+        // i64.load8_u: LDRB + MOV R1, #0
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![WasmOp::I64Load8U {
+            offset: 0,
+            align: 1,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+        assert_eq!(arm_instrs.len(), 2);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::Ldrb { .. }));
+        assert!(matches!(
+            &arm_instrs[1].op,
+            ArmOp::Mov {
+                rd: Reg::R1,
+                op2: Operand2::Imm(0)
+            }
+        ));
+
+        // i64.load32_s: LDR + ASR
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![WasmOp::I64Load32S {
+            offset: 0,
+            align: 4,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+        assert_eq!(arm_instrs.len(), 2);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::Ldr { .. }));
+        assert!(matches!(
+            &arm_instrs[1].op,
+            ArmOp::Asr {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                shift: 31
+            }
+        ));
+
+        // i64.load32_u: LDR + MOV R1, #0
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![WasmOp::I64Load32U {
+            offset: 0,
+            align: 4,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+        assert_eq!(arm_instrs.len(), 2);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::Ldr { .. }));
+        assert!(matches!(
+            &arm_instrs[1].op,
+            ArmOp::Mov {
+                rd: Reg::R1,
+                op2: Operand2::Imm(0)
+            }
+        ));
+    }
+
+    #[test]
+    fn test_i64_subword_stores() {
+        let db = RuleDatabase::new();
+
+        // i64.store8: STRB
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![WasmOp::I64Store8 {
+            offset: 0,
+            align: 1,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::Strb { .. }));
+
+        // i64.store16: STRH
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![WasmOp::I64Store16 {
+            offset: 0,
+            align: 2,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::Strh { .. }));
+
+        // i64.store32: STR
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![WasmOp::I64Store32 {
+            offset: 0,
+            align: 4,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::Str { .. }));
+    }
+
+    // =========================================================================
+    // memory.size / memory.grow tests
+    // =========================================================================
+
+    #[test]
+    fn test_memory_size() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::MemorySize(0)];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::MemorySize { .. }));
+    }
+
+    #[test]
+    fn test_memory_grow() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::MemoryGrow(0)];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+
+        assert_eq!(arm_instrs.len(), 1);
+        assert!(matches!(&arm_instrs[0].op, ArmOp::MemoryGrow { .. }));
+    }
+
+    #[test]
+    fn test_all_subword_ops_succeed() {
+        let db = RuleDatabase::new();
+
+        let all_subword_ops = vec![
+            WasmOp::I32Load8S {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::I32Load8U {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::I32Load16S {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::I32Load16U {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::I32Store8 {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::I32Store16 {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::I64Load8S {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::I64Load8U {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::I64Load16S {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::I64Load16U {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::I64Load32S {
+                offset: 0,
+                align: 4,
+            },
+            WasmOp::I64Load32U {
+                offset: 0,
+                align: 4,
+            },
+            WasmOp::I64Store8 {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::I64Store16 {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::I64Store32 {
+                offset: 0,
+                align: 4,
+            },
+            WasmOp::MemorySize(0),
+            WasmOp::MemoryGrow(0),
+        ];
+
+        for op in &all_subword_ops {
+            let mut selector = InstructionSelector::new(db.rules().to_vec());
+            let result = selector.select(std::slice::from_ref(op));
+            assert!(
+                result.is_ok(),
+                "Sub-word/memory operation {op:?} should succeed but got error: {:?}",
+                result.err()
+            );
+        }
+    }
+
+    #[test]
+    fn test_subword_load_stack_mode() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        // Test i32.load8_u in stack mode: local.get 0; i32.load8_u; end
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load8U {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::End,
+        ];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // Should contain at least one Ldrb instruction
+        let has_ldrb = arm_instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Ldrb { .. }));
+        assert!(has_ldrb, "Should contain LDRB instruction");
+    }
+
+    #[test]
+    fn test_subword_store_stack_mode() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        // Test i32.store8 in stack mode: local.get 0; i32.const 42; i32.store8; end
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(42),
+            WasmOp::I32Store8 {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::End,
+        ];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // Should contain a Strb instruction
+        let has_strb = arm_instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Strb { .. }));
+        assert!(has_strb, "Should contain STRB instruction");
+    }
+
+    #[test]
+    fn test_memory_size_stack_mode() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![WasmOp::MemorySize(0), WasmOp::End];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        let has_mem_size = arm_instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::MemorySize { .. }));
+        assert!(has_mem_size, "Should contain MemorySize instruction");
+    }
+
+    #[test]
+    fn test_memory_grow_stack_mode() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        // memory.grow pops 1 value (requested pages) from stack
+        let wasm_ops = vec![WasmOp::I32Const(1), WasmOp::MemoryGrow(0), WasmOp::End];
+        let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        let has_mem_grow = arm_instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::MemoryGrow { .. }));
+        assert!(has_mem_grow, "Should contain MemoryGrow instruction");
     }
 }

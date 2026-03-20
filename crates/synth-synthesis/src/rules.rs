@@ -248,6 +248,43 @@ pub enum ArmOp {
         addr: MemAddr,
     },
 
+    // Sub-word loads
+    Ldrb {
+        rd: Reg,
+        addr: MemAddr,
+    }, // Load byte, zero-extend
+    Ldrsb {
+        rd: Reg,
+        addr: MemAddr,
+    }, // Load byte, sign-extend
+    Ldrh {
+        rd: Reg,
+        addr: MemAddr,
+    }, // Load halfword, zero-extend
+    Ldrsh {
+        rd: Reg,
+        addr: MemAddr,
+    }, // Load halfword, sign-extend
+
+    // Sub-word stores
+    Strb {
+        rd: Reg,
+        addr: MemAddr,
+    }, // Store byte
+    Strh {
+        rd: Reg,
+        addr: MemAddr,
+    }, // Store halfword
+
+    // Memory management
+    MemorySize {
+        rd: Reg,
+    }, // Return current memory size in pages
+    MemoryGrow {
+        rd: Reg,
+        rn: Reg,
+    }, // Attempt to grow memory by rn pages, result in rd
+
     /// Label pseudo-instruction — marks a branch target position.
     /// Emits no machine code; used for branch offset resolution.
     Label {

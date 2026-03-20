@@ -1,0 +1,385 @@
+# kiln-builtins API Requirements (ASPICE SYS.2 / SWE.1)
+#
+# System: Synth -- WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Defines the API contract between synth-compiled code and kiln-builtins.a,
+# the no_std static library that provides the C ABI runtime bridge for
+# import dispatch, linear memory access, and canonical ABI memory allocation.
+#
+# This artifact captures what synth-compiled code NEEDS from kiln-builtins;
+# the implementation lives in kiln. Cross-repo links use kiln: prefix.
+#
+# References:
+#   - BA RFC #46: https://github.com/bytecodealliance/rfcs/pull/46
+#   - Host-Guest C API: value_t union, host_function_t signatures
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # ---------------------------------------------------------------------------
+  # Import dispatch bridge
+  # ---------------------------------------------------------------------------
+
+  - id: KB-001
+    type: system-req
+    title: __meld_dispatch_import -- generic import dispatch bridge
+    description: >
+      Synth-compiled code shall call host imports via an extern "C" function
+      __meld_dispatch_import(import_index: u32, args: *const value_t,
+      args_len: u32, ret: *mut value_t) -> i32. This is the generic dispatch
+      entry point: synth emits a BL __meld_dispatch_import instruction for
+      each WASM import call, passing the import index and a pointer to the
+      canonical-ABI-lowered argument buffer in linear memory. The dispatcher
+      in kiln-builtins routes the call to the appropriate host function
+      based on the import index. The return value is 0 for success, non-zero
+      for trap. This function must use C ABI (AAPCS on ARM) so that synth
+      can generate the call using standard ARM calling convention (R0-R3
+      for first four arguments).
+    status: draft
+    tags: [kiln-builtins, import-dispatch, c-abi, aapcs]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: CM-002
+      - type: refines
+        target: CM-003
+      - type: traces-to
+        target: kiln:REQ_FUNC_014
+      - type: traces-to
+        target: kiln:REQ_HELPER_ABI_001
+    fields:
+      req-type: interface
+      priority: must
+      symbol: __meld_dispatch_import
+      signature: "extern \"C\" fn(import_index: u32, args: *const value_t, args_len: u32, ret: *mut value_t) -> i32"
+      calling-convention: AAPCS
+      verification-criteria: >
+        Synth emits BL __meld_dispatch_import with R0=import_index,
+        R1=args_ptr, R2=args_len, R3=ret_ptr; kiln-builtins resolves
+        the symbol and dispatches to correct host function.
+
+  - id: KB-002
+    type: system-req
+    title: Per-import direct symbols (__meld_import_N) for optimized dispatch
+    description: >
+      As an optimization over generic dispatch, synth shall support emitting
+      per-import direct call symbols (__meld_import_0, __meld_import_1, etc.)
+      where each symbol has a function signature matching the AAPCS lowering
+      of the WASM import's type signature. This avoids the overhead of the
+      generic dispatch table lookup and value_t boxing/unboxing. Each
+      __meld_import_N function takes WASM arguments directly in R0-R3
+      (spilling to stack for >4 args) and returns the result in R0 (or
+      R0+R1 for i64). kiln-builtins.a provides a stub for each import
+      index that either implements the function directly or trampolines
+      to the host. Per-import symbols are the preferred dispatch mechanism
+      for embedded targets where call overhead matters.
+    status: draft
+    tags: [kiln-builtins, per-import, direct-call, optimization]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: refines
+        target: FR-004
+      - type: refines
+        target: CM-002
+      - type: traces-to
+        target: kiln:REQ_FUNC_014
+    fields:
+      req-type: interface
+      priority: should
+      symbol-pattern: "__meld_import_N (N = 0, 1, 2, ...)"
+      calling-convention: AAPCS
+      verification-criteria: >
+        Synth emits BL __meld_import_0 for import index 0 with arguments
+        directly in R0-R3; kiln-builtins.a defines __meld_import_0 with
+        the matching AAPCS signature; link succeeds without symbol errors.
+
+  # ---------------------------------------------------------------------------
+  # Memory access
+  # ---------------------------------------------------------------------------
+
+  - id: KB-003
+    type: system-req
+    title: __meld_get_memory_base -- linear memory base address accessor
+    description: >
+      Synth-compiled code shall obtain the WASM linear memory base address
+      by calling extern "C" fn __meld_get_memory_base(memory_index: u32)
+      -> *mut u8. For single-memory modules (the common case), memory_index
+      is 0 and the return value is the base pointer of the WASM linear
+      memory region in RAM. The synth Reset_Handler calls this function
+      once at startup and caches the result in R11 (the dedicated linear
+      memory base register). For multi-memory modules, each memory has
+      a distinct index. kiln-builtins provides this function, backed by
+      the target's memory allocation (static buffer for bare-metal,
+      Zephyr k_mem_partition for RTOS targets).
+    status: draft
+    tags: [kiln-builtins, memory, linear-memory, base-address]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: refines
+        target: FR-003
+      - type: refines
+        target: CM-002
+      - type: traces-to
+        target: ARCH-005
+      - type: traces-to
+        target: kiln:REQ_FUNC_014
+    fields:
+      req-type: interface
+      priority: must
+      symbol: __meld_get_memory_base
+      signature: "extern \"C\" fn(memory_index: u32) -> *mut u8"
+      calling-convention: AAPCS
+      verification-criteria: >
+        Synth startup code calls __meld_get_memory_base(0) and stores
+        result in R11; all subsequent memory operations use R11 as base;
+        kiln-builtins returns a valid RAM pointer aligned to 4 bytes.
+
+  - id: KB-004
+    type: system-req
+    title: cabi_realloc -- canonical ABI memory allocator for embedded
+    description: >
+      Synth-compiled code performing canonical ABI lift/lower operations
+      shall call extern "C" fn cabi_realloc(old_ptr: *mut u8, old_size:
+      usize, align: usize, new_size: usize) -> *mut u8 for dynamic
+      memory allocation within the WASM linear memory. This function is
+      defined by the Component Model Canonical ABI specification and is
+      called during string/list lowering when the host needs to allocate
+      guest memory for passing compound values. For embedded targets,
+      the implementation shall be a simple bump allocator or arena
+      allocator within the linear memory region (no malloc/free). The
+      allocator shall respect the alignment parameter and trap on
+      allocation failure (OOM) rather than returning null.
+    status: draft
+    tags: [kiln-builtins, cabi-realloc, canonical-abi, allocator]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: refines
+        target: CM-001
+      - type: refines
+        target: CM-002
+      - type: traces-to
+        target: CM-TR-004
+      - type: traces-to
+        target: kiln:REQ_HELPER_ABI_001
+    fields:
+      req-type: interface
+      priority: must
+      symbol: cabi_realloc
+      signature: "extern \"C\" fn(old_ptr: *mut u8, old_size: usize, align: usize, new_size: usize) -> *mut u8"
+      calling-convention: AAPCS
+      spec-reference: "Component Model Canonical ABI -- realloc"
+      verification-criteria: >
+        Synth canonical ABI lowering for strings/lists emits BL cabi_realloc;
+        kiln-builtins implementation allocates within linear memory with
+        correct alignment; OOM triggers trap (not null return).
+
+  # ---------------------------------------------------------------------------
+  # Import table binary format
+  # ---------------------------------------------------------------------------
+
+  - id: KB-005
+    type: system-req
+    title: .meld_import_table section binary format
+    description: >
+      Synth shall emit a .meld_import_table ELF section in relocatable
+      objects containing metadata for each host import. The section format
+      is a packed array of import descriptors: [import_count: u32,
+      entries: ImportEntry[import_count]] where each ImportEntry is
+      {module_name_offset: u32, field_name_offset: u32, signature_hash:
+      u32, flags: u32}. String data (module and field names) is stored
+      in a companion .meld_import_strings section. The signature_hash
+      is a FNV-1a hash of the canonical type signature, used for
+      link-time ABI version mismatch detection (per CM-003). This section
+      is placed in FLASH (read-only) by the linker script. kiln-builtins
+      reads this table at startup to configure the dispatch table.
+    status: draft
+    tags: [kiln-builtins, import-table, elf-section, binary-format]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: refines
+        target: CM-002
+      - type: refines
+        target: CM-003
+      - type: traces-to
+        target: ARCH-003
+      - type: traces-to
+        target: ZI-009
+    fields:
+      req-type: interface
+      priority: must
+      elf-section: .meld_import_table
+      placement: FLASH (read-only)
+      verification-criteria: >
+        readelf -x .meld_import_table module.o shows correct import_count
+        and packed ImportEntry records; string offsets resolve correctly
+        in .meld_import_strings; signature hashes match expected FNV-1a
+        values for test import signatures.
+
+  # ---------------------------------------------------------------------------
+  # SW-level requirements for synth codegen of kiln-builtins calls
+  # ---------------------------------------------------------------------------
+
+  - id: KB-TR-001
+    type: sw-req
+    title: Import call stub generation for __meld_dispatch_import
+    description: >
+      synth-synthesis shall generate ARM Thumb-2 call stubs for each WASM
+      import that: (1) lower canonical ABI arguments into a stack-allocated
+      value_t array, (2) set R0 = import_index, R1 = args pointer,
+      R2 = args_len, R3 = ret pointer, (3) emit BL __meld_dispatch_import,
+      (4) check R0 for trap (non-zero = trap), (5) lift the return value
+      from ret buffer. The stub shall be emitted inline at each call site
+      for single-use imports and as a shared trampoline for imports called
+      more than once in the same function.
+    status: planned
+    tags: [kiln-builtins, codegen, import-stub, synth-synthesis]
+    links:
+      - type: derives-from
+        target: KB-001
+      - type: refines
+        target: CM-TR-005
+      - type: refines
+        target: FR-002
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-synthesis
+      verification-criteria: >
+        Generated ARM code for a WASM import call contains BL to
+        __meld_dispatch_import with correct R0-R3 setup; Z3 validates
+        argument lowering correctness; trap check branch present after BL.
+
+  - id: KB-TR-002
+    type: sw-req
+    title: Per-import direct symbol generation (__meld_import_N)
+    description: >
+      synth-synthesis shall support an optimization mode where each WASM
+      import generates a BL __meld_import_N instruction with arguments
+      passed directly in R0-R3 per AAPCS, bypassing the generic dispatch
+      value_t boxing. The import index N is assigned sequentially from
+      the module's import section. For imports with more than 4 i32
+      arguments, excess arguments are pushed to the stack per AAPCS.
+      For i64 arguments, the value occupies two registers (R0+R1 or
+      R2+R3). This mode is selected via a synth CLI flag
+      (--import-dispatch=direct) and is the recommended default for
+      embedded targets.
+    status: planned
+    tags: [kiln-builtins, codegen, per-import, direct-dispatch]
+    links:
+      - type: derives-from
+        target: KB-002
+      - type: refines
+        target: CM-TR-005
+      - type: refines
+        target: FR-004
+    fields:
+      req-type: functional
+      priority: should
+      crate: synth-synthesis
+      verification-criteria: >
+        With --import-dispatch=direct, synth emits BL __meld_import_0
+        (not BL __meld_dispatch_import) for import index 0; arguments
+        are in R0-R3 directly without value_t wrapping; generated code
+        is 4-8 instructions shorter per call site.
+
+  - id: KB-TR-003
+    type: sw-req
+    title: .meld_import_table section emission in synth-backend
+    description: >
+      synth-backend shall emit the .meld_import_table and
+      .meld_import_strings ELF sections when the compiled module has
+      host imports. The ElfBuilder shall add these sections with correct
+      SHT_PROGBITS type, SHF_ALLOC flags, 4-byte alignment, and packed
+      binary content matching the KB-005 format specification. The
+      import_count field shall match the number of import declarations
+      in the WASM module. The signature_hash shall be computed from the
+      WASM function type signature (param types, result types) using
+      FNV-1a hashing.
+    status: planned
+    tags: [kiln-builtins, elf-section, synth-backend, emission]
+    links:
+      - type: derives-from
+        target: KB-005
+      - type: refines
+        target: CC-008
+      - type: refines
+        target: TR-002
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-backend
+      verification-criteria: >
+        ElfBuilder produces .meld_import_table with correct header;
+        section content matches expected binary layout for test modules;
+        arm-none-eabi-readelf parses the section without errors.
+
+  - id: KB-TR-004
+    type: sw-req
+    title: value_t union type definition for generic dispatch
+    description: >
+      synth-core shall define a value_t union type matching the kiln-builtins
+      C ABI definition from BA RFC #46. The union shall have variants:
+      i32 (4 bytes), i64 (8 bytes), f32 (4 bytes), f64 (8 bytes), and
+      externref (4 bytes, opaque handle). The union size shall be 8 bytes
+      (aligned to the largest variant). synth-synthesis uses this type to
+      compute argument buffer sizes and offsets for the generic dispatch
+      path (__meld_dispatch_import). The type definition shall be shared
+      between synth (for codegen) and kiln-builtins (for runtime) via a
+      common header or WIT definition.
+    status: planned
+    tags: [kiln-builtins, value-type, c-abi, rfc46]
+    links:
+      - type: derives-from
+        target: KB-001
+      - type: derives-from
+        target: CM-003
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-core
+      verification-criteria: >
+        value_t size is 8 bytes with 8-byte alignment; field offsets
+        match kiln-builtins C definition; synth codegen produces correct
+        buffer sizes (args_len * 8 bytes).
+
+  - id: KB-TR-005
+    type: sw-req
+    title: Startup code memory base initialization via __meld_get_memory_base
+    description: >
+      synth-backend Reset_Handler startup code shall call
+      __meld_get_memory_base(0) to obtain the linear memory base address
+      and store the result in R11. This replaces the current hardcoded
+      MOV R11, #0x20000000 with a dynamic memory base that kiln-builtins
+      configures based on the target platform. The startup sequence shall
+      be: (1) set SP from vector table, (2) optionally enable FPU,
+      (3) BL __meld_get_memory_base with R0=0, (4) MOV R11, R0,
+      (5) branch to user code. For bare-metal targets without
+      kiln-builtins, a weak symbol default returning 0x20000000 shall
+      be provided in the synth-generated startup code.
+    status: planned
+    tags: [kiln-builtins, startup, memory-base, reset-handler]
+    links:
+      - type: derives-from
+        target: KB-003
+      - type: derives-from
+        target: CC-003
+      - type: refines
+        target: FR-003
+      - type: traces-to
+        target: TP-006
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-backend
+      verification-criteria: >
+        Reset_Handler contains BL __meld_get_memory_base followed by
+        MOV R11, R0; weak symbol default returns 0x20000000 when
+        kiln-builtins is not linked; Renode test verifies R11 is set
+        correctly at user code entry.

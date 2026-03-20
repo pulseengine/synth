@@ -56,6 +56,16 @@ pub enum WasmOp {
     I32Load { offset: u32, align: u32 },
     I32Store { offset: u32, align: u32 },
 
+    // Sub-word loads (i32)
+    I32Load8S { offset: u32, align: u32 }, // byte load, sign-extend to i32
+    I32Load8U { offset: u32, align: u32 }, // byte load, zero-extend to i32
+    I32Load16S { offset: u32, align: u32 }, // halfword load, sign-extend to i32
+    I32Load16U { offset: u32, align: u32 }, // halfword load, zero-extend to i32
+
+    // Sub-word stores (i32)
+    I32Store8 { offset: u32, align: u32 },  // store low byte
+    I32Store16 { offset: u32, align: u32 }, // store low halfword
+
     // Control flow
     Block,
     Loop,
@@ -70,6 +80,10 @@ pub enum WasmOp {
     LocalTee(u32),
     GlobalGet(u32),
     GlobalSet(u32),
+
+    // Memory management
+    MemorySize(u32), // returns current memory size in pages (memory index)
+    MemoryGrow(u32), // grow memory by N pages, returns previous size or -1 (memory index)
 
     // More ops
     Drop,
@@ -123,6 +137,19 @@ pub enum WasmOp {
     I64Const(i64),
     I64Load { offset: u32, align: u32 },
     I64Store { offset: u32, align: u32 },
+
+    // Sub-word loads (i64) — load sub-word, extend to i64
+    I64Load8S { offset: u32, align: u32 },
+    I64Load8U { offset: u32, align: u32 },
+    I64Load16S { offset: u32, align: u32 },
+    I64Load16U { offset: u32, align: u32 },
+    I64Load32S { offset: u32, align: u32 },
+    I64Load32U { offset: u32, align: u32 },
+
+    // Sub-word stores (i64) — store low N bits
+    I64Store8 { offset: u32, align: u32 },
+    I64Store16 { offset: u32, align: u32 },
+    I64Store32 { offset: u32, align: u32 },
 
     // Conversion operations
     I64ExtendI32S, // Sign-extend i32 to i64
