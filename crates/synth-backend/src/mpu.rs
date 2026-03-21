@@ -168,12 +168,15 @@ impl MPUAttributes {
         }
     }
 
-    /// Device memory (non-cacheable, non-bufferable)
+    /// Device memory (non-cacheable, bufferable)
+    ///
+    /// Per ARM architecture: Device memory has TEX=0b000, C=0, B=1.
+    /// This distinguishes it from Strongly-ordered (TEX=0b000, C=0, B=0).
     pub fn device() -> Self {
         Self {
             shareable: true,
             cacheable: false,
-            bufferable: false,
+            bufferable: true,
             execute_never: true,
         }
     }

@@ -1,0 +1,375 @@
+# Cross-Compilation Toolchain Requirements (ASPICE SYS.2 / SWE.1)
+#
+# System: Synth -- WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Defines the cross-compilation toolchain requirements for producing
+# runnable firmware from synth-compiled relocatable objects. Covers
+# toolchain detection, kiln-builtins stub provisioning, Bazel hermetic
+# build integration, and the testing progression from emulation to
+# real hardware.
+#
+# Addresses issue #27 (ARM cross-compilation toolchain).
+# Extends: SL-001..SL-007 (static linking), CC-001..CC-008 (compilation chain).
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # ---------------------------------------------------------------------------
+  # System-level: cross-compilation toolchain
+  # ---------------------------------------------------------------------------
+
+  - id: XC-001
+    type: system-req
+    title: Minimal kiln-builtins stub for bare-metal Phase 1
+    description: >
+      A minimal kiln-builtins-stub.a shall be provided that resolves the
+      three undefined symbols emitted by synth-compiled objects:
+      __meld_dispatch_import (returns trap/-1 for all imports),
+      __meld_get_memory_base (returns pointer to static 64KB buffer in
+      .wasm_linear_memory), and cabi_realloc (bump allocator within
+      linear memory). This stub enables Phase 1 bare-metal testing
+      without requiring the full kiln runtime. The stub is cross-compiled
+      for thumbv7em-none-eabihf using arm-none-eabi-gcc or Rust
+      no_std with panic=abort.
+    status: draft
+    tags: [cross-compilation, kiln-builtins, stub, bare-metal, phase-1]
+    links:
+      - type: derives-from
+        target: CC-004
+      - type: derives-from
+        target: SL-003
+      - type: refines
+        target: KB-001
+      - type: refines
+        target: KB-003
+      - type: refines
+        target: KB-004
+    fields:
+      req-type: interface
+      priority: must
+      github-issue: 27
+      verification-criteria: >
+        arm-none-eabi-nm kiln-builtins-stub.a shows T (defined text)
+        for __meld_dispatch_import, __meld_get_memory_base, cabi_realloc;
+        linking with synth-compiled module.o produces firmware.elf with
+        no unresolved symbols.
+
+  - id: XC-002
+    type: system-req
+    title: Bazel-hermetic kiln-builtins stub build
+    description: >
+      The kiln-builtins-stub.a shall be buildable via Bazel as a
+      hermetic target using the ARM cross-compilation toolchain from
+      the Bazel toolchain registry. The Bazel rule shall produce a
+      static archive (.a) containing the stub symbols for the configured
+      ARM target triple. This enables CI to build and link firmware.elf
+      without requiring a locally installed arm-none-eabi-gcc.
+    status: draft
+    tags: [cross-compilation, bazel, hermetic, kiln-builtins]
+    links:
+      - type: derives-from
+        target: XC-001
+      - type: refines
+        target: CC-005
+    fields:
+      req-type: functional
+      priority: should
+      github-issue: 27
+      verification-criteria: >
+        bazel build //tests/compilation-chain:kiln-builtins-stub produces
+        a .a file; no local arm-none-eabi-gcc required.
+
+  - id: XC-003
+    type: system-req
+    title: ARM cross-linker auto-detection and invocation
+    description: >
+      synth-cli shall auto-detect the ARM cross-linker on the host system
+      and invoke it as a subprocess when the --link flag is provided. The
+      detection priority is: (1) --linker CLI flag, (2) SYNTH_LINKER
+      environment variable, (3) PATH search for arm-none-eabi-ld,
+      (4) PATH search for arm-zephyr-eabi-ld (Zephyr SDK), (5) PATH
+      search for ld.lld (LLVM linker with --target). If no linker is
+      found, synth shall emit a clear error message listing installation
+      options (brew install arm-none-eabi-gcc for macOS, apt install
+      gcc-arm-none-eabi for Linux).
+    status: draft
+    tags: [cross-compilation, linker, detection, cli]
+    links:
+      - type: derives-from
+        target: SL-001
+      - type: refines
+        target: CC-005
+      - type: refines
+        target: SL-TR-002
+    fields:
+      req-type: functional
+      priority: must
+      github-issue: 27
+      crate: synth-cli
+      verification-criteria: >
+        synth compile --link succeeds when arm-none-eabi-ld is on PATH;
+        clear error message when no linker found; --linker flag overrides
+        auto-detection.
+
+  - id: XC-004
+    type: system-req
+    title: "synth compile --link single-command firmware production"
+    description: >
+      synth-cli shall support a --link flag that orchestrates the
+      complete pipeline from WASM input to firmware.elf output in a
+      single invocation. When --link is provided, synth: (1) compiles
+      WASM to ARM producing module.o in a temp directory, (2) generates
+      a linker script for the target board, (3) invokes the ARM
+      cross-linker with module.o + kiln-builtins.a (from --builtins
+      flag) + linker script, (4) produces firmware.elf at the -o path.
+      This reduces the three-step manual process to one command.
+    status: draft
+    tags: [cross-compilation, cli, pipeline, single-command]
+    links:
+      - type: derives-from
+        target: CC-007
+      - type: derives-from
+        target: SL-TR-002
+      - type: refines
+        target: TR-003
+    fields:
+      req-type: functional
+      priority: should
+      github-issue: 27
+      crate: synth-cli
+      verification-criteria: >
+        synth compile module.wasm --link --builtins kiln-builtins.a
+        --target cortex-m4 -o firmware.elf produces a valid ET_EXEC ELF;
+        equivalent to manual synth compile + arm-none-eabi-ld.
+
+  - id: XC-005
+    type: system-req
+    title: Board-specific linker script generation via --board flag
+    description: >
+      synth-cli shall accept a --board flag (stm32f407, nrf52840, generic)
+      that selects the appropriate memory map for linker script generation.
+      When combined with --link, the generated linker script uses the
+      board's flash base/size and RAM base/size from the target platform
+      profiles (TP-002, TP-003, TP-008). Custom memory maps can be
+      provided via --flash-origin, --flash-size, --ram-origin, --ram-size
+      flags that override board defaults.
+    status: draft
+    tags: [cross-compilation, linker-script, board-profile]
+    links:
+      - type: derives-from
+        target: SL-002
+      - type: derives-from
+        target: TP-002
+      - type: derives-from
+        target: TP-003
+      - type: refines
+        target: SL-TR-001
+    fields:
+      req-type: functional
+      priority: should
+      crate: synth-cli
+      verification-criteria: >
+        synth compile --link --board stm32f407 generates linker script
+        with flash at 0x08000000; --board nrf52840 uses flash at 0x00000000;
+        --flash-origin overrides board default.
+
+  # ---------------------------------------------------------------------------
+  # Testing progression requirements
+  # ---------------------------------------------------------------------------
+
+  - id: XC-006
+    type: system-req
+    title: "Phase 1 testing: bare-metal Renode e2e test in CI"
+    description: >
+      The CI pipeline shall include a bare-metal end-to-end test that
+      exercises the complete Phase 1 pipeline: synth compile a WASM
+      module with one import, link with kiln-builtins-stub.a, and
+      execute on Renode Cortex-M4 emulator. The test validates: (1)
+      firmware.elf boots (Reset_Handler reaches user code), (2) WASM
+      function executes and produces correct result, (3) import dispatch
+      invokes the stub (trap/no-op). This test runs in Bazel CI via
+      rules_renode on every PR.
+    status: draft
+    tags: [cross-compilation, testing, renode, ci, phase-1]
+    links:
+      - type: derives-from
+        target: CC-006
+      - type: refines
+        target: E2E-VER-001
+      - type: refines
+        target: VER-005
+    fields:
+      req-type: functional
+      priority: must
+      github-issue: 27
+      verification-criteria: >
+        bazel test //tests/compilation-chain:bare_metal_e2e passes;
+        Renode log shows correct function result; no HardFault.
+
+  - id: XC-007
+    type: system-req
+    title: "Phase 2 testing: Zephyr QEMU integration test"
+    description: >
+      The CI pipeline shall include a Zephyr integration test that
+      builds a Zephyr application with synth-compiled assembly, runs
+      it on QEMU Cortex-M3, and verifies UART output. This validates
+      the Zephyr CMake integration path (ZI-001) with the actual Zephyr
+      build system. The test may run in a Zephyr Docker container if
+      the Zephyr SDK is not available on the CI host.
+    status: draft
+    tags: [cross-compilation, testing, zephyr, qemu, phase-2]
+    links:
+      - type: derives-from
+        target: ZI-001
+      - type: derives-from
+        target: ZI-005
+      - type: refines
+        target: VER-005
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        west build -b qemu_cortex_m3 succeeds for examples/zephyr-poc;
+        QEMU output shows correct synth_add results.
+
+  - id: XC-008
+    type: system-req
+    title: "Phase 3 testing: STM32F4-Discovery hardware validation"
+    description: >
+      Firmware produced by the cross-compilation pipeline shall be
+      validated on a physical STM32F4-Discovery board. The test flashes
+      firmware.elf via OpenOCD or J-Link, monitors UART output at
+      115200 baud, and verifies that synth-compiled WASM functions
+      produce correct results on real silicon. This is a manual gate
+      test triggered before release milestones.
+    status: draft
+    tags: [cross-compilation, testing, hardware, stm32, phase-3]
+    links:
+      - type: derives-from
+        target: TP-002
+      - type: derives-from
+        target: ZI-006
+      - type: refines
+        target: VER-005
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        OpenOCD flash succeeds; UART output matches expected results;
+        no HardFault on real STM32F407VG silicon.
+
+  - id: XC-009
+    type: system-req
+    title: "Phase 3 testing: nRF52840-DK hardware validation"
+    description: >
+      Firmware produced by the cross-compilation pipeline shall be
+      validated on a physical nRF52840-DK board. The test flashes via
+      J-Link (nRF52840-DK has onboard SEGGER), monitors UART output,
+      and verifies correct execution. The nRF52840 has a different
+      flash base (0x00000000 vs STM32's 0x08000000), validating that
+      the linker script generation correctly adapts to board profiles.
+    status: draft
+    tags: [cross-compilation, testing, hardware, nrf52840, phase-3]
+    links:
+      - type: derives-from
+        target: TP-003
+      - type: derives-from
+        target: ZI-006
+      - type: refines
+        target: VER-005
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        J-Link flash succeeds; UART output correct; linker script uses
+        flash base 0x00000000 (not 0x08000000).
+
+  # ---------------------------------------------------------------------------
+  # SW-level requirements for cross-compilation in synth
+  # ---------------------------------------------------------------------------
+
+  - id: XC-TR-001
+    type: sw-req
+    title: ARM cross-linker subprocess invocation
+    description: >
+      synth-cli shall invoke the ARM cross-linker as a subprocess using
+      std::process::Command. The invocation shall pass: (1) -T <linker_script>
+      for the generated or user-provided linker script, (2) -o <output>
+      for the firmware.elf output path, (3) all input objects (module.o),
+      (4) all input libraries (kiln-builtins.a via --builtins), (5)
+      --gc-sections for dead code elimination. Linker stdout/stderr
+      shall be captured and re-emitted with synth context (which symbol
+      is unresolved, which object needs it). Non-zero exit codes from
+      the linker shall propagate as synth errors.
+    status: planned
+    tags: [cross-compilation, cli, subprocess, linker]
+    links:
+      - type: derives-from
+        target: XC-003
+      - type: derives-from
+        target: XC-004
+      - type: refines
+        target: SL-TR-002
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-cli
+      verification-criteria: >
+        synth compile --link invokes arm-none-eabi-ld with correct
+        arguments; linker errors reported with context; exit code
+        propagated.
+
+  - id: XC-TR-002
+    type: sw-req
+    title: Weak symbol fallback for __meld_get_memory_base
+    description: >
+      synth-backend shall emit a weak symbol definition for
+      __meld_get_memory_base that returns 0x20000000 (default SRAM base
+      for Cortex-M). This allows bare-metal firmware to link and boot
+      without kiln-builtins.a by using the weak default. When
+      kiln-builtins.a is linked, its strong symbol definition overrides
+      the weak default. The weak symbol shall be emitted in a separate
+      .text.synth.defaults section that can be gc-collected when not
+      needed.
+    status: planned
+    tags: [cross-compilation, weak-symbol, memory-base, bare-metal]
+    links:
+      - type: derives-from
+        target: KB-TR-005
+      - type: derives-from
+        target: SL-003
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-backend
+      verification-criteria: >
+        nm module.o shows W (weak) for __meld_get_memory_base;
+        linking without kiln-builtins.a uses weak default (0x20000000);
+        linking with kiln-builtins.a uses strong definition.
+
+  - id: XC-TR-003
+    type: sw-req
+    title: Target triple to linker flag mapping
+    description: >
+      synth-cli shall map target profiles to correct linker flags:
+      cortex-m4 -> arm-none-eabi-ld (no special flags, Thumb-2 default),
+      cortex-m4f -> arm-none-eabi-ld with -mfloat-abi=hard linkage,
+      cortex-m7dp -> arm-none-eabi-ld with double-precision FP linkage.
+      When using ld.lld, the mapping adds --target=thumbv7em-none-eabihf
+      for Cortex-M4F targets. The mapping is configured via the
+      TargetSpec and HardwareCapabilities structs.
+    status: planned
+    tags: [cross-compilation, target-triple, linker-flags]
+    links:
+      - type: derives-from
+        target: SL-001
+      - type: derives-from
+        target: TP-001
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-cli
+      verification-criteria: >
+        cortex-m4f target invokes linker with hard-float flags;
+        cortex-m3 target does not include FPU flags; ld.lld path
+        adds --target flag.

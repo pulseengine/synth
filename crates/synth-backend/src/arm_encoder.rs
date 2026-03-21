@@ -2407,14 +2407,23 @@ impl ArmEncoder {
                     // Total offset = SignExtend(S:I1:I2:imm10:imm11:0)
                     // where I1 = NOT(J1 XOR S), I2 = NOT(J2 XOR S)
 
-                    let offset = halfword_offset >> 1; // Convert to word offset for encoding
-                    let s = if offset < 0 { 1u32 } else { 0u32 };
-                    let imm10 = ((offset >> 11) as u32) & 0x3FF;
-                    let imm11 = (offset as u32) & 0x7FF;
-                    let i1 = if s == 0 { 1 } else { 0 }; // J1 when S=0: I1=1, so J1=0
-                    let i2 = if s == 0 { 1 } else { 0 }; // J2 when S=0: I2=1, so J2=0
-                    let j1 = if s == 1 { i1 } else { 1 - i1 };
-                    let j2 = if s == 1 { i2 } else { 1 - i2 };
+                    // The B.W (T4) encoding packs the signed offset as:
+                    //   S:I1:I2:imm10:imm11:0  (25-bit signed, halfword-aligned)
+                    // where J1 = NOT(I1 XOR S), J2 = NOT(I2 XOR S)
+                    // Input halfword_offset already equals (target - PC - 4) / 2,
+                    // so the full byte offset = halfword_offset << 1.
+                    // The encoding fields split that 25-bit signed value (including the
+                    // implicit trailing zero) as: S | imm10 | imm11
+                    // with I1 = bit 23 and I2 = bit 22 of the signed offset.
+                    let signed_offset = halfword_offset << 1; // byte offset
+                    let s = if signed_offset < 0 { 1u32 } else { 0u32 };
+                    let uoffset = signed_offset as u32;
+                    let imm10 = (uoffset >> 12) & 0x3FF; // bits [21:12]
+                    let imm11 = (uoffset >> 1) & 0x7FF; // bits [11:1]
+                    let i1 = (uoffset >> 23) & 1; // bit 23
+                    let i2 = (uoffset >> 22) & 1; // bit 22
+                    let j1 = (!(i1 ^ s)) & 1; // J1 = NOT(I1 XOR S)
+                    let j2 = (!(i2 ^ s)) & 1; // J2 = NOT(I2 XOR S)
 
                     let hw1: u16 = (0xF000 | (s << 10) | imm10) as u16;
                     let hw2: u16 = (0x9000 | (j1 << 13) | (j2 << 11) | imm11) as u16;
