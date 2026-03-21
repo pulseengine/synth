@@ -360,6 +360,78 @@ impl ArmEncoder {
                 0xE5800000 | (base_bits << 16) | (rd_bits << 12) | offset_bits
             }
 
+            // Sub-word loads (ARM32 encoding)
+            ArmOp::Ldrb { rd, addr } => {
+                let rd_bits = reg_to_bits(rd);
+                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                // LDRB: LDR with B=1 (byte): cond|01|I|P|U|1|W|L|Rn|Rd|offset
+                0xE5D00000 | (base_bits << 16) | (rd_bits << 12) | offset_bits
+            }
+
+            ArmOp::Ldrsb { rd, addr } => {
+                let rd_bits = reg_to_bits(rd);
+                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                // LDRSB (misc load): cond|000|P|U|1|W|1|Rn|Rd|imm4H|1101|imm4L
+                // Simplified with immediate offset
+                let offset_val = offset_bits & 0xFF;
+                let imm4h = (offset_val >> 4) & 0xF;
+                let imm4l = offset_val & 0xF;
+                0xE1D000D0 | (base_bits << 16) | (rd_bits << 12) | (imm4h << 8) | imm4l
+            }
+
+            ArmOp::Ldrh { rd, addr } => {
+                let rd_bits = reg_to_bits(rd);
+                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                // LDRH (misc load): cond|000|P|U|1|W|1|Rn|Rd|imm4H|1011|imm4L
+                let offset_val = offset_bits & 0xFF;
+                let imm4h = (offset_val >> 4) & 0xF;
+                let imm4l = offset_val & 0xF;
+                0xE1D000B0 | (base_bits << 16) | (rd_bits << 12) | (imm4h << 8) | imm4l
+            }
+
+            ArmOp::Ldrsh { rd, addr } => {
+                let rd_bits = reg_to_bits(rd);
+                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                // LDRSH (misc load): cond|000|P|U|1|W|1|Rn|Rd|imm4H|1111|imm4L
+                let offset_val = offset_bits & 0xFF;
+                let imm4h = (offset_val >> 4) & 0xF;
+                let imm4l = offset_val & 0xF;
+                0xE1D000F0 | (base_bits << 16) | (rd_bits << 12) | (imm4h << 8) | imm4l
+            }
+
+            // Sub-word stores (ARM32 encoding)
+            ArmOp::Strb { rd, addr } => {
+                let rd_bits = reg_to_bits(rd);
+                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                // STRB: STR with B=1 (byte): cond|01|I|P|U|1|W|0|Rn|Rd|offset
+                0xE5C00000 | (base_bits << 16) | (rd_bits << 12) | offset_bits
+            }
+
+            ArmOp::Strh { rd, addr } => {
+                let rd_bits = reg_to_bits(rd);
+                let (base_bits, offset_bits) = encode_mem_addr(addr);
+                // STRH (misc store): cond|000|P|U|1|W|0|Rn|Rd|imm4H|1011|imm4L
+                let offset_val = offset_bits & 0xFF;
+                let imm4h = (offset_val >> 4) & 0xF;
+                let imm4l = offset_val & 0xF;
+                0xE1C000B0 | (base_bits << 16) | (rd_bits << 12) | (imm4h << 8) | imm4l
+            }
+
+            // Memory management (ARM32 encoding)
+            ArmOp::MemorySize { rd } => {
+                let rd_bits = reg_to_bits(rd);
+                // MOV rd, R10, LSR #16  (memory size in bytes / 65536 = pages)
+                // cond|000|1101|S|0000|Rd|shift5|type|0|Rm
+                // LSR #16: shift5=10000, type=01
+                0xE1A00820 | (rd_bits << 12) | 0x0A // Rm=R10, shift=16, LSR
+            }
+
+            ArmOp::MemoryGrow { rd, .. } => {
+                let rd_bits = reg_to_bits(rd);
+                // On embedded, always fail: MOV rd, #-1
+                0xE3E00000 | (rd_bits << 12) // MVN rd, #0 = MOV rd, #-1
+            }
+
             // Label pseudo-instruction: emits no machine code
             ArmOp::Label { .. } => {
                 return Ok(Vec::new());
@@ -1879,6 +1951,201 @@ impl ArmEncoder {
                 } else {
                     self.encode_thumb32_str(rd, &addr.base, offset)
                 }
+            }
+
+            // LDRB (Thumb-2)
+            ArmOp::Ldrb { rd, addr } => {
+                let rd_bits = reg_to_bits(rd);
+                let base_bits = reg_to_bits(&addr.base);
+
+                if let Some(offset_reg) = &addr.offset_reg {
+                    if addr.offset != 0 {
+                        let scratch = Reg::R12;
+                        let mut bytes =
+                            self.encode_thumb32_add_imm(&scratch, offset_reg, addr.offset as u32)?;
+                        bytes.extend(self.encode_thumb32_ldrb_reg(rd, &addr.base, &scratch)?);
+                        return Ok(bytes);
+                    }
+                    return self.encode_thumb32_ldrb_reg(rd, &addr.base, offset_reg);
+                }
+
+                let offset = addr.offset as u32;
+                if rd_bits < 8 && base_bits < 8 && offset <= 31 {
+                    // LDRB Rd, [Rn, #imm5] (16-bit): 0111 1 imm5 Rn Rd
+                    let instr: u16 = 0x7800
+                        | ((offset as u16) << 6)
+                        | ((base_bits as u16) << 3)
+                        | (rd_bits as u16);
+                    Ok(instr.to_le_bytes().to_vec())
+                } else {
+                    self.encode_thumb32_ldrb_imm(rd, &addr.base, offset)
+                }
+            }
+
+            // LDRSB (Thumb-2)
+            ArmOp::Ldrsb { rd, addr } => {
+                let rd_bits = reg_to_bits(rd);
+                let base_bits = reg_to_bits(&addr.base);
+
+                if let Some(offset_reg) = &addr.offset_reg {
+                    if addr.offset != 0 {
+                        let scratch = Reg::R12;
+                        let mut bytes =
+                            self.encode_thumb32_add_imm(&scratch, offset_reg, addr.offset as u32)?;
+                        bytes.extend(self.encode_thumb32_ldrsb_reg(rd, &addr.base, &scratch)?);
+                        return Ok(bytes);
+                    }
+                    return self.encode_thumb32_ldrsb_reg(rd, &addr.base, offset_reg);
+                }
+
+                let offset = addr.offset as u32;
+                // LDRSB has no 16-bit immediate form (only register)
+                // For 16-bit reg form: only if Rd, Rn, Rm < R8
+                if rd_bits < 8 && base_bits < 8 && offset == 0 {
+                    // No immediate 16-bit encoding for LDRSB; use 32-bit
+                    self.encode_thumb32_ldrsb_imm(rd, &addr.base, offset)
+                } else {
+                    self.encode_thumb32_ldrsb_imm(rd, &addr.base, offset)
+                }
+            }
+
+            // LDRH (Thumb-2)
+            ArmOp::Ldrh { rd, addr } => {
+                let rd_bits = reg_to_bits(rd);
+                let base_bits = reg_to_bits(&addr.base);
+
+                if let Some(offset_reg) = &addr.offset_reg {
+                    if addr.offset != 0 {
+                        let scratch = Reg::R12;
+                        let mut bytes =
+                            self.encode_thumb32_add_imm(&scratch, offset_reg, addr.offset as u32)?;
+                        bytes.extend(self.encode_thumb32_ldrh_reg(rd, &addr.base, &scratch)?);
+                        return Ok(bytes);
+                    }
+                    return self.encode_thumb32_ldrh_reg(rd, &addr.base, offset_reg);
+                }
+
+                let offset = addr.offset as u32;
+                if rd_bits < 8 && base_bits < 8 && (offset & 0x1) == 0 && offset <= 62 {
+                    // LDRH Rd, [Rn, #imm5*2] (16-bit): 1000 1 imm5 Rn Rd
+                    let imm5 = (offset >> 1) as u16;
+                    let instr: u16 =
+                        0x8800 | (imm5 << 6) | ((base_bits as u16) << 3) | (rd_bits as u16);
+                    Ok(instr.to_le_bytes().to_vec())
+                } else {
+                    self.encode_thumb32_ldrh_imm(rd, &addr.base, offset)
+                }
+            }
+
+            // LDRSH (Thumb-2)
+            ArmOp::Ldrsh { rd, addr } => {
+                if let Some(offset_reg) = &addr.offset_reg {
+                    if addr.offset != 0 {
+                        let scratch = Reg::R12;
+                        let mut bytes =
+                            self.encode_thumb32_add_imm(&scratch, offset_reg, addr.offset as u32)?;
+                        bytes.extend(self.encode_thumb32_ldrsh_reg(rd, &addr.base, &scratch)?);
+                        return Ok(bytes);
+                    }
+                    return self.encode_thumb32_ldrsh_reg(rd, &addr.base, offset_reg);
+                }
+
+                let offset = addr.offset as u32;
+                self.encode_thumb32_ldrsh_imm(rd, &addr.base, offset)
+            }
+
+            // STRB (Thumb-2)
+            ArmOp::Strb { rd, addr } => {
+                let rd_bits = reg_to_bits(rd);
+                let base_bits = reg_to_bits(&addr.base);
+
+                if let Some(offset_reg) = &addr.offset_reg {
+                    if addr.offset != 0 {
+                        let scratch = Reg::R12;
+                        let mut bytes =
+                            self.encode_thumb32_add_imm(&scratch, offset_reg, addr.offset as u32)?;
+                        bytes.extend(self.encode_thumb32_strb_reg(rd, &addr.base, &scratch)?);
+                        return Ok(bytes);
+                    }
+                    return self.encode_thumb32_strb_reg(rd, &addr.base, offset_reg);
+                }
+
+                let offset = addr.offset as u32;
+                if rd_bits < 8 && base_bits < 8 && offset <= 31 {
+                    // STRB Rd, [Rn, #imm5] (16-bit): 0111 0 imm5 Rn Rd
+                    let instr: u16 = 0x7000
+                        | ((offset as u16) << 6)
+                        | ((base_bits as u16) << 3)
+                        | (rd_bits as u16);
+                    Ok(instr.to_le_bytes().to_vec())
+                } else {
+                    self.encode_thumb32_strb_imm(rd, &addr.base, offset)
+                }
+            }
+
+            // STRH (Thumb-2)
+            ArmOp::Strh { rd, addr } => {
+                let rd_bits = reg_to_bits(rd);
+                let base_bits = reg_to_bits(&addr.base);
+
+                if let Some(offset_reg) = &addr.offset_reg {
+                    if addr.offset != 0 {
+                        let scratch = Reg::R12;
+                        let mut bytes =
+                            self.encode_thumb32_add_imm(&scratch, offset_reg, addr.offset as u32)?;
+                        bytes.extend(self.encode_thumb32_strh_reg(rd, &addr.base, &scratch)?);
+                        return Ok(bytes);
+                    }
+                    return self.encode_thumb32_strh_reg(rd, &addr.base, offset_reg);
+                }
+
+                let offset = addr.offset as u32;
+                if rd_bits < 8 && base_bits < 8 && (offset & 0x1) == 0 && offset <= 62 {
+                    // STRH Rd, [Rn, #imm5*2] (16-bit): 1000 0 imm5 Rn Rd
+                    let imm5 = (offset >> 1) as u16;
+                    let instr: u16 =
+                        0x8000 | (imm5 << 6) | ((base_bits as u16) << 3) | (rd_bits as u16);
+                    Ok(instr.to_le_bytes().to_vec())
+                } else {
+                    self.encode_thumb32_strh_imm(rd, &addr.base, offset)
+                }
+            }
+
+            // MemorySize (Thumb-2)
+            ArmOp::MemorySize { rd } => {
+                // LSR rd, R10, #16 — memory size in bytes / 65536 = pages
+                // Thumb-2 16-bit: LSRS Rd, Rm, #imm5 — 0000 1 imm5 Rm Rd
+                let rd_bits = reg_to_bits(rd);
+                let r10_bits = reg_to_bits(&Reg::R10);
+                if rd_bits < 8 && r10_bits < 8 {
+                    let instr: u16 =
+                        0x0800 | (16u16 << 6) | ((r10_bits as u16) << 3) | (rd_bits as u16);
+                    Ok(instr.to_le_bytes().to_vec())
+                } else {
+                    // Thumb-2 32-bit LSR: 1110 1010 010 0 1111 | 0 imm3 Rd imm2 01 Rm
+                    let imm5: u32 = 16;
+                    let imm3 = (imm5 >> 2) & 0x7;
+                    let imm2 = imm5 & 0x3;
+                    let hw1: u16 = 0xEA4F;
+                    let hw2: u16 =
+                        ((imm3 << 12) | (rd_bits << 8) | (imm2 << 6) | 0x10 | r10_bits) as u16;
+                    let mut bytes = hw1.to_le_bytes().to_vec();
+                    bytes.extend_from_slice(&hw2.to_le_bytes());
+                    Ok(bytes)
+                }
+            }
+
+            // MemoryGrow (Thumb-2)
+            ArmOp::MemoryGrow { rd, .. } => {
+                // On embedded with fixed memory, always return -1 (failure)
+                // MVN rd, #0 → MOV rd, #-1
+                // Thumb-2 32-bit: MVN: 1111 0 i 0 0 0 1 1 0 1111 | 0 imm3 Rd imm8
+                let rd_bits = reg_to_bits(rd);
+                let hw1: u16 = 0xF06F; // MVN with i=0
+                let hw2: u16 = (rd_bits << 8) as u16; // imm8=0 → ~0 = 0xFFFFFFFF = -1
+                let mut bytes = hw1.to_le_bytes().to_vec();
+                bytes.extend_from_slice(&hw2.to_le_bytes());
+                Ok(bytes)
             }
 
             // BX (16-bit)
@@ -5407,6 +5674,158 @@ impl ArmEncoder {
         Ok(bytes)
     }
 
+    // === Sub-word load/store Thumb-2 encoding helpers ===
+
+    /// Encode Thumb-2 32-bit LDRB with immediate: LDRB.W Rd, [Rn, #imm12]
+    fn encode_thumb32_ldrb_imm(&self, rd: &Reg, base: &Reg, offset: u32) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        // LDRB.W Rd, [Rn, #imm12]: 1111 1000 1001 Rn | Rt imm12
+        let hw1: u16 = (0xF890 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit LDRB with register: LDRB.W Rd, [Rn, Rm]
+    fn encode_thumb32_ldrb_reg(&self, rd: &Reg, base: &Reg, offset_reg: &Reg) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        let rm_bits = reg_to_bits(offset_reg);
+        // LDRB.W Rd, [Rn, Rm, LSL #0]: 1111 1000 0001 Rn | Rt 0000 00 imm2 Rm
+        let hw1: u16 = (0xF810 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | rm_bits) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit LDRSB with immediate: LDRSB.W Rd, [Rn, #imm12]
+    fn encode_thumb32_ldrsb_imm(&self, rd: &Reg, base: &Reg, offset: u32) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        // LDRSB.W Rd, [Rn, #imm12]: 1111 1001 1001 Rn | Rt imm12
+        let hw1: u16 = (0xF990 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit LDRSB with register: LDRSB.W Rd, [Rn, Rm]
+    fn encode_thumb32_ldrsb_reg(&self, rd: &Reg, base: &Reg, offset_reg: &Reg) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        let rm_bits = reg_to_bits(offset_reg);
+        // LDRSB.W Rd, [Rn, Rm, LSL #0]: 1111 1001 0001 Rn | Rt 0000 00 imm2 Rm
+        let hw1: u16 = (0xF910 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | rm_bits) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit LDRH with immediate: LDRH.W Rd, [Rn, #imm12]
+    fn encode_thumb32_ldrh_imm(&self, rd: &Reg, base: &Reg, offset: u32) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        // LDRH.W Rd, [Rn, #imm12]: 1111 1000 1011 Rn | Rt imm12
+        let hw1: u16 = (0xF8B0 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit LDRH with register: LDRH.W Rd, [Rn, Rm]
+    fn encode_thumb32_ldrh_reg(&self, rd: &Reg, base: &Reg, offset_reg: &Reg) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        let rm_bits = reg_to_bits(offset_reg);
+        // LDRH.W Rd, [Rn, Rm, LSL #0]: 1111 1000 0011 Rn | Rt 0000 00 imm2 Rm
+        let hw1: u16 = (0xF830 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | rm_bits) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit LDRSH with immediate: LDRSH.W Rd, [Rn, #imm12]
+    fn encode_thumb32_ldrsh_imm(&self, rd: &Reg, base: &Reg, offset: u32) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        // LDRSH.W Rd, [Rn, #imm12]: 1111 1001 1011 Rn | Rt imm12
+        let hw1: u16 = (0xF9B0 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit LDRSH with register: LDRSH.W Rd, [Rn, Rm]
+    fn encode_thumb32_ldrsh_reg(&self, rd: &Reg, base: &Reg, offset_reg: &Reg) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        let rm_bits = reg_to_bits(offset_reg);
+        // LDRSH.W Rd, [Rn, Rm, LSL #0]: 1111 1001 0011 Rn | Rt 0000 00 imm2 Rm
+        let hw1: u16 = (0xF930 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | rm_bits) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit STRB with immediate: STRB.W Rd, [Rn, #imm12]
+    fn encode_thumb32_strb_imm(&self, rd: &Reg, base: &Reg, offset: u32) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        // STRB.W Rd, [Rn, #imm12]: 1111 1000 1000 Rn | Rt imm12
+        let hw1: u16 = (0xF880 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit STRB with register: STRB.W Rd, [Rn, Rm]
+    fn encode_thumb32_strb_reg(&self, rd: &Reg, base: &Reg, offset_reg: &Reg) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        let rm_bits = reg_to_bits(offset_reg);
+        // STRB.W Rd, [Rn, Rm, LSL #0]: 1111 1000 0000 Rn | Rt 0000 00 imm2 Rm
+        let hw1: u16 = (0xF800 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | rm_bits) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit STRH with immediate: STRH.W Rd, [Rn, #imm12]
+    fn encode_thumb32_strh_imm(&self, rd: &Reg, base: &Reg, offset: u32) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        // STRH.W Rd, [Rn, #imm12]: 1111 1000 1010 Rn | Rt imm12
+        let hw1: u16 = (0xF8A0 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit STRH with register: STRH.W Rd, [Rn, Rm]
+    fn encode_thumb32_strh_reg(&self, rd: &Reg, base: &Reg, offset_reg: &Reg) -> Result<Vec<u8>> {
+        let rd_bits = reg_to_bits(rd);
+        let base_bits = reg_to_bits(base);
+        let rm_bits = reg_to_bits(offset_reg);
+        // STRH.W Rd, [Rn, Rm, LSL #0]: 1111 1000 0010 Rn | Rt 0000 00 imm2 Rm
+        let hw1: u16 = (0xF820 | base_bits) as u16;
+        let hw2: u16 = ((rd_bits << 12) | rm_bits) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
     /// Encode Thumb-2 32-bit ADD with immediate: ADD.W Rd, Rn, #imm
     fn encode_thumb32_add_imm(&self, rd: &Reg, rn: &Reg, imm: u32) -> Result<Vec<u8>> {
         let rd_bits = reg_to_bits(rd);
@@ -6928,5 +7347,271 @@ mod tests {
         let code = encoder.encode(&op).unwrap();
         // MOVW + MOVT for lo (8 bytes) + MOVW + MOVT for hi (8 bytes) = 16 bytes
         assert_eq!(code.len(), 16, "I64Const(-1) should be 16 bytes");
+    }
+
+    // =========================================================================
+    // Sub-word load/store encoding tests
+    // =========================================================================
+
+    #[test]
+    fn test_encode_ldrb_arm32() {
+        let encoder = ArmEncoder::new_arm32();
+        let op = ArmOp::Ldrb {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 4),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 4, "ARM32 LDRB should be 4 bytes");
+        // LDRB R0, [R1, #4] = 0xE5D10004
+        let encoded = u32::from_le_bytes([code[0], code[1], code[2], code[3]]);
+        assert_eq!(encoded, 0xE5D10004, "Should encode LDRB R0, [R1, #4]");
+    }
+
+    #[test]
+    fn test_encode_strb_arm32() {
+        let encoder = ArmEncoder::new_arm32();
+        let op = ArmOp::Strb {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 0),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 4, "ARM32 STRB should be 4 bytes");
+        // STRB R0, [R1, #0] = 0xE5C10000
+        let encoded = u32::from_le_bytes([code[0], code[1], code[2], code[3]]);
+        assert_eq!(encoded, 0xE5C10000, "Should encode STRB R0, [R1, #0]");
+    }
+
+    #[test]
+    fn test_encode_ldrh_arm32() {
+        let encoder = ArmEncoder::new_arm32();
+        let op = ArmOp::Ldrh {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 2),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 4, "ARM32 LDRH should be 4 bytes");
+    }
+
+    #[test]
+    fn test_encode_strh_arm32() {
+        let encoder = ArmEncoder::new_arm32();
+        let op = ArmOp::Strh {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 0),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 4, "ARM32 STRH should be 4 bytes");
+    }
+
+    #[test]
+    fn test_encode_ldrsb_arm32() {
+        let encoder = ArmEncoder::new_arm32();
+        let op = ArmOp::Ldrsb {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 0),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 4, "ARM32 LDRSB should be 4 bytes");
+    }
+
+    #[test]
+    fn test_encode_ldrsh_arm32() {
+        let encoder = ArmEncoder::new_arm32();
+        let op = ArmOp::Ldrsh {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 0),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 4, "ARM32 LDRSH should be 4 bytes");
+    }
+
+    #[test]
+    fn test_encode_ldrb_thumb2_16bit() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Ldrb {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 4),
+        };
+        let code = encoder.encode(&op).unwrap();
+        // Low registers + small offset -> 16-bit encoding
+        assert_eq!(
+            code.len(),
+            2,
+            "Thumb-2 LDRB with small offset should be 16-bit"
+        );
+    }
+
+    #[test]
+    fn test_encode_ldrb_thumb2_32bit() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Ldrb {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 100), // offset > 31 needs 32-bit
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(
+            code.len(),
+            4,
+            "Thumb-2 LDRB with large offset should be 32-bit"
+        );
+    }
+
+    #[test]
+    fn test_encode_strb_thumb2_16bit() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Strb {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 10),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(
+            code.len(),
+            2,
+            "Thumb-2 STRB with small offset should be 16-bit"
+        );
+    }
+
+    #[test]
+    fn test_encode_ldrh_thumb2_16bit() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Ldrh {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 4), // offset aligned to 2, <= 62
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(
+            code.len(),
+            2,
+            "Thumb-2 LDRH with small aligned offset should be 16-bit"
+        );
+    }
+
+    #[test]
+    fn test_encode_strh_thumb2_16bit() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Strh {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 4),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(
+            code.len(),
+            2,
+            "Thumb-2 STRH with small aligned offset should be 16-bit"
+        );
+    }
+
+    #[test]
+    fn test_encode_ldrsb_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Ldrsb {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 0),
+        };
+        let code = encoder.encode(&op).unwrap();
+        // LDRSB has no 16-bit immediate form, always 32-bit
+        assert_eq!(code.len(), 4, "Thumb-2 LDRSB should be 32-bit");
+    }
+
+    #[test]
+    fn test_encode_ldrsh_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Ldrsh {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::R1, 0),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 4, "Thumb-2 LDRSH should be 32-bit");
+    }
+
+    #[test]
+    fn test_encode_memory_size_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::MemorySize { rd: Reg::R0 };
+        let code = encoder.encode(&op).unwrap();
+        // R0 and R10 are not both low registers, so this needs careful handling
+        assert!(!code.is_empty(), "MemorySize should produce code");
+    }
+
+    #[test]
+    fn test_encode_memory_grow_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::MemoryGrow {
+            rd: Reg::R0,
+            rn: Reg::R0,
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 4, "MemoryGrow (MVN) should be 32-bit Thumb-2");
+    }
+
+    #[test]
+    fn test_encode_subword_reg_offset_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+
+        // LDRB with register offset
+        let op = ArmOp::Ldrb {
+            rd: Reg::R0,
+            addr: MemAddr::reg(Reg::R1, Reg::R2),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(
+            code.len(),
+            4,
+            "Thumb-2 LDRB with reg offset should be 32-bit"
+        );
+
+        // STRB with register offset
+        let op = ArmOp::Strb {
+            rd: Reg::R0,
+            addr: MemAddr::reg(Reg::R1, Reg::R2),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(
+            code.len(),
+            4,
+            "Thumb-2 STRB with reg offset should be 32-bit"
+        );
+
+        // LDRH with register offset
+        let op = ArmOp::Ldrh {
+            rd: Reg::R0,
+            addr: MemAddr::reg(Reg::R1, Reg::R2),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(
+            code.len(),
+            4,
+            "Thumb-2 LDRH with reg offset should be 32-bit"
+        );
+
+        // STRH with register offset
+        let op = ArmOp::Strh {
+            rd: Reg::R0,
+            addr: MemAddr::reg(Reg::R1, Reg::R2),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(
+            code.len(),
+            4,
+            "Thumb-2 STRH with reg offset should be 32-bit"
+        );
+    }
+
+    #[test]
+    fn test_encode_subword_reg_imm_offset_thumb2() {
+        let encoder = ArmEncoder::new_thumb2();
+
+        // LDRB with both register and immediate offset
+        let op = ArmOp::Ldrb {
+            rd: Reg::R0,
+            addr: MemAddr::reg_imm(Reg::R1, Reg::R2, 4),
+        };
+        let code = encoder.encode(&op).unwrap();
+        // ADD R12, R2, #4 (4 bytes) + LDRB R0, [R1, R12] (4 bytes) = 8 bytes
+        assert_eq!(
+            code.len(),
+            8,
+            "Thumb-2 LDRB with reg+imm offset should be 8 bytes"
+        );
     }
 }

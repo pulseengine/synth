@@ -338,6 +338,34 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
             align: memarg.align as u32,
         }),
 
+        // Sub-word loads (i32)
+        I32Load8S { memarg } => Some(WasmOp::I32Load8S {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I32Load8U { memarg } => Some(WasmOp::I32Load8U {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I32Load16S { memarg } => Some(WasmOp::I32Load16S {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I32Load16U { memarg } => Some(WasmOp::I32Load16U {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+
+        // Sub-word stores (i32)
+        I32Store8 { memarg } => Some(WasmOp::I32Store8 {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I32Store16 { memarg } => Some(WasmOp::I32Store16 {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+
         // Local/Global
         LocalGet { local_index } => Some(WasmOp::LocalGet(*local_index)),
         LocalSet { local_index } => Some(WasmOp::LocalSet(*local_index)),
@@ -376,6 +404,50 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         // If/Else - simplified handling
         If { .. } => Some(WasmOp::If),
         Else => Some(WasmOp::Else),
+
+        // i64 sub-word loads
+        I64Load8S { memarg } => Some(WasmOp::I64Load8S {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I64Load8U { memarg } => Some(WasmOp::I64Load8U {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I64Load16S { memarg } => Some(WasmOp::I64Load16S {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I64Load16U { memarg } => Some(WasmOp::I64Load16U {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I64Load32S { memarg } => Some(WasmOp::I64Load32S {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I64Load32U { memarg } => Some(WasmOp::I64Load32U {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+
+        // i64 sub-word stores
+        I64Store8 { memarg } => Some(WasmOp::I64Store8 {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I64Store16 { memarg } => Some(WasmOp::I64Store16 {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I64Store32 { memarg } => Some(WasmOp::I64Store32 {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+
+        // Memory management
+        MemorySize { mem, .. } => Some(WasmOp::MemorySize(*mem)),
+        MemoryGrow { mem, .. } => Some(WasmOp::MemoryGrow(*mem)),
 
         // Other operators not yet supported
         _ => None,
@@ -536,5 +608,198 @@ mod tests {
 
         assert_eq!(add_func.index, 1);
         assert!(add_func.ops.contains(&WasmOp::I32Add));
+    }
+
+    #[test]
+    fn test_decode_subword_loads() {
+        let wat = r#"
+            (module
+                (memory 1)
+                (func (export "test") (param i32) (result i32)
+                    local.get 0
+                    i32.load8_u
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        assert!(functions[0].ops.contains(&WasmOp::I32Load8U {
+            offset: 0,
+            align: 0,
+        }));
+    }
+
+    #[test]
+    fn test_decode_subword_stores() {
+        let wat = r#"
+            (module
+                (memory 1)
+                (func (export "test") (param i32 i32)
+                    local.get 0
+                    local.get 1
+                    i32.store8
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        assert!(functions[0].ops.contains(&WasmOp::I32Store8 {
+            offset: 0,
+            align: 0,
+        }));
+    }
+
+    #[test]
+    fn test_decode_memory_size_grow() {
+        let wat = r#"
+            (module
+                (memory 1)
+                (func (export "test") (result i32)
+                    memory.size
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        assert!(functions[0].ops.contains(&WasmOp::MemorySize(0)));
+    }
+
+    #[test]
+    fn test_decode_memory_grow() {
+        let wat = r#"
+            (module
+                (memory 1)
+                (func (export "test") (param i32) (result i32)
+                    local.get 0
+                    memory.grow
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        assert!(functions[0].ops.contains(&WasmOp::MemoryGrow(0)));
+    }
+
+    #[test]
+    fn test_decode_i64_subword_loads() {
+        let wat = r#"
+            (module
+                (memory 1)
+                (func (export "test") (param i32) (result i64)
+                    local.get 0
+                    i64.load8_s
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        assert!(functions[0].ops.contains(&WasmOp::I64Load8S {
+            offset: 0,
+            align: 0,
+        }));
+    }
+
+    #[test]
+    fn test_decode_all_subword_memory_ops() {
+        // Test that all sub-word operations are decoded from WAT
+        let wat = r#"
+            (module
+                (memory 1)
+                (func (export "test") (param i32)
+                    ;; i32 sub-word loads
+                    local.get 0
+                    i32.load8_s
+                    drop
+                    local.get 0
+                    i32.load8_u
+                    drop
+                    local.get 0
+                    i32.load16_s
+                    drop
+                    local.get 0
+                    i32.load16_u
+                    drop
+
+                    ;; i32 sub-word stores
+                    local.get 0
+                    i32.const 42
+                    i32.store8
+                    local.get 0
+                    i32.const 42
+                    i32.store16
+
+                    ;; i64 sub-word loads
+                    local.get 0
+                    i64.load8_s
+                    drop
+                    local.get 0
+                    i64.load8_u
+                    drop
+                    local.get 0
+                    i64.load16_s
+                    drop
+                    local.get 0
+                    i64.load16_u
+                    drop
+                    local.get 0
+                    i64.load32_s
+                    drop
+                    local.get 0
+                    i64.load32_u
+                    drop
+
+                    ;; i64 sub-word stores
+                    local.get 0
+                    i64.const 42
+                    i64.store8
+                    local.get 0
+                    i64.const 42
+                    i64.store16
+                    local.get 0
+                    i64.const 42
+                    i64.store32
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        let ops = &functions[0].ops;
+
+        // Verify i32 sub-word ops are present
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I32Load8S { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I32Load8U { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I32Load16S { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I32Load16U { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I32Store8 { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I32Store16 { .. })));
+
+        // Verify i64 sub-word ops are present
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Load8S { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Load8U { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Load16S { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Load16U { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Load32S { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Load32U { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Store8 { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Store16 { .. })));
+        assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Store32 { .. })));
     }
 }

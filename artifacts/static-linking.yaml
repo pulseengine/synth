@@ -1,0 +1,373 @@
+# Static Linking Requirements (ASPICE SYS.2 / SWE.1)
+#
+# System: Synth -- WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Defines the static linking requirements for combining synth-compiled
+# relocatable objects with kiln-builtins.a into firmware.elf. Covers
+# ARM cross-compilation toolchain, linker script with Meld integration
+# sections, symbol resolution, and memory layout.
+#
+# Ties to issue #27 (ARM cross-compilation toolchain).
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # ---------------------------------------------------------------------------
+  # Cross-compilation toolchain requirements
+  # ---------------------------------------------------------------------------
+
+  - id: SL-001
+    type: system-req
+    title: ARM cross-compilation toolchain for static linking
+    description: >
+      The static linking stage shall use an ARM cross-compilation toolchain
+      capable of linking Thumb-2 ELF relocatable objects into an executable
+      ELF for Cortex-M targets. Supported toolchains are:
+      (1) arm-none-eabi-gcc / arm-none-eabi-ld from the GNU Arm Embedded
+      Toolchain, (2) LLVM lld with --target=thumbv7em-none-eabi, and
+      (3) the Zephyr SDK's arm-zephyr-eabi-gcc. The toolchain shall be
+      detectable at synth build time or configurable via --linker flag.
+      This addresses issue #27 (ARM cross-compilation toolchain).
+    status: draft
+    tags: [static-linking, toolchain, arm, cross-compilation, issue-27]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: derives-from
+        target: BR-004
+      - type: refines
+        target: TR-003
+      - type: refines
+        target: CC-005
+    fields:
+      req-type: interface
+      priority: must
+      github-issue: 27
+      verification-criteria: >
+        synth detects arm-none-eabi-ld on PATH or accepts --linker flag;
+        linking succeeds with GNU, LLVM, and Zephyr SDK toolchains;
+        produced ELF is identical across toolchains for the same inputs.
+
+  - id: SL-002
+    type: system-req
+    title: Linker script with Meld integration sections
+    description: >
+      Synth's LinkerScriptGenerator shall produce GNU ld linker scripts
+      that include Meld-specific sections alongside standard Cortex-M
+      sections. The linker script shall define: MEMORY regions (FLASH
+      and RAM with board-specific origins and sizes), ENTRY(Reset_Handler),
+      and SECTIONS including .isr_vector (KEEP, ALIGN(128), FLASH),
+      .text (FLASH), .meld_import_table (FLASH, read-only),
+      .meld_import_strings (FLASH, read-only), .data (RAM, AT> FLASH
+      for LMA copy), .bss (RAM, NOLOAD), .wasm_linear_memory (RAM,
+      aligned to MPU region size), .stack (RAM), and .heap (RAM).
+      EXTERN declarations for __meld_dispatch_import and
+      __meld_get_memory_base shall be emitted when Meld integration
+      is enabled.
+    status: draft
+    tags: [static-linking, linker-script, meld-sections, memory-layout]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: CC-005
+      - type: refines
+        target: FR-002
+      - type: traces-to
+        target: ZI-008
+      - type: traces-to
+        target: ZI-009
+      - type: traces-to
+        target: KB-005
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Generated linker script contains .meld_import_table and
+        .meld_import_strings sections in FLASH; EXTERN declarations
+        present for meld symbols; arm-none-eabi-ld accepts the script
+        without warnings.
+
+  # ---------------------------------------------------------------------------
+  # Symbol resolution requirements
+  # ---------------------------------------------------------------------------
+
+  - id: SL-003
+    type: system-req
+    title: Symbol resolution -- synth undefined symbols provided by kiln-builtins
+    description: >
+      The linker shall resolve all undefined symbols emitted by synth
+      against definitions in kiln-builtins.a. The expected undefined
+      symbols from synth-compiled objects are: __meld_dispatch_import
+      (or __meld_import_N per-import symbols), __meld_get_memory_base,
+      and cabi_realloc. All three must be defined in kiln-builtins.a
+      with matching function types (STT_FUNC, STB_GLOBAL). Any unresolved
+      symbol at link time shall produce a clear error identifying the
+      missing symbol and suggesting that kiln-builtins.a is required.
+      Weak symbols (__meld_get_memory_base_default) provide fallback
+      for bare-metal operation without kiln-builtins.
+    status: draft
+    tags: [static-linking, symbols, resolution, kiln-builtins]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: refines
+        target: CC-005
+      - type: traces-to
+        target: KB-001
+      - type: traces-to
+        target: KB-003
+      - type: traces-to
+        target: KB-004
+    fields:
+      req-type: interface
+      priority: must
+      undefined-symbols:
+        - __meld_dispatch_import
+        - __meld_get_memory_base
+        - cabi_realloc
+      weak-symbols:
+        - __meld_get_memory_base_default
+      verification-criteria: >
+        arm-none-eabi-nm module.o shows UND for expected symbols;
+        arm-none-eabi-nm kiln-builtins.a shows T (text) for same symbols;
+        linking succeeds with zero unresolved symbol errors.
+
+  - id: SL-004
+    type: system-req
+    title: Export symbol visibility for synth-compiled functions
+    description: >
+      Synth-compiled WASM exported functions shall be emitted as global
+      symbols (STB_GLOBAL, STT_FUNC) in the relocatable ELF, using either
+      the WASM export name directly (e.g., "add", "multiply") or a
+      prefixed name (e.g., "synth_add", "synth_multiply") configurable
+      via --export-prefix. These symbols are visible to the linker so
+      that Zephyr C code or other firmware components can call them via
+      extern declarations. Non-exported WASM functions shall be local
+      symbols (STB_LOCAL) to avoid namespace pollution.
+    status: draft
+    tags: [static-linking, symbols, exports, visibility]
+    links:
+      - type: derives-from
+        target: BR-003
+      - type: refines
+        target: FR-002
+      - type: refines
+        target: FR-004
+      - type: traces-to
+        target: ZI-002
+      - type: traces-to
+        target: ARCH-003
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        arm-none-eabi-nm module.o shows T (global text) for exported
+        WASM functions; local WASM functions show t (local text);
+        --export-prefix=synth_ prepends prefix to all export names.
+
+  # ---------------------------------------------------------------------------
+  # Memory layout requirements
+  # ---------------------------------------------------------------------------
+
+  - id: SL-005
+    type: system-req
+    title: Memory layout -- .text in FLASH for compiled code
+    description: >
+      Synth-compiled ARM Thumb-2 code shall be placed in the .text section,
+      which the linker script maps to FLASH memory. For XIP (execute-in-place)
+      targets, code executes directly from flash without copying to RAM.
+      The .text section shall follow the .isr_vector section and precede
+      the .meld_import_table section in the FLASH layout. Code alignment
+      shall be 4 bytes (Thumb-2 instruction alignment). The linker shall
+      merge .text from module.o and kiln-builtins.a into a single .text
+      output section.
+    status: draft
+    tags: [static-linking, memory-layout, flash, text-section]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: refines
+        target: FR-005
+      - type: refines
+        target: CC-005
+      - type: traces-to
+        target: TP-002
+      - type: traces-to
+        target: TP-003
+    fields:
+      req-type: functional
+      priority: must
+      section: .text
+      placement: FLASH
+      alignment: 4
+      verification-criteria: >
+        readelf -S firmware.elf shows .text with ALLOC+EXEC flags;
+        .text address falls within FLASH memory region of target board;
+        objdump -d confirms Thumb-2 instruction decoding.
+
+  - id: SL-006
+    type: system-req
+    title: Memory layout -- .wasm_linear_memory in RAM
+    description: >
+      WASM linear memory shall be placed in a .wasm_linear_memory section
+      mapped to RAM. The section shall be aligned to the MPU region size
+      (power of 2, minimum 256 bytes) to enable hardware memory protection.
+      The initial size shall match the WASM module's memory declaration
+      (minimum pages * 64KB). The section is NOLOAD (zero-initialized
+      at startup via .bss-style clearing or lazy initialization by
+      kiln-builtins). For multi-memory modules, each memory gets a
+      separate section (.wasm_linear_memory_0, .wasm_linear_memory_1, etc.)
+      with individual MPU region allocation.
+    status: draft
+    tags: [static-linking, memory-layout, ram, linear-memory, mpu]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: derives-from
+        target: BR-002
+      - type: refines
+        target: FR-003
+      - type: refines
+        target: CC-005
+      - type: traces-to
+        target: ARCH-005
+      - type: traces-to
+        target: TP-007
+    fields:
+      req-type: functional
+      priority: must
+      section: .wasm_linear_memory
+      placement: RAM
+      alignment: "Power-of-2, matching MPU region size"
+      verification-criteria: >
+        readelf -S firmware.elf shows .wasm_linear_memory with ALLOC+WRITE
+        flags; section address is in RAM region (0x20000000+); alignment
+        is power-of-2; MPU region covers the section exactly.
+
+  - id: SL-007
+    type: system-req
+    title: Memory layout -- .meld_import_table in FLASH (read-only)
+    description: >
+      The .meld_import_table section shall be placed in FLASH as read-only
+      data. This section contains the import descriptor table that
+      kiln-builtins reads at startup to configure the dispatch table.
+      The companion .meld_import_strings section shall immediately follow.
+      Both sections have ALLOC flag but not WRITE or EXEC. Placing import
+      metadata in FLASH saves RAM on constrained targets and ensures the
+      import table cannot be corrupted by software bugs.
+    status: draft
+    tags: [static-linking, memory-layout, flash, import-table, read-only]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: CC-005
+      - type: traces-to
+        target: KB-005
+      - type: traces-to
+        target: SL-002
+    fields:
+      req-type: functional
+      priority: must
+      section: .meld_import_table
+      placement: FLASH (read-only)
+      verification-criteria: >
+        readelf -S firmware.elf shows .meld_import_table with ALLOC
+        flag only (no WRITE, no EXEC); section address is in FLASH
+        region; content matches expected import descriptor format.
+
+  # ---------------------------------------------------------------------------
+  # SW-level requirements for linker integration in synth
+  # ---------------------------------------------------------------------------
+
+  - id: SL-TR-001
+    type: sw-req
+    title: LinkerScriptGenerator Meld section support
+    description: >
+      synth-backend LinkerScriptGenerator shall support a with_meld_sections()
+      builder method that adds .meld_import_table and .meld_import_strings
+      sections to the generated linker script. When enabled, the generator
+      emits EXTERN(__meld_dispatch_import), EXTERN(__meld_get_memory_base),
+      and section definitions with KEEP() to prevent dead-stripping of
+      import metadata. The method is composable with existing
+      with_meld_integration() and board-specific constructors
+      (new_stm32, new_nrf52840, new_generic).
+    status: planned
+    tags: [static-linking, linker-script, synth-backend]
+    links:
+      - type: derives-from
+        target: SL-002
+      - type: derives-from
+        target: ZI-009
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-backend
+      verification-criteria: >
+        LinkerScriptGenerator::new_stm32().with_meld_sections().generate()
+        produces script containing .meld_import_table and EXTERN directives;
+        script is parseable by arm-none-eabi-ld --verbose.
+
+  - id: SL-TR-002
+    type: sw-req
+    title: ARM cross-linker invocation from synth-cli
+    description: >
+      synth-cli shall support invoking the ARM cross-linker as a subprocess
+      when the --link flag is provided. The linker invocation shall pass:
+      (1) the generated module.o, (2) the kiln-builtins.a path (from
+      --builtins flag), (3) the generated or user-provided linker script
+      (from --linker-script flag or auto-generated), and (4) the output
+      path (-o firmware.elf). The linker binary is resolved via --linker
+      flag, SYNTH_LINKER environment variable, or PATH detection of
+      arm-none-eabi-ld. Linker errors are captured and reported with
+      context (which symbol is unresolved, which object needs it).
+    status: planned
+    tags: [static-linking, cli, linker-invocation, synth-cli]
+    links:
+      - type: derives-from
+        target: SL-001
+      - type: refines
+        target: CC-007
+      - type: refines
+        target: TR-003
+    fields:
+      req-type: functional
+      priority: should
+      crate: synth-cli
+      verification-criteria: >
+        synth compile --link --builtins kiln-builtins.a -o firmware.elf
+        invokes arm-none-eabi-ld with correct arguments; linker errors
+        are reported with synth-specific context; exit code propagated.
+
+  - id: SL-TR-003
+    type: sw-req
+    title: Relocation emission for import BL instructions
+    description: >
+      synth-backend ElfBuilder shall emit R_ARM_THM_CALL relocation entries
+      in the .rel.text section for each BL instruction targeting an import
+      symbol. The relocation entry shall reference the correct symbol table
+      index for the import's undefined symbol (__meld_dispatch_import or
+      __meld_import_N). The ARM linker uses these relocations to patch the
+      BL instruction's offset field to point to the resolved symbol address.
+      The BL encoding shall leave the offset field as zero (or a placeholder)
+      in the relocatable object, to be filled by the linker.
+    status: planned
+    tags: [static-linking, relocations, elf, arm-thumb]
+    links:
+      - type: refines
+        target: CC-008
+      - type: derives-from
+        target: SL-003
+      - type: refines
+        target: TR-002
+    fields:
+      req-type: functional
+      priority: must
+      crate: synth-backend
+      verification-criteria: >
+        readelf -r module.o shows R_ARM_THM_CALL entries for each import
+        call; symbol indices reference correct UND symbols; after linking,
+        objdump -d shows BL instructions with correct target addresses.

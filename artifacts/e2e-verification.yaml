@@ -1,0 +1,384 @@
+# End-to-End Verification Plan (ASPICE SYS.5 / SWE.6)
+#
+# System: Synth -- WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Verification artifacts for the compilation chain, covering the first PoC
+# (simple WASM with import), WASI subset test, and component round-trip.
+# These verification activities exercise the full pipeline from WASM input
+# through Meld fusing, Synth AOT compilation, static linking with
+# kiln-builtins.a, to execution on Renode Cortex-M4 emulation.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # ---------------------------------------------------------------------------
+  # PoC 1: Simple WASM with single import
+  # ---------------------------------------------------------------------------
+
+  - id: E2E-VER-001
+    type: sys-verification
+    title: "PoC: Simple WASM with host import -- compile, link, execute"
+    description: >
+      First proof-of-concept test validating the minimal compilation chain.
+      A simple WASM module with one exported function and one host import
+      (e.g., env.print_i32) is compiled through synth, linked with a
+      minimal kiln-builtins stub providing __meld_dispatch_import, and
+      executed on Renode. The test verifies: (1) synth emits BL
+      __meld_dispatch_import for the import call, (2) the linker resolves
+      the symbol against kiln-builtins.a, (3) the compiled code calls the
+      host function with the correct argument, (4) the host function
+      executes and produces observable output (UART print). This is the
+      simplest possible end-to-end test of the import dispatch mechanism.
+    status: planned
+    tags: [e2e, poc, import-dispatch, renode]
+    links:
+      - type: verifies
+        target: CC-001
+      - type: verifies
+        target: CC-003
+      - type: verifies
+        target: CC-005
+      - type: verifies
+        target: KB-001
+      - type: verifies
+        target: SL-003
+    fields:
+      method: simulation
+      preconditions:
+        - synth CLI compiled and available
+        - kiln-builtins.a stub compiled for thumbv7em-none-eabihf
+        - arm-none-eabi-ld available on PATH
+        - Renode emulator available
+      test-input: >
+        (module
+          (import "env" "print_i32" (func $print (param i32)))
+          (func (export "main")
+            i32.const 42
+            call $print))
+      steps:
+        - "synth compile test_import.wasm --target cortex-m4 -o module.o"
+        - "arm-none-eabi-ld -T linker.ld module.o kiln-builtins.a -o firmware.elf"
+        - "renode --execute 'sysbus LoadELF @firmware.elf; start; sleep 1'"
+        - "Verify UART output contains '42'"
+      pass-criteria: >
+        UART output shows the value 42 printed by the host import handler;
+        no HardFault or other exception; execution completes normally.
+
+  - id: E2E-VER-002
+    type: sys-verification
+    title: "PoC: Verify relocatable ELF structure from synth"
+    description: >
+      Structural verification of the relocatable ELF object emitted by
+      synth for a module with host imports. Validates ELF header (ET_REL,
+      EM_ARM, Thumb-2), section headers (.text, .meld_import_table,
+      .rel.text, .symtab), symbol table (UND entries for import symbols,
+      GLOBAL entries for export symbols), and relocation entries
+      (R_ARM_THM_CALL for import BL instructions). This test does not
+      require linking or execution -- it validates synth's ELF emission
+      in isolation.
+    status: planned
+    tags: [e2e, poc, elf-validation, structural]
+    links:
+      - type: verifies
+        target: CC-003
+      - type: verifies
+        target: KB-005
+      - type: verifies
+        target: SL-004
+    fields:
+      method: automated-test
+      steps:
+        - "synth compile test_import.wasm --target cortex-m4 -o module.o"
+        - "readelf -h module.o  # verify ET_REL, EM_ARM"
+        - "readelf -S module.o  # verify .text, .meld_import_table sections"
+        - "readelf -s module.o  # verify UND import symbols, GLOBAL export symbols"
+        - "readelf -r module.o  # verify R_ARM_THM_CALL relocations"
+      pass-criteria: >
+        All readelf checks pass; import symbols are UND; export symbols
+        are GLOBAL FUNC; .meld_import_table section is present with
+        correct flags; relocation count matches import call count.
+
+  # ---------------------------------------------------------------------------
+  # WASI subset test
+  # ---------------------------------------------------------------------------
+
+  - id: E2E-VER-003
+    type: sys-verification
+    title: "WASI: WASM calling wasi:cli/stdout via kiln dispatcher"
+    description: >
+      End-to-end test verifying that a WASM module calling wasi:cli/stdout
+      (fd_write) compiles through synth, links with kiln-builtins, and
+      produces output on the target's UART. The WASI call path is:
+      compiled code calls __meld_dispatch_import with the wasi:cli/stdout
+      import index, kiln-builtins routes to its WasiDispatcher
+      implementation, which writes the string to the UART peripheral.
+      This validates the WASI Preview 2 dispatch compatibility (CM-004)
+      and the generic import dispatch mechanism (KB-001) for a real-world
+      use case.
+    status: planned
+    tags: [e2e, wasi, stdout, renode]
+    links:
+      - type: verifies
+        target: CM-004
+      - type: verifies
+        target: KB-001
+      - type: verifies
+        target: CC-001
+    fields:
+      method: simulation
+      preconditions:
+        - kiln-builtins.a with WASI stdout handler compiled
+        - Renode with UART monitoring configured
+      test-input: >
+        A WASM module that calls wasi:cli/stdout with the string
+        "Hello from WASM" using canonical ABI string lowering.
+      steps:
+        - "meld fuse hello_component.wasm -o hello_core.wasm"
+        - "synth compile hello_core.wasm --target cortex-m4 -o module.o"
+        - "arm-none-eabi-ld -T linker.ld module.o kiln-builtins.a -o firmware.elf"
+        - "Renode execute firmware.elf with UART monitoring"
+        - "Verify UART output contains 'Hello from WASM'"
+      pass-criteria: >
+        UART output shows "Hello from WASM"; string was lowered via
+        canonical ABI (UTF-8, ptr+len), passed through dispatch, and
+        rendered by kiln's WASI stdout handler; no memory faults.
+
+  - id: E2E-VER-004
+    type: sys-verification
+    title: "WASI: cabi_realloc allocation during string lowering"
+    description: >
+      Focused verification that cabi_realloc is called correctly during
+      canonical ABI string lowering for WASI calls. The test module passes
+      a string argument to a WASI import; synth's canonical ABI lowering
+      code emits BL cabi_realloc to allocate space in linear memory for
+      the string bytes, then writes the UTF-8 bytes and passes (ptr, len)
+      to the import. The test verifies: (1) cabi_realloc is called with
+      correct alignment (1 for UTF-8 strings), (2) the returned pointer
+      is within the linear memory region, (3) the string bytes are written
+      correctly at the allocated address, (4) the import receives the
+      correct (ptr, len) pair.
+    status: planned
+    tags: [e2e, wasi, cabi-realloc, canonical-abi]
+    links:
+      - type: verifies
+        target: KB-004
+      - type: verifies
+        target: CM-001
+    fields:
+      method: simulation
+      preconditions:
+        - kiln-builtins.a with cabi_realloc bump allocator
+        - Renode with memory inspection capability
+      steps:
+        - "Compile test module with string-passing WASI import"
+        - "Execute on Renode with memory breakpoint on cabi_realloc"
+        - "Verify cabi_realloc arguments: old_ptr=0, old_size=0, align=1, new_size=string_len"
+        - "Verify returned pointer is within .wasm_linear_memory section"
+        - "Verify string bytes at allocated address match expected UTF-8"
+      pass-criteria: >
+        cabi_realloc called with correct arguments; allocated memory is
+        within linear memory bounds; string bytes match expected content;
+        import receives (ptr, len) with correct values.
+
+  # ---------------------------------------------------------------------------
+  # Component round-trip
+  # ---------------------------------------------------------------------------
+
+  - id: E2E-VER-005
+    type: sys-verification
+    title: "Component round-trip: component fuse, compile, link, execute"
+    description: >
+      Full round-trip test of the BA RFC #46 compilation chain. Starting
+      from a WASM Component with WIT-defined imports and exports:
+      (1) Meld fuses the component to a core module with canonical ABI
+      wrappers, (2) synth AOT-compiles to ARM with import stubs,
+      (3) kiln-builtins.a provides the host functions, (4) the linker
+      produces firmware.elf, (5) Renode executes and validates results.
+      The component uses a non-trivial WIT interface with record types
+      to exercise the canonical ABI lift/lower path end-to-end. This is
+      the integration test that validates the full PulseEngine compilation
+      story: component authoring -> meld composition -> synth AOT ->
+      kiln runtime -> embedded execution.
+    status: planned
+    tags: [e2e, component-model, round-trip, rfc46, integration]
+    links:
+      - type: verifies
+        target: CC-001
+      - type: verifies
+        target: CC-002
+      - type: verifies
+        target: CM-002
+      - type: verifies
+        target: CM-001
+      - type: verifies
+        target: KB-001
+    fields:
+      method: simulation
+      preconditions:
+        - Meld fuser available and functional
+        - kiln-builtins.a with host function implementations
+        - Renode emulator with UART and memory inspection
+      test-input: >
+        A WASM Component defining: interface sensor { record reading {
+        temp: f32, humidity: f32 }; get-reading: func() -> reading; }
+        and a component that imports sensor.get-reading, processes the
+        reading (e.g., converts C to F), and exports a process func.
+      steps:
+        - "meld fuse sensor_component.wasm -o sensor_core.wasm"
+        - "synth compile sensor_core.wasm --target cortex-m4 -o module.o"
+        - "arm-none-eabi-ld -T linker.ld module.o kiln-builtins.a -o firmware.elf"
+        - "Renode execute firmware.elf with mock sensor host function"
+        - "Verify processed reading value matches expected conversion"
+      pass-criteria: >
+        Component imports resolved via Meld lowering; canonical ABI
+        record lift/lower produces correct field values; host function
+        receives correct arguments; computed result matches expected
+        value (e.g., 25.0C -> 77.0F); no memory faults or traps.
+
+  - id: E2E-VER-006
+    type: sys-verification
+    title: "Component round-trip: ABI compatibility validation"
+    description: >
+      Verification that the canonical ABI encoding produced by synth-abi
+      (at compile time) matches the canonical ABI decoding in kiln-builtins
+      (at runtime). For each WIT type family (primitives, strings, records,
+      variants, options, results, lists, enums, flags), a test component
+      passes values through the import boundary and verifies that the
+      host receives exactly the expected bytes. This is the runtime
+      counterpart of CM-VER-002 (cross-toolchain ABI compatibility).
+      Exercises both the lower path (guest -> host) and lift path
+      (host -> guest return values).
+    status: planned
+    tags: [e2e, component-model, abi-compatibility, canonical-abi]
+    links:
+      - type: verifies
+        target: CM-001
+      - type: verifies
+        target: CM-003
+      - type: verifies
+        target: KB-004
+    fields:
+      method: simulation
+      preconditions:
+        - kiln-builtins.a with ABI validation host functions
+        - Test components for each WIT type family
+      steps:
+        - "For each WIT type family: compile test component through pipeline"
+        - "Execute on Renode with ABI validation host function"
+        - "Host function compares received bytes against expected layout"
+        - "Report pass/fail for each type family"
+      pass-criteria: >
+        All WIT type families pass byte-level compatibility check;
+        synth-abi lowering matches kiln-builtins lifting for every
+        type; no alignment errors, truncation, or sign extension bugs.
+
+  # ---------------------------------------------------------------------------
+  # Regression and CI integration
+  # ---------------------------------------------------------------------------
+
+  - id: E2E-VER-007
+    type: sys-verification
+    title: "CI: Compilation chain regression test suite"
+    description: >
+      Bazel test targets exercising the compilation chain in CI. Tests
+      are organized under //tests/compilation-chain/... and include:
+      (1) poc_import_test -- PoC with single import (E2E-VER-001),
+      (2) elf_structure_test -- relocatable ELF validation (E2E-VER-002),
+      (3) wasi_stdout_test -- WASI stdout (E2E-VER-003), and
+      (4) component_roundtrip_test -- component round-trip (E2E-VER-005).
+      All tests use Renode via rules_renode for hermetic ARM emulation.
+      The test suite shall be gated on kiln-builtins.a being available
+      (via Bazel external dependency or pre-built artifact).
+    status: planned
+    tags: [e2e, ci, bazel, regression, renode]
+    links:
+      - type: verifies
+        target: CC-001
+      - type: verifies
+        target: FR-002
+    fields:
+      method: automated-test
+      steps:
+        run: "bazel test //tests/compilation-chain/..."
+        coverage: >
+          PoC import dispatch, ELF structure validation, WASI stdout,
+          component round-trip. All on Renode Cortex-M4 emulation.
+      preconditions:
+        - Bazel with rules_renode configured
+        - kiln-builtins.a available as Bazel external
+        - arm-none-eabi-ld available in Bazel toolchain
+
+  - id: E2E-VER-008
+    type: sw-verification
+    title: Unit tests for import stub codegen
+    description: >
+      Unit tests in synth-synthesis verifying that import call stub
+      generation produces correct ARM instruction sequences. Tests
+      cover: (1) __meld_dispatch_import generic dispatch path with
+      argument marshalling, (2) __meld_import_N per-import direct
+      dispatch with AAPCS argument placement, (3) trap check after
+      dispatch return, (4) return value lifting. Tests use synth's
+      existing test infrastructure (compile WASM instruction, verify
+      emitted ARM instructions) without requiring linking or execution.
+    status: planned
+    tags: [e2e, unit-test, import-stub, synth-synthesis]
+    links:
+      - type: verifies
+        target: KB-TR-001
+      - type: verifies
+        target: KB-TR-002
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-synthesis -- test_import_dispatch"
+        coverage: >
+          Generic dispatch stub, per-import direct stub, trap check,
+          return value lift. Both single-arg and multi-arg imports.
+
+  - id: E2E-VER-009
+    type: sys-verification
+    title: Unit tests for .meld_import_table emission
+    description: >
+      Unit tests in synth-backend verifying that the ElfBuilder correctly
+      emits .meld_import_table and .meld_import_strings sections. Tests
+      cover: (1) import_count field matches module import count,
+      (2) ImportEntry packing (module_name_offset, field_name_offset,
+      signature_hash, flags), (3) string table construction with correct
+      offsets, (4) FNV-1a hash computation for import type signatures,
+      (5) empty import table for modules with no imports (section omitted).
+    status: planned
+    tags: [e2e, unit-test, import-table, synth-backend]
+    links:
+      - type: verifies
+        target: KB-005
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend -- test_meld_import_table"
+        coverage: >
+          Import table emission, string table construction, hash
+          computation, empty table omission. Byte-level verification
+          of section content.
+
+  - id: E2E-VER-010
+    type: sw-verification
+    title: Unit tests for startup memory base initialization
+    description: >
+      Unit tests in synth-backend verifying that the Reset_Handler startup
+      code correctly calls __meld_get_memory_base and stores the result in
+      R11. Tests cover: (1) BL __meld_get_memory_base instruction emitted
+      in startup sequence, (2) MOV R11, R0 follows the BL, (3) weak symbol
+      fallback emits correct default (0x20000000), (4) FPU initialization
+      precedes memory base call when VFP is enabled.
+    status: planned
+    tags: [e2e, unit-test, startup, memory-base, synth-backend]
+    links:
+      - type: verifies
+        target: KB-TR-005
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend -- test_startup_memory_base"
+        coverage: >
+          Memory base initialization in Reset_Handler; weak symbol
+          fallback; ordering relative to FPU init.
