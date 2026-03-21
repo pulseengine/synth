@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Z3 SMT translation validation for the Synth compiler"
 
 [features]
 default = ["z3-solver", "arm"]

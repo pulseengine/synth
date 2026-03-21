@@ -2,8 +2,10 @@
 name = "synth-memory"
 version.workspace = true
 edition.workspace = true
+authors.workspace = true
 license.workspace = true
-description = "Portable memory management for Synth WASM-to-ARM compiler"
+repository.workspace = true
+description = "Portable memory abstraction (Zephyr, Linux, bare-metal) for the Synth compiler"
 
 [dependencies]
 bitflags = "2.4"

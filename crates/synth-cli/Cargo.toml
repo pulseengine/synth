@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "CLI for Synth, the WebAssembly-to-ARM Cortex-M AOT compiler"
 
 [[bin]]
 name = "synth"

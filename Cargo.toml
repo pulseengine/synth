@@ -26,6 +26,9 @@ rust-version = "1.88"
 authors = ["PulseEngine Team"]
 license = "Apache-2.0"
 repository = "https://github.com/pulseengine/synth"
+homepage = "https://github.com/pulseengine/synth"
+keywords = ["webassembly", "arm", "cortex-m", "compiler", "embedded"]
+categories = ["compilers", "embedded", "wasm", "no-std"]
 
 [workspace.dependencies]
 # WebAssembly tooling

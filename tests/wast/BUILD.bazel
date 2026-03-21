@@ -189,6 +189,26 @@ wast_multi_func_test(
 )
 
 # =============================================================================
+# Example application tests
+# =============================================================================
+
+# --- Calculator example (arithmetic, bitwise, accumulator, comparison) ---
+
+wast_multi_func_test(
+    name = "calculator",
+    wast = "calculator.wast",
+    tags = ["example", "calculator"],
+)
+
+# --- Anti-pinch controller example (jam detection, PWM ramping, safety) ---
+
+wast_multi_func_test(
+    name = "anti_pinch",
+    wast = "anti_pinch.wast",
+    tags = ["example", "anti-pinch", "safety"],
+)
+
+# =============================================================================
 # Official WebAssembly Spec Tests
 # =============================================================================
 

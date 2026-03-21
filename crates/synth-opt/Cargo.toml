@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Peephole optimization passes for the Synth compiler"
 
 [dependencies]
 synth-cfg = { path = "../synth-cfg" }
