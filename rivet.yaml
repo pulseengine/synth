@@ -57,3 +57,9 @@ externals:
     path: /Volumes/Home/git/pulseengine/sigil
     ref: main
     prefix: sigil
+
+  gale:
+    git: https://github.com/pulseengine/gale.git
+    path: /Volumes/Home/git/pulseengine/gale
+    ref: main
+    prefix: gale

@@ -72,6 +72,8 @@ pub struct StartupCode {
     pub bss_end: u32,
     /// Enable FPU (set CPACR for CP10+CP11 full access)
     pub enable_fpu: bool,
+    /// Linear memory size in bytes (stored in R10 for memory.size)
+    pub memory_size: u32,
 }
 
 impl StartupCode {
@@ -86,6 +88,7 @@ impl StartupCode {
             bss_start: 0,
             bss_end: 0,
             enable_fpu: false,
+            memory_size: 64 * 1024, // Default 64KB linear memory
         }
     }
 
@@ -143,11 +146,39 @@ impl StartupCode {
         // For 0x2000: imm4=2, i=0, imm3=0, imm8=0
         code.extend_from_slice(&[0xC2, 0xF2, 0x00, 0x0B]); // MOVT R11, #0x2000
 
+        // Initialize R10 with linear memory size in bytes (for memory.size instruction)
+        // memory.size does LSR R10, #16 to convert bytes to WASM pages (65536 bytes/page)
+        {
+            let lo16 = self.memory_size & 0xFFFF;
+            let hi16 = self.memory_size >> 16;
+
+            // Thumb-2 MOVW R10, #lo16
+            // Encoding: 1111 0 i 10 0 1 0 0 imm4 | 0 imm3 Rd imm8
+            // Rd = R10 = 0xA
+            let i_bit = (lo16 >> 11) & 1;
+            let imm4 = (lo16 >> 12) & 0xF;
+            let imm3 = (lo16 >> 8) & 0x7;
+            let imm8 = lo16 & 0xFF;
+            let hw1 = (0xF240 | (i_bit << 10) | imm4) as u16;
+            let hw2 = ((imm3 << 12) | (0xA << 8) | imm8) as u16;
+            code.extend_from_slice(&hw1.to_le_bytes());
+            code.extend_from_slice(&hw2.to_le_bytes());
+
+            // Thumb-2 MOVT R10, #hi16
+            let i_bit = (hi16 >> 11) & 1;
+            let imm4 = (hi16 >> 12) & 0xF;
+            let imm3 = (hi16 >> 8) & 0x7;
+            let imm8 = hi16 & 0xFF;
+            let hw1 = (0xF2C0 | (i_bit << 10) | imm4) as u16;
+            let hw2 = ((imm3 << 12) | (0xA << 8) | imm8) as u16;
+            code.extend_from_slice(&hw1.to_le_bytes());
+            code.extend_from_slice(&hw2.to_le_bytes());
+        }
+
         // Load entry point into R0
-        // LDR r0, [pc, #offset] (load from PC+4+offset, aligned)
-        // After MOVW+MOVT (8 bytes), we have: LDR, BLX, B, padding, literal
-        // PC = current + 4 (Thumb pipeline)
-        // Literal is at PC + 4 (after BLX and B.W)
+        // LDR r0, [pc, #offset] (load from Align(PC,4) + imm*4)
+        // From here: LDR(2), BLX(2), B(2), NOP(2), literal(4)
+        // PC = LDR_addr + 4; Align(PC,4) + 4 = literal address
         code.extend_from_slice(&[0x01, 0x48]); // LDR r0, [pc, #4]
 
         // Thumb encoding for: BLX r0

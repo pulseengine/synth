@@ -394,8 +394,15 @@ impl ElfBuilder {
     }
 
     /// Set entry point
+    ///
+    /// For ARM (Thumb) targets, bit 0 is automatically set to indicate Thumb mode.
+    /// Cortex-M is Thumb-only, so function addresses in ELF must have bit 0 set.
     pub fn with_entry(mut self, entry: u32) -> Self {
-        self.entry = entry;
+        self.entry = if self.machine == ElfMachine::Arm {
+            entry | 1 // Set Thumb bit for ARM targets
+        } else {
+            entry
+        };
         self
     }
 
@@ -766,7 +773,14 @@ impl ElfBuilder {
             symtab.extend_from_slice(&name_offset.to_le_bytes());
 
             // st_value (4 bytes)
-            symtab.extend_from_slice(&symbol.value.to_le_bytes());
+            // For ARM targets, STT_FUNC symbols must have bit 0 set (Thumb interworking)
+            let value = if self.machine == ElfMachine::Arm && symbol.symbol_type == SymbolType::Func
+            {
+                symbol.value | 1
+            } else {
+                symbol.value
+            };
+            symtab.extend_from_slice(&value.to_le_bytes());
 
             // st_size (4 bytes)
             symtab.extend_from_slice(&symbol.size.to_le_bytes());
@@ -1177,7 +1191,7 @@ mod tests {
         assert!(elf.len() > 52); // At least header size
         assert!(elf.len() < 10000); // Reasonable upper bound
 
-        // Validate entry point is set correctly
+        // Validate entry point is set correctly (Thumb bit set for ARM)
         let entry_bytes = &elf[24..28];
         let entry = u32::from_le_bytes([
             entry_bytes[0],
@@ -1185,7 +1199,7 @@ mod tests {
             entry_bytes[2],
             entry_bytes[3],
         ]);
-        assert_eq!(entry, 0x8000);
+        assert_eq!(entry, 0x8001); // 0x8000 | 1 (Thumb bit)
 
         // Validate section header offset is non-zero
         let sh_off_bytes = &elf[32..36];
@@ -1303,6 +1317,7 @@ mod tests {
 
         // Second symbol should have correct encoding
         // Check st_value (bytes 4-7 of second entry)
+        // For ARM STT_FUNC symbols, bit 0 is set for Thumb interworking
         let value_bytes = &symtab[20..24];
         let value = u32::from_le_bytes([
             value_bytes[0],
@@ -1310,7 +1325,7 @@ mod tests {
             value_bytes[2],
             value_bytes[3],
         ]);
-        assert_eq!(value, 0x1000);
+        assert_eq!(value, 0x1001); // 0x1000 | 1 (Thumb bit)
 
         // Check st_size (bytes 8-11 of second entry)
         let size_bytes = &symtab[24..28];

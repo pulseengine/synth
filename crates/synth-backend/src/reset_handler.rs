@@ -4,7 +4,7 @@
 
 use crate::arm_encoder::ArmEncoder;
 use synth_core::Result;
-use synth_synthesis::{ArmOp, Operand2, Reg};
+use synth_synthesis::{ArmOp, MemAddr, Operand2, Reg};
 
 /// Reset handler generator
 pub struct ResetHandlerGenerator {
@@ -60,53 +60,148 @@ impl ResetHandlerGenerator {
         let mut instrs = Vec::new();
 
         // Copy .data section from Flash to RAM
-        // R0 = source (Flash)
-        // R1 = destination (RAM)
-        // R2 = end address
+        // R0 = source (Flash load address)
+        // R1 = destination (RAM data start)
+        // R2 = end address (RAM data end)
 
-        // Load data_load_addr into R0
-        instrs.push(ArmOp::Mov {
+        // Load data_load_addr into R0 using MOVW/MOVT (full 32-bit)
+        instrs.push(ArmOp::Movw {
             rd: Reg::R0,
-            op2: Operand2::Imm((self.data_load_addr >> 16) as i32),
+            imm16: (self.data_load_addr & 0xFFFF) as u16,
         });
-        // Would use MOVT for upper 16 bits in real impl
+        instrs.push(ArmOp::Movt {
+            rd: Reg::R0,
+            imm16: (self.data_load_addr >> 16) as u16,
+        });
 
         // Load data_start into R1
-        instrs.push(ArmOp::Mov {
+        instrs.push(ArmOp::Movw {
             rd: Reg::R1,
-            op2: Operand2::Imm((self.data_start >> 16) as i32),
+            imm16: (self.data_start & 0xFFFF) as u16,
+        });
+        instrs.push(ArmOp::Movt {
+            rd: Reg::R1,
+            imm16: (self.data_start >> 16) as u16,
         });
 
         // Load data_end into R2
-        instrs.push(ArmOp::Mov {
+        instrs.push(ArmOp::Movw {
             rd: Reg::R2,
-            op2: Operand2::Imm((self.data_end >> 16) as i32),
+            imm16: (self.data_end & 0xFFFF) as u16,
+        });
+        instrs.push(ArmOp::Movt {
+            rd: Reg::R2,
+            imm16: (self.data_end >> 16) as u16,
         });
 
-        // Copy loop label would go here
-        // For simplicity, using a simple sequence
+        // .data copy loop: copy words from Flash (R0) to RAM (R1) until R1 == R2
+        // .Lcopy_check:
+        instrs.push(ArmOp::Label {
+            name: ".Lcopy_check".to_string(),
+        });
+        instrs.push(ArmOp::Cmp {
+            rn: Reg::R1,
+            op2: Operand2::Reg(Reg::R2),
+        });
+        // BHS .Lcopy_done (branch if R1 >= R2, i.e., done)
+        instrs.push(ArmOp::Bhs {
+            label: ".Lcopy_done".to_string(),
+        });
+        // LDR R3, [R0], #4 — load word from source, post-increment
+        // Using explicit load + add since post-increment may not be available
+        instrs.push(ArmOp::Ldr {
+            rd: Reg::R3,
+            addr: MemAddr {
+                base: Reg::R0,
+                offset: 0,
+                offset_reg: None,
+            },
+        });
+        instrs.push(ArmOp::Add {
+            rd: Reg::R0,
+            rn: Reg::R0,
+            op2: Operand2::Imm(4),
+        });
+        // STR R3, [R1], #4 — store word to dest, post-increment
+        instrs.push(ArmOp::Str {
+            rd: Reg::R3,
+            addr: MemAddr {
+                base: Reg::R1,
+                offset: 0,
+                offset_reg: None,
+            },
+        });
+        instrs.push(ArmOp::Add {
+            rd: Reg::R1,
+            rn: Reg::R1,
+            op2: Operand2::Imm(4),
+        });
+        // B .Lcopy_check
+        instrs.push(ArmOp::B {
+            label: ".Lcopy_check".to_string(),
+        });
+        instrs.push(ArmOp::Label {
+            name: ".Lcopy_done".to_string(),
+        });
 
         // Zero .bss section
-        // R0 = start address
-        // R1 = end address
-        // R2 = zero value
+        // R0 = bss start, R1 = bss end, R2 = zero value
+        instrs.push(ArmOp::Movw {
+            rd: Reg::R0,
+            imm16: (self.bss_start & 0xFFFF) as u16,
+        });
+        instrs.push(ArmOp::Movt {
+            rd: Reg::R0,
+            imm16: (self.bss_start >> 16) as u16,
+        });
+
+        instrs.push(ArmOp::Movw {
+            rd: Reg::R1,
+            imm16: (self.bss_end & 0xFFFF) as u16,
+        });
+        instrs.push(ArmOp::Movt {
+            rd: Reg::R1,
+            imm16: (self.bss_end >> 16) as u16,
+        });
 
         instrs.push(ArmOp::Mov {
             rd: Reg::R2,
             op2: Operand2::Imm(0),
         });
 
-        instrs.push(ArmOp::Mov {
+        // .bss zero loop: zero words from R0 to R1
+        // .Lzero_check:
+        instrs.push(ArmOp::Label {
+            name: ".Lzero_check".to_string(),
+        });
+        instrs.push(ArmOp::Cmp {
+            rn: Reg::R0,
+            op2: Operand2::Reg(Reg::R1),
+        });
+        // BHS .Lzero_done (branch if R0 >= R1)
+        instrs.push(ArmOp::Bhs {
+            label: ".Lzero_done".to_string(),
+        });
+        instrs.push(ArmOp::Str {
+            rd: Reg::R2,
+            addr: MemAddr {
+                base: Reg::R0,
+                offset: 0,
+                offset_reg: None,
+            },
+        });
+        instrs.push(ArmOp::Add {
             rd: Reg::R0,
-            op2: Operand2::Imm((self.bss_start >> 16) as i32),
+            rn: Reg::R0,
+            op2: Operand2::Imm(4),
         });
-
-        instrs.push(ArmOp::Mov {
-            rd: Reg::R1,
-            op2: Operand2::Imm((self.bss_end >> 16) as i32),
+        // B .Lzero_check
+        instrs.push(ArmOp::B {
+            label: ".Lzero_check".to_string(),
         });
-
-        // Zero loop would go here
+        instrs.push(ArmOp::Label {
+            name: ".Lzero_done".to_string(),
+        });
 
         // Call main
         instrs.push(ArmOp::Bl {

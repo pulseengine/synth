@@ -146,8 +146,8 @@ fn test_alignment_requirements() {
     let generator = LinkerScriptGenerator::new_stm32();
     let script = generator.generate().expect("Failed to generate");
 
-    // Vector table must be 128-byte aligned (ARM Cortex-M requirement)
-    assert!(script.contains("ALIGN(128)"));
+    // Vector table must be 256-byte aligned (power-of-2 >= table size for ARM Cortex-M)
+    assert!(script.contains("ALIGN(256)"));
 
     // Data sections should be 4-byte aligned
     let align_4_count = script.matches("ALIGN(4)").count();

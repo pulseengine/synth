@@ -156,7 +156,7 @@ impl LinkerScriptGenerator {
         // .isr_vector section (interrupt vector table)
         script.push_str("  .isr_vector :\n");
         script.push_str("  {\n");
-        script.push_str("    . = ALIGN(128);  /* Vector table must be 128-byte aligned */\n");
+        script.push_str("    . = ALIGN(256);  /* Vector table must be aligned to next power-of-2 >= table size */\n");
         script.push_str("    KEEP(*(.isr_vector))\n");
         script.push_str("    . = ALIGN(4);\n");
         script.push_str("  } >FLASH\n\n");
@@ -387,8 +387,8 @@ mod tests {
         let generator = LinkerScriptGenerator::new_stm32();
         let script = generator.generate().expect("Failed to generate");
 
-        // Vector table must be 128-byte aligned
-        assert!(script.contains("ALIGN(128)"));
+        // Vector table must be 256-byte aligned (power-of-2 >= table size)
+        assert!(script.contains("ALIGN(256)"));
         // Other sections should be 4-byte aligned
         assert!(script.contains("ALIGN(4)"));
     }

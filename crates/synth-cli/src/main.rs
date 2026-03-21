@@ -2317,7 +2317,10 @@ mod tests {
 
         // Verify entry point is 0x8000
         let entry = u32::from_le_bytes([elf_data[24], elf_data[25], elf_data[26], elf_data[27]]);
-        assert_eq!(entry, 0x8000, "Entry point should be 0x8000");
+        assert_eq!(
+            entry, 0x8001,
+            "Entry point should be 0x8001 (0x8000 | Thumb bit)"
+        );
     }
 
     #[test]

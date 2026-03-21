@@ -78,7 +78,7 @@ fn test_end_to_end_pipeline() {
         entry_bytes[2],
         entry_bytes[3],
     ]);
-    assert_eq!(entry, 0x8000);
+    assert_eq!(entry, 0x8001); // 0x8000 | 1 (Thumb bit for ARM)
 
     println!("✓ End-to-end pipeline test passed!");
     println!("  - Generated {} WASM ops", wasm_ops.len());

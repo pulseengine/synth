@@ -1,0 +1,326 @@
+# Gale Integration Requirements (ASPICE SYS.2 / SWE.1)
+#
+# System: Synth -- WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Defines how synth-compiled WASM modules integrate with gale's formally
+# verified kernel primitives for safety-critical embedded applications.
+# Covers both the Zephyr module path (Phase 1: C FFI shim) and the
+# Kiln host function path (Phase 2: direct Rust calls).
+#
+# Cross-repo references use gale: prefix for gale artifacts.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # ---------------------------------------------------------------------------
+  # System-level: gale integration architecture
+  # ---------------------------------------------------------------------------
+
+  - id: GI-001
+    type: system-req
+    title: Gale Zephyr module co-deployment with synth-compiled modules
+    description: >
+      Synth-compiled WASM modules shall be deployable alongside gale's
+      formally verified kernel primitives in a single Zephyr application.
+      The Zephyr build system (west build) shall compile both: (1) synth
+      output (.s assembly files) via target_sources, and (2) gale's
+      libgale_ffi.a via the Zephyr module system (zephyr/module.yml,
+      CONFIG_GALE_KERNEL_SEM=y, etc.). The Zephyr C application code
+      serves as the integration layer, calling synth-compiled WASM
+      functions for application logic and using Zephyr kernel APIs
+      (which delegate to gale for verified arithmetic) for synchronization.
+      Both synth and gale target the same ARM triple
+      (thumbv7em-none-eabihf for Cortex-M4F).
+    status: draft
+    tags: [gale, zephyr, co-deployment, integration]
+    links:
+      - type: derives-from
+        target: ZI-001
+      - type: derives-from
+        target: BR-001
+      - type: derives-from
+        target: BR-003
+      - type: traces-to
+        target: gale:SYSREQ-SEM-001
+      - type: traces-to
+        target: gale:SYSREQ-MUT-001
+    fields:
+      req-type: interface
+      priority: must
+      verification-criteria: >
+        Zephyr application builds with both synth .s files and gale
+        Zephyr module enabled; application calls synth-compiled WASM
+        function and gale-verified semaphore in the same main().
+
+  - id: GI-002
+    type: system-req
+    title: Gale CMake Rust target triple compatibility with synth
+    description: >
+      Gale's Zephyr CMakeLists.txt and synth shall use compatible Rust
+      target triple selection logic for ARM Cortex-M. Both projects use
+      the same mapping: Cortex-M0 -> thumbv6m-none-eabi, Cortex-M3 ->
+      thumbv7m-none-eabi, Cortex-M4/M7 without FPU -> thumbv7em-none-eabi,
+      Cortex-M4/M7 with FPU -> thumbv7em-none-eabihf, Cortex-M33 ->
+      thumbv8m.main-none-eabi[hf]. The target profile definitions in
+      synth (TargetSpec, HardwareCapabilities) shall produce triples
+      that match gale's CMakeLists.txt RUST_TARGET variable for the
+      same Zephyr CONFIG_CPU_* selection.
+    status: draft
+    tags: [gale, target-triple, compatibility, cortex-m]
+    links:
+      - type: derives-from
+        target: TP-001
+      - type: derives-from
+        target: TP-004
+      - type: derives-from
+        target: TP-005
+      - type: traces-to
+        target: gale:STKH-001
+    fields:
+      req-type: interface
+      priority: must
+      verification-criteria: >
+        For each supported Cortex-M variant, synth's TargetSpec::triple()
+        matches gale's CMakeLists.txt RUST_TARGET for the same
+        CONFIG_CPU_* / CONFIG_FPU combination.
+
+  - id: GI-003
+    type: system-req
+    title: WASM task isolation via gale kernel primitives
+    description: >
+      Multi-component WASM applications compiled by synth shall use
+      gale kernel primitives for inter-component synchronization and
+      communication. Each WASM component instance runs in its own
+      Zephyr thread with an MPU-isolated linear memory region. Gale
+      provides the synchronization primitives: semaphores for producer-
+      consumer signaling, mutexes for shared resource protection,
+      message queues for typed inter-component messages, and pipes for
+      byte-stream communication. The synth-compiled code accesses these
+      primitives via kiln-builtins import dispatch, which routes to
+      gale's Rust implementation (Phase 2) or via Zephyr C APIs that
+      delegate to gale (Phase 1).
+    status: draft
+    tags: [gale, isolation, multi-component, wasm-tasks]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: derives-from
+        target: FR-008
+      - type: derives-from
+        target: ZI-003
+      - type: traces-to
+        target: CM-005
+      - type: traces-to
+        target: gale:STKH-002
+      - type: traces-to
+        target: gale:SYSREQ-KILN-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        Two synth-compiled WASM components communicate via gale message
+        queue on Renode Cortex-M4; MPU regions isolate each component's
+        linear memory; semaphore coordinates execution order.
+
+  - id: GI-004
+    type: system-req
+    title: Gale WIT interfaces for kernel object imports (Phase 2)
+    description: >
+      WIT interface definitions shall be created for gale kernel objects
+      enabling WASM components to import kernel primitives as typed
+      resources. The WIT interfaces define: resource sem (init, give,
+      take, reset, count-get), resource mutex (lock, unlock),
+      resource condvar (signal, broadcast, wait), resource msgq (put,
+      get, peek), resource pipe (write, read), and resource stack (push,
+      pop). These WIT definitions are consumed by meld for component
+      lowering and by synth for canonical ABI stub generation. The WIT
+      definitions match gale's Rust API signatures as specified in
+      gale:SWREQ-KILN-001.
+    status: draft
+    tags: [gale, wit, component-model, kernel-objects, phase-2]
+    links:
+      - type: derives-from
+        target: CM-002
+      - type: derives-from
+        target: FR-001
+      - type: traces-to
+        target: gale:SWREQ-KILN-001
+      - type: traces-to
+        target: gale:SWREQ-KILN-002
+    fields:
+      req-type: interface
+      priority: should
+      verification-criteria: >
+        WIT interfaces compile with wit-bindgen; canonical ABI lowering
+        for each operation matches gale's Rust function signature;
+        synth generates correct import stubs for each WIT operation.
+
+  - id: GI-005
+    type: system-req
+    title: End-to-end verified compilation chain with gale
+    description: >
+      The end-to-end compilation chain shall maintain verified
+      correctness from gale source through to ARM binary execution.
+      The chain is: gale Rust source (Verus SMT proofs for functional
+      correctness) -> gale plain/ (Rocq proofs for refinement properties)
+      -> WASM (via Kiln host function registration) -> synth AOT
+      compilation (Rocq proofs for ARM codegen correctness). Each link
+      in the chain has formal verification: gale proves the kernel
+      primitive is correct, synth proves the compilation preserves
+      semantics. The gap is the Kiln host function boundary, which is
+      covered by ABI compatibility tests (CM-001, CM-VER-002).
+    status: draft
+    tags: [gale, verified-pipeline, end-to-end, safety-critical]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: derives-from
+        target: FR-006
+      - type: traces-to
+        target: gale:SYSREQ-KILN-002
+      - type: traces-to
+        target: gale:SWREQ-KILN-004
+      - type: traces-to
+        target: VER-001
+    fields:
+      req-type: safety
+      priority: must
+      verification-criteria: >
+        Gale Verus proofs pass (all kernel primitives verified); synth
+        Rocq proofs pass (all i32 operations T1-verified); ABI
+        compatibility tests pass between synth-abi and kiln canonical
+        ABI; no Admitted lemmas in critical path.
+
+  # ---------------------------------------------------------------------------
+  # SW-level requirements for gale integration in synth
+  # ---------------------------------------------------------------------------
+
+  - id: GI-TR-001
+    type: sw-req
+    title: Kernel object import stub generation for gale WIT interfaces
+    description: >
+      synth-synthesis shall generate ARM call stubs for gale kernel
+      object WIT imports. Each kernel object operation (e.g., sem.give,
+      mutex.lock) generates a BL to the corresponding kiln dispatch
+      index. The stub handles canonical ABI lowering of the resource
+      handle (u32 index) and operation-specific parameters. For Phase 1,
+      the stubs target __meld_dispatch_import with the appropriate import
+      index. For Phase 2 (per-import direct dispatch), the stubs target
+      __meld_import_N with arguments directly in R0-R3.
+    status: planned
+    tags: [gale, codegen, import-stub, wit]
+    links:
+      - type: derives-from
+        target: GI-004
+      - type: derives-from
+        target: KB-TR-001
+      - type: derives-from
+        target: KB-TR-002
+    fields:
+      req-type: functional
+      priority: should
+      crate: synth-synthesis
+      verification-criteria: >
+        Synth compiles a WASM module importing sem.give to ARM code
+        containing BL __meld_dispatch_import with correct import index;
+        resource handle passed in R0 per AAPCS.
+
+  - id: GI-TR-002
+    type: sw-req
+    title: Zephyr prj.conf generation with gale Kconfig
+    description: >
+      synth-cli shall support generating Zephyr project configuration
+      (prj.conf) that includes gale Kconfig options alongside synth's
+      requirements. When --gale-primitives=sem,mutex is specified, the
+      generated prj.conf includes CONFIG_GALE_KERNEL_SEM=y and
+      CONFIG_GALE_KERNEL_MUTEX=y in addition to CONFIG_PRINTK=y and
+      CONFIG_CONSOLE=y. This simplifies the Zephyr project setup for
+      applications using both synth and gale.
+    status: planned
+    tags: [gale, zephyr, kconfig, cli]
+    links:
+      - type: derives-from
+        target: GI-001
+      - type: derives-from
+        target: ZI-004
+    fields:
+      req-type: functional
+      priority: could
+      crate: synth-cli
+      verification-criteria: >
+        synth init-zephyr --gale-primitives=sem,mutex generates prj.conf
+        with correct Kconfig settings; west build succeeds with the
+        generated configuration.
+
+  # ---------------------------------------------------------------------------
+  # Verification for gale integration
+  # ---------------------------------------------------------------------------
+
+  - id: GI-VER-001
+    type: sys-verification
+    title: "Zephyr + synth + gale co-deployment test"
+    description: >
+      Integration test verifying that a Zephyr application can
+      simultaneously use synth-compiled WASM functions and gale-verified
+      kernel primitives. The test application: (1) calls a synth-compiled
+      add function, (2) initializes a gale semaphore via Zephyr k_sem_init,
+      (3) gives the semaphore, (4) takes the semaphore, (5) prints
+      results via printk. This validates that libgale_ffi.a and synth
+      assembly link without symbol conflicts and execute correctly
+      together.
+    status: planned
+    tags: [gale, integration-test, zephyr, co-deployment]
+    links:
+      - type: verifies
+        target: GI-001
+      - type: verifies
+        target: GI-002
+    fields:
+      method: simulation
+      preconditions:
+        - Zephyr SDK available
+        - Gale checkout at known path
+        - synth-compiled .s file for test module
+      steps:
+        - "west build -b qemu_cortex_m3 with both synth and gale"
+        - "Verify UART output: add result correct + sem give/take succeeds"
+      pass-criteria: >
+        Application builds with no linker errors; UART shows correct
+        add result; k_sem_give and k_sem_take succeed using gale's
+        verified implementation.
+
+  - id: GI-VER-002
+    type: sys-verification
+    title: "Multi-component WASM isolation test with gale primitives"
+    description: >
+      End-to-end test verifying that two synth-compiled WASM components
+      communicate via a gale message queue with MPU-isolated linear
+      memories. Component A produces values and enqueues them via
+      k_msgq_put (verified by gale MQ1-MQ13). Component B dequeues
+      and processes values. Each component's linear memory is in a
+      separate MPU region. The test validates: (1) message queue
+      operations use gale-verified index arithmetic, (2) MPU fault
+      occurs if one component accesses the other's memory, (3) correct
+      values are transferred end-to-end.
+    status: planned
+    tags: [gale, integration-test, isolation, multi-component]
+    links:
+      - type: verifies
+        target: GI-003
+      - type: verifies
+        target: GI-005
+    fields:
+      method: simulation
+      preconditions:
+        - Renode with MPU emulation
+        - Two synth-compiled WASM components
+        - Gale message queue enabled
+      steps:
+        - "Build Zephyr application with two synth components + gale msgq"
+        - "Run on Renode with MPU region monitoring"
+        - "Verify values transfer correctly via message queue"
+        - "Verify MPU fault on cross-component memory access"
+      pass-criteria: >
+        Messages transfer correctly via gale-verified msgq; MPU fault
+        triggered on cross-component access; gale MQ index arithmetic
+        proven correct via Verus proofs.
