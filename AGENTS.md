@@ -9,8 +9,8 @@
 This project uses **Rivet** for SDLC artifact traceability.
 - Config: `rivet.yaml`
 - Schemas: common, stpa, aspice, dev
-- Artifacts: 231 across 17 types
-- Validation: `rivet validate` (current status: 47 errors)
+- Artifacts: 252 across 17 types
+- Validation: `rivet validate` (current status: 95 errors)
 
 ## Available Commands
 
@@ -41,12 +41,12 @@ This project uses **Rivet** for SDLC artifact traceability.
 | `stakeholder-req` | 4 | Stakeholder requirement (SYS.1) |
 | `sub-hazard` | 3 | A refinement of a hazard into a more specific unsafe condition. |
 | `sw-arch-component` | 11 | Software architectural element (SWE.2) |
-| `sw-req` | 21 | Software requirement (SWE.1) |
+| `sw-req` | 26 | Software requirement (SWE.1) |
 | `sw-verification` | 12 | Software verification measure against SW requirements (SWE.6 — Software Verification) |
-| `sys-verification` | 27 | System verification measure against system requirements (SYS.5 — System Verification) |
+| `sys-verification` | 29 | System verification measure against system requirements (SYS.5 — System Verification) |
 | `system-arch-component` | 6 | System architectural element (SYS.3) |
 | `system-constraint` | 10 | A condition or behavior that must be satisfied to prevent a hazard. Each constraint is the inversion of a hazard. |
-| `system-req` | 54 | System requirement derived from stakeholder needs (SYS.2) |
+| `system-req` | 68 | System requirement derived from stakeholder needs (SYS.2) |
 | `uca` | 18 | An Unsafe Control Action — a control action that, in a particular context and worst-case environment, leads to a hazard. Four types (provably complete): 1. Not providing the control action leads to a hazard 2. Providing the control action leads to a hazard 3. Providing too early, too late, or in the wrong order 4. Control action stopped too soon or applied too long |
 | `design-decision` | 0 | An architectural or design decision with rationale |
 | `feature` | 0 | A user-visible capability or feature |
