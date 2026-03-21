@@ -29,16 +29,19 @@
 
 &nbsp;
 
-Synth compiles WebAssembly to native ARM Cortex-M machine code, producing bare-metal ELF binaries for embedded targets. It supports 197+ WASM opcodes (i32, i64, f32, f64, SIMD/Helium), full control flow, memory operations, and globals. Pattern-based instruction selection, AAPCS calling conventions, and ELF generation -- with mechanized correctness proofs in [Rocq](https://rocq-prover.org/) (formerly Coq) and SMT-based translation validation via Z3.
+Synth is an ahead-of-time compiler from WebAssembly to ARM Cortex-M machine code. It produces bare-metal ELF binaries targeting embedded microcontrollers. The compiler handles i32, i64 (via register pairs), f32/f64 (via VFP), control flow, and memory operations. Mechanized correctness proofs in [Rocq](https://rocq-prover.org/) cover the i32 instruction selection; i64/float/SIMD proofs are not yet done.
 
-Part of [PulseEngine](https://github.com/pulseengine) -- a WebAssembly toolchain for safety-critical systems with mechanized verification:
+**This is pre-release software.** It has not been tested on real hardware. The generated ARM code passes unit tests and compiles 227/257 WebAssembly spec test files, but execution on Cortex-M silicon is unverified. Use at your own risk.
+
+Part of [PulseEngine](https://github.com/pulseengine) -- a WebAssembly toolchain for safety-critical embedded systems:
 
 | Project | Role |
 |---------|------|
-| [**Synth**](https://github.com/pulseengine/synth) | WASM-to-ARM compiler with Rocq proofs |
+| [**Synth**](https://github.com/pulseengine/synth) | WASM-to-ARM AOT compiler with Rocq proofs |
 | [**Loom**](https://github.com/pulseengine/loom) | WASM optimizer with Z3 verification |
-| [**Meld**](https://github.com/pulseengine/meld) / [**Kiln**](https://github.com/pulseengine/kiln) | Platform runtime and build orchestration |
-| [**Sigil**](https://github.com/pulseengine/sigil) | Attestation and signing |
+| [**Meld**](https://github.com/pulseengine/meld) | WASM Component Model static fuser |
+| [**Kiln**](https://github.com/pulseengine/kiln) | WASM runtime for safety-critical systems |
+| [**Sigil**](https://github.com/pulseengine/sigil) | Supply chain attestation and signing |
 
 ## Installation
 
@@ -77,22 +80,32 @@ synth verify examples/wat/simple_add.wat firmware.elf
 
 ## Features
 
-| Category | Status |
-|----------|--------|
-| i32 arithmetic, bitwise, comparison, shift/rotate | Supported |
-| i64 arithmetic (register pairs) | Supported |
-| f32/f64 via VFP | Supported |
-| WASM SIMD via ARM Helium MVE | Supported (Cortex-M55) |
-| Control flow (block, loop, if/else, br, br_if, br_table) | Supported |
-| Function calls (direct, indirect) | Supported |
-| Memory (load/store, sub-word, size/grow) | Supported |
-| Globals, select, unreachable, nop | Supported |
-| ELF output with vector table | Supported |
-| Linker scripts (STM32, nRF52840, generic) | Supported |
-| Cross-compilation via arm-none-eabi-gcc | Supported |
-| Rocq mechanized proofs | 188 Qed / 52 Admitted |
-| Z3 translation validation | 53 tests passing |
-| WebAssembly spec test suite | 227/257 files compile |
+| Category | Status | Notes |
+|----------|--------|-------|
+| i32 arithmetic, bitwise, comparison, shift/rotate | **Tested** | Full Rocq T1 proofs, Renode execution tests |
+| i64 arithmetic (register pairs) | **Tested** | ADDS/ADC, SUBS/SBC, UMULL; unit tests only |
+| f32/f64 via VFP | Implemented | Requires FPU-equipped target (M4F, M7); Rocq proofs admitted |
+| WASM SIMD via ARM Helium MVE | Experimental | Cortex-M55 only; encoding untested on hardware |
+| Control flow (block, loop, if/else, br, br_table) | **Tested** | Renode execution tests, complex test suite |
+| Function calls (direct, indirect) | Implemented | Unit tests; inter-function calls not Renode-tested |
+| Memory (load/store, sub-word, size/grow) | Implemented | memory.grow returns -1 on embedded (fixed memory) |
+| Globals, select | Implemented | R9-based globals; unit tests only |
+| ELF output with vector table | Implemented | Thumb bit set on symbols; not linked on real hardware |
+| Linker scripts (STM32, nRF52840, generic) | Implemented | Generated, not tested with real boards |
+| Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
+| Rocq mechanized proofs | 188 Qed / 52 Admitted | Only i32 has result-correspondence (T1); all 52 admits are float/VFP |
+| Z3 translation validation | 53 tests passing | Covers i32 arithmetic and comparison rules |
+| WebAssembly spec test suite | 227/257 compile | Compilation only — not executed on emulator |
+
+### What doesn't work yet
+
+- **No real hardware testing** — all testing is unit tests and Renode emulation
+- **No multi-memory** — fused components from meld need single-memory mode
+- **No WASI on embedded** — kiln-builtins crate doesn't exist yet
+- **No component model execution** — components compile but can't run without kiln-builtins + cabi_realloc
+- **Register allocator is naive** — wrapping allocation with reserved register exclusion, no graph coloring
+- **No tail call optimization** — return_call compiles but doesn't optimize the call frame
+- **SIMD/Helium is untested** — MVE instruction encoding implemented but never run on M55 silicon or emulator
 
 ## Usage
 
@@ -167,12 +180,12 @@ Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM seman
 
 ```
 188 Qed  /  52 Admitted
-  T1: 39 result-correspondence (ARM output = WASM result)
-  T2: 95 existence-only (ARM execution succeeds)
-  T3: 52 admitted (VFP/float semantics)
+  T1: 39 result-correspondence (ARM output = WASM result)  — i32 only
+  T2: 95 existence-only (ARM execution succeeds, no result claim)
+  T3: 52 admitted (VFP/float semantics — not yet proven)
 ```
 
-All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have full T1 proofs.
+Only i32 operations have full T1 (result-correspondence) proofs. The i64, f32, f64, and SIMD instruction selection has NO mechanized proofs — correctness relies on unit tests and the Z3 translation validation. The 52 admitted theorems all require VFP floating-point semantics that are not yet modeled in Rocq.
 
 Build the proofs:
 
