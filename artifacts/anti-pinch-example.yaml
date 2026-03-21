@@ -1,0 +1,163 @@
+# Anti-Pinch Window Controller -- Example Application Artifacts
+#
+# System: Synth -- WebAssembly-to-ARM Cortex-M AOT compiler
+# Scope: Safety-critical automotive anti-pinch protection example
+#
+# This example demonstrates Synth's value for ASIL-rated embedded systems.
+# Inspired by https://osxcar.de/insights/demonstration/
+#
+# STPA context:
+#   L-1: Bodily injury to vehicle occupant
+#   L-2: Vehicle fails safety certification
+#   H-1: Window continues closing when obstruction present
+#   H-3: Jam detection has false negative
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # =========================================================================
+  # System Requirements
+  # =========================================================================
+
+  - id: AP-001
+    type: system-req
+    title: Anti-pinch controller WASM module
+    description: >
+      The anti-pinch window controller shall be implemented as a WebAssembly
+      module (anti_pinch.wat) compiled to ARM Cortex-M via Synth. The module
+      shall use integer-only arithmetic (fixed-point with 0.1% resolution,
+      range 0-1000) and store all state in WASM linear memory. The module
+      shall export functions for initialization, target setting, current
+      sensor input, control tick (100Hz), state queries, and jam reset.
+      The tick function shall implement the complete control loop: direction
+      determination, jam detection, PWM ramping, and position estimation.
+    status: implemented
+    tags: [anti-pinch, wasm, safety-critical, automotive]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: derives-from
+        target: BR-003
+      - type: traces-to
+        target: H-1
+      - type: traces-to
+        target: L-1
+    fields:
+      req-type: functional
+      priority: must
+      asil: B
+      verification-criteria: >
+        WAT module compiles successfully with synth-cli (--cortex-m --all-exports);
+        all 11 exported functions produce valid ARM Thumb-2 code; total code
+        size under 2KB.
+
+  - id: AP-002
+    type: system-req
+    title: Jam detection via motor current threshold
+    description: >
+      The controller shall detect window jam/pinch conditions by comparing
+      the motor current sensor reading against a configurable threshold
+      (default: 800mA). Detection shall only be active while the window is
+      closing (direction == 1). To prevent false positives from transient
+      current spikes, the controller shall require a configurable number of
+      consecutive over-threshold readings (default: 3 ticks at 100Hz = 30ms)
+      before confirming a jam. On confirmed jam, the controller shall
+      immediately set PWM to 0 (motor stop), set the jam flag, and return 0
+      from the tick function.
+    status: implemented
+    tags: [anti-pinch, jam-detection, safety-critical, current-monitoring]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: traces-to
+        target: H-1
+      - type: traces-to
+        target: H-3
+      - type: traces-to
+        target: L-1
+      - type: traces-to
+        target: L-2
+    fields:
+      req-type: safety
+      priority: must
+      asil: B
+      verification-criteria: >
+        When motor current exceeds threshold for 3 consecutive ticks while
+        closing, the tick function returns 0 and is_jam_detected returns 1.
+        Motor stops within 30ms (3 ticks at 100Hz) of obstruction.
+
+  - id: AP-003
+    type: system-req
+    title: Soft start/stop PWM ramping
+    description: >
+      The controller shall implement soft start and soft stop via PWM duty
+      cycle ramping. The PWM output shall ramp toward the target duty cycle
+      at a configurable rate (default: 20 units/tick = 2.0% per 10ms tick).
+      The PWM value shall be clamped to the range [0, 1000] (0.0%-100.0%).
+      This prevents mechanical shock to the window regulator, reduces EMI
+      from the motor driver, and provides smoother occupant experience.
+    status: implemented
+    tags: [anti-pinch, pwm, motor-control, soft-start]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: derives-from
+        target: BR-002
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        PWM output increases by at most ramp_rate per tick; PWM value
+        never exceeds 1000 or drops below 0; motor reaches target speed
+        within 500ms (50 ticks at 2%/tick from 0 to 100%).
+
+  # =========================================================================
+  # Verification
+  # =========================================================================
+
+  - id: AP-VER-001
+    type: sys-verification
+    title: Anti-pinch controller Renode simulation test
+    description: >
+      End-to-end verification of the anti-pinch controller on a simulated
+      ARM Cortex-M4 target via Renode. The test shall verify: (1) controller
+      initialization sets correct default state, (2) window closes normally
+      with PWM ramping, (3) jam detection triggers within 30ms of current
+      threshold exceedance, (4) motor stops immediately on jam confirmation,
+      (5) jam flag can be cleared and window can be reopened, (6) all integer
+      arithmetic produces correct results (no overflow, no truncation).
+      The Zephyr application (main.c) simulates motor current and injects
+      a jam event at ~70% position.
+    status: planned
+    tags: [anti-pinch, renode, simulation, verification]
+    links:
+      - type: verifies
+        target: AP-001
+      - type: verifies
+        target: AP-002
+      - type: verifies
+        target: AP-003
+      - type: traces-to
+        target: H-1
+      - type: traces-to
+        target: H-3
+      - type: traces-to
+        target: L-1
+      - type: traces-to
+        target: L-2
+    fields:
+      method: simulation
+      target: cortex-m4
+      preconditions:
+        - Synth compiler builds successfully
+        - anti_pinch.wat compiles to ELF via synth-cli
+        - Zephyr SDK and Renode installed
+      steps:
+        compile: "cargo run -p synth-cli -- compile examples/anti-pinch-controller/anti_pinch.wat -o /tmp/antipinch.elf --cortex-m --all-exports"
+        build: "west build -b stm32f4_disco examples/anti-pinch-controller"
+        test: "bazel test //tests:anti_pinch_renode"
+      expected-results:
+        - "Jam detected at ~70% position (700/1000)"
+        - "Motor stops within 30ms of jam detection"
+        - "Window reverses to fully open (0/1000)"
+        - "Total code size under 2KB"
