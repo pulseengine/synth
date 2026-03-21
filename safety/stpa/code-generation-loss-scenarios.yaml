@@ -1,0 +1,183 @@
+# STPA Code-Level Loss Scenarios — Code Generation Subsystem
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+# Scope: Loss scenarios explaining WHY each code-level UCA occurs, linking to
+#   specific code locations and causal factors identified in the code review.
+#
+# Format: rivet stpa-yaml
+
+loss-scenarios:
+  # =========================================================================
+  # Register Allocator scenarios
+  # =========================================================================
+  - id: LS-CODE-1
+    title: Register allocator uses modular arithmetic without reserved register exclusion
+    uca: UCA-CODE-1
+    hazards: [H-CODE-1]
+    type: inadequate-control-algorithm
+    scenario: >
+      The index_to_reg function at instruction_selector.rs:80 maps register
+      indices using (index % 13), cycling through R0-R12. The function was
+      written to avoid SP (R13), LR (R14), and PC (R15), but did not account
+      for the fact that R9 (globals base), R10 (memory size), and R11 (memory
+      base) are architecturally reserved by Synth's compilation model.
+      A WASM function with 10+ temporary values (e.g., a sequence of i32.const
+      followed by i32.add chains) causes the allocator to assign R10, R11, and
+      R12 as temporaries, overwriting the memory subsystem registers.
+    causal-factors:
+      - Register convention (R9/R10/R11 reserved) not encoded in allocator
+      - No "reserved register set" abstraction; convention is implicit
+      - Simple modular arithmetic makes wraparound non-obvious
+      - Test suite uses small functions that do not reach 10 allocations
+    process-model-flaw: >
+      Allocator's process model assumes all R0-R12 are available for allocation;
+      it does not model the Synth-specific register convention
+
+  - id: LS-CODE-2
+    title: Register allocator lacks spill/reload mechanism
+    uca: UCA-CODE-5
+    hazards: [H-CODE-1]
+    type: inadequate-control-algorithm
+    scenario: >
+      When all allocatable registers are occupied, the register allocator
+      wraps around via (next_reg + 1) % 13 and silently reuses a register
+      that still holds a live value. There is no spill slot allocation, no
+      STR to save the live value to the stack, and no LDR to reload it.
+      The live value is silently overwritten, and the program continues
+      with a wrong value in the register. This is a fundamental design gap:
+      the allocator was designed for small functions where 13 registers
+      suffice, and no spill path was ever implemented.
+    causal-factors:
+      - No liveness analysis to detect register pressure
+      - No spill slot management in the stack frame
+      - Modular wraparound makes the overflow silent (no error)
+      - Designed for trivial functions; complexity grew without updating allocator
+
+  - id: LS-CODE-3
+    title: Two synthesis paths diverge on division trap behavior
+    uca: UCA-CODE-6
+    hazards: [H-CODE-3]
+    type: inadequate-control-algorithm
+    scenario: >
+      Synth has two code paths for compiling WASM operations to ARM: the
+      rules.rs path (used by the optimizer bridge for pattern-matched
+      synthesis) and the instruction_selector.rs path (used by the direct
+      compilation pipeline). The instruction_selector.rs path was updated
+      to include CMP+BNE+UDF trap guards for division. The rules.rs path
+      was not updated at the same time, leaving bare UDIV/SDIV rules that
+      violate the WASM specification. There is no shared abstraction that
+      guarantees both paths emit the same division sequence.
+    causal-factors:
+      - Two independent code paths for the same operation (rules.rs vs instruction_selector.rs)
+      - No shared "division template" function called by both paths
+      - rules.rs was written as minimal ARM instruction patterns for verification
+      - WASM spec trap requirement not enforced by type system or assertion
+      - Unit tests for rules.rs test arithmetic correctness but not trap behavior
+
+  - id: LS-CODE-4
+    title: Bounds check function signature accepts access_size but ignores it
+    uca: UCA-CODE-9
+    hazards: [H-CODE-4]
+    type: inadequate-control-algorithm
+    scenario: >
+      The generate_load_with_bounds_check function signature includes an
+      _access_size: u32 parameter, indicating the developer intended to use
+      it. However, the bounds check sequence only computes (addr + offset)
+      and compares against memory_size, without adding access_size. The
+      underscore prefix on the parameter silences the "unused variable"
+      compiler warning, hiding the bug. A 4-byte i32.load at address
+      (memory_size - 2) passes the bounds check but reads bytes at
+      positions memory_size and memory_size + 1, which are out of bounds.
+    causal-factors:
+      - Parameter added to function signature but not used in implementation
+      - Underscore prefix silences Rust's unused-variable warning
+      - Bounds check logic was likely written for 1-byte access first
+      - No test case with access at (memory_size - access_width + 1)
+
+  - id: LS-CODE-5
+    title: Inline pseudo-op expansion treats itself as complete function
+    uca: UCA-CODE-11
+    hazards: [H-CODE-7]
+    type: inadequate-control-algorithm
+    scenario: >
+      The I64DivU encoding in arm_encoder.rs was written as a self-contained
+      subroutine: PUSH {R4-R7, LR} at entry and POP {R4-R7, PC} at exit.
+      The POP {PC} pattern is correct for a standalone function but not for
+      an inline expansion within a larger function. When the ARM encoder
+      expands this pseudo-op inline (which it does for all I64 operations),
+      the POP {PC} causes a premature function return. The developer likely
+      tested the division in isolation (where POP {PC} works correctly) but
+      not as part of a larger function. The same pattern appears in I64DivS,
+      I64RemU, and I64RemS.
+    causal-factors:
+      - Inline expansion written as standalone subroutine with return
+      - POP {PC} is standard ARM function epilogue, natural to write
+      - Testing in isolation masks the bug (division works when it is the last op)
+      - No test case with i64.div_u followed by additional operations
+
+  - id: LS-CODE-6
+    title: Popcnt algorithm uses R11 as scratch without awareness of register convention
+    uca: UCA-CODE-12
+    hazards: [H-CODE-8]
+    type: inadequate-process-model
+    scenario: >
+      The Popcnt inline expansion in arm_encoder.rs needs two scratch
+      registers: R12 (for constants) and a second register for intermediate
+      values. The developer chose R11 because it is a general-purpose
+      register in the ARM ISA. However, R11 is reserved by Synth as the
+      WebAssembly linear memory base pointer. The ARM encoder module does
+      not have a documented list of Synth-reserved registers, so the
+      developer had no way to know R11 was off-limits.
+    causal-factors:
+      - No documented register convention accessible to arm_encoder.rs
+      - R11 is a valid ARM GPR with no hardware-level reservation
+      - Synth's R11 convention is implicit, not enforced by types or assertions
+      - Popcnt is a complex algorithm needing multiple scratch registers
+      - Code comment says "Uses rd as working register and R12 as scratch" but also uses R11
+    process-model-flaw: >
+      ARM encoder's process model does not include Synth's register
+      convention; it treats all R0-R12 as available scratch registers
+
+  - id: LS-CODE-7
+    title: 16-bit CMP encoding used without checking register range
+    uca: UCA-CODE-13
+    hazards: [H-CODE-9]
+    type: inadequate-control-algorithm
+    scenario: >
+      The I64SetCondZ expansion uses the 16-bit CMP Rd, #imm8 encoding
+      (0x2800 | (rd_bits << 8)). This encoding format has a 3-bit register
+      field in bits [10:8], which only supports R0-R7. The developer used
+      reg_to_bits() which returns the full 4-bit register number (0-15).
+      When rd is R8 (bits=8=1000b), the shift places bit 3 into bit 11 of
+      the encoding, producing a different instruction entirely. The
+      I64Popcnt expansion (which uses R3, R4, R5 as scratch) avoids the
+      bug because it uses low registers, but I64Eqz routes through
+      I64SetCondZ with whatever register the allocator provides.
+    causal-factors:
+      - 16-bit Thumb CMP only supports R0-R7 but no range check is performed
+      - reg_to_bits returns 4-bit value for an encoding that needs 3 bits
+      - ARM encoding manual constraint not asserted in code
+      - Other similar expansions (e.g., MOV Rd, #imm8) have the same latent issue
+      - Test cases may not exercise high register assignments for rd
+
+  - id: LS-CODE-8
+    title: No callee-saved register management in function prologue/epilogue
+    uca: UCA-CODE-7
+    hazards: [H-CODE-5]
+    type: inadequate-control-algorithm
+    scenario: >
+      The instruction selector's compile_function method generates the ARM
+      instruction sequence for a WASM function body but does not add a
+      prologue (PUSH of callee-saved registers) or epilogue (POP to restore
+      them). The register allocator freely assigns R4-R11 for temporaries,
+      but the AAPCS requires R4-R11 to be preserved across calls. When a
+      compiled function calls another compiled function (or is called by the
+      runtime), the caller's values in R4-R11 are silently destroyed. This
+      only manifests in multi-function programs (not single-function tests),
+      which is why it was not caught during initial development.
+    causal-factors:
+      - compile_function does not generate prologue/epilogue
+      - AAPCS callee-saved convention not implemented
+      - Single-function tests do not exercise inter-function register preservation
+      - Register allocator assigns callee-saved registers without recording them
+      - No "used registers" analysis pass to determine which registers need saving

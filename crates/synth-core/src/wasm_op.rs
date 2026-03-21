@@ -254,4 +254,114 @@ pub enum WasmOp {
     I64TruncF64U,      // Truncate f64 to unsigned i64
     I32TruncF64S,      // Truncate f64 to signed i32
     I32TruncF64U,      // Truncate f64 to unsigned i32
+
+    // ========================================================================
+    // v128 SIMD Operations (WASM SIMD proposal)
+    // ========================================================================
+    // Targets ARM Cortex-M55 Helium MVE (M-Profile Vector Extension)
+
+    // v128 Constants and Memory
+    V128Const([u8; 16]),                   // 128-bit constant
+    V128Load { offset: u32, align: u32 },  // v128.load
+    V128Store { offset: u32, align: u32 }, // v128.store
+
+    // v128 Bitwise operations
+    V128And,    // v128.and
+    V128Or,     // v128.or
+    V128Xor,    // v128.xor
+    V128Not,    // v128.not
+    V128AndNot, // v128.andnot
+
+    // i8x16 integer SIMD
+    I8x16Add,               // i8x16.add
+    I8x16Sub,               // i8x16.sub
+    I8x16Neg,               // i8x16.neg
+    I8x16Eq,                // i8x16.eq
+    I8x16Ne,                // i8x16.ne
+    I8x16LtS,               // i8x16.lt_s
+    I8x16LtU,               // i8x16.lt_u
+    I8x16GtS,               // i8x16.gt_s
+    I8x16GtU,               // i8x16.gt_u
+    I8x16LeS,               // i8x16.le_s
+    I8x16LeU,               // i8x16.le_u
+    I8x16GeS,               // i8x16.ge_s
+    I8x16GeU,               // i8x16.ge_u
+    I8x16Splat,             // i8x16.splat
+    I8x16ExtractLaneS(u8),  // i8x16.extract_lane_s
+    I8x16ExtractLaneU(u8),  // i8x16.extract_lane_u
+    I8x16ReplaceLane(u8),   // i8x16.replace_lane
+    I8x16Shuffle([u8; 16]), // i8x16.shuffle
+    I8x16Swizzle,           // i8x16.swizzle
+
+    // i16x8 integer SIMD
+    I16x8Add,              // i16x8.add
+    I16x8Sub,              // i16x8.sub
+    I16x8Mul,              // i16x8.mul
+    I16x8Neg,              // i16x8.neg
+    I16x8Eq,               // i16x8.eq
+    I16x8Ne,               // i16x8.ne
+    I16x8LtS,              // i16x8.lt_s
+    I16x8LtU,              // i16x8.lt_u
+    I16x8GtS,              // i16x8.gt_s
+    I16x8GtU,              // i16x8.gt_u
+    I16x8LeS,              // i16x8.le_s
+    I16x8LeU,              // i16x8.le_u
+    I16x8GeS,              // i16x8.ge_s
+    I16x8GeU,              // i16x8.ge_u
+    I16x8Splat,            // i16x8.splat
+    I16x8ExtractLaneS(u8), // i16x8.extract_lane_s
+    I16x8ExtractLaneU(u8), // i16x8.extract_lane_u
+    I16x8ReplaceLane(u8),  // i16x8.replace_lane
+
+    // i32x4 integer SIMD
+    I32x4Add,             // i32x4.add
+    I32x4Sub,             // i32x4.sub
+    I32x4Mul,             // i32x4.mul
+    I32x4Neg,             // i32x4.neg
+    I32x4Eq,              // i32x4.eq
+    I32x4Ne,              // i32x4.ne
+    I32x4LtS,             // i32x4.lt_s
+    I32x4LtU,             // i32x4.lt_u
+    I32x4GtS,             // i32x4.gt_s
+    I32x4GtU,             // i32x4.gt_u
+    I32x4LeS,             // i32x4.le_s
+    I32x4LeU,             // i32x4.le_u
+    I32x4GeS,             // i32x4.ge_s
+    I32x4GeU,             // i32x4.ge_u
+    I32x4Splat,           // i32x4.splat
+    I32x4ExtractLane(u8), // i32x4.extract_lane
+    I32x4ReplaceLane(u8), // i32x4.replace_lane
+
+    // i64x2 integer SIMD
+    I64x2Add,             // i64x2.add
+    I64x2Sub,             // i64x2.sub
+    I64x2Mul,             // i64x2.mul
+    I64x2Neg,             // i64x2.neg
+    I64x2Eq,              // i64x2.eq
+    I64x2Ne,              // i64x2.ne
+    I64x2LtS,             // i64x2.lt_s
+    I64x2GtS,             // i64x2.gt_s
+    I64x2LeS,             // i64x2.le_s
+    I64x2GeS,             // i64x2.ge_s
+    I64x2Splat,           // i64x2.splat
+    I64x2ExtractLane(u8), // i64x2.extract_lane
+    I64x2ReplaceLane(u8), // i64x2.replace_lane
+
+    // f32x4 floating-point SIMD
+    F32x4Add,             // f32x4.add
+    F32x4Sub,             // f32x4.sub
+    F32x4Mul,             // f32x4.mul
+    F32x4Div,             // f32x4.div
+    F32x4Abs,             // f32x4.abs
+    F32x4Neg,             // f32x4.neg
+    F32x4Sqrt,            // f32x4.sqrt
+    F32x4Eq,              // f32x4.eq
+    F32x4Ne,              // f32x4.ne
+    F32x4Lt,              // f32x4.lt
+    F32x4Le,              // f32x4.le
+    F32x4Gt,              // f32x4.gt
+    F32x4Ge,              // f32x4.ge
+    F32x4Splat,           // f32x4.splat
+    F32x4ExtractLane(u8), // f32x4.extract_lane
+    F32x4ReplaceLane(u8), // f32x4.replace_lane
 }

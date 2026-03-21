@@ -1,0 +1,218 @@
+# STPA Code-Level Hazards — Code Generation Subsystem
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+# Scope: Hazards identified from the embedded code review (C1-C5, H2-H8).
+#   Each hazard maps a specific code-level bug to a causal chain ending in
+#   one or more code-level losses (L-CODE-1 through L-CODE-4) and system-level
+#   hazards (H-1 through H-9).
+#
+# Format: rivet stpa-yaml
+
+hazards:
+  - id: H-CODE-1
+    title: Register allocator assigns reserved register to temporary
+    description: >
+      The register allocator (index_to_reg) cycles through R0-R12 via modular
+      arithmetic ((next_reg + 1) % 13). After 10 allocations it assigns R10
+      (memory size register for bounds checks) and after 11 it assigns R11
+      (memory base pointer). Any instruction using the temporary will overwrite
+      the memory base or size, corrupting all subsequent memory accesses. After
+      12 allocations it assigns R12 (IP scratch), and after 13 it wraps back
+      to R0, potentially overwriting live function arguments or return values.
+    losses: [L-CODE-1, L-CODE-2, L-CODE-3]
+    links:
+      - type: refines
+        target: H-6
+    code-locations:
+      - file: crates/synth-synthesis/src/instruction_selector.rs
+        function: index_to_reg
+        line: 80
+      - file: crates/synth-synthesis/src/instruction_selector.rs
+        function: RegisterState::alloc_reg
+        line: 118
+    review-findings: [C4, C5]
+
+  - id: H-CODE-2
+    title: Immediate value silently truncated during ARM encoding
+    description: >
+      The ARM encoder masks immediate values to the encoding field width
+      without first checking whether the value fits. For RSB, the encoder
+      uses (imm & 0xFF), silently truncating any value above 255 to its low
+      byte. For LDRSB and LDRH, offset values are masked to 8 bits with
+      (offset_bits & 0xFF). The instruction selector does not check whether
+      the immediate fits before emitting the instruction, so large constants
+      or offsets are silently wrong rather than causing a compile-time error.
+    losses: [L-CODE-1]
+    links:
+      - type: refines
+        target: H-4
+      - type: refines
+        target: H-1
+    code-locations:
+      - file: crates/synth-backend/src/arm_encoder.rs
+        function: encode
+        line: 252
+        detail: "RSB: imm & 0xFF truncates without range check"
+      - file: crates/synth-backend/src/arm_encoder.rs
+        function: encode
+        line: 376
+        detail: "LDRSB: offset_bits & 0xFF truncates without range check"
+      - file: crates/synth-backend/src/arm_encoder.rs
+        function: encode
+        line: 386
+        detail: "LDRH: offset_bits & 0xFF truncates without range check"
+    review-findings: [C2, C3]
+
+  - id: H-CODE-3
+    title: Division by zero not trapped in rules.rs synthesis path
+    description: >
+      The rules.rs synthesis path emits bare UDIV/SDIV instructions for
+      i32.div_u and i32.div_s without a preceding CMP+BEQ trap guard. The
+      WebAssembly specification requires trapping on division by zero. ARM's
+      UDIV/SDIV return 0 when the divisor is 0 (implementation-defined but
+      typically 0 on Cortex-M). The instruction_selector.rs path correctly
+      emits the trap guard, creating an inconsistency between synthesis paths.
+    losses: [L-CODE-4, L-CODE-1]
+    links:
+      - type: refines
+        target: H-1
+    code-locations:
+      - file: crates/synth-synthesis/src/rules.rs
+        detail: "Division rules emit UDIV/SDIV without zero-check trap guard"
+      - file: crates/synth-synthesis/src/instruction_selector.rs
+        function: compile_function
+        line: 2582
+        detail: "Correct path: CMP+BNE+UDF before UDIV"
+    review-findings: [C1]
+
+  - id: H-CODE-4
+    title: Bounds check ignores access width
+    description: >
+      The software bounds check sequence computes effective_address = addr + offset
+      and compares it against the memory size, but does not add the access width
+      (1, 2, or 4 bytes) to the comparison. A 4-byte load at address
+      (memory_size - 2) passes the bounds check because (memory_size - 2) <
+      memory_size, but the load reads 2 bytes past the end of linear memory.
+      The _access_size parameter is accepted but unused in both
+      generate_load_with_bounds_check and generate_store_with_bounds_check.
+    losses: [L-CODE-3]
+    links:
+      - type: refines
+        target: H-3
+    code-locations:
+      - file: crates/synth-synthesis/src/instruction_selector.rs
+        function: generate_load_with_bounds_check
+        line: 2145
+        detail: "_access_size parameter unused; CMP uses addr+offset without adding width"
+      - file: crates/synth-synthesis/src/instruction_selector.rs
+        function: generate_store_with_bounds_check
+        line: 2205
+        detail: "_access_size parameter unused; same bug as load path"
+    review-findings: [H2]
+
+  - id: H-CODE-5
+    title: Callee-saved registers not preserved across function calls
+    description: >
+      The instruction selector does not emit PUSH {r4-r11, lr} at function
+      entry or POP {r4-r11, pc} at function exit for registers used within
+      the function body. When a compiled WASM function uses registers r4-r11
+      (which the register allocator freely assigns), those registers are
+      clobbered without saving. If the function was called by another
+      compiled function (or by the runtime), the caller's register state is
+      corrupted, leading to wrong computation or crashes upon return.
+    losses: [L-CODE-2, L-CODE-1]
+    links:
+      - type: refines
+        target: H-6
+    code-locations:
+      - file: crates/synth-synthesis/src/instruction_selector.rs
+        function: compile_function
+        detail: "No PUSH/POP of callee-saved registers at function prologue/epilogue"
+    review-findings: [H3]
+
+  - id: H-CODE-6
+    title: Stack alignment not enforced to 8-byte boundary
+    description: >
+      The ARM Architecture Procedure Call Standard (AAPCS) requires the stack
+      pointer to be 8-byte aligned at all public function boundaries. The
+      instruction selector does not emit alignment adjustment (e.g.,
+      BIC SP, SP, #7 or SUB SP, SP, #4 when needed) in the function prologue.
+      An odd number of PUSH registers creates 4-byte alignment. STRD/LDRD
+      instructions require 8-byte alignment and will fault. Additionally,
+      Cortex-M hardware exception entry assumes 8-byte aligned SP.
+    losses: [L-CODE-2]
+    links:
+      - type: refines
+        target: H-6
+    code-locations:
+      - file: crates/synth-synthesis/src/instruction_selector.rs
+        function: compile_function
+        detail: "No stack alignment enforcement in function prologue"
+    review-findings: [H4]
+
+  - id: H-CODE-7
+    title: Inline i64 division expansion emits POP {PC} causing premature return
+    description: >
+      The ARM encoder's inline expansion of I64DivU, I64DivS, I64RemU, and
+      I64RemS pseudo-ops includes PUSH {R4-R7, LR} at the start and
+      POP {R4-R7, PC} at the end. The POP {PC} is equivalent to a function
+      return (BX LR). When this inline expansion appears in the middle of a
+      compiled function, POP {PC} causes a premature return from the entire
+      function, skipping all subsequent instructions. This is correct only
+      if the i64 division is the last operation before return, which is not
+      guaranteed.
+    losses: [L-CODE-2, L-CODE-1]
+    links:
+      - type: refines
+        target: H-1
+      - type: refines
+        target: H-5
+    code-locations:
+      - file: crates/synth-backend/src/arm_encoder.rs
+        function: encode_thumb
+        line: 3957
+        detail: "POP {R4-R7, PC} at end of I64DivU inline expansion (0xBDF0)"
+    review-findings: [H5]
+
+  - id: H-CODE-8
+    title: Popcnt inline expansion clobbers R11 (memory base pointer)
+    description: >
+      The ARM encoder's inline expansion of the Popcnt pseudo-op uses R11 as
+      a scratch register for intermediate values in the bit-counting algorithm.
+      R11 holds the WebAssembly linear memory base pointer throughout the
+      compiled function. After popcnt executes, R11 contains a garbage value
+      from the bit-manipulation, and all subsequent memory loads/stores use
+      this garbage as the base address, reading/writing to wrong memory.
+    losses: [L-CODE-1, L-CODE-3]
+    links:
+      - type: refines
+        target: H-6
+      - type: refines
+        target: H-1
+    code-locations:
+      - file: crates/synth-backend/src/arm_encoder.rs
+        function: encode_thumb (Popcnt arm)
+        line: 3836
+        detail: "Uses R11 as scratch via encode_thumb32_lsr_raw(11, ...) without save/restore"
+    review-findings: [H7]
+
+  - id: H-CODE-9
+    title: I64SetCondZ CMP encoding fails for high registers
+    description: >
+      The I64SetCondZ inline expansion uses a 16-bit CMP Rd, #0 encoding
+      (0x2800 | (rd_bits << 8)). The 16-bit CMP immediate encoding only
+      supports R0-R7 (3-bit register field). When rd is a high register
+      (R8-R12), the register bits overflow the 3-bit field, producing a
+      wrong encoding that either compares the wrong register or is an
+      invalid instruction. Since I64Eqz delegates to I64SetCondZ, all
+      i64.eqz operations are affected when the result register is high.
+    losses: [L-CODE-1, L-CODE-2]
+    links:
+      - type: refines
+        target: H-4
+    code-locations:
+      - file: crates/synth-backend/src/arm_encoder.rs
+        function: encode_thumb (I64SetCondZ arm)
+        line: 2684
+        detail: "16-bit CMP Rd, #0 with rd_bits > 7 overflows 3-bit register field"
+    review-findings: [H8]

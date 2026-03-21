@@ -14,7 +14,7 @@ pub use control_flow::{
 };
 pub use instruction_selector::{
     ArmInstruction, BoundsCheckConfig, InstructionSelector, RegisterState, SelectionStats,
-    validate_instructions,
+    validate_instructions, validate_instructions_with_helium,
 };
 pub use optimizer_bridge::{OptimizationConfig, OptimizationStats, OptimizerBridge};
 pub use pattern_matcher::{
@@ -22,8 +22,8 @@ pub use pattern_matcher::{
 };
 pub use peephole::{OptimizationStats as PeepholeStats, PeepholeOptimizer};
 pub use rules::{
-    ArmOp, Condition, Cost, MemAddr, Operand2, Pattern, Reg, Replacement, RuleDatabase, ShiftType,
-    SynthesisRule, VfpReg, WasmOp,
+    ArmOp, Condition, Cost, MemAddr, MveSize, Operand2, Pattern, QReg, Reg, Replacement,
+    RuleDatabase, ShiftType, SynthesisRule, VfpReg, WasmOp,
 };
 pub use wasm_decoder::{
     DecodedModule, FunctionOps, WasmMemory, decode_wasm_functions, decode_wasm_module,
