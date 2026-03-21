@@ -185,29 +185,49 @@ fn i32_ctz_corresponds_to_rocq() {
 #[test]
 fn i32_divs_corresponds_to_rocq() {
     // Rocq: I32DivS => [SDIV R0 R0 R1]
+    // Rust adds div-by-zero trap guard: CMP + BNE + UDF before SDIV
     let ops = select_single(WasmOp::I32DivS);
-    assert_eq!(opcode_names(&ops), vec!["SDIV"]);
+    let names = opcode_names(&ops);
+    assert!(names.contains(&"SDIV"), "Should contain SDIV: {:?}", names);
+    assert!(
+        names.contains(&"CMP"),
+        "Should have div-by-zero CMP guard: {:?}",
+        names
+    );
 }
 
 #[test]
 fn i32_divu_corresponds_to_rocq() {
     // Rocq: I32DivU => [UDIV R0 R0 R1]
+    // Rust adds div-by-zero trap guard: CMP + BNE + UDF before UDIV
     let ops = select_single(WasmOp::I32DivU);
-    assert_eq!(opcode_names(&ops), vec!["UDIV"]);
+    let names = opcode_names(&ops);
+    assert!(names.contains(&"UDIV"), "Should contain UDIV: {:?}", names);
+    assert!(
+        names.contains(&"CMP"),
+        "Should have div-by-zero CMP guard: {:?}",
+        names
+    );
 }
 
 #[test]
 fn i32_rems_corresponds_to_rocq() {
     // Rocq: I32RemS => [SDIV R2 R0 R1; MLS R0 R2 R1 R0]
+    // Rust adds div-by-zero trap guard before SDIV
     let ops = select_single(WasmOp::I32RemS);
-    assert_eq!(opcode_names(&ops), vec!["SDIV", "MLS"]);
+    let names = opcode_names(&ops);
+    assert!(names.contains(&"SDIV"), "Should contain SDIV: {:?}", names);
+    assert!(names.contains(&"MLS"), "Should contain MLS: {:?}", names);
 }
 
 #[test]
 fn i32_remu_corresponds_to_rocq() {
     // Rocq: I32RemU => [UDIV R2 R0 R1; MLS R0 R2 R1 R0]
+    // Rust adds div-by-zero trap guard before UDIV
     let ops = select_single(WasmOp::I32RemU);
-    assert_eq!(opcode_names(&ops), vec!["UDIV", "MLS"]);
+    let names = opcode_names(&ops);
+    assert!(names.contains(&"UDIV"), "Should contain UDIV: {:?}", names);
+    assert!(names.contains(&"MLS"), "Should contain MLS: {:?}", names);
 }
 
 #[test]
@@ -312,13 +332,13 @@ fn instruction_counts_match_rocq() {
         (WasmOp::I32ShrS, 1),
         (WasmOp::I32Rotr, 1),
         (WasmOp::I32Clz, 1),
-        (WasmOp::I32DivS, 1),
-        (WasmOp::I32DivU, 1),
+        (WasmOp::I32DivS, 4), // CMP + BNE + UDF + SDIV (with trap guard)
+        (WasmOp::I32DivU, 4), // CMP + BNE + UDF + UDIV (with trap guard)
         // Two-instruction ops
         (WasmOp::I32Rotl, 2), // RSB + ROR_reg
         (WasmOp::I32Ctz, 2),  // RBIT + CLZ
-        (WasmOp::I32RemS, 2), // SDIV + MLS
-        (WasmOp::I32RemU, 2), // UDIV + MLS
+        (WasmOp::I32RemS, 5), // CMP + BNE + UDF + SDIV + MLS (with trap guard)
+        (WasmOp::I32RemU, 5), // CMP + BNE + UDF + UDIV + MLS (with trap guard)
     ];
 
     for (wasm_op, expected_count) in &expected {

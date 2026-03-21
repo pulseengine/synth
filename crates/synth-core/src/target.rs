@@ -432,6 +432,17 @@ impl TargetSpec {
         }
     }
 
+    /// Cortex-M55 with Helium MVE, single-precision FPU, TrustZone
+    pub fn cortex_m55() -> Self {
+        Self {
+            family: ArchFamily::ArmCortexM,
+            triple: "thumbv8.1m.main-none-eabi".to_string(),
+            isa: IsaVariant::Thumb2,
+            mem_protection: MemProtection::Mpu { regions: 16 },
+            fpu: Some(FPUPrecision::Single),
+        }
+    }
+
     /// Parse from an LLVM triple or shorthand name
     pub fn from_triple(triple: &str) -> std::result::Result<Self, String> {
         match triple {
@@ -440,6 +451,7 @@ impl TargetSpec {
             "thumbv7em-none-eabihf" | "cortex-m4f" => Ok(Self::cortex_m4f()),
             "cortex-m7" => Ok(Self::cortex_m7()),
             "cortex-m7dp" => Ok(Self::cortex_m7dp()),
+            "thumbv8.1m.main-none-eabi" | "cortex-m55" => Ok(Self::cortex_m55()),
             "armv7r-none-eabihf" | "cortex-r5" => Ok(Self::cortex_r5()),
             "aarch64-none-elf" | "cortex-a53" => Ok(Self::cortex_a53()),
             "riscv32imac-unknown-none-elf" | "riscv32imac" => Ok(Self::riscv32imac()),
@@ -601,5 +613,26 @@ mod tests {
         let m7dp = TargetSpec::cortex_m7dp();
         assert!(m7dp.has_single_precision_fpu(), "M7DP spec has single FPU");
         assert!(m7dp.has_double_precision_fpu(), "M7DP spec has double FPU");
+    }
+
+    #[test]
+    fn test_cortex_m55_target_spec() {
+        let m55 = TargetSpec::cortex_m55();
+        assert_eq!(m55.family, ArchFamily::ArmCortexM);
+        assert_eq!(m55.triple, "thumbv8.1m.main-none-eabi");
+        assert!(m55.is_thumb2());
+        assert!(m55.has_fpu());
+        assert!(m55.has_single_precision_fpu());
+        assert_eq!(m55.mem_protection, MemProtection::Mpu { regions: 16 });
+    }
+
+    #[test]
+    fn test_cortex_m55_from_triple() {
+        let m55 = TargetSpec::from_triple("cortex-m55").unwrap();
+        assert_eq!(m55.triple, "thumbv8.1m.main-none-eabi");
+        assert!(m55.has_fpu());
+
+        let m55_triple = TargetSpec::from_triple("thumbv8.1m.main-none-eabi").unwrap();
+        assert_eq!(m55_triple.triple, "thumbv8.1m.main-none-eabi");
     }
 }

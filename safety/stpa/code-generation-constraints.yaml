@@ -1,0 +1,214 @@
+# STPA Code-Level Constraints — Code Generation Subsystem
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+# Scope: Constraints that must hold in the code generation pipeline to prevent
+#   the code-level hazards (H-CODE-1 through H-CODE-9). Each constraint is the
+#   inversion of one or more hazards.
+#
+# These constraints refine the system-level constraints (SC-1 through SC-10)
+# and the controller constraints (CC-IS-*, CC-AE-*, etc.) with concrete,
+# testable implementation requirements.
+#
+# Format: rivet stpa-yaml
+
+system-constraints:
+  # =========================================================================
+  # Register Allocator constraints
+  # =========================================================================
+  - id: SC-CODE-1
+    title: Register allocator must not assign reserved registers
+    description: >
+      The register allocator shall exclude R9 (globals base), R10 (memory size),
+      R11 (memory base), R12 (IP scratch), R13 (SP), R14 (LR), and R15 (PC)
+      from the general-purpose allocation pool. Only R0-R8 shall be available
+      for temporary value allocation. The current index_to_reg function includes
+      R9-R12 in its pool via (index % 13), which must be changed to (index % 9)
+      with a mapping to R0-R8 only.
+    hazards: [H-CODE-1]
+    ucas: [UCA-CODE-1, UCA-CODE-2, UCA-CODE-4]
+    links:
+      - type: refines
+        target: SC-6
+    verification-criteria: >
+      No generated ARM instruction shall write to R9, R10, or R11 as a
+      register allocator temporary. Test: compile a function with 20+
+      operations and verify no instruction uses R9-R11 as destination.
+
+  - id: SC-CODE-2
+    title: Register allocator must spill when registers exhausted
+    description: >
+      When all allocatable registers (R0-R8) are occupied by live values, the
+      register allocator shall spill the least-recently-used value to the stack
+      (STR Rn, [SP, #offset]) and reload it (LDR Rn, [SP, #offset]) when
+      needed. The allocator shall not wrap around and silently overwrite a
+      live register. A liveness analysis pass should determine which registers
+      are live at each program point.
+    hazards: [H-CODE-1]
+    ucas: [UCA-CODE-3, UCA-CODE-5]
+    links:
+      - type: refines
+        target: SC-6
+    verification-criteria: >
+      Compile a function with more simultaneously live values than registers.
+      Verify STR/LDR spill/reload instructions are emitted. Verify output
+      correctness on Renode.
+
+  # =========================================================================
+  # Instruction Selector constraints
+  # =========================================================================
+  - id: SC-CODE-3
+    title: All division operations must include divide-by-zero trap guard
+    description: >
+      Every synthesis path (rules.rs, instruction_selector.rs, optimizer_bridge.rs)
+      that compiles i32.div_u, i32.div_s, i64.div_u, or i64.div_s shall emit a
+      divide-by-zero trap guard sequence (CMP divisor, #0; BNE skip; UDF #trap_code)
+      before the division instruction. No division shall be emitted without the
+      guard. This is a WebAssembly specification requirement (section 4.3.2.3).
+    hazards: [H-CODE-3]
+    ucas: [UCA-CODE-6]
+    links:
+      - type: refines
+        target: SC-1
+    verification-criteria: >
+      For every division rule in rules.rs, verify that a CMP+BNE+UDF sequence
+      precedes the UDIV/SDIV instruction. Property-based test: compile
+      (i32.const 42) (i32.const 0) (i32.div_u) and verify UDF is reachable.
+
+  - id: SC-CODE-4
+    title: Bounds check must include access width in comparison
+    description: >
+      The software bounds check sequence shall compare (effective_address +
+      access_size) against the memory size, not just effective_address. The
+      comparison shall be: ADD temp, addr, #(offset + access_size); CMP temp,
+      R10; BHS trap. The _access_size parameter must be used, not ignored.
+      Access sizes are: 1 (i32.load8), 2 (i32.load16), 4 (i32.load, f32.load),
+      8 (i64.load, f64.load).
+    hazards: [H-CODE-4]
+    ucas: [UCA-CODE-9]
+    links:
+      - type: refines
+        target: SC-3
+    verification-criteria: >
+      Compile an i32.load with bounds checking enabled. Verify the CMP
+      operand includes the 4-byte access width. Test: memory size 100,
+      load at address 98 should trap (98 + 4 > 100).
+
+  - id: SC-CODE-5
+    title: Callee-saved registers must be preserved at function boundaries
+    description: >
+      The instruction selector shall emit PUSH {r4-r11, lr} (for all used
+      callee-saved registers) at function entry and POP {r4-r11, pc} at
+      function exit, per AAPCS requirements. Only registers actually used
+      within the function body need to be saved. The set of used callee-saved
+      registers shall be determined by a pre-pass over the function body.
+    hazards: [H-CODE-5]
+    ucas: [UCA-CODE-7]
+    links:
+      - type: refines
+        target: SC-6
+    verification-criteria: >
+      Compile a function that uses R4-R7. Verify PUSH includes those
+      registers and LR. Verify POP includes those registers and PC.
+      Test: call the function from another function, verify caller's
+      registers are preserved.
+
+  - id: SC-CODE-6
+    title: Stack pointer must be 8-byte aligned at function boundaries
+    description: >
+      The instruction selector shall ensure the stack pointer is 8-byte aligned
+      at all public function entry and exit points, per AAPCS section 5.2.1.2.
+      If an odd number of registers are pushed, an extra register (e.g., a
+      dummy push of R3) shall be added to maintain alignment. Alternatively,
+      the prologue can use SUB SP, SP, #4 after an odd push count.
+    hazards: [H-CODE-6]
+    ucas: [UCA-CODE-8]
+    links:
+      - type: refines
+        target: SC-6
+    verification-criteria: >
+      For every compiled function, verify that SP is 8-byte aligned after
+      the prologue PUSH. Count pushed registers; if odd, verify padding.
+
+  # =========================================================================
+  # ARM Encoder constraints
+  # =========================================================================
+  - id: SC-CODE-7
+    title: Immediate values must be range-checked before encoding
+    description: >
+      The ARM encoder shall validate that every immediate value fits within
+      the instruction's encoding format before producing machine code bytes.
+      If an immediate is out of range, the encoder shall return an error
+      (Err, not silent truncation). The instruction selector shall handle
+      the error by emitting a multi-instruction sequence to materialize the
+      constant (e.g., MOVW+MOVT for 32-bit constants). No masking to field
+      width (& 0xFF, & 0xFFF) shall occur without a preceding range check.
+    hazards: [H-CODE-2]
+    ucas: [UCA-CODE-10]
+    links:
+      - type: refines
+        target: SC-4
+    verification-criteria: >
+      Test: encode RSB with immediate 256 and verify an error is returned.
+      Test: encode LDRSB with offset 256 and verify an error is returned.
+      Audit all (& 0xFF) and (& 0xFFF) in arm_encoder.rs for missing
+      range checks.
+
+  - id: SC-CODE-8
+    title: Inline pseudo-op expansions must not emit POP {PC}
+    description: >
+      Inline pseudo-op expansions (I64DivU, I64DivS, I64RemU, I64RemS, and
+      any future multi-instruction pseudo-ops) shall not emit POP {PC} or
+      any other instruction that alters the program counter. These expansions
+      are inlined into the middle of a function and must not perform a function
+      return. Save/restore of scratch registers shall use PUSH/POP with
+      register-only restore (POP {R4-R7} without PC), and the expansion shall
+      fall through to the next instruction.
+    hazards: [H-CODE-7]
+    ucas: [UCA-CODE-11]
+    links:
+      - type: refines
+        target: SC-1
+      - type: refines
+        target: SC-5
+    verification-criteria: >
+      Audit all encode_thumb match arms for POP with PC. Replace POP {PC}
+      with POP {LR-equivalent} or register-only POP. Test: compile a function
+      with i64.div_u followed by i64.add, verify both operations execute.
+
+  - id: SC-CODE-9
+    title: Inline pseudo-op expansions must not clobber reserved registers
+    description: >
+      Inline pseudo-op expansions shall not use R9 (globals base), R10 (memory
+      size), or R11 (memory base) as scratch registers. If additional scratch
+      registers are needed beyond R12, the expansion shall PUSH the register
+      before use and POP it after. The Popcnt expansion currently uses R11 as
+      scratch without save/restore; this must be changed to use a different
+      register or to save/restore R11.
+    hazards: [H-CODE-8]
+    ucas: [UCA-CODE-12]
+    links:
+      - type: refines
+        target: SC-6
+    verification-criteria: >
+      Audit all encode_thumb pseudo-op expansions for use of R9, R10, R11.
+      Verify Popcnt does not clobber R11. Test: compile (i32.popcnt) followed
+      by (i32.load), verify the load uses correct memory base.
+
+  - id: SC-CODE-10
+    title: Multi-instruction encodings must use correct register encoding width
+    description: >
+      All inline multi-instruction expansions in the ARM encoder shall use
+      Thumb-2 wide (32-bit) encodings for instructions that reference high
+      registers (R8-R12). The 16-bit Thumb encoding for CMP Rd, #imm only
+      supports R0-R7 (3-bit register field). When rd can be a high register,
+      the 32-bit CMP.W encoding (F1B0 series) shall be used. The I64SetCondZ
+      expansion must be updated to use CMP.W or ensure rd is always a low
+      register.
+    hazards: [H-CODE-9]
+    ucas: [UCA-CODE-13]
+    links:
+      - type: refines
+        target: SC-4
+    verification-criteria: >
+      Test: encode I64SetCondZ with rd=R8 and verify correct CMP.W encoding
+      or error. Test: encode i64.eqz routed to R8 result register.

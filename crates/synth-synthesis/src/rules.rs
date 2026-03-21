@@ -331,6 +331,15 @@ pub enum ArmOp {
         rm: Reg,
     },
 
+    /// PUSH register list (callee-saved + LR for function prologue)
+    Push {
+        regs: Vec<Reg>,
+    },
+    /// POP register list (callee-saved + PC for function epilogue)
+    Pop {
+        regs: Vec<Reg>,
+    },
+
     // No operation
     Nop,
 
@@ -1033,6 +1042,278 @@ pub enum ArmOp {
         rd: Reg,
         dm: VfpReg,
     }, // VCVT.U32.F64 Sd, Dm + VMOV Rd, Sd
+
+    // ========================================================================
+    // Helium MVE Operations (v128 SIMD on Cortex-M55)
+    // ========================================================================
+
+    // v128 Load/Store
+    /// VLDRW.32 Qd, [Rn, #offset] — load 128-bit vector from memory
+    MveLoad {
+        qd: QReg,
+        addr: MemAddr,
+    },
+    /// VSTRW.32 Qd, [Rn, #offset] — store 128-bit vector to memory
+    MveStore {
+        qd: QReg,
+        addr: MemAddr,
+    },
+
+    // v128 constant — load 128-bit immediate via constant pool or VMOV sequence
+    MveConst {
+        qd: QReg,
+        bytes: [u8; 16],
+    },
+
+    // v128 Bitwise operations
+    /// VAND Qd, Qn, Qm
+    MveAnd {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// VORR Qd, Qn, Qm
+    MveOrr {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// VEOR Qd, Qn, Qm
+    MveEor {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// VMVN Qd, Qm — bitwise NOT
+    MveMvn {
+        qd: QReg,
+        qm: QReg,
+    },
+    /// VBIC Qd, Qn, Qm — AND-NOT (Qd = Qn AND NOT Qm)
+    MveBic {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+
+    // Integer SIMD arithmetic (parameterized by element size)
+    /// VADD.Ix Qd, Qn, Qm — integer vector add
+    MveAddI {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VSUB.Ix Qd, Qn, Qm — integer vector subtract
+    MveSubI {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VMUL.Ix Qd, Qn, Qm — integer vector multiply
+    MveMulI {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VNEG.Sx Qd, Qm — integer vector negate (signed)
+    MveNegI {
+        qd: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+
+    // Integer SIMD comparisons (result as predicate mask via VCMP + VPSEL)
+    /// VCMP.Ix + VPSEL for integer vector equality
+    MveCmpEqI {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VCMP.Ix + VPSEL for integer vector not-equal
+    MveCmpNeI {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VCMP.Sx + VPSEL for signed less-than
+    MveCmpLtS {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VCMP.Ux + VPSEL for unsigned less-than
+    MveCmpLtU {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VCMP.Sx + VPSEL for signed greater-than
+    MveCmpGtS {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VCMP.Ux + VPSEL for unsigned greater-than
+    MveCmpGtU {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VCMP.Sx + VPSEL for signed less-equal
+    MveCmpLeS {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VCMP.Ux + VPSEL for unsigned less-equal
+    MveCmpLeU {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VCMP.Sx + VPSEL for signed greater-equal
+    MveCmpGeS {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+    /// VCMP.Ux + VPSEL for unsigned greater-equal
+    MveCmpGeU {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+        size: MveSize,
+    },
+
+    // Splat/Extract/Replace lane operations
+    /// VDUP.sz Qd, Rn — replicate scalar to all lanes
+    MveDup {
+        qd: QReg,
+        rn: Reg,
+        size: MveSize,
+    },
+    /// VMOV.sz Rd, Qn[lane] — extract lane to core register
+    MveExtractLane {
+        rd: Reg,
+        qn: QReg,
+        lane: u8,
+        size: MveSize,
+    },
+    /// VMOV.sz Qd[lane], Rn — insert core register into lane
+    MveInsertLane {
+        qd: QReg,
+        rn: Reg,
+        lane: u8,
+        size: MveSize,
+    },
+
+    // f32x4 floating-point SIMD
+    /// VADD.F32 Qd, Qn, Qm — float vector add
+    MveAddF32 {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// VSUB.F32 Qd, Qn, Qm — float vector subtract
+    MveSubF32 {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// VMUL.F32 Qd, Qn, Qm — float vector multiply
+    MveMulF32 {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// VNEG.F32 Qd, Qm — float vector negate
+    MveNegF32 {
+        qd: QReg,
+        qm: QReg,
+    },
+    /// VABS.F32 Qd, Qm — float vector absolute value
+    MveAbsF32 {
+        qd: QReg,
+        qm: QReg,
+    },
+    /// VCMP.F32 + VPSEL for float equality
+    MveCmpEqF32 {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// VCMP.F32 + VPSEL for float not-equal
+    MveCmpNeF32 {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// VCMP.F32 + VPSEL for float less-than
+    MveCmpLtF32 {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// VCMP.F32 + VPSEL for float less-equal
+    MveCmpLeF32 {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// VCMP.F32 + VPSEL for float greater-than
+    MveCmpGtF32 {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// VCMP.F32 + VPSEL for float greater-equal
+    MveCmpGeF32 {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// f32x4.splat — VDUP.32 Qd, Sn (replicate S-reg to all Q lanes)
+    MveDupF32 {
+        qd: QReg,
+        rn: Reg,
+    },
+    /// f32x4.extract_lane — VMOV Sn, Qd[lane] then VMOV Rd, Sn
+    MveExtractLaneF32 {
+        rd: Reg,
+        qn: QReg,
+        lane: u8,
+    },
+    /// f32x4.replace_lane — VMOV Qd[lane], Rn
+    MveReplaceLaneF32 {
+        qd: QReg,
+        rn: Reg,
+        lane: u8,
+    },
+
+    // f32x4 ops that need lane-by-lane expansion (no direct MVE instruction)
+    /// f32x4.div — lane-wise VDIV.F32 via S-register extraction
+    MveDivF32 {
+        qd: QReg,
+        qn: QReg,
+        qm: QReg,
+    },
+    /// f32x4.sqrt — lane-wise VSQRT.F32 via S-register extraction
+    MveSqrtF32 {
+        qd: QReg,
+        qm: QReg,
+    },
 }
 
 impl ArmOp {
@@ -1157,6 +1438,57 @@ impl ArmOp {
         )
     }
 
+    /// Returns `true` if this instruction requires Helium MVE (Cortex-M55).
+    ///
+    /// Only targets with Helium (e.g., Cortex-M55) can execute MVE vector
+    /// instructions. All non-Helium targets must reject these.
+    pub fn requires_helium(&self) -> bool {
+        matches!(
+            self,
+            ArmOp::MveLoad { .. }
+                | ArmOp::MveStore { .. }
+                | ArmOp::MveConst { .. }
+                | ArmOp::MveAnd { .. }
+                | ArmOp::MveOrr { .. }
+                | ArmOp::MveEor { .. }
+                | ArmOp::MveMvn { .. }
+                | ArmOp::MveBic { .. }
+                | ArmOp::MveAddI { .. }
+                | ArmOp::MveSubI { .. }
+                | ArmOp::MveMulI { .. }
+                | ArmOp::MveNegI { .. }
+                | ArmOp::MveCmpEqI { .. }
+                | ArmOp::MveCmpNeI { .. }
+                | ArmOp::MveCmpLtS { .. }
+                | ArmOp::MveCmpLtU { .. }
+                | ArmOp::MveCmpGtS { .. }
+                | ArmOp::MveCmpGtU { .. }
+                | ArmOp::MveCmpLeS { .. }
+                | ArmOp::MveCmpLeU { .. }
+                | ArmOp::MveCmpGeS { .. }
+                | ArmOp::MveCmpGeU { .. }
+                | ArmOp::MveDup { .. }
+                | ArmOp::MveExtractLane { .. }
+                | ArmOp::MveInsertLane { .. }
+                | ArmOp::MveAddF32 { .. }
+                | ArmOp::MveSubF32 { .. }
+                | ArmOp::MveMulF32 { .. }
+                | ArmOp::MveNegF32 { .. }
+                | ArmOp::MveAbsF32 { .. }
+                | ArmOp::MveCmpEqF32 { .. }
+                | ArmOp::MveCmpNeF32 { .. }
+                | ArmOp::MveCmpLtF32 { .. }
+                | ArmOp::MveCmpLeF32 { .. }
+                | ArmOp::MveCmpGtF32 { .. }
+                | ArmOp::MveCmpGeF32 { .. }
+                | ArmOp::MveDupF32 { .. }
+                | ArmOp::MveExtractLaneF32 { .. }
+                | ArmOp::MveReplaceLaneF32 { .. }
+                | ArmOp::MveDivF32 { .. }
+                | ArmOp::MveSqrtF32 { .. }
+        )
+    }
+
     /// Returns a human-readable name for this instruction (for error messages).
     pub fn instruction_name(&self) -> &'static str {
         match self {
@@ -1225,6 +1557,48 @@ impl ArmOp {
             ArmOp::I64TruncF64U { .. } => "VCVT.U64.F64",
             ArmOp::I32TruncF64S { .. } => "VCVT.S32.F64",
             ArmOp::I32TruncF64U { .. } => "VCVT.U32.F64",
+            // Helium MVE instructions
+            ArmOp::MveLoad { .. } => "VLDRW.32",
+            ArmOp::MveStore { .. } => "VSTRW.32",
+            ArmOp::MveConst { .. } => "MVE.CONST",
+            ArmOp::MveAnd { .. } => "VAND",
+            ArmOp::MveOrr { .. } => "VORR",
+            ArmOp::MveEor { .. } => "VEOR",
+            ArmOp::MveMvn { .. } => "VMVN",
+            ArmOp::MveBic { .. } => "VBIC",
+            ArmOp::MveAddI { .. } => "VADD.I",
+            ArmOp::MveSubI { .. } => "VSUB.I",
+            ArmOp::MveMulI { .. } => "VMUL.I",
+            ArmOp::MveNegI { .. } => "VNEG.S",
+            ArmOp::MveCmpEqI { .. } => "VCMP.I (EQ)",
+            ArmOp::MveCmpNeI { .. } => "VCMP.I (NE)",
+            ArmOp::MveCmpLtS { .. } => "VCMP.S (LT)",
+            ArmOp::MveCmpLtU { .. } => "VCMP.U (LT)",
+            ArmOp::MveCmpGtS { .. } => "VCMP.S (GT)",
+            ArmOp::MveCmpGtU { .. } => "VCMP.U (GT)",
+            ArmOp::MveCmpLeS { .. } => "VCMP.S (LE)",
+            ArmOp::MveCmpLeU { .. } => "VCMP.U (LE)",
+            ArmOp::MveCmpGeS { .. } => "VCMP.S (GE)",
+            ArmOp::MveCmpGeU { .. } => "VCMP.U (GE)",
+            ArmOp::MveDup { .. } => "VDUP",
+            ArmOp::MveExtractLane { .. } => "VMOV (lane->core)",
+            ArmOp::MveInsertLane { .. } => "VMOV (core->lane)",
+            ArmOp::MveAddF32 { .. } => "VADD.F32 (MVE)",
+            ArmOp::MveSubF32 { .. } => "VSUB.F32 (MVE)",
+            ArmOp::MveMulF32 { .. } => "VMUL.F32 (MVE)",
+            ArmOp::MveNegF32 { .. } => "VNEG.F32 (MVE)",
+            ArmOp::MveAbsF32 { .. } => "VABS.F32 (MVE)",
+            ArmOp::MveCmpEqF32 { .. } => "VCMP.F32 (EQ, MVE)",
+            ArmOp::MveCmpNeF32 { .. } => "VCMP.F32 (NE, MVE)",
+            ArmOp::MveCmpLtF32 { .. } => "VCMP.F32 (LT, MVE)",
+            ArmOp::MveCmpLeF32 { .. } => "VCMP.F32 (LE, MVE)",
+            ArmOp::MveCmpGtF32 { .. } => "VCMP.F32 (GT, MVE)",
+            ArmOp::MveCmpGeF32 { .. } => "VCMP.F32 (GE, MVE)",
+            ArmOp::MveDupF32 { .. } => "VDUP.32 (F32)",
+            ArmOp::MveExtractLaneF32 { .. } => "VMOV (F32 lane->core)",
+            ArmOp::MveReplaceLaneF32 { .. } => "VMOV (core->F32 lane)",
+            ArmOp::MveDivF32 { .. } => "VDIV.F32 (lane-wise)",
+            ArmOp::MveSqrtF32 { .. } => "VSQRT.F32 (lane-wise)",
             _ => "ARM",
         }
     }
@@ -1321,6 +1695,33 @@ pub enum VfpReg {
     D13,
     D14,
     D15,
+}
+
+/// ARM Helium MVE Q-register (128-bit vector register)
+///
+/// Q0-Q7 map to D0:D1 through D14:D15 (and S0:S3 through S28:S31).
+/// Helium MVE uses Q0-Q7 for 128-bit SIMD operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum QReg {
+    Q0,
+    Q1,
+    Q2,
+    Q3,
+    Q4,
+    Q5,
+    Q6,
+    Q7,
+}
+
+/// MVE element size for integer SIMD operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MveSize {
+    /// 8-bit elements (16 lanes)
+    S8,
+    /// 16-bit elements (8 lanes)
+    S16,
+    /// 32-bit elements (4 lanes)
+    S32,
 }
 
 /// ARM operand 2 (flexible second operand)

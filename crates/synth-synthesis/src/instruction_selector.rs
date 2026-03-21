@@ -3,7 +3,9 @@
 //! Uses pattern matching to select optimal ARM instruction sequences
 
 use crate::control_flow::{BlockType, BranchableInstruction, ControlFlowManager};
-use crate::rules::{ArmOp, Condition, MemAddr, Operand2, Reg, Replacement, SynthesisRule, VfpReg};
+use crate::rules::{
+    ArmOp, Condition, MemAddr, MveSize, Operand2, QReg, Reg, Replacement, SynthesisRule, VfpReg,
+};
 use crate::{Bindings, PatternMatcher};
 use std::collections::HashMap;
 use synth_core::Result;
@@ -74,24 +76,26 @@ impl BranchableInstruction for ArmInstruction {
     }
 }
 
-/// Convert register index to Reg enum
+/// Allocatable registers: R0-R8, R12.
+/// R9 (globals base), R10 (memory size), R11 (memory base) are reserved by the
+/// runtime convention and must never be allocated as temporaries.
+const ALLOCATABLE_REGS: [Reg; 10] = [
+    Reg::R0,
+    Reg::R1,
+    Reg::R2,
+    Reg::R3,
+    Reg::R4,
+    Reg::R5,
+    Reg::R6,
+    Reg::R7,
+    Reg::R8,
+    Reg::R12,
+];
+
+/// Convert register index to Reg enum.
+/// Skips reserved registers R9 (globals), R10 (mem size), R11 (mem base).
 fn index_to_reg(index: u8) -> Reg {
-    match index % 13 {
-        // R0-R12 only, avoid SP/LR/PC
-        0 => Reg::R0,
-        1 => Reg::R1,
-        2 => Reg::R2,
-        3 => Reg::R3,
-        4 => Reg::R4,
-        5 => Reg::R5,
-        6 => Reg::R6,
-        7 => Reg::R7,
-        8 => Reg::R8,
-        9 => Reg::R9,
-        10 => Reg::R10,
-        11 => Reg::R11,
-        _ => Reg::R12,
-    }
+    ALLOCATABLE_REGS[(index as usize) % ALLOCATABLE_REGS.len()]
 }
 
 /// Register allocator state
@@ -112,10 +116,10 @@ impl RegisterState {
         }
     }
 
-    /// Allocate a new register
+    /// Allocate a new register (cycles through allocatable set, skipping R9/R10/R11)
     pub fn alloc_reg(&mut self) -> Reg {
         let reg = index_to_reg(self.next_reg);
-        self.next_reg = (self.next_reg + 1) % 13; // R0-R12
+        self.next_reg = (self.next_reg + 1) % ALLOCATABLE_REGS.len() as u8;
         reg
     }
 
@@ -165,6 +169,20 @@ fn index_to_vfp_reg(index: u8) -> VfpReg {
     }
 }
 
+/// Convert Q-register index to QReg enum (Q0-Q7, wrapping)
+fn index_to_qreg(index: u8) -> QReg {
+    match index % 8 {
+        0 => QReg::Q0,
+        1 => QReg::Q1,
+        2 => QReg::Q2,
+        3 => QReg::Q3,
+        4 => QReg::Q4,
+        5 => QReg::Q5,
+        6 => QReg::Q6,
+        _ => QReg::Q7,
+    }
+}
+
 /// Instruction selector
 pub struct InstructionSelector {
     /// Pattern matcher with synthesis rules
@@ -183,6 +201,10 @@ pub struct InstructionSelector {
     next_vfp_reg: u8,
     /// Label counter for generating unique label names
     label_counter: u32,
+    /// Whether this target has Helium MVE (Cortex-M55)
+    has_helium: bool,
+    /// Next available Q-register (Q0-Q7, wrapping)
+    next_qreg: u8,
 }
 
 impl InstructionSelector {
@@ -197,6 +219,8 @@ impl InstructionSelector {
             target_name: "cortex-m3".to_string(),
             next_vfp_reg: 0,
             label_counter: 0,
+            has_helium: false,
+            next_qreg: 0,
         }
     }
 
@@ -211,6 +235,8 @@ impl InstructionSelector {
             target_name: "cortex-m3".to_string(),
             next_vfp_reg: 0,
             label_counter: 0,
+            has_helium: false,
+            next_qreg: 0,
         }
     }
 
@@ -228,6 +254,18 @@ impl InstructionSelector {
     pub fn set_target(&mut self, fpu: Option<FPUPrecision>, target_name: &str) {
         self.fpu = fpu;
         self.target_name = target_name.to_string();
+    }
+
+    /// Set Helium MVE capability (Cortex-M55)
+    pub fn set_helium(&mut self, has_helium: bool) {
+        self.has_helium = has_helium;
+    }
+
+    /// Allocate a Q-register (Q0-Q7, wrapping)
+    fn alloc_qreg(&mut self) -> QReg {
+        let reg = index_to_qreg(self.next_qreg);
+        self.next_qreg = (self.next_qreg + 1) % 8;
+        reg
     }
 
     /// Generate a unique label name with the given prefix
@@ -399,10 +437,41 @@ impl InstructionSelector {
             }
 
             I32Const(val) => {
-                vec![ArmOp::Mov {
-                    rd,
-                    op2: Operand2::Imm(*val),
-                }]
+                let uval = *val as u32;
+                let inverted = !uval;
+                if uval <= 0xFFFF {
+                    // 0..65535: MOVW handles the full 16-bit range
+                    vec![ArmOp::Movw {
+                        rd,
+                        imm16: uval as u16,
+                    }]
+                } else if inverted <= 0xFFFF {
+                    // Simple bit-inverted patterns: MOVW inverted + MVN
+                    // e.g., -1 (0xFFFFFFFF) -> MOVW rd, #0; MVN rd, rd
+                    // e.g., -2 (0xFFFFFFFE) -> MOVW rd, #1; MVN rd, rd
+                    vec![
+                        ArmOp::Movw {
+                            rd,
+                            imm16: inverted as u16,
+                        },
+                        ArmOp::Mvn {
+                            rd,
+                            op2: Operand2::Reg(rd),
+                        },
+                    ]
+                } else {
+                    // Full 32-bit range: MOVW low16 + MOVT high16
+                    vec![
+                        ArmOp::Movw {
+                            rd,
+                            imm16: (uval & 0xFFFF) as u16,
+                        },
+                        ArmOp::Movt {
+                            rd,
+                            imm16: ((uval >> 16) & 0xFFFF) as u16,
+                        },
+                    ]
+                }
             }
 
             I32Load { offset, .. } => {
@@ -646,19 +715,55 @@ impl InstructionSelector {
             }
 
             // Division and remainder (ARMv7-M+)
+            // WASM requires trap on divide-by-zero. ARM SDIV/UDIV silently return 0,
+            // so we emit an explicit zero-check: CMP rm, #0 / BNE skip / UDF #0.
             I32DivS => {
-                // Signed division: SDIV Rd, Rn, Rm
-                vec![ArmOp::Sdiv { rd, rn, rm }]
+                vec![
+                    // Trap if divisor == 0
+                    ArmOp::Cmp {
+                        rn: rm,
+                        op2: Operand2::Imm(0),
+                    },
+                    ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 0,
+                    },
+                    ArmOp::Udf { imm: 0 },
+                    // Signed division
+                    ArmOp::Sdiv { rd, rn, rm },
+                ]
             }
             I32DivU => {
-                // Unsigned division: UDIV Rd, Rn, Rm
-                vec![ArmOp::Udiv { rd, rn, rm }]
+                vec![
+                    // Trap if divisor == 0
+                    ArmOp::Cmp {
+                        rn: rm,
+                        op2: Operand2::Imm(0),
+                    },
+                    ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 0,
+                    },
+                    ArmOp::Udf { imm: 0 },
+                    // Unsigned division
+                    ArmOp::Udiv { rd, rn, rm },
+                ]
             }
             I32RemS => {
                 // Signed remainder: quotient = SDIV tmp, rn, rm
                 // remainder = MLS rd, tmp, rm, rn  (rd = rn - tmp * rm)
                 let rtmp = self.regs.alloc_reg();
                 vec![
+                    // Trap if divisor == 0
+                    ArmOp::Cmp {
+                        rn: rm,
+                        op2: Operand2::Imm(0),
+                    },
+                    ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 0,
+                    },
+                    ArmOp::Udf { imm: 0 },
                     ArmOp::Sdiv { rd: rtmp, rn, rm },
                     ArmOp::Mls {
                         rd,
@@ -673,6 +778,16 @@ impl InstructionSelector {
                 // remainder = MLS rd, tmp, rm, rn  (rd = rn - tmp * rm)
                 let rtmp = self.regs.alloc_reg();
                 vec![
+                    // Trap if divisor == 0
+                    ArmOp::Cmp {
+                        rn: rm,
+                        op2: Operand2::Imm(0),
+                    },
+                    ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 0,
+                    },
+                    ArmOp::Udf { imm: 0 },
                     ArmOp::Udiv { rd: rtmp, rn, rm },
                     ArmOp::Mls {
                         rd,
@@ -1472,18 +1587,957 @@ impl InstructionSelector {
                 };
                 return Err(synth_core::Error::synthesis(msg));
             }
+
+            // ===== v128 SIMD operations =====
+            // Path A: Helium present → generate MVE instructions
+            // Path B: no Helium → error
+
+            // v128 Constants
+            V128Const(bytes) if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveConst { qd, bytes: *bytes }]
+            }
+
+            // v128 Load/Store
+            V128Load { offset, .. } if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveLoad {
+                    qd,
+                    addr: MemAddr::reg_imm(Reg::R11, rn, *offset as i32),
+                }]
+            }
+            V128Store { offset, .. } if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveStore {
+                    qd,
+                    addr: MemAddr::reg_imm(Reg::R11, rn, *offset as i32),
+                }]
+            }
+
+            // v128 Bitwise
+            V128And if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveAnd { qd, qn, qm }]
+            }
+            V128Or if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveOrr { qd, qn, qm }]
+            }
+            V128Xor if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveEor { qd, qn, qm }]
+            }
+            V128Not if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveMvn { qd, qm }]
+            }
+            V128AndNot if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveBic { qd, qn, qm }]
+            }
+
+            // i8x16 arithmetic
+            I8x16Add if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveAddI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16Sub if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveSubI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16Neg if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveNegI {
+                    qd,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16Splat if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveDup {
+                    qd,
+                    rn,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16ExtractLaneS(lane) | I8x16ExtractLaneU(lane) if self.has_helium => {
+                let qn = self.alloc_qreg();
+                vec![ArmOp::MveExtractLane {
+                    rd,
+                    qn,
+                    lane: *lane,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16ReplaceLane(lane) if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveInsertLane {
+                    qd,
+                    rn,
+                    lane: *lane,
+                    size: MveSize::S8,
+                }]
+            }
+
+            // i8x16 comparisons
+            I8x16Eq if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpEqI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16Ne if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpNeI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16LtS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLtS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16LtU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLtU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16GtS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGtS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16GtU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGtU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16LeS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLeS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16LeU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLeU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16GeS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGeS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+            I8x16GeU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGeU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S8,
+                }]
+            }
+
+            // i16x8 arithmetic
+            I16x8Add if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveAddI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8Sub if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveSubI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8Mul if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveMulI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8Neg if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveNegI {
+                    qd,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8Splat if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveDup {
+                    qd,
+                    rn,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8ExtractLaneS(lane) | I16x8ExtractLaneU(lane) if self.has_helium => {
+                let qn = self.alloc_qreg();
+                vec![ArmOp::MveExtractLane {
+                    rd,
+                    qn,
+                    lane: *lane,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8ReplaceLane(lane) if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveInsertLane {
+                    qd,
+                    rn,
+                    lane: *lane,
+                    size: MveSize::S16,
+                }]
+            }
+
+            // i16x8 comparisons
+            I16x8Eq if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpEqI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8Ne if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpNeI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8LtS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLtS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8LtU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLtU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8GtS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGtS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8GtU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGtU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8LeS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLeS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8LeU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLeU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8GeS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGeS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+            I16x8GeU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGeU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S16,
+                }]
+            }
+
+            // i32x4 arithmetic
+            I32x4Add if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveAddI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4Sub if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveSubI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4Mul if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveMulI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4Neg if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveNegI {
+                    qd,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4Splat if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveDup {
+                    qd,
+                    rn,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4ExtractLane(lane) if self.has_helium => {
+                let qn = self.alloc_qreg();
+                vec![ArmOp::MveExtractLane {
+                    rd,
+                    qn,
+                    lane: *lane,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4ReplaceLane(lane) if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveInsertLane {
+                    qd,
+                    rn,
+                    lane: *lane,
+                    size: MveSize::S32,
+                }]
+            }
+
+            // i32x4 comparisons
+            I32x4Eq if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpEqI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4Ne if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpNeI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4LtS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLtS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4LtU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLtU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4GtS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGtS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4GtU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGtU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4LeS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLeS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4LeU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLeU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4GeS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGeS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I32x4GeU if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGeU {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+
+            // i64x2 arithmetic (MVE supports 32-bit element sizes natively;
+            // 64-bit uses pairs of 32-bit ops or widening instructions)
+            I64x2Add if self.has_helium => {
+                // VADD.I32 operates on 32-bit lanes; i64x2 is two 64-bit values.
+                // Pseudo-op: encoder expands to ADDS/ADC pairs per lane.
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveAddI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I64x2Sub if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveSubI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I64x2Neg if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveNegI {
+                    qd,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I64x2Splat if self.has_helium => {
+                // Splat 64-bit value: duplicate low 32 bits to lanes 0,2
+                // and high 32 bits to lanes 1,3
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveDup {
+                    qd,
+                    rn,
+                    size: MveSize::S32,
+                }]
+            }
+            I64x2ExtractLane(lane) if self.has_helium => {
+                let qn = self.alloc_qreg();
+                vec![ArmOp::MveExtractLane {
+                    rd,
+                    qn,
+                    lane: *lane,
+                    size: MveSize::S32,
+                }]
+            }
+            I64x2ReplaceLane(lane) if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveInsertLane {
+                    qd,
+                    rn,
+                    lane: *lane,
+                    size: MveSize::S32,
+                }]
+            }
+
+            // i64x2 comparisons and mul — emit as pseudo-ops for now
+            I64x2Mul if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveMulI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I64x2Eq if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpEqI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I64x2Ne if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpNeI {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I64x2LtS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLtS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I64x2GtS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGtS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I64x2LeS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLeS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+            I64x2GeS if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGeS {
+                    qd,
+                    qn,
+                    qm,
+                    size: MveSize::S32,
+                }]
+            }
+
+            // f32x4 floating-point SIMD
+            F32x4Add if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveAddF32 { qd, qn, qm }]
+            }
+            F32x4Sub if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveSubF32 { qd, qn, qm }]
+            }
+            F32x4Mul if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveMulF32 { qd, qn, qm }]
+            }
+            F32x4Div if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveDivF32 { qd, qn, qm }]
+            }
+            F32x4Abs if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveAbsF32 { qd, qm }]
+            }
+            F32x4Neg if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveNegF32 { qd, qm }]
+            }
+            F32x4Sqrt if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveSqrtF32 { qd, qm }]
+            }
+            F32x4Eq if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpEqF32 { qd, qn, qm }]
+            }
+            F32x4Ne if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpNeF32 { qd, qn, qm }]
+            }
+            F32x4Lt if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLtF32 { qd, qn, qm }]
+            }
+            F32x4Le if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpLeF32 { qd, qn, qm }]
+            }
+            F32x4Gt if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGtF32 { qd, qn, qm }]
+            }
+            F32x4Ge if self.has_helium => {
+                let qd = self.alloc_qreg();
+                let qn = self.alloc_qreg();
+                let qm = self.alloc_qreg();
+                vec![ArmOp::MveCmpGeF32 { qd, qn, qm }]
+            }
+            F32x4Splat if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveDupF32 { qd, rn }]
+            }
+            F32x4ExtractLane(lane) if self.has_helium => {
+                let qn = self.alloc_qreg();
+                vec![ArmOp::MveExtractLaneF32 {
+                    rd,
+                    qn,
+                    lane: *lane,
+                }]
+            }
+            F32x4ReplaceLane(lane) if self.has_helium => {
+                let qd = self.alloc_qreg();
+                vec![ArmOp::MveReplaceLaneF32 {
+                    qd,
+                    rn,
+                    lane: *lane,
+                }]
+            }
+
+            // i8x16.shuffle / i8x16.swizzle — complex, not yet implemented
+            op @ (I8x16Shuffle(_) | I8x16Swizzle) if self.has_helium => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "{op:?} not yet implemented for Helium MVE"
+                )));
+            }
+
+            // All SIMD ops without Helium → error
+            op @ (V128Const(_)
+            | V128Load { .. }
+            | V128Store { .. }
+            | V128And
+            | V128Or
+            | V128Xor
+            | V128Not
+            | V128AndNot
+            | I8x16Add
+            | I8x16Sub
+            | I8x16Neg
+            | I8x16Eq
+            | I8x16Ne
+            | I8x16LtS
+            | I8x16LtU
+            | I8x16GtS
+            | I8x16GtU
+            | I8x16LeS
+            | I8x16LeU
+            | I8x16GeS
+            | I8x16GeU
+            | I8x16Splat
+            | I8x16ExtractLaneS(_)
+            | I8x16ExtractLaneU(_)
+            | I8x16ReplaceLane(_)
+            | I8x16Shuffle(_)
+            | I8x16Swizzle
+            | I16x8Add
+            | I16x8Sub
+            | I16x8Mul
+            | I16x8Neg
+            | I16x8Eq
+            | I16x8Ne
+            | I16x8LtS
+            | I16x8LtU
+            | I16x8GtS
+            | I16x8GtU
+            | I16x8LeS
+            | I16x8LeU
+            | I16x8GeS
+            | I16x8GeU
+            | I16x8Splat
+            | I16x8ExtractLaneS(_)
+            | I16x8ExtractLaneU(_)
+            | I16x8ReplaceLane(_)
+            | I32x4Add
+            | I32x4Sub
+            | I32x4Mul
+            | I32x4Neg
+            | I32x4Eq
+            | I32x4Ne
+            | I32x4LtS
+            | I32x4LtU
+            | I32x4GtS
+            | I32x4GtU
+            | I32x4LeS
+            | I32x4LeU
+            | I32x4GeS
+            | I32x4GeU
+            | I32x4Splat
+            | I32x4ExtractLane(_)
+            | I32x4ReplaceLane(_)
+            | I64x2Add
+            | I64x2Sub
+            | I64x2Mul
+            | I64x2Neg
+            | I64x2Eq
+            | I64x2Ne
+            | I64x2LtS
+            | I64x2GtS
+            | I64x2LeS
+            | I64x2GeS
+            | I64x2Splat
+            | I64x2ExtractLane(_)
+            | I64x2ReplaceLane(_)
+            | F32x4Add
+            | F32x4Sub
+            | F32x4Mul
+            | F32x4Div
+            | F32x4Abs
+            | F32x4Neg
+            | F32x4Sqrt
+            | F32x4Eq
+            | F32x4Ne
+            | F32x4Lt
+            | F32x4Le
+            | F32x4Gt
+            | F32x4Ge
+            | F32x4Splat
+            | F32x4ExtractLane(_)
+            | F32x4ReplaceLane(_)) => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "SIMD operation {op:?} requires Helium MVE (Cortex-M55), \
+                     but target {} does not have Helium",
+                    self.target_name
+                )));
+            }
         };
         Ok(instrs)
     }
 
     /// Generate a load with optional bounds checking
     /// R10 = memory size, R11 = memory base
+    /// Bounds check verifies addr + offset + access_size - 1 < memory_size
     fn generate_load_with_bounds_check(
         &self,
         rd: Reg,
         addr_reg: Reg,
         offset: i32,
-        _access_size: u32,
+        access_size: u32,
     ) -> Vec<ArmOp> {
         let load_op = ArmOp::Ldr {
             rd,
@@ -1493,37 +2547,29 @@ impl InstructionSelector {
         match self.bounds_check {
             BoundsCheckConfig::None => vec![load_op],
             BoundsCheckConfig::Software => {
-                // Software bounds check sequence:
-                // ADD temp, addr_reg, #offset   ; Calculate effective address
-                // CMP temp, R10                 ; Compare against memory size (in R10)
-                // BHS .trap                     ; Branch to trap if >= memory size
-                // LDR rd, [R11, addr_reg, #offset]
-                let temp = Reg::R12; // Use R12 as scratch (IP register)
+                // Software bounds check: verify last byte of access is in bounds
+                // ADD temp, addr_reg, #(offset + access_size - 1)
+                // CMP temp, R10 (memory size)
+                // BHS Trap_Handler
+                let temp = Reg::R12;
+                let end_offset = offset + (access_size as i32) - 1;
                 vec![
-                    // Calculate effective address: temp = addr_reg + offset
                     ArmOp::Add {
                         rd: temp,
                         rn: addr_reg,
-                        op2: Operand2::Imm(offset),
+                        op2: Operand2::Imm(end_offset),
                     },
-                    // Compare against memory size (in R10)
                     ArmOp::Cmp {
                         rn: temp,
                         op2: Operand2::Reg(Reg::R10),
                     },
-                    // Branch to trap handler if >= (unsigned)
                     ArmOp::Bhs {
                         label: "Trap_Handler".to_string(),
                     },
-                    // Actual load
                     load_op,
                 ]
             }
             BoundsCheckConfig::Masking => {
-                // Masking approach: AND address with (memory_size - 1)
-                // This only works for power-of-2 memory sizes
-                // AND addr_reg, addr_reg, R10  ; R10 should contain mask (size - 1)
-                // LDR rd, [R11, addr_reg, #offset]
                 vec![
                     ArmOp::And {
                         rd: addr_reg,
@@ -1538,12 +2584,13 @@ impl InstructionSelector {
 
     /// Generate a store with optional bounds checking
     /// R10 = memory size (or mask for masking mode), R11 = memory base
+    /// Bounds check verifies addr + offset + access_size - 1 < memory_size
     fn generate_store_with_bounds_check(
         &self,
         value_reg: Reg,
         addr_reg: Reg,
         offset: i32,
-        _access_size: u32,
+        access_size: u32,
     ) -> Vec<ArmOp> {
         let store_op = ArmOp::Str {
             rd: value_reg,
@@ -1553,34 +2600,26 @@ impl InstructionSelector {
         match self.bounds_check {
             BoundsCheckConfig::None => vec![store_op],
             BoundsCheckConfig::Software => {
-                // Software bounds check sequence:
-                // ADD temp, addr_reg, #offset   ; Calculate effective address
-                // CMP temp, R10                 ; Compare against memory size (in R10)
-                // BHS .trap                     ; Branch to trap if >= memory size
-                // STR value_reg, [R11, addr_reg, #offset]
-                let temp = Reg::R12; // Use R12 as scratch (IP register)
+                // Software bounds check: verify last byte of access is in bounds
+                let temp = Reg::R12;
+                let end_offset = offset + (access_size as i32) - 1;
                 vec![
-                    // Calculate effective address: temp = addr_reg + offset
                     ArmOp::Add {
                         rd: temp,
                         rn: addr_reg,
-                        op2: Operand2::Imm(offset),
+                        op2: Operand2::Imm(end_offset),
                     },
-                    // Compare against memory size (in R10)
                     ArmOp::Cmp {
                         rn: temp,
                         op2: Operand2::Reg(Reg::R10),
                     },
-                    // Branch to trap handler if >= (unsigned)
                     ArmOp::Bhs {
                         label: "Trap_Handler".to_string(),
                     },
-                    // Actual store
                     store_op,
                 ]
             }
             BoundsCheckConfig::Masking => {
-                // Masking approach: AND address with (memory_size - 1)
                 vec![
                     ArmOp::And {
                         rd: addr_reg,
@@ -1617,11 +2656,12 @@ impl InstructionSelector {
             BoundsCheckConfig::None => vec![load_op],
             BoundsCheckConfig::Software => {
                 let temp = Reg::R12;
+                let end_offset = offset + (access_size as i32) - 1;
                 vec![
                     ArmOp::Add {
                         rd: temp,
                         rn: addr_reg,
-                        op2: Operand2::Imm(offset),
+                        op2: Operand2::Imm(end_offset),
                     },
                     ArmOp::Cmp {
                         rn: temp,
@@ -1675,11 +2715,12 @@ impl InstructionSelector {
             BoundsCheckConfig::None => vec![store_op],
             BoundsCheckConfig::Software => {
                 let temp = Reg::R12;
+                let end_offset = offset + (access_size as i32) - 1;
                 vec![
                     ArmOp::Add {
                         rd: temp,
                         rn: addr_reg,
-                        op2: Operand2::Imm(offset),
+                        op2: Operand2::Imm(end_offset),
                     },
                     ArmOp::Cmp {
                         rn: temp,
@@ -1731,6 +2772,17 @@ impl InstructionSelector {
         use WasmOp::*;
 
         let mut instructions = Vec::new();
+
+        // Function prologue: save callee-saved registers and LR.
+        // AAPCS requires 8-byte aligned SP at call sites. Pushing an even
+        // number of registers (6: R4-R8, LR) maintains alignment.
+        instructions.push(ArmInstruction {
+            op: ArmOp::Push {
+                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR],
+            },
+            source_line: None,
+        });
+
         // Virtual stack holds register indices
         let mut stack: Vec<Reg> = Vec::new();
         // Next available register for temporaries (start after params)
@@ -1762,7 +2814,7 @@ impl InstructionSelector {
                     } else {
                         // Local not in register (spilled to stack) - load it
                         let dst = index_to_reg(next_temp);
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                         instructions.push(ArmInstruction {
                             op: ArmOp::Ldr {
                                 rd: dst,
@@ -1777,14 +2829,51 @@ impl InstructionSelector {
 
                 I32Const(val) => {
                     let dst = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % 13;
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Mov {
-                            rd: dst,
-                            op2: Operand2::Imm(*val),
-                        },
-                        source_line: Some(idx),
-                    });
+                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let uval = *val as u32;
+                    let inverted = !uval;
+                    if uval <= 0xFFFF {
+                        // 0..65535: MOVW handles the full 16-bit range
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Movw {
+                                rd: dst,
+                                imm16: uval as u16,
+                            },
+                            source_line: Some(idx),
+                        });
+                    } else if inverted <= 0xFFFF {
+                        // Bit-inverted pattern: MOVW inverted + MVN
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Movw {
+                                rd: dst,
+                                imm16: inverted as u16,
+                            },
+                            source_line: Some(idx),
+                        });
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Mvn {
+                                rd: dst,
+                                op2: Operand2::Reg(dst),
+                            },
+                            source_line: Some(idx),
+                        });
+                    } else {
+                        // Full 32-bit: MOVW low16 + MOVT high16
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Movw {
+                                rd: dst,
+                                imm16: (uval & 0xFFFF) as u16,
+                            },
+                            source_line: Some(idx),
+                        });
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Movt {
+                                rd: dst,
+                                imm16: ((uval >> 16) & 0xFFFF) as u16,
+                            },
+                            source_line: Some(idx),
+                        });
+                    }
                     stack.push(dst);
                 }
 
@@ -1796,7 +2885,7 @@ impl InstructionSelector {
                         Reg::R0
                     } else {
                         let t = index_to_reg(next_temp);
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                         t
                     };
                     instructions.push(ArmInstruction {
@@ -1819,7 +2908,7 @@ impl InstructionSelector {
                         index_to_reg(next_temp)
                     };
                     if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     }
                     instructions.push(ArmInstruction {
                         op: ArmOp::Sub {
@@ -1841,7 +2930,7 @@ impl InstructionSelector {
                         index_to_reg(next_temp)
                     };
                     if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     }
                     instructions.push(ArmInstruction {
                         op: ArmOp::Mul {
@@ -1863,7 +2952,7 @@ impl InstructionSelector {
                         index_to_reg(next_temp)
                     };
                     if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     }
                     instructions.push(ArmInstruction {
                         op: ArmOp::And {
@@ -1885,7 +2974,7 @@ impl InstructionSelector {
                         index_to_reg(next_temp)
                     };
                     if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     }
                     instructions.push(ArmInstruction {
                         op: ArmOp::Orr {
@@ -1907,7 +2996,7 @@ impl InstructionSelector {
                         index_to_reg(next_temp)
                     };
                     if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     }
                     instructions.push(ArmInstruction {
                         op: ArmOp::Eor {
@@ -1930,7 +3019,7 @@ impl InstructionSelector {
                         index_to_reg(next_temp)
                     };
                     if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     }
 
                     // Trap check: if divisor == 0, trigger UDF (UsageFault -> Trap_Handler)
@@ -1977,7 +3066,7 @@ impl InstructionSelector {
                         index_to_reg(next_temp)
                     };
                     if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     }
 
                     // Trap check 1: divide by zero
@@ -2003,7 +3092,7 @@ impl InstructionSelector {
                     // Trap check 2: signed overflow (INT_MIN / -1)
                     // We need a temp register for INT_MIN (0x80000000)
                     let tmp = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % 13;
+                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
 
                     // Load INT_MIN into tmp: MOVW tmp, #0; MOVT tmp, #0x8000
                     instructions.push(ArmInstruction {
@@ -2079,7 +3168,7 @@ impl InstructionSelector {
                         index_to_reg(next_temp)
                     };
                     if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     }
 
                     // Trap check: divide by zero
@@ -2105,7 +3194,7 @@ impl InstructionSelector {
                     // Remainder: dst = dividend - (dividend / divisor) * divisor
                     // quotient = UDIV tmp, dividend, divisor
                     let tmp = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % 13;
+                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     instructions.push(ArmInstruction {
                         op: ArmOp::Udiv {
                             rd: tmp,
@@ -2136,7 +3225,7 @@ impl InstructionSelector {
                         index_to_reg(next_temp)
                     };
                     if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     }
 
                     // Trap check: divide by zero (rem_s doesn't trap on INT_MIN % -1)
@@ -2161,7 +3250,7 @@ impl InstructionSelector {
 
                     // Signed remainder: dst = dividend - (dividend / divisor) * divisor
                     let tmp = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % 13;
+                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     instructions.push(ArmInstruction {
                         op: ArmOp::Sdiv {
                             rd: tmp,
@@ -2194,7 +3283,7 @@ impl InstructionSelector {
                         Reg::R0
                     } else {
                         let t = index_to_reg(next_temp);
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                         t
                     };
 
@@ -2239,7 +3328,7 @@ impl InstructionSelector {
                         Reg::R0
                     } else {
                         let t = index_to_reg(next_temp);
-                        next_temp = (next_temp + 1) % 13;
+                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                         t
                     };
 
@@ -2440,7 +3529,7 @@ impl InstructionSelector {
                 // Memory management
                 MemorySize(_mem_idx) => {
                     let dst = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % 13;
+                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     instructions.push(ArmInstruction {
                         op: ArmOp::MemorySize { rd: dst },
                         source_line: Some(idx),
@@ -2452,7 +3541,7 @@ impl InstructionSelector {
                     // Pop the requested number of pages from stack
                     let pages = stack.pop().unwrap_or(Reg::R0);
                     let dst = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % 13;
+                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     instructions.push(ArmInstruction {
                         op: ArmOp::MemoryGrow { rd: dst, rn: pages },
                         source_line: Some(idx),
@@ -2696,8 +3785,11 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     }
+                    // Restore callee-saved registers and return via PC
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Bx { rm: Reg::LR },
+                        op: ArmOp::Pop {
+                            regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
+                        },
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
@@ -2775,7 +3867,7 @@ impl InstructionSelector {
                     let val2 = stack.pop().unwrap_or(Reg::R1);
                     let val1 = stack.pop().unwrap_or(Reg::R0);
                     let dst = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % 13;
+                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
 
                     // CMP cond, #0
                     instructions.push(ArmInstruction {
@@ -2869,7 +3961,7 @@ impl InstructionSelector {
                     // Load global value from globals table (R9 = globals base).
                     // Each i32 global occupies 4 bytes at offset index * 4.
                     let dst = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % 13;
+                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     instructions.push(ArmInstruction {
                         op: ArmOp::Ldr {
                             rd: dst,
@@ -2908,9 +4000,12 @@ impl InstructionSelector {
             }
         }
 
-        // Add BX LR at the end to return
+        // Function epilogue: restore callee-saved registers and return via PC
+        // POP {R4-R8, PC} restores registers and returns (PC = saved LR)
         instructions.push(ArmInstruction {
-            op: ArmOp::Bx { rm: Reg::LR },
+            op: ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
+            },
             source_line: None,
         });
 
@@ -2928,6 +4023,16 @@ impl InstructionSelector {
 pub fn validate_instructions(
     instructions: &[ArmInstruction],
     fpu: Option<FPUPrecision>,
+    target_name: &str,
+) -> Result<()> {
+    validate_instructions_with_helium(instructions, fpu, false, target_name)
+}
+
+/// Validate instructions with full ISA feature gating including Helium MVE.
+pub fn validate_instructions_with_helium(
+    instructions: &[ArmInstruction],
+    fpu: Option<FPUPrecision>,
+    has_helium: bool,
     target_name: &str,
 ) -> Result<()> {
     for instr in instructions {
@@ -2952,6 +4057,15 @@ pub fn validate_instructions(
                 instr.op.instruction_name(),
                 target_name,
                 reason,
+            )));
+        }
+
+        // Check Helium MVE requirement
+        if instr.op.requires_helium() && !has_helium {
+            return Err(synth_core::Error::UnsupportedInstruction(format!(
+                "instruction {} requires Helium MVE, but target {} does not have Helium",
+                instr.op.instruction_name(),
+                target_name,
             )));
         }
     }
@@ -3159,8 +4273,16 @@ mod tests {
     fn test_index_to_reg_conversion() {
         assert_eq!(index_to_reg(0), Reg::R0);
         assert_eq!(index_to_reg(1), Reg::R1);
-        assert_eq!(index_to_reg(12), Reg::R12);
-        assert_eq!(index_to_reg(13), Reg::R0); // Wraps around
+        assert_eq!(index_to_reg(8), Reg::R8);
+        assert_eq!(index_to_reg(9), Reg::R12); // R9/R10/R11 skipped, R12 is at index 9
+        assert_eq!(index_to_reg(10), Reg::R0); // Wraps around after 10 allocatable registers
+        // Verify reserved registers are never allocated
+        for i in 0..100u8 {
+            let reg = index_to_reg(i);
+            assert_ne!(reg, Reg::R9, "R9 (globals base) must never be allocated");
+            assert_ne!(reg, Reg::R10, "R10 (mem size) must never be allocated");
+            assert_ne!(reg, Reg::R11, "R11 (mem base) must never be allocated");
+        }
     }
 
     #[test]
@@ -3199,19 +4321,22 @@ mod tests {
         }];
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
-        // Should be: ADD temp, addr, #offset; CMP temp, R10; BHS trap; LDR
+        // Should be: ADD temp, addr, #(offset+access_size-1); CMP temp, R10; BHS trap; LDR
         assert_eq!(arm_instrs.len(), 4);
 
-        // First: ADD to calculate effective address
+        // First: ADD to calculate end-of-access address (offset=4, access_size=4 -> 4+4-1=7)
         match &arm_instrs[0].op {
             ArmOp::Add {
                 rd,
                 rn: _,
-                op2: Operand2::Imm(4),
+                op2: Operand2::Imm(7),
             } => {
                 assert_eq!(*rd, Reg::R12); // Uses R12 as temp
             }
-            other => panic!("Expected Add with immediate 4, got {:?}", other),
+            other => panic!(
+                "Expected Add with immediate 7 (offset+access_size-1), got {:?}",
+                other
+            ),
         }
 
         // Second: CMP against R10 (memory size)
@@ -3417,11 +4542,11 @@ mod tests {
             .any(|i| matches!(&i.op, ArmOp::Label { .. }));
         assert!(has_label, "Block should emit an end label");
 
-        // Should contain a MOV for the constant
-        let has_mov = arm_instrs
+        // Should contain a MOVW for the constant
+        let has_movw = arm_instrs
             .iter()
-            .any(|i| matches!(&i.op, ArmOp::Mov { .. }));
-        assert!(has_mov, "Should emit MOV for i32.const");
+            .any(|i| matches!(&i.op, ArmOp::Movw { .. }));
+        assert!(has_movw, "Should emit MOVW for i32.const");
     }
 
     #[test]
@@ -3653,12 +4778,11 @@ mod tests {
         let wasm_ops = vec![WasmOp::I32Const(42), WasmOp::Return];
         let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
 
-        // Should contain BX LR for the return
-        let bx_count = arm_instrs
+        // Should contain BX LR or POP {PC} for the return
+        let has_return = arm_instrs
             .iter()
-            .filter(|i| matches!(&i.op, ArmOp::Bx { rm: Reg::LR }))
-            .count();
-        assert!(bx_count >= 1, "Return should emit BX LR");
+            .any(|i| matches!(&i.op, ArmOp::Bx { rm: Reg::LR } | ArmOp::Pop { .. }));
+        assert!(has_return, "Return should emit BX LR or POP");
     }
 
     #[test]
@@ -3697,12 +4821,12 @@ mod tests {
         let wasm_ops = vec![WasmOp::I32Const(42), WasmOp::Drop, WasmOp::I32Const(10)];
         let arm_instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
 
-        // Should emit MOVs for the consts but no instruction for Drop
-        let mov_count = arm_instrs
+        // Should emit MOVWs for the consts but no instruction for Drop
+        let movw_count = arm_instrs
             .iter()
-            .filter(|i| matches!(&i.op, ArmOp::Mov { .. }))
+            .filter(|i| matches!(&i.op, ArmOp::Movw { .. }))
             .count();
-        assert_eq!(mov_count, 2, "Should have two MOVs for the two consts");
+        assert_eq!(movw_count, 2, "Should have two MOVWs for the two consts");
     }
 
     #[test]
@@ -4376,11 +5500,11 @@ mod tests {
         let sub_count = count_op(&instrs, |op| matches!(op, ArmOp::Sub { .. }));
         assert_eq!(sub_count, 1, "Should have exactly one SUB for n - 1");
 
-        // Should have BX LR at the end for function return
-        let has_bx_lr = instrs
+        // Should have BX LR or POP for function return
+        let has_return = instrs
             .iter()
-            .any(|i| matches!(&i.op, ArmOp::Bx { rm: Reg::LR }));
-        assert!(has_bx_lr, "Function should end with BX LR");
+            .any(|i| matches!(&i.op, ArmOp::Bx { rm: Reg::LR } | ArmOp::Pop { .. }));
+        assert!(has_return, "Function should end with BX LR or POP");
     }
 
     // ----- Test 6: Fibonacci (loop + if + arithmetic) -----
@@ -4887,12 +6011,14 @@ mod tests {
 
         let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
 
-        // Should have BX LR for the Return instruction (plus the one at function end)
-        let bx_count = count_op(&instrs, |op| matches!(op, ArmOp::Bx { rm: Reg::LR }));
+        // Should have return instructions (BX LR or POP) for early return + function epilogue
+        let return_count = count_op(&instrs, |op| {
+            matches!(op, ArmOp::Bx { rm: Reg::LR } | ArmOp::Pop { .. })
+        });
         assert!(
-            bx_count >= 2,
-            "Should have at least 2 BX LR (early return + function epilogue), got {}",
-            bx_count
+            return_count >= 2,
+            "Should have at least 2 returns (early return + function epilogue), got {}",
+            return_count
         );
 
         // Should have loop_start
@@ -6456,5 +7582,554 @@ mod tests {
             .iter()
             .any(|i| matches!(&i.op, ArmOp::MemoryGrow { .. }));
         assert!(has_mem_grow, "Should contain MemoryGrow instruction");
+    }
+
+    // ========================================================================
+    // v128 SIMD / Helium MVE tests
+    // ========================================================================
+
+    fn helium_selector() -> InstructionSelector {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_target(Some(FPUPrecision::Single), "cortex-m55");
+        selector.set_helium(true);
+        selector
+    }
+
+    fn non_helium_selector() -> InstructionSelector {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
+        selector
+    }
+
+    #[test]
+    fn test_simd_i32x4_add_on_helium() {
+        let mut selector = helium_selector();
+        let ops = vec![WasmOp::I32x4Add];
+        let result = selector.select(&ops);
+        assert!(result.is_ok(), "i32x4.add should succeed on Helium target");
+        let instrs = result.unwrap();
+        assert!(
+            instrs.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::MveAddI {
+                    size: MveSize::S32,
+                    ..
+                }
+            )),
+            "Should produce VADD.I32 MVE instruction"
+        );
+    }
+
+    #[test]
+    fn test_simd_i32x4_sub_on_helium() {
+        let mut selector = helium_selector();
+        let ops = vec![WasmOp::I32x4Sub];
+        let result = selector.select(&ops);
+        assert!(result.is_ok());
+        let instrs = result.unwrap();
+        assert!(instrs.iter().any(|i| matches!(
+            &i.op,
+            ArmOp::MveSubI {
+                size: MveSize::S32,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_simd_i32x4_mul_on_helium() {
+        let mut selector = helium_selector();
+        let ops = vec![WasmOp::I32x4Mul];
+        let result = selector.select(&ops);
+        assert!(result.is_ok());
+        let instrs = result.unwrap();
+        assert!(instrs.iter().any(|i| matches!(
+            &i.op,
+            ArmOp::MveMulI {
+                size: MveSize::S32,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_simd_i8x16_add_on_helium() {
+        let mut selector = helium_selector();
+        let ops = vec![WasmOp::I8x16Add];
+        let result = selector.select(&ops);
+        assert!(result.is_ok());
+        let instrs = result.unwrap();
+        assert!(instrs.iter().any(|i| matches!(
+            &i.op,
+            ArmOp::MveAddI {
+                size: MveSize::S8,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_simd_i16x8_add_on_helium() {
+        let mut selector = helium_selector();
+        let ops = vec![WasmOp::I16x8Add];
+        let result = selector.select(&ops);
+        assert!(result.is_ok());
+        let instrs = result.unwrap();
+        assert!(instrs.iter().any(|i| matches!(
+            &i.op,
+            ArmOp::MveAddI {
+                size: MveSize::S16,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_simd_v128_bitwise_on_helium() {
+        let mut selector = helium_selector();
+
+        let result = selector.select(&[WasmOp::V128And]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveAnd { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::V128Or]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveOrr { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::V128Xor]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveEor { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::V128Not]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveMvn { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::V128AndNot]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveBic { .. }))
+        );
+    }
+
+    #[test]
+    fn test_simd_v128_const_on_helium() {
+        let mut selector = helium_selector();
+        let bytes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        let ops = vec![WasmOp::V128Const(bytes)];
+        let result = selector.select(&ops);
+        assert!(result.is_ok());
+        let instrs = result.unwrap();
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveConst { bytes: b, .. } if *b == bytes))
+        );
+    }
+
+    #[test]
+    fn test_simd_v128_load_store_on_helium() {
+        let mut selector = helium_selector();
+
+        let result = selector.select(&[WasmOp::V128Load {
+            offset: 0,
+            align: 4,
+        }]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveLoad { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::V128Store {
+            offset: 0,
+            align: 4,
+        }]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveStore { .. }))
+        );
+    }
+
+    #[test]
+    fn test_simd_i32x4_splat_on_helium() {
+        let mut selector = helium_selector();
+        let result = selector.select(&[WasmOp::I32x4Splat]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().iter().any(|i| matches!(
+            &i.op,
+            ArmOp::MveDup {
+                size: MveSize::S32,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_simd_i32x4_extract_lane_on_helium() {
+        let mut selector = helium_selector();
+        let result = selector.select(&[WasmOp::I32x4ExtractLane(2)]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().iter().any(|i| matches!(
+            &i.op,
+            ArmOp::MveExtractLane {
+                lane: 2,
+                size: MveSize::S32,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_simd_i32x4_replace_lane_on_helium() {
+        let mut selector = helium_selector();
+        let result = selector.select(&[WasmOp::I32x4ReplaceLane(1)]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().iter().any(|i| matches!(
+            &i.op,
+            ArmOp::MveInsertLane {
+                lane: 1,
+                size: MveSize::S32,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_simd_f32x4_arithmetic_on_helium() {
+        let mut selector = helium_selector();
+
+        let result = selector.select(&[WasmOp::F32x4Add]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveAddF32 { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::F32x4Sub]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveSubF32 { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::F32x4Mul]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveMulF32 { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::F32x4Div]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveDivF32 { .. }))
+        );
+    }
+
+    #[test]
+    fn test_simd_f32x4_unary_on_helium() {
+        let mut selector = helium_selector();
+
+        let result = selector.select(&[WasmOp::F32x4Abs]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveAbsF32 { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::F32x4Neg]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveNegF32 { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::F32x4Sqrt]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveSqrtF32 { .. }))
+        );
+    }
+
+    #[test]
+    fn test_simd_f32x4_comparisons_on_helium() {
+        let mut selector = helium_selector();
+
+        let result = selector.select(&[WasmOp::F32x4Eq]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveCmpEqF32 { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::F32x4Lt]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveCmpLtF32 { .. }))
+        );
+    }
+
+    #[test]
+    fn test_simd_f32x4_splat_extract_replace_on_helium() {
+        let mut selector = helium_selector();
+
+        let result = selector.select(&[WasmOp::F32x4Splat]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveDupF32 { .. }))
+        );
+
+        let result = selector.select(&[WasmOp::F32x4ExtractLane(3)]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveExtractLaneF32 { lane: 3, .. }))
+        );
+
+        let result = selector.select(&[WasmOp::F32x4ReplaceLane(0)]);
+        assert!(result.is_ok());
+        assert!(
+            result
+                .unwrap()
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::MveReplaceLaneF32 { lane: 0, .. }))
+        );
+    }
+
+    #[test]
+    fn test_simd_i32x4_comparisons_on_helium() {
+        let mut selector = helium_selector();
+
+        for (op, expected_pattern) in [
+            (WasmOp::I32x4Eq, "CmpEqI"),
+            (WasmOp::I32x4Ne, "CmpNeI"),
+            (WasmOp::I32x4LtS, "CmpLtS"),
+            (WasmOp::I32x4LtU, "CmpLtU"),
+            (WasmOp::I32x4GtS, "CmpGtS"),
+            (WasmOp::I32x4GtU, "CmpGtU"),
+        ] {
+            let result = selector.select(std::slice::from_ref(&op));
+            assert!(
+                result.is_ok(),
+                "Comparison {expected_pattern} should succeed on Helium"
+            );
+        }
+    }
+
+    #[test]
+    fn test_simd_rejected_on_non_helium() {
+        let mut selector = non_helium_selector();
+
+        let simd_ops = vec![
+            WasmOp::I32x4Add,
+            WasmOp::I8x16Add,
+            WasmOp::I16x8Add,
+            WasmOp::V128And,
+            WasmOp::V128Const([0u8; 16]),
+            WasmOp::V128Load {
+                offset: 0,
+                align: 4,
+            },
+            WasmOp::I32x4Splat,
+            WasmOp::F32x4Add,
+            WasmOp::F32x4Splat,
+        ];
+
+        for op in &simd_ops {
+            let result = selector.select(std::slice::from_ref(op));
+            assert!(
+                result.is_err(),
+                "SIMD op {op:?} should be rejected on non-Helium target"
+            );
+            let err_msg = result.unwrap_err().to_string();
+            assert!(
+                err_msg.contains("Helium") || err_msg.contains("SIMD"),
+                "Error for {op:?} should mention Helium or SIMD: {err_msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_simd_i8x16_shuffle_not_implemented() {
+        let mut selector = helium_selector();
+        let result = selector.select(&[WasmOp::I8x16Shuffle([
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+        ])]);
+        assert!(
+            result.is_err(),
+            "i8x16.shuffle should error (not yet implemented)"
+        );
+    }
+
+    #[test]
+    fn test_validate_instructions_rejects_mve_on_non_helium() {
+        let instrs = vec![ArmInstruction {
+            op: ArmOp::MveAddI {
+                qd: QReg::Q0,
+                qn: QReg::Q1,
+                qm: QReg::Q2,
+                size: MveSize::S32,
+            },
+            source_line: Some(0),
+        }];
+        let result = super::validate_instructions_with_helium(
+            &instrs,
+            Some(FPUPrecision::Single),
+            false,
+            "cortex-m4f",
+        );
+        assert!(
+            result.is_err(),
+            "MVE instruction should be rejected on non-Helium target"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Helium"),
+            "Error should mention Helium: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_validate_instructions_allows_mve_on_helium() {
+        let instrs = vec![ArmInstruction {
+            op: ArmOp::MveAddI {
+                qd: QReg::Q0,
+                qn: QReg::Q1,
+                qm: QReg::Q2,
+                size: MveSize::S32,
+            },
+            source_line: Some(0),
+        }];
+        let result = super::validate_instructions_with_helium(
+            &instrs,
+            Some(FPUPrecision::Single),
+            true,
+            "cortex-m55",
+        );
+        assert!(
+            result.is_ok(),
+            "MVE instruction should be accepted on Helium target"
+        );
+    }
+
+    #[test]
+    fn test_simd_neg_operations_on_helium() {
+        let mut selector = helium_selector();
+
+        let result = selector.select(&[WasmOp::I8x16Neg]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().iter().any(|i| matches!(
+            &i.op,
+            ArmOp::MveNegI {
+                size: MveSize::S8,
+                ..
+            }
+        )));
+
+        let result = selector.select(&[WasmOp::I16x8Neg]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().iter().any(|i| matches!(
+            &i.op,
+            ArmOp::MveNegI {
+                size: MveSize::S16,
+                ..
+            }
+        )));
+
+        let result = selector.select(&[WasmOp::I32x4Neg]);
+        assert!(result.is_ok());
+        assert!(result.unwrap().iter().any(|i| matches!(
+            &i.op,
+            ArmOp::MveNegI {
+                size: MveSize::S32,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn test_requires_helium_trait() {
+        // MVE instructions should report requires_helium = true
+        let mve_op = ArmOp::MveAddI {
+            qd: QReg::Q0,
+            qn: QReg::Q1,
+            qm: QReg::Q2,
+            size: MveSize::S32,
+        };
+        assert!(mve_op.requires_helium());
+        assert!(!mve_op.requires_fpu());
+
+        // Non-MVE instructions should report requires_helium = false
+        let add_op = ArmOp::Add {
+            rd: Reg::R0,
+            rn: Reg::R1,
+            op2: Operand2::Reg(Reg::R2),
+        };
+        assert!(!add_op.requires_helium());
+
+        // FPU instructions should not require Helium
+        let f32_op = ArmOp::F32Add {
+            sd: VfpReg::S0,
+            sn: VfpReg::S1,
+            sm: VfpReg::S2,
+        };
+        assert!(!f32_op.requires_helium());
+        assert!(f32_op.requires_fpu());
     }
 }

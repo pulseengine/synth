@@ -1,0 +1,72 @@
+# STPA Code-Level Losses — Code Generation Subsystem
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+# Scope: Losses specific to the code generation pipeline (instruction selection,
+#   register allocation, ARM encoding, inline expansion). Derived from embedded
+#   code review findings (C1-C5, H2-H8).
+#
+# These refine the system-level losses (L-1 through L-6) with code-specific
+# failure modes observed in the implementation.
+#
+# Format: rivet stpa-yaml
+
+losses:
+  - id: L-CODE-1
+    title: Generated ARM code produces wrong computation results
+    description: >
+      The compiled ARM instruction sequence computes a value that differs from
+      what the WebAssembly specification requires for the same inputs. This
+      includes: wrong arithmetic results from immediate value truncation (C2/C3),
+      wrong register contents from register allocator collisions with reserved
+      registers (C4/C5), and corrupted intermediate values from inline pseudo-op
+      expansion clobbering live registers (H7 popcnt clobbers R11).
+    stakeholders: [developers, end-users, certification-authorities]
+    links:
+      - type: refines
+        target: L-1
+
+  - id: L-CODE-2
+    title: Generated ARM code crashes at runtime
+    description: >
+      The compiled ARM code causes a hardware fault (HardFault, UsageFault,
+      BusFault, MemManage, or alignment fault) during execution. Causes include:
+      clobbered stack pointer or link register from register allocator wrapping
+      into reserved registers (C4/C5), premature function return from inline
+      i64 division POP {PC} (H5), corrupted callee-saved registers that break
+      the caller's stack frame (H3), and alignment faults from unaligned stack
+      pointer (H4).
+    stakeholders: [developers, end-users, certification-authorities]
+    links:
+      - type: refines
+        target: L-1
+      - type: refines
+        target: L-5
+
+  - id: L-CODE-3
+    title: Generated ARM code has memory safety violations
+    description: >
+      The compiled ARM code accesses memory outside the WebAssembly linear
+      memory bounds, corrupts the stack, or writes to memory regions it should
+      not. Causes include: bounds check that ignores access width allowing
+      final bytes to read/write past memory end (H2), stack corruption from
+      missing callee-saved register preservation (H3), and memory base pointer
+      (R11) destroyed by popcnt inline expansion (H7) causing all subsequent
+      memory accesses to use a wrong base address.
+    stakeholders: [developers, end-users, certification-authorities]
+    links:
+      - type: refines
+        target: L-2
+
+  - id: L-CODE-4
+    title: Generated ARM code violates WebAssembly specification semantics
+    description: >
+      The compiled ARM code omits a behavior required by the WebAssembly
+      specification. The primary instance is division by zero not being trapped
+      (C1): the WASM spec requires i32.div_u and i32.div_s to trap when the
+      divisor is zero, but the rules.rs synthesis path emits a bare UDIV/SDIV
+      without a preceding zero-check, allowing ARM's silent-zero-return behavior
+      to produce a wrong result instead of trapping.
+    stakeholders: [developers, end-users, certification-authorities]
+    links:
+      - type: refines
+        target: L-1

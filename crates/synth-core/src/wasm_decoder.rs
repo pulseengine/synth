@@ -449,6 +449,123 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         MemorySize { mem, .. } => Some(WasmOp::MemorySize(*mem)),
         MemoryGrow { mem, .. } => Some(WasmOp::MemoryGrow(*mem)),
 
+        // ========================================================================
+        // v128 SIMD operations (WASM SIMD proposal, 0xFD prefix)
+        // ========================================================================
+        V128Const { value } => {
+            let mut bytes = [0u8; 16];
+            bytes.copy_from_slice(value.bytes());
+            Some(WasmOp::V128Const(bytes))
+        }
+        V128Load { memarg } => Some(WasmOp::V128Load {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        V128Store { memarg } => Some(WasmOp::V128Store {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+
+        // v128 bitwise
+        V128And => Some(WasmOp::V128And),
+        V128Or => Some(WasmOp::V128Or),
+        V128Xor => Some(WasmOp::V128Xor),
+        V128Not => Some(WasmOp::V128Not),
+        V128AndNot => Some(WasmOp::V128AndNot),
+
+        // i8x16
+        I8x16Add => Some(WasmOp::I8x16Add),
+        I8x16Sub => Some(WasmOp::I8x16Sub),
+        I8x16Neg => Some(WasmOp::I8x16Neg),
+        I8x16Eq => Some(WasmOp::I8x16Eq),
+        I8x16Ne => Some(WasmOp::I8x16Ne),
+        I8x16LtS => Some(WasmOp::I8x16LtS),
+        I8x16LtU => Some(WasmOp::I8x16LtU),
+        I8x16GtS => Some(WasmOp::I8x16GtS),
+        I8x16GtU => Some(WasmOp::I8x16GtU),
+        I8x16LeS => Some(WasmOp::I8x16LeS),
+        I8x16LeU => Some(WasmOp::I8x16LeU),
+        I8x16GeS => Some(WasmOp::I8x16GeS),
+        I8x16GeU => Some(WasmOp::I8x16GeU),
+        I8x16Splat => Some(WasmOp::I8x16Splat),
+        I8x16ExtractLaneS { lane } => Some(WasmOp::I8x16ExtractLaneS(*lane)),
+        I8x16ExtractLaneU { lane } => Some(WasmOp::I8x16ExtractLaneU(*lane)),
+        I8x16ReplaceLane { lane } => Some(WasmOp::I8x16ReplaceLane(*lane)),
+        I8x16Shuffle { lanes } => Some(WasmOp::I8x16Shuffle(*lanes)),
+        I8x16Swizzle => Some(WasmOp::I8x16Swizzle),
+
+        // i16x8
+        I16x8Add => Some(WasmOp::I16x8Add),
+        I16x8Sub => Some(WasmOp::I16x8Sub),
+        I16x8Mul => Some(WasmOp::I16x8Mul),
+        I16x8Neg => Some(WasmOp::I16x8Neg),
+        I16x8Eq => Some(WasmOp::I16x8Eq),
+        I16x8Ne => Some(WasmOp::I16x8Ne),
+        I16x8LtS => Some(WasmOp::I16x8LtS),
+        I16x8LtU => Some(WasmOp::I16x8LtU),
+        I16x8GtS => Some(WasmOp::I16x8GtS),
+        I16x8GtU => Some(WasmOp::I16x8GtU),
+        I16x8LeS => Some(WasmOp::I16x8LeS),
+        I16x8LeU => Some(WasmOp::I16x8LeU),
+        I16x8GeS => Some(WasmOp::I16x8GeS),
+        I16x8GeU => Some(WasmOp::I16x8GeU),
+        I16x8Splat => Some(WasmOp::I16x8Splat),
+        I16x8ExtractLaneS { lane } => Some(WasmOp::I16x8ExtractLaneS(*lane)),
+        I16x8ExtractLaneU { lane } => Some(WasmOp::I16x8ExtractLaneU(*lane)),
+        I16x8ReplaceLane { lane } => Some(WasmOp::I16x8ReplaceLane(*lane)),
+
+        // i32x4
+        I32x4Add => Some(WasmOp::I32x4Add),
+        I32x4Sub => Some(WasmOp::I32x4Sub),
+        I32x4Mul => Some(WasmOp::I32x4Mul),
+        I32x4Neg => Some(WasmOp::I32x4Neg),
+        I32x4Eq => Some(WasmOp::I32x4Eq),
+        I32x4Ne => Some(WasmOp::I32x4Ne),
+        I32x4LtS => Some(WasmOp::I32x4LtS),
+        I32x4LtU => Some(WasmOp::I32x4LtU),
+        I32x4GtS => Some(WasmOp::I32x4GtS),
+        I32x4GtU => Some(WasmOp::I32x4GtU),
+        I32x4LeS => Some(WasmOp::I32x4LeS),
+        I32x4LeU => Some(WasmOp::I32x4LeU),
+        I32x4GeS => Some(WasmOp::I32x4GeS),
+        I32x4GeU => Some(WasmOp::I32x4GeU),
+        I32x4Splat => Some(WasmOp::I32x4Splat),
+        I32x4ExtractLane { lane } => Some(WasmOp::I32x4ExtractLane(*lane)),
+        I32x4ReplaceLane { lane } => Some(WasmOp::I32x4ReplaceLane(*lane)),
+
+        // i64x2
+        I64x2Add => Some(WasmOp::I64x2Add),
+        I64x2Sub => Some(WasmOp::I64x2Sub),
+        I64x2Mul => Some(WasmOp::I64x2Mul),
+        I64x2Neg => Some(WasmOp::I64x2Neg),
+        I64x2Eq => Some(WasmOp::I64x2Eq),
+        I64x2Ne => Some(WasmOp::I64x2Ne),
+        I64x2LtS => Some(WasmOp::I64x2LtS),
+        I64x2GtS => Some(WasmOp::I64x2GtS),
+        I64x2LeS => Some(WasmOp::I64x2LeS),
+        I64x2GeS => Some(WasmOp::I64x2GeS),
+        I64x2Splat => Some(WasmOp::I64x2Splat),
+        I64x2ExtractLane { lane } => Some(WasmOp::I64x2ExtractLane(*lane)),
+        I64x2ReplaceLane { lane } => Some(WasmOp::I64x2ReplaceLane(*lane)),
+
+        // f32x4
+        F32x4Add => Some(WasmOp::F32x4Add),
+        F32x4Sub => Some(WasmOp::F32x4Sub),
+        F32x4Mul => Some(WasmOp::F32x4Mul),
+        F32x4Div => Some(WasmOp::F32x4Div),
+        F32x4Abs => Some(WasmOp::F32x4Abs),
+        F32x4Neg => Some(WasmOp::F32x4Neg),
+        F32x4Sqrt => Some(WasmOp::F32x4Sqrt),
+        F32x4Eq => Some(WasmOp::F32x4Eq),
+        F32x4Ne => Some(WasmOp::F32x4Ne),
+        F32x4Lt => Some(WasmOp::F32x4Lt),
+        F32x4Le => Some(WasmOp::F32x4Le),
+        F32x4Gt => Some(WasmOp::F32x4Gt),
+        F32x4Ge => Some(WasmOp::F32x4Ge),
+        F32x4Splat => Some(WasmOp::F32x4Splat),
+        F32x4ExtractLane { lane } => Some(WasmOp::F32x4ExtractLane(*lane)),
+        F32x4ReplaceLane { lane } => Some(WasmOp::F32x4ReplaceLane(*lane)),
+
         // Other operators not yet supported
         _ => None,
     }
@@ -801,5 +918,182 @@ mod tests {
         assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Store8 { .. })));
         assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Store16 { .. })));
         assert!(ops.iter().any(|o| matches!(o, WasmOp::I64Store32 { .. })));
+    }
+
+    #[test]
+    fn test_decode_simd_i32x4_add() {
+        let wat = r#"
+            (module
+                (func (export "add_v128") (param v128 v128) (result v128)
+                    local.get 0
+                    local.get 1
+                    i32x4.add
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT with SIMD");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        assert!(
+            functions[0].ops.contains(&WasmOp::I32x4Add),
+            "Should decode i32x4.add: {:?}",
+            functions[0].ops
+        );
+    }
+
+    #[test]
+    fn test_decode_simd_v128_const() {
+        let wat = r#"
+            (module
+                (func (export "const_v128") (result v128)
+                    v128.const i32x4 1 2 3 4
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT with SIMD");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        assert!(
+            functions[0]
+                .ops
+                .iter()
+                .any(|o| matches!(o, WasmOp::V128Const(_))),
+            "Should decode v128.const: {:?}",
+            functions[0].ops
+        );
+    }
+
+    #[test]
+    fn test_decode_simd_v128_load_store() {
+        let wat = r#"
+            (module
+                (memory 1)
+                (func (export "load_store") (param i32)
+                    local.get 0
+                    v128.load
+                    local.get 0
+                    v128.store
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT with SIMD");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        let ops = &functions[0].ops;
+        assert!(
+            ops.iter().any(|o| matches!(o, WasmOp::V128Load { .. })),
+            "Should decode v128.load"
+        );
+        assert!(
+            ops.iter().any(|o| matches!(o, WasmOp::V128Store { .. })),
+            "Should decode v128.store"
+        );
+    }
+
+    #[test]
+    fn test_decode_simd_bitwise_ops() {
+        let wat = r#"
+            (module
+                (func (export "bitwise") (param v128 v128) (result v128)
+                    local.get 0
+                    local.get 1
+                    v128.and
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT with SIMD");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        assert!(functions[0].ops.contains(&WasmOp::V128And));
+    }
+
+    #[test]
+    fn test_decode_simd_splat() {
+        let wat = r#"
+            (module
+                (func (export "splat") (param i32) (result v128)
+                    local.get 0
+                    i32x4.splat
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT with SIMD");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        assert!(functions[0].ops.contains(&WasmOp::I32x4Splat));
+    }
+
+    #[test]
+    fn test_decode_simd_extract_lane() {
+        let wat = r#"
+            (module
+                (func (export "extract") (param v128) (result i32)
+                    local.get 0
+                    i32x4.extract_lane 2
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT with SIMD");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        assert!(
+            functions[0].ops.contains(&WasmOp::I32x4ExtractLane(2)),
+            "Should decode i32x4.extract_lane 2"
+        );
+    }
+
+    #[test]
+    fn test_decode_simd_f32x4_arithmetic() {
+        let wat = r#"
+            (module
+                (func (export "f32x4_add") (param v128 v128) (result v128)
+                    local.get 0
+                    local.get 1
+                    f32x4.add
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT with SIMD");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        assert!(functions[0].ops.contains(&WasmOp::F32x4Add));
+    }
+
+    #[test]
+    fn test_decode_simd_multiple_ops() {
+        let wat = r#"
+            (module
+                (func (export "simd_ops") (param v128 v128 v128) (result v128)
+                    ;; (a + b) * c
+                    local.get 0
+                    local.get 1
+                    i32x4.add
+                    local.get 2
+                    i32x4.mul
+                )
+            )
+        "#;
+
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT with SIMD");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+
+        assert_eq!(functions.len(), 1);
+        let ops = &functions[0].ops;
+        assert!(ops.contains(&WasmOp::I32x4Add));
+        assert!(ops.contains(&WasmOp::I32x4Mul));
     }
 }

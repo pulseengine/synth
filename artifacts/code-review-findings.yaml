@@ -1,0 +1,338 @@
+# Code Review Findings — Embedded Code Generation Safety Review
+#
+# System: Synth — WebAssembly-to-ARM Cortex-M AOT compiler
+# Date: 2026-03-21
+# Scope: Code generation subsystem (instruction selection, register allocation,
+#   ARM encoding, inline pseudo-op expansion)
+#
+# Findings are categorized as Critical (C) or High (H) severity.
+# Each finding traces to STPA hazards, losses, and constraints.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # =========================================================================
+  # Critical Findings (C1-C5)
+  # =========================================================================
+  - id: CR-C1
+    type: sys-verification
+    title: "C1: Division by zero not trapped (WASM spec violation)"
+    description: >
+      The rules.rs synthesis path emits bare UDIV/SDIV instructions for
+      i32.div_u and i32.div_s without a preceding CMP+BEQ+UDF trap guard.
+      The WebAssembly specification (section 4.3.2.3) requires that division
+      by zero traps. ARM's UDIV/SDIV return 0 when the divisor is 0
+      (implementation-defined behavior on Cortex-M). The instruction_selector.rs
+      path correctly emits the trap guard, creating an inconsistency between
+      two synthesis paths for the same operation.
+    status: open
+    tags: [critical, wasm-spec, division, trap, rules-rs]
+    links:
+      - type: verifies
+        target: FR-002
+      - type: traces-to
+        target: H-CODE-3
+      - type: traces-to
+        target: SC-CODE-3
+      - type: traces-to
+        target: SC-1
+    fields:
+      severity: critical
+      category: specification-violation
+      affected-operations: [i32.div_u, i32.div_s]
+      code-location: crates/synth-synthesis/src/rules.rs
+      fix-strategy: >
+        Add CMP+BNE+UDF trap guard before every UDIV/SDIV emission in
+        rules.rs, matching the pattern already used in instruction_selector.rs.
+
+  - id: CR-C2
+    type: sys-verification
+    title: "C2: RSB immediate truncation (silent wrong code)"
+    description: >
+      The ARM encoder's RSB instruction encoding masks the immediate to 8 bits
+      with (imm & 0xFF) without checking whether the value fits. An immediate
+      value of 256 is silently encoded as 0, producing RSB Rd, Rn, #0 instead
+      of RSB Rd, Rn, #256. The caller receives no error and the generated code
+      computes wrong results for any RSB with immediate > 255.
+    status: open
+    tags: [critical, arm-encoding, truncation, immediate]
+    links:
+      - type: verifies
+        target: FR-002
+      - type: traces-to
+        target: H-CODE-2
+      - type: traces-to
+        target: SC-CODE-7
+      - type: traces-to
+        target: SC-4
+    fields:
+      severity: critical
+      category: wrong-code-generation
+      code-location: "crates/synth-backend/src/arm_encoder.rs:252"
+      fix-strategy: >
+        Add range check before masking: if imm > 255, return
+        Err(EncodeError::ImmediateOutOfRange). The instruction selector must
+        then emit MOVW+MOVT to materialize the constant.
+
+  - id: CR-C3
+    type: sys-verification
+    title: "C3: LDRSB/LDRH offset truncation (silent wrong code)"
+    description: >
+      The ARM encoder's LDRSB and LDRH instruction encodings mask the offset
+      to 8 bits with (offset_bits & 0xFF) without range checking. An offset
+      of 260 is silently encoded as 4 (260 & 0xFF = 4), causing the load to
+      access memory at a completely wrong address. This produces silent data
+      corruption with no compile-time or runtime error.
+    status: open
+    tags: [critical, arm-encoding, truncation, offset]
+    links:
+      - type: verifies
+        target: FR-002
+      - type: traces-to
+        target: H-CODE-2
+      - type: traces-to
+        target: SC-CODE-7
+      - type: traces-to
+        target: SC-4
+    fields:
+      severity: critical
+      category: wrong-code-generation
+      code-location: "crates/synth-backend/src/arm_encoder.rs:376,386"
+      fix-strategy: >
+        Add range check: if offset > 255 for LDRSB/LDRH, return
+        Err(EncodeError::OffsetOutOfRange). The instruction selector must
+        emit an ADD to a scratch register for large offsets.
+
+  - id: CR-C4
+    type: sys-verification
+    title: "C4: Register allocator wraps through R10 (memory size clobbered)"
+    description: >
+      The register allocator (index_to_reg) uses (index % 13) to cycle through
+      R0-R12. After 10 temporary allocations, it assigns R10, which holds the
+      WebAssembly linear memory size for bounds checks. Writing to R10 corrupts
+      the bounds check comparison value, causing bounds checks to use a wrong
+      memory size for all subsequent memory accesses.
+    status: open
+    tags: [critical, register-allocation, memory-safety]
+    links:
+      - type: verifies
+        target: NFR-002
+      - type: traces-to
+        target: H-CODE-1
+      - type: traces-to
+        target: SC-CODE-1
+      - type: traces-to
+        target: SC-6
+    fields:
+      severity: critical
+      category: register-corruption
+      code-location: "crates/synth-synthesis/src/instruction_selector.rs:80-96"
+      fix-strategy: >
+        Change index_to_reg to only allocate R0-R8 (index % 9). Exclude R9
+        (globals), R10 (memory size), R11 (memory base), R12 (IP scratch).
+
+  - id: CR-C5
+    type: sys-verification
+    title: "C5: Register allocator wraps through R11 (memory base clobbered)"
+    description: >
+      The register allocator assigns R11 after 11 allocations. R11 holds the
+      WebAssembly linear memory base pointer. All memory loads (LDR Rd,
+      [R11, Rn]) and stores (STR Rd, [R11, Rn]) use R11 as the base address.
+      Overwriting R11 with a temporary value causes all subsequent memory
+      operations to read/write at a completely wrong memory location,
+      potentially corrupting arbitrary system memory.
+    status: open
+    tags: [critical, register-allocation, memory-safety]
+    links:
+      - type: verifies
+        target: NFR-002
+      - type: traces-to
+        target: H-CODE-1
+      - type: traces-to
+        target: SC-CODE-1
+      - type: traces-to
+        target: SC-6
+    fields:
+      severity: critical
+      category: register-corruption
+      code-location: "crates/synth-synthesis/src/instruction_selector.rs:80-96"
+      fix-strategy: >
+        Same fix as CR-C4: change index_to_reg to exclude R9-R12.
+
+  # =========================================================================
+  # High Findings (H2-H8)
+  # =========================================================================
+  - id: CR-H2
+    type: sys-verification
+    title: "H2: Bounds check ignores access size (OOB memory access)"
+    description: >
+      The software bounds check sequence compares effective_address against
+      memory_size but does not add the access width (1, 2, 4, or 8 bytes).
+      A 4-byte i32.load at address (memory_size - 1) passes the check
+      (address < memory_size) but reads 3 bytes past the linear memory end.
+      The _access_size parameter is declared in the function signature but
+      never used in the computation.
+    status: open
+    tags: [high, memory-safety, bounds-checking]
+    links:
+      - type: verifies
+        target: FR-003
+      - type: traces-to
+        target: H-CODE-4
+      - type: traces-to
+        target: SC-CODE-4
+      - type: traces-to
+        target: SC-3
+    fields:
+      severity: high
+      category: memory-safety
+      affected-operations: [i32.load, i64.load, f32.load, f64.load, i32.store, i64.store, f32.store, f64.store]
+      code-location: "crates/synth-synthesis/src/instruction_selector.rs:2145,2205"
+      fix-strategy: >
+        Change bounds check to: ADD temp, addr, #(offset + access_size);
+        CMP temp, R10; BHS trap. Use the _access_size parameter.
+
+  - id: CR-H3
+    type: sys-verification
+    title: "H3: No callee-saved register preservation (caller state corrupted)"
+    description: >
+      The instruction selector does not emit PUSH/POP of callee-saved
+      registers (r4-r11, lr) at function entry/exit. When a compiled WASM
+      function uses any of r4-r11 (which the register allocator assigns
+      starting at the 5th temporary), those registers are clobbered without
+      being saved. If the function is called from another compiled function
+      or from the runtime, the caller's values in those registers are lost.
+    status: open
+    tags: [high, calling-convention, register-preservation]
+    links:
+      - type: verifies
+        target: FR-005
+      - type: traces-to
+        target: H-CODE-5
+      - type: traces-to
+        target: SC-CODE-5
+      - type: traces-to
+        target: SC-6
+    fields:
+      severity: high
+      category: calling-convention-violation
+      code-location: "crates/synth-synthesis/src/instruction_selector.rs (compile_function)"
+      fix-strategy: >
+        Add prologue: determine used callee-saved registers from function
+        body, emit PUSH {used_regs, lr}. Add epilogue: emit POP {used_regs, pc}.
+
+  - id: CR-H4
+    type: sys-verification
+    title: "H4: No 8-byte stack alignment (alignment faults)"
+    description: >
+      The instruction selector does not enforce 8-byte stack alignment
+      at function boundaries as required by AAPCS section 5.2.1.2. If an
+      odd number of registers are pushed, SP is 4-byte aligned but not
+      8-byte aligned. STRD/LDRD instructions require 8-byte alignment and
+      will fault. Cortex-M hardware exception entry also assumes 8-byte
+      aligned SP.
+    status: open
+    tags: [high, calling-convention, stack-alignment, aapcs]
+    links:
+      - type: verifies
+        target: FR-005
+      - type: traces-to
+        target: H-CODE-6
+      - type: traces-to
+        target: SC-CODE-6
+    fields:
+      severity: high
+      category: calling-convention-violation
+      code-location: "crates/synth-synthesis/src/instruction_selector.rs (compile_function)"
+      fix-strategy: >
+        After determining the set of registers to push, if count is odd,
+        add a padding register (e.g., R3) to the push list to maintain
+        8-byte alignment.
+
+  - id: CR-H5
+    type: sys-verification
+    title: "H5: Inline i64 division emits POP {PC} (premature function return)"
+    description: >
+      The ARM encoder's inline expansion of I64DivU, I64DivS, I64RemU, and
+      I64RemS emits PUSH {R4-R7, LR} at the start and POP {R4-R7, PC} at
+      the end. POP {PC} is equivalent to a function return. When the i64
+      division appears in the middle of a function (followed by more
+      operations), POP {PC} causes the function to return immediately after
+      the division, skipping all subsequent instructions.
+    status: open
+    tags: [high, arm-encoding, control-flow, i64-division]
+    links:
+      - type: verifies
+        target: FR-002
+      - type: traces-to
+        target: H-CODE-7
+      - type: traces-to
+        target: SC-CODE-8
+    fields:
+      severity: high
+      category: control-flow-corruption
+      affected-operations: [i64.div_u, i64.div_s, i64.rem_u, i64.rem_s]
+      code-location: "crates/synth-backend/src/arm_encoder.rs:3957 (0xBDF0)"
+      fix-strategy: >
+        Replace POP {R4-R7, PC} (0xBDF0) with POP {R4-R7} (0xBCF0, without
+        PC). The expansion should fall through to the next instruction.
+        LR was pushed but should be restored to LR, not PC.
+
+  - id: CR-H7
+    type: sys-verification
+    title: "H7: Popcnt clobbers R11 (memory base pointer destroyed)"
+    description: >
+      The Popcnt inline expansion in the ARM encoder uses R11 as a scratch
+      register for intermediate bit-manipulation results. R11 is the
+      WebAssembly linear memory base pointer maintained throughout each
+      compiled function. After i32.popcnt executes, R11 contains garbage,
+      and all subsequent LDR/STR [R11, ...] memory accesses use the wrong
+      base address, reading from or writing to arbitrary memory.
+    status: open
+    tags: [high, arm-encoding, register-clobber, memory-safety]
+    links:
+      - type: verifies
+        target: FR-002
+      - type: traces-to
+        target: H-CODE-8
+      - type: traces-to
+        target: SC-CODE-9
+    fields:
+      severity: high
+      category: register-corruption
+      affected-operations: [i32.popcnt]
+      code-location: "crates/synth-backend/src/arm_encoder.rs:3836"
+      fix-strategy: >
+        Option A: PUSH {R11} before use, POP {R11} after. Option B: Use a
+        different scratch register (e.g., R3 after PUSH {R3}). Option C:
+        Restructure the algorithm to use only R12 and rd as scratch.
+
+  - id: CR-H8
+    type: sys-verification
+    title: "H8: I64SetCondZ CMP encoding fails for high registers"
+    description: >
+      The I64SetCondZ inline expansion uses a 16-bit CMP Rd, #0 encoding
+      (0x2800 | (rd_bits << 8)). This 16-bit encoding only supports registers
+      R0-R7 (3-bit register field in bits [10:8]). When rd is R8 or higher,
+      rd_bits > 7 and the shift overflows the 3-bit field. This produces
+      either a wrong register comparison or an invalid instruction encoding.
+      Since I64Eqz delegates to I64SetCondZ, all i64.eqz operations are
+      affected when the result register is a high register.
+    status: open
+    tags: [high, arm-encoding, register-encoding, i64]
+    links:
+      - type: verifies
+        target: FR-002
+      - type: traces-to
+        target: H-CODE-9
+      - type: traces-to
+        target: SC-CODE-10
+    fields:
+      severity: high
+      category: wrong-code-generation
+      affected-operations: [i64.eqz, i64.eq]
+      code-location: "crates/synth-backend/src/arm_encoder.rs:2684"
+      fix-strategy: >
+        Replace 16-bit CMP with 32-bit CMP.W encoding (F1B0 series) that
+        supports all registers R0-R15. Or ensure rd is always forced to a
+        low register before the comparison.
