@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "ARM encoder, ELF builder, vector table, linker scripts, and MPU configuration"
 
 [features]
 default = ["arm-cortex-m"]

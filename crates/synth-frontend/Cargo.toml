@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "WASM/WAT parser and module decoder frontend for the Synth compiler"
 
 [dependencies]
 synth-core = { path = "../synth-core" }

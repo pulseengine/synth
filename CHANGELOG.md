@@ -5,23 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Changed
-- Reorganized documentation structure - consolidated 41 root docs into organized `docs/` subdirectories
-- Documentation now organized by category: status, sessions, analysis, planning, research, build-systems, validation, architecture
+## [0.1.0] - 2026-03-21
 
 ### Added
-- GitHub project infrastructure: 40 labels, 4 milestones, 24 issues
-- Project board for tracking reorganization progress
 
-## [0.1.0] - TBD
+#### Compiler
+- WebAssembly-to-ARM Cortex-M AOT compiler
+- 197+ WASM opcodes supported (i32, i64, f32, f64, SIMD/Helium)
+- Full control flow (block, loop, if/else, br, br_if, br_table, call)
+- Sub-word memory operations (load8/16, store8/16)
+- memory.size / memory.grow
+- Globals, select, i64 register pairs
+- ARM Thumb-2 instruction encoding
+- VFP/FPU support (f32, f64)
+- WASM SIMD to ARM Helium MVE (Cortex-M55)
 
-### Planned
-- Working CLI: `synth compile input.wasm -o output.elf`
-- Calculator demo running on Zephyr/QEMU
-- Complete CI/CD pipeline
-- Comprehensive documentation
+#### Output
+- ELF binary output with vector table and startup code
+- Linker script generation (STM32, nRF52840, generic)
+- MPU region configuration
+- `synth compile --link` cross-compilation pipeline via arm-none-eabi-gcc
+
+#### CLI
+- `synth compile` -- compile WASM/WAT to ARM ELF
+- `synth disasm` -- disassemble ARM ELF binaries
+- `synth verify` -- Z3 SMT translation validation
+- `synth backends` -- list available compilation backends
+- Target profiles: cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp, cortex-m55
+
+#### Verification
+- Rocq mechanized proofs (188 Qed / 52 Admitted)
+- All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have T1 result-correspondence proofs
+- Z3 SMT translation validation (53 verification tests)
+- STPA safety analysis (losses, hazards, UCAs, constraints)
+- Rivet SDLC artifact traceability (250+ artifacts)
+
+#### Testing
+- 851 tests, all passing
+- 227/257 WebAssembly spec test files compile
+- Renode ARM Cortex-M4 emulation tests via Bazel
+
+#### Examples & Integrations
+- Zephyr RTOS integration examples
+- Anti-pinch window controller (automotive safety demo)
+- OSxCAR WASM compilation test
 
 ---
 

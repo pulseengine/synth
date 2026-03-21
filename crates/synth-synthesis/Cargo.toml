@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "WASM-to-ARM instruction selection and peephole optimizer"
 
 [dependencies]
 synth-core = { path = "../synth-core" }

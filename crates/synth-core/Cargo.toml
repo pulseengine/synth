@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "Core types, error handling, and backend trait for the Synth compiler"
 
 [dependencies]
 serde.workspace = true

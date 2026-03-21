@@ -5,6 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+description = "WebAssembly Component Model ABI (lift/lower) for the Synth compiler"
 
 [dependencies]
 synth-wit = { path = "../synth-wit" }

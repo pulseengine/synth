@@ -2,7 +2,7 @@
 
 # Synth
 
-<sup>WebAssembly-to-ARM compiler with mechanized correctness proofs</sup>
+<sup>WebAssembly-to-ARM Cortex-M AOT compiler with mechanized correctness proofs</sup>
 
 &nbsp;
 
@@ -29,7 +29,7 @@
 
 &nbsp;
 
-Synth compiles WebAssembly to native ARM Cortex-M machine code, producing bare-metal ELF binaries for embedded targets. Pattern-based instruction selection, AAPCS calling conventions, and ELF generation -- with mechanized correctness proofs in [Rocq](https://rocq-prover.org/) (formerly Coq) and SMT-based translation validation via Z3.
+Synth compiles WebAssembly to native ARM Cortex-M machine code, producing bare-metal ELF binaries for embedded targets. It supports 197+ WASM opcodes (i32, i64, f32, f64, SIMD/Helium), full control flow, memory operations, and globals. Pattern-based instruction selection, AAPCS calling conventions, and ELF generation -- with mechanized correctness proofs in [Rocq](https://rocq-prover.org/) (formerly Coq) and SMT-based translation validation via Z3.
 
 Part of [PulseEngine](https://github.com/pulseengine) -- a WebAssembly toolchain for safety-critical systems with mechanized verification:
 
@@ -44,7 +44,7 @@ Part of [PulseEngine](https://github.com/pulseengine) -- a WebAssembly toolchain
 
 ### From source (Cargo)
 
-Requires Rust 1.85+ (edition 2024).
+Requires Rust 1.88+ (edition 2024).
 
 ```bash
 git clone https://github.com/pulseengine/synth.git
@@ -61,6 +61,38 @@ Bazel 8.x builds Rust, Rocq proofs, and Renode emulation tests hermetically via 
 ```bash
 bazel build //crates:synth
 ```
+
+## Quick Start
+
+```bash
+# Compile a WAT file to a Cortex-M ELF binary
+synth compile examples/wat/simple_add.wat --cortex-m -o firmware.elf
+
+# Disassemble the result
+synth disasm firmware.elf
+
+# Formally verify the translation
+synth verify examples/wat/simple_add.wat firmware.elf
+```
+
+## Features
+
+| Category | Status |
+|----------|--------|
+| i32 arithmetic, bitwise, comparison, shift/rotate | Supported |
+| i64 arithmetic (register pairs) | Supported |
+| f32/f64 via VFP | Supported |
+| WASM SIMD via ARM Helium MVE | Supported (Cortex-M55) |
+| Control flow (block, loop, if/else, br, br_if, br_table) | Supported |
+| Function calls (direct, indirect) | Supported |
+| Memory (load/store, sub-word, size/grow) | Supported |
+| Globals, select, unreachable, nop | Supported |
+| ELF output with vector table | Supported |
+| Linker scripts (STM32, nRF52840, generic) | Supported |
+| Cross-compilation via arm-none-eabi-gcc | Supported |
+| Rocq mechanized proofs | 188 Qed / 52 Admitted |
+| Z3 translation validation | 53 tests passing |
+| WebAssembly spec test suite | 227/257 files compile |
 
 ## Usage
 
@@ -120,7 +152,7 @@ graph LR
 **Pipeline stages:**
 
 1. **Parse** -- decode WASM binary or WAT text via `wasmparser`/`wat` crates
-2. **Instruction selection** -- pattern-match WASM ops to ARM instruction sequences (i32 integer ops; f32/f64/i64 rejected at compile time)
+2. **Instruction selection** -- pattern-match WASM ops to ARM instruction sequences (i32, i64, f32, f64, SIMD)
 3. **Peephole optimization** -- redundant-op elimination, NOP removal, instruction fusion, constant propagation (0-25% code reduction)
 4. **ARM encoding** -- emit 32-bit ARM / Thumb-2 machine code
 5. **ELF builder** -- produce ELF32 with `.text`, `.isr_vector`, `.data`, `.bss`, symbol table; optional vector table and reset handler for Cortex-M
@@ -134,11 +166,13 @@ Synth employs two complementary verification strategies.
 Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM semantics for each operation. The proof suite lives in `coq/Synth/` and covers ARM instruction semantics, WASM stack-machine semantics, and per-operation correctness theorems.
 
 ```
-154 Qed  /  71 Admitted  /  12 axioms
-  T1: 19 result-correspondence (ARM output = WASM result)
+188 Qed  /  52 Admitted
+  T1: 39 result-correspondence (ARM output = WASM result)
   T2: 95 existence-only (ARM execution succeeds)
-  T3: 71 admitted (VFP, flags, shifts)
+  T3: 52 admitted (VFP/float semantics)
 ```
+
+All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have full T1 proofs.
 
 Build the proofs:
 
@@ -173,7 +207,7 @@ The `synth-verify` crate encodes WASM and ARM semantics as Z3 formulas and check
 ## Testing
 
 ```bash
-# Run all Rust tests (521 tests across workspace)
+# Run all Rust tests (851 tests across workspace)
 cargo test --workspace
 
 # Lint

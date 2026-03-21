@@ -1,6 +1,7 @@
-//! Synth CLI - WebAssembly Component Synthesizer
+//! Synth CLI - WebAssembly-to-ARM Cortex-M AOT Compiler
 //!
-//! Command-line interface for the Synth synthesizer.
+//! Command-line interface for the Synth compiler. Compiles WASM/WAT files
+//! to bare-metal ARM Cortex-M ELF binaries with optional formal verification.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -23,7 +24,17 @@ use wast::{Wast, WastDirective};
 
 #[derive(Parser)]
 #[command(name = "synth")]
-#[command(about = "WebAssembly Component Synthesizer for Embedded Systems", long_about = None)]
+#[command(about = "WebAssembly-to-ARM Cortex-M AOT compiler")]
+#[command(
+    long_about = "Synth compiles WebAssembly (WASM/WAT) to native ARM Cortex-M machine code,\n\
+producing bare-metal ELF binaries for embedded targets.\n\n\
+Examples:\n  \
+synth compile input.wat -o output.elf\n  \
+synth compile input.wat --cortex-m -o firmware.elf\n  \
+synth compile input.wat --cortex-m --link -o firmware.elf\n  \
+synth disasm firmware.elf\n  \
+synth verify input.wat firmware.elf"
+)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -90,7 +101,7 @@ enum Commands {
         target: String,
     },
 
-    /// Compile WASM/WAT to ARM ELF
+    /// Compile WASM/WAT to ARM ELF (e.g., synth compile input.wat --cortex-m -o fw.elf)
     Compile {
         /// Input WASM or WAT file (optional, use --demo for built-in demos)
         #[arg(value_name = "INPUT")]
@@ -155,7 +166,7 @@ enum Commands {
         builtins: Option<PathBuf>,
     },
 
-    /// Disassemble an ARM ELF file
+    /// Disassemble an ARM ELF file (e.g., synth disasm output.elf)
     Disasm {
         /// Input ELF file
         #[arg(value_name = "INPUT")]
@@ -165,7 +176,7 @@ enum Commands {
     /// List available compilation backends and their status
     Backends,
 
-    /// Verify compilation correctness (translation validation)
+    /// Verify compilation correctness via Z3 (e.g., synth verify input.wat output.elf)
     Verify {
         /// Input WASM or WAT file (source)
         #[arg(value_name = "WASM")]
