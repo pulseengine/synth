@@ -145,6 +145,14 @@ enum Commands {
         /// Run translation validation after compilation
         #[arg(long)]
         verify: bool,
+
+        /// Link the compiled object into a final firmware ELF using arm-none-eabi-gcc
+        #[arg(long)]
+        link: bool,
+
+        /// Path to kiln-builtins object file (.o) for linking (used with --link)
+        #[arg(long, value_name = "BUILTINS")]
+        builtins: Option<PathBuf>,
     },
 
     /// Disassemble an ARM ELF file
@@ -220,6 +228,8 @@ fn main() -> Result<()> {
             bounds_check,
             backend,
             verify,
+            link,
+            builtins,
         } => {
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
             let target_spec = resolve_target_spec(target.as_deref(), cortex_m)?;
@@ -228,7 +238,7 @@ fn main() -> Result<()> {
 
             compile_command(
                 input,
-                output,
+                output.clone(),
                 demo,
                 func_index,
                 func_name,
@@ -241,6 +251,11 @@ fn main() -> Result<()> {
                 verify,
                 &target_spec,
             )?;
+
+            // If --link requested, invoke the cross-linker
+            if link {
+                link_firmware(&output, builtins.as_deref(), &target_spec)?;
+            }
         }
         Commands::Disasm { input } => {
             disasm_command(input)?;
@@ -2239,6 +2254,109 @@ fn generate_trap_handler() -> Vec<u8> {
     // between normal return (PC at Default_Handler) and trap (PC at Trap_Handler)
     // B . (branch to self) - Thumb encoding
     vec![0xfe, 0xe7]
+}
+
+/// Link a compiled .o into a final firmware.elf using arm-none-eabi-gcc.
+///
+/// Steps:
+/// 1. Generate a linker script from the .o file
+/// 2. Find arm-none-eabi-gcc in PATH
+/// 3. Invoke the linker with the generated script
+/// 4. Replace the .o output with the linked .elf
+fn link_firmware(
+    object_path: &std::path::Path,
+    builtins: Option<&std::path::Path>,
+    _target_spec: &TargetSpec,
+) -> Result<()> {
+    use std::process::Command;
+
+    // Find cross-compiler
+    let gcc = ["arm-none-eabi-gcc", "arm-none-eabi-ld"]
+        .iter()
+        .find(|cmd| {
+            Command::new(cmd)
+                .arg("--version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        })
+        .copied();
+
+    let gcc = match gcc {
+        Some(g) => g,
+        None => {
+            anyhow::bail!(
+                "arm-none-eabi-gcc not found in PATH. Install the ARM embedded toolchain:\n  \
+                 brew install arm-none-eabi-gcc  (macOS)\n  \
+                 apt install gcc-arm-none-eabi   (Linux)"
+            );
+        }
+    };
+
+    info!("Using cross-linker: {}", gcc);
+
+    // Generate linker script
+    let mut ls_gen = synth_backend::LinkerScriptGenerator::new();
+    ls_gen.add_region(synth_backend::MemoryRegion {
+        name: "FLASH".to_string(),
+        origin: 0x0000_0000,
+        length: 256 * 1024,
+        attributes: "rx".to_string(),
+    });
+    ls_gen.add_region(synth_backend::MemoryRegion {
+        name: "RAM".to_string(),
+        origin: 0x2000_0000,
+        length: 128 * 1024,
+        attributes: "rwx".to_string(),
+    });
+    let ls_gen = ls_gen.with_stack_size(4096).with_meld_integration();
+    let linker_script = ls_gen
+        .generate()
+        .context("Failed to generate linker script")?;
+
+    let ld_script_path = object_path.with_extension("ld");
+    std::fs::write(&ld_script_path, &linker_script).context("Failed to write linker script")?;
+
+    info!("Generated linker script: {}", ld_script_path.display());
+
+    // Build linker command
+    let firmware_path = object_path.with_extension("firmware.elf");
+    let mut cmd = Command::new(gcc);
+
+    if gcc == "arm-none-eabi-gcc" {
+        cmd.args(["-nostartfiles", "-nostdlib", "-mcpu=cortex-m4", "-mthumb"]);
+    }
+
+    cmd.arg("-T").arg(&ld_script_path);
+    cmd.arg(object_path);
+
+    if let Some(builtins_path) = builtins {
+        cmd.arg(builtins_path);
+    }
+
+    cmd.arg("-o").arg(&firmware_path);
+
+    info!("Linking: {:?}", cmd);
+
+    let output = cmd.output().context("Failed to invoke cross-linker")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Linker failed:\n{}", stderr);
+    }
+
+    // Clean up linker script
+    let _ = std::fs::remove_file(&ld_script_path);
+
+    println!(
+        "Linked firmware: {} ({} bytes)",
+        firmware_path.display(),
+        std::fs::metadata(&firmware_path)
+            .map(|m| m.len())
+            .unwrap_or(0)
+    );
+
+    Ok(())
 }
 
 #[cfg(test)]
