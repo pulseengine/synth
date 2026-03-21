@@ -16,7 +16,7 @@ use synth_core::HardwareCapabilities;
 use synth_core::backend::{Backend, BackendRegistry, CompileConfig};
 use synth_core::target::TargetSpec;
 use synth_core::wasm_decoder::ImportEntry;
-use synth_synthesis::{WasmMemory, WasmOp, decode_wasm_functions, decode_wasm_module};
+use synth_synthesis::{FunctionOps, WasmMemory, WasmOp, decode_wasm_functions, decode_wasm_module};
 use tracing::{Level, info};
 use wast::parser::{self, ParseBuffer};
 use wast::{Wast, WastDirective};
@@ -1049,24 +1049,57 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<()> {
 }
 
 /// Extract module binary from WAST file (handles assert_return, etc.)
-fn extract_module_from_wast(contents: &str) -> Result<Vec<u8>> {
+/// Extract all modules from a WAST file, returning their binary representations.
+///
+/// Many spec test files contain multiple modules where exports live in later
+/// modules, not the first one.  We collect every valid module so the caller
+/// can merge exports across them.
+fn extract_all_modules_from_wast(contents: &str) -> Result<Vec<Vec<u8>>> {
     let buf = ParseBuffer::new(contents)
         .map_err(|e| anyhow::anyhow!("Failed to create parse buffer: {}", e))?;
 
     let wast: Wast =
         parser::parse(&buf).map_err(|e| anyhow::anyhow!("Failed to parse WAST: {}", e))?;
 
-    // Find the first module in the WAST directives
+    let mut modules = Vec::new();
+
     for directive in wast.directives {
         if let WastDirective::Module(mut quote_wat) = directive {
-            // Encode the WAT module to binary WASM
-            return quote_wat
-                .encode()
-                .map_err(|e| anyhow::anyhow!("Failed to encode module: {}", e));
+            match quote_wat.encode() {
+                Ok(binary) => modules.push(binary),
+                Err(e) => {
+                    // Some modules in spec tests are intentionally invalid
+                    // (e.g. modules used in assert_invalid). Skip them.
+                    info!("Skipping unencoded module: {}", e);
+                }
+            }
         }
     }
 
-    anyhow::bail!("No module found in WAST file")
+    if modules.is_empty() {
+        anyhow::bail!("No module found in WAST file");
+    }
+
+    Ok(modules)
+}
+
+/// Legacy helper: extract a single module from a WAST file.
+/// Picks the first module that has exported functions; falls back to the first
+/// module if none have exports.
+fn extract_module_from_wast(contents: &str) -> Result<Vec<u8>> {
+    let modules = extract_all_modules_from_wast(contents)?;
+
+    // Prefer a module with exports
+    for module_bytes in &modules {
+        if let Ok(decoded) = decode_wasm_module(module_bytes)
+            && decoded.functions.iter().any(|f| f.export_name.is_some())
+        {
+            return Ok(module_bytes.clone());
+        }
+    }
+
+    // Fall back to first module
+    Ok(modules.into_iter().next().unwrap())
 }
 
 /// Compile all exported functions into a multi-function ELF
@@ -1089,25 +1122,98 @@ fn compile_all_exports(
     let file_bytes =
         std::fs::read(&path).context(format!("Failed to read input file: {}", path.display()))?;
 
-    let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wast") {
-        info!("Parsing WAST to WASM (extracting module)...");
-        let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
-        extract_module_from_wast(&contents)?
-    } else if path.extension().is_some_and(|ext| ext == "wat") {
-        info!("Parsing WAT to WASM...");
-        wat::parse_bytes(&file_bytes)
-            .context("Failed to parse WAT file")?
-            .into_owned()
-    } else {
-        file_bytes
-    };
+    // Decode module(s) — for WAST files we merge exports across all modules
+    let (all_exports, all_memories, all_imports, max_num_imported_funcs) =
+        if path.extension().is_some_and(|ext| ext == "wast") {
+            info!("Parsing WAST (extracting all modules)...");
+            let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
+            let module_binaries = extract_all_modules_from_wast(&contents)?;
+            info!("Found {} modules in WAST file", module_binaries.len());
 
-    let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
+            // Decode each module and collect exports.
+            // Use an IndexMap-style approach: last module with a given export name wins
+            // (matching WAST spec semantics where assertions test the most-recent module).
+            let mut export_map: std::collections::HashMap<String, FunctionOps> =
+                std::collections::HashMap::new();
+            let mut merged_memories: Vec<WasmMemory> = Vec::new();
+            let mut merged_imports: Vec<ImportEntry> = Vec::new();
+            let mut max_imports: u32 = 0;
+
+            for (idx, wasm_bytes) in module_binaries.iter().enumerate() {
+                match decode_wasm_module(wasm_bytes) {
+                    Ok(module) => {
+                        let export_count = module
+                            .functions
+                            .iter()
+                            .filter(|f| f.export_name.is_some())
+                            .count();
+                        info!(
+                            "  Module {}: {} functions ({} exports), {} memories",
+                            idx,
+                            module.functions.len(),
+                            export_count,
+                            module.memories.len()
+                        );
+
+                        for func in module.functions {
+                            if let Some(name) = func.export_name.clone() {
+                                export_map.insert(name, func);
+                            }
+                        }
+
+                        // Take the largest memory across all modules
+                        for mem in &module.memories {
+                            if merged_memories.is_empty()
+                                || mem.initial_pages
+                                    > merged_memories
+                                        .first()
+                                        .map(|m| m.initial_pages)
+                                        .unwrap_or(0)
+                            {
+                                merged_memories = vec![mem.clone()];
+                            }
+                        }
+
+                        if module.num_imported_funcs > max_imports {
+                            max_imports = module.num_imported_funcs;
+                            merged_imports = module.imports.clone();
+                        }
+                    }
+                    Err(e) => {
+                        info!("  Module {}: decode failed ({}), skipping", idx, e);
+                    }
+                }
+            }
+
+            let exports: Vec<_> = export_map.into_values().collect();
+            (exports, merged_memories, merged_imports, max_imports)
+        } else {
+            let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
+                info!("Parsing WAT to WASM...");
+                wat::parse_bytes(&file_bytes)
+                    .context("Failed to parse WAT file")?
+                    .into_owned()
+            } else {
+                file_bytes
+            };
+
+            let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
+
+            let exports: Vec<_> = module
+                .functions
+                .into_iter()
+                .filter(|f| f.export_name.is_some())
+                .collect();
+            let memories = module.memories;
+            let imports = module.imports;
+            let num_imports = module.num_imported_funcs;
+            (exports, memories, imports, num_imports)
+        };
 
     // Log memory information
-    if !module.memories.is_empty() {
-        info!("Module declares {} memories:", module.memories.len());
-        for mem in &module.memories {
+    if !all_memories.is_empty() {
+        info!("Memories ({} total):", all_memories.len());
+        for mem in &all_memories {
             let max_str = mem
                 .max_pages
                 .map(|m| format!("{}", m))
@@ -1123,31 +1229,24 @@ fn compile_all_exports(
     }
 
     // Log import information
-    if module.num_imported_funcs > 0 {
+    if max_num_imported_funcs > 0 {
         info!(
             "Module imports {} functions (Meld dispatch enabled):",
-            module.num_imported_funcs
+            max_num_imported_funcs
         );
-        for imp in &module.imports {
+        for imp in &all_imports {
             if matches!(imp.kind, synth_core::ImportKind::Function(_)) {
                 info!("  import[{}]: {}::{}", imp.index, imp.module, imp.name);
             }
         }
     }
 
-    // Filter to only exported functions
-    let exports: Vec<_> = module
-        .functions
-        .iter()
-        .filter(|f| f.export_name.is_some())
-        .collect();
-
-    if exports.is_empty() {
+    if all_exports.is_empty() {
         anyhow::bail!("No exported functions found in module");
     }
 
-    info!("Found {} exported functions:", exports.len());
-    for f in &exports {
+    info!("Found {} exported functions:", all_exports.len());
+    for f in &all_exports {
         info!(
             "  '{}' (index {})",
             f.export_name.as_ref().unwrap(),
@@ -1160,14 +1259,14 @@ fn compile_all_exports(
         no_optimize,
         loom_compat,
         bounds_check,
-        num_imports: module.num_imported_funcs,
+        num_imports: max_num_imported_funcs,
         target: target_spec.clone(),
         ..CompileConfig::default()
     };
 
     // Compile each function via the selected backend
     let mut compiled_funcs = Vec::new();
-    for func in &exports {
+    for func in &all_exports {
         let name = func.export_name.clone().unwrap();
         info!(
             "Compiling function '{}' via backend '{}'...",
@@ -1216,9 +1315,9 @@ fn compile_all_exports(
     // (which provides __meld_dispatch_import and __meld_get_memory_base).
     let elf_data = if has_relocations {
         info!("Module has import calls — producing relocatable object (ET_REL)");
-        build_relocatable_elf(&compiled_funcs, &module.imports)?
+        build_relocatable_elf(&compiled_funcs, &all_imports)?
     } else if cortex_m {
-        build_multi_func_cortex_m_elf(&compiled_funcs, &module.memories, target_spec)?
+        build_multi_func_cortex_m_elf(&compiled_funcs, &all_memories, target_spec)?
     } else {
         build_multi_func_simple_elf(&compiled_funcs)?
     };
@@ -1429,7 +1528,6 @@ fn build_multi_func_cortex_m_elf(
 ) -> Result<Vec<u8>> {
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
-    let ram_size: u32 = 128 * 1024; // 128KB to accommodate linear memory + stack
 
     // Calculate linear memory size from WASM memory declarations
     // Default to 1 page (64KB) if no memory declared (for backwards compatibility)
@@ -1439,18 +1537,13 @@ fn build_multi_func_cortex_m_elf(
     // RAM layout:
     // 0x2000_0000: Linear memory (R11 points here)
     // 0x2000_0000 + linear_memory_size: Stack base
-    // 0x2001_0000: Stack top (grows down)
+    // ram_base + ram_size: Stack top (grows down)
     //
-    // Ensure we have at least 4KB for stack
-    let min_stack_size: u32 = 4 * 1024;
-    if linear_memory_size + min_stack_size > ram_size {
-        anyhow::bail!(
-            "Linear memory ({} bytes) + minimum stack ({} bytes) exceeds RAM ({} bytes)",
-            linear_memory_size,
-            min_stack_size,
-            ram_size
-        );
-    }
+    // Auto-scale RAM: linear memory + 8KB stack, rounded up to next 64KB boundary.
+    // Minimum 128KB for backwards compatibility.
+    let min_stack_size: u32 = 8 * 1024;
+    let needed = linear_memory_size + min_stack_size;
+    let ram_size: u32 = std::cmp::max(128 * 1024, (needed + 0xFFFF) & !0xFFFF);
 
     let stack_top = ram_base + ram_size;
 
