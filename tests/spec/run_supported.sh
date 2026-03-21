@@ -15,6 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+TESTSUITE_DIR="$PROJECT_ROOT/tests/spec-testsuite"
 OUTDIR="/tmp/synth-spec-results"
 
 # Parse arguments
@@ -93,12 +94,19 @@ echo ""
 if $QUICK_MODE; then
     FILES=()
     for f in "${QUICK_FILES[@]}"; do
-        if [ -f "$SCRIPT_DIR/$f.wast" ]; then
-            FILES+=("$SCRIPT_DIR/$f.wast")
+        if [ -f "$TESTSUITE_DIR/$f.wast" ]; then
+            FILES+=("$TESTSUITE_DIR/$f.wast")
         fi
     done
 else
-    FILES=("$SCRIPT_DIR"/*.wast)
+    FILES=("$TESTSUITE_DIR"/*.wast)
+fi
+
+if [ ${#FILES[@]} -eq 0 ]; then
+    echo "ERROR: No .wast files found in $TESTSUITE_DIR"
+    echo "  Did you initialize the spec-testsuite submodule?"
+    echo "  git submodule update --init tests/spec-testsuite"
+    exit 1
 fi
 
 TOTAL=${#FILES[@]}
@@ -134,7 +142,7 @@ for wast_file in "${FILES[@]}"; do
         COMPILE_NOEXPORT=$((COMPILE_NOEXPORT + 1))
         if [ "$ASSERT_RET" -gt 0 ]; then
             NOEXPORT_FILES+=("$basename($ASSERT_RET)")
-            printf "[%3d/%d] ${CYAN}NO EXPORTS${NC}  %-30s  assert_return=%s (first module has no exports)\n" \
+            printf "[%3d/%d] ${CYAN}NO EXPORTS${NC}  %-30s  assert_return=%s (no module has exports)\n" \
                    "$CURRENT" "$TOTAL" "$basename" "$ASSERT_RET"
         else
             printf "[%3d/%d] ${CYAN}NO EXPORTS${NC}  %-30s  (validation-only test)\n" \
@@ -172,7 +180,7 @@ echo ""
 echo -e "${GREEN}Compile OK:           $COMPILE_OK${NC}  (${#OK_FILES[@]} files)"
 echo -e "${YELLOW}Compile PANIC:        $COMPILE_PANIC${NC}  (optimizer regalloc — all pass with --no-optimize)"
 echo -e "${RED}Compile ERROR:        $COMPILE_ERROR${NC}"
-echo -e "${CYAN}Compile NO_EXPORTS:   $COMPILE_NOEXPORT${NC}  (first module lacks exports; multi-module WAST)"
+echo -e "${CYAN}Compile NO_EXPORTS:   $COMPILE_NOEXPORT${NC}  (validation-only or all modules lack exports)"
 echo ""
 echo "Total assert_return tests parsed: $TOTAL_ASSERT_RETURN"
 echo ""
