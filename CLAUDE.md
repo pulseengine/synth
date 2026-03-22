@@ -10,7 +10,7 @@ Part of [PulseEngine](https://github.com/pulseengine): synth (compiler) + [loom]
 
 ```bash
 # Rust — primary build
-cargo test --workspace             # 526+ tests
+cargo test --workspace             # 885+ tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 
@@ -25,14 +25,21 @@ bazel test //tests/...             # Renode ARM Cortex-M4 emulation tests
 | Crate | Purpose |
 |-------|---------|
 | `synth-cli` | CLI entry point (`synth compile`, `synth verify`, `synth disasm`) |
-| `synth-core` | Shared types, error handling, `Backend` trait |
-| `synth-backend` | ARM encoder, ELF builder, vector table, linker scripts, MPU |
-| `synth-synthesis` | WASM→ARM instruction selection, peephole optimizer |
+| `synth-core` | Shared types, error handling, `Backend` trait, WASM decoder |
+| `synth-frontend` | WASM Component Model parser and validator |
+| `synth-backend` | ARM Thumb-2 encoder, ELF builder, vector table, linker scripts, MPU |
+| `synth-backend-awsm` | aWsm backend integration (WASM→native via aWsm) |
+| `synth-backend-wasker` | Wasker backend integration (WASM→Rust transpiler) |
+| `synth-synthesis` | WASM→ARM instruction selection, peephole optimizer, pattern matcher |
+| `synth-cfg` | Control flow graph construction and analysis |
+| `synth-opt` | IR-level optimization passes (CSE, constant folding, DCE) |
 | `synth-verify` | Z3 SMT translation validation |
-| `synth-analysis` | SSA, control flow analysis |
+| `synth-analysis` | SSA, control flow analysis, call graph |
 | `synth-abi` | WebAssembly Component Model ABI (lift/lower) |
 | `synth-memory` | Portable memory abstraction (Zephyr, Linux, bare-metal) |
+| `synth-qemu` | QEMU integration for testing |
 | `synth-test` | WAST→Robot Framework test generator for Renode |
+| `synth-wit` | WIT (WebAssembly Interface Types) parser |
 
 ## Rocq Proof Suite
 
