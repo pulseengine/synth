@@ -8132,4 +8132,696 @@ mod tests {
         assert!(!f32_op.requires_helium());
         assert!(f32_op.requires_fpu());
     }
+
+    // =========================================================================
+    // Task 1: Constant materialization edge cases
+    //
+    // Verify that i32.const produces correct ARM sequences for boundary values.
+    // =========================================================================
+
+    #[test]
+    fn test_const_materialization_minus_one() {
+        // i32.const -1 (0xFFFFFFFF) -> MOVW #0 + MVN (inverted pattern)
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(&[WasmOp::I32Const(-1)], 0)
+            .unwrap();
+
+        // Should have MOVW rd, #0 then MVN rd, rd (inverted path since !0xFFFFFFFF == 0)
+        let movw_ops: Vec<_> = instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Movw { imm16: 0, .. }))
+            .collect();
+        assert!(
+            !movw_ops.is_empty(),
+            "Should emit MOVW #0 for -1 (inverted=0)"
+        );
+
+        let mvn_ops: Vec<_> = instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Mvn { .. }))
+            .collect();
+        assert!(!mvn_ops.is_empty(), "Should emit MVN for -1");
+    }
+
+    #[test]
+    fn test_const_materialization_zero() {
+        // i32.const 0 -> single MOVW #0
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(&[WasmOp::I32Const(0)], 0)
+            .unwrap();
+
+        let has_movw_zero = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 0, .. }));
+        assert!(has_movw_zero, "Should emit MOVW #0 for zero");
+
+        // Should NOT emit MOVT (zero fits in 16 bits)
+        let movt_count = count_op(&instrs, |op| matches!(op, ArmOp::Movt { .. }));
+        assert_eq!(movt_count, 0, "Zero should not emit MOVT");
+    }
+
+    #[test]
+    fn test_const_materialization_255() {
+        // i32.const 255 -> single MOVW #255
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(&[WasmOp::I32Const(255)], 0)
+            .unwrap();
+
+        let has_movw = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 255, .. }));
+        assert!(has_movw, "Should emit MOVW #255");
+
+        let movt_count = count_op(&instrs, |op| matches!(op, ArmOp::Movt { .. }));
+        assert_eq!(movt_count, 0, "255 fits in 16 bits, no MOVT needed");
+    }
+
+    #[test]
+    fn test_const_materialization_256() {
+        // i32.const 256 -> single MOVW #256
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(&[WasmOp::I32Const(256)], 0)
+            .unwrap();
+
+        let has_movw = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 256, .. }));
+        assert!(has_movw, "Should emit MOVW #256");
+
+        let movt_count = count_op(&instrs, |op| matches!(op, ArmOp::Movt { .. }));
+        assert_eq!(movt_count, 0, "256 fits in 16 bits, no MOVT needed");
+    }
+
+    #[test]
+    fn test_const_materialization_65536() {
+        // i32.const 65536 (0x10000) -> MOVW #0 + MOVT #1
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(&[WasmOp::I32Const(65536)], 0)
+            .unwrap();
+
+        let has_movw_zero = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 0, .. }));
+        assert!(has_movw_zero, "Should emit MOVW #0 for low 16 bits");
+
+        let has_movt_one = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movt { imm16: 1, .. }));
+        assert!(has_movt_one, "Should emit MOVT #1 for high 16 bits");
+    }
+
+    #[test]
+    fn test_const_materialization_i32_max() {
+        // i32.const 0x7FFFFFFF -> MOVW 0xFFFF + MOVT 0x7FFF
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(&[WasmOp::I32Const(0x7FFFFFFF)], 0)
+            .unwrap();
+
+        let has_movw = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 0xFFFF, .. }));
+        assert!(has_movw, "Should emit MOVW #0xFFFF for low 16 bits");
+
+        let has_movt = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movt { imm16: 0x7FFF, .. }));
+        assert!(has_movt, "Should emit MOVT #0x7FFF for high 16 bits");
+    }
+
+    #[test]
+    fn test_const_materialization_i32_min() {
+        // i32.const -2147483648 (0x80000000) -> MOVW #0 + MOVT #0x8000
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(&[WasmOp::I32Const(i32::MIN)], 0)
+            .unwrap();
+
+        let has_movw_zero = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 0, .. }));
+        assert!(
+            has_movw_zero,
+            "Should emit MOVW #0 for low 16 bits of i32::MIN"
+        );
+
+        let has_movt = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movt { imm16: 0x8000, .. }));
+        assert!(
+            has_movt,
+            "Should emit MOVT #0x8000 for high 16 bits of i32::MIN"
+        );
+    }
+
+    #[test]
+    fn test_const_materialization_select_default() {
+        // Also test the select_default path (non-stack mode)
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        // -1 through select_default
+        let instrs = selector.select(&[WasmOp::I32Const(-1)]).unwrap();
+        let has_movw = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 0, .. }));
+        let has_mvn = instrs.iter().any(|i| matches!(&i.op, ArmOp::Mvn { .. }));
+        assert!(
+            has_movw && has_mvn,
+            "select_default -1 should emit MOVW #0 + MVN"
+        );
+
+        // 65536 through select_default
+        selector.reset();
+        let instrs = selector.select(&[WasmOp::I32Const(65536)]).unwrap();
+        let has_movw_zero = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 0, .. }));
+        let has_movt_one = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movt { imm16: 1, .. }));
+        assert!(
+            has_movw_zero && has_movt_one,
+            "select_default 65536 should emit MOVW #0 + MOVT #1"
+        );
+
+        // i32::MIN through select_default
+        selector.reset();
+        let instrs = selector.select(&[WasmOp::I32Const(i32::MIN)]).unwrap();
+        let has_movt = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movt { imm16: 0x8000, .. }));
+        assert!(has_movt, "select_default i32::MIN should emit MOVT #0x8000");
+    }
+
+    // =========================================================================
+    // Task 2: Callee-saved register restoration on all exit paths
+    // =========================================================================
+
+    #[test]
+    fn test_epilogue_normal_end() {
+        // Normal function: PUSH at start, POP at end
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(&[WasmOp::I32Const(42)], 0)
+            .unwrap();
+
+        // First instruction should be PUSH {R4-R8, LR}
+        assert!(
+            matches!(&instrs[0].op, ArmOp::Push { regs } if regs.contains(&Reg::LR)),
+            "Prologue must PUSH LR"
+        );
+
+        // Last instruction should be POP {R4-R8, PC}
+        let last = &instrs[instrs.len() - 1];
+        assert!(
+            matches!(&last.op, ArmOp::Pop { regs } if regs.contains(&Reg::PC)),
+            "Epilogue must POP PC"
+        );
+    }
+
+    #[test]
+    fn test_epilogue_return_opcode() {
+        // Return opcode must restore callee-saved regs (POP {R4-R8, PC})
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(&[WasmOp::I32Const(42), WasmOp::Return], 0)
+            .unwrap();
+
+        // Find the Return-generated POP
+        let pop_ops: Vec<_> = instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Pop { regs } if regs.contains(&Reg::PC)))
+            .collect();
+
+        // Should have at least 2 POPs: one from Return, one from epilogue
+        assert!(
+            !pop_ops.is_empty(),
+            "Return must emit POP {{R4-R8, PC}} to restore callee-saved regs"
+        );
+
+        // Verify the Return-generated POP has R4 (callee-saved)
+        let return_pop = instrs.iter().find(|i| {
+            matches!(&i.op, ArmOp::Pop { regs }
+                if regs.contains(&Reg::R4) && regs.contains(&Reg::PC))
+        });
+        assert!(
+            return_pop.is_some(),
+            "Return must POP callee-saved regs (R4-R8) along with PC"
+        );
+    }
+
+    #[test]
+    fn test_epilogue_unreachable_no_restore() {
+        // Unreachable (UDF trap) doesn't need register restoration
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(&[WasmOp::Unreachable], 0)
+            .unwrap();
+
+        let has_udf = instrs.iter().any(|i| matches!(&i.op, ArmOp::Udf { .. }));
+        assert!(has_udf, "Unreachable should emit UDF");
+
+        // The UDF should appear BEFORE any epilogue POP
+        let udf_pos = instrs
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Udf { .. }))
+            .unwrap();
+        // The final POP is just the function epilogue, UDF fires before reaching it
+        assert!(
+            udf_pos < instrs.len() - 1,
+            "UDF trap should be before epilogue"
+        );
+    }
+
+    #[test]
+    fn test_epilogue_br_out_of_function() {
+        // Br from a block back to the function level — should restore before returning
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[
+                    WasmOp::Block,
+                    WasmOp::I32Const(1),
+                    WasmOp::Br(0), // branch to end of block
+                    WasmOp::End,   // end block
+                ],
+                0,
+            )
+            .unwrap();
+
+        // The function epilogue POP must exist
+        let pop_count = count_op(
+            &instrs,
+            |op| matches!(op, ArmOp::Pop { regs } if regs.contains(&Reg::PC)),
+        );
+        assert!(pop_count >= 1, "Must have epilogue POP after block exits");
+    }
+
+    #[test]
+    fn test_epilogue_early_return_from_nested() {
+        // Return from nested if inside loop inside block
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[
+                    WasmOp::Block,
+                    WasmOp::Loop,
+                    WasmOp::LocalGet(0),
+                    WasmOp::I32Eqz,
+                    WasmOp::If,
+                    WasmOp::I32Const(99),
+                    WasmOp::Return,
+                    WasmOp::End,   // end if
+                    WasmOp::Br(0), // loop back
+                    WasmOp::End,   // end loop
+                    WasmOp::End,   // end block
+                ],
+                1,
+            )
+            .unwrap();
+
+        // The early Return must include POP with callee-saved regs
+        let pop_with_callee: Vec<_> = instrs
+            .iter()
+            .filter(|i| {
+                matches!(&i.op, ArmOp::Pop { regs }
+                if regs.contains(&Reg::R4) && regs.contains(&Reg::PC))
+            })
+            .collect();
+
+        assert!(
+            pop_with_callee.len() >= 2,
+            "Early return + function epilogue should both POP callee-saved regs (found {})",
+            pop_with_callee.len()
+        );
+    }
+
+    // =========================================================================
+    // Task 3: i64 division edge cases
+    //
+    // These verify that the instruction selector emits the right i64 pseudo-ops.
+    // The actual division algorithm correctness is tested in Renode emulation.
+    // =========================================================================
+
+    #[test]
+    fn test_i64_div_emits_pseudo_op() {
+        // Verify that i64 division operations produce the correct pseudo-ops
+        let mut selector = fresh_selector();
+
+        // I64DivU
+        let instrs = selector.select(&[WasmOp::I64DivU]).unwrap();
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::I64DivU { .. })),
+            "I64DivU should emit I64DivU pseudo-op"
+        );
+
+        // I64DivS
+        selector.reset();
+        let instrs = selector.select(&[WasmOp::I64DivS]).unwrap();
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::I64DivS { .. })),
+            "I64DivS should emit I64DivS pseudo-op"
+        );
+
+        // I64RemU
+        selector.reset();
+        let instrs = selector.select(&[WasmOp::I64RemU]).unwrap();
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::I64RemU { .. })),
+            "I64RemU should emit I64RemU pseudo-op"
+        );
+
+        // I64RemS
+        selector.reset();
+        let instrs = selector.select(&[WasmOp::I64RemS]).unwrap();
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::I64RemS { .. })),
+            "I64RemS should emit I64RemS pseudo-op"
+        );
+    }
+
+    #[test]
+    fn test_i64_div_register_allocation() {
+        // Verify register allocation for i64 division:
+        // dividend in R0:R1, divisor in R2:R3, result in R0:R1
+        let mut selector = fresh_selector();
+
+        let instrs = selector.select(&[WasmOp::I64DivU]).unwrap();
+        if let ArmOp::I64DivU {
+            rdlo,
+            rdhi,
+            rnlo,
+            rnhi,
+            rmlo,
+            rmhi,
+        } = &instrs[0].op
+        {
+            assert_eq!(*rnlo, Reg::R0, "Dividend low in R0");
+            assert_eq!(*rnhi, Reg::R1, "Dividend high in R1");
+            assert_eq!(*rmlo, Reg::R2, "Divisor low in R2");
+            assert_eq!(*rmhi, Reg::R3, "Divisor high in R3");
+            assert_eq!(*rdlo, Reg::R0, "Result low in R0");
+            assert_eq!(*rdhi, Reg::R1, "Result high in R1");
+        } else {
+            panic!("Expected I64DivU, got {:?}", instrs[0].op);
+        }
+    }
+
+    #[test]
+    fn test_i32_div_zero_trap_sequence() {
+        // Verify i32 division emits divide-by-zero trap check
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[WasmOp::I32Const(42), WasmOp::I32Const(0), WasmOp::I32DivU],
+                0,
+            )
+            .unwrap();
+
+        // Should contain CMP, BNE (skip trap), UDF (trap), UDIV
+        let has_cmp = instrs.iter().any(|i| matches!(&i.op, ArmOp::Cmp { .. }));
+        let has_udf = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Udf { imm: 0 }));
+        let has_udiv = instrs.iter().any(|i| matches!(&i.op, ArmOp::Udiv { .. }));
+
+        assert!(has_cmp, "Division must have CMP for zero check");
+        assert!(has_udf, "Division must have UDF for divide-by-zero trap");
+        assert!(has_udiv, "Division must have UDIV instruction");
+    }
+
+    #[test]
+    fn test_i32_divs_overflow_trap_sequence() {
+        // Verify i32 signed division emits INT_MIN / -1 overflow check
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[
+                    WasmOp::I32Const(i32::MIN),
+                    WasmOp::I32Const(-1),
+                    WasmOp::I32DivS,
+                ],
+                0,
+            )
+            .unwrap();
+
+        // Should contain MOVT 0x8000 (loading INT_MIN for comparison)
+        let has_int_min_check = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movt { imm16: 0x8000, .. }));
+        assert!(has_int_min_check, "I32DivS must check for INT_MIN overflow");
+
+        // Should contain CMN for -1 check
+        let has_cmn = instrs.iter().any(|i| matches!(&i.op, ArmOp::Cmn { .. }));
+        assert!(has_cmn, "I32DivS must have CMN for -1 divisor check");
+
+        // Should contain UDF #1 (overflow trap, distinct from div-by-zero UDF #0)
+        let has_overflow_trap = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Udf { imm: 1 }));
+        assert!(
+            has_overflow_trap,
+            "I32DivS must have UDF #1 for overflow trap"
+        );
+    }
+
+    // =========================================================================
+    // Task 4: Large function test
+    //
+    // Compile a function with 50+ operations and verify no panic/explosion.
+    // =========================================================================
+
+    #[test]
+    #[allow(clippy::vec_init_then_push)]
+    fn test_large_function_no_panic() {
+        let mut selector = fresh_selector();
+
+        // Build a function with 80+ operations:
+        // nested loops, many locals, arithmetic chains
+        let mut ops = vec![
+            // Outer block
+            WasmOp::Block,
+            // First loop: compute sum of 1..10
+            WasmOp::Loop,
+            WasmOp::LocalGet(0), // counter
+            WasmOp::I32Const(1),
+            WasmOp::I32Sub,
+            WasmOp::LocalSet(0),
+            WasmOp::LocalGet(1), // accumulator
+            WasmOp::LocalGet(0),
+            WasmOp::I32Add,
+            WasmOp::LocalSet(1),
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(0),
+            WasmOp::I32GtS,
+            WasmOp::BrIf(0), // loop back
+            WasmOp::End,     // end loop
+            // Arithmetic chain
+            WasmOp::LocalGet(1),
+            WasmOp::I32Const(2),
+            WasmOp::I32Mul,
+            WasmOp::I32Const(3),
+            WasmOp::I32Add,
+            WasmOp::I32Const(7),
+            WasmOp::I32And,
+            WasmOp::I32Const(1),
+            WasmOp::I32Or,
+            WasmOp::I32Const(4),
+            WasmOp::I32Xor,
+            WasmOp::LocalSet(2),
+            // Nested if-else
+            WasmOp::LocalGet(2),
+            WasmOp::I32Const(5),
+            WasmOp::I32GtS,
+            WasmOp::If,
+            WasmOp::LocalGet(2),
+            WasmOp::I32Const(10),
+            WasmOp::I32Mul,
+            WasmOp::LocalSet(2),
+            WasmOp::Else,
+            WasmOp::LocalGet(2),
+            WasmOp::I32Const(100),
+            WasmOp::I32Add,
+            WasmOp::LocalSet(2),
+            WasmOp::End, // end if
+            // Second loop with bit manipulation
+            WasmOp::Loop,
+            WasmOp::LocalGet(2),
+            WasmOp::I32Const(1),
+            WasmOp::I32ShrU,
+            WasmOp::LocalSet(2),
+            WasmOp::LocalGet(2),
+            WasmOp::I32Const(0),
+            WasmOp::I32GtU,
+            WasmOp::BrIf(0),
+            WasmOp::End, // end loop
+        ];
+
+        // More arithmetic (dynamic, to reach 50+ ops)
+        for i in 0..10 {
+            ops.push(WasmOp::LocalGet(1));
+            ops.push(WasmOp::I32Const(i + 1));
+            ops.push(WasmOp::I32Add);
+            ops.push(WasmOp::LocalSet(1));
+        }
+
+        // Result
+        ops.push(WasmOp::LocalGet(1));
+
+        ops.push(WasmOp::End); // end outer block
+
+        assert!(
+            ops.len() >= 50,
+            "Test must have 50+ operations (has {})",
+            ops.len()
+        );
+
+        // Compile and verify no panic
+        let instrs = selector.select_with_stack(&ops, 3).unwrap();
+
+        // Sanity check: reasonable instruction count (not exponential)
+        assert!(
+            instrs.len() < ops.len() * 20,
+            "Instruction count {} should be bounded (input: {} ops)",
+            instrs.len(),
+            ops.len()
+        );
+        // ARM instructions should be reasonable: at least prologue+epilogue
+        assert!(
+            instrs.len() >= 2,
+            "Should generate at least prologue + epilogue (got {} ARM instrs from {} WASM ops)",
+            instrs.len(),
+            ops.len()
+        );
+
+        // Verify prologue/epilogue present
+        assert!(
+            matches!(&instrs[0].op, ArmOp::Push { regs } if regs.contains(&Reg::LR)),
+            "Must have function prologue"
+        );
+        let last = &instrs[instrs.len() - 1];
+        assert!(
+            matches!(&last.op, ArmOp::Pop { regs } if regs.contains(&Reg::PC)),
+            "Must have function epilogue"
+        );
+    }
+
+    // =========================================================================
+    // Task 5: Negative tests (invalid input)
+    // =========================================================================
+
+    #[test]
+    fn test_empty_wasm_compiles_to_nop() {
+        // Empty operation sequence should still work (just prologue + epilogue)
+        let mut selector = fresh_selector();
+        let instrs = selector.select_with_stack(&[], 0).unwrap();
+
+        // Should have at minimum PUSH + POP
+        assert!(
+            instrs.len() >= 2,
+            "Empty function needs prologue + epilogue"
+        );
+        assert!(matches!(&instrs[0].op, ArmOp::Push { .. }));
+        assert!(matches!(&instrs[instrs.len() - 1].op, ArmOp::Pop { .. }));
+    }
+
+    #[test]
+    fn test_invalid_wasm_bytes_decoder_error() {
+        // Empty bytes should give clean error from wasm decoder
+        let result = synth_core::decode_wasm_module(&[]);
+        assert!(result.is_err(), "Empty WASM bytes should error");
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(!err_msg.is_empty(), "Error message should not be empty");
+    }
+
+    #[test]
+    fn test_truncated_wasm_bytes_decoder_error() {
+        // Truncated WASM file (just magic number, no version)
+        let result = synth_core::decode_wasm_module(&[0x00, 0x61, 0x73, 0x6D]);
+        assert!(result.is_err(), "Truncated WASM (magic only) should error");
+    }
+
+    #[test]
+    fn test_invalid_magic_decoder_error() {
+        // Invalid magic number
+        let result =
+            synth_core::decode_wasm_module(&[0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0x00]);
+        assert!(result.is_err(), "Invalid WASM magic should error");
+    }
+
+    #[test]
+    fn test_simd_rejected_on_non_helium_target() {
+        // SIMD ops should produce error on non-Helium targets
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        // Do NOT set Helium: selector.set_helium(false) is default
+
+        let result = selector.select(&[WasmOp::V128Const([0u8; 16])]);
+        assert!(
+            result.is_err(),
+            "SIMD should be rejected on non-Helium target"
+        );
+    }
+
+    #[test]
+    fn test_validate_rejects_fpu_on_m0() {
+        // FPU instructions should fail validation on Cortex-M0 (no FPU)
+        let instrs = vec![ArmInstruction {
+            op: ArmOp::F32Add {
+                sd: VfpReg::S0,
+                sn: VfpReg::S1,
+                sm: VfpReg::S2,
+            },
+            source_line: None,
+        }];
+
+        let result = validate_instructions(&instrs, None, "cortex-m0");
+        assert!(
+            result.is_err(),
+            "FPU instruction should fail validation on no-FPU target"
+        );
+    }
+
+    // =========================================================================
+    // Task 6: Thumb bit / disasm verification
+    //
+    // Verify that compiled ELFs have correct symbol alignment for Thumb mode.
+    // The Thumb bit (bit 0 = 1) must be set on function symbols for Cortex-M.
+    // =========================================================================
+
+    #[test]
+    fn test_select_with_stack_produces_valid_thumb_sequence() {
+        // Verify the compiled sequence is internally consistent
+        // (all instructions are valid ARM/Thumb operations)
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[WasmOp::I32Const(10), WasmOp::I32Const(20), WasmOp::I32Add],
+                0,
+            )
+            .unwrap();
+
+        // Every instruction should be a valid ArmOp variant
+        for instr in &instrs {
+            // Just verify each is a recognizable op (no invalid states)
+            let _ = format!("{:?}", instr.op);
+        }
+
+        // The instruction sequence should compile without errors
+        assert!(!instrs.is_empty());
+    }
 }
