@@ -70,6 +70,11 @@ print(f'{len(data)} bytes')
 PASS=0
 FAIL=0
 
+# OSxCAR modules use f64 (double-precision) math internally.
+# Cortex-M7DP has a double-precision FPU; Cortex-M4F only has single-precision.
+# Use --target cortex-m7dp to enable f64 hardware support.
+TARGET="cortex-m7dp"
+
 # Fetch and compile each component
 for component in anti_pinch_v2_component motor_driver_v2_component soft_start_stop_component; do
     echo -n "[fetch] ${component}.js → "
@@ -83,11 +88,11 @@ for component in anti_pinch_v2_component motor_driver_v2_component soft_start_st
 
     echo -n "$(wc -c < "$WASM" | tr -d ' ') bytes → "
 
-    # Compile through synth
+    # Compile through synth with double-precision FPU target
     ELF="$TMPDIR/${component}.elf"
-    if "$SYNTH" compile "$WASM" -o "$ELF" --cortex-m --all-exports 2>/dev/null; then
-        FUNCS=$(grep -c "INFO.*bytes of machine code" <<< "$("$SYNTH" compile "$WASM" -o "$ELF" --cortex-m --all-exports 2>&1)" || echo "?")
-        echo "OK ($(wc -c < "$ELF" | tr -d ' ') byte ELF)"
+    if "$SYNTH" compile "$WASM" -o "$ELF" --target "$TARGET" --all-exports 2>/dev/null; then
+        FUNCS=$(grep -c "INFO.*bytes of machine code" <<< "$("$SYNTH" compile "$WASM" -o "$ELF" --target "$TARGET" --all-exports 2>&1)" || echo "?")
+        echo "OK ($(wc -c < "$ELF" | tr -d ' ') byte ELF, target: ${TARGET})"
         PASS=$((PASS + 1))
     else
         echo "FAIL (compile)"
