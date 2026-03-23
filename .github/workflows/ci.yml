@@ -130,6 +130,17 @@ jobs:
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
+  kani:
+    name: Kani Verification
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Kani
+        uses: model-checking/kani-verifier-action@v1
+      - name: Run Kani proofs
+        run: cargo kani -p synth-backend --tests
+        timeout-minutes: 30
+
   rivet:
     name: Rivet Validation
     runs-on: ubuntu-latest

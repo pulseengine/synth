@@ -173,7 +173,18 @@ graph LR
 
 ## Formal Verification
 
-Synth employs two complementary verification strategies.
+### Verification status
+
+Per the [PulseEngine Verification Guide](https://pulseengine.eu/guides/VERIFICATION-GUIDE.md), projects target multi-track verification. Current status:
+
+| Track | Status | Coverage |
+|-------|--------|----------|
+| **Rocq** | Partial | 188 Qed / 52 Admitted — only i32 has T1 result-correspondence proofs |
+| **Kani** | Starting | 20 bounded model checking harnesses for ARM encoder |
+| **Verus** | Not started | No requires/ensures specs on Rust functions |
+| **Lean** | Not started | — |
+
+See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 through VG-008).
 
 ### Rocq proof suite
 
