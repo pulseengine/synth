@@ -6,6 +6,8 @@
 //! Run with: `cargo kani -p synth-backend --tests`
 //! Normal `cargo test` skips these (#[cfg(kani)] compile-gate).
 
+#![allow(unexpected_cfgs)]
+
 #[cfg(kani)]
 mod kani_proofs {
     // =========================================================================
@@ -113,8 +115,7 @@ mod kani_proofs {
         let imm5: u8 = kani::any();
         kani::assume(rt <= 7 && rn <= 7 && imm5 <= 31);
 
-        let encoded: u16 =
-            0x6800 | ((imm5 as u16) << 6) | ((rn as u16) << 3) | (rt as u16);
+        let encoded: u16 = 0x6800 | ((imm5 as u16) << 6) | ((rn as u16) << 3) | (rt as u16);
 
         assert_eq!(encoded >> 11, 0b01101);
         assert_eq!((encoded >> 6) & 0x1F, imm5 as u16);
@@ -135,8 +136,7 @@ mod kani_proofs {
         let imm5: u8 = kani::any();
         kani::assume(rt <= 7 && rn <= 7 && imm5 <= 31);
 
-        let encoded: u16 =
-            0x6000 | ((imm5 as u16) << 6) | ((rn as u16) << 3) | (rt as u16);
+        let encoded: u16 = 0x6000 | ((imm5 as u16) << 6) | ((rn as u16) << 3) | (rt as u16);
 
         assert_eq!(encoded >> 11, 0b01100);
     }
