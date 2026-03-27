@@ -360,16 +360,14 @@ Proof.
   unfold I64.unsigned, I32.unsigned, I64.repr, I32.repr.
   unfold I32.modulus, I64.modulus.
   (* Goal: (x mod 2^64 mod 2^32 mod 2^32) mod 2^64 = x mod 2^64 mod 2^32 *)
-  (* Step 1: n mod m mod m = n mod m — prove from Z.mod_pos_bound + Z.mod_small *)
-  assert (Hmod_idem : forall a b, b > 0 -> (a mod b) mod b = a mod b).
-  { intros a b Hb.
-    rewrite Z.mod_small; [reflexivity |].
-    apply Z.mod_pos_bound. lia. }
-  rewrite Hmod_idem by lia.
-  (* Goal: (x mod 2^64 mod 2^32) mod 2^64 = x mod 2^64 mod 2^32 *)
-  (* Step 2: x mod 2^32 is in range [0, 2^32), which is < 2^64, so mod 2^64 is identity *)
-  rewrite Z.mod_small; [reflexivity |].
-  split.
-  - apply Z.mod_pos_bound. lia.
-  - assert (x mod 2 ^ 64 mod 2 ^ 32 < 2 ^ 32) by (apply Z.mod_pos_bound; lia). lia.
+  (* Let y = x mod 2^64 mod 2^32. Then goal is (y mod 2^32) mod 2^64 = y. *)
+  set (y := x mod 2 ^ 64 mod 2 ^ 32).
+  (* y mod 2^32 = y because y is already in [0, 2^32) *)
+  assert (Hy_range : 0 <= y < 2 ^ 32).
+  { subst y. apply Z.mod_pos_bound. lia. }
+  assert (Hy_mod : y mod 2 ^ 32 = y).
+  { apply Z.mod_small. lia. }
+  rewrite Hy_mod.
+  (* Goal: y mod 2^64 = y — y < 2^32 < 2^64 *)
+  apply Z.mod_small. lia.
 Qed.
