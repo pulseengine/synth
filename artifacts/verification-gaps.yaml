@@ -1,0 +1,183 @@
+# Verification Gaps (PulseEngine Verification Guide Compliance)
+#
+# Tracks gaps against https://pulseengine.eu/guides/VERIFICATION-GUIDE.md
+# which requires all projects to pass Verus, Rocq, Lean, and Kani.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  - id: VG-001
+    type: system-req
+    title: "Verus verification not implemented"
+    description: >
+      The PulseEngine verification guide requires all projects to pass Verus
+      verification with explicit requires/ensures specs on public functions.
+      Synth has zero Verus annotations. The instruction selector, register
+      allocator, and ARM encoder have no formal pre/postcondition specs.
+    status: planned
+    tags: [verification-gap, verus]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: non-functional
+      priority: should
+      verification-track: verus
+
+  - id: VG-002
+    type: system-req
+    title: "Rocq proofs — 52 VFP/float admits outstanding"
+    description: >
+      The Rocq proof suite has 188 Qed and 52 Admitted theorems. All 52
+      admits are in VFP floating-point semantics (f32/f64 operations).
+      Only i32 operations have T1 result-correspondence proofs. i64, f32,
+      f64, and SIMD instruction selection has NO mechanized proofs.
+    status: in-progress
+    tags: [verification-gap, rocq, float]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+      - type: refines
+        target: FR-002
+    fields:
+      req-type: non-functional
+      priority: must
+      verified-count: 188
+      admitted-count: 52
+      verification-track: rocq
+
+  - id: VG-003
+    type: system-req
+    title: "Lean verification track not started"
+    description: >
+      The verification guide specifies Lean 4 as a third independent
+      verification track. Synth has no Lean proofs. This track would
+      provide independent verification of instruction selection correctness
+      using Lean's simp/omega/decide tactics.
+    status: planned
+    tags: [verification-gap, lean]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: non-functional
+      priority: could
+      verification-track: lean
+
+  - id: VG-004
+    type: system-req
+    title: "Kani bounded model checking for ARM encoder"
+    description: >
+      Kani harnesses verify that the ARM encoder produces correct instruction
+      bytes matching the ARM Architecture Reference Manual. 20 harnesses
+      covering ADD/SUB, MOVW/MOVT, LDR/STR, CMP, B.W, BL, VFP, i64
+      carry/borrow chains, division trap guards, constant materialization,
+      and Thumb bit handling. Harnesses use kani::any() for symbolic inputs
+      with kani::assume() constraints.
+    status: draft
+    tags: [verification-gap, kani, arm-encoder]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+      - type: refines
+        target: FR-005
+    fields:
+      req-type: non-functional
+      priority: must
+      harness-count: 20
+      verification-track: kani
+
+  - id: VG-005
+    type: system-req
+    title: "No coq_of_rust translation of Rust encoder code"
+    description: >
+      The verification guide recommends coq_of_rust to translate critical
+      Rust code into Rocq for formal verification. The ARM encoder
+      (arm_encoder.rs, ~6000 lines) and instruction selector
+      (instruction_selector.rs, ~6000 lines) have not been translated.
+      The existing Rocq proofs verify a separate Rocq model of
+      compile_wasm_to_arm, not the actual Rust implementation.
+    status: planned
+    tags: [verification-gap, rocq, coq-of-rust]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: non-functional
+      priority: should
+      verification-track: rocq
+
+  - id: VG-006
+    type: system-req
+    title: "No explicit requires/ensures specs on public Rust functions"
+    description: >
+      The verification guide requires explicit specs (requires/ensures)
+      on all public functions. Synth has zero Verus-style specifications.
+      Critical functions lacking specs include: alloc_reg, select_default,
+      select_with_stack, encode_thumb, encode_arm32, build_elf.
+    status: planned
+    tags: [verification-gap, verus, specs]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: non-functional
+      priority: should
+      verification-track: verus
+
+  - id: VG-007
+    type: system-req
+    title: "Register allocator invariant preservation unverified"
+    description: >
+      The register allocator (alloc_reg, next_temp) has invariants that
+      should be formally verified: R9/R10/R11 are never allocated as
+      temporaries, allocated registers don't conflict with live values,
+      spilled values are correctly reloaded. These invariants are
+      tested empirically but not formally proven.
+    status: planned
+    tags: [verification-gap, verus, register-allocator]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+      - type: traces-to
+        target: H-CODE-1
+    fields:
+      req-type: non-functional
+      priority: must
+      verification-track: verus
+
+  - id: VG-008
+    type: system-req
+    title: "Arithmetic overflow handling not formally verified"
+    description: >
+      Rust edition 2024 checks integer overflow in debug mode but wraps
+      in release mode. The ARM encoder performs bit manipulation on
+      register numbers, immediate values, and offsets that could overflow.
+      No formal verification ensures these operations are within bounds.
+      Kani harnesses partially address this via kani::assume() constraints
+      but don't cover all code paths.
+    status: planned
+    tags: [verification-gap, kani, overflow]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: refines
+        target: NFR-002
+    fields:
+      req-type: non-functional
+      priority: should
+      verification-track: kani
