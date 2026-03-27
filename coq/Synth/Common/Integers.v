@@ -368,6 +368,6 @@ Proof.
   assert (Hy_mod : y mod 2 ^ 32 = y).
   { apply Z.mod_small. lia. }
   rewrite Hy_mod.
-  (* Goal: y mod 2^64 = y — y < 2^32 < 2^64 *)
-  apply Z.mod_small. lia.
+  (* Goal may be y mod 2^64 = y or y = y mod 2^64 depending on direction *)
+  symmetry. apply Z.mod_small. lia.
 Qed.
