@@ -360,9 +360,11 @@ Proof.
   unfold I64.unsigned, I32.unsigned, I64.repr, I32.repr.
   unfold I32.modulus, I64.modulus.
   (* Goal: (x mod 2^64 mod 2^32 mod 2^32) mod 2^64 = x mod 2^64 mod 2^32 *)
-  (* Step 1: n mod m mod m = n mod m (use Z.mod_mod or prove directly) *)
+  (* Step 1: n mod m mod m = n mod m — prove from Z.mod_pos_bound + Z.mod_small *)
   assert (Hmod_idem : forall a b, b > 0 -> (a mod b) mod b = a mod b).
-  { intros a b Hb. rewrite Z.mod_mod; lia. }
+  { intros a b Hb.
+    rewrite Z.mod_small; [reflexivity |].
+    apply Z.mod_pos_bound. lia. }
   rewrite Hmod_idem by lia.
   (* Goal: (x mod 2^64 mod 2^32) mod 2^64 = x mod 2^64 mod 2^32 *)
   (* Step 2: x mod 2^32 is in range [0, 2^32), which is < 2^64, so mod 2^64 is identity *)
