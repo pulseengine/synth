@@ -2,9 +2,10 @@
 
     This file serves as the master index for all correctness proofs.
 
-    After removing the catch-all (| _ => Some s) from ArmSemantics.v,
-    only proofs backed by real ARM semantics survive as Qed.
-    VFP-dependent proofs are honestly Admitted.
+    After adding VFP floating-point semantics to ArmSemantics.v,
+    all 48 VFP-dependent proofs are now closed with Qed.
+    The i64_to_i32_to_i64_wrap lemma in Integers.v is also closed.
+    Only ArmRefinement.v Sail integration placeholders remain Admitted.
 *)
 
 From Stdlib Require Import QArith.
@@ -41,12 +42,12 @@ Require Export Synth.Synth.CorrectnessMemory.
                                      comparisons, shifts, bit-manip)
     CorrectnessI64.v:            26 (arith, bitwise, shifts, comparisons, bit-manip)
     CorrectnessI64Comparisons.v: 19 (comparisons, bit-manip, shifts)
-    CorrectnessF32.v:             7 (empty-program: min, max, copysign, ceil, floor, trunc, nearest)
-    CorrectnessF64.v:             7 (same as F32)
-    CorrectnessConversions.v:     3 (i32_wrap, i64_extend_s, i64_extend_u)
-    CorrectnessMemory.v:          4 (i32/i64 load/store)
+    CorrectnessF32.v:            20 (7 empty-program + 13 VFP with abstract semantics)
+    CorrectnessF64.v:            20 (7 empty-program + 13 VFP with abstract semantics)
+    CorrectnessConversions.v:    21 (3 integer + 18 VFP conversions)
+    CorrectnessMemory.v:          8 (4 i32/i64 + 4 f32/f64 load/store)
     ---
-    Total T2:                    95
+    Total T2:                   143
 
     These proofs establish: exists astate', exec_program ... = Some astate'
     (ARM execution succeeds, no claim about result value)
@@ -54,46 +55,42 @@ Require Export Synth.Synth.CorrectnessMemory.
 
 (** ** T3: Admitted Proofs
 
-    CorrectnessI32.v:            16 (5 shifts + 11 comparisons)
-    CorrectnessI64.v:             4 (divs, divu, rems, remu)
-    CorrectnessF32.v:            13 (VFP arithmetic + comparisons)
-    CorrectnessF64.v:            13 (VFP arithmetic + comparisons)
-    CorrectnessConversions.v:    18 (VFP conversion instructions)
-    CorrectnessMemory.v:          4 (float load/store: VLDR/VSTR)
     ArmRefinement.v:              2 (Sail integration placeholder)
-    Integers.v:                   1 (i64_to_i32_to_i64_wrap)
     ---
-    Total T3:                    71
+    Total T3:                     2
 
-    Breakdown by root cause:
-    - VFP unmodeled (48): All f32/f64 ops, conversions, float memory
-    - Flag-correspondence (11): i32 comparisons
-    - Fixed-immediate shifts (5): i32 shifts/rotates
-    - Division correspondence (4): i64 division/remainder
-    - Other (3): ArmRefinement Sail placeholders, integer wrap lemma
+    The ArmRefinement admits require importing Sail-generated ARM semantics,
+    which is a Phase 2 dependency (not blocking compiler correctness).
 *)
 
 Module ProgressMetrics.
 
   (** Correctness proof counts *)
-  Definition total_t1_result : nat := 19.
-  Definition total_t2_existence : nat := 95.
-  Definition total_t3_admitted : nat := 71.
+  Definition total_t1_result : nat := 39.
+  Definition total_t2_existence : nat := 143.
+  Definition total_t3_admitted : nat := 2.
 
-  Definition total_qed : nat := 114.  (* T1 + T2 *)
-  Definition total_admitted : nat := 71.  (* T3 *)
+  Definition total_qed : nat := 237.  (* T1 + T2 + infra *)
+  Definition total_admitted : nat := 2.  (* T3: ArmRefinement only *)
 
   (** Infrastructure proofs (not included above) *)
-  Definition infra_qed : nat := 40.
-  (** Base(4) + Integers(10) + StateMonad(3) + ArmState(6) +
+  Definition infra_qed : nat := 55.
+  (** Base(4) + Integers(11) + StateMonad(3) + ArmState(11) +
       ArmSemantics(7) + ArmInstructions(0) + WasmValues(2) +
-      WasmSemantics(6) + Compilation(2) = 40 *)
+      WasmSemantics(6) + Compilation(2) + ArmFlagLemmas(10) - 1 axiom = 55 *)
 
-  (** Axiom count *)
-  Definition total_axioms : nat := 12.
-  (** Integers.v: clz, ctz, popcnt, rbit, clz_rbit,
+  (** Axiom count — VFP axioms added for abstract float operations *)
+  Definition total_axioms : nat := 34.
+  (** Original I32/I64 axioms (13): clz, ctz, popcnt, rbit, clz_rbit,
       clz_range, ctz_range, popcnt_range,
       div_mul_rem_unsigned, div_mul_rem_signed,
-      remu_formula, rems_formula *)
+      remu_formula, rems_formula, rotl_rotr_sub
+
+      VFP axioms (21): f32_add/sub/mul/div/sqrt/abs/neg_bits (7),
+      f64_add/sub/mul/div/sqrt/abs/neg_bits (7),
+      f32_compare_flags, f64_compare_flags (2),
+      cvt_f32_to_f64_bits, cvt_f64_to_f32_bits (2),
+      cvt_s32_to_f32_bits, cvt_f32_to_s32_bits (2),
+      nv_flag_sub_lts (1 in ArmFlagLemmas.v) *)
 
 End ProgressMetrics.

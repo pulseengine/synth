@@ -3,9 +3,9 @@
     This file contains correctness proofs for WebAssembly type conversion operations.
     Total: 21 operations (conversions between i32, i64, f32, f64)
 
-    Status after catch-all removal:
+    Status: ALL 21 Qed
     - 3 Qed: integer wrap/extend compile to [] (empty program)
-    - 18 Admitted: VFP conversion instructions have no modeled semantics
+    - 18 Qed: VFP conversion instructions with abstract semantics
 *)
 
 From Stdlib Require Import ZArith.
@@ -21,6 +21,12 @@ Require Import Synth.Synth.Compilation.
 Require Import Synth.Synth.Tactics.
 
 Open Scope Z_scope.
+
+(** Helper tactic for multi-instruction VFP conversion proofs *)
+Ltac solve_vfp_conv :=
+  intros; unfold compile_wasm_to_arm;
+  unfold exec_program; simpl;
+  eexists; reflexivity.
 
 (** ** Integer Conversions (3 total) — ALL Qed *)
 (** These compile to [] (empty program), trivially proven *)
@@ -58,8 +64,8 @@ Proof.
   intros; unfold compile_wasm_to_arm; simpl; eexists; reflexivity.
 Qed.
 
-(** ** Float to Integer Conversions (8 total) — ALL Admitted *)
-(** ADMITTED: VFP conversion instructions (VCVT, VMOV) have no modeled semantics *)
+(** ** Float to Integer Conversions (8 total) — ALL Qed *)
+(** VFP conversion instructions now have modeled semantics *)
 
 Theorem i32_trunc_f32_s_executes : forall wstate astate bits stack',
   wstate.(stack) = VF32 bits :: stack' ->
@@ -68,7 +74,7 @@ Theorem i32_trunc_f32_s_executes : forall wstate astate bits stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I32TruncF32S) astate = Some astate'.
-Proof. (* ADMITTED: VCVT_S32_F32/VMOV_VFP_TO_ARM unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem i32_trunc_f32_u_executes : forall wstate astate bits stack',
   wstate.(stack) = VF32 bits :: stack' ->
@@ -77,7 +83,7 @@ Theorem i32_trunc_f32_u_executes : forall wstate astate bits stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I32TruncF32U) astate = Some astate'.
-Proof. (* ADMITTED: VCVT_S32_F32/VMOV_VFP_TO_ARM unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem i32_trunc_f64_s_executes : forall wstate astate bits stack',
   wstate.(stack) = VF64 bits :: stack' ->
@@ -86,7 +92,7 @@ Theorem i32_trunc_f64_s_executes : forall wstate astate bits stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I32TruncF64S) astate = Some astate'.
-Proof. (* ADMITTED: VCVT_F32_F64/VCVT_S32_F32/VMOV_VFP_TO_ARM unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem i32_trunc_f64_u_executes : forall wstate astate bits stack',
   wstate.(stack) = VF64 bits :: stack' ->
@@ -95,7 +101,7 @@ Theorem i32_trunc_f64_u_executes : forall wstate astate bits stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I32TruncF64U) astate = Some astate'.
-Proof. (* ADMITTED: VCVT unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem i64_trunc_f32_s_executes : forall wstate astate bits stack',
   wstate.(stack) = VF32 bits :: stack' ->
@@ -104,7 +110,7 @@ Theorem i64_trunc_f32_s_executes : forall wstate astate bits stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64TruncF32S) astate = Some astate'.
-Proof. (* ADMITTED: VCVT unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem i64_trunc_f32_u_executes : forall wstate astate bits stack',
   wstate.(stack) = VF32 bits :: stack' ->
@@ -113,7 +119,7 @@ Theorem i64_trunc_f32_u_executes : forall wstate astate bits stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64TruncF32U) astate = Some astate'.
-Proof. (* ADMITTED: VCVT unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem i64_trunc_f64_s_executes : forall wstate astate bits stack',
   wstate.(stack) = VF64 bits :: stack' ->
@@ -122,7 +128,7 @@ Theorem i64_trunc_f64_s_executes : forall wstate astate bits stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64TruncF64S) astate = Some astate'.
-Proof. (* ADMITTED: VCVT unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem i64_trunc_f64_u_executes : forall wstate astate bits stack',
   wstate.(stack) = VF64 bits :: stack' ->
@@ -131,9 +137,9 @@ Theorem i64_trunc_f64_u_executes : forall wstate astate bits stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm I64TruncF64U) astate = Some astate'.
-Proof. (* ADMITTED: VCVT unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
-(** ** Integer to Float Conversions (8 total) — ALL Admitted *)
+(** ** Integer to Float Conversions (8 total) — ALL Qed *)
 
 Theorem f32_convert_i32_s_executes : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
@@ -142,7 +148,7 @@ Theorem f32_convert_i32_s_executes : forall wstate astate v stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32ConvertI32S) astate = Some astate'.
-Proof. (* ADMITTED: VMOV_ARM_TO_VFP/VCVT_F32_S32 unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem f32_convert_i32_u_executes : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
@@ -151,7 +157,7 @@ Theorem f32_convert_i32_u_executes : forall wstate astate v stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32ConvertI32U) astate = Some astate'.
-Proof. (* ADMITTED: VFP unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem f32_convert_i64_s_executes : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
@@ -160,7 +166,7 @@ Theorem f32_convert_i64_s_executes : forall wstate astate v stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32ConvertI64S) astate = Some astate'.
-Proof. (* ADMITTED: VFP unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem f32_convert_i64_u_executes : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
@@ -169,7 +175,7 @@ Theorem f32_convert_i64_u_executes : forall wstate astate v stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32ConvertI64U) astate = Some astate'.
-Proof. (* ADMITTED: VFP unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem f64_convert_i32_s_executes : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
@@ -178,7 +184,7 @@ Theorem f64_convert_i32_s_executes : forall wstate astate v stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F64ConvertI32S) astate = Some astate'.
-Proof. (* ADMITTED: VFP unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem f64_convert_i32_u_executes : forall wstate astate v stack',
   wstate.(stack) = VI32 v :: stack' ->
@@ -187,7 +193,7 @@ Theorem f64_convert_i32_u_executes : forall wstate astate v stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F64ConvertI32U) astate = Some astate'.
-Proof. (* ADMITTED: VFP unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem f64_convert_i64_s_executes : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
@@ -196,7 +202,7 @@ Theorem f64_convert_i64_s_executes : forall wstate astate v stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F64ConvertI64S) astate = Some astate'.
-Proof. (* ADMITTED: VFP unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem f64_convert_i64_u_executes : forall wstate astate v stack',
   wstate.(stack) = VI64 v :: stack' ->
@@ -205,9 +211,9 @@ Theorem f64_convert_i64_u_executes : forall wstate astate v stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F64ConvertI64U) astate = Some astate'.
-Proof. (* ADMITTED: VFP unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
-(** ** Float Conversions (2 total) — Admitted *)
+(** ** Float Conversions (2 total) — Qed *)
 
 Theorem f32_demote_f64_executes : forall wstate astate bits stack',
   wstate.(stack) = VF64 bits :: stack' ->
@@ -216,7 +222,7 @@ Theorem f32_demote_f64_executes : forall wstate astate bits stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F32DemoteF64) astate = Some astate'.
-Proof. (* ADMITTED: VCVT_F32_F64 unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
 Theorem f64_promote_f32_executes : forall wstate astate bits stack',
   wstate.(stack) = VF32 bits :: stack' ->
@@ -225,11 +231,9 @@ Theorem f64_promote_f32_executes : forall wstate astate bits stack',
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm F64PromoteF32) astate = Some astate'.
-Proof. (* ADMITTED: VCVT_F64_F32 unmodeled *) Admitted.
+Proof. solve_vfp_conv. Qed.
 
-(** ** Summary
+(** ** Summary: ALL 21 Qed
     - 3 Qed: integer wrap/extend (compile to [], trivially proven)
-    - 18 Admitted: VFP conversion instructions (VCVT, VMOV) unmodeled
-
-    To close: integrate Flocq IEEE 754 library for VFP semantics
+    - 18 Qed: VFP conversion instructions with abstract float semantics
 *)

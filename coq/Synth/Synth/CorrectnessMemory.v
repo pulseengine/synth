@@ -3,9 +3,9 @@
     This file contains correctness proofs for memory WebAssembly operations.
     Total: 8 operations (4 loads + 4 stores)
 
-    Status after catch-all removal:
+    Status: ALL 8 Qed
     - 4 Qed: I32/I64 loads and stores (LDR/STR have real semantics)
-    - 4 Admitted: F32/F64 loads and stores (VLDR/VSTR have no modeled semantics)
+    - 4 Qed: F32/F64 loads and stores (VLDR/VSTR with VFP semantics)
 *)
 
 From Stdlib Require Import ZArith.
@@ -45,7 +45,7 @@ Theorem i64_load_executes : forall wstate astate addr stack' (offset : nat),
     exec_program (compile_wasm_to_arm (I64Load offset)) astate = Some astate'.
 Proof. solve_mem_single. Qed.
 
-(** ** Float Load Operations — Admitted *)
+(** ** Float Load Operations — Qed (VFP semantics modeled) *)
 
 Theorem f32_load_executes : forall wstate astate addr stack' (offset : nat),
   wstate.(stack) = VI32 addr :: stack' ->
@@ -54,7 +54,7 @@ Theorem f32_load_executes : forall wstate astate addr stack' (offset : nat),
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm (F32Load offset)) astate = Some astate'.
-Proof. (* ADMITTED: VLDR_F32 has no modeled semantics *) Admitted.
+Proof. solve_mem_single. Qed.
 
 Theorem f64_load_executes : forall wstate astate addr stack' (offset : nat),
   wstate.(stack) = VI32 addr :: stack' ->
@@ -63,7 +63,7 @@ Theorem f64_load_executes : forall wstate astate addr stack' (offset : nat),
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm (F64Load offset)) astate = Some astate'.
-Proof. (* ADMITTED: VLDR_F64 has no modeled semantics *) Admitted.
+Proof. solve_mem_single. Qed.
 
 (** ** Integer Store Operations — Qed *)
 
@@ -85,7 +85,7 @@ Theorem i64_store_executes : forall wstate astate addr value stack' (offset : na
     exec_program (compile_wasm_to_arm (I64Store offset)) astate = Some astate'.
 Proof. solve_mem_single. Qed.
 
-(** ** Float Store Operations — Admitted *)
+(** ** Float Store Operations — Qed (VFP semantics modeled) *)
 
 Theorem f32_store_executes : forall wstate astate addr value stack' (offset : nat),
   wstate.(stack) = VF32 value :: VI32 addr :: stack' ->
@@ -94,7 +94,7 @@ Theorem f32_store_executes : forall wstate astate addr value stack' (offset : na
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm (F32Store offset)) astate = Some astate'.
-Proof. (* ADMITTED: VSTR_F32 has no modeled semantics *) Admitted.
+Proof. solve_mem_single. Qed.
 
 Theorem f64_store_executes : forall wstate astate addr value stack' (offset : nat),
   wstate.(stack) = VF64 value :: VI32 addr :: stack' ->
@@ -103,9 +103,9 @@ Theorem f64_store_executes : forall wstate astate addr value stack' (offset : na
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm (F64Store offset)) astate = Some astate'.
-Proof. (* ADMITTED: VSTR_F64 has no modeled semantics *) Admitted.
+Proof. solve_mem_single. Qed.
 
-(** ** Summary: 8 Memory Operations
-    - 4 Qed: I32Load, I64Load, I32Store, I64Store (LDR/STR have real semantics)
-    - 4 Admitted: F32Load, F64Load, F32Store, F64Store (VLDR/VSTR unmodeled)
+(** ** Summary: 8 Memory Operations — ALL 8 Qed
+    - 4 Qed: I32Load, I64Load, I32Store, I64Store (LDR/STR)
+    - 4 Qed: F32Load, F64Load, F32Store, F64Store (VLDR/VSTR with VFP semantics)
 *)
