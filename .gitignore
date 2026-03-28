@@ -60,3 +60,8 @@ vendor.log
 
 # Rivet external project cache
 .rivet/
+
+# Nix
+result
+result-*
+.direnv/

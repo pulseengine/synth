@@ -16,6 +16,8 @@ default = []
 awsm = ["synth-backend-awsm"]
 wasker = ["synth-backend-wasker"]
 verify = ["synth-verify"]
+# Uncomment when loom crate is available:
+# loom = ["dep:loom-opt"]
 
 [dependencies]
 synth-core = { path = "../synth-core" }
@@ -29,6 +31,10 @@ synth-backend-wasker = { path = "../synth-backend-wasker", optional = true }
 
 # Optional verification (requires z3)
 synth-verify = { path = "../synth-verify", optional = true, features = ["z3-solver", "arm"] }
+
+# Optional PulseEngine WASM optimizer
+# Uncomment when loom crate is available:
+# loom-opt = { workspace = true, optional = true }
 
 clap.workspace = true
 anyhow.workspace = true

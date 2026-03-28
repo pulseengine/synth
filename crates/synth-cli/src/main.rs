@@ -144,6 +144,12 @@ enum Commands {
         #[arg(long)]
         loom_compat: bool,
 
+        /// Run Loom WASM optimizer before compilation (requires --features loom)
+        /// Pipeline: WASM -> loom optimize -> optimized WASM -> synth compile -> ARM
+        /// Implies --loom-compat (skips redundant synth passes)
+        #[arg(long)]
+        loom: bool,
+
         /// Enable software bounds checking for memory operations
         /// Generates CMP/BHS before each load/store (~25% overhead)
         #[arg(long)]
@@ -236,6 +242,7 @@ fn main() -> Result<()> {
             target,
             no_optimize,
             loom_compat,
+            loom,
             bounds_check,
             backend,
             verify,
@@ -247,6 +254,9 @@ fn main() -> Result<()> {
             let is_cortex_m =
                 cortex_m || target_spec.family == synth_core::target::ArchFamily::ArmCortexM;
 
+            // --loom implies --loom-compat (skip redundant synth passes)
+            let loom_compat = loom_compat || loom;
+
             compile_command(
                 input,
                 output.clone(),
@@ -257,6 +267,7 @@ fn main() -> Result<()> {
                 is_cortex_m,
                 no_optimize,
                 loom_compat,
+                loom,
                 bounds_check,
                 &backend,
                 verify,
@@ -464,6 +475,68 @@ fn build_backend_registry() -> BackendRegistry {
     registry
 }
 
+/// Run the Loom WASM optimizer on a WASM module if enabled.
+///
+/// Pipeline: raw WASM bytes -> loom optimize -> optimized WASM bytes
+///
+/// Loom is PulseEngine's WASM-level optimizer (https://github.com/pulseengine/loom).
+/// It applies constant folding, strength reduction, and dead code elimination
+/// at the WASM level with optional Z3 verification of semantic equivalence.
+///
+/// ## Integration status
+///
+/// The `--loom` flag and integration points are wired up. When the `loom` crate
+/// is published, enable the dependency in workspace Cargo.toml and synth-cli
+/// Cargo.toml (see commented-out lines), then uncomment the `#[cfg(feature = "loom")]`
+/// block below.
+///
+/// ## Expected loom API
+///
+/// ```ignore
+/// // loom-opt crate expected API:
+/// pub fn optimize(wasm_bytes: &[u8]) -> Result<Vec<u8>>;
+/// ```
+fn maybe_run_loom(enabled: bool, wasm_bytes: Vec<u8>) -> Result<Vec<u8>> {
+    if !enabled {
+        return Ok(wasm_bytes);
+    }
+
+    // === Loom integration point ===
+    //
+    // When the loom crate is available, uncomment the feature-gated block below
+    // and the corresponding dependency lines in:
+    //   - Cargo.toml (workspace): loom-opt = { git = "..." }
+    //   - crates/synth-cli/Cargo.toml: loom = ["dep:loom-opt"], loom-opt = { workspace = true, optional = true }
+    //
+    // Then compile with: cargo build --features loom
+    //
+    // #[cfg(feature = "loom")]
+    // {
+    //     info!("Running Loom WASM optimizer...");
+    //     let input_len = wasm_bytes.len();
+    //     let optimized = loom_opt::optimize(&wasm_bytes)
+    //         .context("Loom optimization failed")?;
+    //     let savings = if input_len > 0 {
+    //         let reduced = input_len.saturating_sub(optimized.len());
+    //         (reduced as f64 / input_len as f64) * 100.0
+    //     } else {
+    //         0.0
+    //     };
+    //     info!(
+    //         "Loom: {} bytes -> {} bytes ({:.1}% reduction)",
+    //         input_len, optimized.len(), savings,
+    //     );
+    //     return Ok(optimized);
+    // }
+
+    anyhow::bail!(
+        "--loom is not yet available. The loom WASM optimizer integration is pending.\n\
+         See https://github.com/pulseengine/loom for status.\n\n\
+         In the meantime, use --loom-compat to skip synth passes that overlap\n\
+         with loom's optimizations (constant folding, strength reduction)."
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compile_command(
     input: Option<PathBuf>,
@@ -475,6 +548,7 @@ fn compile_command(
     cortex_m: bool,
     no_optimize: bool,
     loom_compat: bool,
+    loom: bool,
     bounds_check: bool,
     backend_name: &str,
     verify: bool,
@@ -516,6 +590,7 @@ fn compile_command(
             cortex_m,
             no_optimize,
             loom_compat,
+            loom,
             bounds_check,
             backend,
             verify,
@@ -545,6 +620,9 @@ fn compile_command(
             } else {
                 file_bytes
             };
+
+            // Run Loom WASM optimizer if --loom is enabled
+            let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;
 
             let functions =
                 decode_wasm_functions(&wasm_bytes).context("Failed to decode WASM functions")?;
@@ -1136,6 +1214,7 @@ fn compile_all_exports(
     cortex_m: bool,
     no_optimize: bool,
     loom_compat: bool,
+    loom: bool,
     bounds_check: bool,
     backend: &dyn Backend,
     verify: bool,
@@ -1166,7 +1245,9 @@ fn compile_all_exports(
             let mut max_imports: u32 = 0;
 
             for (idx, wasm_bytes) in module_binaries.iter().enumerate() {
-                match decode_wasm_module(wasm_bytes) {
+                // Run Loom optimizer on each module if --loom is enabled
+                let wasm_bytes = maybe_run_loom(loom, wasm_bytes.clone())?;
+                match decode_wasm_module(&wasm_bytes) {
                     Ok(module) => {
                         let export_count = module
                             .functions
@@ -1222,6 +1303,9 @@ fn compile_all_exports(
             } else {
                 file_bytes
             };
+
+            // Run Loom optimizer if --loom is enabled
+            let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;
 
             let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
 

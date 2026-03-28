@@ -58,6 +58,12 @@ externals:
     ref: main
     prefix: sigil
 
+  loom:
+    git: https://github.com/pulseengine/loom.git
+    path: /Volumes/Home/git/pulseengine/loom
+    ref: main
+    prefix: loom
+
   gale:
     git: https://github.com/pulseengine/gale.git
     path: /Volumes/Home/git/pulseengine/gale

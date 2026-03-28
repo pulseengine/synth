@@ -189,3 +189,7 @@ jobs:
         run: bazel build //crates:synth
       - name: Verify Rocq proofs
         run: bazel test //coq:verify_proofs
+      - name: Run Renode emulation tests
+        run: bazel test //tests/renode/... --test_tag_filters=wast
+        continue-on-error: true
+        timeout-minutes: 10
