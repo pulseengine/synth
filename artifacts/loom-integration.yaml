@@ -1,0 +1,227 @@
+# Loom Integration Requirements (ASPICE SYS.2 / SWE.1)
+#
+# System: Synth -- WebAssembly-to-ARM Cortex-M AOT compiler
+#
+# Defines how synth integrates with loom, PulseEngine's WASM-level optimizer.
+# Loom sits between WASM input and synth's instruction selector:
+#   WASM -> loom optimize -> optimized WASM -> synth compile -> ARM
+#
+# Cross-repo references use loom: prefix for loom artifacts.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+  # ---------------------------------------------------------------------------
+  # System-level: loom integration architecture
+  # ---------------------------------------------------------------------------
+
+  - id: LI-001
+    type: system-req
+    title: Loom WASM optimizer integration in synth compilation pipeline
+    description: >
+      Synth shall support an optional pre-compilation step that runs the
+      loom WASM optimizer on input WASM modules before instruction selection.
+      The pipeline becomes: WASM input -> loom optimize -> optimized WASM ->
+      synth compile -> ARM ELF. This step shall be activated via the --loom
+      CLI flag and gated behind a Cargo feature flag (--features loom) to
+      avoid a hard dependency on the loom crate. When --loom is active,
+      --loom-compat shall be automatically enabled to skip synth-internal
+      optimization passes that overlap with loom's WASM-level optimizations
+      (constant folding, strength reduction).
+    status: draft
+    tags: [loom, optimization, pipeline, integration]
+    links:
+      - type: derives-from
+        target: FR-002
+      - type: derives-from
+        target: FR-007
+    fields:
+      req-type: interface
+      priority: should
+      verification-criteria: >
+        With --loom enabled, compilation produces functionally equivalent
+        ARM output compared to compilation without --loom; loom-optimized
+        modules pass the same Renode emulation tests as unoptimized ones.
+
+  - id: LI-002
+    type: system-req
+    title: Loom-compatible optimization preset
+    description: >
+      Synth shall provide a --loom-compat flag that configures the internal
+      optimization pipeline to skip passes that loom already performs at the
+      WASM level. Specifically, constant folding and algebraic simplification
+      (strength reduction) shall be disabled, while ARM-specific peephole
+      optimization, common subexpression elimination (CSE), and dead code
+      elimination (DCE) shall remain enabled. This avoids redundant work
+      when loom has already optimized the WASM input.
+    status: implemented
+    tags: [loom, optimization, compat]
+    links:
+      - type: derives-from
+        target: FR-002
+      - type: derives-from
+        target: FR-007
+      - type: satisfies
+        target: LI-001
+    fields:
+      req-type: functional
+      priority: should
+      implementation: >
+        OptimizationConfig::loom_compat() in synth-synthesis/src/optimizer_bridge.rs.
+        Disables enable_constant_folding and enable_algebraic; keeps enable_peephole,
+        enable_cse, enable_dce.
+      verification-criteria: >
+        Compilation with --loom-compat produces valid ARM output; peephole,
+        CSE, and DCE remain active; constant folding and algebraic passes
+        are skipped.
+
+  - id: LI-003
+    type: system-req
+    title: Loom optimization operates on raw WASM bytes
+    description: >
+      The loom integration point shall operate on raw WASM binary bytes,
+      after WAT/WAST parsing but before synth's internal WASM decoder
+      (decode_wasm_functions / decode_wasm_module). Loom's expected API is
+      optimize(wasm_bytes: &[u8]) -> Result<Vec<u8>>, accepting valid WASM
+      binary format and returning optimized WASM binary format. This
+      preserves the module structure and export signatures while optimizing
+      the instruction sequences within function bodies.
+    status: draft
+    tags: [loom, api, interface]
+    links:
+      - type: derives-from
+        target: LI-001
+    fields:
+      req-type: interface
+      priority: should
+      verification-criteria: >
+        Loom output is valid WASM binary; wasmparser successfully parses
+        loom-optimized output; function export names and type signatures
+        are preserved.
+
+  - id: LI-004
+    type: system-req
+    title: Graceful degradation without loom feature
+    description: >
+      When synth is compiled without the loom feature (the default), the
+      --loom CLI flag shall produce a clear error message directing the
+      user to recompile with --features loom. The --loom-compat flag shall
+      remain functional regardless of whether the loom feature is enabled,
+      as it only controls synth-internal optimization passes. No loom
+      dependency shall be pulled into the default build.
+    status: implemented
+    tags: [loom, feature-gate, ux]
+    links:
+      - type: derives-from
+        target: LI-001
+    fields:
+      req-type: functional
+      priority: must
+      implementation: >
+        maybe_run_loom() in synth-cli/src/main.rs returns an error with
+        instructions when --loom is used without the feature. The loom
+        dependency is gated behind dep:loom-opt in Cargo.toml (currently
+        commented out pending loom crate publication).
+      verification-criteria: >
+        cargo build (default features) succeeds; --loom flag produces
+        actionable error; --loom-compat works without loom feature.
+
+  # ---------------------------------------------------------------------------
+  # Architecture: integration points
+  # ---------------------------------------------------------------------------
+
+  - id: LI-ARCH-001
+    type: sw-arch-component
+    title: Loom pre-processor in compile pipeline
+    description: >
+      Integration point in synth-cli that invokes loom before the synth
+      compilation pipeline. Located in the compile_command and
+      compile_all_exports functions, after WAT/WAST-to-WASM conversion
+      and before decode_wasm_functions/decode_wasm_module. The
+      maybe_run_loom() function handles feature detection, logging, and
+      size reduction reporting.
+    status: implemented
+    tags: [loom, architecture, cli]
+    links:
+      - type: allocated-from
+        target: LI-001
+      - type: allocated-from
+        target: LI-003
+    fields:
+      component-type: software
+      interfaces:
+        inputs: ["WASM binary bytes", "--loom flag"]
+        outputs: ["optimized WASM binary bytes"]
+        crates: ["synth-cli"]
+      file-refs:
+        - crates/synth-cli/src/main.rs
+
+  - id: LI-ARCH-002
+    type: sw-arch-component
+    title: Loom-compat optimization config
+    description: >
+      Optimization configuration preset in synth-synthesis that disables
+      WASM-level passes already handled by loom. Used both when --loom
+      is active (automatically) and when --loom-compat is specified
+      directly (for manual pre-optimization workflows).
+    status: implemented
+    tags: [loom, architecture, optimization]
+    links:
+      - type: allocated-from
+        target: LI-002
+    fields:
+      component-type: software
+      interfaces:
+        inputs: ["loom_compat flag in CompileConfig"]
+        outputs: ["OptimizationConfig with reduced passes"]
+        crates: ["synth-synthesis", "synth-backend"]
+      file-refs:
+        - crates/synth-synthesis/src/optimizer_bridge.rs
+        - crates/synth-backend/src/arm_backend.rs
+        - crates/synth-core/src/backend.rs
+
+  # ---------------------------------------------------------------------------
+  # Verification
+  # ---------------------------------------------------------------------------
+
+  - id: LI-VER-001
+    type: sw-verification
+    title: Loom integration CLI test
+    description: >
+      Verify that the --loom flag produces the expected error when the
+      loom feature is not enabled, and that --loom-compat correctly
+      modifies the optimization pipeline.
+    status: planned
+    tags: [loom, verification, cli]
+    links:
+      - type: verifies
+        target: LI-001
+      - type: verifies
+        target: LI-004
+    fields:
+      method: test
+      verification-criteria: >
+        1. synth compile --loom input.wat exits with error mentioning
+           loom feature when compiled without --features loom.
+        2. synth compile --loom-compat input.wat compiles successfully,
+           skipping constant folding and algebraic passes.
+        3. When loom feature is available: synth compile --loom input.wat
+           produces valid ARM ELF that passes Renode emulation tests.
+
+  - id: LI-VER-002
+    type: sw-verification
+    title: Loom semantic equivalence
+    description: >
+      Verify that loom-optimized WASM modules produce functionally
+      equivalent ARM output compared to unoptimized compilation.
+    status: planned
+    tags: [loom, verification, equivalence]
+    links:
+      - type: verifies
+        target: LI-001
+    fields:
+      method: test
+      verification-criteria: >
+        For each test case in the spec test suite, compilation with and
+        without --loom produces ARM binaries that yield identical results
+        when executed on Renode/QEMU for all test assertions.
