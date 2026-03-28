@@ -2,6 +2,7 @@
 //!
 //! Uses pattern matching to select optimal ARM instruction sequences
 
+use crate::contracts;
 use crate::control_flow::{BlockType, BranchableInstruction, ControlFlowManager};
 use crate::rules::{
     ArmOp, Condition, MemAddr, MveSize, Operand2, QReg, Reg, Replacement, SynthesisRule, VfpReg,
@@ -94,8 +95,24 @@ const ALLOCATABLE_REGS: [Reg; 10] = [
 
 /// Convert register index to Reg enum.
 /// Skips reserved registers R9 (globals), R10 (mem size), R11 (mem base).
+///
+/// # Contract (Verus-style)
+/// ```text
+/// requires index < ALLOCATABLE_REGS.len()
+/// ensures
+///     result != Reg::R9,
+///     result != Reg::R10,
+///     result != Reg::R11,
+/// ```
 fn index_to_reg(index: u8) -> Reg {
-    ALLOCATABLE_REGS[(index as usize) % ALLOCATABLE_REGS.len()]
+    let reg = ALLOCATABLE_REGS[(index as usize) % ALLOCATABLE_REGS.len()];
+    debug_assert!(
+        contracts::regalloc::is_allocatable(&reg),
+        "CONTRACT VIOLATION [index_to_reg]: index {} mapped to reserved register {:?}",
+        index,
+        reg
+    );
+    reg
 }
 
 /// Register allocator state
@@ -117,9 +134,21 @@ impl RegisterState {
     }
 
     /// Allocate a new register (cycles through allocatable set, skipping R9/R10/R11)
+    ///
+    /// # Contract (Verus-style)
+    /// ```text
+    /// requires self.next_reg < ALLOCATABLE_REGS.len()
+    /// ensures
+    ///     result != Reg::R9,   // globals base — reserved
+    ///     result != Reg::R10,  // memory size — reserved
+    ///     result != Reg::R11,  // memory base — reserved
+    ///     is_allocatable(result),
+    /// ```
     pub fn alloc_reg(&mut self) -> Reg {
+        contracts::regalloc::verify_index(self.next_reg, ALLOCATABLE_REGS.len());
         let reg = index_to_reg(self.next_reg);
         self.next_reg = (self.next_reg + 1) % ALLOCATABLE_REGS.len() as u8;
+        contracts::regalloc::verify_allocation(&reg);
         reg
     }
 
@@ -718,7 +747,7 @@ impl InstructionSelector {
             // WASM requires trap on divide-by-zero. ARM SDIV/UDIV silently return 0,
             // so we emit an explicit zero-check: CMP rm, #0 / BNE skip / UDF #0.
             I32DivS => {
-                vec![
+                let seq = vec![
                     // Trap if divisor == 0
                     ArmOp::Cmp {
                         rn: rm,
@@ -731,10 +760,12 @@ impl InstructionSelector {
                     ArmOp::Udf { imm: 0 },
                     // Signed division
                     ArmOp::Sdiv { rd, rn, rm },
-                ]
+                ];
+                contracts::division::verify_trap_guard_length(seq.len());
+                seq
             }
             I32DivU => {
-                vec![
+                let seq = vec![
                     // Trap if divisor == 0
                     ArmOp::Cmp {
                         rn: rm,
@@ -747,13 +778,15 @@ impl InstructionSelector {
                     ArmOp::Udf { imm: 0 },
                     // Unsigned division
                     ArmOp::Udiv { rd, rn, rm },
-                ]
+                ];
+                contracts::division::verify_trap_guard_length(seq.len());
+                seq
             }
             I32RemS => {
                 // Signed remainder: quotient = SDIV tmp, rn, rm
                 // remainder = MLS rd, tmp, rm, rn  (rd = rn - tmp * rm)
                 let rtmp = self.regs.alloc_reg();
-                vec![
+                let seq = vec![
                     // Trap if divisor == 0
                     ArmOp::Cmp {
                         rn: rm,
@@ -771,13 +804,15 @@ impl InstructionSelector {
                         rm,
                         ra: rn,
                     },
-                ]
+                ];
+                contracts::division::verify_trap_guard_length(seq.len());
+                seq
             }
             I32RemU => {
                 // Unsigned remainder: quotient = UDIV tmp, rn, rm
                 // remainder = MLS rd, tmp, rm, rn  (rd = rn - tmp * rm)
                 let rtmp = self.regs.alloc_reg();
-                vec![
+                let seq = vec![
                     // Trap if divisor == 0
                     ArmOp::Cmp {
                         rn: rm,
@@ -795,7 +830,9 @@ impl InstructionSelector {
                         rm,
                         ra: rn,
                     },
-                ]
+                ];
+                contracts::division::verify_trap_guard_length(seq.len());
+                seq
             }
 
             // Sign extension operations
@@ -2532,6 +2569,15 @@ impl InstructionSelector {
     /// Generate a load with optional bounds checking
     /// R10 = memory size, R11 = memory base
     /// Bounds check verifies addr + offset + access_size - 1 < memory_size
+    ///
+    /// # Contract (Verus-style)
+    /// ```text
+    /// requires access_size in set![1u32, 2u32, 4u32, 8u32]
+    /// ensures
+    ///     bounds_check_mode == Software ==>
+    ///         result contains CMP(addr + access_size - 1, R10),
+    ///     result.last() is Ldr { rd, .. },
+    /// ```
     fn generate_load_with_bounds_check(
         &self,
         rd: Reg,
@@ -2539,6 +2585,8 @@ impl InstructionSelector {
         offset: i32,
         access_size: u32,
     ) -> Vec<ArmOp> {
+        contracts::memory::verify_access_size(access_size);
+
         let load_op = ArmOp::Ldr {
             rd,
             addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
@@ -2585,6 +2633,15 @@ impl InstructionSelector {
     /// Generate a store with optional bounds checking
     /// R10 = memory size (or mask for masking mode), R11 = memory base
     /// Bounds check verifies addr + offset + access_size - 1 < memory_size
+    ///
+    /// # Contract (Verus-style)
+    /// ```text
+    /// requires access_size in set![1u32, 2u32, 4u32, 8u32]
+    /// ensures
+    ///     bounds_check_mode == Software ==>
+    ///         result contains CMP(addr + access_size - 1, R10),
+    ///     result.last() is Str { rd: value_reg, .. },
+    /// ```
     fn generate_store_with_bounds_check(
         &self,
         value_reg: Reg,
@@ -2592,6 +2649,8 @@ impl InstructionSelector {
         offset: i32,
         access_size: u32,
     ) -> Vec<ArmOp> {
+        contracts::memory::verify_access_size(access_size);
+
         let store_op = ArmOp::Str {
             rd: value_reg,
             addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
@@ -2635,6 +2694,11 @@ impl InstructionSelector {
     /// Generate a sub-word load with optional bounds checking.
     /// `access_size`: 1 for byte, 2 for halfword.
     /// `sign_extend`: true for sign-extending loads (LDRSB/LDRSH), false for zero-extending (LDRB/LDRH).
+    ///
+    /// # Contract (Verus-style)
+    /// ```text
+    /// requires access_size in set![1u32, 2u32, 4u32, 8u32]
+    /// ```
     fn generate_subword_load_with_bounds_check(
         &self,
         rd: Reg,
@@ -2643,6 +2707,8 @@ impl InstructionSelector {
         access_size: u32,
         sign_extend: bool,
     ) -> Vec<ArmOp> {
+        contracts::memory::verify_access_size(access_size);
+
         let addr = MemAddr::reg_imm(Reg::R11, addr_reg, offset);
         let load_op = match (access_size, sign_extend) {
             (1, false) => ArmOp::Ldrb { rd, addr },
@@ -2688,6 +2754,11 @@ impl InstructionSelector {
 
     /// Generate a sub-word store with optional bounds checking.
     /// `access_size`: 1 for byte (STRB), 2 for halfword (STRH).
+    ///
+    /// # Contract (Verus-style)
+    /// ```text
+    /// requires access_size in set![1u32, 2u32, 4u32, 8u32]
+    /// ```
     fn generate_subword_store_with_bounds_check(
         &self,
         value_reg: Reg,
@@ -2695,6 +2766,8 @@ impl InstructionSelector {
         offset: i32,
         access_size: u32,
     ) -> Vec<ArmOp> {
+        contracts::memory::verify_access_size(access_size);
+
         let addr = MemAddr::reg_imm(Reg::R11, addr_reg, offset);
         let store_op = match access_size {
             1 => ArmOp::Strb {

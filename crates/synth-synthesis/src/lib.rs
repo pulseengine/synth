@@ -1,5 +1,6 @@
 //! Synth Synthesis - Code synthesis engine
 
+pub mod contracts;
 pub mod control_flow;
 pub mod instruction_selector;
 pub mod optimizer_bridge;
