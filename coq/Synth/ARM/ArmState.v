@@ -235,3 +235,43 @@ Proof.
   intros. unfold load_mem, store_mem. simpl.
   apply update_neq. auto.
 Qed.
+
+(** ** VFP Register Properties *)
+
+(** Getting a VFP register after setting it returns the set value *)
+Theorem get_set_vfp_reg_eq : forall s r v,
+  get_vfp_reg (set_vfp_reg s r v) r = v.
+Proof.
+  intros. unfold get_vfp_reg, set_vfp_reg. simpl.
+  apply update_eq.
+Qed.
+
+(** Getting a different VFP register after setting returns the old value *)
+Theorem get_set_vfp_reg_neq : forall s r1 r2 v,
+  r1 <> r2 ->
+  get_vfp_reg (set_vfp_reg s r1 v) r2 = get_vfp_reg s r2.
+Proof.
+  intros. unfold get_vfp_reg, set_vfp_reg. simpl.
+  apply update_neq. auto.
+Qed.
+
+(** Setting a VFP register doesn't affect ARM registers *)
+Theorem set_vfp_reg_preserves_regs : forall s r v,
+  (set_vfp_reg s r v).(regs) = s.(regs).
+Proof.
+  intros. reflexivity.
+Qed.
+
+(** Setting a VFP register doesn't affect flags *)
+Theorem set_vfp_reg_preserves_flags : forall s r v,
+  (set_vfp_reg s r v).(flags) = s.(flags).
+Proof.
+  intros. reflexivity.
+Qed.
+
+(** Setting a VFP register doesn't affect memory *)
+Theorem set_vfp_reg_preserves_mem : forall s r v,
+  (set_vfp_reg s r v).(mem) = s.(mem).
+Proof.
+  intros. reflexivity.
+Qed.

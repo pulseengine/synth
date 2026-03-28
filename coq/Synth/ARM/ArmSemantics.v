@@ -18,6 +18,45 @@ Import ListNotations.
 Open Scope Z_scope.
 Open Scope bool_scope.
 
+(** ** Abstract VFP (Floating-Point) Operations
+
+    VFP operations are axiomatized as abstract functions on bit patterns.
+    VFP registers store I32.int values representing IEEE 754 bit patterns.
+
+    This is sufficient for existence proofs (T2: ARM execution succeeds).
+    Full result-correspondence proofs (T1) would require Flocq IEEE 754
+    semantics to relate these bit-pattern operations to WASM float semantics.
+*)
+
+(** F32 arithmetic on bit patterns (single-precision, stored in S-registers) *)
+Axiom f32_add_bits : I32.int -> I32.int -> I32.int.
+Axiom f32_sub_bits : I32.int -> I32.int -> I32.int.
+Axiom f32_mul_bits : I32.int -> I32.int -> I32.int.
+Axiom f32_div_bits : I32.int -> I32.int -> I32.int.
+Axiom f32_sqrt_bits : I32.int -> I32.int.
+Axiom f32_abs_bits : I32.int -> I32.int.
+Axiom f32_neg_bits : I32.int -> I32.int.
+
+(** F64 arithmetic on bit patterns (double-precision, stored in D-registers) *)
+Axiom f64_add_bits : I32.int -> I32.int -> I32.int.
+Axiom f64_sub_bits : I32.int -> I32.int -> I32.int.
+Axiom f64_mul_bits : I32.int -> I32.int -> I32.int.
+Axiom f64_div_bits : I32.int -> I32.int -> I32.int.
+Axiom f64_sqrt_bits : I32.int -> I32.int.
+Axiom f64_abs_bits : I32.int -> I32.int.
+Axiom f64_neg_bits : I32.int -> I32.int.
+
+(** VFP comparison: updates FPSCR flags, modeled as updating ARM condition flags.
+    Returns the new condition flags after comparing two VFP values. *)
+Axiom f32_compare_flags : I32.int -> I32.int -> condition_flags.
+Axiom f64_compare_flags : I32.int -> I32.int -> condition_flags.
+
+(** VFP conversion operations on bit patterns *)
+Axiom cvt_f32_to_f64_bits : I32.int -> I32.int.  (** F32 -> F64 promote *)
+Axiom cvt_f64_to_f32_bits : I32.int -> I32.int.  (** F64 -> F32 demote *)
+Axiom cvt_s32_to_f32_bits : I32.int -> I32.int.  (** Signed int -> F32 *)
+Axiom cvt_f32_to_s32_bits : I32.int -> I32.int.  (** F32 -> Signed int *)
+
 (** ** Flag Computation Helpers *)
 
 (** Compute negative flag: result < 0 (signed) *)
@@ -346,15 +385,137 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       let target := get_reg s rm in
       Some (set_reg s PC target)
 
-  (* VFP operations — no semantics modeled, execution fails honestly *)
-  | VADD_F32 _ _ _ => None
-  | VSUB_F32 _ _ _ => None
-  | VMUL_F32 _ _ _ => None
-  | VDIV_F32 _ _ _ => None
+  (* VFP F32 arithmetic operations *)
+  | VADD_F32 sd sn sm =>
+      let vn := get_vfp_reg s sn in
+      let vm := get_vfp_reg s sm in
+      Some (set_vfp_reg s sd (f32_add_bits vn vm))
 
-  | _ =>
-      (* Unmodeled instruction — execution fails *)
-      None
+  | VSUB_F32 sd sn sm =>
+      let vn := get_vfp_reg s sn in
+      let vm := get_vfp_reg s sm in
+      Some (set_vfp_reg s sd (f32_sub_bits vn vm))
+
+  | VMUL_F32 sd sn sm =>
+      let vn := get_vfp_reg s sn in
+      let vm := get_vfp_reg s sm in
+      Some (set_vfp_reg s sd (f32_mul_bits vn vm))
+
+  | VDIV_F32 sd sn sm =>
+      let vn := get_vfp_reg s sn in
+      let vm := get_vfp_reg s sm in
+      Some (set_vfp_reg s sd (f32_div_bits vn vm))
+
+  | VSQRT_F32 sd sm =>
+      let vm := get_vfp_reg s sm in
+      Some (set_vfp_reg s sd (f32_sqrt_bits vm))
+
+  | VABS_F32 sd sm =>
+      let vm := get_vfp_reg s sm in
+      Some (set_vfp_reg s sd (f32_abs_bits vm))
+
+  | VNEG_F32 sd sm =>
+      let vm := get_vfp_reg s sm in
+      Some (set_vfp_reg s sd (f32_neg_bits vm))
+
+  (* VFP F64 arithmetic operations *)
+  | VADD_F64 dd dn dm =>
+      let vn := get_vfp_reg s dn in
+      let vm := get_vfp_reg s dm in
+      Some (set_vfp_reg s dd (f64_add_bits vn vm))
+
+  | VSUB_F64 dd dn dm =>
+      let vn := get_vfp_reg s dn in
+      let vm := get_vfp_reg s dm in
+      Some (set_vfp_reg s dd (f64_sub_bits vn vm))
+
+  | VMUL_F64 dd dn dm =>
+      let vn := get_vfp_reg s dn in
+      let vm := get_vfp_reg s dm in
+      Some (set_vfp_reg s dd (f64_mul_bits vn vm))
+
+  | VDIV_F64 dd dn dm =>
+      let vn := get_vfp_reg s dn in
+      let vm := get_vfp_reg s dm in
+      Some (set_vfp_reg s dd (f64_div_bits vn vm))
+
+  | VSQRT_F64 dd dm =>
+      let vm := get_vfp_reg s dm in
+      Some (set_vfp_reg s dd (f64_sqrt_bits vm))
+
+  | VABS_F64 dd dm =>
+      let vm := get_vfp_reg s dm in
+      Some (set_vfp_reg s dd (f64_abs_bits vm))
+
+  | VNEG_F64 dd dm =>
+      let vm := get_vfp_reg s dm in
+      Some (set_vfp_reg s dd (f64_neg_bits vm))
+
+  (* VFP comparison operations — update condition flags via VMRS APSR_nzcv, FPSCR *)
+  | VCMP_F32 sn sm =>
+      let vn := get_vfp_reg s sn in
+      let vm := get_vfp_reg s sm in
+      Some (set_flags s (f32_compare_flags vn vm))
+
+  | VCMP_F64 dn dm =>
+      let vn := get_vfp_reg s dn in
+      let vm := get_vfp_reg s dm in
+      Some (set_flags s (f64_compare_flags vn vm))
+
+  (* VFP conversion operations *)
+  | VCVT_F32_F64 sd dm =>
+      let vm := get_vfp_reg s dm in
+      Some (set_vfp_reg s sd (cvt_f64_to_f32_bits vm))
+
+  | VCVT_F64_F32 dd sm =>
+      let vm := get_vfp_reg s sm in
+      Some (set_vfp_reg s dd (cvt_f32_to_f64_bits vm))
+
+  | VCVT_S32_F32 sd sm =>
+      let vm := get_vfp_reg s sm in
+      Some (set_vfp_reg s sd (cvt_f32_to_s32_bits vm))
+
+  | VCVT_F32_S32 sd sm =>
+      let vm := get_vfp_reg s sm in
+      Some (set_vfp_reg s sd (cvt_s32_to_f32_bits vm))
+
+  (* VFP move operations *)
+  | VMOV sd sm =>
+      let vm := get_vfp_reg s sm in
+      Some (set_vfp_reg s sd vm)
+
+  | VMOV_ARM_TO_VFP sd rm =>
+      let vm := get_reg s rm in
+      Some (set_vfp_reg s sd vm)
+
+  | VMOV_VFP_TO_ARM rd sm =>
+      let vm := get_vfp_reg s sm in
+      Some (set_reg s rd vm)
+
+  (* VFP memory operations *)
+  | VLDR_F32 sd rn offset =>
+      let base := get_reg s rn in
+      let addr := I32.add base (I32.repr offset) in
+      let value := load_mem s (I32.signed addr) in
+      Some (set_vfp_reg s sd value)
+
+  | VSTR_F32 sd rn offset =>
+      let base := get_reg s rn in
+      let addr := I32.add base (I32.repr offset) in
+      let value := get_vfp_reg s sd in
+      Some (store_mem s (I32.signed addr) value)
+
+  | VLDR_F64 dd rn offset =>
+      let base := get_reg s rn in
+      let addr := I32.add base (I32.repr offset) in
+      let value := load_mem s (I32.signed addr) in
+      Some (set_vfp_reg s dd value)
+
+  | VSTR_F64 dd rn offset =>
+      let base := get_reg s rn in
+      let addr := I32.add base (I32.repr offset) in
+      let value := get_vfp_reg s dd in
+      Some (store_mem s (I32.signed addr) value)
   end.
 
 (** Execute a sequence of instructions *)

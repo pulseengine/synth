@@ -355,5 +355,14 @@ Theorem i64_to_i32_to_i64_wrap : forall x,
   I64.unsigned (i32_to_i64_unsigned (i64_to_i32 x)) =
   I64.unsigned x mod I32.modulus.
 Proof.
-  (* TODO: Z.mod_mod signature differs across Rocq versions *)
-  Admitted.
+  intros x.
+  unfold i32_to_i64_unsigned, i64_to_i32.
+  unfold I64.unsigned, I32.unsigned, I64.repr, I32.repr.
+  unfold I32.modulus, I64.modulus.
+  (* Goal: (x mod 2^64 mod 2^32 mod 2^32) mod 2^64 = x mod 2^64 mod 2^32 *)
+  (* Let y = x mod 2^64 mod 2^32. Then goal is (y mod 2^32) mod 2^64 = y. *)
+  (* ADMITTED: Rocq 9 Z.mod_mod signature changed — rewrite matching fails.
+     Goal: (x mod 2^64 mod 2^32 mod 2^32) mod 2^64 = x mod 2^64 mod 2^32
+     The proof is mathematically trivial but Rocq 9's rewrite tactic
+     cannot disambiguate nested mod subterms. Tracked in VG-002. *)
+Admitted.
