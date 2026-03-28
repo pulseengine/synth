@@ -361,13 +361,21 @@ Proof.
   unfold I32.modulus, I64.modulus.
   (* Goal: (x mod 2^64 mod 2^32 mod 2^32) mod 2^64 = x mod 2^64 mod 2^32 *)
   (* Let y = x mod 2^64 mod 2^32. Then goal is (y mod 2^32) mod 2^64 = y. *)
-  set (y := x mod 2 ^ 64 mod 2 ^ 32).
-  (* y mod 2^32 = y because y is already in [0, 2^32) *)
-  assert (Hy_range : 0 <= y < 2 ^ 32).
+  (* The goal reduces to showing (x mod 2^64 mod 2^32 mod 2^32) mod 2^64 = x mod 2^64 mod 2^32 *)
+  (* We prove this by showing both sides are equal to x mod 2^64 mod 2^32 *)
+  (* Key facts: 2^32 > 0 and 2^64 > 0 *)
+  assert (H32 : 2 ^ 32 > 0) by lia.
+  assert (H64 : 2 ^ 64 > 0) by lia.
+  assert (H32_lt_64 : 2 ^ 32 <= 2 ^ 64) by lia.
+  (* Fact 1: for any a, 0 <= a mod 2^32 < 2^32 *)
+  (* Fact 2: 2^32 < 2^64, so (a mod 2^32) mod 2^64 = a mod 2^32 *)
+  (* Fact 3: (a mod 2^32) mod 2^32 = a mod 2^32 *)
+  remember (x mod 2 ^ 64 mod 2 ^ 32) as y eqn:Hy.
+  assert (Hy_bound : 0 <= y < 2 ^ 32).
   { subst y. apply Z.mod_pos_bound. lia. }
-  assert (Hy_mod : y mod 2 ^ 32 = y).
-  { apply Z.mod_small. lia. }
-  rewrite Hy_mod.
-  (* Goal may be y mod 2^64 = y or y = y mod 2^64 depending on direction *)
+  (* LHS: (y mod 2^32) mod 2^64 *)
+  (* y mod 2^32 = y (since 0 <= y < 2^32) *)
+  replace (y mod 2 ^ 32) with y by (symmetry; apply Z.mod_small; lia).
+  (* y mod 2^64 = y (since 0 <= y < 2^32 <= 2^64) *)
   symmetry. apply Z.mod_small. lia.
 Qed.
