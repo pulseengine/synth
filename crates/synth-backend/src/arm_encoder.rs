@@ -4,6 +4,7 @@
 
 use synth_core::Result;
 use synth_core::target::FPUPrecision;
+use synth_synthesis::contracts::encoding as encoding_contracts;
 use synth_synthesis::{ArmOp, MemAddr, MveSize, Operand2, QReg, Reg, VfpReg};
 
 /// ARM instruction encoding
@@ -1538,7 +1539,9 @@ impl ArmEncoder {
                 // UDF (Undefined) in Thumb-2: 16-bit encoding is 0xDE00 | imm8
                 // This triggers UsageFault/HardFault, used for WASM traps
                 let instr: u16 = 0xDE00 | (*imm as u16);
-                Ok(instr.to_le_bytes().to_vec())
+                let bytes = instr.to_le_bytes().to_vec();
+                encoding_contracts::verify_thumb16(&bytes);
+                Ok(bytes)
             }
 
             // i64 support: ADDS, ADC, SUBS, SBC for register pair arithmetic
@@ -1631,6 +1634,9 @@ impl ArmEncoder {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
                 let rm_bits = reg_to_bits(rm);
+                encoding_contracts::verify_reg_bits(rd_bits);
+                encoding_contracts::verify_reg_bits(rn_bits);
+                encoding_contracts::verify_reg_bits(rm_bits);
 
                 // Thumb-2 SDIV: FB90 F0F0 | Rn<<16 | Rd<<8 | Rm
                 // First halfword: 1111 1011 1001 Rn = 0xFB90 | Rn
@@ -1641,6 +1647,7 @@ impl ArmEncoder {
                 // Thumb-2 32-bit instructions: first halfword, then second halfword (little-endian each)
                 let mut bytes = hw1.to_le_bytes().to_vec();
                 bytes.extend_from_slice(&hw2.to_le_bytes());
+                encoding_contracts::verify_thumb32(&bytes);
                 Ok(bytes)
             }
 
@@ -1649,6 +1656,9 @@ impl ArmEncoder {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
                 let rm_bits = reg_to_bits(rm);
+                encoding_contracts::verify_reg_bits(rd_bits);
+                encoding_contracts::verify_reg_bits(rn_bits);
+                encoding_contracts::verify_reg_bits(rm_bits);
 
                 // Thumb-2 UDIV: FBB0 F0F0 | Rn<<16 | Rd<<8 | Rm
                 let hw1: u16 = (0xFBB0 | rn_bits) as u16;
@@ -1656,6 +1666,7 @@ impl ArmEncoder {
 
                 let mut bytes = hw1.to_le_bytes().to_vec();
                 bytes.extend_from_slice(&hw2.to_le_bytes());
+                encoding_contracts::verify_thumb32(&bytes);
                 Ok(bytes)
             }
 
@@ -5832,8 +5843,16 @@ impl ArmEncoder {
     }
 
     /// Encode Thumb-2 32-bit MOVW (16-bit immediate)
+    ///
+    /// # Contract (Verus-style)
+    /// ```text
+    /// requires rd <= R14
+    /// ensures result.len() == 4
+    /// ensures (imm & 0xFFFF) can be reconstructed from the encoding
+    /// ```
     fn encode_thumb32_movw(&self, rd: &Reg, imm: u32) -> Result<Vec<u8>> {
         let rd_bits = reg_to_bits(rd);
+        encoding_contracts::verify_reg_bits(rd_bits);
         let imm16 = imm & 0xFFFF;
 
         // MOVW Rd, #imm16
@@ -5848,10 +5867,17 @@ impl ArmEncoder {
 
         let mut bytes = hw1.to_le_bytes().to_vec();
         bytes.extend_from_slice(&hw2.to_le_bytes());
+        encoding_contracts::verify_thumb32(&bytes);
         Ok(bytes)
     }
 
     /// Encode Thumb-2 32-bit shift with immediate
+    ///
+    /// # Contract (Verus-style)
+    /// ```text
+    /// requires rd <= R14, rm <= R14
+    /// ensures result.len() == 4
+    /// ```
     fn encode_thumb32_shift(
         &self,
         rd: &Reg,
@@ -5861,6 +5887,8 @@ impl ArmEncoder {
     ) -> Result<Vec<u8>> {
         let rd_bits = reg_to_bits(rd);
         let rm_bits = reg_to_bits(rm);
+        encoding_contracts::verify_reg_bits(rd_bits);
+        encoding_contracts::verify_reg_bits(rm_bits);
         let imm5 = shift & 0x1F;
         let imm2 = imm5 & 0x3;
         let imm3 = (imm5 >> 2) & 0x7;
@@ -6165,7 +6193,15 @@ impl ArmEncoder {
     // === Raw encoding helpers for POPCNT (take register numbers directly) ===
 
     /// Encode Thumb-2 32-bit MOVW (16-bit immediate) - raw version
+    ///
+    /// # Contract (Verus-style)
+    /// ```text
+    /// requires rd <= 14, imm16 <= 0xFFFF
+    /// ensures result.len() == 4
+    /// ```
     fn encode_thumb32_movw_raw(&self, rd: u32, imm16: u32) -> Result<Vec<u8>> {
+        encoding_contracts::verify_reg_bits(rd);
+        encoding_contracts::verify_imm16(imm16);
         // MOVW Rd, #imm16
         // 1111 0 i 10 0 1 0 0 imm4 | 0 imm3 Rd imm8
         let imm16 = imm16 & 0xFFFF;
@@ -6179,11 +6215,20 @@ impl ArmEncoder {
 
         let mut bytes = hw1.to_le_bytes().to_vec();
         bytes.extend_from_slice(&hw2.to_le_bytes());
+        encoding_contracts::verify_thumb32(&bytes);
         Ok(bytes)
     }
 
     /// Encode Thumb-2 32-bit MOVT (move top 16 bits) - raw version
+    ///
+    /// # Contract (Verus-style)
+    /// ```text
+    /// requires rd <= 14, imm16 <= 0xFFFF
+    /// ensures result.len() == 4
+    /// ```
     fn encode_thumb32_movt_raw(&self, rd: u32, imm16: u32) -> Result<Vec<u8>> {
+        encoding_contracts::verify_reg_bits(rd);
+        encoding_contracts::verify_imm16(imm16);
         // MOVT Rd, #imm16
         // 1111 0 i 10 1 1 0 0 imm4 | 0 imm3 Rd imm8
         let imm16 = imm16 & 0xFFFF;
@@ -6197,6 +6242,7 @@ impl ArmEncoder {
 
         let mut bytes = hw1.to_le_bytes().to_vec();
         bytes.extend_from_slice(&hw2.to_le_bytes());
+        encoding_contracts::verify_thumb32(&bytes);
         Ok(bytes)
     }
 

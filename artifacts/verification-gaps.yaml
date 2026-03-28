@@ -12,9 +12,12 @@ artifacts:
     description: >
       The PulseEngine verification guide requires all projects to pass Verus
       verification with explicit requires/ensures specs on public functions.
-      Synth has zero Verus annotations. The instruction selector, register
-      allocator, and ARM encoder have no formal pre/postcondition specs.
-    status: planned
+      Verus-style contracts (requires/ensures doc comments + debug_assert!
+      runtime checks) have been added to alloc_reg, index_to_reg,
+      generate_load/store_with_bounds_check, division trap guard sequences,
+      encode_thumb32_movw/movt, and SDIV/UDIV encoders. Full Verus macro
+      integration pending rules_verus + verus_strip Bazel integration.
+    status: in-progress
     tags: [verification-gap, verus]
     links:
       - type: derives-from
@@ -122,10 +125,15 @@ artifacts:
     title: "No explicit requires/ensures specs on public Rust functions"
     description: >
       The verification guide requires explicit specs (requires/ensures)
-      on all public functions. Synth has zero Verus-style specifications.
-      Critical functions lacking specs include: alloc_reg, select_default,
-      select_with_stack, encode_thumb, encode_arm32, build_elf.
-    status: planned
+      on all public functions. Verus-style specification annotations
+      (doc-comment contracts + debug_assert! runtime checks) have been
+      added to critical functions: alloc_reg, index_to_reg,
+      generate_load/store_with_bounds_check, division trap sequences,
+      encode_thumb32_movw/movt, SDIV/UDIV encoders. Contracts module at
+      synth-synthesis/src/contracts.rs defines formal invariants for
+      regalloc, encoding, memory, and division subsystems. Remaining
+      functions (select_with_stack, encode_thumb, build_elf) still need specs.
+    status: in-progress
     tags: [verification-gap, verus, specs]
     links:
       - type: derives-from
