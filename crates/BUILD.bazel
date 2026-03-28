@@ -281,3 +281,22 @@ filegroup(
         ":synth-memory",
     ],
 )
+
+# =============================================================================
+# Verus formal verification targets
+# =============================================================================
+
+load("@rules_verus//verus:defs.bzl", "verus_test", "verus_strip")
+
+# Verify contracts with Verus (SMT/Z3 track)
+verus_test(
+    name = "verify_contracts",
+    srcs = ["synth-synthesis/src/contracts.rs"],
+    tags = ["verus", "verification"],
+)
+
+# Strip Verus annotations for plain Rust consumption
+verus_strip(
+    name = "contracts_plain",
+    srcs = ["synth-synthesis/src/contracts.rs"],
+)
