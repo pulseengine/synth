@@ -218,3 +218,225 @@ artifacts:
       steps:
         run: "bazel build //crates:synth && bazel test //tests/..."
         coverage: "Hermetic build on Linux and macOS"
+
+  # ---------------------------------------------------------------------------
+  # Target platform verification (TP-001..TP-008)
+  # ---------------------------------------------------------------------------
+
+  - id: VER-TP-001
+    type: sys-verification
+    title: Cortex-M4F target support verification
+    description: >
+      Renode emulation tests validate that synth produces correct
+      bare-metal ELF binaries for the Cortex-M4F target. The Renode
+      platform (synth_cortex_m.repl) emulates Cortex-M4 at 0x0 flash
+      / 0x20000000 SRAM. Tests in tests/renode/cortex_m_test.robot
+      compile WASM to ARM, load ELF via sysbus LoadELF, and verify
+      execution results via register inspection.
+    status: implemented
+    tags: [target-platforms, cortex-m4, renode, verification]
+    links:
+      - type: verifies
+        target: TP-001
+      - type: verifies
+        target: TP-008
+    fields:
+      method: simulation
+      evidence:
+        - tests/renode/cortex_m_test.robot
+        - tests/renode/synth_cortex_m.repl
+      steps:
+        run: "bazel test //tests/renode:cortex_m_test"
+        coverage: "Cortex-M4F ELF boot and execution on Renode emulation"
+
+  - id: VER-TP-002
+    type: sys-verification
+    title: Board profile and memory layout verification
+    description: >
+      Unit tests in synth-backend verify correct board profiles for
+      STM32F407 (TP-002) and nRF52840 (TP-003). Tests confirm flash
+      base addresses (0x08000000 for STM32, 0x00000000 for nRF52840),
+      RAM layout, MPU region counts, and FPU capabilities. Also tests
+      Cortex-M7 (TP-004) and M33 (TP-005) target specification
+      construction and hardware capability reporting.
+    status: implemented
+    tags: [target-platforms, board-profile, unit-tests, verification]
+    links:
+      - type: verifies
+        target: TP-002
+      - type: verifies
+        target: TP-003
+      - type: verifies
+        target: TP-004
+      - type: verifies
+        target: TP-005
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend -- hardware_capabilities"
+        coverage: "STM32F407, nRF52840, Cortex-M7, Cortex-M33 profiles"
+
+  - id: VER-TP-003
+    type: sys-verification
+    title: Vector table and startup code verification
+    description: >
+      Tests verifying vector table generation (TP-006) and MPU region
+      allocation (TP-007). Unit tests confirm correct Thumb-mode
+      addresses in the vector table, Reset_Handler initializes R11
+      to 0x20000000, FPU enable code writes CPACR, and MPU allocator
+      produces valid region configurations for power-of-2 sizes with
+      correct RBAR/RASR register values.
+    status: implemented
+    tags: [target-platforms, vector-table, mpu, verification]
+    links:
+      - type: verifies
+        target: TP-006
+      - type: verifies
+        target: TP-007
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend -- vector_table mpu"
+        coverage: "Vector table layout, startup code, MPU region allocation"
+
+  # ---------------------------------------------------------------------------
+  # Zephyr integration verification (ZI-001..ZI-010)
+  # ---------------------------------------------------------------------------
+
+  - id: VER-ZI-001
+    type: sys-verification
+    title: Zephyr CMake and AAPCS integration verification
+    description: >
+      The examples/zephyr-poc/ project demonstrates Zephyr CMake build
+      integration (ZI-001) and AAPCS calling convention compliance
+      (ZI-002). The project includes synth-compiled assembly via
+      target_sources and calls synth functions from C using extern
+      declarations. Evidence that .syntax unified / .thumb / .global
+      directives work with the Zephyr SDK arm-none-eabi-gcc assembler.
+    status: implemented
+    tags: [zephyr, cmake, aapcs, verification]
+    links:
+      - type: verifies
+        target: ZI-001
+      - type: verifies
+        target: ZI-002
+    fields:
+      method: inspection
+      evidence:
+        - examples/zephyr-poc/CMakeLists.txt
+        - examples/zephyr-poc/prj.conf
+        - examples/zephyr-poc/src/
+      steps:
+        run: "Review zephyr-poc project structure and build integration"
+        coverage: "CMake integration, AAPCS calling convention, assembly directives"
+
+  - id: VER-ZI-002
+    type: sys-verification
+    title: Zephyr configuration and linker script verification
+    description: >
+      Verification of Zephyr prj.conf configuration (ZI-004),
+      linker script generation (ZI-008), and Meld runtime integration
+      (ZI-009). Evidence from examples/zephyr-poc/prj.conf demonstrates
+      required Kconfig settings. Unit tests in synth-backend verify
+      LinkerScriptGenerator produces valid scripts with ENTRY,
+      .isr_vector KEEP, .data AT> FLASH, and Meld section support.
+    status: implemented
+    tags: [zephyr, configuration, linker-script, verification]
+    links:
+      - type: verifies
+        target: ZI-004
+      - type: verifies
+        target: ZI-008
+      - type: verifies
+        target: ZI-009
+    fields:
+      method: automated-test
+      evidence:
+        - examples/zephyr-poc/prj.conf
+      steps:
+        run: "cargo test -p synth-backend -- linker_script"
+        coverage: "Linker script generation, Meld sections, Zephyr config"
+
+  - id: VER-ZI-003
+    type: sys-verification
+    title: Zephyr calculator application verification
+    description: >
+      The examples/zephyr-calculator/ project demonstrates a complete
+      Zephyr application (ZI-005) integrating synth-compiled calculator
+      functions (add, subtract, multiply, divide, modulo). Includes
+      CMakeLists.txt, prj.conf, calculator.wat source, and C
+      application code calling synth-compiled functions via extern
+      declarations.
+    status: implemented
+    tags: [zephyr, calculator, example, verification]
+    links:
+      - type: verifies
+        target: ZI-005
+    fields:
+      method: inspection
+      evidence:
+        - examples/zephyr-calculator/CMakeLists.txt
+        - examples/zephyr-calculator/prj.conf
+        - examples/zephyr-calculator/calculator.wat
+        - examples/zephyr-calculator/src/
+      steps:
+        run: "Review zephyr-calculator project structure"
+        coverage: "Calculator WASM-to-Zephyr integration"
+
+  - id: VER-ZI-004
+    type: sys-verification
+    title: Bounds checking strategy verification
+    description: >
+      Unit tests in synth-memory verify bounds checking strategy
+      selection for Zephyr targets (ZI-010). Tests confirm
+      SoftwareBoundsChecker traps on out-of-bounds, MaskingBoundsChecker
+      wraps for power-of-2 sizes, and MpuBoundsChecker delegates to
+      hardware. Also covers the Memory Domain integration design
+      (ZI-003) via the MemoryPlatform trait architecture.
+    status: implemented
+    tags: [zephyr, bounds-checking, memory, verification]
+    links:
+      - type: verifies
+        target: ZI-003
+      - type: verifies
+        target: ZI-010
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-memory"
+        coverage: "Bounds checking strategies, memory platform abstraction"
+
+  # ---------------------------------------------------------------------------
+  # Canonical ABI verification (CM-TR-001..CM-TR-004)
+  # ---------------------------------------------------------------------------
+
+  - id: VER-CM-001
+    type: sw-verification
+    title: Canonical ABI type layout and lift/lower unit tests
+    description: >
+      Comprehensive unit tests in synth-abi verifying canonical ABI
+      compliance for CM-TR-001 (type layout), CM-TR-002 (primitive
+      lift/lower), CM-TR-003 (compound lift/lower), and CM-TR-004
+      (Memory trait). Tests include roundtrip verification for all
+      WIT type families (primitives, strings in UTF-8/UTF-16/Latin-1,
+      records, variants, options, results, enums, flags, lists) and
+      Memory trait bounds checking.
+    status: implemented
+    tags: [canonical-abi, synth-abi, unit-tests, verification]
+    links:
+      - type: verifies
+        target: CM-TR-001
+      - type: verifies
+        target: CM-TR-002
+      - type: verifies
+        target: CM-TR-003
+      - type: verifies
+        target: CM-TR-004
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-abi"
+        coverage: >
+          28+ tests: roundtrip primitives, string encoding (UTF-8,
+          UTF-16, Latin-1), records, variants, options, results, enums,
+          flags, lists, memory bounds checking

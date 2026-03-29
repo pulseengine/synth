@@ -35,11 +35,11 @@ artifacts:
     tags: [gale, zephyr, co-deployment, integration]
     links:
       - type: derives-from
-        target: ZI-001
-      - type: derives-from
         target: BR-001
       - type: derives-from
         target: BR-003
+      - type: refines
+        target: ZI-001
       - type: traces-to
         target: gale:SYSREQ-SEM-001
       - type: traces-to
@@ -69,10 +69,12 @@ artifacts:
     tags: [gale, target-triple, compatibility, cortex-m]
     links:
       - type: derives-from
+        target: BR-003
+      - type: refines
         target: TP-001
-      - type: derives-from
+      - type: refines
         target: TP-004
-      - type: derives-from
+      - type: refines
         target: TP-005
       - type: traces-to
         target: gale:STKH-001
@@ -104,9 +106,9 @@ artifacts:
     links:
       - type: derives-from
         target: BR-001
-      - type: derives-from
+      - type: refines
         target: FR-008
-      - type: derives-from
+      - type: refines
         target: ZI-003
       - type: traces-to
         target: CM-005
@@ -140,8 +142,10 @@ artifacts:
     tags: [gale, wit, component-model, kernel-objects, phase-2]
     links:
       - type: derives-from
+        target: BR-003
+      - type: refines
         target: CM-002
-      - type: derives-from
+      - type: refines
         target: FR-001
       - type: traces-to
         target: gale:SWREQ-KILN-001
@@ -174,7 +178,7 @@ artifacts:
     links:
       - type: derives-from
         target: BR-001
-      - type: derives-from
+      - type: refines
         target: FR-006
       - type: traces-to
         target: gale:SYSREQ-KILN-002
@@ -212,9 +216,9 @@ artifacts:
     links:
       - type: derives-from
         target: GI-004
-      - type: derives-from
+      - type: refines
         target: KB-TR-001
-      - type: derives-from
+      - type: refines
         target: KB-TR-002
     fields:
       req-type: functional

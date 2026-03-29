@@ -74,8 +74,12 @@ synth compile examples/wat/simple_add.wat --cortex-m -o firmware.elf
 
 # Disassemble the result
 synth disasm firmware.elf
+```
 
-# Formally verify the translation
+To use Z3 translation validation, rebuild with the `verify` feature (requires Z3 on your system):
+
+```bash
+cargo build --release -p synth-cli --features verify
 synth verify examples/wat/simple_add.wat firmware.elf
 ```
 

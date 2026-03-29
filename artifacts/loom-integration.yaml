@@ -32,8 +32,10 @@ artifacts:
     tags: [loom, optimization, pipeline, integration]
     links:
       - type: derives-from
+        target: BR-002
+      - type: refines
         target: FR-002
-      - type: derives-from
+      - type: refines
         target: FR-007
     fields:
       req-type: interface
@@ -58,8 +60,10 @@ artifacts:
     tags: [loom, optimization, compat]
     links:
       - type: derives-from
+        target: BR-002
+      - type: refines
         target: FR-002
-      - type: derives-from
+      - type: refines
         target: FR-007
       - type: satisfies
         target: LI-001
@@ -90,6 +94,8 @@ artifacts:
     tags: [loom, api, interface]
     links:
       - type: derives-from
+        target: BR-002
+      - type: refines
         target: LI-001
     fields:
       req-type: interface
@@ -113,6 +119,8 @@ artifacts:
     tags: [loom, feature-gate, ux]
     links:
       - type: derives-from
+        target: BR-004
+      - type: refines
         target: LI-001
     fields:
       req-type: functional
@@ -144,8 +152,10 @@ artifacts:
     tags: [loom, architecture, cli]
     links:
       - type: allocated-from
+        target: TR-003
+      - type: traces-to
         target: LI-001
-      - type: allocated-from
+      - type: traces-to
         target: LI-003
     fields:
       component-type: software
@@ -168,6 +178,8 @@ artifacts:
     tags: [loom, architecture, optimization]
     links:
       - type: allocated-from
+        target: TR-004
+      - type: traces-to
         target: LI-002
     fields:
       component-type: software
@@ -185,7 +197,7 @@ artifacts:
   # ---------------------------------------------------------------------------
 
   - id: LI-VER-001
-    type: sw-verification
+    type: sys-verification
     title: Loom integration CLI test
     description: >
       Verify that the --loom flag produces the expected error when the
@@ -199,7 +211,7 @@ artifacts:
       - type: verifies
         target: LI-004
     fields:
-      method: test
+      method: automated-test
       verification-criteria: >
         1. synth compile --loom input.wat exits with error mentioning
            loom feature when compiled without --features loom.
@@ -209,7 +221,7 @@ artifacts:
            produces valid ARM ELF that passes Renode emulation tests.
 
   - id: LI-VER-002
-    type: sw-verification
+    type: sys-verification
     title: Loom semantic equivalence
     description: >
       Verify that loom-optimized WASM modules produce functionally

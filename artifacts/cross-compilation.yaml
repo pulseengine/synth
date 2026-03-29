@@ -35,8 +35,10 @@ artifacts:
     tags: [cross-compilation, kiln-builtins, stub, bare-metal, phase-1]
     links:
       - type: derives-from
+        target: BR-003
+      - type: refines
         target: CC-004
-      - type: derives-from
+      - type: refines
         target: SL-003
       - type: refines
         target: KB-001
@@ -68,6 +70,8 @@ artifacts:
     tags: [cross-compilation, bazel, hermetic, kiln-builtins]
     links:
       - type: derives-from
+        target: BR-003
+      - type: refines
         target: XC-001
       - type: refines
         target: CC-005
@@ -96,6 +100,8 @@ artifacts:
     tags: [cross-compilation, linker, detection, cli]
     links:
       - type: derives-from
+        target: BR-004
+      - type: refines
         target: SL-001
       - type: refines
         target: CC-005
@@ -127,8 +133,10 @@ artifacts:
     tags: [cross-compilation, cli, pipeline, single-command]
     links:
       - type: derives-from
+        target: BR-004
+      - type: refines
         target: CC-007
-      - type: derives-from
+      - type: refines
         target: SL-TR-002
       - type: refines
         target: TR-003
@@ -157,10 +165,12 @@ artifacts:
     tags: [cross-compilation, linker-script, board-profile]
     links:
       - type: derives-from
+        target: BR-003
+      - type: refines
         target: SL-002
-      - type: derives-from
+      - type: refines
         target: TP-002
-      - type: derives-from
+      - type: refines
         target: TP-003
       - type: refines
         target: SL-TR-001
@@ -193,6 +203,8 @@ artifacts:
     tags: [cross-compilation, testing, renode, ci, phase-1]
     links:
       - type: derives-from
+        target: BR-001
+      - type: refines
         target: CC-006
       - type: refines
         target: E2E-VER-001
@@ -220,8 +232,10 @@ artifacts:
     tags: [cross-compilation, testing, zephyr, qemu, phase-2]
     links:
       - type: derives-from
+        target: BR-003
+      - type: refines
         target: ZI-001
-      - type: derives-from
+      - type: refines
         target: ZI-005
       - type: refines
         target: VER-005
@@ -246,8 +260,10 @@ artifacts:
     tags: [cross-compilation, testing, hardware, stm32, phase-3]
     links:
       - type: derives-from
+        target: BR-003
+      - type: refines
         target: TP-002
-      - type: derives-from
+      - type: refines
         target: ZI-006
       - type: refines
         target: VER-005
@@ -272,8 +288,10 @@ artifacts:
     tags: [cross-compilation, testing, hardware, nrf52840, phase-3]
     links:
       - type: derives-from
+        target: BR-003
+      - type: refines
         target: TP-003
-      - type: derives-from
+      - type: refines
         target: ZI-006
       - type: refines
         target: VER-005
@@ -335,9 +353,9 @@ artifacts:
     tags: [cross-compilation, weak-symbol, memory-base, bare-metal]
     links:
       - type: derives-from
-        target: KB-TR-005
-      - type: derives-from
         target: SL-003
+      - type: refines
+        target: KB-TR-005
     fields:
       req-type: functional
       priority: must
