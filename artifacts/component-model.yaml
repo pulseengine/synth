@@ -220,6 +220,8 @@ artifacts:
         target: CM-002
       - type: traces-to
         target: CM-005
+      - type: traces-to
+        target: kiln:FR-P3-ASYNC-BUILTINS
     fields:
       req-type: functional
       priority: should
