@@ -30,7 +30,7 @@
 
 &nbsp;
 
-Synth is an ahead-of-time compiler from WebAssembly to ARM Cortex-M machine code. It produces bare-metal ELF binaries targeting embedded microcontrollers. The compiler handles i32, i64 (via register pairs), f32/f64 (via VFP), control flow, and memory operations. Mechanized correctness proofs in [Rocq](https://rocq-prover.org/) cover the i32 instruction selection; i64/float/SIMD proofs are not yet done.
+Synth is an ahead-of-time compiler from WebAssembly to ARM Cortex-M machine code. It produces bare-metal ELF binaries targeting embedded microcontrollers. The compiler handles i32, i64 (via register pairs), f32 (via VFP), control flow, and memory operations. Mechanized correctness proofs in [Rocq](https://rocq-prover.org/) cover the i32 instruction selection; i64/float/SIMD proofs are not yet done.
 
 **This is pre-release software.** It has not been tested on real hardware. The generated ARM code passes unit tests and compiles 227/257 WebAssembly spec test files, but execution on Cortex-M silicon is unverified. Use at your own risk.
 
@@ -89,7 +89,8 @@ synth verify examples/wat/simple_add.wat firmware.elf
 |----------|--------|-------|
 | i32 arithmetic, bitwise, comparison, shift/rotate | **Tested** | Full Rocq T1 proofs, Renode execution tests |
 | i64 arithmetic (register pairs) | **Tested** | ADDS/ADC, SUBS/SBC, UMULL; unit tests only |
-| f32/f64 via VFP | Implemented | Requires FPU-equipped target (M4F, M7); Rocq proofs admitted |
+| f32 via VFP | Implemented | Requires FPU-equipped target (M4F, M7); Rocq T2 existence proofs |
+| f64 via VFP | Not implemented | Decoded but rejected by instruction selector |
 | WASM SIMD via ARM Helium MVE | Experimental | Cortex-M55 only; encoding untested on hardware |
 | Control flow (block, loop, if/else, br, br_table) | **Tested** | Renode execution tests, complex test suite |
 | Function calls (direct, indirect) | Implemented | Unit tests; inter-function calls not Renode-tested |
@@ -98,7 +99,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 | ELF output with vector table | Implemented | Thumb bit set on symbols; not linked on real hardware |
 | Linker scripts (STM32, nRF52840, generic) | Implemented | Generated, not tested with real boards |
 | Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
-| Rocq mechanized proofs | 237 Qed / 2 Admitted | Only i32 has result-correspondence (T1); 2 remaining admits are ArmRefinement Sail placeholders |
+| Rocq mechanized proofs | 241 Qed / 3 Admitted | Only i32 has result-correspondence (T1); 3 remaining admits (2 ArmRefinement Sail, 1 Integers.v) |
 | Z3 translation validation | 53 tests passing | Covers i32 arithmetic and comparison rules |
 | WebAssembly spec test suite | 227/257 compile | Compilation only — not executed on emulator |
 
@@ -183,9 +184,9 @@ Per the [PulseEngine Verification Guide](https://pulseengine.eu/guides/VERIFICAT
 
 | Track | Status | Coverage |
 |-------|--------|----------|
-| **Rocq** | Partial | 237 Qed / 2 Admitted — only i32 has T1 result-correspondence proofs |
+| **Rocq** | Partial | 241 Qed / 3 Admitted — only i32 has T1 result-correspondence proofs |
 | **Kani** | Starting | 18 bounded model checking harnesses for ARM encoder |
-| **Verus** | Starting | 9 spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` |
+| **Verus** | Starting | 8 spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` |
 | **Lean** | Not started | — |
 
 See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 through VG-008).
@@ -195,14 +196,14 @@ See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 thr
 Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM semantics for each operation. The proof suite lives in `coq/Synth/` and covers ARM instruction semantics, WASM stack-machine semantics, and per-operation correctness theorems.
 
 ```
-237 Qed  /  2 Admitted
+241 Qed  /  3 Admitted
   T1: 39 result-correspondence (ARM output = WASM result)  — i32 only
   T2: 143 existence-only (ARM execution succeeds, no result claim)
-  T3: 2 admitted (ArmRefinement Sail integration placeholders)
-  Infrastructure: 55 (integer properties, state lemmas, flag lemmas)
+  T3: 3 admitted (2 ArmRefinement Sail placeholders, 1 Integers.v Rocq 9 migration)
+  Infrastructure: 59 (integer properties, state lemmas, flag lemmas, semantics helpers)
 ```
 
-Only i32 operations have full T1 (result-correspondence) proofs. The i64, f32, f64, and SIMD instruction selection has T2 existence proofs but not T1 result-correspondence. The 2 remaining admitted theorems are ArmRefinement Sail integration placeholders.
+Only i32 operations have full T1 (result-correspondence) proofs. The i64, f32, f64, and SIMD instruction selection has T2 existence proofs but not T1 result-correspondence. The 3 remaining admitted theorems are 2 ArmRefinement Sail integration placeholders and 1 Integers.v lemma broken by Rocq 9 migration.
 
 Build the proofs:
 

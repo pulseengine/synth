@@ -4,8 +4,8 @@
 
     After adding VFP floating-point semantics to ArmSemantics.v,
     all 48 VFP-dependent proofs are now closed with Qed.
-    The i64_to_i32_to_i64_wrap lemma in Integers.v is also closed.
-    Only ArmRefinement.v Sail integration placeholders remain Admitted.
+    The i64_to_i32_to_i64_wrap lemma in Integers.v remains Admitted (Rocq 9 Z.mod_mod issue).
+    3 Admitted remain: 2 ArmRefinement.v Sail placeholders + 1 Integers.v.
 *)
 
 From Stdlib Require Import QArith.

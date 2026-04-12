@@ -34,14 +34,14 @@ Synth is a WebAssembly-to-ARM Cortex-M compiler with mechanized correctness proo
 
 ### Rocq (Coq) Proofs
 
-237 Qed / 2 Admitted across all `.v` files in `coq/Synth/`.
+241 Qed / 3 Admitted across all `.v` files in `coq/Synth/`.
 
 | Tier | Meaning | Count |
 |------|---------|-------|
 | T1: Result correspondence | ARM output = WASM result value | 39 |
 | T2: Existence-only | ARM execution succeeds (no result claim) | 143 |
-| T3: Admitted | Not yet proven (Sail integration placeholders) | 2 |
-| Infrastructure | Integer properties, state lemmas, flag lemmas | 55 |
+| T3: Admitted | Not yet proven (2 Sail placeholders, 1 Rocq 9 migration) | 3 |
+| Infrastructure | Integer properties, state lemmas, flag lemmas | 59 |
 
 See `coq/STATUS.md` for the per-file breakdown.
 
@@ -84,7 +84,7 @@ instruction encoding, memory access, and division trap invariants.
 
 - No testing on physical ARM hardware (Renode emulation only).
 - No WASI support.
-- No SIMD (v128) operations.
+- SIMD (v128) Helium MVE encoding is experimental (Cortex-M55 only, untested on hardware).
 - No reference types.
 - No multi-memory.
 - No bulk memory operations.

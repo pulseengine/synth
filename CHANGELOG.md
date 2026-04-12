@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Compiler
 - WebAssembly-to-ARM Cortex-M AOT compiler
-- 197+ WASM opcodes supported (i32, i64, f32, SIMD/Helium; f64 decoded but not compiled)
+- ~93 WASM opcodes compile to ARM (i32, i64, f32); SIMD/Helium encoding experimental; f64 decoded but not compiled
 - Full control flow (block, loop, if/else, br, br_if, br_table, call)
 - Sub-word memory operations (load8/16, store8/16)
 - memory.size / memory.grow
@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Target profiles: cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp, cortex-m55
 
 #### Verification
-- Rocq mechanized proofs (237 Qed / 2 Admitted)
+- Rocq mechanized proofs (241 Qed / 3 Admitted)
 - All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have T1 result-correspondence proofs
 - Z3 SMT translation validation (53 verification tests)
 - STPA safety analysis (losses, hazards, UCAs, constraints)

@@ -1,13 +1,13 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated:** March 2026 (after Phase 5: VFP floating-point semantics)
+**Last Updated:** April 2026
 
 ## Overview
 
 Synth's Rocq proof suite verifies that `compile_wasm_to_arm` preserves WASM semantics.
 After adding VFP floating-point semantics to ArmSemantics.v, all 48 previously-admitted
-VFP proofs are closed. The `i64_to_i32_to_i64_wrap` lemma is also closed.
-Only 2 ArmRefinement Sail integration placeholders remain Admitted.
+VFP proofs are closed. 3 admits remain: 2 ArmRefinement Sail integration placeholders
+and 1 `i64_to_i32_to_i64_wrap` lemma in Integers.v (Rocq 9 `Z.mod_mod` migration issue).
 
 ## Proof Tiers
 
@@ -15,10 +15,10 @@ Only 2 ArmRefinement Sail integration placeholders remain Admitted.
 |------|---------|-------|
 | **T1: Result Correspondence** | ARM output register = WASM result value | 39 |
 | **T2: Existence-Only** | ARM execution succeeds (no result claim) | 143 |
-| **T3: Admitted** | Not yet proven | 2 |
-| **Infrastructure** | Properties of integers, states, flag lemmas | 55 |
+| **T3: Admitted** | Not yet proven | 3 |
+| **Infrastructure** | Properties of integers, states, flag lemmas | 59 |
 
-**Total: 237 Qed / 2 Admitted across all files**
+**Total: 241 Qed / 3 Admitted across all files**
 
 ## T1: Result Correspondence (39 Qed)
 
@@ -111,11 +111,12 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 | CorrectnessMemory.v | 8 | 4 i32/i64 + 4 f32/f64 load/store |
 | CorrectnessComplete.v | 1 | Master compilation theorem |
 
-## T3: Admitted (2)
+## T3: Admitted (3)
 
-| Category | Count | Root Cause | Unblocking Strategy |
-|----------|-------|------------|---------------------|
-| ArmRefinement | 2 | Needs Sail-generated ARM semantics | Phase 2: Import Sail specifications |
+| File | Count | Root Cause | Unblocking Strategy |
+|------|-------|------------|---------------------|
+| ArmRefinement.v | 2 | Needs Sail-generated ARM semantics | Phase 2: Import Sail specifications |
+| Integers.v | 1 | `i64_to_i32_to_i64_wrap` — Rocq 9 `Z.mod_mod` signature changed | Rework proof for new Z.mod_mod API |
 
 ## VFP Semantics (Phase 5 — New)
 
@@ -172,11 +173,30 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 | `cvt_s32_to_f32_bits` | Signed int -> F32 conversion |
 | `cvt_f32_to_s32_bits` | F32 -> Signed int conversion |
 
+### Integers.v — I64 Module (6 axioms)
+
+| Axiom | Purpose |
+|-------|---------|
+| `I64.clz` | Count leading zeros function (64-bit) |
+| `I64.ctz` | Count trailing zeros function (64-bit) |
+| `I64.popcnt` | Population count function (64-bit) |
+| `I64.clz_range` | `0 <= clz(x) <= 64` |
+| `I64.ctz_range` | `0 <= ctz(x) <= 64` |
+| `I64.popcnt_range` | `0 <= popcnt(x) <= 64` |
+
 ### ArmFlagLemmas.v (1 axiom)
 
 | Axiom | Purpose |
 |-------|---------|
 | `nv_flag_sub_lts` | N!=V flag after CMP <-> signed less-than (ARM architecture property) |
+
+### ArmRefinement.v (1 axiom)
+
+| Axiom | Purpose |
+|-------|---------|
+| `sail_exec_instr` | Placeholder for Sail ARM specification (not yet imported) |
+
+**Total: 41 axioms** (13 I32 + 6 I64 + 20 VFP + 1 flag + 1 refinement)
 
 ## Flag-Correspondence Lemmas (ArmFlagLemmas.v)
 
@@ -211,10 +231,16 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 | CorrectnessMemory.v | 8 | 0 | T2 |
 | CorrectnessComplete.v | 1 | 0 | T2 |
 | ArmRefinement.v | 0 | 2 | T3 |
+| Integers.v | 10 | 1 | Infra/T3 |
 | ArmFlagLemmas.v | 10 | 0 | Infra |
 | Tactics.v | 1 | 0 | Infra |
 | ArmState.v | 11 | 0 | Infra |
-| Infrastructure (other) | 33 | 0 | Infra |
+| ArmSemantics.v | 7 | 0 | Infra |
+| WasmSemantics.v | 6 | 0 | Infra |
+| Compilation.v | 5 | 0 | Infra |
+| Base.v | 4 | 0 | Infra |
+| StateMonad.v | 3 | 0 | Infra |
+| WasmValues.v | 2 | 0 | Infra |
 
 ## Phase History
 
@@ -222,9 +248,9 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 - Added abstract VFP operation axioms (21 axioms on bit patterns)
 - Modeled all VFP instructions in ArmSemantics.v (arithmetic, comparison, conversion, move, load/store)
 - Closed all 48 VFP-dependent admits (CorrectnessF32, CorrectnessF64, CorrectnessConversions, CorrectnessMemory)
-- Closed i64_to_i32_to_i64_wrap in Integers.v
+- NOTE: i64_to_i32_to_i64_wrap in Integers.v remains Admitted (Rocq 9 Z.mod_mod issue)
 - Added VFP register get/set lemmas to ArmState.v
-- **Result: 52 -> 2 Admitted** (only ArmRefinement Sail placeholders remain)
+- **Result: 52 -> 3 Admitted** (2 ArmRefinement Sail placeholders + 1 Integers.v)
 
 ### Phase 4: Register-based shift instructions
 - Added LSL_reg/LSR_reg/ASR_reg/ROR_reg/RSB to ArmInstructions.v and ArmSemantics.v

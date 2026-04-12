@@ -141,7 +141,7 @@ Close the gap between "unit tests pass" and "compiler actually works end-to-end.
 
 ## Out of Scope (Future)
 
-- SIMD/vector operations
+- SIMD/vector operations (note: experimental Helium MVE encoding exists for Cortex-M55 but is untested)
 - RISC-V backend (pending Phase F research)
 - Full Component Model support
 - ISO 26262 / IEC 62304 certification
