@@ -12,180 +12,222 @@
 #
 # Format: rivet stpa-yaml
 
-register-allocator-ucas:
-  control-action: "Allocate physical register for temporary value"
-  controller: CTRL-RA
-  note: >
-    The register allocator is embedded in the instruction selector as the
-    RegisterState struct and index_to_reg function. It is modeled as a
-    separate logical controller because its failure modes are distinct.
+ucas:
+  # =========================================================================
+  # Register Allocator UCAs (CTRL-RA)
+  # =========================================================================
+  - id: UCA-CODE-1
+    title: R10 (memory size) allocated as temporary after 10 allocations
+    uca-type: providing
+    control-action: "Allocate physical register for temporary value"
+    controller: CTRL-RA
+    description: >
+      Register allocator provides R10 (memory size register) as a temporary
+      register after 10 allocations without reset. Any MOV, ADD, or other
+      instruction writing to this temporary overwrites the memory size used
+      by all subsequent bounds checks. If bounds checking is enabled, all
+      subsequent bounds checks compare against a wrong memory size.
+    context: >
+      Function with 10+ WASM operations that each allocate a temporary,
+      such as a sequence of i32.const, i32.add, i32.mul operations.
+    hazards: [H-CODE-1]
 
-  providing:
-    - id: UCA-CODE-1
-      description: >
-        Register allocator provides R10 (memory size register) as a temporary
-        register after 10 allocations without reset. Any MOV, ADD, or other
-        instruction writing to this temporary overwrites the memory size used
-        by all subsequent bounds checks. If bounds checking is enabled, all
-        subsequent bounds checks compare against a wrong memory size.
-      context: >
-        Function with 10+ WASM operations that each allocate a temporary,
-        such as a sequence of i32.const, i32.add, i32.mul operations.
-      hazards: [H-CODE-1]
+  - id: UCA-CODE-2
+    title: R11 (memory base) allocated as temporary after 11 allocations
+    uca-type: providing
+    control-action: "Allocate physical register for temporary value"
+    controller: CTRL-RA
+    description: >
+      Register allocator provides R11 (memory base pointer) as a temporary
+      register after 11 allocations without reset. Any write to this
+      temporary destroys the memory base address. All subsequent memory
+      loads and stores (LDR/STR with [R11, ...]) access memory at a wrong
+      base address, reading garbage or writing to arbitrary memory.
+    context: >
+      Function with 11+ operations, or any function with moderate
+      complexity where the register allocator wraps past R10.
+    hazards: [H-CODE-1]
 
-    - id: UCA-CODE-2
-      description: >
-        Register allocator provides R11 (memory base pointer) as a temporary
-        register after 11 allocations without reset. Any write to this
-        temporary destroys the memory base address. All subsequent memory
-        loads and stores (LDR/STR with [R11, ...]) access memory at a wrong
-        base address, reading garbage or writing to arbitrary memory.
-      context: >
-        Function with 11+ operations, or any function with moderate
-        complexity where the register allocator wraps past R10.
-      hazards: [H-CODE-1]
+  - id: UCA-CODE-3
+    title: R0 reused as temporary while still holding live value
+    uca-type: providing
+    control-action: "Allocate physical register for temporary value"
+    controller: CTRL-RA
+    description: >
+      Register allocator wraps around from R12 back to R0, providing R0
+      as a temporary when R0 still holds a live value (function argument,
+      previous computation result, or return value being constructed).
+      The live value in R0 is silently overwritten.
+    context: >
+      Function with 13+ temporary allocations, where R0 was assigned
+      to the first local variable or function parameter.
+    hazards: [H-CODE-1]
 
-    - id: UCA-CODE-3
-      description: >
-        Register allocator wraps around from R12 back to R0, providing R0
-        as a temporary when R0 still holds a live value (function argument,
-        previous computation result, or return value being constructed).
-        The live value in R0 is silently overwritten.
-      context: >
-        Function with 13+ temporary allocations, where R0 was assigned
-        to the first local variable or function parameter.
-      hazards: [H-CODE-1]
+  - id: UCA-CODE-4
+    title: Reserved registers not excluded from allocation pool
+    uca-type: not-providing
+    control-action: "Allocate physical register for temporary value"
+    controller: CTRL-RA
+    description: >
+      Register allocator does not exclude reserved registers (R9 = globals
+      base, R10 = memory size, R11 = memory base, R13 = SP, R14 = LR,
+      R15 = PC) from the allocation pool. While SP/LR/PC are avoided by
+      the % 13 modulus, R9, R10, and R11 are included in the pool. The
+      allocator does not maintain a set of reserved registers that cannot
+      be allocated.
+    context: >
+      Any compilation where reserved registers are used for their
+      designated purpose (memory access, globals access).
+    hazards: [H-CODE-1]
 
-  not-providing:
-    - id: UCA-CODE-4
-      description: >
-        Register allocator does not exclude reserved registers (R9 = globals
-        base, R10 = memory size, R11 = memory base, R13 = SP, R14 = LR,
-        R15 = PC) from the allocation pool. While SP/LR/PC are avoided by
-        the % 13 modulus, R9, R10, and R11 are included in the pool. The
-        allocator does not maintain a set of reserved registers that cannot
-        be allocated.
-      context: >
-        Any compilation where reserved registers are used for their
-        designated purpose (memory access, globals access).
-      hazards: [H-CODE-1]
+  - id: UCA-CODE-5
+    title: No register spill/reload when all registers in use
+    uca-type: not-providing
+    control-action: "Allocate physical register for temporary value"
+    controller: CTRL-RA
+    description: >
+      Register allocator does not perform liveness analysis or spill
+      registers to the stack when all allocatable registers are in use.
+      Instead it wraps around and silently reuses registers that may
+      still hold live values. No spill/reload mechanism exists.
+    context: >
+      Any function where the number of simultaneously live values
+      exceeds the number of allocatable registers.
+    hazards: [H-CODE-1]
 
-    - id: UCA-CODE-5
-      description: >
-        Register allocator does not perform liveness analysis or spill
-        registers to the stack when all allocatable registers are in use.
-        Instead it wraps around and silently reuses registers that may
-        still hold live values. No spill/reload mechanism exists.
-      context: >
-        Any function where the number of simultaneously live values
-        exceeds the number of allocatable registers.
-      hazards: [H-CODE-1]
+  # =========================================================================
+  # Instruction Selector UCAs (CTRL-1)
+  # =========================================================================
+  - id: UCA-CODE-6
+    title: Missing divide-by-zero trap guard in rules.rs path
+    uca-type: not-providing
+    control-action: "Emit ARM instruction sequence for WASM operation"
+    controller: CTRL-1
+    description: >
+      Instruction selector (rules.rs path) does not emit a divide-by-zero
+      trap guard (CMP divisor, #0; BNE skip; UDF #0) before the UDIV/SDIV
+      instruction for i32.div_u and i32.div_s. The WebAssembly specification
+      requires trapping on division by zero. ARM UDIV/SDIV silently returns
+      0 when the divisor is 0.
+    context: >
+      i32.div_u, i32.div_s compiled via the rules.rs synthesis path
+      rather than the instruction_selector.rs direct path.
+    hazards: [H-CODE-3]
 
-instruction-selector-ucas:
-  control-action: "Emit ARM instruction sequence for WASM operation"
-  controller: CTRL-1
+  - id: UCA-CODE-7
+    title: Missing callee-saved register preservation
+    uca-type: not-providing
+    control-action: "Emit ARM instruction sequence for WASM operation"
+    controller: CTRL-1
+    description: >
+      Instruction selector does not emit callee-saved register preservation
+      (PUSH {r4-r11, lr} at entry, POP {r4-r11, pc} at exit) for any
+      registers used within the function body. The AAPCS requires r4-r11
+      and lr to be preserved across function calls. Without this, any
+      function call from compiled code corrupts the caller's state.
+    context: >
+      Any compiled WASM function that uses registers r4-r11 (which the
+      allocator assigns for the 5th through 12th temporaries).
+    hazards: [H-CODE-5]
 
-  not-providing:
-    - id: UCA-CODE-6
-      description: >
-        Instruction selector (rules.rs path) does not emit a divide-by-zero
-        trap guard (CMP divisor, #0; BNE skip; UDF #0) before the UDIV/SDIV
-        instruction for i32.div_u and i32.div_s. The WebAssembly specification
-        requires trapping on division by zero. ARM UDIV/SDIV silently returns
-        0 when the divisor is 0.
-      context: >
-        i32.div_u, i32.div_s compiled via the rules.rs synthesis path
-        rather than the instruction_selector.rs direct path.
-      hazards: [H-CODE-3]
+  - id: UCA-CODE-8
+    title: Missing stack alignment adjustment in prologue
+    uca-type: not-providing
+    control-action: "Emit ARM instruction sequence for WASM operation"
+    controller: CTRL-1
+    description: >
+      Instruction selector does not emit stack alignment adjustment in the
+      function prologue. AAPCS requires 8-byte alignment at public function
+      boundaries. When an odd number of registers are pushed, the stack
+      pointer is 4-byte aligned but not 8-byte aligned. No compensating
+      SUB SP or extra register push is emitted.
+    context: >
+      Function prologue where an odd number of callee-saved registers
+      would be pushed (if callee-save were implemented).
+    hazards: [H-CODE-6]
 
-    - id: UCA-CODE-7
-      description: >
-        Instruction selector does not emit callee-saved register preservation
-        (PUSH {r4-r11, lr} at entry, POP {r4-r11, pc} at exit) for any
-        registers used within the function body. The AAPCS requires r4-r11
-        and lr to be preserved across function calls. Without this, any
-        function call from compiled code corrupts the caller's state.
-      context: >
-        Any compiled WASM function that uses registers r4-r11 (which the
-        allocator assigns for the 5th through 12th temporaries).
-      hazards: [H-CODE-5]
+  - id: UCA-CODE-9
+    title: Bounds check ignores access width
+    uca-type: not-providing
+    control-action: "Emit ARM instruction sequence for WASM operation"
+    controller: CTRL-1
+    description: >
+      Instruction selector does not add the access width (1, 2, or 4 bytes)
+      to the effective address before comparing against the memory size in
+      the bounds check sequence. The _access_size parameter is accepted
+      but ignored. A 4-byte access at (memory_size - 1) passes the check
+      but reads 3 bytes past the end of linear memory.
+    context: >
+      i32.load, i64.load, f64.load, or any multi-byte load/store where
+      the address is within access_size bytes of the memory boundary.
+    hazards: [H-CODE-4]
 
-    - id: UCA-CODE-8
-      description: >
-        Instruction selector does not emit stack alignment adjustment in the
-        function prologue. AAPCS requires 8-byte alignment at public function
-        boundaries. When an odd number of registers are pushed, the stack
-        pointer is 4-byte aligned but not 8-byte aligned. No compensating
-        SUB SP or extra register push is emitted.
-      context: >
-        Function prologue where an odd number of callee-saved registers
-        would be pushed (if callee-save were implemented).
-      hazards: [H-CODE-6]
+  # =========================================================================
+  # ARM Encoder UCAs (CTRL-3)
+  # =========================================================================
+  - id: UCA-CODE-10
+    title: Silent immediate truncation by masking to field width
+    uca-type: providing
+    control-action: "Encode abstract ARM instruction to machine code bytes"
+    controller: CTRL-3
+    description: >
+      ARM encoder silently truncates immediate values by masking to the
+      encoding field width. RSB uses (imm & 0xFF), LDRSB uses
+      (offset_bits & 0xFF), LDRH uses (offset_bits & 0xFF). No range
+      check or error is raised when the value does not fit. The encoded
+      instruction contains a wrong constant, and the compiler reports
+      success.
+    context: >
+      Any RSB with immediate > 255, or LDRSB/LDRH with offset > 255.
+      Occurs when the instruction selector emits an instruction with an
+      out-of-range immediate without first materializing the constant.
+    hazards: [H-CODE-2]
 
-    - id: UCA-CODE-9
-      description: >
-        Instruction selector does not add the access width (1, 2, or 4 bytes)
-        to the effective address before comparing against the memory size in
-        the bounds check sequence. The _access_size parameter is accepted
-        but ignored. A 4-byte access at (memory_size - 1) passes the check
-        but reads 3 bytes past the end of linear memory.
-      context: >
-        i32.load, i64.load, f64.load, or any multi-byte load/store where
-        the address is within access_size bytes of the memory boundary.
-      hazards: [H-CODE-4]
+  - id: UCA-CODE-11
+    title: Inline I64 division expansion emits POP {PC} causing premature return
+    uca-type: providing
+    control-action: "Encode abstract ARM instruction to machine code bytes"
+    controller: CTRL-3
+    description: >
+      ARM encoder's inline expansion of I64DivU/I64DivS/I64RemU/I64RemS
+      emits PUSH {R4-R7, LR} at the start and POP {R4-R7, PC} at the end.
+      The POP {PC} performs a function return. When the i64 division is not
+      the last operation in the function, this causes a premature return,
+      skipping all instructions after the division.
+    context: >
+      Any WASM function containing i64.div_u, i64.div_s, i64.rem_u, or
+      i64.rem_s followed by additional operations (e.g., i64.add, local.set,
+      or another i64 operation).
+    hazards: [H-CODE-7]
 
-arm-encoder-ucas:
-  control-action: "Encode abstract ARM instruction to machine code bytes"
-  controller: CTRL-3
+  - id: UCA-CODE-12
+    title: Popcnt expansion clobbers R11 (memory base pointer)
+    uca-type: providing
+    control-action: "Encode abstract ARM instruction to machine code bytes"
+    controller: CTRL-3
+    description: >
+      ARM encoder's inline expansion of Popcnt uses R11 as a scratch
+      register (via encode_thumb32_lsr_raw(11, ...)). R11 is the WebAssembly
+      linear memory base pointer. After the popcnt expansion, R11 contains
+      a garbage intermediate value. No save/restore of R11 is performed.
+    context: >
+      Any WASM function using i32.popcnt followed by a memory access
+      (i32.load, i32.store, etc.) or followed by any i64.popcnt which
+      also uses R11 in its internal algorithm.
+    hazards: [H-CODE-8]
 
-  providing:
-    - id: UCA-CODE-10
-      description: >
-        ARM encoder silently truncates immediate values by masking to the
-        encoding field width. RSB uses (imm & 0xFF), LDRSB uses
-        (offset_bits & 0xFF), LDRH uses (offset_bits & 0xFF). No range
-        check or error is raised when the value does not fit. The encoded
-        instruction contains a wrong constant, and the compiler reports
-        success.
-      context: >
-        Any RSB with immediate > 255, or LDRSB/LDRH with offset > 255.
-        Occurs when the instruction selector emits an instruction with an
-        out-of-range immediate without first materializing the constant.
-      hazards: [H-CODE-2]
-
-    - id: UCA-CODE-11
-      description: >
-        ARM encoder's inline expansion of I64DivU/I64DivS/I64RemU/I64RemS
-        emits PUSH {R4-R7, LR} at the start and POP {R4-R7, PC} at the end.
-        The POP {PC} performs a function return. When the i64 division is not
-        the last operation in the function, this causes a premature return,
-        skipping all instructions after the division.
-      context: >
-        Any WASM function containing i64.div_u, i64.div_s, i64.rem_u, or
-        i64.rem_s followed by additional operations (e.g., i64.add, local.set,
-        or another i64 operation).
-      hazards: [H-CODE-7]
-
-    - id: UCA-CODE-12
-      description: >
-        ARM encoder's inline expansion of Popcnt uses R11 as a scratch
-        register (via encode_thumb32_lsr_raw(11, ...)). R11 is the WebAssembly
-        linear memory base pointer. After the popcnt expansion, R11 contains
-        a garbage intermediate value. No save/restore of R11 is performed.
-      context: >
-        Any WASM function using i32.popcnt followed by a memory access
-        (i32.load, i32.store, etc.) or followed by any i64.popcnt which
-        also uses R11 in its internal algorithm.
-      hazards: [H-CODE-8]
-
-    - id: UCA-CODE-13
-      description: >
-        ARM encoder's I64SetCondZ expansion uses a 16-bit CMP Rd, #0
-        encoding that only supports registers R0-R7. When the result
-        register rd is R8 or higher, the 3-bit register field overflows,
-        producing a wrong CMP encoding. This affects i64.eqz (which
-        delegates to I64SetCondZ) and all i64 equality comparisons.
-      context: >
-        i64.eqz or i64.eq when the result register is R8-R12. Likely
-        to occur when the register allocator has cycled past R7.
-      hazards: [H-CODE-9]
+  - id: UCA-CODE-13
+    title: 16-bit CMP encoding overflows for high registers
+    uca-type: providing
+    control-action: "Encode abstract ARM instruction to machine code bytes"
+    controller: CTRL-3
+    description: >
+      ARM encoder's I64SetCondZ expansion uses a 16-bit CMP Rd, #0
+      encoding that only supports registers R0-R7. When the result
+      register rd is R8 or higher, the 3-bit register field overflows,
+      producing a wrong CMP encoding. This affects i64.eqz (which
+      delegates to I64SetCondZ) and all i64 equality comparisons.
+    context: >
+      i64.eqz or i64.eq when the result register is R8-R12. Likely
+      to occur when the register allocator has cycled past R7.
+    hazards: [H-CODE-9]

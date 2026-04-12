@@ -98,7 +98,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 | ELF output with vector table | Implemented | Thumb bit set on symbols; not linked on real hardware |
 | Linker scripts (STM32, nRF52840, generic) | Implemented | Generated, not tested with real boards |
 | Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
-| Rocq mechanized proofs | 188 Qed / 52 Admitted | Only i32 has result-correspondence (T1); all 52 admits are float/VFP |
+| Rocq mechanized proofs | 237 Qed / 2 Admitted | Only i32 has result-correspondence (T1); 2 remaining admits are ArmRefinement Sail placeholders |
 | Z3 translation validation | 53 tests passing | Covers i32 arithmetic and comparison rules |
 | WebAssembly spec test suite | 227/257 compile | Compilation only — not executed on emulator |
 
@@ -183,9 +183,9 @@ Per the [PulseEngine Verification Guide](https://pulseengine.eu/guides/VERIFICAT
 
 | Track | Status | Coverage |
 |-------|--------|----------|
-| **Rocq** | Partial | 188 Qed / 52 Admitted — only i32 has T1 result-correspondence proofs |
-| **Kani** | Starting | 20 bounded model checking harnesses for ARM encoder |
-| **Verus** | Not started | No requires/ensures specs on Rust functions |
+| **Rocq** | Partial | 237 Qed / 2 Admitted — only i32 has T1 result-correspondence proofs |
+| **Kani** | Starting | 18 bounded model checking harnesses for ARM encoder |
+| **Verus** | Starting | 9 spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` |
 | **Lean** | Not started | — |
 
 See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 through VG-008).
@@ -195,13 +195,14 @@ See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 thr
 Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM semantics for each operation. The proof suite lives in `coq/Synth/` and covers ARM instruction semantics, WASM stack-machine semantics, and per-operation correctness theorems.
 
 ```
-188 Qed  /  52 Admitted
+237 Qed  /  2 Admitted
   T1: 39 result-correspondence (ARM output = WASM result)  — i32 only
-  T2: 95 existence-only (ARM execution succeeds, no result claim)
-  T3: 52 admitted (VFP/float semantics — not yet proven)
+  T2: 143 existence-only (ARM execution succeeds, no result claim)
+  T3: 2 admitted (ArmRefinement Sail integration placeholders)
+  Infrastructure: 55 (integer properties, state lemmas, flag lemmas)
 ```
 
-Only i32 operations have full T1 (result-correspondence) proofs. The i64, f32, f64, and SIMD instruction selection has NO mechanized proofs — correctness relies on unit tests and the Z3 translation validation. The 52 admitted theorems all require VFP floating-point semantics that are not yet modeled in Rocq.
+Only i32 operations have full T1 (result-correspondence) proofs. The i64, f32, f64, and SIMD instruction selection has T2 existence proofs but not T1 result-correspondence. The 2 remaining admitted theorems are ArmRefinement Sail integration placeholders.
 
 Build the proofs:
 
@@ -224,19 +225,26 @@ The `synth-verify` crate encodes WASM and ARM semantics as Z3 formulas and check
 | Crate | Purpose |
 |-------|---------|
 | `synth-cli` | CLI entry point (`synth compile`, `synth verify`, `synth disasm`) |
-| `synth-core` | Shared types, error handling, `Backend` trait |
-| `synth-backend` | ARM encoder, ELF builder, vector table, linker scripts, MPU |
-| `synth-synthesis` | WASM-to-ARM instruction selection, peephole optimizer |
+| `synth-core` | Shared types, error handling, `Backend` trait, WASM decoder |
+| `synth-frontend` | WASM Component Model parser and validator |
+| `synth-backend` | ARM Thumb-2 encoder, ELF builder, vector table, linker scripts, MPU |
+| `synth-backend-awsm` | aWsm backend integration (WASM-to-native via aWsm) |
+| `synth-backend-wasker` | Wasker backend integration (WASM-to-Rust transpiler) |
+| `synth-synthesis` | WASM-to-ARM instruction selection, peephole optimizer, pattern matcher |
+| `synth-cfg` | Control flow graph construction and analysis |
+| `synth-opt` | IR-level optimization passes (CSE, constant folding, DCE) |
 | `synth-verify` | Z3 SMT translation validation |
-| `synth-analysis` | SSA, control flow analysis |
+| `synth-analysis` | SSA, control flow analysis, call graph |
 | `synth-abi` | WebAssembly Component Model ABI (lift/lower) |
 | `synth-memory` | Portable memory abstraction (Zephyr, Linux, bare-metal) |
+| `synth-qemu` | QEMU integration for testing |
 | `synth-test` | WAST-to-Robot Framework test generator for Renode |
+| `synth-wit` | WIT (WebAssembly Interface Types) parser |
 
 ## Testing
 
 ```bash
-# Run all Rust tests (851 tests across workspace)
+# Run all Rust tests (895 tests across workspace)
 cargo test --workspace
 
 # Lint

@@ -164,6 +164,28 @@ controllers:
       - Verification covers all synthesis rules in use
       - Timeout does not mean the rule is correct
 
+  - id: CTRL-RA
+    name: Register Allocator
+    type: automated
+    description: >
+      The register allocator embedded in the instruction selector as the
+      RegisterState struct and index_to_reg function. Modeled as a separate
+      logical controller because its failure modes are distinct from the
+      instruction selector's pattern-matching logic. Maps virtual register
+      indices to physical ARM registers (R0-R12) using modular arithmetic.
+    source-file: crates/synth-synthesis/src/instruction_selector.rs
+    control-actions:
+      - ca: CA-RA-1
+        target: CP-1
+        action: Allocate physical register for temporary value
+    feedback:
+      - from: CP-1
+        info: Current register allocation state, next available register index
+    process-model:
+      - All R0-R12 are available for allocation (incorrect — R9-R11 are reserved)
+      - Register wraparound is safe (incorrect — may overwrite live values)
+      - No spill mechanism is needed for typical functions
+
 controlled-processes:
   - id: CP-1
     name: ARM Instruction Stream

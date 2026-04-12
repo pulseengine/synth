@@ -412,20 +412,20 @@ Ready for deployment to ARM Cortex-M!
 
 ### Test Coverage
 
-- **Total tests:** 526+ passing across 18 crates
+- **Total tests:** 895+ passing across 16 crates
 - **Categories:** instruction selection, ARM encoding, peephole optimization, ELF emission, Z3 verification, register allocation, ABI, WIT, WAST compilation, Renode emulation
-- **Verification:** 53 Z3 SMT tests, 106 closed Rocq proofs, 55+ Renode ARM Cortex-M4 emulation tests
+- **Verification:** 53 Z3 SMT tests, 237 closed Rocq proofs (2 admitted), 55+ Renode ARM Cortex-M4 emulation tests
 
 ## Supported Platforms
 
 ### ARM Cortex-M Series
 
-| Platform | Flash | RAM | Tested |
+| Platform | Flash | RAM | Status |
 |----------|-------|-----|--------|
-| STM32F4 | 512KB | 128KB | ✓ |
-| STM32F1 | 64KB | 20KB | ✓ |
-| RP2040 | 2MB | 264KB | ✓ |
-| nRF52 | 512KB | 64KB | ✓ |
+| STM32F4 | 512KB | 128KB | Emulation only |
+| STM32F1 | 64KB | 20KB | Emulation only |
+| RP2040 | 2MB | 264KB | Emulation only |
+| nRF52 | 512KB | 64KB | Emulation only |
 
 ### Feature Requirements
 
@@ -444,6 +444,6 @@ Synth demonstrates that WebAssembly can be efficiently compiled for embedded ARM
 - **Efficient instruction selection** (1:1 WASM:ARM ratio in many cases)
 - **Effective optimization** (up to 25% reduction)
 - **Complete toolchain** (vector tables, startup code, linker scripts)
-- **Production-ready** (526+ passing tests, comprehensive benchmarks)
+- **Approaching initial release** (895+ passing tests, Renode emulation validation, no hardware testing yet)
 
 The architecture is modular, extensible, and suitable for real-world embedded deployment.
