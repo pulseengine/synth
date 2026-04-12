@@ -374,14 +374,16 @@ impl InstructionSelector {
                 Ok(ops.clone())
             }
 
-            Replacement::Var(_var_name) => {
-                // Use variable from pattern - would substitute from bindings
-                Ok(vec![ArmOp::Nop]) // Placeholder
+            Replacement::Var(var_name) => {
+                Err(synth_core::Error::synthesis(format!(
+                    "Replacement::Var({var_name}) not implemented — would silently emit NOP"
+                )))
             }
 
             Replacement::Inline => {
-                // Inline function call - would inline the function body
-                Ok(vec![ArmOp::Nop]) // Placeholder
+                Err(synth_core::Error::synthesis(
+                    "Replacement::Inline not implemented — would silently emit NOP".to_string(),
+                ))
             }
         }
     }
@@ -2951,8 +2953,8 @@ impl InstructionSelector {
                 }
 
                 I32Add => {
-                    let b = stack.pop().unwrap_or(Reg::R1);
-                    let a = stack.pop().unwrap_or(Reg::R0);
+                    let b = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let a = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     // Result goes in r0 for return value (or temp if not last op)
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
@@ -2973,8 +2975,8 @@ impl InstructionSelector {
                 }
 
                 I32Sub => {
-                    let b = stack.pop().unwrap_or(Reg::R1);
-                    let a = stack.pop().unwrap_or(Reg::R0);
+                    let b = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let a = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -2995,8 +2997,8 @@ impl InstructionSelector {
                 }
 
                 I32Mul => {
-                    let b = stack.pop().unwrap_or(Reg::R1);
-                    let a = stack.pop().unwrap_or(Reg::R0);
+                    let b = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let a = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -3017,8 +3019,8 @@ impl InstructionSelector {
                 }
 
                 I32And => {
-                    let b = stack.pop().unwrap_or(Reg::R1);
-                    let a = stack.pop().unwrap_or(Reg::R0);
+                    let b = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let a = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -3039,8 +3041,8 @@ impl InstructionSelector {
                 }
 
                 I32Or => {
-                    let b = stack.pop().unwrap_or(Reg::R1);
-                    let a = stack.pop().unwrap_or(Reg::R0);
+                    let b = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let a = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -3061,8 +3063,8 @@ impl InstructionSelector {
                 }
 
                 I32Xor => {
-                    let b = stack.pop().unwrap_or(Reg::R1);
-                    let a = stack.pop().unwrap_or(Reg::R0);
+                    let b = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let a = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -3084,8 +3086,8 @@ impl InstructionSelector {
 
                 // Division operations with trap checks for divide-by-zero
                 I32DivU => {
-                    let divisor = stack.pop().unwrap_or(Reg::R1); // b (divisor)
-                    let dividend = stack.pop().unwrap_or(Reg::R0); // a (dividend)
+                    let divisor = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?; // b (divisor)
+                    let dividend = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?; // a (dividend)
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -3131,8 +3133,8 @@ impl InstructionSelector {
                 }
 
                 I32DivS => {
-                    let divisor = stack.pop().unwrap_or(Reg::R1);
-                    let dividend = stack.pop().unwrap_or(Reg::R0);
+                    let divisor = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let dividend = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -3233,8 +3235,8 @@ impl InstructionSelector {
                 }
 
                 I32RemU => {
-                    let divisor = stack.pop().unwrap_or(Reg::R1);
-                    let dividend = stack.pop().unwrap_or(Reg::R0);
+                    let divisor = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let dividend = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -3290,8 +3292,8 @@ impl InstructionSelector {
                 }
 
                 I32RemS => {
-                    let divisor = stack.pop().unwrap_or(Reg::R1);
-                    let dividend = stack.pop().unwrap_or(Reg::R0);
+                    let divisor = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let dividend = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -3347,7 +3349,7 @@ impl InstructionSelector {
                 // Memory operations need stack-aware handling
                 I32Load { offset, .. } => {
                     // Pop address from stack
-                    let addr = stack.pop().unwrap_or(Reg::R0);
+                    let addr = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     // Result goes in R0 if this is the last value-producing op (before End)
                     // Check if next op is End or if we're at the last position
                     let is_return_value = idx == wasm_ops.len() - 1
@@ -3374,8 +3376,8 @@ impl InstructionSelector {
 
                 I32Store { offset, .. } => {
                     // WASM i32.store pops: value first, then address
-                    let value = stack.pop().unwrap_or(Reg::R1);
-                    let addr = stack.pop().unwrap_or(Reg::R0);
+                    let value = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let addr = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
 
                     // Generate store with optional bounds checking
                     let store_ops =
@@ -3394,7 +3396,7 @@ impl InstructionSelector {
                 | I32Load8U { offset, .. }
                 | I32Load16S { offset, .. }
                 | I32Load16U { offset, .. } => {
-                    let addr = stack.pop().unwrap_or(Reg::R0);
+                    let addr = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let is_return_value = idx == wasm_ops.len() - 1
                         || (idx + 1 < wasm_ops.len() && matches!(wasm_ops[idx + 1], End));
                     let dst = if is_return_value {
@@ -3431,8 +3433,8 @@ impl InstructionSelector {
 
                 // Sub-word stores (i32) — like I32Store but with STRB/STRH
                 I32Store8 { offset, .. } | I32Store16 { offset, .. } => {
-                    let value = stack.pop().unwrap_or(Reg::R1);
-                    let addr = stack.pop().unwrap_or(Reg::R0);
+                    let value = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let addr = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
 
                     let access_size = match op {
                         I32Store8 { .. } => 1,
@@ -3461,7 +3463,7 @@ impl InstructionSelector {
                 | I64Load16U { offset, .. }
                 | I64Load32S { offset, .. }
                 | I64Load32U { offset, .. } => {
-                    let addr = stack.pop().unwrap_or(Reg::R0);
+                    let addr = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let dst_lo = Reg::R0;
                     let dst_hi = Reg::R1;
 
@@ -3569,8 +3571,8 @@ impl InstructionSelector {
                 | I64Store16 { offset, .. }
                 | I64Store32 { offset, .. } => {
                     // Pop i64 value (lo register) and address
-                    let value_lo = stack.pop().unwrap_or(Reg::R1);
-                    let addr = stack.pop().unwrap_or(Reg::R0);
+                    let value_lo = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let addr = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
 
                     let ops: Vec<ArmOp> = match op {
                         I64Store8 { .. } => self.generate_subword_store_with_bounds_check(
@@ -3612,7 +3614,7 @@ impl InstructionSelector {
 
                 MemoryGrow(_mem_idx) => {
                     // Pop the requested number of pages from stack
-                    let pages = stack.pop().unwrap_or(Reg::R0);
+                    let pages = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let dst = index_to_reg(next_temp);
                     next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
                     instructions.push(ArmInstruction {
@@ -3647,7 +3649,7 @@ impl InstructionSelector {
 
                 If => {
                     // Pop condition from stack
-                    let cond_reg = stack.pop().unwrap_or(Reg::R0);
+                    let cond_reg = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let else_label = self.alloc_label("else");
                     let end_label = self.alloc_label("if_end");
 
@@ -3774,7 +3776,7 @@ impl InstructionSelector {
 
                 BrIf(depth) => {
                     // Pop condition from stack
-                    let cond_reg = stack.pop().unwrap_or(Reg::R0);
+                    let cond_reg = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
 
                     // CMP cond_reg, #0
                     instructions.push(ArmInstruction {
@@ -3803,7 +3805,7 @@ impl InstructionSelector {
 
                 BrTable { targets, default } => {
                     // Pop index from stack
-                    let index_reg = stack.pop().unwrap_or(Reg::R0);
+                    let index_reg = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
 
                     // Emit cascading CMP + BEQ for each target
                     for (i, target) in targets.iter().enumerate() {
@@ -3900,7 +3902,7 @@ impl InstructionSelector {
                 }
 
                 CallIndirect { type_index, .. } => {
-                    let table_idx_reg = stack.pop().unwrap_or(Reg::R0);
+                    let table_idx_reg = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::CallIndirect {
                             rd: Reg::R0,
@@ -3936,9 +3938,9 @@ impl InstructionSelector {
 
                 Select => {
                     // Select: pop condition, val2, val1; push val1 if cond != 0, else val2
-                    let cond_reg = stack.pop().unwrap_or(Reg::R2);
-                    let val2 = stack.pop().unwrap_or(Reg::R1);
-                    let val1 = stack.pop().unwrap_or(Reg::R0);
+                    let cond_reg = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let val2 = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
+                    let val1 = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     let dst = index_to_reg(next_temp);
                     next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
 
@@ -3976,7 +3978,7 @@ impl InstructionSelector {
                 }
 
                 LocalSet(local_idx) => {
-                    let val = stack.pop().unwrap_or(Reg::R0);
+                    let val = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     if *local_idx < num_params.min(4) {
                         let target = index_to_reg(*local_idx as u8);
                         if val != target {
@@ -4004,7 +4006,7 @@ impl InstructionSelector {
 
                 LocalTee(local_idx) => {
                     // Like local.set but keeps value on stack
-                    let val = stack.last().copied().unwrap_or(Reg::R0);
+                    let val = stack.last().copied().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     if *local_idx < num_params.min(4) {
                         let target = index_to_reg(*local_idx as u8);
                         if val != target {
@@ -4048,7 +4050,7 @@ impl InstructionSelector {
 
                 GlobalSet(global_idx) => {
                     // Pop value from stack and store to globals table (R9 = globals base).
-                    let val = stack.pop().unwrap_or(Reg::R0);
+                    let val = stack.pop().ok_or_else(|| synth_core::Error::synthesis("stack underflow: malformed WASM or compiler bug".to_string()))?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::Str {
                             rd: val,

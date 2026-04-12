@@ -258,4 +258,10 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 
 ### Phase 3: Catch-all removal
 - Replaced `| _ => Some s` with `| _ => None` in ArmSemantics.v
-- Made proof accounting honest
+- Replaced `| _ => Some s` with `| _ => None` in WasmSemantics.v
+- Made proof accounting honest: unmodeled instructions now fail (None) instead
+  of silently succeeding as no-ops. 79 unmodeled WASM instructions affected
+  (i64 arithmetic/bitwise, all f32/f64, conversions, memory ops).
+  Correctness proofs remain valid because they take exec_wasm_instr = Some (...)
+  as a hypothesis; with None, the hypothesis is False, making theorems
+  vacuously true (honest: we don't claim correctness for what we haven't modeled).

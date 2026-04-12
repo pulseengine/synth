@@ -140,7 +140,6 @@ jobs:
       - name: Run Kani proofs
         run: cargo kani -p synth-backend --tests
         timeout-minutes: 30
-    continue-on-error: true
 
   rivet:
     name: Rivet Validation
@@ -162,7 +161,6 @@ jobs:
       - name: Install rivet
         run: cargo install --force --git https://github.com/pulseengine/rivet --branch main rivet-cli
       - name: Validate artifacts
-        continue-on-error: true
         run: |
           sed -i '/^externals:/,$d' rivet.yaml
           rivet validate
@@ -191,5 +189,4 @@ jobs:
         run: bazel test //coq:verify_proofs
       - name: Run Renode emulation tests
         run: bazel test //tests/renode/... --test_tag_filters=wast
-        continue-on-error: true
         timeout-minutes: 10

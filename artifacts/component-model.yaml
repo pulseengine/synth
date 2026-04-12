@@ -44,6 +44,12 @@ artifacts:
         target: kiln:SR-10
       - type: traces-to
         target: kiln:SR-9
+      - type: constraint-satisfies
+        target: SC-8
+      - type: constraint-satisfies
+        target: SC-10
+      - type: constraint-satisfies
+        target: CC-IS-7
     fields:
       req-type: interface
       priority: must

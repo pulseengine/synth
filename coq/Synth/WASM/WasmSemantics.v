@@ -553,8 +553,14 @@ Definition exec_wasm_instr (i : wasm_instr) (s : wasm_state) : option wasm_state
   | Nop =>
       Some s
 
-  (* Not yet implemented *)
-  | _ => Some s
+  (* Unmodeled instructions fail honestly.
+     The catch-all returns None (failure) rather than Some s (silent no-op)
+     so the WASM model does not claim success for instructions it doesn't define.
+     This matches the ArmSemantics.v fix from Phase 3.
+     Proofs that assume exec_wasm_instr <unmodeled> = Some (...) become
+     vacuously true, which is honest: we don't claim correctness for
+     instructions we haven't modeled. *)
+  | _ => None
   end.
 
 (** Execute a sequence of instructions *)

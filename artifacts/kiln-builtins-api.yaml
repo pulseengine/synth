@@ -50,6 +50,10 @@ artifacts:
         target: kiln:REQ_FUNC_014
       - type: traces-to
         target: kiln:REQ_HELPER_ABI_001
+      - type: constraint-satisfies
+        target: SC-8
+      - type: constraint-satisfies
+        target: CC-IS-7
     fields:
       req-type: interface
       priority: must

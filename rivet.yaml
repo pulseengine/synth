@@ -9,7 +9,7 @@ project:
     - common
     - stpa
     - aspice
-    - dev
+    - stpa-aspice.bridge
 
 sources:
   - path: artifacts

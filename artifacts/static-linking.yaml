@@ -81,6 +81,14 @@ artifacts:
         target: ZI-009
       - type: traces-to
         target: KB-005
+      - type: constraint-satisfies
+        target: SC-7
+      - type: constraint-satisfies
+        target: CC-EB-1
+      - type: constraint-satisfies
+        target: CC-EB-2
+      - type: constraint-satisfies
+        target: CC-EB-3
     fields:
       req-type: functional
       priority: must
@@ -197,6 +205,8 @@ artifacts:
         target: TP-002
       - type: traces-to
         target: TP-003
+      - type: constraint-satisfies
+        target: CC-EB-2
     fields:
       req-type: functional
       priority: must
@@ -236,6 +246,8 @@ artifacts:
         target: ARCH-005
       - type: traces-to
         target: TP-007
+      - type: constraint-satisfies
+        target: CC-EB-2
     fields:
       req-type: functional
       priority: must
