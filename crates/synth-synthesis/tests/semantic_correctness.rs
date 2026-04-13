@@ -902,3 +902,334 @@ fn shl_emits_correct_opcode() {
     let has_lsl = instrs.iter().any(|i| matches!(&i.op, ArmOp::LslReg { .. }));
     assert!(has_lsl, "i32.shl should produce LslReg instruction");
 }
+
+// =========================================================================
+// Test: i64 operations -- structural verification
+//
+// I64 values are represented as register pairs (lo, hi) on ARM Cortex-M.
+// These tests verify that the instruction selector emits the correct ARM
+// opcodes for i64 operations routed through select_with_stack.
+// =========================================================================
+
+// ---- i64.const ----
+
+#[test]
+fn i64_const_emits_instruction() {
+    let mut selector = InstructionSelector::new(vec![]);
+    let instrs = selector
+        .select_with_stack(&[WasmOp::I64Const(42)], 0)
+        .expect("instruction selection should succeed");
+
+    let i64const = instrs
+        .iter()
+        .find(|i| matches!(&i.op, ArmOp::I64Const { .. }));
+    assert!(
+        i64const.is_some(),
+        "I64Const(42) should emit an I64Const ARM op"
+    );
+
+    if let ArmOp::I64Const { value, .. } = &i64const.unwrap().op {
+        assert_eq!(*value, 42, "I64Const should carry the value 42");
+    }
+}
+
+#[test]
+fn i64_const_large_value() {
+    // 0x1_0000_0000 exceeds 32 bits -- high word must be non-zero
+    let mut selector = InstructionSelector::new(vec![]);
+    let instrs = selector
+        .select_with_stack(&[WasmOp::I64Const(0x1_0000_0000)], 0)
+        .expect("instruction selection should succeed");
+
+    let i64const = instrs
+        .iter()
+        .find(|i| matches!(&i.op, ArmOp::I64Const { .. }));
+    assert!(
+        i64const.is_some(),
+        "I64Const(0x1_0000_0000) should emit an I64Const ARM op"
+    );
+
+    if let ArmOp::I64Const {
+        rdlo,
+        rdhi,
+        value,
+    } = &i64const.unwrap().op
+    {
+        assert_eq!(*value, 0x1_0000_0000i64, "value should be 0x1_0000_0000");
+        assert_ne!(
+            rdlo, rdhi,
+            "lo and hi destination registers must be different"
+        );
+    }
+}
+
+#[test]
+fn i64_const_negative_one() {
+    let mut selector = InstructionSelector::new(vec![]);
+    let instrs = selector
+        .select_with_stack(&[WasmOp::I64Const(-1)], 0)
+        .expect("instruction selection should succeed");
+
+    let i64const = instrs
+        .iter()
+        .find(|i| matches!(&i.op, ArmOp::I64Const { .. }));
+    assert!(
+        i64const.is_some(),
+        "I64Const(-1) should emit an I64Const ARM op"
+    );
+
+    if let ArmOp::I64Const { value, .. } = &i64const.unwrap().op {
+        assert_eq!(*value, -1i64, "I64Const should carry the value -1");
+    }
+}
+
+// ---- i64.add ----
+
+#[test]
+fn i64_add_emits_adds_adc() {
+    let mut selector = InstructionSelector::new(vec![]);
+    let instrs = selector
+        .select_with_stack(
+            &[WasmOp::I64Const(1), WasmOp::I64Const(2), WasmOp::I64Add],
+            0,
+        )
+        .expect("instruction selection should succeed");
+
+    let has_adds = instrs.iter().any(|i| matches!(&i.op, ArmOp::Adds { .. }));
+    let has_adc = instrs.iter().any(|i| matches!(&i.op, ArmOp::Adc { .. }));
+    assert!(
+        has_adds && has_adc,
+        "I64Add should emit ADDS + ADC sequence, got: {:#?}",
+        instrs.iter().map(|i| &i.op).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn i64_add_register_pairs() {
+    let mut selector = InstructionSelector::new(vec![]);
+    let instrs = selector
+        .select_with_stack(
+            &[WasmOp::I64Const(1), WasmOp::I64Const(2), WasmOp::I64Add],
+            0,
+        )
+        .expect("instruction selection should succeed");
+
+    // ADDS operates on lo halves, ADC on hi halves.
+    // The dest registers of ADDS and ADC should be different (lo vs hi of result pair).
+    let adds_instr = instrs.iter().find(|i| matches!(&i.op, ArmOp::Adds { .. }));
+    let adc_instr = instrs.iter().find(|i| matches!(&i.op, ArmOp::Adc { .. }));
+
+    assert!(adds_instr.is_some(), "should have ADDS");
+    assert!(adc_instr.is_some(), "should have ADC");
+
+    if let (
+        ArmOp::Adds {
+            rd: adds_rd,
+            rn: adds_rn,
+            op2: adds_op2,
+        },
+        ArmOp::Adc {
+            rd: adc_rd,
+            rn: adc_rn,
+            op2: adc_op2,
+        },
+    ) = (&adds_instr.unwrap().op, &adc_instr.unwrap().op)
+    {
+        // Dest pair must be two different registers
+        assert_ne!(
+            adds_rd, adc_rd,
+            "ADDS and ADC should write to different registers (lo vs hi)"
+        );
+        // Source registers should differ between lo/hi operations
+        assert_ne!(
+            adds_rn, adc_rn,
+            "ADDS and ADC should read from different source registers (lo vs hi)"
+        );
+        // Both should use register operands (not immediates)
+        assert!(
+            matches!(adds_op2, Operand2::Reg(_)),
+            "ADDS operand2 should be a register"
+        );
+        assert!(
+            matches!(adc_op2, Operand2::Reg(_)),
+            "ADC operand2 should be a register"
+        );
+    }
+}
+
+// ---- i64.sub ----
+
+#[test]
+fn i64_sub_emits_subs_sbc() {
+    let mut selector = InstructionSelector::new(vec![]);
+    let instrs = selector
+        .select_with_stack(
+            &[WasmOp::I64Const(10), WasmOp::I64Const(3), WasmOp::I64Sub],
+            0,
+        )
+        .expect("instruction selection should succeed");
+
+    let has_subs = instrs.iter().any(|i| matches!(&i.op, ArmOp::Subs { .. }));
+    let has_sbc = instrs.iter().any(|i| matches!(&i.op, ArmOp::Sbc { .. }));
+    assert!(
+        has_subs && has_sbc,
+        "I64Sub should emit SUBS + SBC sequence, got: {:#?}",
+        instrs.iter().map(|i| &i.op).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn i64_sub_register_pairs() {
+    let mut selector = InstructionSelector::new(vec![]);
+    let instrs = selector
+        .select_with_stack(
+            &[WasmOp::I64Const(10), WasmOp::I64Const(3), WasmOp::I64Sub],
+            0,
+        )
+        .expect("instruction selection should succeed");
+
+    let subs_instr = instrs.iter().find(|i| matches!(&i.op, ArmOp::Subs { .. }));
+    let sbc_instr = instrs.iter().find(|i| matches!(&i.op, ArmOp::Sbc { .. }));
+
+    assert!(subs_instr.is_some(), "should have SUBS");
+    assert!(sbc_instr.is_some(), "should have SBC");
+
+    if let (
+        ArmOp::Subs {
+            rd: subs_rd,
+            rn: subs_rn,
+            ..
+        },
+        ArmOp::Sbc {
+            rd: sbc_rd,
+            rn: sbc_rn,
+            ..
+        },
+    ) = (&subs_instr.unwrap().op, &sbc_instr.unwrap().op)
+    {
+        assert_ne!(
+            subs_rd, sbc_rd,
+            "SUBS and SBC should write to different registers (lo vs hi)"
+        );
+        assert_ne!(
+            subs_rn, sbc_rn,
+            "SUBS and SBC should read from different source registers (lo vs hi)"
+        );
+    }
+}
+
+// ---- i64.eqz ----
+
+#[test]
+fn i64_eqz_emits_setcondz() {
+    let mut selector = InstructionSelector::new(vec![]);
+    let instrs = selector
+        .select_with_stack(&[WasmOp::I64Const(0), WasmOp::I64Eqz], 0)
+        .expect("instruction selection should succeed");
+
+    let has_setcondz = instrs
+        .iter()
+        .any(|i| matches!(&i.op, ArmOp::I64SetCondZ { .. }));
+    assert!(
+        has_setcondz,
+        "I64Eqz should emit I64SetCondZ instruction, got: {:#?}",
+        instrs.iter().map(|i| &i.op).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn i64_eqz_register_layout() {
+    let mut selector = InstructionSelector::new(vec![]);
+    let instrs = selector
+        .select_with_stack(&[WasmOp::I64Const(42), WasmOp::I64Eqz], 0)
+        .expect("instruction selection should succeed");
+
+    let setcondz = instrs
+        .iter()
+        .find(|i| matches!(&i.op, ArmOp::I64SetCondZ { .. }));
+    assert!(setcondz.is_some(), "should have I64SetCondZ");
+
+    if let ArmOp::I64SetCondZ { rd, rn_lo, rn_hi } = &setcondz.unwrap().op {
+        // The source pair (rn_lo, rn_hi) must be distinct
+        assert_ne!(
+            rn_lo, rn_hi,
+            "I64SetCondZ source lo and hi must be different registers"
+        );
+        // The result is a single i32 register, which may overlap with sources
+        // but verify it exists
+        assert!(
+            matches!(
+                rd,
+                Reg::R0
+                    | Reg::R1
+                    | Reg::R2
+                    | Reg::R3
+                    | Reg::R4
+                    | Reg::R5
+                    | Reg::R6
+                    | Reg::R7
+                    | Reg::R8
+                    | Reg::R9
+                    | Reg::R10
+                    | Reg::R11
+                    | Reg::R12
+            ),
+            "I64SetCondZ result should be an allocatable register, got {:?}",
+            rd
+        );
+    }
+}
+
+// ---- i64 chained operations ----
+
+#[test]
+fn i64_add_then_eqz() {
+    // I64Const(1) + I64Const(-1) then I64Eqz -- should produce both add and eqz ops
+    let mut selector = InstructionSelector::new(vec![]);
+    let instrs = selector
+        .select_with_stack(
+            &[
+                WasmOp::I64Const(1),
+                WasmOp::I64Const(-1),
+                WasmOp::I64Add,
+                WasmOp::I64Eqz,
+            ],
+            0,
+        )
+        .expect("instruction selection should succeed");
+
+    let has_adds = instrs.iter().any(|i| matches!(&i.op, ArmOp::Adds { .. }));
+    let has_adc = instrs.iter().any(|i| matches!(&i.op, ArmOp::Adc { .. }));
+    let has_setcondz = instrs
+        .iter()
+        .any(|i| matches!(&i.op, ArmOp::I64SetCondZ { .. }));
+
+    assert!(has_adds, "chained i64 add+eqz should have ADDS");
+    assert!(has_adc, "chained i64 add+eqz should have ADC");
+    assert!(
+        has_setcondz,
+        "chained i64 add+eqz should have I64SetCondZ"
+    );
+}
+
+#[test]
+fn i64_const_zero_eqz() {
+    // I64Const(0) then I64Eqz -- structural check that pipeline handles zero
+    let mut selector = InstructionSelector::new(vec![]);
+    let instrs = selector
+        .select_with_stack(&[WasmOp::I64Const(0), WasmOp::I64Eqz], 0)
+        .expect("instruction selection should succeed");
+
+    // Should have exactly one I64Const and one I64SetCondZ
+    let const_count = instrs
+        .iter()
+        .filter(|i| matches!(&i.op, ArmOp::I64Const { .. }))
+        .count();
+    let eqz_count = instrs
+        .iter()
+        .filter(|i| matches!(&i.op, ArmOp::I64SetCondZ { .. }))
+        .count();
+
+    assert_eq!(const_count, 1, "should emit exactly one I64Const");
+    assert_eq!(eqz_count, 1, "should emit exactly one I64SetCondZ");
+}
