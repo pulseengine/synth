@@ -670,13 +670,13 @@ impl ArmEncoder {
             ArmOp::I32WrapI64 { .. } => 0xE1A00000,    // NOP
 
             // f32 VFP single-precision instructions
-            ArmOp::F32Add { sd, sn, sm } => encode_vfp_3reg(0xEE300A00, sd, sn, sm),
-            ArmOp::F32Sub { sd, sn, sm } => encode_vfp_3reg(0xEE300A40, sd, sn, sm),
-            ArmOp::F32Mul { sd, sn, sm } => encode_vfp_3reg(0xEE200A00, sd, sn, sm),
-            ArmOp::F32Div { sd, sn, sm } => encode_vfp_3reg(0xEE800A00, sd, sn, sm),
-            ArmOp::F32Abs { sd, sm } => encode_vfp_2reg(0xEEB00AC0, sd, sm),
-            ArmOp::F32Neg { sd, sm } => encode_vfp_2reg(0xEEB10A40, sd, sm),
-            ArmOp::F32Sqrt { sd, sm } => encode_vfp_2reg(0xEEB10AC0, sd, sm),
+            ArmOp::F32Add { sd, sn, sm } => encode_vfp_3reg(0xEE300A00, sd, sn, sm)?,
+            ArmOp::F32Sub { sd, sn, sm } => encode_vfp_3reg(0xEE300A40, sd, sn, sm)?,
+            ArmOp::F32Mul { sd, sn, sm } => encode_vfp_3reg(0xEE200A00, sd, sn, sm)?,
+            ArmOp::F32Div { sd, sn, sm } => encode_vfp_3reg(0xEE800A00, sd, sn, sm)?,
+            ArmOp::F32Abs { sd, sm } => encode_vfp_2reg(0xEEB00AC0, sd, sm)?,
+            ArmOp::F32Neg { sd, sm } => encode_vfp_2reg(0xEEB10A40, sd, sm)?,
+            ArmOp::F32Sqrt { sd, sm } => encode_vfp_2reg(0xEEB10AC0, sd, sm)?,
 
             // f32 pseudo-ops — multi-instruction sequences
             // FPSCR RMode: 00=nearest, 01=+inf(ceil), 10=-inf(floor), 11=zero(trunc)
@@ -727,8 +727,8 @@ impl ArmEncoder {
                 return self.encode_arm_f32_const(sd, *value);
             }
 
-            ArmOp::F32Load { sd, addr } => encode_vfp_ldst(0xED900A00, sd, addr),
-            ArmOp::F32Store { sd, addr } => encode_vfp_ldst(0xED800A00, sd, addr),
+            ArmOp::F32Load { sd, addr } => encode_vfp_ldst(0xED900A00, sd, addr)?,
+            ArmOp::F32Store { sd, addr } => encode_vfp_ldst(0xED800A00, sd, addr)?,
 
             // f32 conversions — multi-instruction sequences
             ArmOp::F32ConvertI32S { sd, rm } => {
@@ -742,8 +742,8 @@ impl ArmEncoder {
                     "F32 i64 conversion not supported (requires register pairs on 32-bit ARM)",
                 ));
             }
-            ArmOp::F32ReinterpretI32 { sd, rm } => encode_vmov_core_sreg(true, sd, rm),
-            ArmOp::I32ReinterpretF32 { rd, sm } => encode_vmov_core_sreg(false, sm, rd),
+            ArmOp::F32ReinterpretI32 { sd, rm } => encode_vmov_core_sreg(true, sd, rm)?,
+            ArmOp::I32ReinterpretF32 { rd, sm } => encode_vmov_core_sreg(false, sm, rd)?,
             ArmOp::I32TruncF32S { rd, sm } => {
                 return self.encode_arm_i32_trunc_f32(rd, sm, true);
             }
@@ -753,13 +753,13 @@ impl ArmEncoder {
 
             // f64 VFP double-precision instructions (ARM32)
             // F64 arithmetic: same as F32 but with sz=1 (bit 8 = 1, cp11 = 0xB)
-            ArmOp::F64Add { dd, dn, dm } => encode_vfp_3reg_f64(0xEE300B00, dd, dn, dm),
-            ArmOp::F64Sub { dd, dn, dm } => encode_vfp_3reg_f64(0xEE300B40, dd, dn, dm),
-            ArmOp::F64Mul { dd, dn, dm } => encode_vfp_3reg_f64(0xEE200B00, dd, dn, dm),
-            ArmOp::F64Div { dd, dn, dm } => encode_vfp_3reg_f64(0xEE800B00, dd, dn, dm),
-            ArmOp::F64Abs { dd, dm } => encode_vfp_2reg_f64(0xEEB00BC0, dd, dm),
-            ArmOp::F64Neg { dd, dm } => encode_vfp_2reg_f64(0xEEB10B40, dd, dm),
-            ArmOp::F64Sqrt { dd, dm } => encode_vfp_2reg_f64(0xEEB10BC0, dd, dm),
+            ArmOp::F64Add { dd, dn, dm } => encode_vfp_3reg_f64(0xEE300B00, dd, dn, dm)?,
+            ArmOp::F64Sub { dd, dn, dm } => encode_vfp_3reg_f64(0xEE300B40, dd, dn, dm)?,
+            ArmOp::F64Mul { dd, dn, dm } => encode_vfp_3reg_f64(0xEE200B00, dd, dn, dm)?,
+            ArmOp::F64Div { dd, dn, dm } => encode_vfp_3reg_f64(0xEE800B00, dd, dn, dm)?,
+            ArmOp::F64Abs { dd, dm } => encode_vfp_2reg_f64(0xEEB00BC0, dd, dm)?,
+            ArmOp::F64Neg { dd, dm } => encode_vfp_2reg_f64(0xEEB10B40, dd, dm)?,
+            ArmOp::F64Sqrt { dd, dm } => encode_vfp_2reg_f64(0xEEB10BC0, dd, dm)?,
 
             // f64 pseudo-ops
             // FPSCR RMode: 00=nearest, 01=+inf(ceil), 10=-inf(floor), 11=zero(trunc)
@@ -809,8 +809,8 @@ impl ArmEncoder {
                 return self.encode_arm_f64_const(dd, *value);
             }
 
-            ArmOp::F64Load { dd, addr } => encode_vfp_ldst_f64(0xED900B00, dd, addr),
-            ArmOp::F64Store { dd, addr } => encode_vfp_ldst_f64(0xED800B00, dd, addr),
+            ArmOp::F64Load { dd, addr } => encode_vfp_ldst_f64(0xED900B00, dd, addr)?,
+            ArmOp::F64Store { dd, addr } => encode_vfp_ldst_f64(0xED800B00, dd, addr)?,
 
             ArmOp::F64ConvertI32S { dd, rm } => {
                 return self.encode_arm_f64_convert_i32(dd, rm, true);
@@ -827,10 +827,10 @@ impl ArmEncoder {
                 return self.encode_arm_f64_promote_f32(dd, sm);
             }
             ArmOp::F64ReinterpretI64 { dd, rmlo, rmhi } => {
-                encode_vmov_core_dreg(true, dd, rmlo, rmhi)
+                encode_vmov_core_dreg(true, dd, rmlo, rmhi)?
             }
             ArmOp::I64ReinterpretF64 { rdlo, rdhi, dm } => {
-                encode_vmov_core_dreg(false, dm, rdlo, rdhi)
+                encode_vmov_core_dreg(false, dm, rdlo, rdhi)?
             }
             ArmOp::I64TruncF64S { .. } | ArmOp::I64TruncF64U { .. } => {
                 return Err(synth_core::Error::synthesis(
@@ -914,8 +914,8 @@ impl ArmEncoder {
         let mut bytes = Vec::new();
 
         // VCMP.F32 Sn, Sm: 0xEEB40A40 with Sn in Vd position, Sm in Vm position
-        let sn_num = vfp_sreg_to_num(sn);
-        let sm_num = vfp_sreg_to_num(sm);
+        let sn_num = vfp_sreg_to_num(sn)?;
+        let sm_num = vfp_sreg_to_num(sm)?;
         let (vd, d) = encode_sreg(sn_num);
         let (vm, m) = encode_sreg(sm_num);
         let vcmp = 0xEEB40A40 | (d << 22) | (vd << 12) | (m << 5) | vm;
@@ -955,7 +955,7 @@ impl ArmEncoder {
         bytes.extend_from_slice(&movt.to_le_bytes());
 
         // VMOV Sd, R12
-        let vmov = encode_vmov_core_sreg(true, sd, &Reg::R12);
+        let vmov = encode_vmov_core_sreg(true, sd, &Reg::R12)?;
         bytes.extend_from_slice(&vmov.to_le_bytes());
 
         Ok(bytes)
@@ -966,12 +966,12 @@ impl ArmEncoder {
         let mut bytes = Vec::new();
 
         // VMOV Sd, Rm — move integer to VFP register
-        let vmov = encode_vmov_core_sreg(true, sd, rm);
+        let vmov = encode_vmov_core_sreg(true, sd, rm)?;
         bytes.extend_from_slice(&vmov.to_le_bytes());
 
         // VCVT.F32.S32 Sd, Sd (signed) or VCVT.F32.U32 Sd, Sd (unsigned)
         // Base: 0xEEB80A40 (signed) or 0xEEB80AC0 (unsigned)
-        let sd_num = vfp_sreg_to_num(sd);
+        let sd_num = vfp_sreg_to_num(sd)?;
         let (vd, d) = encode_sreg(sd_num);
         let (vm, m) = encode_sreg(sd_num); // same register as source
         let base = if signed { 0xEEB80A40 } else { 0xEEB80AC0 };
@@ -994,8 +994,8 @@ impl ArmEncoder {
     /// which honours FPSCR rmode), then restores FPSCR.
     fn encode_arm_f32_rounding(&self, sd: &VfpReg, sm: &VfpReg, mode: u8) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        let sm_num = vfp_sreg_to_num(sm);
-        let sd_num = vfp_sreg_to_num(sd);
+        let sm_num = vfp_sreg_to_num(sm)?;
+        let sd_num = vfp_sreg_to_num(sd)?;
         let (vd_s, d_s) = encode_sreg(sd_num);
         let (vm_s, m_s) = encode_sreg(sm_num);
 
@@ -1055,9 +1055,9 @@ impl ArmEncoder {
         is_min: bool,
     ) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        let sn_num = vfp_sreg_to_num(sn);
-        let sm_num = vfp_sreg_to_num(sm);
-        let sd_num = vfp_sreg_to_num(sd);
+        let sn_num = vfp_sreg_to_num(sn)?;
+        let sm_num = vfp_sreg_to_num(sm)?;
+        let sd_num = vfp_sreg_to_num(sd)?;
 
         // VMOV Sd, Sn (start with first operand)
         let (vd, d) = encode_sreg(sd_num);
@@ -1089,11 +1089,11 @@ impl ArmEncoder {
         let mut bytes = Vec::new();
 
         // VMOV R12, Sm (get sign source bits)
-        let vmov_sm = encode_vmov_core_sreg(false, sm, &Reg::R12);
+        let vmov_sm = encode_vmov_core_sreg(false, sm, &Reg::R12)?;
         bytes.extend_from_slice(&vmov_sm.to_le_bytes());
 
         // VMOV R0, Sn (get magnitude source bits) — use R0 as temp
-        let vmov_sn = encode_vmov_core_sreg(false, sn, &Reg::R0);
+        let vmov_sn = encode_vmov_core_sreg(false, sn, &Reg::R0)?;
         bytes.extend_from_slice(&vmov_sn.to_le_bytes());
 
         // AND R12, R12, #0x80000000 (keep only sign bit)
@@ -1113,7 +1113,7 @@ impl ArmEncoder {
         bytes.extend_from_slice(&orr.to_le_bytes());
 
         // VMOV Sd, R0
-        let vmov_result = encode_vmov_core_sreg(true, sd, &Reg::R0);
+        let vmov_result = encode_vmov_core_sreg(true, sd, &Reg::R0)?;
         bytes.extend_from_slice(&vmov_result.to_le_bytes());
 
         Ok(bytes)
@@ -1130,8 +1130,8 @@ impl ArmEncoder {
         let mut bytes = Vec::new();
 
         // VCMP.F64 Dn, Dm: 0xEEB40B40 with Dn in Vd position, Dm in Vm position
-        let dn_num = vfp_dreg_to_num(dn);
-        let dm_num = vfp_dreg_to_num(dm);
+        let dn_num = vfp_dreg_to_num(dn)?;
+        let dm_num = vfp_dreg_to_num(dm)?;
         let (vd, d) = encode_dreg(dn_num);
         let (vm, m) = encode_dreg(dm_num);
         let vcmp = 0xEEB40B40 | (d << 22) | (vd << 12) | (m << 5) | vm;
@@ -1176,7 +1176,7 @@ impl ArmEncoder {
         bytes.extend_from_slice(&movt_r12.to_le_bytes());
 
         // VMOV Dd, R0, R12
-        let vmov = encode_vmov_core_dreg(true, dd, &Reg::R0, &Reg::R12);
+        let vmov = encode_vmov_core_dreg(true, dd, &Reg::R0, &Reg::R12)?;
         bytes.extend_from_slice(&vmov.to_le_bytes());
 
         Ok(bytes)
@@ -1187,12 +1187,12 @@ impl ArmEncoder {
         let mut bytes = Vec::new();
 
         // Use S0 as intermediate: VMOV S0, Rm
-        let vmov = encode_vmov_core_sreg(true, &VfpReg::S0, rm);
+        let vmov = encode_vmov_core_sreg(true, &VfpReg::S0, rm)?;
         bytes.extend_from_slice(&vmov.to_le_bytes());
 
         // VCVT.F64.S32 Dd, S0 (signed) or VCVT.F64.U32 Dd, S0 (unsigned)
         // Base: 0xEEB80B40 (signed) or 0xEEB80BC0 (unsigned)
-        let dd_num = vfp_dreg_to_num(dd);
+        let dd_num = vfp_dreg_to_num(dd)?;
         let (vd, d) = encode_dreg(dd_num);
         let base = if signed { 0xEEB80B40 } else { 0xEEB80BC0 };
         // S0 is register 0: Vm=0, M=0
@@ -1204,8 +1204,8 @@ impl ArmEncoder {
 
     /// Encode VCVT.F64.F32 Dd, Sm as ARM32 (f32 to f64 promotion)
     fn encode_arm_f64_promote_f32(&self, dd: &VfpReg, sm: &VfpReg) -> Result<Vec<u8>> {
-        let dd_num = vfp_dreg_to_num(dd);
-        let sm_num = vfp_sreg_to_num(sm);
+        let dd_num = vfp_dreg_to_num(dd)?;
+        let sm_num = vfp_sreg_to_num(sm)?;
         let (vd, d) = encode_dreg(dd_num);
         let (vm, m) = encode_sreg(sm_num);
 
@@ -1217,7 +1217,7 @@ impl ArmEncoder {
     /// Encode VCVT.S32/U32.F64 Sd, Dm + VMOV Rd, Sd as ARM32
     fn encode_arm_i32_trunc_f64(&self, rd: &Reg, dm: &VfpReg, signed: bool) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        let dm_num = vfp_dreg_to_num(dm);
+        let dm_num = vfp_dreg_to_num(dm)?;
         let (vm, m) = encode_dreg(dm_num);
 
         // VCVT.S32.F64 S0, Dm (toward zero) or VCVT.U32.F64 S0, Dm
@@ -1227,7 +1227,7 @@ impl ArmEncoder {
         bytes.extend_from_slice(&vcvt.to_le_bytes());
 
         // VMOV Rd, S0
-        let vmov = encode_vmov_core_sreg(false, &VfpReg::S0, rd);
+        let vmov = encode_vmov_core_sreg(false, &VfpReg::S0, rd)?;
         bytes.extend_from_slice(&vmov.to_le_bytes());
 
         Ok(bytes)
@@ -1242,8 +1242,8 @@ impl ArmEncoder {
     /// then restores FPSCR.
     fn encode_arm_f64_rounding(&self, dd: &VfpReg, dm: &VfpReg, mode: u8) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        let dm_num = vfp_dreg_to_num(dm);
-        let dd_num = vfp_dreg_to_num(dd);
+        let dm_num = vfp_dreg_to_num(dm)?;
+        let dd_num = vfp_dreg_to_num(dd)?;
         let (vm, m) = encode_dreg(dm_num);
         let (vd, d) = encode_dreg(dd_num);
 
@@ -1299,9 +1299,9 @@ impl ArmEncoder {
         is_min: bool,
     ) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        let dn_num = vfp_dreg_to_num(dn);
-        let dm_num = vfp_dreg_to_num(dm);
-        let dd_num = vfp_dreg_to_num(dd);
+        let dn_num = vfp_dreg_to_num(dn)?;
+        let dm_num = vfp_dreg_to_num(dm)?;
+        let dd_num = vfp_dreg_to_num(dd)?;
 
         // VMOV.F64 Dd, Dn (start with first operand)
         let (vd, d) = encode_dreg(dd_num);
@@ -1329,12 +1329,12 @@ impl ArmEncoder {
         let mut bytes = Vec::new();
 
         // VMOV R0, R12, Dm (get sign source bits)
-        let vmov_dm = encode_vmov_core_dreg(false, dm, &Reg::R0, &Reg::R12);
+        let vmov_dm = encode_vmov_core_dreg(false, dm, &Reg::R0, &Reg::R12)?;
         bytes.extend_from_slice(&vmov_dm.to_le_bytes());
 
         // VMOV R1, R2, Dn (get magnitude source bits)
         // We use R1 (lo) and R2 (hi) for the magnitude
-        let vmov_dn = encode_vmov_core_dreg(false, dn, &Reg::R1, &Reg::R2);
+        let vmov_dn = encode_vmov_core_dreg(false, dn, &Reg::R1, &Reg::R2)?;
         bytes.extend_from_slice(&vmov_dn.to_le_bytes());
 
         // AND R12, R12, #0x80000000 (keep only sign bit from hi word)
@@ -1350,7 +1350,7 @@ impl ArmEncoder {
         bytes.extend_from_slice(&orr.to_le_bytes());
 
         // VMOV Dd, R1, R2
-        let vmov_result = encode_vmov_core_dreg(true, dd, &Reg::R1, &Reg::R2);
+        let vmov_result = encode_vmov_core_dreg(true, dd, &Reg::R1, &Reg::R2)?;
         bytes.extend_from_slice(&vmov_result.to_le_bytes());
 
         Ok(bytes)
@@ -1362,7 +1362,7 @@ impl ArmEncoder {
 
         // VCVT.S32.F32 Sd, Sm (toward zero) or VCVT.U32.F32 Sd, Sm
         // We use Sm as both source and destination for the intermediate result
-        let sm_num = vfp_sreg_to_num(sm);
+        let sm_num = vfp_sreg_to_num(sm)?;
         let (vd, d) = encode_sreg(sm_num);
         let (vm, m) = encode_sreg(sm_num);
         let base = if signed { 0xEEBD0AC0 } else { 0xEEBC0AC0 };
@@ -1370,7 +1370,7 @@ impl ArmEncoder {
         bytes.extend_from_slice(&vcvt.to_le_bytes());
 
         // VMOV Rd, Sm — move result back to core register
-        let vmov = encode_vmov_core_sreg(false, sm, rd);
+        let vmov = encode_vmov_core_sreg(false, sm, rd)?;
         bytes.extend_from_slice(&vmov.to_le_bytes());
 
         Ok(bytes)
@@ -4502,21 +4502,25 @@ impl ArmEncoder {
             // === F32 VFP single-precision Thumb-2 encodings ===
             // VFP instruction words are identical to ARM32; emit as two LE halfwords.
             ArmOp::F32Add { sd, sn, sm } => {
-                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE300A00, sd, sn, sm)))
+                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE300A00, sd, sn, sm)?))
             }
             ArmOp::F32Sub { sd, sn, sm } => {
-                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE300A40, sd, sn, sm)))
+                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE300A40, sd, sn, sm)?))
             }
             ArmOp::F32Mul { sd, sn, sm } => {
-                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE200A00, sd, sn, sm)))
+                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE200A00, sd, sn, sm)?))
             }
             ArmOp::F32Div { sd, sn, sm } => {
-                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE800A00, sd, sn, sm)))
+                Ok(vfp_to_thumb_bytes(encode_vfp_3reg(0xEE800A00, sd, sn, sm)?))
             }
-            ArmOp::F32Abs { sd, sm } => Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB00AC0, sd, sm))),
-            ArmOp::F32Neg { sd, sm } => Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB10A40, sd, sm))),
+            ArmOp::F32Abs { sd, sm } => {
+                Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB00AC0, sd, sm)?))
+            }
+            ArmOp::F32Neg { sd, sm } => {
+                Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB10A40, sd, sm)?))
+            }
             ArmOp::F32Sqrt { sd, sm } => {
-                Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB10AC0, sd, sm)))
+                Ok(vfp_to_thumb_bytes(encode_vfp_2reg(0xEEB10AC0, sd, sm)?))
             }
 
             // f32 pseudo-ops — multi-instruction sequences
@@ -4540,10 +4544,10 @@ impl ArmEncoder {
             ArmOp::F32Const { sd, value } => self.encode_thumb_f32_const(sd, *value),
 
             ArmOp::F32Load { sd, addr } => {
-                Ok(vfp_to_thumb_bytes(encode_vfp_ldst(0xED900A00, sd, addr)))
+                Ok(vfp_to_thumb_bytes(encode_vfp_ldst(0xED900A00, sd, addr)?))
             }
             ArmOp::F32Store { sd, addr } => {
-                Ok(vfp_to_thumb_bytes(encode_vfp_ldst(0xED800A00, sd, addr)))
+                Ok(vfp_to_thumb_bytes(encode_vfp_ldst(0xED800A00, sd, addr)?))
             }
 
             ArmOp::F32ConvertI32S { sd, rm } => self.encode_thumb_f32_convert_i32(sd, rm, true),
@@ -4554,10 +4558,10 @@ impl ArmEncoder {
                 ))
             }
             ArmOp::F32ReinterpretI32 { sd, rm } => {
-                Ok(vfp_to_thumb_bytes(encode_vmov_core_sreg(true, sd, rm)))
+                Ok(vfp_to_thumb_bytes(encode_vmov_core_sreg(true, sd, rm)?))
             }
             ArmOp::I32ReinterpretF32 { rd, sm } => {
-                Ok(vfp_to_thumb_bytes(encode_vmov_core_sreg(false, sm, rd)))
+                Ok(vfp_to_thumb_bytes(encode_vmov_core_sreg(false, sm, rd)?))
             }
             ArmOp::I32TruncF32S { rd, sm } => self.encode_thumb_i32_trunc_f32(rd, sm, true),
             ArmOp::I32TruncF32U { rd, sm } => self.encode_thumb_i32_trunc_f32(rd, sm, false),
@@ -4566,24 +4570,24 @@ impl ArmEncoder {
             // VFP instruction words are identical to ARM32; emit as two LE halfwords.
             ArmOp::F64Add { dd, dn, dm } => Ok(vfp_to_thumb_bytes(encode_vfp_3reg_f64(
                 0xEE300B00, dd, dn, dm,
-            ))),
+            )?)),
             ArmOp::F64Sub { dd, dn, dm } => Ok(vfp_to_thumb_bytes(encode_vfp_3reg_f64(
                 0xEE300B40, dd, dn, dm,
-            ))),
+            )?)),
             ArmOp::F64Mul { dd, dn, dm } => Ok(vfp_to_thumb_bytes(encode_vfp_3reg_f64(
                 0xEE200B00, dd, dn, dm,
-            ))),
+            )?)),
             ArmOp::F64Div { dd, dn, dm } => Ok(vfp_to_thumb_bytes(encode_vfp_3reg_f64(
                 0xEE800B00, dd, dn, dm,
-            ))),
+            )?)),
             ArmOp::F64Abs { dd, dm } => {
-                Ok(vfp_to_thumb_bytes(encode_vfp_2reg_f64(0xEEB00BC0, dd, dm)))
+                Ok(vfp_to_thumb_bytes(encode_vfp_2reg_f64(0xEEB00BC0, dd, dm)?))
             }
             ArmOp::F64Neg { dd, dm } => {
-                Ok(vfp_to_thumb_bytes(encode_vfp_2reg_f64(0xEEB10B40, dd, dm)))
+                Ok(vfp_to_thumb_bytes(encode_vfp_2reg_f64(0xEEB10B40, dd, dm)?))
             }
             ArmOp::F64Sqrt { dd, dm } => {
-                Ok(vfp_to_thumb_bytes(encode_vfp_2reg_f64(0xEEB10BC0, dd, dm)))
+                Ok(vfp_to_thumb_bytes(encode_vfp_2reg_f64(0xEEB10BC0, dd, dm)?))
             }
 
             // f64 pseudo-ops
@@ -4608,10 +4612,10 @@ impl ArmEncoder {
 
             ArmOp::F64Load { dd, addr } => Ok(vfp_to_thumb_bytes(encode_vfp_ldst_f64(
                 0xED900B00, dd, addr,
-            ))),
+            )?)),
             ArmOp::F64Store { dd, addr } => Ok(vfp_to_thumb_bytes(encode_vfp_ldst_f64(
                 0xED800B00, dd, addr,
-            ))),
+            )?)),
 
             ArmOp::F64ConvertI32S { dd, rm } => self.encode_thumb_f64_convert_i32(dd, rm, true),
             ArmOp::F64ConvertI32U { dd, rm } => self.encode_thumb_f64_convert_i32(dd, rm, false),
@@ -4622,10 +4626,10 @@ impl ArmEncoder {
             }
             ArmOp::F64PromoteF32 { dd, sm } => self.encode_thumb_f64_promote_f32(dd, sm),
             ArmOp::F64ReinterpretI64 { dd, rmlo, rmhi } => Ok(vfp_to_thumb_bytes(
-                encode_vmov_core_dreg(true, dd, rmlo, rmhi),
+                encode_vmov_core_dreg(true, dd, rmlo, rmhi)?,
             )),
             ArmOp::I64ReinterpretF64 { rdlo, rdhi, dm } => Ok(vfp_to_thumb_bytes(
-                encode_vmov_core_dreg(false, dm, rdlo, rdhi),
+                encode_vmov_core_dreg(false, dm, rdlo, rdhi)?,
             )),
             ArmOp::I64TruncF64S { .. } | ArmOp::I64TruncF64U { .. } => {
                 Err(synth_core::Error::synthesis(
@@ -5217,8 +5221,8 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
 
         // VCMP.F32 Sn, Sm
-        let sn_num = vfp_sreg_to_num(sn);
-        let sm_num = vfp_sreg_to_num(sm);
+        let sn_num = vfp_sreg_to_num(sn)?;
+        let sm_num = vfp_sreg_to_num(sm)?;
         let (vd, d) = encode_sreg(sn_num);
         let (vm, m) = encode_sreg(sm_num);
         let vcmp = 0xEEB40A40 | (d << 22) | (vd << 12) | (m << 5) | vm;
@@ -5290,7 +5294,7 @@ impl ArmEncoder {
         bytes.extend_from_slice(&hw2.to_le_bytes());
 
         // VMOV Sd, R12
-        let vmov = encode_vmov_core_sreg(true, sd, &Reg::R12);
+        let vmov = encode_vmov_core_sreg(true, sd, &Reg::R12)?;
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
 
         Ok(bytes)
@@ -5301,11 +5305,11 @@ impl ArmEncoder {
         let mut bytes = Vec::new();
 
         // VMOV Sd, Rm
-        let vmov = encode_vmov_core_sreg(true, sd, rm);
+        let vmov = encode_vmov_core_sreg(true, sd, rm)?;
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
 
         // VCVT.F32.S32/U32 Sd, Sd
-        let sd_num = vfp_sreg_to_num(sd);
+        let sd_num = vfp_sreg_to_num(sd)?;
         let (vd, d) = encode_sreg(sd_num);
         let (vm, m) = encode_sreg(sd_num);
         let base = if signed { 0xEEB80A40 } else { 0xEEB80AC0 };
@@ -5324,8 +5328,8 @@ impl ArmEncoder {
     /// then restores FPSCR.
     fn encode_thumb_f32_rounding(&self, sd: &VfpReg, sm: &VfpReg, mode: u8) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        let sm_num = vfp_sreg_to_num(sm);
-        let sd_num = vfp_sreg_to_num(sd);
+        let sm_num = vfp_sreg_to_num(sm)?;
+        let sd_num = vfp_sreg_to_num(sd)?;
         let (vd_s, d_s) = encode_sreg(sd_num);
         let (vm_s, m_s) = encode_sreg(sm_num);
 
@@ -5390,9 +5394,9 @@ impl ArmEncoder {
         is_min: bool,
     ) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        let sn_num = vfp_sreg_to_num(sn);
-        let sm_num = vfp_sreg_to_num(sm);
-        let sd_num = vfp_sreg_to_num(sd);
+        let sn_num = vfp_sreg_to_num(sn)?;
+        let sm_num = vfp_sreg_to_num(sm)?;
+        let sd_num = vfp_sreg_to_num(sd)?;
 
         // VMOV.F32 Sd, Sn
         let (vd, d) = encode_sreg(sd_num);
@@ -5429,14 +5433,14 @@ impl ArmEncoder {
             false,
             sm,
             &Reg::R12,
-        )));
+        )?));
 
         // VMOV R0, Sn (get magnitude source bits)
         bytes.extend_from_slice(&vfp_to_thumb_bytes(encode_vmov_core_sreg(
             false,
             sn,
             &Reg::R0,
-        )));
+        )?));
 
         // AND.W R12, R12, #0x80000000
         // Thumb-2 modified immediate: 0x80000000 = constant 0x80 with rotation
@@ -5469,7 +5473,7 @@ impl ArmEncoder {
             true,
             sd,
             &Reg::R0,
-        )));
+        )?));
 
         Ok(bytes)
     }
@@ -5486,8 +5490,8 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
 
         // VCMP.F64 Dn, Dm
-        let dn_num = vfp_dreg_to_num(dn);
-        let dm_num = vfp_dreg_to_num(dm);
+        let dn_num = vfp_dreg_to_num(dn)?;
+        let dm_num = vfp_dreg_to_num(dm)?;
         let (vd, d) = encode_dreg(dn_num);
         let (vm, m) = encode_dreg(dm_num);
         let vcmp = 0xEEB40B40 | (d << 22) | (vd << 12) | (m << 5) | vm;
@@ -5549,7 +5553,7 @@ impl ArmEncoder {
         bytes.extend_from_slice(&self.encode_thumb32_movt_raw(12, hi16)?);
 
         // VMOV Dd, R0, R12
-        let vmov = encode_vmov_core_dreg(true, dd, &Reg::R0, &Reg::R12);
+        let vmov = encode_vmov_core_dreg(true, dd, &Reg::R0, &Reg::R12)?;
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
 
         Ok(bytes)
@@ -5560,11 +5564,11 @@ impl ArmEncoder {
         let mut bytes = Vec::new();
 
         // VMOV S0, Rm
-        let vmov = encode_vmov_core_sreg(true, &VfpReg::S0, rm);
+        let vmov = encode_vmov_core_sreg(true, &VfpReg::S0, rm)?;
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
 
         // VCVT.F64.S32 Dd, S0 or VCVT.F64.U32 Dd, S0
-        let dd_num = vfp_dreg_to_num(dd);
+        let dd_num = vfp_dreg_to_num(dd)?;
         let (vd, d) = encode_dreg(dd_num);
         let base = if signed { 0xEEB80B40 } else { 0xEEB80BC0 };
         let vcvt = base | (d << 22) | (vd << 12);
@@ -5575,8 +5579,8 @@ impl ArmEncoder {
 
     /// Encode VCVT.F64.F32 Dd, Sm as Thumb-2
     fn encode_thumb_f64_promote_f32(&self, dd: &VfpReg, sm: &VfpReg) -> Result<Vec<u8>> {
-        let dd_num = vfp_dreg_to_num(dd);
-        let sm_num = vfp_sreg_to_num(sm);
+        let dd_num = vfp_dreg_to_num(dd)?;
+        let sm_num = vfp_sreg_to_num(sm)?;
         let (vd, d) = encode_dreg(dd_num);
         let (vm, m) = encode_sreg(sm_num);
 
@@ -5587,7 +5591,7 @@ impl ArmEncoder {
     /// Encode VCVT.S32/U32.F64 S0, Dm + VMOV Rd, S0 as Thumb-2
     fn encode_thumb_i32_trunc_f64(&self, rd: &Reg, dm: &VfpReg, signed: bool) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        let dm_num = vfp_dreg_to_num(dm);
+        let dm_num = vfp_dreg_to_num(dm)?;
         let (vm, m) = encode_dreg(dm_num);
 
         // VCVT.S32.F64 S0, Dm or VCVT.U32.F64 S0, Dm
@@ -5596,7 +5600,7 @@ impl ArmEncoder {
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt));
 
         // VMOV Rd, S0
-        let vmov = encode_vmov_core_sreg(false, &VfpReg::S0, rd);
+        let vmov = encode_vmov_core_sreg(false, &VfpReg::S0, rd)?;
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
 
         Ok(bytes)
@@ -5607,8 +5611,8 @@ impl ArmEncoder {
     /// `mode`: FPSCR RMode — 0b00=nearest, 0b01=+inf(ceil), 0b10=-inf(floor), 0b11=zero(trunc)
     fn encode_thumb_f64_rounding(&self, dd: &VfpReg, dm: &VfpReg, mode: u8) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        let dm_num = vfp_dreg_to_num(dm);
-        let dd_num = vfp_dreg_to_num(dd);
+        let dm_num = vfp_dreg_to_num(dm)?;
+        let dd_num = vfp_dreg_to_num(dd)?;
         let (vm, m) = encode_dreg(dm_num);
         let (vd, d) = encode_dreg(dd_num);
 
@@ -5668,9 +5672,9 @@ impl ArmEncoder {
         is_min: bool,
     ) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
-        let dn_num = vfp_dreg_to_num(dn);
-        let dm_num = vfp_dreg_to_num(dm);
-        let dd_num = vfp_dreg_to_num(dd);
+        let dn_num = vfp_dreg_to_num(dn)?;
+        let dm_num = vfp_dreg_to_num(dm)?;
+        let dd_num = vfp_dreg_to_num(dd)?;
 
         // VMOV.F64 Dd, Dn
         let (vd, d) = encode_dreg(dd_num);
@@ -5708,7 +5712,7 @@ impl ArmEncoder {
             dm,
             &Reg::R0,
             &Reg::R12,
-        )));
+        )?));
 
         // VMOV R1, R2, Dn (get magnitude source)
         bytes.extend_from_slice(&vfp_to_thumb_bytes(encode_vmov_core_dreg(
@@ -5716,7 +5720,7 @@ impl ArmEncoder {
             dn,
             &Reg::R1,
             &Reg::R2,
-        )));
+        )?));
 
         // AND.W R12, R12, #0x80000000 (i=0, Rn=R12)
         let hw1: u16 = 0xF000 | 12;
@@ -5742,7 +5746,7 @@ impl ArmEncoder {
             dd,
             &Reg::R1,
             &Reg::R2,
-        )));
+        )?));
 
         Ok(bytes)
     }
@@ -5751,7 +5755,7 @@ impl ArmEncoder {
     fn encode_thumb_i32_trunc_f32(&self, rd: &Reg, sm: &VfpReg, signed: bool) -> Result<Vec<u8>> {
         let mut bytes = Vec::new();
 
-        let sm_num = vfp_sreg_to_num(sm);
+        let sm_num = vfp_sreg_to_num(sm)?;
         let (vd, d) = encode_sreg(sm_num);
         let (vm, m) = encode_sreg(sm_num);
         let base = if signed { 0xEEBD0AC0 } else { 0xEEBC0AC0 };
@@ -5759,7 +5763,7 @@ impl ArmEncoder {
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt));
 
         // VMOV Rd, Sm
-        let vmov = encode_vmov_core_sreg(false, sm, rd);
+        let vmov = encode_vmov_core_sreg(false, sm, rd)?;
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
 
         Ok(bytes)
@@ -6415,66 +6419,70 @@ fn encode_mem_addr(addr: &MemAddr) -> (u32, u32) {
 }
 
 /// S-register number: S0=0, S1=1, ..., S31=31
-fn vfp_sreg_to_num(reg: &VfpReg) -> u32 {
+fn vfp_sreg_to_num(reg: &VfpReg) -> Result<u32> {
     match reg {
-        VfpReg::S0 => 0,
-        VfpReg::S1 => 1,
-        VfpReg::S2 => 2,
-        VfpReg::S3 => 3,
-        VfpReg::S4 => 4,
-        VfpReg::S5 => 5,
-        VfpReg::S6 => 6,
-        VfpReg::S7 => 7,
-        VfpReg::S8 => 8,
-        VfpReg::S9 => 9,
-        VfpReg::S10 => 10,
-        VfpReg::S11 => 11,
-        VfpReg::S12 => 12,
-        VfpReg::S13 => 13,
-        VfpReg::S14 => 14,
-        VfpReg::S15 => 15,
-        VfpReg::S16 => 16,
-        VfpReg::S17 => 17,
-        VfpReg::S18 => 18,
-        VfpReg::S19 => 19,
-        VfpReg::S20 => 20,
-        VfpReg::S21 => 21,
-        VfpReg::S22 => 22,
-        VfpReg::S23 => 23,
-        VfpReg::S24 => 24,
-        VfpReg::S25 => 25,
-        VfpReg::S26 => 26,
-        VfpReg::S27 => 27,
-        VfpReg::S28 => 28,
-        VfpReg::S29 => 29,
-        VfpReg::S30 => 30,
-        VfpReg::S31 => 31,
+        VfpReg::S0 => Ok(0),
+        VfpReg::S1 => Ok(1),
+        VfpReg::S2 => Ok(2),
+        VfpReg::S3 => Ok(3),
+        VfpReg::S4 => Ok(4),
+        VfpReg::S5 => Ok(5),
+        VfpReg::S6 => Ok(6),
+        VfpReg::S7 => Ok(7),
+        VfpReg::S8 => Ok(8),
+        VfpReg::S9 => Ok(9),
+        VfpReg::S10 => Ok(10),
+        VfpReg::S11 => Ok(11),
+        VfpReg::S12 => Ok(12),
+        VfpReg::S13 => Ok(13),
+        VfpReg::S14 => Ok(14),
+        VfpReg::S15 => Ok(15),
+        VfpReg::S16 => Ok(16),
+        VfpReg::S17 => Ok(17),
+        VfpReg::S18 => Ok(18),
+        VfpReg::S19 => Ok(19),
+        VfpReg::S20 => Ok(20),
+        VfpReg::S21 => Ok(21),
+        VfpReg::S22 => Ok(22),
+        VfpReg::S23 => Ok(23),
+        VfpReg::S24 => Ok(24),
+        VfpReg::S25 => Ok(25),
+        VfpReg::S26 => Ok(26),
+        VfpReg::S27 => Ok(27),
+        VfpReg::S28 => Ok(28),
+        VfpReg::S29 => Ok(29),
+        VfpReg::S30 => Ok(30),
+        VfpReg::S31 => Ok(31),
         // D-registers are not used in F32 single-precision encodings
-        _ => panic!("D-registers not supported in single-precision VFP encoding"),
+        _ => Err(synth_core::Error::SynthesisError(
+            "D-register not supported in single-precision VFP encoding".to_string(),
+        )),
     }
 }
 
 /// D-register number: D0=0, D1=1, ..., D15=15
-fn vfp_dreg_to_num(reg: &VfpReg) -> u32 {
+fn vfp_dreg_to_num(reg: &VfpReg) -> Result<u32> {
     match reg {
-        VfpReg::D0 => 0,
-        VfpReg::D1 => 1,
-        VfpReg::D2 => 2,
-        VfpReg::D3 => 3,
-        VfpReg::D4 => 4,
-        VfpReg::D5 => 5,
-        VfpReg::D6 => 6,
-        VfpReg::D7 => 7,
-        VfpReg::D8 => 8,
-        VfpReg::D9 => 9,
-        VfpReg::D10 => 10,
-        VfpReg::D11 => 11,
-        VfpReg::D12 => 12,
-        VfpReg::D13 => 13,
-        VfpReg::D14 => 14,
-        VfpReg::D15 => 15,
+        VfpReg::D0 => Ok(0),
+        VfpReg::D1 => Ok(1),
+        VfpReg::D2 => Ok(2),
+        VfpReg::D3 => Ok(3),
+        VfpReg::D4 => Ok(4),
+        VfpReg::D5 => Ok(5),
+        VfpReg::D6 => Ok(6),
+        VfpReg::D7 => Ok(7),
+        VfpReg::D8 => Ok(8),
+        VfpReg::D9 => Ok(9),
+        VfpReg::D10 => Ok(10),
+        VfpReg::D11 => Ok(11),
+        VfpReg::D12 => Ok(12),
+        VfpReg::D13 => Ok(13),
+        VfpReg::D14 => Ok(14),
+        VfpReg::D15 => Ok(15),
         // S-registers are not used in F64 double-precision encodings
-        _ => panic!("S-registers not supported in double-precision VFP encoding"),
+        _ => Err(synth_core::Error::SynthesisError(
+            "S-register not supported in double-precision VFP encoding".to_string(),
+        )),
     }
 }
 
@@ -6497,33 +6505,33 @@ fn encode_dreg(d: u32) -> (u32, u32) {
 ///
 /// VFP encoding: [cond 1110] [D opc1 Vn] [Vd 101 sz] [N opc2 M 0 Vm]
 /// For single-precision (sz=0), coprocessor = 0xA (bits[11:8]).
-fn encode_vfp_3reg(base: u32, sd: &VfpReg, sn: &VfpReg, sm: &VfpReg) -> u32 {
-    let sd_num = vfp_sreg_to_num(sd);
-    let sn_num = vfp_sreg_to_num(sn);
-    let sm_num = vfp_sreg_to_num(sm);
+fn encode_vfp_3reg(base: u32, sd: &VfpReg, sn: &VfpReg, sm: &VfpReg) -> Result<u32> {
+    let sd_num = vfp_sreg_to_num(sd)?;
+    let sn_num = vfp_sreg_to_num(sn)?;
+    let sm_num = vfp_sreg_to_num(sm)?;
     let (vd, d) = encode_sreg(sd_num);
     let (vn, n) = encode_sreg(sn_num);
     let (vm, m) = encode_sreg(sm_num);
 
-    base | (d << 22) | (vn << 16) | (vd << 12) | (n << 7) | (m << 5) | vm
+    Ok(base | (d << 22) | (vn << 16) | (vd << 12) | (n << 7) | (m << 5) | vm)
 }
 
 /// Encode a VFP 2-register instruction (VNEG.F32, VABS.F32, VSQRT.F32).
 /// Returns the full 32-bit instruction word.
-fn encode_vfp_2reg(base: u32, sd: &VfpReg, sm: &VfpReg) -> u32 {
-    let sd_num = vfp_sreg_to_num(sd);
-    let sm_num = vfp_sreg_to_num(sm);
+fn encode_vfp_2reg(base: u32, sd: &VfpReg, sm: &VfpReg) -> Result<u32> {
+    let sd_num = vfp_sreg_to_num(sd)?;
+    let sm_num = vfp_sreg_to_num(sm)?;
     let (vd, d) = encode_sreg(sd_num);
     let (vm, m) = encode_sreg(sm_num);
 
-    base | (d << 22) | (vd << 12) | (m << 5) | vm
+    Ok(base | (d << 22) | (vd << 12) | (m << 5) | vm)
 }
 
 /// Encode a VFP load/store (VLDR.F32 / VSTR.F32).
 /// offset is in bytes and must be word-aligned; encoded as imm8 = offset/4.
 /// U bit (bit 23) controls add/subtract offset.
-fn encode_vfp_ldst(base: u32, sd: &VfpReg, addr: &MemAddr) -> u32 {
-    let sd_num = vfp_sreg_to_num(sd);
+fn encode_vfp_ldst(base: u32, sd: &VfpReg, addr: &MemAddr) -> Result<u32> {
+    let sd_num = vfp_sreg_to_num(sd)?;
     let (vd, d) = encode_sreg(sd_num);
     let rn = reg_to_bits(&addr.base);
 
@@ -6532,49 +6540,49 @@ fn encode_vfp_ldst(base: u32, sd: &VfpReg, addr: &MemAddr) -> u32 {
     let abs_offset = offset.unsigned_abs();
     let imm8 = (abs_offset / 4) & 0xFF;
 
-    base | (u_bit << 23) | (d << 22) | (rn << 16) | (vd << 12) | imm8
+    Ok(base | (u_bit << 23) | (d << 22) | (rn << 16) | (vd << 12) | imm8)
 }
 
 /// Encode VMOV between core register and S-register.
 /// VMOV Sn, Rt: 0xEE00_0A10 | (Vn << 16) | (N << 7) | (Rt << 12)
 /// VMOV Rt, Sn: 0xEE10_0A10 | (Vn << 16) | (N << 7) | (Rt << 12)
-fn encode_vmov_core_sreg(to_sreg: bool, sreg: &VfpReg, core: &Reg) -> u32 {
-    let s_num = vfp_sreg_to_num(sreg);
+fn encode_vmov_core_sreg(to_sreg: bool, sreg: &VfpReg, core: &Reg) -> Result<u32> {
+    let s_num = vfp_sreg_to_num(sreg)?;
     let (vn, n) = encode_sreg(s_num);
     let rt = reg_to_bits(core);
 
     let base = if to_sreg { 0xEE000A10 } else { 0xEE100A10 };
-    base | (vn << 16) | (rt << 12) | (n << 7)
+    Ok(base | (vn << 16) | (rt << 12) | (n << 7))
 }
 
 /// Encode a VFP 3-register double-precision instruction (VADD.F64, VSUB.F64, etc.).
 /// For double-precision (sz=1), coprocessor = 0xB (bits[11:8]).
 /// The base should have bit 8 = 1 for F64 (0xB suffix instead of 0xA).
-fn encode_vfp_3reg_f64(base: u32, dd: &VfpReg, dn: &VfpReg, dm: &VfpReg) -> u32 {
-    let dd_num = vfp_dreg_to_num(dd);
-    let dn_num = vfp_dreg_to_num(dn);
-    let dm_num = vfp_dreg_to_num(dm);
+fn encode_vfp_3reg_f64(base: u32, dd: &VfpReg, dn: &VfpReg, dm: &VfpReg) -> Result<u32> {
+    let dd_num = vfp_dreg_to_num(dd)?;
+    let dn_num = vfp_dreg_to_num(dn)?;
+    let dm_num = vfp_dreg_to_num(dm)?;
     let (vd, d) = encode_dreg(dd_num);
     let (vn, n) = encode_dreg(dn_num);
     let (vm, m) = encode_dreg(dm_num);
 
-    base | (d << 22) | (vn << 16) | (vd << 12) | (n << 7) | (m << 5) | vm
+    Ok(base | (d << 22) | (vn << 16) | (vd << 12) | (n << 7) | (m << 5) | vm)
 }
 
 /// Encode a VFP 2-register double-precision instruction (VNEG.F64, VABS.F64, VSQRT.F64).
-fn encode_vfp_2reg_f64(base: u32, dd: &VfpReg, dm: &VfpReg) -> u32 {
-    let dd_num = vfp_dreg_to_num(dd);
-    let dm_num = vfp_dreg_to_num(dm);
+fn encode_vfp_2reg_f64(base: u32, dd: &VfpReg, dm: &VfpReg) -> Result<u32> {
+    let dd_num = vfp_dreg_to_num(dd)?;
+    let dm_num = vfp_dreg_to_num(dm)?;
     let (vd, d) = encode_dreg(dd_num);
     let (vm, m) = encode_dreg(dm_num);
 
-    base | (d << 22) | (vd << 12) | (m << 5) | vm
+    Ok(base | (d << 22) | (vd << 12) | (m << 5) | vm)
 }
 
 /// Encode a VFP load/store for double-precision (VLDR.64 / VSTR.64).
 /// offset is in bytes and must be word-aligned; encoded as imm8 = offset/4.
-fn encode_vfp_ldst_f64(base: u32, dd: &VfpReg, addr: &MemAddr) -> u32 {
-    let dd_num = vfp_dreg_to_num(dd);
+fn encode_vfp_ldst_f64(base: u32, dd: &VfpReg, addr: &MemAddr) -> Result<u32> {
+    let dd_num = vfp_dreg_to_num(dd)?;
     let (vd, d) = encode_dreg(dd_num);
     let rn = reg_to_bits(&addr.base);
 
@@ -6583,20 +6591,25 @@ fn encode_vfp_ldst_f64(base: u32, dd: &VfpReg, addr: &MemAddr) -> u32 {
     let abs_offset = offset.unsigned_abs();
     let imm8 = (abs_offset / 4) & 0xFF;
 
-    base | (u_bit << 23) | (d << 22) | (rn << 16) | (vd << 12) | imm8
+    Ok(base | (u_bit << 23) | (d << 22) | (rn << 16) | (vd << 12) | imm8)
 }
 
 /// Encode VMOV between two core registers and a D-register.
 /// VMOV Dm, Rt, Rt2: 0xEC40_0B10 | (Rt2 << 16) | (Rt << 12) | (M << 5) | Vm
 /// VMOV Rt, Rt2, Dm: 0xEC50_0B10 | (Rt2 << 16) | (Rt << 12) | (M << 5) | Vm
-fn encode_vmov_core_dreg(to_dreg: bool, dreg: &VfpReg, core_lo: &Reg, core_hi: &Reg) -> u32 {
-    let d_num = vfp_dreg_to_num(dreg);
+fn encode_vmov_core_dreg(
+    to_dreg: bool,
+    dreg: &VfpReg,
+    core_lo: &Reg,
+    core_hi: &Reg,
+) -> Result<u32> {
+    let d_num = vfp_dreg_to_num(dreg)?;
     let (vm, m) = encode_dreg(d_num);
     let rt = reg_to_bits(core_lo);
     let rt2 = reg_to_bits(core_hi);
 
     let base = if to_dreg { 0xEC400B10 } else { 0xEC500B10 };
-    base | (rt2 << 16) | (rt << 12) | (m << 5) | vm
+    Ok(base | (rt2 << 16) | (rt << 12) | (m << 5) | vm)
 }
 
 /// Emit a VFP 32-bit instruction as Thumb-2 bytes (two LE halfwords).

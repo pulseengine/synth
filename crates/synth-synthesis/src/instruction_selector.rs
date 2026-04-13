@@ -115,6 +115,23 @@ fn index_to_reg(index: u8) -> Reg {
     reg
 }
 
+/// Allocate a temporary register, skipping any that are live on the virtual stack.
+/// Returns Error if all allocatable registers are in use.
+fn alloc_temp_safe(next_temp: &mut u8, stack: &[Reg]) -> Result<Reg> {
+    for _ in 0..ALLOCATABLE_REGS.len() {
+        let reg = index_to_reg(*next_temp);
+        *next_temp = (*next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+        if !stack.contains(&reg) {
+            return Ok(reg);
+        }
+    }
+    Err(synth_core::Error::synthesis(
+        "register exhaustion: all allocatable registers are live on the stack — \
+         function too complex for current register allocator"
+            .to_string(),
+    ))
+}
+
 /// Given the low register of an i64 register pair, return the high register.
 ///
 /// Convention: i64 values on 32-bit ARM use two consecutive registers.
@@ -126,16 +143,132 @@ fn index_to_reg(index: u8) -> Reg {
 /// requires lo_reg is an even-indexed entry in ALLOCATABLE_REGS
 /// ensures result == ALLOCATABLE_REGS[index_of(lo_reg) + 1]
 /// ```
-fn i64_pair_hi(lo_reg: Reg) -> Reg {
+fn i64_pair_hi(lo_reg: Reg) -> Result<Reg> {
     // Find lo_reg in ALLOCATABLE_REGS and return the next entry
     for (i, &r) in ALLOCATABLE_REGS.iter().enumerate() {
         if r == lo_reg && i + 1 < ALLOCATABLE_REGS.len() {
-            return ALLOCATABLE_REGS[i + 1];
+            return Ok(ALLOCATABLE_REGS[i + 1]);
         }
     }
-    // Fallback for R8 (index 8): hi would be R12 (index 9)
-    // This covers the last valid pair in ALLOCATABLE_REGS
-    Reg::R1
+    Err(synth_core::Error::synthesis(format!(
+        "i64 register pair: no high register available for {:?} (last in ALLOCATABLE_REGS)",
+        lo_reg
+    )))
+}
+
+/// Return the (pops, pushes) stack effect for a WASM op.
+///
+/// Used by the wildcard fallthrough in select_with_stack to maintain
+/// approximate stack tracking for ops still handled by select_default.
+fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {
+    use WasmOp::*;
+    match op {
+        // Binary ops: pop 2, push 1
+        I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU | I32And | I32Or
+        | I32Xor | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr | I32Eq | I32Ne | I32LtS
+        | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS | I32GeU => (2, 1),
+
+        // Unary ops: pop 1, push 1
+        I32Eqz | I32Clz | I32Ctz | I32Popcnt | I32Extend8S | I32Extend16S => (1, 1),
+
+        // i64 binary
+        I64Add | I64Sub | I64Mul | I64DivS | I64DivU | I64RemS | I64RemU | I64And | I64Or
+        | I64Xor | I64Shl | I64ShrS | I64ShrU | I64Rotl | I64Rotr | I64Eq | I64Ne | I64LtS
+        | I64LtU | I64GtS | I64GtU | I64LeS | I64LeU | I64GeS | I64GeU => (2, 1),
+
+        // i64 unary
+        I64Eqz | I64Clz | I64Ctz | I64Popcnt | I64Extend8S | I64Extend16S | I64Extend32S => (1, 1),
+
+        // Conversions
+        I64ExtendI32S | I64ExtendI32U | I32WrapI64 => (1, 1),
+
+        // f32 binary
+        F32Add | F32Sub | F32Mul | F32Div | F32Min | F32Max | F32Copysign => (2, 1),
+
+        // f32 comparisons: pop 2, push 1 (i32 result)
+        F32Eq | F32Ne | F32Lt | F32Le | F32Gt | F32Ge => (2, 1),
+
+        // f32 unary
+        F32Abs | F32Neg | F32Ceil | F32Floor | F32Trunc | F32Nearest | F32Sqrt => (1, 1),
+
+        // f64 binary
+        F64Add | F64Sub | F64Mul | F64Div | F64Min | F64Max | F64Copysign => (2, 1),
+
+        // f64 comparisons: pop 2, push 1 (i32 result)
+        F64Eq | F64Ne | F64Lt | F64Le | F64Gt | F64Ge => (2, 1),
+
+        // f64 unary
+        F64Abs | F64Neg | F64Ceil | F64Floor | F64Trunc | F64Nearest | F64Sqrt => (1, 1),
+
+        // f32/f64 conversions (unary: pop 1, push 1)
+        F32ConvertI32S | F32ConvertI32U | F32ConvertI64S | F32ConvertI64U | F32DemoteF64
+        | F64ConvertI32S | F64ConvertI32U | F64ConvertI64S | F64ConvertI64U | F64PromoteF32
+        | I32TruncF32S | I32TruncF32U | I32TruncF64S | I32TruncF64U | I64TruncF64S
+        | I64TruncF64U | F32ReinterpretI32 | I32ReinterpretF32 | F64ReinterpretI64
+        | I64ReinterpretF64 => (1, 1),
+
+        // Constants: push 1
+        I32Const(_) | I64Const(_) | F32Const(_) | F64Const(_) => (0, 1),
+
+        // Loads: pop address, push value
+        I32Load { .. }
+        | I32Load8S { .. }
+        | I32Load8U { .. }
+        | I32Load16S { .. }
+        | I32Load16U { .. }
+        | I64Load { .. }
+        | I64Load8S { .. }
+        | I64Load8U { .. }
+        | I64Load16S { .. }
+        | I64Load16U { .. }
+        | I64Load32S { .. }
+        | I64Load32U { .. }
+        | F32Load { .. }
+        | F64Load { .. } => (1, 1),
+
+        // Stores: pop value + address, push nothing
+        I32Store { .. }
+        | I32Store8 { .. }
+        | I32Store16 { .. }
+        | I64Store { .. }
+        | I64Store8 { .. }
+        | I64Store16 { .. }
+        | I64Store32 { .. }
+        | F32Store { .. }
+        | F64Store { .. } => (2, 0),
+
+        // Variables
+        LocalGet(_) | GlobalGet(_) => (0, 1),
+        LocalSet(_) | GlobalSet(_) => (1, 0),
+        LocalTee(_) => (0, 0), // peeks, doesn't pop
+
+        // Memory
+        MemorySize(_) => (0, 1),
+        MemoryGrow(_) => (1, 1),
+
+        // Control flow / structural — no value stack effect at this level
+        Block
+        | Loop
+        | If
+        | Else
+        | End
+        | Nop
+        | Unreachable
+        | Return
+        | Br(_)
+        | BrIf(_)
+        | BrTable { .. } => (0, 0),
+
+        // Special
+        Drop => (1, 0),
+        Select => (3, 1),
+        Call(_) | CallIndirect { .. } => (0, 1), // approximate: push return value
+
+        // v128 SIMD and anything else — conservative default
+        // Most SIMD ops are binary (pop 2, push 1) but some are unary.
+        // Using (0, 0) as safe fallback since SIMD isn't stack-tracked yet.
+        _ => (0, 0),
+    }
 }
 
 /// Register allocator state
@@ -3127,8 +3260,7 @@ impl InstructionSelector {
                         r
                     } else {
                         // Local not in register (spilled to stack) - load it
-                        let dst = index_to_reg(next_temp);
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                        let dst = alloc_temp_safe(&mut next_temp, &stack)?;
                         instructions.push(ArmInstruction {
                             op: ArmOp::Ldr {
                                 rd: dst,
@@ -3142,8 +3274,7 @@ impl InstructionSelector {
                 }
 
                 I32Const(val) => {
-                    let dst = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let dst = alloc_temp_safe(&mut next_temp, &stack)?;
                     let uval = *val as u32;
                     let inverted = !uval;
                     if uval <= 0xFFFF {
@@ -3206,9 +3337,7 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        let t = index_to_reg(next_temp);
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                        t
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Add {
@@ -3235,11 +3364,8 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        index_to_reg(next_temp)
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
-                    if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    }
                     instructions.push(ArmInstruction {
                         op: ArmOp::Sub {
                             rd: dst,
@@ -3265,11 +3391,8 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        index_to_reg(next_temp)
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
-                    if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    }
                     instructions.push(ArmInstruction {
                         op: ArmOp::Mul {
                             rd: dst,
@@ -3295,11 +3418,8 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        index_to_reg(next_temp)
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
-                    if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    }
                     instructions.push(ArmInstruction {
                         op: ArmOp::And {
                             rd: dst,
@@ -3325,11 +3445,8 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        index_to_reg(next_temp)
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
-                    if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    }
                     instructions.push(ArmInstruction {
                         op: ArmOp::Orr {
                             rd: dst,
@@ -3355,11 +3472,8 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        index_to_reg(next_temp)
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
-                    if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    }
                     instructions.push(ArmInstruction {
                         op: ArmOp::Eor {
                             rd: dst,
@@ -3386,11 +3500,8 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        index_to_reg(next_temp)
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
-                    if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    }
 
                     // Trap check: if divisor == 0, trigger UDF (UsageFault -> Trap_Handler)
                     // CMP divisor, #0
@@ -3441,11 +3552,8 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        index_to_reg(next_temp)
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
-                    if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    }
 
                     // Trap check 1: divide by zero
                     instructions.push(ArmInstruction {
@@ -3469,8 +3577,7 @@ impl InstructionSelector {
 
                     // Trap check 2: signed overflow (INT_MIN / -1)
                     // We need a temp register for INT_MIN (0x80000000)
-                    let tmp = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let tmp = alloc_temp_safe(&mut next_temp, &stack)?;
 
                     // Load INT_MIN into tmp: MOVW tmp, #0; MOVT tmp, #0x8000
                     instructions.push(ArmInstruction {
@@ -3551,11 +3658,8 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        index_to_reg(next_temp)
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
-                    if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    }
 
                     // Trap check: divide by zero
                     instructions.push(ArmInstruction {
@@ -3579,8 +3683,7 @@ impl InstructionSelector {
 
                     // Remainder: dst = dividend - (dividend / divisor) * divisor
                     // quotient = UDIV tmp, dividend, divisor
-                    let tmp = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let tmp = alloc_temp_safe(&mut next_temp, &stack)?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::Udiv {
                             rd: tmp,
@@ -3616,11 +3719,8 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        index_to_reg(next_temp)
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
-                    if dst != Reg::R0 {
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    }
 
                     // Trap check: divide by zero (rem_s doesn't trap on INT_MIN % -1)
                     instructions.push(ArmInstruction {
@@ -3643,8 +3743,7 @@ impl InstructionSelector {
                     });
 
                     // Signed remainder: dst = dividend - (dividend / divisor) * divisor
-                    let tmp = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let tmp = alloc_temp_safe(&mut next_temp, &stack)?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::Sdiv {
                             rd: tmp,
@@ -3680,9 +3779,7 @@ impl InstructionSelector {
                     let dst = if is_return_value {
                         Reg::R0
                     } else {
-                        let t = index_to_reg(next_temp);
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                        t
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
 
                     // Generate load with optional bounds checking
@@ -3737,9 +3834,7 @@ impl InstructionSelector {
                     let dst = if is_return_value {
                         Reg::R0
                     } else {
-                        let t = index_to_reg(next_temp);
-                        next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                        t
+                        alloc_temp_safe(&mut next_temp, &stack)?
                     };
 
                     let (access_size, sign_extend) = match op {
@@ -3958,8 +4053,7 @@ impl InstructionSelector {
 
                 // Memory management
                 MemorySize(_mem_idx) => {
-                    let dst = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let dst = alloc_temp_safe(&mut next_temp, &stack)?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::MemorySize { rd: dst },
                         source_line: Some(idx),
@@ -3974,8 +4068,7 @@ impl InstructionSelector {
                             "stack underflow: malformed WASM or compiler bug".to_string(),
                         )
                     })?;
-                    let dst = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let dst = alloc_temp_safe(&mut next_temp, &stack)?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::MemoryGrow { rd: dst, rn: pages },
                         source_line: Some(idx),
@@ -4328,8 +4421,7 @@ impl InstructionSelector {
                             "stack underflow: malformed WASM or compiler bug".to_string(),
                         )
                     })?;
-                    let dst = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let dst = alloc_temp_safe(&mut next_temp, &stack)?;
 
                     // CMP cond, #0
                     instructions.push(ArmInstruction {
@@ -4430,8 +4522,7 @@ impl InstructionSelector {
                 GlobalGet(global_idx) => {
                     // Load global value from globals table (R9 = globals base).
                     // Each i32 global occupies 4 bytes at offset index * 4.
-                    let dst = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let dst = alloc_temp_safe(&mut next_temp, &stack)?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::Ldr {
                             rd: dst,
@@ -4471,10 +4562,8 @@ impl InstructionSelector {
                 // =========================================================
                 I64Const(val) => {
                     // Allocate a register pair for the 64-bit constant
-                    let dst_lo = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    let dst_hi = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
+                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
 
                     instructions.push(ArmInstruction {
                         op: ArmOp::I64Const {
@@ -4501,14 +4590,12 @@ impl InstructionSelector {
                             "stack underflow in I64Add: malformed WASM or compiler bug".to_string(),
                         )
                     })?;
-                    let b_hi = i64_pair_hi(b_lo);
-                    let a_hi = i64_pair_hi(a_lo);
+                    let b_hi = i64_pair_hi(b_lo)?;
+                    let a_hi = i64_pair_hi(a_lo)?;
 
                     // Allocate result register pair
-                    let dst_lo = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    let dst_hi = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
+                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
 
                     // ADDS dst_lo, a_lo, b_lo  (sets carry flag)
                     instructions.push(ArmInstruction {
@@ -4547,14 +4634,12 @@ impl InstructionSelector {
                             "stack underflow in I64Sub: malformed WASM or compiler bug".to_string(),
                         )
                     })?;
-                    let b_hi = i64_pair_hi(b_lo);
-                    let a_hi = i64_pair_hi(a_lo);
+                    let b_hi = i64_pair_hi(b_lo)?;
+                    let a_hi = i64_pair_hi(a_lo)?;
 
                     // Allocate result register pair
-                    let dst_lo = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    let dst_hi = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
+                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
 
                     // SUBS dst_lo, a_lo, b_lo  (sets borrow flag)
                     instructions.push(ArmInstruction {
@@ -4591,10 +4676,8 @@ impl InstructionSelector {
                     })?;
 
                     // Allocate result register pair
-                    let dst_lo = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-                    let dst_hi = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
+                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
 
                     // Generate bounds-checked i64 load into the allocated pair
                     let load_ops =
@@ -4622,7 +4705,7 @@ impl InstructionSelector {
                                 .to_string(),
                         )
                     })?;
-                    let value_hi = i64_pair_hi(value_lo);
+                    let value_hi = i64_pair_hi(value_lo)?;
 
                     // Generate bounds-checked i64 store from the value pair
                     let store_ops =
@@ -4643,11 +4726,10 @@ impl InstructionSelector {
                             "stack underflow in I64Eqz: malformed WASM or compiler bug".to_string(),
                         )
                     })?;
-                    let src_hi = i64_pair_hi(src_lo);
+                    let src_hi = i64_pair_hi(src_lo)?;
 
                     // Result is a single i32 (0 or 1)
-                    let dst = index_to_reg(next_temp);
-                    next_temp = (next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
+                    let dst = alloc_temp_safe(&mut next_temp, &stack)?;
 
                     instructions.push(ArmInstruction {
                         op: ArmOp::I64SetCondZ {
@@ -4663,7 +4745,292 @@ impl InstructionSelector {
                     stack.push(dst);
                 }
 
-                // For other operations, fall back to default behavior
+                // =========================================================
+                // i32 comparisons (binary: pop 2, push 1)
+                // CMP rn, rm; SetCond rd, <condition>
+                // =========================================================
+                I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS
+                | I32GeU => {
+                    let b = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let a = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    let cond = match op {
+                        I32Eq => Condition::EQ,
+                        I32Ne => Condition::NE,
+                        I32LtS => Condition::LT,
+                        I32LtU => Condition::LO,
+                        I32GtS => Condition::GT,
+                        I32GtU => Condition::HI,
+                        I32LeS => Condition::LE,
+                        I32LeU => Condition::LS,
+                        I32GeS => Condition::GE,
+                        I32GeU => Condition::HS,
+                        _ => unreachable!(),
+                    };
+                    // CMP a, b
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Cmp {
+                            rn: a,
+                            op2: Operand2::Reg(b),
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    // SetCond rd, <cond> — materializes 0/1 based on flags
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::SetCond { rd: dst, cond },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                // i32.eqz (unary: pop 1, push 1)
+                // CMP rn, #0; SetCond rd, EQ
+                I32Eqz => {
+                    let a = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Cmp {
+                            rn: a,
+                            op2: Operand2::Imm(0),
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::SetCond {
+                            rd: dst,
+                            cond: Condition::EQ,
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                // =========================================================
+                // i32 shifts and rotates (binary: pop 2, push 1)
+                // =========================================================
+                I32Shl | I32ShrS | I32ShrU | I32Rotr => {
+                    let shift_amt = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let value = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    let shift_op = match op {
+                        I32Shl => ArmOp::LslReg {
+                            rd: dst,
+                            rn: value,
+                            rm: shift_amt,
+                        },
+                        I32ShrU => ArmOp::LsrReg {
+                            rd: dst,
+                            rn: value,
+                            rm: shift_amt,
+                        },
+                        I32ShrS => ArmOp::AsrReg {
+                            rd: dst,
+                            rn: value,
+                            rm: shift_amt,
+                        },
+                        I32Rotr => ArmOp::RorReg {
+                            rd: dst,
+                            rn: value,
+                            rm: shift_amt,
+                        },
+                        _ => unreachable!(),
+                    };
+                    instructions.push(ArmInstruction {
+                        op: shift_op,
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                I32Rotl => {
+                    // Rotate left by N = Rotate right by (32 - N)
+                    // RSB tmp, shift_amt, #32; ROR dst, value, tmp
+                    let shift_amt = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let value = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    let tmp = alloc_temp_safe(&mut next_temp, &stack)?;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Rsb {
+                            rd: tmp,
+                            rn: shift_amt,
+                            imm: 32,
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::RorReg {
+                            rd: dst,
+                            rn: value,
+                            rm: tmp,
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                // =========================================================
+                // i32 unary bit operations (pop 1, push 1)
+                // =========================================================
+                I32Clz => {
+                    let src = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Clz { rd: dst, rm: src },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                I32Ctz => {
+                    // Count trailing zeros: RBIT + CLZ
+                    let src = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Rbit { rd: dst, rm: src },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Clz { rd: dst, rm: dst },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                I32Popcnt => {
+                    // Population count — no native ARM instruction
+                    // Popcnt pseudo-op expanded by encoder
+                    let src = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Popcnt { rd: dst, rm: src },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                // =========================================================
+                // i32 sign extension (pop 1, push 1)
+                // =========================================================
+                I32Extend8S => {
+                    let src = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Sxtb { rd: dst, rm: src },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                I32Extend16S => {
+                    let src = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow: malformed WASM or compiler bug".to_string(),
+                        )
+                    })?;
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Sxth { rd: dst, rm: src },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                // For other operations, fall back to default behavior.
+                // Stack tracking is approximate after this point: select_default
+                // uses its own register allocator and doesn't update the virtual stack.
                 _ => {
                     let arm_ops = self.select_default(op)?;
                     for arm_op in arm_ops {
@@ -4672,6 +5039,17 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
+                    }
+                    // Update stack based on WASM stack effect.
+                    // This is approximate — select_default allocated its own registers.
+                    let (pops, pushes) = wasm_stack_effect(op);
+                    for _ in 0..pops.min(stack.len()) {
+                        stack.pop();
+                    }
+                    for _ in 0..pushes {
+                        // Push a placeholder — select_default used its own register
+                        let placeholder = self.regs.alloc_reg();
+                        stack.push(placeholder);
                     }
                 }
             }
