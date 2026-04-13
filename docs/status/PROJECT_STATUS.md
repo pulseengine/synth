@@ -34,14 +34,14 @@ Synth is a WebAssembly-to-ARM Cortex-M compiler with mechanized correctness proo
 
 ### Rocq (Coq) Proofs
 
-241 Qed / 3 Admitted across all `.v` files in `coq/Synth/`.
+233 Qed / 10 Admitted across all `.v` files in `coq/Synth/`.
 
 | Tier | Meaning | Count |
 |------|---------|-------|
-| T1: Result correspondence | ARM output = WASM result value | 39 |
-| T2: Existence-only | ARM execution succeeds (no result claim) | 143 |
-| T3: Admitted | Not yet proven (2 Sail placeholders, 1 Rocq 9 migration) | 3 |
-| Infrastructure | Integer properties, state lemmas, flag lemmas | 59 |
+| T1: Result correspondence | ARM output = WASM result value | 35 |
+| T2: Existence-only | ARM execution succeeds (no result claim) | 142 |
+| T3: Admitted | Trap guards, constants, Sail, Rocq 9 migration | 10 |
+| Infrastructure | Integer properties, state lemmas, flag lemmas | 56 |
 
 See `coq/STATUS.md` for the per-file breakdown.
 

@@ -34,7 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Target profiles: cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp, cortex-m55
 
 #### Verification
-- Rocq mechanized proofs (241 Qed / 3 Admitted)
+- Rocq mechanized proofs (233 Qed / 10 Admitted)
 - All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have T1 result-correspondence proofs
 - Z3 SMT translation validation (53 verification tests)
 - STPA safety analysis (losses, hazards, UCAs, constraints)

@@ -647,11 +647,17 @@ impl InstructionSelector {
                 vec![ArmOp::MemoryGrow { rd, rn }]
             }
 
+            // FIXME: select_default LocalGet/Set ignores index (hardcoded SP+0).
+            // Currently unreachable because select_with_stack handles these ops.
+            // See issue #72.
             LocalGet(_index) => vec![ArmOp::Ldr {
                 rd,
                 addr: MemAddr::imm(Reg::SP, 0), // Simplified - would use proper frame offset
             }],
 
+            // FIXME: select_default LocalGet/Set ignores index (hardcoded SP+0).
+            // Currently unreachable because select_with_stack handles these ops.
+            // See issue #72.
             LocalSet(_index) => vec![ArmOp::Str {
                 rd,
                 addr: MemAddr::imm(Reg::SP, 0),
@@ -748,6 +754,9 @@ impl InstructionSelector {
             // Division and remainder (ARMv7-M+)
             // WASM requires trap on divide-by-zero. ARM SDIV/UDIV silently return 0,
             // so we emit an explicit zero-check: CMP rm, #0 / BNE skip / UDF #0.
+            // FIXME: select_default I32DivS missing INT_MIN/-1 overflow trap.
+            // Currently unreachable because select_with_stack handles this op.
+            // See issue #72.
             I32DivS => {
                 let seq = vec![
                     // Trap if divisor == 0
@@ -1340,21 +1349,13 @@ impl InstructionSelector {
                 }]
             }
 
-            // i64 memory operations
+            // i64 memory operations (8-byte access, bounds-checked like i32)
             I64Load { offset, .. } => {
-                vec![ArmOp::I64Ldr {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    addr: MemAddr::reg_imm(Reg::R11, rn, *offset as i32),
-                }]
+                self.generate_i64_load_with_bounds_check(rn, *offset as i32)
             }
 
             I64Store { offset, .. } => {
-                vec![ArmOp::I64Str {
-                    rdlo: Reg::R0,
-                    rdhi: Reg::R1,
-                    addr: MemAddr::reg_imm(Reg::R11, rn, *offset as i32),
-                }]
+                self.generate_i64_store_with_bounds_check(rn, *offset as i32)
             }
 
             // ===== F32 operations =====
@@ -2662,6 +2663,129 @@ impl InstructionSelector {
             BoundsCheckConfig::None => vec![store_op],
             BoundsCheckConfig::Software => {
                 // Software bounds check: verify last byte of access is in bounds
+                let temp = Reg::R12;
+                let end_offset = offset + (access_size as i32) - 1;
+                vec![
+                    ArmOp::Add {
+                        rd: temp,
+                        rn: addr_reg,
+                        op2: Operand2::Imm(end_offset),
+                    },
+                    ArmOp::Cmp {
+                        rn: temp,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    ArmOp::Bhs {
+                        label: "Trap_Handler".to_string(),
+                    },
+                    store_op,
+                ]
+            }
+            BoundsCheckConfig::Masking => {
+                vec![
+                    ArmOp::And {
+                        rd: addr_reg,
+                        rn: addr_reg,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    store_op,
+                ]
+            }
+        }
+    }
+
+    /// Generate an i64 (8-byte) load with optional bounds checking.
+    /// R10 = memory size (or mask for masking mode), R11 = memory base.
+    /// Result is loaded into R0 (low) and R1 (high).
+    ///
+    /// # Contract (Verus-style)
+    /// ```text
+    /// ensures
+    ///     bounds_check_mode == Software ==>
+    ///         result contains CMP(addr + 8 - 1, R10),
+    ///     result.last() is I64Ldr { rdlo: R0, rdhi: R1, .. },
+    /// ```
+    fn generate_i64_load_with_bounds_check(
+        &self,
+        addr_reg: Reg,
+        offset: i32,
+    ) -> Vec<ArmOp> {
+        let access_size: u32 = 8;
+        contracts::memory::verify_access_size(access_size);
+
+        let load_op = ArmOp::I64Ldr {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
+        };
+
+        match self.bounds_check {
+            BoundsCheckConfig::None => vec![load_op],
+            BoundsCheckConfig::Software => {
+                // Software bounds check: verify last byte of 8-byte access is in bounds
+                // ADD temp, addr_reg, #(offset + 8 - 1)
+                // CMP temp, R10 (memory size)
+                // BHS Trap_Handler
+                let temp = Reg::R12;
+                let end_offset = offset + (access_size as i32) - 1;
+                vec![
+                    ArmOp::Add {
+                        rd: temp,
+                        rn: addr_reg,
+                        op2: Operand2::Imm(end_offset),
+                    },
+                    ArmOp::Cmp {
+                        rn: temp,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    ArmOp::Bhs {
+                        label: "Trap_Handler".to_string(),
+                    },
+                    load_op,
+                ]
+            }
+            BoundsCheckConfig::Masking => {
+                vec![
+                    ArmOp::And {
+                        rd: addr_reg,
+                        rn: addr_reg,
+                        op2: Operand2::Reg(Reg::R10),
+                    },
+                    load_op,
+                ]
+            }
+        }
+    }
+
+    /// Generate an i64 (8-byte) store with optional bounds checking.
+    /// R10 = memory size (or mask for masking mode), R11 = memory base.
+    /// Value is stored from R0 (low) and R1 (high).
+    ///
+    /// # Contract (Verus-style)
+    /// ```text
+    /// ensures
+    ///     bounds_check_mode == Software ==>
+    ///         result contains CMP(addr + 8 - 1, R10),
+    ///     result.last() is I64Str { rdlo: R0, rdhi: R1, .. },
+    /// ```
+    fn generate_i64_store_with_bounds_check(
+        &self,
+        addr_reg: Reg,
+        offset: i32,
+    ) -> Vec<ArmOp> {
+        let access_size: u32 = 8;
+        contracts::memory::verify_access_size(access_size);
+
+        let store_op = ArmOp::I64Str {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
+        };
+
+        match self.bounds_check {
+            BoundsCheckConfig::None => vec![store_op],
+            BoundsCheckConfig::Software => {
+                // Software bounds check: verify last byte of 8-byte access is in bounds
                 let temp = Reg::R12;
                 let end_offset = offset + (access_size as i32) - 1;
                 vec![

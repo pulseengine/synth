@@ -5,22 +5,22 @@
 ## Overview
 
 Synth's Rocq proof suite verifies that `compile_wasm_to_arm` preserves WASM semantics.
-After adding VFP floating-point semantics to ArmSemantics.v, all 48 previously-admitted
-VFP proofs are closed. 3 admits remain: 2 ArmRefinement Sail integration placeholders
-and 1 `i64_to_i32_to_i64_wrap` lemma in Integers.v (Rocq 9 `Z.mod_mod` migration issue).
+After aligning Compilation.v with the actual Rust compiler (trap guard sequences for
+division, MOVW+MOVT for large constants), 7 proofs were re-admitted pending exec_program
+extensions for PC-relative branching. 10 total admits remain.
 
 ## Proof Tiers
 
 | Tier | Meaning | Count |
 |------|---------|-------|
-| **T1: Result Correspondence** | ARM output register = WASM result value | 39 |
-| **T2: Existence-Only** | ARM execution succeeds (no result claim) | 143 |
-| **T3: Admitted** | Not yet proven | 3 |
-| **Infrastructure** | Properties of integers, states, flag lemmas | 59 |
+| **T1: Result Correspondence** | ARM output register = WASM result value | 35 |
+| **T2: Existence-Only** | ARM execution succeeds (no result claim) | 142 |
+| **T3: Admitted** | Not yet proven | 10 |
+| **Infrastructure** | Properties of integers, states, flag lemmas | 56 |
 
-**Total: 241 Qed / 3 Admitted across all files**
+**Total: 233 Qed / 10 Admitted across all files**
 
-## T1: Result Correspondence (39 Qed)
+## T1: Result Correspondence (35 Qed)
 
 These are the crown jewels — they prove the compiled ARM code produces the exact same
 value as the WASM operation.
@@ -38,14 +38,11 @@ value as the WASM operation.
 
 (Also duplicated in CorrectnessI32.v: add, sub, mul, and, or, xor)
 
-### i32 Division (4)
+### i32 Division (0 — moved to T3)
 
-| File | Theorem | Operation |
-|------|---------|-----------|
-| CorrectnessI32.v | `i32_divs_correct` | I32DivS |
-| CorrectnessI32.v | `i32_divu_correct` | I32DivU |
-| CorrectnessI32.v | `i32_rems_correct` | I32RemS |
-| CorrectnessI32.v | `i32_remu_correct` | I32RemU |
+These were T1 proofs but are now Admitted because division compilation emits
+trap guard sequences (CMP + BCondOffset + UDF) that cannot be verified in the
+current sequential exec_program model. See T3 section below.
 
 ### i32 Comparison (11) — uses flag-correspondence lemmas
 
@@ -102,7 +99,7 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 
 | File | Count | Operations |
 |------|-------|------------|
-| CorrectnessSimple.v | 29 | Nop, Drop, Select, LocalGet/Set/Tee, GlobalGet/Set, I32Const, I64Const, 11 comparisons, 5 shifts, 3 bit-manip |
+| CorrectnessSimple.v | 28 | Nop, Drop, Select, LocalGet/Set/Tee, GlobalGet/Set, I64Const, 11 comparisons, 5 shifts, 3 bit-manip (I32Const now Admitted) |
 | CorrectnessI64.v | 25 | Add, Sub, Mul, And, Or, Xor, 5 shifts, 11 comparisons, 3 bit-manip |
 | CorrectnessI64Comparisons.v | 19 | 11 comparisons, 3 bit-manip, 5 shifts |
 | CorrectnessF32.v | 20 | 7 empty-program + 13 VFP (4 arith, 3 unary, 6 comparison) |
@@ -111,12 +108,15 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 | CorrectnessMemory.v | 8 | 4 i32/i64 + 4 f32/f64 load/store |
 | CorrectnessComplete.v | 1 | Master compilation theorem |
 
-## T3: Admitted (3)
+## T3: Admitted (10)
 
 | File | Count | Root Cause | Unblocking Strategy |
 |------|-------|------------|---------------------|
 | ArmRefinement.v | 2 | Needs Sail-generated ARM semantics | Phase 2: Import Sail specifications |
 | Integers.v | 1 | `i64_to_i32_to_i64_wrap` — Rocq 9 `Z.mod_mod` signature changed | Rework proof for new Z.mod_mod API |
+| CorrectnessI32.v | 4 | `i32_divs/divu/rems/remu_correct` — trap guard sequences (CMP+BCondOffset+UDF) cannot be verified in the sequential exec_program model | Extend exec_program to support PC-relative branching |
+| CorrectnessSimple.v | 1 | `i32_const_correct` — compilation now branches on `I32.unsigned n <= 65535`; large-constant case requires Z.land/Z.shiftr lemmas | Prove MOVW+MOVT reconstruction lemma |
+| Compilation.v | 2 | `ex_compile_simple_add`, `ex_compile_increment_local` — `simpl` cannot reduce `Z.leb (I32.unsigned (I32.repr n)) 65535` | Use `vm_compute` or prove I32.unsigned reduction lemma |
 
 ## VFP Semantics (Phase 5 — New)
 

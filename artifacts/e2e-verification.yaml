@@ -76,7 +76,9 @@ artifacts:
       (R_ARM_THM_CALL for import BL instructions). This test does not
       require linking or execution -- it validates synth's ELF emission
       in isolation.
-    status: planned
+    status: implemented
+    note: >
+      Covered by crates/synth-cli/tests/wast_compile.rs::compile_import_call_produces_relocatable_elf()
     tags: [e2e, poc, elf-validation, structural]
     links:
       - type: verifies
@@ -320,7 +322,9 @@ artifacts:
       dispatch return, (4) return value lifting. Tests use synth's
       existing test infrastructure (compile WASM instruction, verify
       emitted ARM instructions) without requiring linking or execution.
-    status: planned
+    status: implemented
+    note: >
+      Covered by crates/synth-backend/tests/meld_abi_test.rs::test_import_dispatch_stub_generation()
     tags: [e2e, unit-test, import-stub, synth-synthesis]
     links:
       - type: verifies
@@ -346,7 +350,9 @@ artifacts:
       signature_hash, flags), (3) string table construction with correct
       offsets, (4) FNV-1a hash computation for import type signatures,
       (5) empty import table for modules with no imports (section omitted).
-    status: planned
+    status: implemented
+    note: >
+      Covered by crates/synth-cli/tests/wast_compile.rs (ELF structure validation tests)
     tags: [e2e, unit-test, import-table, synth-backend]
     links:
       - type: verifies

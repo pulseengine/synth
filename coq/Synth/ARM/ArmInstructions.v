@@ -5,11 +5,13 @@
 *)
 
 From Stdlib Require Import ZArith.
+From Stdlib Require Import Bool.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
 
 Open Scope Z_scope.
+Open Scope bool_scope.
 
 (** ** Operand 2 (Flexible Second Operand) *)
 
@@ -23,6 +25,28 @@ Inductive operand2 : Type :=
   | Imm : I32.int -> operand2
   | Reg : arm_reg -> operand2
   | RegShift : arm_reg -> nat -> operand2.  (* register + shift amount *)
+
+(** ** ARM Condition Codes *)
+
+(** Condition codes used by conditional branch instructions.
+    These correspond to the ARM condition field encoding. *)
+
+Inductive condition : Type :=
+  | Cond_EQ   (* Equal: Z=1 *)
+  | Cond_NE   (* Not equal: Z=0 *)
+  | Cond_CS   (* Carry set / unsigned higher or same: C=1 *)
+  | Cond_CC   (* Carry clear / unsigned lower: C=0 *)
+  | Cond_MI   (* Minus / negative: N=1 *)
+  | Cond_PL   (* Plus / positive or zero: N=0 *)
+  | Cond_VS   (* Overflow: V=1 *)
+  | Cond_VC   (* No overflow: V=0 *)
+  | Cond_HI   (* Unsigned higher: C=1 and Z=0 *)
+  | Cond_LS   (* Unsigned lower or same: C=0 or Z=1 *)
+  | Cond_GE   (* Signed greater or equal: N=V *)
+  | Cond_LT   (* Signed less than: N!=V *)
+  | Cond_GT   (* Signed greater than: Z=0 and N=V *)
+  | Cond_LE   (* Signed less or equal: Z=1 or N!=V *)
+  | Cond_AL.  (* Always (unconditional) *)
 
 (** ** ARM Instruction Set *)
 
@@ -86,10 +110,17 @@ Inductive arm_instr : Type :=
   | LDR : arm_reg -> arm_reg -> Z -> arm_instr   (* Load register *)
   | STR : arm_reg -> arm_reg -> Z -> arm_instr   (* Store register *)
 
+  (* Trap *)
+  | UDF : Z -> arm_instr        (* Undefined instruction — trap *)
+
+  (* Compare Negated *)
+  | CMN : arm_reg -> operand2 -> arm_instr  (* Compare Negated — sets flags for rn + op2 *)
+
   (* Control flow *)
   | B : Z -> arm_instr          (* Branch *)
   | BL : Z -> arm_instr         (* Branch with link *)
   | BX : arm_reg -> arm_instr   (* Branch and exchange *)
+  | BCondOffset : condition -> Z -> arm_instr  (* Conditional branch with PC-relative offset *)
 
   (* VFP (Floating-point) operations *)
   | VADD_F32 : vfp_reg -> vfp_reg -> vfp_reg -> arm_instr
@@ -141,6 +172,26 @@ Definition eval_operand2 (op2 : operand2) (s : arm_state) : I32.int :=
   | RegShift r shift =>
       (* Simplified: just return register value, ignoring shift for now *)
       get_reg s r
+  end.
+
+(** Evaluate a condition code against the current condition flags *)
+Definition eval_condition (cond : condition) (f : condition_flags) : bool :=
+  match cond with
+  | Cond_EQ => f.(flag_z)
+  | Cond_NE => negb f.(flag_z)
+  | Cond_CS => f.(flag_c)
+  | Cond_CC => negb f.(flag_c)
+  | Cond_MI => f.(flag_n)
+  | Cond_PL => negb f.(flag_n)
+  | Cond_VS => f.(flag_v)
+  | Cond_VC => negb f.(flag_v)
+  | Cond_HI => f.(flag_c) && negb f.(flag_z)
+  | Cond_LS => negb f.(flag_c) || f.(flag_z)
+  | Cond_GE => Bool.eqb f.(flag_n) f.(flag_v)
+  | Cond_LT => negb (Bool.eqb f.(flag_n) f.(flag_v))
+  | Cond_GT => negb f.(flag_z) && Bool.eqb f.(flag_n) f.(flag_v)
+  | Cond_LE => f.(flag_z) || negb (Bool.eqb f.(flag_n) f.(flag_v))
+  | Cond_AL => true
   end.
 
 (** ** Examples of Common Instructions *)

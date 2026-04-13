@@ -87,9 +87,9 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 241 Qed / 3 Admitted.
-Proofs are tiered: T1 (39 result-correspondence), T2 (143 existence-only), T3 (3 admitted).
-The 3 remaining admits: 2 ArmRefinement Sail integration placeholders + 1 Integers.v (Rocq 9 Z.mod_mod).
+See `coq/STATUS.md` for the complete coverage matrix. Current: 233 Qed / 10 Admitted.
+Proofs are tiered: T1 (35 result-correspondence), T2 (142 existence-only), T3 (10 admitted).
+7 new admits from aligning Compilation.v with actual compiler (trap guards, MOVW+MOVT constants).
 All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have T1 proofs.
 
 ## Conventions

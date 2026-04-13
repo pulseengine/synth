@@ -157,6 +157,10 @@ Qed.
 
 (** ** Constants *)
 
+(** i32.const now branches on the constant size (MOVW for <= 65535, MOVW+MOVT
+    for larger values). The small-constant case is straightforward; the
+    large-constant case requires showing MOVW+MOVT reconstructs the original
+    value via bitwise composition, which needs Z.land/Z.shiftr arithmetic. *)
 Theorem i32_const_correct : forall wstate astate n,
   exec_wasm_instr (I32Const n) wstate =
     Some (mkWasmState
@@ -168,12 +172,12 @@ Theorem i32_const_correct : forall wstate astate n,
     exec_program (compile_wasm_to_arm (I32Const n)) astate = Some astate' /\
     get_reg astate' R0 = n.
 Proof.
-  intros wstate astate n Hwasm.
-  unfold compile_wasm_to_arm. simpl.
-  eexists. split.
-  - reflexivity.
-  - apply get_set_reg_eq.
-Qed.
+  (* Admitted: compilation now branches on I32.unsigned n <= 65535.
+     Small case: same as before (MOVW).
+     Large case: MOVW+MOVT reconstruct value from low/high halves.
+     Proving the large case requires: I32.or (I32.and (I32.repr low) 0xFFFF)
+       (I32.shl (I32.repr high) 16) = n, which needs Z.land/Z.shiftr lemmas. *)
+Admitted.
 
 Theorem i64_const_correct : forall wstate astate n,
   exec_wasm_instr (I64Const n) wstate =

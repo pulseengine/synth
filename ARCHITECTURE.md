@@ -414,7 +414,7 @@ Ready for deployment to ARM Cortex-M!
 
 - **Total tests:** 895+ passing across 16 crates
 - **Categories:** instruction selection, ARM encoding, peephole optimization, ELF emission, Z3 verification, register allocation, ABI, WIT, WAST compilation, Renode emulation
-- **Verification:** 53 Z3 SMT tests, 241 closed Rocq proofs (3 admitted), 55+ Renode ARM Cortex-M4 emulation tests
+- **Verification:** 53 Z3 SMT tests, 233 closed Rocq proofs (10 admitted), 55+ Renode ARM Cortex-M4 emulation tests
 
 ## Supported Platforms
 

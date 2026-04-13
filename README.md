@@ -99,7 +99,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 | ELF output with vector table | Implemented | Thumb bit set on symbols; not linked on real hardware |
 | Linker scripts (STM32, nRF52840, generic) | Implemented | Generated, not tested with real boards |
 | Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
-| Rocq mechanized proofs | 241 Qed / 3 Admitted | Only i32 has result-correspondence (T1); 3 remaining admits (2 ArmRefinement Sail, 1 Integers.v) |
+| Rocq mechanized proofs | 233 Qed / 10 Admitted | i32 T1 proofs; division/constant proofs re-admitted for trap guard alignment |
 | Z3 translation validation | 53 tests passing | Covers i32 arithmetic and comparison rules |
 | WebAssembly spec test suite | 227/257 compile | Compilation only — not executed on emulator |
 
@@ -184,7 +184,7 @@ Per the [PulseEngine Verification Guide](https://pulseengine.eu/guides/VERIFICAT
 
 | Track | Status | Coverage |
 |-------|--------|----------|
-| **Rocq** | Partial | 241 Qed / 3 Admitted — only i32 has T1 result-correspondence proofs |
+| **Rocq** | Partial | 233 Qed / 10 Admitted — division proofs re-admitted for trap guard alignment |
 | **Kani** | Starting | 18 bounded model checking harnesses for ARM encoder |
 | **Verus** | Starting | 8 spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` |
 | **Lean** | Not started | — |
@@ -196,14 +196,15 @@ See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 thr
 Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM semantics for each operation. The proof suite lives in `coq/Synth/` and covers ARM instruction semantics, WASM stack-machine semantics, and per-operation correctness theorems.
 
 ```
-241 Qed  /  3 Admitted
-  T1: 39 result-correspondence (ARM output = WASM result)  — i32 only
-  T2: 143 existence-only (ARM execution succeeds, no result claim)
-  T3: 3 admitted (2 ArmRefinement Sail placeholders, 1 Integers.v Rocq 9 migration)
-  Infrastructure: 59 (integer properties, state lemmas, flag lemmas, semantics helpers)
+233 Qed  /  10 Admitted
+  T1: 35 result-correspondence (ARM output = WASM result)  — i32 only
+  T2: 142 existence-only (ARM execution succeeds, no result claim)
+  T3: 10 admitted (4 division trap guards, 1 constant encoding, 2 examples,
+                    2 ArmRefinement Sail, 1 Integers.v Rocq 9 migration)
+  Infrastructure: 56 (integer properties, state lemmas, flag lemmas, semantics helpers)
 ```
 
-Only i32 operations have full T1 (result-correspondence) proofs. The i64, f32, f64, and SIMD instruction selection has T2 existence proofs but not T1 result-correspondence. The 3 remaining admitted theorems are 2 ArmRefinement Sail integration placeholders and 1 Integers.v lemma broken by Rocq 9 migration.
+Only i32 arithmetic/bitwise operations have full T1 (result-correspondence) proofs. Division proofs were re-admitted after updating Compilation.v to emit trap guard sequences (CMP+BCondOffset+UDF) matching the actual compiler — the sequential exec_program model needs PC-relative branching support to verify these. The i64, f32, f64, and SIMD instruction selection has T2 existence proofs but not T1 result-correspondence.
 
 Build the proofs:
 
