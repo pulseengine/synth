@@ -1,12 +1,12 @@
 # Synth Roadmap
 
-**Updated:** February 2026
+**Updated:** April 2026
 
 ---
 
 ## Current Status
 
-- **18 crates**, ~24K lines of Rust, **496 tests passing**
+- **16 crates**, ~24K lines of Rust, **895 tests passing**
 - **151/151** WASM Core 1.0 operations have synthesis rules + unit tests
 - **End-to-end compilation works:** `synth compile input.wat -o output.elf`
 - **Multi-backend architecture:** Backend trait, registry, ARM backend functional
@@ -22,7 +22,7 @@
 | Task | Status |
 |------|--------|
 | Documentation structure (91+ docs) | Done |
-| Crate architecture (18 crates) | Done |
+| Crate architecture (16 crates) | Done |
 | Feature matrix | Done |
 | Roadmap | Done |
 
@@ -30,7 +30,7 @@
 
 | Task | Status |
 |------|--------|
-| Bazel BUILD files (17/18 crates) | Done |
+| Bazel BUILD files (16 crates) | Done |
 | WASM → ARM ELF compilation | Done |
 | Vector table generation | Done |
 | Startup code (reset handler) | Done |
@@ -141,7 +141,7 @@ Close the gap between "unit tests pass" and "compiler actually works end-to-end.
 
 ## Out of Scope (Future)
 
-- SIMD/vector operations
+- SIMD/vector operations (note: experimental Helium MVE encoding exists for Cortex-M55 but is untested)
 - RISC-V backend (pending Phase F research)
 - Full Component Model support
 - ISO 26262 / IEC 62304 certification
@@ -154,9 +154,9 @@ Close the gap between "unit tests pass" and "compiler actually works end-to-end.
 
 | Metric | Value |
 |--------|-------|
-| Crates | 18 |
+| Crates | 16 |
 | Lines of Rust | ~24K |
-| Tests | 496 |
+| Tests | 895 |
 | WASM ops covered | 151/151 (100%) |
 | Z3 verification tests | 53 |
 | Documentation files | 91+ |
@@ -167,4 +167,3 @@ Close the gap between "unit tests pass" and "compiler actually works end-to-end.
 ## Tracking
 
 - **Issues:** [GitHub Issues](https://github.com/pulseengine/Synth/issues)
-- **Plan:** `.claude/plans/elegant-toasting-koala.md` (detailed execution plan)

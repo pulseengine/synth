@@ -46,6 +46,12 @@ artifacts:
         target: NFR-002
       - type: refines
         target: FR-002
+      - type: constraint-satisfies
+        target: SC-9
+      - type: constraint-satisfies
+        target: CC-Z3-1
+      - type: constraint-satisfies
+        target: CC-Z3-2
     fields:
       req-type: non-functional
       priority: must
@@ -163,6 +169,14 @@ artifacts:
         target: NFR-002
       - type: traces-to
         target: H-CODE-1
+      - type: constraint-satisfies
+        target: SC-6
+      - type: constraint-satisfies
+        target: SC-CODE-1
+      - type: constraint-satisfies
+        target: SC-CODE-2
+      - type: constraint-satisfies
+        target: SC-CODE-9
     fields:
       req-type: non-functional
       priority: must

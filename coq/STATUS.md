@@ -1,26 +1,26 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated:** March 2026 (after Phase 5: VFP floating-point semantics)
+**Last Updated:** April 2026
 
 ## Overview
 
 Synth's Rocq proof suite verifies that `compile_wasm_to_arm` preserves WASM semantics.
-After adding VFP floating-point semantics to ArmSemantics.v, all 48 previously-admitted
-VFP proofs are closed. The `i64_to_i32_to_i64_wrap` lemma is also closed.
-Only 2 ArmRefinement Sail integration placeholders remain Admitted.
+After aligning Compilation.v with the actual Rust compiler (trap guard sequences for
+division, MOVW+MOVT for large constants), 7 proofs were re-admitted pending exec_program
+extensions for PC-relative branching. 10 total admits remain.
 
 ## Proof Tiers
 
 | Tier | Meaning | Count |
 |------|---------|-------|
-| **T1: Result Correspondence** | ARM output register = WASM result value | 39 |
-| **T2: Existence-Only** | ARM execution succeeds (no result claim) | 143 |
-| **T3: Admitted** | Not yet proven | 2 |
-| **Infrastructure** | Properties of integers, states, flag lemmas | 55 |
+| **T1: Result Correspondence** | ARM output register = WASM result value | 35 |
+| **T2: Existence-Only** | ARM execution succeeds (no result claim) | 142 |
+| **T3: Admitted** | Not yet proven | 10 |
+| **Infrastructure** | Properties of integers, states, flag lemmas | 56 |
 
-**Total: 237 Qed / 2 Admitted across all files**
+**Total: 233 Qed / 10 Admitted across all files**
 
-## T1: Result Correspondence (39 Qed)
+## T1: Result Correspondence (35 Qed)
 
 These are the crown jewels — they prove the compiled ARM code produces the exact same
 value as the WASM operation.
@@ -38,14 +38,11 @@ value as the WASM operation.
 
 (Also duplicated in CorrectnessI32.v: add, sub, mul, and, or, xor)
 
-### i32 Division (4)
+### i32 Division (0 — moved to T3)
 
-| File | Theorem | Operation |
-|------|---------|-----------|
-| CorrectnessI32.v | `i32_divs_correct` | I32DivS |
-| CorrectnessI32.v | `i32_divu_correct` | I32DivU |
-| CorrectnessI32.v | `i32_rems_correct` | I32RemS |
-| CorrectnessI32.v | `i32_remu_correct` | I32RemU |
+These were T1 proofs but are now Admitted because division compilation emits
+trap guard sequences (CMP + BCondOffset + UDF) that cannot be verified in the
+current sequential exec_program model. See T3 section below.
 
 ### i32 Comparison (11) — uses flag-correspondence lemmas
 
@@ -102,7 +99,7 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 
 | File | Count | Operations |
 |------|-------|------------|
-| CorrectnessSimple.v | 29 | Nop, Drop, Select, LocalGet/Set/Tee, GlobalGet/Set, I32Const, I64Const, 11 comparisons, 5 shifts, 3 bit-manip |
+| CorrectnessSimple.v | 28 | Nop, Drop, Select, LocalGet/Set/Tee, GlobalGet/Set, I64Const, 11 comparisons, 5 shifts, 3 bit-manip (I32Const now Admitted) |
 | CorrectnessI64.v | 25 | Add, Sub, Mul, And, Or, Xor, 5 shifts, 11 comparisons, 3 bit-manip |
 | CorrectnessI64Comparisons.v | 19 | 11 comparisons, 3 bit-manip, 5 shifts |
 | CorrectnessF32.v | 20 | 7 empty-program + 13 VFP (4 arith, 3 unary, 6 comparison) |
@@ -111,11 +108,15 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 | CorrectnessMemory.v | 8 | 4 i32/i64 + 4 f32/f64 load/store |
 | CorrectnessComplete.v | 1 | Master compilation theorem |
 
-## T3: Admitted (2)
+## T3: Admitted (10)
 
-| Category | Count | Root Cause | Unblocking Strategy |
-|----------|-------|------------|---------------------|
-| ArmRefinement | 2 | Needs Sail-generated ARM semantics | Phase 2: Import Sail specifications |
+| File | Count | Root Cause | Unblocking Strategy |
+|------|-------|------------|---------------------|
+| ArmRefinement.v | 2 | Needs Sail-generated ARM semantics | Phase 2: Import Sail specifications |
+| Integers.v | 1 | `i64_to_i32_to_i64_wrap` — Rocq 9 `Z.mod_mod` signature changed | Rework proof for new Z.mod_mod API |
+| CorrectnessI32.v | 4 | `i32_divs/divu/rems/remu_correct` — trap guard sequences (CMP+BCondOffset+UDF) cannot be verified in the sequential exec_program model | Extend exec_program to support PC-relative branching |
+| CorrectnessSimple.v | 1 | `i32_const_correct` — compilation now branches on `I32.unsigned n <= 65535`; large-constant case requires Z.land/Z.shiftr lemmas | Prove MOVW+MOVT reconstruction lemma |
+| Compilation.v | 2 | `ex_compile_simple_add`, `ex_compile_increment_local` — `simpl` cannot reduce `Z.leb (I32.unsigned (I32.repr n)) 65535` | Use `vm_compute` or prove I32.unsigned reduction lemma |
 
 ## VFP Semantics (Phase 5 — New)
 
@@ -172,11 +173,30 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 | `cvt_s32_to_f32_bits` | Signed int -> F32 conversion |
 | `cvt_f32_to_s32_bits` | F32 -> Signed int conversion |
 
+### Integers.v — I64 Module (6 axioms)
+
+| Axiom | Purpose |
+|-------|---------|
+| `I64.clz` | Count leading zeros function (64-bit) |
+| `I64.ctz` | Count trailing zeros function (64-bit) |
+| `I64.popcnt` | Population count function (64-bit) |
+| `I64.clz_range` | `0 <= clz(x) <= 64` |
+| `I64.ctz_range` | `0 <= ctz(x) <= 64` |
+| `I64.popcnt_range` | `0 <= popcnt(x) <= 64` |
+
 ### ArmFlagLemmas.v (1 axiom)
 
 | Axiom | Purpose |
 |-------|---------|
 | `nv_flag_sub_lts` | N!=V flag after CMP <-> signed less-than (ARM architecture property) |
+
+### ArmRefinement.v (1 axiom)
+
+| Axiom | Purpose |
+|-------|---------|
+| `sail_exec_instr` | Placeholder for Sail ARM specification (not yet imported) |
+
+**Total: 41 axioms** (13 I32 + 6 I64 + 20 VFP + 1 flag + 1 refinement)
 
 ## Flag-Correspondence Lemmas (ArmFlagLemmas.v)
 
@@ -211,10 +231,16 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 | CorrectnessMemory.v | 8 | 0 | T2 |
 | CorrectnessComplete.v | 1 | 0 | T2 |
 | ArmRefinement.v | 0 | 2 | T3 |
+| Integers.v | 10 | 1 | Infra/T3 |
 | ArmFlagLemmas.v | 10 | 0 | Infra |
 | Tactics.v | 1 | 0 | Infra |
 | ArmState.v | 11 | 0 | Infra |
-| Infrastructure (other) | 33 | 0 | Infra |
+| ArmSemantics.v | 7 | 0 | Infra |
+| WasmSemantics.v | 6 | 0 | Infra |
+| Compilation.v | 5 | 0 | Infra |
+| Base.v | 4 | 0 | Infra |
+| StateMonad.v | 3 | 0 | Infra |
+| WasmValues.v | 2 | 0 | Infra |
 
 ## Phase History
 
@@ -222,9 +248,9 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 - Added abstract VFP operation axioms (21 axioms on bit patterns)
 - Modeled all VFP instructions in ArmSemantics.v (arithmetic, comparison, conversion, move, load/store)
 - Closed all 48 VFP-dependent admits (CorrectnessF32, CorrectnessF64, CorrectnessConversions, CorrectnessMemory)
-- Closed i64_to_i32_to_i64_wrap in Integers.v
+- NOTE: i64_to_i32_to_i64_wrap in Integers.v remains Admitted (Rocq 9 Z.mod_mod issue)
 - Added VFP register get/set lemmas to ArmState.v
-- **Result: 52 -> 2 Admitted** (only ArmRefinement Sail placeholders remain)
+- **Result: 52 -> 3 Admitted** (2 ArmRefinement Sail placeholders + 1 Integers.v)
 
 ### Phase 4: Register-based shift instructions
 - Added LSL_reg/LSR_reg/ASR_reg/ROR_reg/RSB to ArmInstructions.v and ArmSemantics.v
@@ -232,4 +258,10 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 
 ### Phase 3: Catch-all removal
 - Replaced `| _ => Some s` with `| _ => None` in ArmSemantics.v
-- Made proof accounting honest
+- Replaced `| _ => Some s` with `| _ => None` in WasmSemantics.v
+- Made proof accounting honest: unmodeled instructions now fail (None) instead
+  of silently succeeding as no-ops. 79 unmodeled WASM instructions affected
+  (i64 arithmetic/bitwise, all f32/f64, conversions, memory ops).
+  Correctness proofs remain valid because they take exec_wasm_instr = Some (...)
+  as a hypothesis; with None, the hypothesis is False, making theorems
+  vacuously true (honest: we don't claim correctness for what we haven't modeled).

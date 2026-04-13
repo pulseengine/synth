@@ -112,6 +112,8 @@ artifacts:
         target: ARCH-002
       - type: traces-to
         target: ARCH-003
+      - type: constraint-satisfies
+        target: SC-7
     fields:
       req-type: functional
       priority: must

@@ -23,6 +23,16 @@ pub struct AbiOptions {
 
     /// Whether to use realloc for allocations
     pub use_realloc: bool,
+
+    /// Skip the canonical ABI reentrancy guard for this call.
+    ///
+    /// When `true`, the generated canonical ABI entry sequence omits the
+    /// `call_might_be_recursive` check, allowing a component instance to
+    /// be reentered while already on the call stack. This is needed for
+    /// fused components where caller and callee share the same instance.
+    ///
+    /// Default: `false` (spec-compliant trapping behavior).
+    pub recursive_reentrance: bool,
 }
 
 impl Default for AbiOptions {
@@ -31,6 +41,7 @@ impl Default for AbiOptions {
             string_encoding: StringEncoding::Utf8,
             memory_index: 0,
             use_realloc: true,
+            recursive_reentrance: false,
         }
     }
 }
@@ -47,6 +58,11 @@ impl AbiOptions {
 
     pub fn with_memory(mut self, index: u32) -> Self {
         self.memory_index = index;
+        self
+    }
+
+    pub fn with_recursive_reentrance(mut self, enabled: bool) -> Self {
+        self.recursive_reentrance = enabled;
         self
     }
 }

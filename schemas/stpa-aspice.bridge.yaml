@@ -1,0 +1,37 @@
+# Bridge: stpa + aspice
+#
+# Connects STPA safety constraints to ASPICE V-model requirement types.
+# The built-in stpa-dev bridge recognizes only the `requirement` type (dev schema).
+# This bridge defines the constraint-satisfies link type and traceability rules
+# for `system-req` and `sw-req` (aspice schema).
+
+schema:
+  name: stpa-aspice-bridge
+  version: "0.1.0"
+  extends: [stpa, aspice]
+  description: >
+    Bridge between STPA safety analysis and ASPICE V-model schemas.
+    Allows system-req and sw-req artifacts to satisfy system-constraints
+    and controller-constraints via constraint-satisfies links.
+
+link-types:
+  - name: constraint-satisfies
+    inverse: satisfied-by-constraint
+    description: Requirement satisfies (implements) a safety constraint
+    source-types: [system-req, sw-req]
+    target-types: [system-constraint, controller-constraint]
+
+traceability-rules:
+  - name: constraint-has-requirement
+    description: Every system constraint should be satisfied by at least one requirement
+    source-type: system-constraint
+    required-backlink: constraint-satisfies
+    from-types: [system-req, sw-req]
+    severity: warning
+
+  - name: controller-constraint-has-requirement
+    description: Every controller constraint should be satisfied by at least one requirement
+    source-type: controller-constraint
+    required-backlink: constraint-satisfies
+    from-types: [system-req, sw-req]
+    severity: info

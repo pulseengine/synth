@@ -9,8 +9,8 @@
 This project uses **Rivet** for SDLC artifact traceability.
 - Config: `rivet.yaml`
 - Schemas: common, stpa, aspice, dev
-- Artifacts: 252 across 17 types
-- Validation: `rivet validate` (current status: 95 errors)
+- Artifacts: 284 across 15 types
+- Validation: `rivet validate` (current status: 91 errors)
 
 ## Available Commands
 
@@ -31,29 +31,29 @@ This project uses **Rivet** for SDLC artifact traceability.
 
 | Type | Count | Description |
 |------|------:|-------------|
-| `control-action` | 10 | An action issued by a controller to a controlled process or another controller. |
 | `controlled-process` | 3 | A process being controlled — the physical or data transformation acted upon by controllers. |
 | `controller` | 6 | A system component (human or automated) responsible for issuing control actions. Each controller has a process model — its internal beliefs about the state of the controlled process. |
 | `controller-constraint` | 18 | A constraint on a controller's behavior derived by inverting a UCA. Specifies what the controller must or must not do. |
-| `hazard` | 10 | A system state or set of conditions that, together with worst-case environmental conditions, will lead to a loss. |
-| `loss` | 6 | An undesired or unplanned event involving something of value to stakeholders. Losses define what the analysis aims to prevent. |
-| `loss-scenario` | 12 | A causal pathway describing how a UCA could occur or how the control action could be improperly executed, leading to a hazard. |
+| `hazard` | 19 | A system state or set of conditions that, together with worst-case environmental conditions, will lead to a loss. |
+| `loss` | 10 | An undesired or unplanned event involving something of value to stakeholders. Losses define what the analysis aims to prevent. |
+| `loss-scenario` | 20 | A causal pathway describing how a UCA could occur or how the control action could be improperly executed, leading to a hazard. |
 | `stakeholder-req` | 4 | Stakeholder requirement (SYS.1) |
 | `sub-hazard` | 3 | A refinement of a hazard into a more specific unsafe condition. |
-| `sw-arch-component` | 11 | Software architectural element (SWE.2) |
+| `sw-arch-component` | 13 | Software architectural element (SWE.2) |
 | `sw-req` | 26 | Software requirement (SWE.1) |
-| `sw-verification` | 12 | Software verification measure against SW requirements (SWE.6 — Software Verification) |
-| `sys-verification` | 29 | System verification measure against system requirements (SYS.5 — System Verification) |
+| `sw-verification` | 13 | Software verification measure against SW requirements (SWE.6 — Software Verification) |
+| `sys-verification` | 39 | System verification measure against system requirements (SYS.5 — System Verification) |
 | `system-arch-component` | 6 | System architectural element (SYS.3) |
-| `system-constraint` | 10 | A condition or behavior that must be satisfied to prevent a hazard. Each constraint is the inversion of a hazard. |
-| `system-req` | 68 | System requirement derived from stakeholder needs (SYS.2) |
-| `uca` | 18 | An Unsafe Control Action — a control action that, in a particular context and worst-case environment, leads to a hazard. Four types (provably complete): 1. Not providing the control action leads to a hazard 2. Providing the control action leads to a hazard 3. Providing too early, too late, or in the wrong order 4. Control action stopped too soon or applied too long |
+| `system-constraint` | 20 | A condition or behavior that must be satisfied to prevent a hazard. Each constraint is the inversion of a hazard. |
+| `system-req` | 84 | System requirement derived from stakeholder needs (SYS.2) |
+| `control-action` | 0 | An action issued by a controller to a controlled process or another controller. |
 | `design-decision` | 0 | An architectural or design decision with rationale |
 | `feature` | 0 | A user-visible capability or feature |
 | `requirement` | 0 | A functional or non-functional requirement |
 | `sw-detail-design` | 0 | Software detailed design or unit specification (SWE.3) |
 | `sw-integration-verification` | 0 | Software component and integration verification measure (SWE.5 — Software Component Verification and Integration Verification) |
 | `sys-integration-verification` | 0 | System integration and integration verification measure (SYS.4 — System Integration and Integration Verification) |
+| `uca` | 0 | An Unsafe Control Action — a control action that, in a particular context and worst-case environment, leads to a hazard. Four types (provably complete): 1. Not providing the control action leads to a hazard 2. Providing the control action leads to a hazard 3. Providing too early, too late, or in the wrong order 4. Control action stopped too soon or applied too long |
 | `unit-verification` | 0 | Unit verification measure (SWE.4 — Software Unit Verification) |
 | `verification-execution` | 0 | A verification execution run against a specific version |
 | `verification-verdict` | 0 | Pass/fail verdict for a single verification measure in an execution run |
@@ -83,6 +83,7 @@ Use `rivet validate --format json` for machine-readable output.
 | `caused-by-uca` | Loss scenario is caused by an unsafe control action | `causes-scenario` |
 | `constrained-by` | Source is constrained by the target | `constrains` |
 | `constrains-controller` | Constraint applies to a specific controller | `controller-constrained-by` |
+| `constraint-satisfies` | Requirement satisfies (implements) a system constraint | `satisfied-by-constraint` |
 | `depends-on` | Source depends on target being completed first | `depended-on-by` |
 | `derives-from` | Source is derived from the target | `derived-into` |
 | `implements` | Source implements the target | `implemented-by` |

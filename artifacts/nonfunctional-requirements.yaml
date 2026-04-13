@@ -49,6 +49,8 @@ artifacts:
         target: sigil:L-7
       - type: traces-to
         target: sigil:SC-14
+      - type: constraint-satisfies
+        target: CC-EB-3
     fields:
       req-type: constraint
       priority: must

@@ -147,6 +147,23 @@ pub struct ComponentInstance {
 
     /// Referenced component
     pub component: String,
+
+    /// Allow recursive reentrance into this instance.
+    ///
+    /// The Component Model spec traps when `call_might_be_recursive` detects
+    /// that a component instance is already on the call stack (Concurrency.md).
+    /// After fusion (e.g. via meld), the caller and callee share the same
+    /// instance, making cross-component calls appear reentrant even though
+    /// the original components were distinct.
+    ///
+    /// When `true`, the AOT-generated canonical ABI entry sequence skips
+    /// the reentrancy guard for calls into this instance. This is an opt-in
+    /// extension ahead of the spec's planned `recursive` effect on function
+    /// types.
+    ///
+    /// Default: `false` (spec-compliant trapping behavior).
+    #[serde(default)]
+    pub recursive_reentrance: bool,
 }
 
 /// WIT (WebAssembly Interface Type) interface

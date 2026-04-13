@@ -72,6 +72,12 @@ artifacts:
         target: ARCH-002
       - type: traces-to
         target: ARCH-006
+      - type: constraint-satisfies
+        target: SC-CODE-5
+      - type: constraint-satisfies
+        target: SC-CODE-6
+      - type: constraint-satisfies
+        target: CC-IS-5
     fields:
       req-type: interface
       priority: must
@@ -332,6 +338,10 @@ artifacts:
         target: FR-008
       - type: traces-to
         target: ARCH-005
+      - type: constraint-satisfies
+        target: SC-3
+      - type: constraint-satisfies
+        target: SC-CODE-4
     fields:
       req-type: functional
       priority: must

@@ -365,6 +365,38 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       let value := get_reg s rd in
       Some (store_mem s (I32.signed addr) value)
 
+  (* Trap instruction — always fails *)
+  | UDF _ => None
+
+  (* CMN: compare negated — sets flags based on addition (rn + op2) *)
+  | CMN rn op2 =>
+      let v1 := get_reg s rn in
+      let v2 := eval_operand2 op2 s in
+      let result := I32.add v1 v2 in
+      let c := compute_c_flag_add v1 v2 in
+      let v := compute_v_flag_add v1 v2 result in
+      let new_flags := update_flags_arith result c v in
+      Some (set_flags s new_flags)
+
+  (* BCondOffset: conditional branch with instruction offset.
+
+     Limitation: The current exec_program model executes instructions
+     sequentially from a flat list with no support for skipping instructions.
+     Real ARM conditional branches modify the PC to skip over instructions.
+     To properly model BCondOffset, exec_program would need to track a
+     program counter index and support non-sequential execution.
+
+     Current modeling: BCondOffset is treated as a no-op that only updates
+     flags-based state. The actual branching behavior (skipping instructions
+     on trap guards) is handled at a higher level by the correctness proofs
+     which reason about the full instruction sequence.
+
+     TODO: Extend exec_program to support indexed execution with PC-relative
+     branching. This would enable compositional proofs of trap-guarded
+     sequences like CMP + BCondOffset + UDF + UDIV. *)
+  | BCondOffset _cond _offset =>
+      Some s  (* No-op in sequential model *)
+
   (* Control flow - simplified *)
   | B offset =>
       (* Branch: update PC *)

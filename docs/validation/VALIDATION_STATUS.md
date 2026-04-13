@@ -1,5 +1,7 @@
 # Validation Infrastructure - Current Status
 
+> **Note: This document describes planned validation infrastructure that has not been implemented. The test driver and OCaml extraction pipeline described below do not exist.**
+
 ## Summary
 
 Successfully implemented the executable validation strategy, extracting our verified compiler to OCaml and creating the validation framework. Encountered version compatibility issues with pre-built Sail ARM emulator.

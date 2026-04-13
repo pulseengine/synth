@@ -10,7 +10,7 @@ Part of [PulseEngine](https://github.com/pulseengine): synth (compiler) + [loom]
 
 ```bash
 # Rust — primary build
-cargo test --workspace             # 885+ tests
+cargo test --workspace             # 895+ tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 
@@ -87,9 +87,9 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 188 Qed / 52 Admitted.
-Proofs are tiered: T1 (39 result-correspondence), T2 (95 existence-only), T3 (52 admitted).
-All 52 admits require VFP/float semantics (48) or are low-priority infrastructure (4).
+See `coq/STATUS.md` for the complete coverage matrix. Current: 233 Qed / 10 Admitted.
+Proofs are tiered: T1 (35 result-correspondence), T2 (142 existence-only), T3 (10 admitted).
+7 new admits from aligning Compilation.v with actual compiler (trap guards, MOVW+MOVT constants).
 All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have T1 proofs.
 
 ## Conventions

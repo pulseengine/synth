@@ -1,12 +1,14 @@
 (** * I32 Operations Correctness
 
     This file contains correctness proofs for all i32 WebAssembly operations.
-    Total: 34 operations — 24 Qed, 5 Admitted
+    Total: 34 operations — 20 Qed, 9 Admitted
 
     Strategy:
     - Arithmetic (add, sub, mul, and, or, xor): synth_binop_proof tactic
-    - Division (divs, divu): manual proof with Option handling
-    - Remainder (rems, remu): manual proof tracing SDIV/UDIV + MLS
+    - Division (divs, divu): Admitted — trap guard sequences require
+      PC-relative branching model (BCondOffset + UDF cannot be skipped
+      in the sequential exec_program model)
+    - Remainder (rems, remu): Admitted — same trap guard issue as division
     - Comparisons: flag-correspondence lemmas from ArmFlagLemmas.v
     - Bit manipulation: axiom-based (I32.clz/rbit/popcnt)
     - Shifts: Admitted — ARM compilation uses fixed immediate, not register shift
@@ -67,7 +69,16 @@ Theorem i32_mul_correct : forall wstate astate v1 v2 stack',
     get_reg astate' R0 = I32.mul v1 v2.
 Proof. synth_binop_proof. Qed.
 
-(** Division operations - handle option type *)
+(** Division operations — trap-guarded sequences.
+
+    The compilation now emits CMP + BCondOffset + UDF trap guards before
+    the actual SDIV/UDIV. These proofs are Admitted because the current
+    sequential exec_program model cannot skip instructions (BCondOffset is
+    modeled as a no-op, so UDF is always reached and returns None).
+
+    Completing these proofs requires extending exec_program to support
+    indexed/PC-relative execution so that BCondOffset can skip the UDF
+    when the condition holds. See the TODO in ArmSemantics.v. *)
 
 Theorem i32_divs_correct : forall wstate astate v1 v2 stack' result,
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -81,13 +92,8 @@ Theorem i32_divs_correct : forall wstate astate v1 v2 stack' result,
     exec_program (compile_wasm_to_arm I32DivS) astate = Some astate' /\
     get_reg astate' R0 = result.
 Proof.
-  intros. unfold compile_wasm_to_arm.
-  simpl.
-  rewrite H0, H1, H2.
-  eexists. split.
-  - reflexivity.
-  - apply get_set_reg_eq.
-Qed.
+  (* Admitted: requires PC-relative branching model to skip UDF trap guard *)
+Admitted.
 
 Theorem i32_divu_correct : forall wstate astate v1 v2 stack' result,
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -101,13 +107,8 @@ Theorem i32_divu_correct : forall wstate astate v1 v2 stack' result,
     exec_program (compile_wasm_to_arm I32DivU) astate = Some astate' /\
     get_reg astate' R0 = result.
 Proof.
-  intros. unfold compile_wasm_to_arm.
-  simpl.
-  rewrite H0, H1, H2.
-  eexists. split.
-  - reflexivity.
-  - apply get_set_reg_eq.
-Qed.
+  (* Admitted: requires PC-relative branching model to skip UDF trap guard *)
+Admitted.
 
 Theorem i32_rems_correct : forall wstate astate v1 v2 stack' result quotient,
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -123,23 +124,8 @@ Theorem i32_rems_correct : forall wstate astate v1 v2 stack' result quotient,
     exec_program (compile_wasm_to_arm I32RemS) astate = Some astate' /\
     get_reg astate' R0 = result.
 Proof.
-  (* Remainder: a % b = a - (a/b) * b *)
-  (* Compiled as: SDIV R2, R0, R1; MLS R0, R2, R1, R0 *)
-  intros wstate astate v1 v2 stack' result quotient Hstack HR0 HR1 Hquot Hresult Hrems Hwasm.
-  unfold compile_wasm_to_arm. simpl.
-  rewrite HR0, HR1, Hquot. simpl.
-  eexists. split.
-  - reflexivity.
-  - rewrite get_set_reg_eq.
-    unfold get_reg, set_reg. simpl.
-    rewrite update_neq by discriminate.
-    rewrite update_eq.
-    rewrite update_neq by discriminate.
-    change ((regs astate) R0) with (get_reg astate R0).
-    change ((regs astate) R1) with (get_reg astate R1).
-    rewrite HR0, HR1.
-    symmetry. exact Hresult.
-Qed.
+  (* Admitted: requires PC-relative branching model to skip UDF trap guard *)
+Admitted.
 
 Theorem i32_remu_correct : forall wstate astate v1 v2 stack' result quotient,
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -155,22 +141,8 @@ Theorem i32_remu_correct : forall wstate astate v1 v2 stack' result quotient,
     exec_program (compile_wasm_to_arm I32RemU) astate = Some astate' /\
     get_reg astate' R0 = result.
 Proof.
-  (* Same pattern as rems but using UDIV *)
-  intros wstate astate v1 v2 stack' result quotient Hstack HR0 HR1 Hquot Hresult Hremu Hwasm.
-  unfold compile_wasm_to_arm. simpl.
-  rewrite HR0, HR1, Hquot. simpl.
-  eexists. split.
-  - reflexivity.
-  - rewrite get_set_reg_eq.
-    unfold get_reg, set_reg. simpl.
-    rewrite update_neq by discriminate.
-    rewrite update_eq.
-    rewrite update_neq by discriminate.
-    change ((regs astate) R0) with (get_reg astate R0).
-    change ((regs astate) R1) with (get_reg astate R1).
-    rewrite HR0, HR1.
-    symmetry. exact Hresult.
-Qed.
+  (* Admitted: requires PC-relative branching model to skip UDF trap guard *)
+Admitted.
 
 (** ** I32 Bitwise Operations (10 total) *)
 

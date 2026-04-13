@@ -1202,8 +1202,11 @@ fn extract_module_from_wast(contents: &str) -> Result<Vec<u8>> {
         }
     }
 
-    // Fall back to first module
-    Ok(modules.into_iter().next().unwrap())
+    // Fall back to first module (non-empty guaranteed by check above)
+    modules
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no modules found in WAST file"))
 }
 
 /// Compile all exported functions into a multi-function ELF
@@ -1357,11 +1360,11 @@ fn compile_all_exports(
 
     info!("Found {} exported functions:", all_exports.len());
     for f in &all_exports {
-        info!(
-            "  '{}' (index {})",
-            f.export_name.as_ref().unwrap(),
-            f.index
-        );
+        let display_name = f
+            .export_name
+            .as_deref()
+            .map_or_else(|| format!("func_{}", f.index), String::from);
+        info!("  '{}' (index {})", display_name, f.index);
     }
 
     // Build compile config from CLI flags
@@ -1377,7 +1380,9 @@ fn compile_all_exports(
     // Compile each function via the selected backend
     let mut compiled_funcs = Vec::new();
     for func in &all_exports {
-        let name = func.export_name.clone().unwrap();
+        let name = func.export_name.clone().ok_or_else(|| {
+            anyhow::anyhow!("function at index {} has no export name", func.index)
+        })?;
         info!(
             "Compiling function '{}' via backend '{}'...",
             name,
@@ -2016,7 +2021,9 @@ fn verify_command(wasm_input: PathBuf, elf_input: PathBuf, backend_name: &str) -
             println!("\n  Verifying {} exported functions...", exports.len());
 
             for func in &exports {
-                let name = func.export_name.as_ref().unwrap();
+                let name = func.export_name.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("function at index {} has no export name", func.index)
+                })?;
                 run_verification(&func.ops, name)?;
             }
 

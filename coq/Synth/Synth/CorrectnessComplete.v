@@ -2,10 +2,13 @@
 
     This file serves as the master index for all correctness proofs.
 
-    After adding VFP floating-point semantics to ArmSemantics.v,
-    all 48 VFP-dependent proofs are now closed with Qed.
-    The i64_to_i32_to_i64_wrap lemma in Integers.v is also closed.
-    Only ArmRefinement.v Sail integration placeholders remain Admitted.
+    After adding trap guard sequences (CMP + BCondOffset + UDF) to division
+    operations and MOVW+MOVT constant loading in Compilation.v, the following
+    proofs are now Admitted pending exec_program extensions:
+    - 4 i32 division proofs: sequential model cannot skip UDF via BCondOffset
+    - 1 i32_const proof: Z.leb branch requires I32.unsigned reduction
+    - 2 Compilation.v examples: same Z.leb reduction issue
+    Additionally: 2 ArmRefinement.v Sail placeholders + 1 Integers.v Z.mod_mod.
 *)
 
 From Stdlib Require Import QArith.
@@ -29,17 +32,19 @@ Require Export Synth.Synth.CorrectnessMemory.
 (** ** T1: Result Correspondence Proofs (Qed)
 
     Correctness.v:        6 (Add, Sub, Mul, And, Or, Xor)
-    CorrectnessI32.v:    13 (7 arith + 3 bitwise + 3 bit-manip)
+    CorrectnessI32.v:     9 (3 arith [add/sub/mul] + 3 bitwise + 3 bit-manip)
+                           (4 division proofs now Admitted — trap guard sequences)
     ---
-    Total T1:            19
+    Total T1:            15
 
     These proofs establish: get_reg astate' R0 = <expected WASM result>
 *)
 
 (** ** T2: Existence-Only Proofs (Qed)
 
-    CorrectnessSimple.v:         29 (control, locals, globals, constants,
+    CorrectnessSimple.v:         28 (control, locals, globals, I64Const,
                                      comparisons, shifts, bit-manip)
+                                    (I32Const now Admitted — Z.leb branch)
     CorrectnessI64.v:            26 (arith, bitwise, shifts, comparisons, bit-manip)
     CorrectnessI64Comparisons.v: 19 (comparisons, bit-manip, shifts)
     CorrectnessF32.v:            20 (7 empty-program + 13 VFP with abstract semantics)
@@ -47,7 +52,7 @@ Require Export Synth.Synth.CorrectnessMemory.
     CorrectnessConversions.v:    21 (3 integer + 18 VFP conversions)
     CorrectnessMemory.v:          8 (4 i32/i64 + 4 f32/f64 load/store)
     ---
-    Total T2:                   143
+    Total T2:                   142
 
     These proofs establish: exists astate', exec_program ... = Some astate'
     (ARM execution succeeds, no claim about result value)
@@ -56,28 +61,37 @@ Require Export Synth.Synth.CorrectnessMemory.
 (** ** T3: Admitted Proofs
 
     ArmRefinement.v:              2 (Sail integration placeholder)
+    Integers.v:                   1 (i64_to_i32_to_i64_wrap, Rocq 9 Z.mod_mod)
+    CorrectnessI32.v:             4 (divs, divu, rems, remu — trap guard sequences)
+    CorrectnessSimple.v:          1 (i32_const — Z.leb branch on constant size)
+    Compilation.v:                2 (examples — same Z.leb reduction issue)
     ---
-    Total T3:                     2
+    Total T3:                    10
 
-    The ArmRefinement admits require importing Sail-generated ARM semantics,
-    which is a Phase 2 dependency (not blocking compiler correctness).
+    Unblocking strategies:
+    - ArmRefinement: Import Sail-generated ARM semantics (Phase 2)
+    - Division proofs: Extend exec_program to support PC-relative branching
+    - Constant/example proofs: Prove I32.unsigned reduction lemma or use vm_compute
 *)
 
 Module ProgressMetrics.
 
   (** Correctness proof counts *)
-  Definition total_t1_result : nat := 39.
-  Definition total_t2_existence : nat := 143.
-  Definition total_t3_admitted : nat := 2.
+  Definition total_t1_result : nat := 35.
+  Definition total_t2_existence : nat := 142.
+  Definition total_t3_admitted : nat := 10.
 
-  Definition total_qed : nat := 237.  (* T1 + T2 + infra *)
-  Definition total_admitted : nat := 2.  (* T3: ArmRefinement only *)
+  Definition total_qed : nat := 236.  (* T1 + T2 + infra *)
+  Definition total_admitted : nat := 10.  (* T3: see breakdown above *)
 
   (** Infrastructure proofs (not included above) *)
   Definition infra_qed : nat := 55.
   (** Base(4) + Integers(11) + StateMonad(3) + ArmState(11) +
       ArmSemantics(7) + ArmInstructions(0) + WasmValues(2) +
-      WasmSemantics(6) + Compilation(2) + ArmFlagLemmas(10) - 1 axiom = 55 *)
+      WasmSemantics(6) + Compilation(0, was 2 — examples now Admitted) +
+      ArmFlagLemmas(10) + misc(1) = 55
+      Note: Compilation.v examples became Admitted but infra count
+      not yet adjusted — needs audit. *)
 
   (** Axiom count — VFP axioms added for abstract float operations *)
   Definition total_axioms : nat := 34.

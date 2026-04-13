@@ -11,14 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Compiler
 - WebAssembly-to-ARM Cortex-M AOT compiler
-- 197+ WASM opcodes supported (i32, i64, f32, f64, SIMD/Helium)
+- ~93 WASM opcodes compile to ARM (i32, i64, f32); SIMD/Helium encoding experimental; f64 decoded but not compiled
 - Full control flow (block, loop, if/else, br, br_if, br_table, call)
 - Sub-word memory operations (load8/16, store8/16)
 - memory.size / memory.grow
 - Globals, select, i64 register pairs
 - ARM Thumb-2 instruction encoding
-- VFP/FPU support (f32, f64)
-- WASM SIMD to ARM Helium MVE (Cortex-M55)
+- VFP/FPU support (f32; f64 not yet supported in instruction selector)
+- WASM SIMD to ARM Helium MVE (Cortex-M55) — encoding and instruction selection implemented, unit-tested only
 
 #### Output
 - ELF binary output with vector table and startup code
@@ -34,14 +34,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Target profiles: cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp, cortex-m55
 
 #### Verification
-- Rocq mechanized proofs (188 Qed / 52 Admitted)
+- Rocq mechanized proofs (233 Qed / 10 Admitted)
 - All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have T1 result-correspondence proofs
 - Z3 SMT translation validation (53 verification tests)
 - STPA safety analysis (losses, hazards, UCAs, constraints)
 - Rivet SDLC artifact traceability (250+ artifacts)
 
 #### Testing
-- 851 tests, all passing
+- 895 tests, all passing
 - 227/257 WebAssembly spec test files compile
 - Renode ARM Cortex-M4 emulation tests via Bazel
 

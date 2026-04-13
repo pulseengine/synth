@@ -44,6 +44,12 @@ artifacts:
         target: kiln:SR-10
       - type: traces-to
         target: kiln:SR-9
+      - type: constraint-satisfies
+        target: SC-8
+      - type: constraint-satisfies
+        target: SC-10
+      - type: constraint-satisfies
+        target: CC-IS-7
     fields:
       req-type: interface
       priority: must
@@ -197,6 +203,40 @@ artifacts:
         Synth-compiled module using thread_new and stream_read/write
         compiles to ARM code containing correct host intrinsic call
         sequences; execution verified on Renode with kiln-builtins stub.
+
+  - id: CM-006
+    type: system-req
+    title: Opt-in recursive reentrance for fused component instances
+    description: >
+      Synth shall support an opt-in recursive_reentrance flag on component
+      instances that causes the AOT-compiled canonical ABI entry sequence to
+      skip the reentrancy guard (call_might_be_recursive check). This is
+      required for meld-fused components where multiple original component
+      instances have been collapsed into a single instance, making
+      cross-component calls appear reentrant. The flag defaults to false
+      for spec-compliant behavior. This extension anticipates the Component
+      Model spec's planned 'recursive' effect on function types
+      (Concurrency.md TODO).
+    status: planned
+    tags: [component-model, reentrance, fusion, meld-interop, extension]
+    links:
+      - type: derives-from
+        target: BR-002
+      - type: traces-to
+        target: CM-002
+      - type: traces-to
+        target: CM-005
+      - type: traces-to
+        target: kiln:FR-P3-ASYNC-BUILTINS
+    fields:
+      req-type: functional
+      priority: should
+      spec-reference: "Component Model Concurrency.md — recursive effect TODO"
+      verification-criteria: >
+        Synth-compiled fused component with recursive_reentrance=true
+        does not trap on cross-component async calls within the same
+        instance; the reentrancy guard is omitted from the generated
+        ARM entry sequence.
 
   # ---------------------------------------------------------------------------
   # Software-level requirements for synth-abi canonical ABI implementation

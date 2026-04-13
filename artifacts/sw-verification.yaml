@@ -158,3 +158,109 @@ artifacts:
           5 tests: select_default mode, stack mode with constants,
           stack mode already tested in control_flow_select,
           composition with global values
+
+  - id: SWVER-008
+    type: sw-verification
+    title: Import call stub generation verification
+    description: >
+      Verifies that import call dispatch stubs are correctly generated,
+      including __meld_dispatch_import generic dispatch path and per-import
+      direct dispatch with AAPCS argument placement. Tests validate the
+      full Meld ABI pipeline from import index resolution through ARM
+      instruction emission.
+    status: implemented
+    tags: [import-dispatch, meld-abi, unit-tests]
+    links:
+      - type: verifies
+        target: KB-TR-001
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend -- meld_abi"
+        coverage: >
+          test_import_dispatch_stub_generation() and
+          test_full_meld_abi_pipeline() in
+          crates/synth-backend/tests/meld_abi_test.rs
+
+  - id: SWVER-009
+    type: sw-verification
+    title: .meld_import_table section emission verification
+    description: >
+      Verifies that the ELF builder correctly emits the .meld_import_table
+      section with proper import metadata entries, string table offsets,
+      and section flags for runtime import resolution by kiln-builtins.
+    status: implemented
+    tags: [import-table, elf, unit-tests]
+    links:
+      - type: verifies
+        target: KB-TR-003
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-cli -- compile_import_call"
+        coverage: >
+          compile_import_call_produces_relocatable_elf() in
+          crates/synth-cli/tests/wast_compile.rs validates
+          .meld_import_table presence in emitted ELF
+
+  - id: SWVER-010
+    type: sw-verification
+    title: LinkerScriptGenerator Meld section support verification
+    description: >
+      Verifies that the LinkerScriptGenerator correctly emits Meld-specific
+      sections (.meld_import_table, .meld_import_strings) in the generated
+      linker script with correct memory placement and section flags.
+    status: implemented
+    tags: [linker-script, meld-sections, unit-tests]
+    links:
+      - type: verifies
+        target: SL-TR-001
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend -- linker_script"
+        coverage: >
+          LinkerScriptGenerator unit tests in
+          crates/synth-backend/src/linker_script.rs
+
+  - id: SWVER-011
+    type: sw-verification
+    title: Relocation emission verification
+    description: >
+      Verifies that the ELF builder emits correct .rel.text relocation
+      entries (R_ARM_THM_CALL) for import call sites, enabling the static
+      linker to resolve __meld_dispatch_import symbols at link time.
+    status: implemented
+    tags: [relocations, elf, unit-tests]
+    links:
+      - type: verifies
+        target: SL-TR-003
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-cli -- compile_import_call"
+        coverage: >
+          wast_compile.rs validates .rel.text section presence
+          and relocation entries in emitted relocatable ELF
+
+  - id: SWVER-012
+    type: sw-verification
+    title: Relocatable ELF emission verification
+    description: >
+      Verifies that synth emits a valid ET_REL relocatable ELF object file
+      with correct ARM ELF header fields (EM_ARM, Thumb-2 flags), required
+      sections (.text, .symtab, .strtab), and proper symbol visibility for
+      exports (GLOBAL) and imports (UND).
+    status: implemented
+    tags: [elf, relocatable, integration-tests]
+    links:
+      - type: verifies
+        target: CC-008
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-cli -- compile_import_call"
+        coverage: >
+          compile_import_call_produces_relocatable_elf() in
+          crates/synth-cli/tests/wast_compile.rs validates
+          complete relocatable ELF structure

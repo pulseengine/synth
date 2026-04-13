@@ -30,6 +30,12 @@ artifacts:
         target: FR-005
       - type: derives-from
         target: BR-003
+      - type: constraint-satisfies
+        target: SC-4
+      - type: constraint-satisfies
+        target: CC-IS-1
+      - type: constraint-satisfies
+        target: CC-IV-1
     fields:
       req-type: functional
       priority: must
@@ -189,6 +195,10 @@ artifacts:
         target: FR-002
       - type: traces-to
         target: ARCH-003
+      - type: constraint-satisfies
+        target: SC-7
+      - type: constraint-satisfies
+        target: CC-EB-1
     fields:
       req-type: functional
       priority: must

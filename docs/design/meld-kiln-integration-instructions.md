@@ -55,13 +55,14 @@ Add `--emit-import-map imports.json` flag that produces:
 ```json
 {
   "imports": [
-    {"index": 0, "module": "wasi:cli/stderr@0.2.6", "name": "get-stderr"},
-    {"index": 1, "module": "wasi:io/streams@0.2.6", "name": "[method]output-stream.blocking-write-and-flush"}
+    {"index": 0, "module": "$root", "name": "[task-return]0", "kind": "p3-builtin"},
+    {"index": 1, "module": "$root", "name": "[context-get-0]", "kind": "p3-builtin"},
+    {"index": 12, "module": "wasi:cli/stderr@0.2.6", "name": "get-stderr", "kind": "wasi"}
   ]
 }
 ```
 
-This tells synth (and kiln-builtins) exactly which import index maps to which WASI function, enabling the dispatcher to route calls correctly.
+This tells synth (and kiln-builtins) exactly which import index maps to which WASI function or P3 async built-in, enabling the dispatcher to route calls correctly.
 
 ### Step 4: Test with Synth
 
@@ -154,6 +155,65 @@ For the anti-pinch demo, the minimum WASI needed is:
 - `wasi:clocks/monotonic-clock` — timer (read SysTick)
 
 Source material exists in `kiln-wasi/src/dispatcher.rs` — extract the dispatch logic into no_std-compatible form.
+
+## P3 Async Built-in Imports
+
+Meld-fused P3 async components produce core module imports for the Component
+Model async built-ins. Kiln must recognize and dispatch these imports when
+executing fused P3 modules (interpreter or AOT-compiled via synth).
+
+### Import Names from `$root` Namespace
+
+| Import name | Signature | Description |
+|---|---|---|
+| `[task-return]N` | varies per export N | Task return for export N. Multiple variants with different signatures. |
+| `[context-get-0]` | `() -> i32` | Get task-local context slot 0. |
+| `[context-set-0]` | `(i32) -> ()` | Set task-local context slot 0. |
+| `[waitable-set-new]` | `() -> i32` | Create a new waitable set. |
+| `[waitable-set-poll]` | `(i32, i32) -> i32` | Poll a waitable set. First arg = set handle, second = memory ptr for result. |
+| `[waitable-set-drop]` | `(i32) -> ()` | Destroy a waitable set. |
+| `[waitable-join]` | `(i32, i32) -> ()` | Join a waitable to a set. First arg = waitable handle, second = set handle. |
+
+### Import Names from `[export]$root` Namespace
+
+| Import name | Signature | Description |
+|---|---|---|
+| `[task-cancel]` | `(i32) -> i32` | Cancel a running task. Returns cancellation status. |
+
+### Multi-Instance Suffix Convention
+
+Meld suffixes import names with `$N` for multi-instance components:
+- `[context-get-0]$2` — context get for component 2
+- `[waitable-set-new]$5` — waitable-set-new for component 5
+
+Kiln should **strip the `$N` suffix** when dispatching to determine the
+built-in operation, and use the suffix value to select the correct component's
+memory and context state.
+
+### Naming Convention Note
+
+These names follow the component model internal naming convention. RFC 46
+proposes standardized names (e.g., `env::[context[0].get]`). For now, kiln
+handles meld's naming as documented. Future RFC 46 alignment is tracked.
+
+## Multi-Memory Handling for P3 Fused Modules
+
+Meld's fused P3 modules use multi-memory (one linear memory per original
+component). The fused module exports all memories:
+
+| Export name | Memory index | Component |
+|---|---|---|
+| `memory` | 0 | First component |
+| `memory$0` | 1 | Component 0 |
+| `memory$5` | 2 | Component 5 (CLI runner) |
+
+Each WASI import and P3 built-in is associated with a specific component's
+memory. The import suffix (`$2`, `$5`) indicates which component originated
+the import, and therefore which memory to use for pointer arguments and
+canonical ABI operations.
+
+For single-memory targets (`--memory shared`), all components share one memory.
+Multi-memory support is required for P3 async fused modules.
 
 ### Step 4: Build for ARM Target
 

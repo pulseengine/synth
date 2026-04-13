@@ -4,12 +4,6 @@ This directory contains historical and experimental documentation that is no lon
 
 ## Contents
 
-### sessions/
-Development session notes from the initial implementation phases. These are historical records of work done, not actionable documentation.
-
-- 12 session note files documenting Phase 1-3 development
-- Kept for historical reference only
-
 ### experimental/
 Exploratory analysis and planning documents that are no longer current:
 
@@ -18,6 +12,9 @@ Exploratory analysis and planning documents that are no longer current:
 - `ASILD_SAIL_MIGRATION_PLAN.md` - ASIL D planning (superseded)
 - `VALIDATION_REPORT.md` - Older validation report (superseded by COMPREHENSIVE_VALIDATION_REPORT.md)
 - `PHASE*` - Historical phase completion docs
+
+### planning/
+Historical planning and reorganization documents.
 
 ## Note
 
