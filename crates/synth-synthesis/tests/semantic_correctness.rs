@@ -949,12 +949,7 @@ fn i64_const_large_value() {
         "I64Const(0x1_0000_0000) should emit an I64Const ARM op"
     );
 
-    if let ArmOp::I64Const {
-        rdlo,
-        rdhi,
-        value,
-    } = &i64const.unwrap().op
-    {
+    if let ArmOp::I64Const { rdlo, rdhi, value } = &i64const.unwrap().op {
         assert_eq!(*value, 0x1_0000_0000i64, "value should be 0x1_0000_0000");
         assert_ne!(
             rdlo, rdhi,
@@ -1206,10 +1201,7 @@ fn i64_add_then_eqz() {
 
     assert!(has_adds, "chained i64 add+eqz should have ADDS");
     assert!(has_adc, "chained i64 add+eqz should have ADC");
-    assert!(
-        has_setcondz,
-        "chained i64 add+eqz should have I64SetCondZ"
-    );
+    assert!(has_setcondz, "chained i64 add+eqz should have I64SetCondZ");
 }
 
 #[test]
