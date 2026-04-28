@@ -132,6 +132,41 @@ fn alloc_temp_safe(next_temp: &mut u8, stack: &[Reg]) -> Result<Reg> {
     ))
 }
 
+/// Allocate a CONSECUTIVE pair `(rN, rN+1)` of registers from ALLOCATABLE_REGS,
+/// neither of which is currently on the wasm stack.
+///
+/// Calling [`alloc_temp_safe`] twice in succession is unsafe for i64 values
+/// because if a register between them is live on the wasm stack, the second
+/// call skips it and the resulting pair is non-consecutive. Subsequent code
+/// that uses [`i64_pair_hi`]`(rdlo)` to recover the high register then gets
+/// the wrong register and reads garbage.
+///
+/// This helper ensures both halves come from consecutive ALLOCATABLE_REGS
+/// entries (no wraparound) so the pair convention holds throughout the
+/// function body.
+fn alloc_consecutive_pair(next_temp: &mut u8, stack: &[Reg]) -> Result<(Reg, Reg)> {
+    let n = ALLOCATABLE_REGS.len();
+    for _ in 0..n {
+        let lo_idx = (*next_temp as usize) % n;
+        let hi_idx = lo_idx + 1;
+        // Wraparound is invalid: i64_pair_hi requires hi_idx < n.
+        if hi_idx < n {
+            let lo_reg = ALLOCATABLE_REGS[lo_idx];
+            let hi_reg = ALLOCATABLE_REGS[hi_idx];
+            if !stack.contains(&lo_reg) && !stack.contains(&hi_reg) {
+                *next_temp = ((hi_idx + 1) % n) as u8;
+                return Ok((lo_reg, hi_reg));
+            }
+        }
+        *next_temp = ((*next_temp as usize + 1) % n) as u8;
+    }
+    Err(synth_core::Error::synthesis(
+        "register exhaustion: no consecutive pair of free registers for i64 — \
+         function too complex for current register allocator"
+            .to_string(),
+    ))
+}
+
 /// Given the low register of an i64 register pair, return the high register.
 ///
 /// Convention: i64 values on 32-bit ARM use two consecutive registers.
@@ -3448,8 +3483,13 @@ impl InstructionSelector {
                         // register pair via the I64Ldr pseudo-op. Convention
                         // matches I64Const: push only dst_lo on the stack;
                         // dst_hi is recovered later via i64_pair_hi(lo).
-                        let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
-                        let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
+                        // The pair MUST be consecutive in ALLOCATABLE_REGS
+                        // — i64_pair_hi assumes that. Two separate calls to
+                        // alloc_temp_safe can return non-consecutive registers
+                        // when something in between is live, breaking the
+                        // pair convention.
+                        let (dst_lo, dst_hi) =
+                            alloc_consecutive_pair(&mut next_temp, &stack)?;
                         instructions.push(ArmInstruction {
                             op: ArmOp::I64Ldr {
                                 rdlo: dst_lo,
@@ -4835,9 +4875,12 @@ impl InstructionSelector {
                 // Pairs are allocated as two consecutive temp registers.
                 // =========================================================
                 I64Const(val) => {
-                    // Allocate a register pair for the 64-bit constant
-                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
-                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
+                    // Allocate a CONSECUTIVE register pair for the 64-bit
+                    // constant. Two separate alloc_temp_safe calls can return
+                    // non-consecutive registers if something in between is
+                    // live on the wasm stack, which then breaks the
+                    // i64_pair_hi convention used by every i64 op downstream.
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack)?;
 
                     instructions.push(ArmInstruction {
                         op: ArmOp::I64Const {
@@ -4867,9 +4910,13 @@ impl InstructionSelector {
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
 
-                    // Allocate result register pair
-                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
-                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
+                    // Allocate result register pair. MUST be consecutive
+                    // in ALLOCATABLE_REGS — i64_pair_hi assumes consecutive
+                    // and is called by every i64 op downstream to recover
+                    // the high register. Two separate alloc_temp_safe calls
+                    // skip live registers and produce non-consecutive pairs.
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack)?;
 
                     // ADDS dst_lo, a_lo, b_lo  (sets carry flag)
                     instructions.push(ArmInstruction {
@@ -4911,9 +4958,13 @@ impl InstructionSelector {
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
 
-                    // Allocate result register pair
-                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
-                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
+                    // Allocate result register pair. MUST be consecutive
+                    // in ALLOCATABLE_REGS — i64_pair_hi assumes consecutive
+                    // and is called by every i64 op downstream to recover
+                    // the high register. Two separate alloc_temp_safe calls
+                    // skip live registers and produce non-consecutive pairs.
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack)?;
 
                     // SUBS dst_lo, a_lo, b_lo  (sets borrow flag)
                     instructions.push(ArmInstruction {
@@ -4949,9 +5000,13 @@ impl InstructionSelector {
                         )
                     })?;
 
-                    // Allocate result register pair
-                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
-                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
+                    // Allocate result register pair. MUST be consecutive
+                    // in ALLOCATABLE_REGS — i64_pair_hi assumes consecutive
+                    // and is called by every i64 op downstream to recover
+                    // the high register. Two separate alloc_temp_safe calls
+                    // skip live registers and produce non-consecutive pairs.
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack)?;
 
                     // Generate bounds-checked i64 load into the allocated pair
                     let load_ops =
