@@ -156,6 +156,169 @@ fn i64_pair_hi(lo_reg: Reg) -> Result<Reg> {
     )))
 }
 
+/// Per-function stack-frame layout for non-parameter locals.
+///
+/// `offsets[idx]` gives the byte offset (relative to SP after the frame
+/// allocation) where local `idx` lives. `frame_size` is the total bytes
+/// to allocate via `sub sp, sp, #frame_size` in the prologue.
+///
+/// i32/i64 locals each occupy 4/8 bytes respectively. i64 locals are
+/// 8-byte aligned per AAPCS. The total frame is rounded up to 8 bytes
+/// to keep SP 8-byte aligned at call sites.
+struct LocalLayout {
+    /// idx -> (offset_from_sp, is_i64)
+    locals: std::collections::HashMap<u32, (i32, bool)>,
+    frame_size: i32,
+}
+
+/// Compute the stack-frame layout for non-parameter locals in a function.
+///
+/// Walks the wasm op stream once to:
+/// 1. Identify which non-param local indices are referenced (LocalGet/Set/Tee).
+/// 2. Determine each local's width via `infer_i64_locals` (i32 vs i64).
+/// 3. Lay them out in ascending-index order with i64 locals 8-byte aligned.
+///
+/// The result drives:
+/// - Prologue: `sub sp, sp, #frame_size` after pushing callee-saved regs.
+/// - LocalGet/Set/Tee: use `offsets[idx]` instead of the legacy
+///   `(idx - 4) * 4` formula (which only happened to work when num_params==4
+///   AND the formula's negative result was silently clamped to 0 by the
+///   encoder, in both cases corrupting the caller's stack or the callee's
+///   own callee-saved-register spill).
+/// - Epilogue: `add sp, sp, #frame_size` before popping registers.
+fn compute_local_layout(wasm_ops: &[WasmOp], num_params: u32) -> LocalLayout {
+    use std::collections::{BTreeSet, HashMap};
+    let i64_set = infer_i64_locals(wasm_ops);
+
+    // Collect non-param local indices, in ascending order for deterministic layout.
+    let mut used: BTreeSet<u32> = BTreeSet::new();
+    for op in wasm_ops {
+        match op {
+            WasmOp::LocalGet(idx) | WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) => {
+                if *idx >= num_params {
+                    used.insert(*idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut locals: HashMap<u32, (i32, bool)> = HashMap::new();
+    let mut offset: i32 = 0;
+    for &idx in &used {
+        let is_i64 = i64_set.contains(&idx);
+        // i64 locals require 8-byte alignment.
+        if is_i64 && (offset % 8) != 0 {
+            offset += 4;
+        }
+        locals.insert(idx, (offset, is_i64));
+        offset += if is_i64 { 8 } else { 4 };
+    }
+    // Round frame to 8-byte multiple for AAPCS SP alignment.
+    let frame_size = (offset + 7) & !7;
+
+    LocalLayout {
+        locals,
+        frame_size,
+    }
+}
+
+/// Infer which non-parameter wasm locals are i64 (8-byte) values.
+///
+/// The wasm decoder discards local-declaration type info, so we re-derive
+/// it from the operation stream by simulating a virtual stack of widths
+/// (1 = 32-bit, 2 = 64-bit). On each `LocalSet`/`LocalTee` we record the
+/// width of the value being stored. WASM type rules guarantee a local's
+/// width is invariant for its lifetime, so the first store wins.
+///
+/// Without this, the spilled-local store/load path would emit a single
+/// 4-byte STR/LDR for i64 locals, dropping the upper half — corrupting
+/// any function that returns or uses a u64-packed FFI struct.
+fn infer_i64_locals(wasm_ops: &[WasmOp]) -> std::collections::HashSet<u32> {
+    use WasmOp::*;
+    let mut i64_locals: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut vstack: Vec<bool> = Vec::new(); // true = i64
+
+    let is_i64_producer = |op: &WasmOp| -> bool {
+        matches!(
+            op,
+            I64Add
+                | I64Sub
+                | I64Mul
+                | I64DivS
+                | I64DivU
+                | I64RemS
+                | I64RemU
+                | I64And
+                | I64Or
+                | I64Xor
+                | I64Shl
+                | I64ShrS
+                | I64ShrU
+                | I64Rotl
+                | I64Rotr
+                | I64Clz
+                | I64Ctz
+                | I64Popcnt
+                | I64Const(_)
+                | I64Load { .. }
+                | I64Load8S { .. }
+                | I64Load8U { .. }
+                | I64Load16S { .. }
+                | I64Load16U { .. }
+                | I64Load32S { .. }
+                | I64Load32U { .. }
+                | I64ExtendI32S
+                | I64ExtendI32U
+                | I64Extend8S
+                | I64Extend16S
+                | I64Extend32S
+        )
+    };
+
+    for op in wasm_ops {
+        match op {
+            LocalGet(idx) => {
+                let is_i64 = i64_locals.contains(idx);
+                vstack.push(is_i64);
+            }
+            LocalSet(idx) => {
+                if let Some(is_i64) = vstack.pop() {
+                    if is_i64 {
+                        i64_locals.insert(*idx);
+                    }
+                }
+            }
+            LocalTee(idx) => {
+                if let Some(&is_i64) = vstack.last() {
+                    if is_i64 {
+                        i64_locals.insert(*idx);
+                    }
+                }
+            }
+            Select => {
+                // pops [val1, val2, cond], pushes one value with width of val1/val2
+                let _cond = vstack.pop();
+                let v2 = vstack.pop();
+                let v1 = vstack.pop();
+                vstack.push(v1.or(v2).unwrap_or(false));
+            }
+            _ => {
+                let (pops, pushes) = wasm_stack_effect(op);
+                for _ in 0..pops {
+                    vstack.pop();
+                }
+                let push_width = is_i64_producer(op);
+                for _ in 0..pushes {
+                    vstack.push(push_width);
+                }
+            }
+        }
+    }
+
+    i64_locals
+}
+
 /// Return the (pops, pushes) stack effect for a WASM op.
 ///
 /// Used by the wildcard fallthrough in select_with_stack to maintain
@@ -3220,15 +3383,34 @@ impl InstructionSelector {
 
         let mut instructions = Vec::new();
 
-        // Function prologue: save callee-saved registers and LR.
+        // Function prologue: save callee-saved registers and LR, then
+        // allocate the local-variable frame.
+        //
         // AAPCS requires 8-byte aligned SP at call sites. Pushing an even
-        // number of registers (6: R4-R8, LR) maintains alignment.
+        // number of registers (6: R4-R8, LR) maintains alignment, and the
+        // frame_size below is rounded to 8 to preserve it.
         instructions.push(ArmInstruction {
             op: ArmOp::Push {
                 regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR],
             },
             source_line: None,
         });
+
+        // Compute non-param local layout (offsets + total frame size).
+        let layout = compute_local_layout(wasm_ops, num_params);
+        // Allocate stack space for non-param locals so they don't alias the
+        // callee-saved-register spill area (which immediately follows SP
+        // after Push above).
+        if layout.frame_size > 0 {
+            instructions.push(ArmInstruction {
+                op: ArmOp::Sub {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    op2: Operand2::Imm(layout.frame_size),
+                },
+                source_line: None,
+            });
+        }
 
         // Virtual stack holds register indices
         let mut stack: Vec<Reg> = Vec::new();
@@ -3255,11 +3437,42 @@ impl InstructionSelector {
         for (idx, op) in wasm_ops.iter().enumerate() {
             match op {
                 LocalGet(local_idx) => {
-                    // Get the register for this local
+                    // Get the register for this local. Three cases:
+                    //  1. Param in register — use the cached mapping.
+                    //  2. Spilled i64 local — load both halves via I64Ldr.
+                    //  3. Spilled i32 local — single Ldr.
                     let reg = if let Some(&r) = local_to_reg.get(local_idx) {
                         r
+                    } else if let Some(&(off, true)) = layout.locals.get(local_idx) {
+                        // i64 local — load both 32-bit halves into a consecutive
+                        // register pair via the I64Ldr pseudo-op. Convention
+                        // matches I64Const: push only dst_lo on the stack;
+                        // dst_hi is recovered later via i64_pair_hi(lo).
+                        let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
+                        let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I64Ldr {
+                                rdlo: dst_lo,
+                                rdhi: dst_hi,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        dst_lo
+                    } else if let Some(&(off, false)) = layout.locals.get(local_idx) {
+                        // i32 local: single 4-byte load from the locals frame.
+                        let dst = alloc_temp_safe(&mut next_temp, &stack)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Ldr {
+                                rd: dst,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        dst
                     } else {
-                        // Local not in register (spilled to stack) - load it
+                        // Local not in layout (shouldn't happen for valid wasm,
+                        // but fall back to legacy behaviour for compatibility).
                         let dst = alloc_temp_safe(&mut next_temp, &stack)?;
                         instructions.push(ArmInstruction {
                             op: ArmOp::Ldr {
@@ -4324,6 +4537,20 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     }
+                    // Deallocate the local frame before popping callee-saved
+                    // registers; otherwise the pop would read from the locals
+                    // area instead of the saved-register slots.
+                    if layout.frame_size > 0 {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Add {
+                                rd: Reg::SP,
+                                rn: Reg::SP,
+                                op2: Operand2::Imm(layout.frame_size),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     // Restore callee-saved registers and return via PC
                     instructions.push(ArmInstruction {
                         op: ArmOp::Pop {
@@ -4475,7 +4702,32 @@ impl InstructionSelector {
                             cf.add_instruction();
                         }
                         local_to_reg.insert(*local_idx, target);
+                    } else if let Some(&(off, true)) = layout.locals.get(local_idx) {
+                        // i64 spilled local: store BOTH 32-bit halves
+                        // (lower at offset N, upper at N+4) via the I64Str
+                        // pseudo-op. Without this we drop the upper half.
+                        let val_hi = i64_pair_hi(val)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I64Str {
+                                rdlo: val,
+                                rdhi: val_hi,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else if let Some(&(off, false)) = layout.locals.get(local_idx) {
+                        // i32 spilled local: single 4-byte store.
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: val,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
                     } else {
+                        // Fall-through for compatibility (shouldn't happen).
                         instructions.push(ArmInstruction {
                             op: ArmOp::Str {
                                 rd: val,
@@ -4507,7 +4759,29 @@ impl InstructionSelector {
                             cf.add_instruction();
                         }
                         local_to_reg.insert(*local_idx, target);
+                    } else if let Some(&(off, true)) = layout.locals.get(local_idx) {
+                        // i64 spilled local: store both halves like LocalSet.
+                        let val_hi = i64_pair_hi(val)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I64Str {
+                                rdlo: val,
+                                rdhi: val_hi,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else if let Some(&(off, false)) = layout.locals.get(local_idx) {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: val,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
                     } else {
+                        // Fall-through for compatibility.
                         instructions.push(ArmInstruction {
                             op: ArmOp::Str {
                                 rd: val,
@@ -5055,7 +5329,18 @@ impl InstructionSelector {
             }
         }
 
-        // Function epilogue: restore callee-saved registers and return via PC
+        // Function epilogue: deallocate the local frame, then restore
+        // callee-saved registers and return via PC.
+        if layout.frame_size > 0 {
+            instructions.push(ArmInstruction {
+                op: ArmOp::Add {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    op2: Operand2::Imm(layout.frame_size),
+                },
+                source_line: None,
+            });
+        }
         // POP {R4-R8, PC} restores registers and returns (PC = saved LR)
         instructions.push(ArmInstruction {
             op: ArmOp::Pop {
