@@ -132,6 +132,66 @@ fn alloc_temp_safe(next_temp: &mut u8, stack: &[Reg]) -> Result<Reg> {
     ))
 }
 
+/// Allocate a CONSECUTIVE pair `(rN, rN+1)` of registers from ALLOCATABLE_REGS,
+/// neither of which is currently in use.
+///
+/// "In use" means:
+/// 1. On the wasm stack (the explicit `Vec<Reg>` tracking).
+/// 2. The implicit *high* register of any i64 value on the stack — for every
+///    `lo` in `stack`, [`i64_pair_hi`]`(lo)` is also reserved. The wasm stack
+///    only tracks the lo register of each i64; the hi is reserved by
+///    convention but invisible to a naive scan. If we ignored that, a fresh
+///    `alloc_consecutive_pair` could return the implicit-hi of an earlier
+///    i64, clobbering it on the next i64 op that reads it via i64_pair_hi.
+/// 3. Any explicit registers in `extra_avoid` — used by i64-op handlers to
+///    keep the just-popped operand pairs alive across the destination
+///    allocation (e.g. for I64Or, the popped a_lo/a_hi/b_lo/b_hi are still
+///    live until the OR is emitted).
+///
+/// Calling [`alloc_temp_safe`] twice in succession is unsafe for i64 values:
+/// if a register between them is live, the second call skips it and the
+/// resulting pair is non-consecutive, breaking [`i64_pair_hi`]'s contract.
+fn alloc_consecutive_pair(
+    next_temp: &mut u8,
+    stack: &[Reg],
+    extra_avoid: &[Reg],
+) -> Result<(Reg, Reg)> {
+    // Build a "live" Vec: every stack entry, plus its conventional
+    // pair_hi (over-reserves for i32 stack entries but that's safe), plus
+    // any explicit extras the caller specifies. Using Vec rather than
+    // HashSet because Reg in this crate does not derive Hash.
+    let mut live: Vec<Reg> = Vec::with_capacity(stack.len() * 2 + extra_avoid.len());
+    for &reg in stack {
+        live.push(reg);
+        if let Ok(hi) = i64_pair_hi(reg) {
+            live.push(hi);
+        }
+    }
+    for &reg in extra_avoid {
+        live.push(reg);
+    }
+
+    let n = ALLOCATABLE_REGS.len();
+    for _ in 0..n {
+        let lo_idx = (*next_temp as usize) % n;
+        let hi_idx = lo_idx + 1;
+        if hi_idx < n {
+            let lo_reg = ALLOCATABLE_REGS[lo_idx];
+            let hi_reg = ALLOCATABLE_REGS[hi_idx];
+            if !live.contains(&lo_reg) && !live.contains(&hi_reg) {
+                *next_temp = ((hi_idx + 1) % n) as u8;
+                return Ok((lo_reg, hi_reg));
+            }
+        }
+        *next_temp = ((*next_temp as usize + 1) % n) as u8;
+    }
+    Err(synth_core::Error::synthesis(
+        "register exhaustion: no consecutive pair of free registers for i64 — \
+         function too complex for current register allocator"
+            .to_string(),
+    ))
+}
+
 /// Given the low register of an i64 register pair, return the high register.
 ///
 /// Convention: i64 values on 32-bit ARM use two consecutive registers.
@@ -154,6 +214,169 @@ fn i64_pair_hi(lo_reg: Reg) -> Result<Reg> {
         "i64 register pair: no high register available for {:?} (last in ALLOCATABLE_REGS)",
         lo_reg
     )))
+}
+
+/// Per-function stack-frame layout for non-parameter locals.
+///
+/// `offsets[idx]` gives the byte offset (relative to SP after the frame
+/// allocation) where local `idx` lives. `frame_size` is the total bytes
+/// to allocate via `sub sp, sp, #frame_size` in the prologue.
+///
+/// i32/i64 locals each occupy 4/8 bytes respectively. i64 locals are
+/// 8-byte aligned per AAPCS. The total frame is rounded up to 8 bytes
+/// to keep SP 8-byte aligned at call sites.
+struct LocalLayout {
+    /// idx -> (offset_from_sp, is_i64)
+    locals: std::collections::HashMap<u32, (i32, bool)>,
+    frame_size: i32,
+}
+
+/// Compute the stack-frame layout for non-parameter locals in a function.
+///
+/// Walks the wasm op stream once to:
+/// 1. Identify which non-param local indices are referenced (LocalGet/Set/Tee).
+/// 2. Determine each local's width via `infer_i64_locals` (i32 vs i64).
+/// 3. Lay them out in ascending-index order with i64 locals 8-byte aligned.
+///
+/// The result drives:
+/// - Prologue: `sub sp, sp, #frame_size` after pushing callee-saved regs.
+/// - LocalGet/Set/Tee: use `offsets[idx]` instead of the legacy
+///   `(idx - 4) * 4` formula (which only happened to work when num_params==4
+///   AND the formula's negative result was silently clamped to 0 by the
+///   encoder, in both cases corrupting the caller's stack or the callee's
+///   own callee-saved-register spill).
+/// - Epilogue: `add sp, sp, #frame_size` before popping registers.
+fn compute_local_layout(wasm_ops: &[WasmOp], num_params: u32) -> LocalLayout {
+    use std::collections::{BTreeSet, HashMap};
+    let i64_set = infer_i64_locals(wasm_ops);
+
+    // Collect non-param local indices, in ascending order for deterministic layout.
+    let mut used: BTreeSet<u32> = BTreeSet::new();
+    for op in wasm_ops {
+        match op {
+            WasmOp::LocalGet(idx) | WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) => {
+                if *idx >= num_params {
+                    used.insert(*idx);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut locals: HashMap<u32, (i32, bool)> = HashMap::new();
+    let mut offset: i32 = 0;
+    for &idx in &used {
+        let is_i64 = i64_set.contains(&idx);
+        // i64 locals require 8-byte alignment.
+        if is_i64 && (offset % 8) != 0 {
+            offset += 4;
+        }
+        locals.insert(idx, (offset, is_i64));
+        offset += if is_i64 { 8 } else { 4 };
+    }
+    // Round frame to 8-byte multiple for AAPCS SP alignment.
+    let frame_size = (offset + 7) & !7;
+
+    LocalLayout {
+        locals,
+        frame_size,
+    }
+}
+
+/// Infer which non-parameter wasm locals are i64 (8-byte) values.
+///
+/// The wasm decoder discards local-declaration type info, so we re-derive
+/// it from the operation stream by simulating a virtual stack of widths
+/// (1 = 32-bit, 2 = 64-bit). On each `LocalSet`/`LocalTee` we record the
+/// width of the value being stored. WASM type rules guarantee a local's
+/// width is invariant for its lifetime, so the first store wins.
+///
+/// Without this, the spilled-local store/load path would emit a single
+/// 4-byte STR/LDR for i64 locals, dropping the upper half — corrupting
+/// any function that returns or uses a u64-packed FFI struct.
+fn infer_i64_locals(wasm_ops: &[WasmOp]) -> std::collections::HashSet<u32> {
+    use WasmOp::*;
+    let mut i64_locals: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut vstack: Vec<bool> = Vec::new(); // true = i64
+
+    let is_i64_producer = |op: &WasmOp| -> bool {
+        matches!(
+            op,
+            I64Add
+                | I64Sub
+                | I64Mul
+                | I64DivS
+                | I64DivU
+                | I64RemS
+                | I64RemU
+                | I64And
+                | I64Or
+                | I64Xor
+                | I64Shl
+                | I64ShrS
+                | I64ShrU
+                | I64Rotl
+                | I64Rotr
+                | I64Clz
+                | I64Ctz
+                | I64Popcnt
+                | I64Const(_)
+                | I64Load { .. }
+                | I64Load8S { .. }
+                | I64Load8U { .. }
+                | I64Load16S { .. }
+                | I64Load16U { .. }
+                | I64Load32S { .. }
+                | I64Load32U { .. }
+                | I64ExtendI32S
+                | I64ExtendI32U
+                | I64Extend8S
+                | I64Extend16S
+                | I64Extend32S
+        )
+    };
+
+    for op in wasm_ops {
+        match op {
+            LocalGet(idx) => {
+                let is_i64 = i64_locals.contains(idx);
+                vstack.push(is_i64);
+            }
+            LocalSet(idx) => {
+                if let Some(is_i64) = vstack.pop() {
+                    if is_i64 {
+                        i64_locals.insert(*idx);
+                    }
+                }
+            }
+            LocalTee(idx) => {
+                if let Some(&is_i64) = vstack.last() {
+                    if is_i64 {
+                        i64_locals.insert(*idx);
+                    }
+                }
+            }
+            Select => {
+                // pops [val1, val2, cond], pushes one value with width of val1/val2
+                let _cond = vstack.pop();
+                let v2 = vstack.pop();
+                let v1 = vstack.pop();
+                vstack.push(v1.or(v2).unwrap_or(false));
+            }
+            _ => {
+                let (pops, pushes) = wasm_stack_effect(op);
+                for _ in 0..pops {
+                    vstack.pop();
+                }
+                let push_width = is_i64_producer(op);
+                for _ in 0..pushes {
+                    vstack.push(push_width);
+                }
+            }
+        }
+    }
+
+    i64_locals
 }
 
 /// Return the (pops, pushes) stack effect for a WASM op.
@@ -3220,15 +3443,34 @@ impl InstructionSelector {
 
         let mut instructions = Vec::new();
 
-        // Function prologue: save callee-saved registers and LR.
+        // Function prologue: save callee-saved registers and LR, then
+        // allocate the local-variable frame.
+        //
         // AAPCS requires 8-byte aligned SP at call sites. Pushing an even
-        // number of registers (6: R4-R8, LR) maintains alignment.
+        // number of registers (6: R4-R8, LR) maintains alignment, and the
+        // frame_size below is rounded to 8 to preserve it.
         instructions.push(ArmInstruction {
             op: ArmOp::Push {
                 regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR],
             },
             source_line: None,
         });
+
+        // Compute non-param local layout (offsets + total frame size).
+        let layout = compute_local_layout(wasm_ops, num_params);
+        // Allocate stack space for non-param locals so they don't alias the
+        // callee-saved-register spill area (which immediately follows SP
+        // after Push above).
+        if layout.frame_size > 0 {
+            instructions.push(ArmInstruction {
+                op: ArmOp::Sub {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    op2: Operand2::Imm(layout.frame_size),
+                },
+                source_line: None,
+            });
+        }
 
         // Virtual stack holds register indices
         let mut stack: Vec<Reg> = Vec::new();
@@ -3255,11 +3497,47 @@ impl InstructionSelector {
         for (idx, op) in wasm_ops.iter().enumerate() {
             match op {
                 LocalGet(local_idx) => {
-                    // Get the register for this local
+                    // Get the register for this local. Three cases:
+                    //  1. Param in register — use the cached mapping.
+                    //  2. Spilled i64 local — load both halves via I64Ldr.
+                    //  3. Spilled i32 local — single Ldr.
                     let reg = if let Some(&r) = local_to_reg.get(local_idx) {
                         r
+                    } else if let Some(&(off, true)) = layout.locals.get(local_idx) {
+                        // i64 local — load both 32-bit halves into a consecutive
+                        // register pair via the I64Ldr pseudo-op. Convention
+                        // matches I64Const: push only dst_lo on the stack;
+                        // dst_hi is recovered later via i64_pair_hi(lo).
+                        // The pair MUST be consecutive in ALLOCATABLE_REGS
+                        // — i64_pair_hi assumes that. Two separate calls to
+                        // alloc_temp_safe can return non-consecutive registers
+                        // when something in between is live, breaking the
+                        // pair convention.
+                        let (dst_lo, dst_hi) =
+                            alloc_consecutive_pair(&mut next_temp, &stack, &[])?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I64Ldr {
+                                rdlo: dst_lo,
+                                rdhi: dst_hi,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        dst_lo
+                    } else if let Some(&(off, false)) = layout.locals.get(local_idx) {
+                        // i32 local: single 4-byte load from the locals frame.
+                        let dst = alloc_temp_safe(&mut next_temp, &stack)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Ldr {
+                                rd: dst,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        dst
                     } else {
-                        // Local not in register (spilled to stack) - load it
+                        // Local not in layout (shouldn't happen for valid wasm,
+                        // but fall back to legacy behaviour for compatibility).
                         let dst = alloc_temp_safe(&mut next_temp, &stack)?;
                         instructions.push(ArmInstruction {
                             op: ArmOp::Ldr {
@@ -4324,6 +4602,20 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     }
+                    // Deallocate the local frame before popping callee-saved
+                    // registers; otherwise the pop would read from the locals
+                    // area instead of the saved-register slots.
+                    if layout.frame_size > 0 {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Add {
+                                rd: Reg::SP,
+                                rn: Reg::SP,
+                                op2: Operand2::Imm(layout.frame_size),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     // Restore callee-saved registers and return via PC
                     instructions.push(ArmInstruction {
                         op: ArmOp::Pop {
@@ -4475,7 +4767,32 @@ impl InstructionSelector {
                             cf.add_instruction();
                         }
                         local_to_reg.insert(*local_idx, target);
+                    } else if let Some(&(off, true)) = layout.locals.get(local_idx) {
+                        // i64 spilled local: store BOTH 32-bit halves
+                        // (lower at offset N, upper at N+4) via the I64Str
+                        // pseudo-op. Without this we drop the upper half.
+                        let val_hi = i64_pair_hi(val)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I64Str {
+                                rdlo: val,
+                                rdhi: val_hi,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else if let Some(&(off, false)) = layout.locals.get(local_idx) {
+                        // i32 spilled local: single 4-byte store.
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: val,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
                     } else {
+                        // Fall-through for compatibility (shouldn't happen).
                         instructions.push(ArmInstruction {
                             op: ArmOp::Str {
                                 rd: val,
@@ -4507,7 +4824,29 @@ impl InstructionSelector {
                             cf.add_instruction();
                         }
                         local_to_reg.insert(*local_idx, target);
+                    } else if let Some(&(off, true)) = layout.locals.get(local_idx) {
+                        // i64 spilled local: store both halves like LocalSet.
+                        let val_hi = i64_pair_hi(val)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I64Str {
+                                rdlo: val,
+                                rdhi: val_hi,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else if let Some(&(off, false)) = layout.locals.get(local_idx) {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: val,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
                     } else {
+                        // Fall-through for compatibility.
                         instructions.push(ArmInstruction {
                             op: ArmOp::Str {
                                 rd: val,
@@ -4561,9 +4900,12 @@ impl InstructionSelector {
                 // Pairs are allocated as two consecutive temp registers.
                 // =========================================================
                 I64Const(val) => {
-                    // Allocate a register pair for the 64-bit constant
-                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
-                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
+                    // Allocate a CONSECUTIVE register pair for the 64-bit
+                    // constant. Two separate alloc_temp_safe calls can return
+                    // non-consecutive registers if something in between is
+                    // live on the wasm stack, which then breaks the
+                    // i64_pair_hi convention used by every i64 op downstream.
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[])?;
 
                     instructions.push(ArmInstruction {
                         op: ArmOp::I64Const {
@@ -4593,9 +4935,19 @@ impl InstructionSelector {
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
 
-                    // Allocate result register pair
-                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
-                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
+                    // Allocate result register pair. MUST be consecutive
+                    // in ALLOCATABLE_REGS — i64_pair_hi assumes consecutive
+                    // and is called by every i64 op downstream to recover
+                    // the high register. Two separate alloc_temp_safe calls
+                    // skip live registers and produce non-consecutive pairs.
+                    // Avoid clobbering the just-popped operand pairs before
+                    // the ADC reads them — passing them in extra_avoid
+                    // ensures dst doesn't overlap any of a_lo/a_hi/b_lo/b_hi.
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &stack,
+                        &[a_lo, a_hi, b_lo, b_hi],
+                    )?;
 
                     // ADDS dst_lo, a_lo, b_lo  (sets carry flag)
                     instructions.push(ArmInstruction {
@@ -4637,9 +4989,13 @@ impl InstructionSelector {
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
 
-                    // Allocate result register pair
-                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
-                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
+                    // See I64Add for why extra_avoid carries a_*/b_* —
+                    // dst must not overlap any operand half before SBC reads it.
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &stack,
+                        &[a_lo, a_hi, b_lo, b_hi],
+                    )?;
 
                     // SUBS dst_lo, a_lo, b_lo  (sets borrow flag)
                     instructions.push(ArmInstruction {
@@ -4666,6 +5022,212 @@ impl InstructionSelector {
                     stack.push(dst_lo);
                 }
 
+                // ============================================================
+                // i64 bitwise ops (I64Or / I64And / I64Xor)
+                //
+                // Each pops two i64 register pairs from the wasm stack and
+                // emits two ARM ops (low-half then high-half) into a freshly
+                // allocated consecutive pair. This replaces the wildcard
+                // fallthrough to select_default, which assumed inputs in
+                // R0:R1 and R2:R3 — incorrect when the wasm stack tracks
+                // arbitrary register pairs from earlier ops.
+                // ============================================================
+                I64Or | I64And | I64Xor => {
+                    let b_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow in i64 bitwise op".to_string(),
+                        )
+                    })?;
+                    let a_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow in i64 bitwise op".to_string(),
+                        )
+                    })?;
+                    let b_hi = i64_pair_hi(b_lo)?;
+                    let a_hi = i64_pair_hi(a_lo)?;
+                    // dst must not overlap any popped operand's half — the
+                    // hi instruction reads a_hi and b_hi after the lo
+                    // instruction writes dst_lo.
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &stack,
+                        &[a_lo, a_hi, b_lo, b_hi],
+                    )?;
+                    let (lo_op, hi_op) = match op {
+                        I64Or => (
+                            ArmOp::Orr {
+                                rd: dst_lo,
+                                rn: a_lo,
+                                op2: Operand2::Reg(b_lo),
+                            },
+                            ArmOp::Orr {
+                                rd: dst_hi,
+                                rn: a_hi,
+                                op2: Operand2::Reg(b_hi),
+                            },
+                        ),
+                        I64And => (
+                            ArmOp::And {
+                                rd: dst_lo,
+                                rn: a_lo,
+                                op2: Operand2::Reg(b_lo),
+                            },
+                            ArmOp::And {
+                                rd: dst_hi,
+                                rn: a_hi,
+                                op2: Operand2::Reg(b_hi),
+                            },
+                        ),
+                        I64Xor => (
+                            ArmOp::Eor {
+                                rd: dst_lo,
+                                rn: a_lo,
+                                op2: Operand2::Reg(b_lo),
+                            },
+                            ArmOp::Eor {
+                                rd: dst_hi,
+                                rn: a_hi,
+                                op2: Operand2::Reg(b_hi),
+                            },
+                        ),
+                        _ => unreachable!(),
+                    };
+                    instructions.push(ArmInstruction {
+                        op: lo_op,
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    instructions.push(ArmInstruction {
+                        op: hi_op,
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst_lo);
+                }
+
+                // ============================================================
+                // i32 -> i64 extension (I64ExtendI32U / I64ExtendI32S)
+                //
+                // Pops one i32, allocates a consecutive i64 pair, places the
+                // i32 in the low half. For unsigned: high = 0. For signed:
+                // high = arithmetic-shift-right by 31 (sign-extension).
+                // ============================================================
+                I64ExtendI32U => {
+                    let val = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow in I64ExtendI32U".to_string(),
+                        )
+                    })?;
+                    // val must stay alive until the Mov reads it; dst_hi
+                    // must not be val (we'd write the zero high before
+                    // moving val to dst_lo).
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack, &[val])?;
+                    if val != dst_lo {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Mov {
+                                rd: dst_lo,
+                                op2: Operand2::Reg(val),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Movw {
+                            rd: dst_hi,
+                            imm16: 0,
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst_lo);
+                }
+
+                I64ExtendI32S => {
+                    let val = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow in I64ExtendI32S".to_string(),
+                        )
+                    })?;
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack, &[val])?;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::I64ExtendI32S {
+                            rdlo: dst_lo,
+                            rdhi: dst_hi,
+                            rn: val,
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst_lo);
+                }
+
+                // ============================================================
+                // i64 variable shifts (I64Shl / I64ShrU / I64ShrS)
+                //
+                // Use the existing I64Shl/I64ShrU/I64ShrS pseudo-ops (which
+                // expand to the variable-shift logic in arm_encoder.rs) but
+                // pass the actual stack-tracked register pairs rather than
+                // assuming R0:R1 / R2:R3.
+                // ============================================================
+                I64Shl | I64ShrU | I64ShrS => {
+                    let b_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow in i64 shift".to_string(),
+                        )
+                    })?;
+                    let a_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow in i64 shift".to_string(),
+                        )
+                    })?;
+                    let b_hi = i64_pair_hi(b_lo)?;
+                    let a_hi = i64_pair_hi(a_lo)?;
+                    // dst must not overlap any popped operand's half — the
+                    // shift pseudo-op reads all four (rn_lo/rn_hi/rm_lo/rm_hi)
+                    // before writing the destination.
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &stack,
+                        &[a_lo, a_hi, b_lo, b_hi],
+                    )?;
+                    let shift_op = match op {
+                        I64Shl => ArmOp::I64Shl {
+                            rd_lo: dst_lo,
+                            rd_hi: dst_hi,
+                            rn_lo: a_lo,
+                            rn_hi: a_hi,
+                            rm_lo: b_lo,
+                            rm_hi: b_hi,
+                        },
+                        I64ShrU => ArmOp::I64ShrU {
+                            rd_lo: dst_lo,
+                            rd_hi: dst_hi,
+                            rn_lo: a_lo,
+                            rn_hi: a_hi,
+                            rm_lo: b_lo,
+                            rm_hi: b_hi,
+                        },
+                        I64ShrS => ArmOp::I64ShrS {
+                            rd_lo: dst_lo,
+                            rd_hi: dst_hi,
+                            rn_lo: a_lo,
+                            rn_hi: a_hi,
+                            rm_lo: b_lo,
+                            rm_hi: b_hi,
+                        },
+                        _ => unreachable!(),
+                    };
+                    instructions.push(ArmInstruction {
+                        op: shift_op,
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst_lo);
+                }
+
                 I64Load { offset, .. } => {
                     // Pop address from stack
                     let addr = stack.pop().ok_or_else(|| {
@@ -4675,9 +5237,13 @@ impl InstructionSelector {
                         )
                     })?;
 
-                    // Allocate result register pair
-                    let dst_lo = alloc_temp_safe(&mut next_temp, &stack)?;
-                    let dst_hi = alloc_temp_safe(&mut next_temp, &stack)?;
+                    // Allocate result register pair. MUST be consecutive
+                    // in ALLOCATABLE_REGS — i64_pair_hi assumes consecutive
+                    // and is called by every i64 op downstream to recover
+                    // the high register. Avoid clobbering addr before the
+                    // load uses it.
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack, &[addr])?;
 
                     // Generate bounds-checked i64 load into the allocated pair
                     let load_ops =
@@ -5055,7 +5621,18 @@ impl InstructionSelector {
             }
         }
 
-        // Function epilogue: restore callee-saved registers and return via PC
+        // Function epilogue: deallocate the local frame, then restore
+        // callee-saved registers and return via PC.
+        if layout.frame_size > 0 {
+            instructions.push(ArmInstruction {
+                op: ArmOp::Add {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    op2: Operand2::Imm(layout.frame_size),
+                },
+                source_line: None,
+            });
+        }
         // POP {R4-R8, PC} restores registers and returns (PC = saved LR)
         instructions.push(ArmInstruction {
             op: ArmOp::Pop {
