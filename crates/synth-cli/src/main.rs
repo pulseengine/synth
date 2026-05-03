@@ -77,7 +77,7 @@ enum Commands {
         )]
         target: String,
 
-        /// Hardware config (nrf52840, stm32f407, or custom)
+        /// Hardware config (nrf52840, stm32f407, stm32h743, imxrt1062, or custom)
         #[arg(long, value_name = "HARDWARE", default_value = "nrf52840")]
         hardware: String,
 
@@ -363,9 +363,11 @@ fn synthesize_command(
     let hw_caps = match hardware.as_str() {
         "nrf52840" => HardwareCapabilities::nrf52840(),
         "stm32f407" => HardwareCapabilities::stm32f407(),
+        "stm32h743" => HardwareCapabilities::stm32h743(),
+        "imxrt1062" => HardwareCapabilities::imxrt1062(),
         _ => {
             anyhow::bail!(
-                "Unsupported hardware: {}. Use nrf52840 or stm32f407",
+                "Unsupported hardware: {}. Use nrf52840, stm32f407, stm32h743, imxrt1062",
                 hardware
             );
         }
@@ -405,8 +407,19 @@ fn target_info_command(target: String) -> Result<()> {
             let caps = HardwareCapabilities::stm32f407();
             print_hardware_info(&caps);
         }
+        "stm32h743" => {
+            let caps = HardwareCapabilities::stm32h743();
+            print_hardware_info(&caps);
+        }
+        "imxrt1062" => {
+            let caps = HardwareCapabilities::imxrt1062();
+            print_hardware_info(&caps);
+        }
         _ => {
-            anyhow::bail!("Unknown target: {}. Supported: nrf52840, stm32f407", target);
+            anyhow::bail!(
+                "Unknown target: {}. Supported: nrf52840, stm32f407, stm32h743, imxrt1062",
+                target
+            );
         }
     }
 

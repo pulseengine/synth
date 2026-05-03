@@ -2387,8 +2387,7 @@ impl OptimizerBridge {
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
                     let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
                     let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd, _) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd,
@@ -2412,8 +2411,7 @@ impl OptimizerBridge {
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
                     let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
                     let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd, _) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd,
@@ -2437,8 +2435,7 @@ impl OptimizerBridge {
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
                     let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
                     let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd, _) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd,
@@ -2462,8 +2459,7 @@ impl OptimizerBridge {
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
                     let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
                     let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd, _) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd,
@@ -2487,8 +2483,7 @@ impl OptimizerBridge {
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
                     let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
                     let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd, _) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd,
@@ -2512,8 +2507,7 @@ impl OptimizerBridge {
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
                     let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
                     let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd, _) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd,
@@ -2538,8 +2532,7 @@ impl OptimizerBridge {
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
                     let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
                     let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd, _) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd,
@@ -2563,8 +2556,7 @@ impl OptimizerBridge {
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
                     let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
                     let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd, _) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd,
@@ -2588,8 +2580,7 @@ impl OptimizerBridge {
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
                     let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
                     let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd, _) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd,
@@ -2613,8 +2604,7 @@ impl OptimizerBridge {
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
                     let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
                     let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd, _) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
                         rd,
@@ -2634,14 +2624,9 @@ impl OptimizerBridge {
                 } => {
                     let rn_lo = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs);
                     let rn_hi = get_arm_reg(src_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd, _) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest.0, rd);
-                    arm_instrs.push(ArmOp::I64SetCondZ {
-                        rd,
-                        rn_lo,
-                        rn_hi,
-                    });
+                    arm_instrs.push(ArmOp::I64SetCondZ { rd, rn_lo, rn_hi });
                     last_result_vreg = Some(dest.0);
                 }
 
@@ -3429,36 +3414,19 @@ impl OptimizerBridge {
                 ArmOp::Mov {
                     rd,
                     op2: Operand2::Imm(v),
-                } => {
-                    if reg_num(rd) > 7 || *v > 255 || *v < 0 {
-                        4
-                    } else {
-                        2
-                    }
-                }
+                } if reg_num(rd) > 7 || *v > 255 || *v < 0 => 4,
+                ArmOp::Mov { .. } => 2,
                 // SUB/ADD with high registers need 32-bit encoding
                 ArmOp::Sub {
                     rd,
                     rn,
                     op2: Operand2::Reg(rm),
-                } => {
-                    if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 {
-                        4
-                    } else {
-                        2
-                    }
-                }
+                } if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 => 4,
                 ArmOp::Add {
                     rd,
                     rn,
                     op2: Operand2::Reg(rm),
-                } => {
-                    if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 {
-                        4
-                    } else {
-                        2
-                    }
-                }
+                } if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 => 4,
                 // Most 16-bit Thumb instructions (MOV low, CMP low, B, etc.)
                 _ => 2,
             }

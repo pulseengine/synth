@@ -335,11 +335,11 @@ impl DeadCodeElimination {
                     SSAInstr::Assign { result, .. }
                     | SSAInstr::BinOp { result, .. }
                     | SSAInstr::UnaryOp { result, .. }
-                    | SSAInstr::Load { result, .. } => {
-                        if !used_vars.contains(result) {
-                            removed += 1;
-                            return false;
-                        }
+                    | SSAInstr::Load { result, .. }
+                        if !used_vars.contains(result) =>
+                    {
+                        removed += 1;
+                        return false;
                     }
                     _ => {}
                 }

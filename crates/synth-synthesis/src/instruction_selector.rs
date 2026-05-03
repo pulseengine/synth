@@ -254,10 +254,10 @@ fn compute_local_layout(wasm_ops: &[WasmOp], num_params: u32) -> LocalLayout {
     let mut used: BTreeSet<u32> = BTreeSet::new();
     for op in wasm_ops {
         match op {
-            WasmOp::LocalGet(idx) | WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) => {
-                if *idx >= num_params {
-                    used.insert(*idx);
-                }
+            WasmOp::LocalGet(idx) | WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx)
+                if *idx >= num_params =>
+            {
+                used.insert(*idx);
             }
             _ => {}
         }
@@ -277,10 +277,7 @@ fn compute_local_layout(wasm_ops: &[WasmOp], num_params: u32) -> LocalLayout {
     // Round frame to 8-byte multiple for AAPCS SP alignment.
     let frame_size = (offset + 7) & !7;
 
-    LocalLayout {
-        locals,
-        frame_size,
-    }
+    LocalLayout { locals, frame_size }
 }
 
 /// Infer which non-parameter wasm locals are i64 (8-byte) values.
@@ -343,17 +340,13 @@ fn infer_i64_locals(wasm_ops: &[WasmOp]) -> std::collections::HashSet<u32> {
                 vstack.push(is_i64);
             }
             LocalSet(idx) => {
-                if let Some(is_i64) = vstack.pop() {
-                    if is_i64 {
-                        i64_locals.insert(*idx);
-                    }
+                if let Some(true) = vstack.pop() {
+                    i64_locals.insert(*idx);
                 }
             }
             LocalTee(idx) => {
-                if let Some(&is_i64) = vstack.last() {
-                    if is_i64 {
-                        i64_locals.insert(*idx);
-                    }
+                if let Some(&true) = vstack.last() {
+                    i64_locals.insert(*idx);
                 }
             }
             Select => {
@@ -3513,8 +3506,7 @@ impl InstructionSelector {
                         // alloc_temp_safe can return non-consecutive registers
                         // when something in between is live, breaking the
                         // pair convention.
-                        let (dst_lo, dst_hi) =
-                            alloc_consecutive_pair(&mut next_temp, &stack, &[])?;
+                        let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[])?;
                         instructions.push(ArmInstruction {
                             op: ArmOp::I64Ldr {
                                 rdlo: dst_lo,
@@ -4943,11 +4935,8 @@ impl InstructionSelector {
                     // Avoid clobbering the just-popped operand pairs before
                     // the ADC reads them — passing them in extra_avoid
                     // ensures dst doesn't overlap any of a_lo/a_hi/b_lo/b_hi.
-                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
-                        &mut next_temp,
-                        &stack,
-                        &[a_lo, a_hi, b_lo, b_hi],
-                    )?;
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
 
                     // ADDS dst_lo, a_lo, b_lo  (sets carry flag)
                     instructions.push(ArmInstruction {
@@ -4991,11 +4980,8 @@ impl InstructionSelector {
 
                     // See I64Add for why extra_avoid carries a_*/b_* —
                     // dst must not overlap any operand half before SBC reads it.
-                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
-                        &mut next_temp,
-                        &stack,
-                        &[a_lo, a_hi, b_lo, b_hi],
-                    )?;
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
 
                     // SUBS dst_lo, a_lo, b_lo  (sets borrow flag)
                     instructions.push(ArmInstruction {
@@ -5048,11 +5034,8 @@ impl InstructionSelector {
                     // dst must not overlap any popped operand's half — the
                     // hi instruction reads a_hi and b_hi after the lo
                     // instruction writes dst_lo.
-                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
-                        &mut next_temp,
-                        &stack,
-                        &[a_lo, a_hi, b_lo, b_hi],
-                    )?;
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
                     let (lo_op, hi_op) = match op {
                         I64Or => (
                             ArmOp::Orr {
@@ -5114,15 +5097,12 @@ impl InstructionSelector {
                 // ============================================================
                 I64ExtendI32U => {
                     let val = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in I64ExtendI32U".to_string(),
-                        )
+                        synth_core::Error::synthesis("stack underflow in I64ExtendI32U".to_string())
                     })?;
                     // val must stay alive until the Mov reads it; dst_hi
                     // must not be val (we'd write the zero high before
                     // moving val to dst_lo).
-                    let (dst_lo, dst_hi) =
-                        alloc_consecutive_pair(&mut next_temp, &stack, &[val])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[val])?;
                     if val != dst_lo {
                         instructions.push(ArmInstruction {
                             op: ArmOp::Mov {
@@ -5146,12 +5126,9 @@ impl InstructionSelector {
 
                 I64ExtendI32S => {
                     let val = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in I64ExtendI32S".to_string(),
-                        )
+                        synth_core::Error::synthesis("stack underflow in I64ExtendI32S".to_string())
                     })?;
-                    let (dst_lo, dst_hi) =
-                        alloc_consecutive_pair(&mut next_temp, &stack, &[val])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[val])?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::I64ExtendI32S {
                             rdlo: dst_lo,
@@ -5174,25 +5151,18 @@ impl InstructionSelector {
                 // ============================================================
                 I64Shl | I64ShrU | I64ShrS => {
                     let b_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in i64 shift".to_string(),
-                        )
+                        synth_core::Error::synthesis("stack underflow in i64 shift".to_string())
                     })?;
                     let a_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in i64 shift".to_string(),
-                        )
+                        synth_core::Error::synthesis("stack underflow in i64 shift".to_string())
                     })?;
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
                     // dst must not overlap any popped operand's half — the
                     // shift pseudo-op reads all four (rn_lo/rn_hi/rm_lo/rm_hi)
                     // before writing the destination.
-                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
-                        &mut next_temp,
-                        &stack,
-                        &[a_lo, a_hi, b_lo, b_hi],
-                    )?;
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
                     let shift_op = match op {
                         I64Shl => ArmOp::I64Shl {
                             rd_lo: dst_lo,
@@ -5242,8 +5212,7 @@ impl InstructionSelector {
                     // and is called by every i64 op downstream to recover
                     // the high register. Avoid clobbering addr before the
                     // load uses it.
-                    let (dst_lo, dst_hi) =
-                        alloc_consecutive_pair(&mut next_temp, &stack, &[addr])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[addr])?;
 
                     // Generate bounds-checked i64 load into the allocated pair
                     let load_ops =
