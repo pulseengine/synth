@@ -208,17 +208,35 @@ rust_library(
     ],
 )
 
-# Main CLI binary
+# RISC-V backend (RV32IMAC encoder, ELF builder, PMP allocator)
+rust_library(
+    name = "synth-backend-riscv",
+    srcs = glob(["synth-backend-riscv/src/**/*.rs"]),
+    crate_root = "synth-backend-riscv/src/lib.rs",
+    edition = "2024",
+    deps = [
+        ":synth-core",
+        ":synth-synthesis",
+        "@crates//:anyhow",
+        "@crates//:thiserror",
+        "@crates//:tracing",
+    ],
+)
+
+# Main CLI binary — `riscv` feature wires synth-backend-riscv in (matches
+# Cargo's default = ["riscv"]).
 rust_binary(
     name = "synth",
     srcs = glob(["synth-cli/src/**/*.rs"]),
     crate_root = "synth-cli/src/main.rs",
     edition = "2024",
+    rustc_flags = ["--cfg", "feature=\"riscv\""],
     deps = [
         ":synth-core",
         ":synth-frontend",
         ":synth-synthesis",
         ":synth-backend",
+        ":synth-backend-riscv",
         "@crates//:anyhow",
         "@crates//:clap",
         "@crates//:serde_json",
