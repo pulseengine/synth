@@ -492,6 +492,10 @@ fn build_backend_registry() -> BackendRegistry {
     #[cfg(feature = "wasker")]
     registry.register(Box::new(synth_backend_wasker::WaskerBackend::new()));
 
+    // Register RISC-V backend if compiled with feature
+    #[cfg(feature = "riscv")]
+    registry.register(Box::new(synth_backend_riscv::RiscVBackend::new()));
+
     registry
 }
 
@@ -729,7 +733,9 @@ fn compile_command(
     let code = compiled.code;
     info!("Encoded {} bytes of machine code", code.len());
 
-    let elf_data = if cortex_m {
+    let elf_data = if matches!(target_spec.family, synth_core::target::ArchFamily::RiscV) {
+        build_riscv_elf(&code, &func_name)?
+    } else if cortex_m {
         build_cortex_m_elf(&code, &func_name, target_spec)?
     } else {
         build_simple_elf(&code, &func_name)?
@@ -1453,7 +1459,11 @@ fn compile_all_exports(
     // (which provides __meld_dispatch_import and __meld_get_memory_base).
     // The --relocatable flag forces ET_REL output even when the wasm has no
     // imports, for linking into a host build system (e.g. Zephyr).
-    let elf_data = if has_relocations || relocatable {
+    let is_riscv = matches!(target_spec.family, synth_core::target::ArchFamily::RiscV);
+    let elf_data = if is_riscv {
+        info!("Building RISC-V multi-function relocatable object (EM_RISCV)");
+        build_multi_func_riscv_elf(&compiled_funcs)?
+    } else if has_relocations || relocatable {
         let total_relocs: usize = compiled_funcs.iter().map(|f| f.relocations.len()).sum();
         if has_relocations {
             info!(
@@ -2080,6 +2090,114 @@ fn verify_command(wasm_input: PathBuf, elf_input: PathBuf, backend_name: &str) -
     }
 
     Ok(())
+}
+
+/// Build a RISC-V relocatable ELF wrapping the bytes the RV backend produced.
+///
+/// Re-runs the RISC-V backend's `RiscVElfBuilder` so the output is a real
+/// RV32 object file (EM_RISCV, RVC e_flags) rather than the generic ARM
+/// ELF that `build_simple_elf` emits.
+#[cfg(feature = "riscv")]
+fn build_riscv_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
+    use synth_backend_riscv::{Reg, RiscVElfBuilder, RiscVElfFunction, RiscVOp};
+
+    // The RISC-V ELF builder operates on `Vec<RiscVOp>` to support label
+    // resolution. The CLI path doesn't have ops at this layer (only bytes),
+    // so we wrap each 4-byte word as an opaque "raw" instruction by treating
+    // the bytes as already encoded. We materialize them as `Addi`-shaped
+    // sentinels and then post-process the ELF body to overwrite with our
+    // actual code. Cleaner: use a future raw-bytes API on the builder.
+    //
+    // For the skeleton, the simpler path: wrap as one Addi per word — wrong
+    // bits, but the ELF builder writes the section table correctly. We then
+    // patch .text bytes back. This avoids leaking the encoder back through
+    // the CLI and is fine until we drop ARM-style byte-handoff entirely.
+    let n_instrs = code.len().div_ceil(4);
+    let placeholder_ops: Vec<RiscVOp> = (0..n_instrs)
+        .map(|_| RiscVOp::Addi {
+            rd: Reg::ZERO,
+            rs1: Reg::ZERO,
+            imm: 0,
+        })
+        .collect();
+    let f = RiscVElfFunction {
+        name: func_name.to_string(),
+        ops: placeholder_ops,
+    };
+
+    let builder = RiscVElfBuilder::new_relocatable();
+    let mut elf = builder
+        .build(&[f])
+        .context("RISC-V ELF generation failed")?;
+
+    // .text starts at offset 52 (ELF header). Overwrite the placeholder bytes
+    // with the actual code we got from the backend.
+    let text_offset = 52;
+    if elf.len() < text_offset + code.len() {
+        anyhow::bail!("RISC-V ELF is shorter than embedded code");
+    }
+    elf[text_offset..text_offset + code.len()].copy_from_slice(code);
+    Ok(elf)
+}
+
+#[cfg(not(feature = "riscv"))]
+fn build_riscv_elf(_code: &[u8], _func_name: &str) -> Result<Vec<u8>> {
+    anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
+}
+
+/// Build a multi-function RISC-V relocatable ELF.
+#[cfg(feature = "riscv")]
+fn build_multi_func_riscv_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
+    use synth_backend_riscv::{Reg, RiscVElfBuilder, RiscVElfFunction, RiscVOp};
+
+    // Same placeholder-then-overwrite approach as build_riscv_elf.
+    // We accumulate a single .text spanning all functions and patch the
+    // bytes back in after the ELF builder finishes layout.
+    let mut all_code: Vec<u8> = Vec::new();
+    let mut func_byte_ranges: Vec<(usize, usize)> = Vec::new();
+    let mut placeholder_funcs: Vec<RiscVElfFunction> = Vec::new();
+
+    for func in funcs {
+        // Align each function to 4 bytes (RISC-V requires 4-byte instruction alignment).
+        while !all_code.len().is_multiple_of(4) {
+            all_code.push(0);
+        }
+        let start = all_code.len();
+        all_code.extend_from_slice(&func.code);
+        let end = all_code.len();
+        func_byte_ranges.push((start, end));
+
+        let n_instrs = (end - start).div_ceil(4);
+        let placeholder_ops: Vec<RiscVOp> = (0..n_instrs)
+            .map(|_| RiscVOp::Addi {
+                rd: Reg::ZERO,
+                rs1: Reg::ZERO,
+                imm: 0,
+            })
+            .collect();
+        placeholder_funcs.push(RiscVElfFunction {
+            name: func.name.clone(),
+            ops: placeholder_ops,
+        });
+    }
+
+    let builder = RiscVElfBuilder::new_relocatable();
+    let mut elf = builder
+        .build(&placeholder_funcs)
+        .context("RISC-V multi-function ELF generation failed")?;
+
+    // .text starts immediately after the 52-byte ELF header.
+    let text_offset = 52usize;
+    if elf.len() < text_offset + all_code.len() {
+        anyhow::bail!("RISC-V ELF too small to embed code");
+    }
+    elf[text_offset..text_offset + all_code.len()].copy_from_slice(&all_code);
+    Ok(elf)
+}
+
+#[cfg(not(feature = "riscv"))]
+fn build_multi_func_riscv_elf(_funcs: &[ElfFunction]) -> Result<Vec<u8>> {
+    anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
 }
 
 /// Build a simple ELF with just the code section (for quick testing)

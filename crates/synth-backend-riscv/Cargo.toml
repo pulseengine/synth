@@ -1,0 +1,18 @@
+[package]
+name = "synth-backend-riscv"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "RISC-V encoder, ELF builder, PMP allocator, and bare-metal startup for synth"
+
+[dependencies]
+synth-core = { path = "../synth-core" }
+synth-synthesis = { path = "../synth-synthesis" }
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
