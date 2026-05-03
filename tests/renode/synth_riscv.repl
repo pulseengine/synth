@@ -1,0 +1,27 @@
+// Minimal RISC-V RV32IMAC platform for Synth-generated binaries.
+// Models a SiFive FE310-class chip: single hart, RV32IMAC, no FPU,
+// 16 PMP entries, integrated 16 KB SRAM and a small .text region.
+//
+// Memory layout:
+//   0x00000000 — flash / boot ROM (ELF .text loaded here for tests)
+//   0x80000000 — SRAM (where the heap and stack live in firmware)
+//
+// The CPU is set to RV32IMAC: I (base int), M (mul/div), A (atomic),
+// C (compressed). RV32GC (which adds F+D+Zicsr+Zifencei) requires
+// hardware FPU support that synth's RISC-V backend doesn't yet emit.
+
+flash: Memory.MappedMemory @ sysbus 0x0
+    size: 0x10000        // 64 KB code window for tests
+
+sram: Memory.MappedMemory @ sysbus 0x80000000
+    size: 0x10000        // 64 KB SRAM (linear memory + stack)
+
+// CLINT (Core-Local Interruptor) — needed for mtime / mtimecmp / msip
+clint: IRQControllers.CoreLevelInterruptor @ sysbus 0x02000000
+    frequency: 32768
+    [0,1] -> cpu@[3,7]   // mtimer interrupt → IRQ 7 (machine timer)
+
+cpu: CPU.RiscV32 @ sysbus
+    cpuType: "rv32imac"
+    timeProvider: clint
+    privilegeArchitecture: PrivilegeArchitecture.Priv1_10

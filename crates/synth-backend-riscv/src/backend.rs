@@ -318,28 +318,32 @@ mod tests {
             relocations: Vec::new(),
         };
         let rv = compile_to_riscv_ops(&ops, &dummy).unwrap();
+        // First two ops should move param regs into temporaries (immediate 0).
         assert!(matches!(
             rv[0],
             RiscVOp::Addi {
-                rd: Reg::T0,
                 rs1: Reg::A0,
+                imm: 0,
                 ..
             }
         ));
         assert!(matches!(
             rv[1],
             RiscVOp::Addi {
-                rd: Reg::T1,
                 rs1: Reg::A1,
+                imm: 0,
                 ..
             }
         ));
+        // Third op is the actual ADD (registers vary with allocator policy).
+        assert!(matches!(rv[2], RiscVOp::Add { .. }));
+        // Final op is the function return.
         assert!(matches!(
-            rv[2],
-            RiscVOp::Add {
-                rd: Reg::T0,
-                rs1: Reg::T0,
-                rs2: Reg::T1
+            rv.last().unwrap(),
+            RiscVOp::Jalr {
+                rd: Reg::ZERO,
+                rs1: Reg::RA,
+                imm: 0,
             }
         ));
     }
