@@ -2,7 +2,7 @@
 
 # Synth
 
-<sup>WebAssembly-to-ARM Cortex-M AOT compiler with mechanized correctness proofs</sup>
+<sup>WebAssembly-to-ARM/RISC-V AOT compiler with mechanized correctness proofs</sup>
 
 &nbsp;
 

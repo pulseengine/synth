@@ -201,6 +201,38 @@ enum Commands {
         #[arg(short, long, default_value = "arm")]
         backend: String,
     },
+
+    /// Emit RISC-V bare-metal startup code + linker script
+    /// (e.g., `synth riscv-runtime -o build/`)
+    RiscvRuntime {
+        /// Output directory — receives `startup.c` and `linker.ld`
+        #[arg(short = 'o', long, value_name = "DIR", default_value = ".")]
+        outdir: PathBuf,
+
+        /// Target ISA variant (default: rv32imac)
+        #[arg(short, long, default_value = "rv32imac")]
+        target: String,
+
+        /// Flash origin address (default: 0x0)
+        #[arg(long, default_value = "0x0")]
+        flash_origin: String,
+
+        /// RAM origin address (default: 0x80000000)
+        #[arg(long, default_value = "0x80000000")]
+        ram_origin: String,
+
+        /// Linear-memory size in bytes (default: 65536, one wasm page)
+        #[arg(long, default_value = "65536")]
+        linear_memory_size: u64,
+
+        /// Stack size in bytes (default: 4096)
+        #[arg(long, default_value = "4096")]
+        stack_size: u64,
+
+        /// Enable FPU init in the reset vector
+        #[arg(long)]
+        enable_fpu: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -299,9 +331,138 @@ fn main() -> Result<()> {
         } => {
             verify_command(wasm_input, elf_input, &backend)?;
         }
+        Commands::RiscvRuntime {
+            outdir,
+            target,
+            flash_origin,
+            ram_origin,
+            linear_memory_size,
+            stack_size,
+            enable_fpu,
+        } => {
+            riscv_runtime_command(
+                outdir,
+                target,
+                flash_origin,
+                ram_origin,
+                linear_memory_size,
+                stack_size,
+                enable_fpu,
+            )?;
+        }
     }
 
     Ok(())
+}
+
+#[cfg(feature = "riscv")]
+#[allow(clippy::too_many_arguments)]
+fn riscv_runtime_command(
+    outdir: PathBuf,
+    target: String,
+    flash_origin: String,
+    ram_origin: String,
+    linear_memory_size: u64,
+    stack_size: u64,
+    enable_fpu: bool,
+) -> Result<()> {
+    use synth_backend_riscv::{
+        LinkerScriptConfig, RiscVLinkerScriptGenerator, RiscVStartupGenerator, StartupConfig,
+    };
+    use synth_core::{HardwareCapabilities, RISCVVariant, TargetArch};
+
+    // Hardware caps from the target name.
+    let variant = match target.as_str() {
+        "rv32i" => RISCVVariant::RV32I,
+        "rv32imac" | "rv32imc" => RISCVVariant::RV32IMAC,
+        "rv32gc" => RISCVVariant::RV32GC,
+        "rv64i" => RISCVVariant::RV64I,
+        "rv64imac" => RISCVVariant::RV64IMAC,
+        "rv64gc" => RISCVVariant::RV64GC,
+        _ => anyhow::bail!(
+            "unknown RISC-V target: {}. Supported: rv32i, rv32imac, rv32gc, rv64i, rv64imac, rv64gc",
+            target
+        ),
+    };
+
+    let parse_addr = |s: &str| -> Result<u64> {
+        let s = s.trim_start_matches("0x").trim_start_matches("0X");
+        u64::from_str_radix(s, 16).context(format!("invalid hex address: {}", s))
+    };
+    let flash_origin_v = parse_addr(&flash_origin)?;
+    let ram_origin_v = parse_addr(&ram_origin)?;
+
+    let hw_caps = HardwareCapabilities {
+        arch: TargetArch::RISCV(variant),
+        has_mpu: false,
+        mpu_regions: 0,
+        has_pmp: true,
+        pmp_entries: 16,
+        has_fpu: enable_fpu,
+        fpu_precision: None,
+        has_simd: false,
+        simd_level: None,
+        xip_capable: true,
+        flash_size: 64 * 1024,
+        ram_size: 64 * 1024,
+    };
+
+    std::fs::create_dir_all(&outdir).context("failed to create output directory")?;
+
+    // Startup
+    let startup = RiscVStartupGenerator::new(hw_caps.clone()).with_config(StartupConfig {
+        enable_fpu,
+        ..Default::default()
+    });
+    let startup_path = outdir.join("startup.c");
+    std::fs::write(&startup_path, startup.generate())
+        .context(format!("failed to write {}", startup_path.display()))?;
+
+    // Linker script
+    let linker = RiscVLinkerScriptGenerator::new(hw_caps).with_config(LinkerScriptConfig {
+        flash_origin: flash_origin_v,
+        ram_origin: ram_origin_v,
+        linear_memory_size,
+        stack_size,
+    });
+    let linker_path = outdir.join("linker.ld");
+    std::fs::write(&linker_path, linker.generate())
+        .context(format!("failed to write {}", linker_path.display()))?;
+
+    println!("Wrote {}", startup_path.display());
+    println!("Wrote {}", linker_path.display());
+    println!();
+    let march = if matches!(target.as_str(), "rv32imac" | "rv32imc") {
+        "rv32imac"
+    } else {
+        target.as_str()
+    };
+    println!("Link your synth-compiled .o with:");
+    println!(
+        "  riscv64-unknown-elf-gcc -nostartfiles -nostdlib -mabi=ilp32 -march={} \\",
+        march
+    );
+    println!(
+        "    -T {} -o firmware.elf {} <synth.o>",
+        linker_path.display(),
+        startup_path.display()
+    );
+
+    Ok(())
+}
+
+#[cfg(not(feature = "riscv"))]
+#[allow(clippy::too_many_arguments)]
+fn riscv_runtime_command(
+    _outdir: PathBuf,
+    _target: String,
+    _flash_origin: String,
+    _ram_origin: String,
+    _linear_memory_size: u64,
+    _stack_size: u64,
+    _enable_fpu: bool,
+) -> Result<()> {
+    anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
 }
 
 fn parse_command(input: PathBuf, output: Option<PathBuf>) -> Result<()> {
