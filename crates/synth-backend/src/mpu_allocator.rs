@@ -339,4 +339,86 @@ mod tests {
             assert!(region.validate().is_ok());
         }
     }
+
+    #[test]
+    fn test_imxrt1062_has_16_regions() {
+        // i.MX RT1062 (M7-class) has 16 MPU regions vs 8 on M4-class parts
+        let hw_caps = HardwareCapabilities::imxrt1062();
+        assert_eq!(hw_caps.mpu_regions, 16);
+
+        let allocator = MPUAllocator::new(hw_caps);
+        assert_eq!(allocator.available_regions(), 16);
+    }
+
+    #[test]
+    fn test_m7_can_allocate_more_than_8_regions() {
+        // Validate that the allocator actually uses all 16 regions on M7
+        let mut allocator = MPUAllocator::new(HardwareCapabilities::imxrt1062());
+
+        for i in 0u32..16 {
+            let request = MPUAllocationRequest {
+                memory: Memory {
+                    index: i,
+                    initial: 1,
+                    maximum: None,
+                    shared: false,
+                    memory64: false,
+                },
+                permissions: MPUPermissions::FullRW,
+                attributes: MPUAttributes::normal(),
+                preferred_base: Some(0x20000000 + i * 0x10000),
+            };
+            allocator.allocate(request).unwrap_or_else(|e| {
+                panic!("region {} allocation failed: {:?}", i, e);
+            });
+        }
+
+        assert_eq!(allocator.available_regions(), 0);
+        assert_eq!(allocator.allocated_regions().len(), 16);
+    }
+
+    #[test]
+    fn test_m4_class_caps_at_8_regions() {
+        // Negative — M4-class parts must reject the 9th region.
+        let mut allocator = MPUAllocator::new(HardwareCapabilities::nrf52840());
+
+        for i in 0u32..8 {
+            let request = MPUAllocationRequest {
+                memory: Memory {
+                    index: i,
+                    initial: 1,
+                    maximum: None,
+                    shared: false,
+                    memory64: false,
+                },
+                permissions: MPUPermissions::FullRW,
+                attributes: MPUAttributes::normal(),
+                preferred_base: Some(0x20000000 + i * 0x10000),
+            };
+            allocator.allocate(request).unwrap();
+        }
+
+        // 9th region must fail
+        let overflow = MPUAllocationRequest {
+            memory: Memory {
+                index: 8,
+                initial: 1,
+                maximum: None,
+                shared: false,
+                memory64: false,
+            },
+            permissions: MPUPermissions::FullRW,
+            attributes: MPUAttributes::normal(),
+            preferred_base: Some(0x20100000),
+        };
+        assert!(allocator.allocate(overflow).is_err());
+    }
+
+    #[test]
+    fn test_stm32h743_has_16_regions_and_double_fpu() {
+        let caps = HardwareCapabilities::stm32h743();
+        assert_eq!(caps.mpu_regions, 16);
+        assert!(caps.has_fpu);
+        assert_eq!(caps.fpu_precision, Some(synth_core::FPUPrecision::Double));
+    }
 }

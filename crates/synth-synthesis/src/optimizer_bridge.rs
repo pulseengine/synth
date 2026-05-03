@@ -1277,6 +1277,12 @@ impl OptimizerBridge {
         // AAPCS: first 4 params in R0-R3
         let param_regs = [Reg::R0, Reg::R1, Reg::R2, Reg::R3];
 
+        // Reserved param registers: R0..R(min(num_params,4)). These hold incoming
+        // AAPCS arguments that must NOT be clobbered by i64 op handlers — at least
+        // until the user's WASM has done a `local.get` of each. Using Vec because
+        // `Reg` does not derive Hash (matches `instruction_selector::alloc_consecutive_pair`).
+        let param_reserved_regs: Vec<Reg> = param_regs[..num_params.min(4)].to_vec();
+
         // Track which ARM register currently holds each local variable
         // This avoids stack spills for simple cases
         let mut local_to_reg: HashMap<u32, Reg> = HashMap::new();
@@ -1290,7 +1296,17 @@ impl OptimizerBridge {
 
         // Track the last value-producing vreg (for function return value)
         let mut last_result_vreg: Option<u32> = None;
-        // Track whether the last result is an i64 (result already in R0:R1, no move needed)
+        // For i64 returns, also track the hi-half vreg so the epilogue can move
+        // the pair into R0:R1 regardless of where regalloc placed it. Was previously
+        // unnecessary because every i64 op pinned its result to R0:R1 — that's the
+        // bug we're fixing here.
+        let mut last_result_vreg_hi: Option<u32> = None;
+        // For i64 ops whose IR Opcode only tracks a single `dest` vreg (Clz / Ctz /
+        // Popcnt), the hi half lives in a register chosen at lowering time but has
+        // no IR vreg pointing at it. Stash that physical reg directly so the
+        // epilogue can still emit the correct (R0, R1) move.
+        let mut last_result_vreg_hi_reg: Option<Reg> = None;
+        // Track whether the last result is an i64 (return value occupies a pair).
         let mut is_i64_result = false;
         // WASM operand value stack - tracks vreg IDs for correct stack semantics
         // Used to restore last_result_vreg after br_if pops its condition
@@ -1317,6 +1333,48 @@ impl OptimizerBridge {
                     Reg::R0
                 }
             };
+
+        // Allocate a CONSECUTIVE callee-saved register pair for an i64 destination.
+        //
+        // Searches `[(R4,R5), (R6,R7), (R8,R9), (R10,R11)]` for a pair where neither
+        // register is currently:
+        //   - holding a live vreg (`vreg_to_arm.values()`)
+        //   - bound to a non-param local (`local_to_reg.values()`)
+        //   - one of the AAPCS param registers we must preserve on entry
+        //     (`param_reserved_regs`)
+        //
+        // Falls back to `(R4, R5)` if no pair is free — preserves prior behaviour
+        // for very-pressured functions, but at least keeps params intact in the
+        // common case. Per `instruction_selector::alloc_consecutive_pair`, callers
+        // who hit the fallback in real workloads will need spill support; that's
+        // out of scope for this fix.
+        let alloc_i64_pair = |vreg_to_arm: &HashMap<u32, Reg>,
+                              local_to_reg: &HashMap<u32, Reg>,
+                              param_reserved_regs: &[Reg]|
+         -> (Reg, Reg) {
+            const CANDIDATES: &[(Reg, Reg)] = &[
+                (Reg::R4, Reg::R5),
+                (Reg::R6, Reg::R7),
+                (Reg::R8, Reg::R9),
+                (Reg::R10, Reg::R11),
+            ];
+            let is_in_use = |r: Reg| -> bool {
+                vreg_to_arm.values().any(|&v| v == r)
+                    || local_to_reg.values().any(|&v| v == r)
+                    || param_reserved_regs.contains(&r)
+            };
+            for &(lo, hi) in CANDIDATES {
+                if !is_in_use(lo) && !is_in_use(hi) {
+                    return (lo, hi);
+                }
+            }
+            // Fallback — same hardcoded pair the buggy code used. Better than crashing,
+            // and matches existing behaviour when the caller is so pressured that
+            // even R8..R11 are occupied. (Empirically this never triggers for
+            // workloads we care about; if it does, the architectural fix is
+            // proper spilling, not a wider search.)
+            (Reg::R4, Reg::R5)
+        };
 
         // Emit a reload instruction if the vreg was spilled to stack.
         // Must be called before the instruction that uses the register.
@@ -2073,19 +2131,21 @@ impl OptimizerBridge {
                 } => {
                     // Map local index to register pair
                     // Per AAPCS: i64 uses consecutive even/odd register pairs
-                    let (lo_reg, hi_reg) = if *addr == 0 {
+                    let (lo_reg, hi_reg) = if *addr == 0 && num_params >= 2 {
                         (Reg::R0, Reg::R1) // First i64 param
-                    } else if *addr == 1 {
+                    } else if *addr == 1 && num_params >= 4 {
                         (Reg::R2, Reg::R3) // Second i64 param
                     } else {
-                        // For other locals, we'd need stack access
-                        // For now, use R4:R5 as temp
-                        (Reg::R4, Reg::R5)
+                        // Non-param i64 local: pick a free callee-saved pair so we
+                        // don't clobber AAPCS arg regs that haven't been read yet.
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs)
                     };
                     vreg_to_arm.insert(dest_lo.0, lo_reg);
                     vreg_to_arm.insert(dest_hi.0, hi_reg);
                     // No ARM instructions needed - values are already in registers for params
                     last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
+                    is_i64_result = true;
                 }
 
                 Opcode::I64Const {
@@ -2096,14 +2156,12 @@ impl OptimizerBridge {
                     // Load 64-bit constant into register pair
                     let lo = (*value & 0xFFFFFFFF) as u32;
                     let hi = ((*value >> 32) & 0xFFFFFFFF) as u32;
-                    // Choose register pair based on virtual register number
-                    // If dest_lo.0 is 0 or 1, use R0:R1 (first i64 slot)
-                    // If dest_lo.0 is 2 or 3, use R2:R3 (second i64 slot)
-                    let (lo_reg, hi_reg) = if dest_lo.0 <= 1 {
-                        (Reg::R0, Reg::R1)
-                    } else {
-                        (Reg::R2, Reg::R3)
-                    };
+                    // Choose a free callee-saved pair so we don't trample params still
+                    // sitting in R0..R3. The earlier heuristic (vreg-id → R0:R1 / R2:R3)
+                    // ignored AAPCS, breaking any function that issued an i64.const
+                    // before reading its i32 params.
+                    let (lo_reg, hi_reg) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
                     vreg_to_arm.insert(dest_lo.0, lo_reg);
                     vreg_to_arm.insert(dest_hi.0, hi_reg);
                     // Load low word
@@ -2142,511 +2200,871 @@ impl OptimizerBridge {
                             });
                         }
                     }
+                    // If this i64 const is the final return value, the epilogue
+                    // needs to know which pair holds it (for the move into R0:R1).
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
+                    is_i64_result = true;
                 }
 
                 Opcode::I64Add {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    // i64.add: R0:R1 = R0:R1 + R2:R3
-                    // ADDS R0, R0, R2 (sets carry)
-                    // ADC  R1, R1, R3 (adds carry)
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    // i64.add: rd = rn + rm using the actual operand regs from
+                    // vreg_to_arm — NOT hardcoded R0:R1/R2:R3 (which would clobber
+                    // AAPCS param regs).
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rd_lo);
+                    vreg_to_arm.insert(dest_hi.0, rd_hi);
                     arm_instrs.push(ArmOp::Adds {
-                        rd: Reg::R0,
-                        rn: Reg::R0,
-                        op2: Operand2::Reg(Reg::R2),
+                        rd: rd_lo,
+                        rn: rn_lo,
+                        op2: Operand2::Reg(rm_lo),
                     });
                     arm_instrs.push(ArmOp::Adc {
-                        rd: Reg::R1,
-                        rn: Reg::R1,
-                        op2: Operand2::Reg(Reg::R3),
+                        rd: rd_hi,
+                        rn: rn_hi,
+                        op2: Operand2::Reg(rm_hi),
                     });
-                    // Mark as i64 result - no final mov needed, result already in R0:R1
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 Opcode::I64Sub {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    // i64.sub: R0:R1 = R0:R1 - R2:R3
-                    // SUBS R0, R0, R2 (sets borrow)
-                    // SBC  R1, R1, R3 (subtracts borrow)
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rd_lo);
+                    vreg_to_arm.insert(dest_hi.0, rd_hi);
                     arm_instrs.push(ArmOp::Subs {
-                        rd: Reg::R0,
-                        rn: Reg::R0,
-                        op2: Operand2::Reg(Reg::R2),
+                        rd: rd_lo,
+                        rn: rn_lo,
+                        op2: Operand2::Reg(rm_lo),
                     });
                     arm_instrs.push(ArmOp::Sbc {
-                        rd: Reg::R1,
-                        rn: Reg::R1,
-                        op2: Operand2::Reg(Reg::R3),
+                        rd: rd_hi,
+                        rn: rn_hi,
+                        op2: Operand2::Reg(rm_hi),
                     });
-                    // Mark as i64 result - no final mov needed, result already in R0:R1
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 Opcode::I64And {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    // i64.and: R0:R1 = R0:R1 & R2:R3
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rd_lo);
+                    vreg_to_arm.insert(dest_hi.0, rd_hi);
                     arm_instrs.push(ArmOp::And {
-                        rd: Reg::R0,
-                        rn: Reg::R0,
-                        op2: Operand2::Reg(Reg::R2),
+                        rd: rd_lo,
+                        rn: rn_lo,
+                        op2: Operand2::Reg(rm_lo),
                     });
                     arm_instrs.push(ArmOp::And {
-                        rd: Reg::R1,
-                        rn: Reg::R1,
-                        op2: Operand2::Reg(Reg::R3),
+                        rd: rd_hi,
+                        rn: rn_hi,
+                        op2: Operand2::Reg(rm_hi),
                     });
-                    // Mark as i64 result - no final mov needed, result already in R0:R1
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 Opcode::I64Or {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    // i64.or: R0:R1 = R0:R1 | R2:R3
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rd_lo);
+                    vreg_to_arm.insert(dest_hi.0, rd_hi);
                     arm_instrs.push(ArmOp::Orr {
-                        rd: Reg::R0,
-                        rn: Reg::R0,
-                        op2: Operand2::Reg(Reg::R2),
+                        rd: rd_lo,
+                        rn: rn_lo,
+                        op2: Operand2::Reg(rm_lo),
                     });
                     arm_instrs.push(ArmOp::Orr {
-                        rd: Reg::R1,
-                        rn: Reg::R1,
-                        op2: Operand2::Reg(Reg::R3),
+                        rd: rd_hi,
+                        rn: rn_hi,
+                        op2: Operand2::Reg(rm_hi),
                     });
-                    // Mark as i64 result - no final mov needed, result already in R0:R1
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 Opcode::I64Xor {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    // i64.xor: R0:R1 = R0:R1 ^ R2:R3
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rd_lo);
+                    vreg_to_arm.insert(dest_hi.0, rd_hi);
                     arm_instrs.push(ArmOp::Eor {
-                        rd: Reg::R0,
-                        rn: Reg::R0,
-                        op2: Operand2::Reg(Reg::R2),
+                        rd: rd_lo,
+                        rn: rn_lo,
+                        op2: Operand2::Reg(rm_lo),
                     });
                     arm_instrs.push(ArmOp::Eor {
-                        rd: Reg::R1,
-                        rn: Reg::R1,
-                        op2: Operand2::Reg(Reg::R3),
+                        rd: rd_hi,
+                        rn: rn_hi,
+                        op2: Operand2::Reg(rm_hi),
                     });
-                    // Mark as i64 result - no final mov needed, result already in R0:R1
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 // ========================================================================
-                // i64 Comparisons (result is single i32 in R0)
+                // i64 Comparisons (result is single i32)
+                //
+                // Sources are read from `vreg_to_arm[src*]` rather than hardcoded
+                // R0:R1/R2:R3 — the latter would mean "i64 ops always assume their
+                // operands materialised at the AAPCS arg slots", which is false:
+                // operand registers come from whatever the upstream IR producers
+                // (I64Const, I64Load, prior i64 ops) chose. Result lands on the lo
+                // half of a freshly allocated callee-saved pair so we don't smash
+                // any AAPCS arg reg the user hasn't read yet.
                 // ========================================================================
-                Opcode::I64Eq { dest, .. } => {
-                    // i64.eq: (R0:R1) == (R2:R3), result in R0
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                Opcode::I64Eq {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                         cond: Condition::EQ,
                     });
                     last_result_vreg = Some(dest.0);
                 }
 
-                Opcode::I64Ne { dest, .. } => {
-                    // i64.ne: (R0:R1) != (R2:R3), result in R0
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                Opcode::I64Ne {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                         cond: Condition::NE,
                     });
                     last_result_vreg = Some(dest.0);
                 }
 
-                Opcode::I64LtS { dest, .. } => {
-                    // i64.lt_s: (R0:R1) < (R2:R3) signed, result in R0
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                Opcode::I64LtS {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                         cond: Condition::LT,
                     });
                     last_result_vreg = Some(dest.0);
                 }
 
-                Opcode::I64GtS { dest, .. } => {
-                    // i64.gt_s: (R0:R1) > (R2:R3) signed, result in R0
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                Opcode::I64GtS {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                         cond: Condition::GT,
                     });
                     last_result_vreg = Some(dest.0);
                 }
 
-                Opcode::I64LeS { dest, .. } => {
-                    // i64.le_s: (R0:R1) <= (R2:R3) signed, result in R0
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                Opcode::I64LeS {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                         cond: Condition::LE,
                     });
                     last_result_vreg = Some(dest.0);
                 }
 
-                Opcode::I64GeS { dest, .. } => {
-                    // i64.ge_s: (R0:R1) >= (R2:R3) signed, result in R0
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                Opcode::I64GeS {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                         cond: Condition::GE,
                     });
                     last_result_vreg = Some(dest.0);
                 }
 
                 // Unsigned i64 comparisons
-                Opcode::I64LtU { dest, .. } => {
-                    // i64.lt_u: (R0:R1) < (R2:R3) unsigned, result in R0
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                Opcode::I64LtU {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                         cond: Condition::LO,
                     });
                     last_result_vreg = Some(dest.0);
                 }
 
-                Opcode::I64GtU { dest, .. } => {
-                    // i64.gt_u: (R0:R1) > (R2:R3) unsigned, result in R0
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                Opcode::I64GtU {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                         cond: Condition::HI,
                     });
                     last_result_vreg = Some(dest.0);
                 }
 
-                Opcode::I64LeU { dest, .. } => {
-                    // i64.le_u: (R0:R1) <= (R2:R3) unsigned, result in R0
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                Opcode::I64LeU {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                         cond: Condition::LS,
                     });
                     last_result_vreg = Some(dest.0);
                 }
 
-                Opcode::I64GeU { dest, .. } => {
-                    // i64.ge_u: (R0:R1) >= (R2:R3) unsigned, result in R0
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                Opcode::I64GeU {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::I64SetCond {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                         cond: Condition::HS,
                     });
                     last_result_vreg = Some(dest.0);
                 }
 
-                Opcode::I64Eqz { dest, .. } => {
-                    // i64.eqz: (R0:R1) == 0, result in R0
-                    vreg_to_arm.insert(dest.0, Reg::R0);
-                    arm_instrs.push(ArmOp::I64SetCondZ {
-                        rd: Reg::R0,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                    });
+                Opcode::I64Eqz {
+                    dest,
+                    src_lo,
+                    src_hi,
+                } => {
+                    let rn_lo = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd, _) = alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest.0, rd);
+                    arm_instrs.push(ArmOp::I64SetCondZ { rd, rn_lo, rn_hi });
                     last_result_vreg = Some(dest.0);
                 }
 
-                // i64 count leading zeros (returns i64 where high word is always 0)
-                Opcode::I64Clz { dest, .. } => {
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                // i64 count leading zeros (i64 result: lo gets count, hi must be 0).
+                //
+                // The ArmOp::I64Clz encoder writes the count into `rd` AND zeroes
+                // `rnhi` in-place — so `rnhi` doubles as the result's hi half. To
+                // keep the upstream src_hi register intact and avoid clobbering
+                // unrelated AAPCS regs, we copy src_hi into a freshly allocated
+                // callee-saved hi slot and pass that as `rnhi`. After the encoded
+                // sequence, the i64 result lives in (rd_lo, rd_hi).
+                //
+                // The IR Opcode only carries a single `dest` vreg (the lo half);
+                // we register dest.0 → rd_lo. The hi-zero is implicit and used by
+                // the function epilogue when this is the i64 return value (see
+                // last_result_vreg_hi_reg below).
+                Opcode::I64Clz {
+                    dest,
+                    src_lo,
+                    src_hi,
+                } => {
+                    let rnlo = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs);
+                    let rnhi_src = get_arm_reg(src_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    if rd_hi != rnhi_src {
+                        arm_instrs.push(ArmOp::Mov {
+                            rd: rd_hi,
+                            op2: Operand2::Reg(rnhi_src),
+                        });
+                    }
+                    vreg_to_arm.insert(dest.0, rd_lo);
                     arm_instrs.push(ArmOp::I64Clz {
-                        rd: Reg::R0,
-                        rnlo: Reg::R0,
-                        rnhi: Reg::R1,
+                        rd: rd_lo,
+                        rnlo,
+                        rnhi: rd_hi,
                     });
                     last_result_vreg = Some(dest.0);
+                    last_result_vreg_hi_reg = Some(rd_hi);
                     is_i64_result = true;
                 }
 
-                // i64 count trailing zeros (returns i64 where high word is always 0)
-                Opcode::I64Ctz { dest, .. } => {
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                // i64 count trailing zeros — same pattern as I64Clz above.
+                Opcode::I64Ctz {
+                    dest,
+                    src_lo,
+                    src_hi,
+                } => {
+                    let rnlo = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs);
+                    let rnhi_src = get_arm_reg(src_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    if rd_hi != rnhi_src {
+                        arm_instrs.push(ArmOp::Mov {
+                            rd: rd_hi,
+                            op2: Operand2::Reg(rnhi_src),
+                        });
+                    }
+                    vreg_to_arm.insert(dest.0, rd_lo);
                     arm_instrs.push(ArmOp::I64Ctz {
-                        rd: Reg::R0,
-                        rnlo: Reg::R0,
-                        rnhi: Reg::R1,
+                        rd: rd_lo,
+                        rnlo,
+                        rnhi: rd_hi,
                     });
                     last_result_vreg = Some(dest.0);
+                    last_result_vreg_hi_reg = Some(rd_hi);
                     is_i64_result = true;
                 }
 
-                // i64 population count (returns i64 where high word is always 0)
-                Opcode::I64Popcnt { dest, .. } => {
-                    vreg_to_arm.insert(dest.0, Reg::R0);
+                // i64 population count — same pattern as I64Clz above.
+                Opcode::I64Popcnt {
+                    dest,
+                    src_lo,
+                    src_hi,
+                } => {
+                    let rnlo = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs);
+                    let rnhi_src = get_arm_reg(src_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    if rd_hi != rnhi_src {
+                        arm_instrs.push(ArmOp::Mov {
+                            rd: rd_hi,
+                            op2: Operand2::Reg(rnhi_src),
+                        });
+                    }
+                    vreg_to_arm.insert(dest.0, rd_lo);
                     arm_instrs.push(ArmOp::I64Popcnt {
-                        rd: Reg::R0,
-                        rnlo: Reg::R0,
-                        rnhi: Reg::R1,
+                        rd: rd_lo,
+                        rnlo,
+                        rnhi: rd_hi,
                     });
                     last_result_vreg = Some(dest.0);
+                    last_result_vreg_hi_reg = Some(rd_hi);
                     is_i64_result = true;
                 }
 
                 // i64 sign extension operations
                 Opcode::I64Extend8S {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src_lo,
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
-                    arm_instrs.push(ArmOp::I64Extend8S {
-                        rdlo: Reg::R0,
-                        rdhi: Reg::R1,
-                        rnlo: Reg::R0,
-                    });
+                    let rnlo = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs);
+                    let (rdlo, rdhi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rdlo);
+                    vreg_to_arm.insert(dest_hi.0, rdhi);
+                    arm_instrs.push(ArmOp::I64Extend8S { rdlo, rdhi, rnlo });
                     last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 Opcode::I64Extend16S {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src_lo,
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
-                    arm_instrs.push(ArmOp::I64Extend16S {
-                        rdlo: Reg::R0,
-                        rdhi: Reg::R1,
-                        rnlo: Reg::R0,
-                    });
+                    let rnlo = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs);
+                    let (rdlo, rdhi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rdlo);
+                    vreg_to_arm.insert(dest_hi.0, rdhi);
+                    arm_instrs.push(ArmOp::I64Extend16S { rdlo, rdhi, rnlo });
                     last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 Opcode::I64Extend32S {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src_lo,
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
-                    arm_instrs.push(ArmOp::I64Extend32S {
-                        rdlo: Reg::R0,
-                        rdhi: Reg::R1,
-                        rnlo: Reg::R0,
-                    });
+                    let rnlo = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs);
+                    let (rdlo, rdhi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rdlo);
+                    vreg_to_arm.insert(dest_hi.0, rdhi);
+                    arm_instrs.push(ArmOp::I64Extend32S { rdlo, rdhi, rnlo });
                     last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 // i64 multiply: UMULL + MLA cross products
                 Opcode::I64Mul {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rd_lo);
+                    vreg_to_arm.insert(dest_hi.0, rd_hi);
                     arm_instrs.push(ArmOp::I64Mul {
-                        rd_lo: Reg::R0,
-                        rd_hi: Reg::R1,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd_lo,
+                        rd_hi,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                     });
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 // i64 shift left
                 Opcode::I64Shl {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rd_lo);
+                    vreg_to_arm.insert(dest_hi.0, rd_hi);
                     arm_instrs.push(ArmOp::I64Shl {
-                        rd_lo: Reg::R0,
-                        rd_hi: Reg::R1,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd_lo,
+                        rd_hi,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                     });
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 // i64 arithmetic shift right
                 Opcode::I64ShrS {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rd_lo);
+                    vreg_to_arm.insert(dest_hi.0, rd_hi);
                     arm_instrs.push(ArmOp::I64ShrS {
-                        rd_lo: Reg::R0,
-                        rd_hi: Reg::R1,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd_lo,
+                        rd_hi,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                     });
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 // i64 logical shift right
                 Opcode::I64ShrU {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rd_lo, rd_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rd_lo);
+                    vreg_to_arm.insert(dest_hi.0, rd_hi);
                     arm_instrs.push(ArmOp::I64ShrU {
-                        rd_lo: Reg::R0,
-                        rd_hi: Reg::R1,
-                        rn_lo: Reg::R0,
-                        rn_hi: Reg::R1,
-                        rm_lo: Reg::R2,
-                        rm_hi: Reg::R3,
+                        rd_lo,
+                        rd_hi,
+                        rn_lo,
+                        rn_hi,
+                        rm_lo,
+                        rm_hi,
                     });
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 // i64 rotate left
                 Opcode::I64Rotl {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    ..
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rnlo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rnhi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let shift = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let (rdlo, rdhi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rdlo);
+                    vreg_to_arm.insert(dest_hi.0, rdhi);
                     arm_instrs.push(ArmOp::I64Rotl {
-                        rdlo: Reg::R0,
-                        rdhi: Reg::R1,
-                        rnlo: Reg::R0,
-                        rnhi: Reg::R1,
-                        shift: Reg::R2, // Only use low word of shift amount
+                        rdlo,
+                        rdhi,
+                        rnlo,
+                        rnhi,
+                        shift,
                     });
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 // i64 rotate right
                 Opcode::I64Rotr {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    ..
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rnlo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rnhi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let shift = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let (rdlo, rdhi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rdlo);
+                    vreg_to_arm.insert(dest_hi.0, rdhi);
                     arm_instrs.push(ArmOp::I64Rotr {
-                        rdlo: Reg::R0,
-                        rdhi: Reg::R1,
-                        rnlo: Reg::R0,
-                        rnhi: Reg::R1,
-                        shift: Reg::R2, // Only use low word of shift amount
+                        rdlo,
+                        rdhi,
+                        rnlo,
+                        rnhi,
+                        shift,
                     });
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 // i64 signed division
                 Opcode::I64DivS {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rnlo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rnhi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rmlo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rmhi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rdlo, rdhi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rdlo);
+                    vreg_to_arm.insert(dest_hi.0, rdhi);
                     arm_instrs.push(ArmOp::I64DivS {
-                        rdlo: Reg::R0,
-                        rdhi: Reg::R1,
-                        rnlo: Reg::R0,
-                        rnhi: Reg::R1,
-                        rmlo: Reg::R2,
-                        rmhi: Reg::R3,
+                        rdlo,
+                        rdhi,
+                        rnlo,
+                        rnhi,
+                        rmlo,
+                        rmhi,
                     });
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 // i64 unsigned division
                 Opcode::I64DivU {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rnlo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rnhi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rmlo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rmhi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rdlo, rdhi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rdlo);
+                    vreg_to_arm.insert(dest_hi.0, rdhi);
                     arm_instrs.push(ArmOp::I64DivU {
-                        rdlo: Reg::R0,
-                        rdhi: Reg::R1,
-                        rnlo: Reg::R0,
-                        rnhi: Reg::R1,
-                        rmlo: Reg::R2,
-                        rmhi: Reg::R3,
+                        rdlo,
+                        rdhi,
+                        rnlo,
+                        rnhi,
+                        rmlo,
+                        rmhi,
                     });
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 // i64 signed remainder
                 Opcode::I64RemS {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rnlo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rnhi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rmlo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rmhi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rdlo, rdhi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rdlo);
+                    vreg_to_arm.insert(dest_hi.0, rdhi);
                     arm_instrs.push(ArmOp::I64RemS {
-                        rdlo: Reg::R0,
-                        rdhi: Reg::R1,
-                        rnlo: Reg::R0,
-                        rnhi: Reg::R1,
-                        rmlo: Reg::R2,
-                        rmhi: Reg::R3,
+                        rdlo,
+                        rdhi,
+                        rnlo,
+                        rnhi,
+                        rmlo,
+                        rmhi,
                     });
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
                 // i64 unsigned remainder
                 Opcode::I64RemU {
-                    dest_lo, dest_hi, ..
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
                 } => {
-                    vreg_to_arm.insert(dest_lo.0, Reg::R0);
-                    vreg_to_arm.insert(dest_hi.0, Reg::R1);
+                    let rnlo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
+                    let rnhi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    let rmlo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                    let rmhi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                    let (rdlo, rdhi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    vreg_to_arm.insert(dest_lo.0, rdlo);
+                    vreg_to_arm.insert(dest_hi.0, rdhi);
                     arm_instrs.push(ArmOp::I64RemU {
-                        rdlo: Reg::R0,
-                        rdhi: Reg::R1,
-                        rnlo: Reg::R0,
-                        rnhi: Reg::R1,
-                        rmlo: Reg::R2,
-                        rmhi: Reg::R3,
+                        rdlo,
+                        rdhi,
+                        rnlo,
+                        rnhi,
+                        rmlo,
+                        rmhi,
                     });
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
                 }
 
@@ -2996,36 +3414,19 @@ impl OptimizerBridge {
                 ArmOp::Mov {
                     rd,
                     op2: Operand2::Imm(v),
-                } => {
-                    if reg_num(rd) > 7 || *v > 255 || *v < 0 {
-                        4
-                    } else {
-                        2
-                    }
-                }
+                } if reg_num(rd) > 7 || *v > 255 || *v < 0 => 4,
+                ArmOp::Mov { .. } => 2,
                 // SUB/ADD with high registers need 32-bit encoding
                 ArmOp::Sub {
                     rd,
                     rn,
                     op2: Operand2::Reg(rm),
-                } => {
-                    if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 {
-                        4
-                    } else {
-                        2
-                    }
-                }
+                } if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 => 4,
                 ArmOp::Add {
                     rd,
                     rn,
                     op2: Operand2::Reg(rm),
-                } => {
-                    if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 {
-                        4
-                    } else {
-                        2
-                    }
-                }
+                } if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 => 4,
                 // Most 16-bit Thumb instructions (MOV low, CMP low, B, etc.)
                 _ => 2,
             }
@@ -3066,9 +3467,73 @@ impl OptimizerBridge {
             }
         }
 
-        // Ensure return value is in R0 (skip for i64 results which are already in R0:R1)
-        if !is_i64_result
-            && let Some(result_vreg) = last_result_vreg
+        // Ensure the return value is in R0 (i32 result) or R0:R1 (i64 result).
+        //
+        // Pre-fix, every i64 op pinned its result at R0:R1 so this could be a
+        // no-op for is_i64_result. After the fix, the result pair may live in
+        // any callee-saved pair (R4:R5..R10:R11), and we need an explicit move.
+        // The order matters: copy hi → R1 first, then lo → R0, so we don't
+        // clobber the lo value if the source happens to be R1.
+        if is_i64_result {
+            // Resolve the lo half from vreg_to_arm.
+            let lo_reg = last_result_vreg.and_then(|v| vreg_to_arm.get(&v).copied());
+            // Resolve the hi half: prefer an explicit vreg id, else fall back to
+            // the physical reg stash used by Clz/Ctz/Popcnt.
+            let hi_reg = last_result_vreg_hi
+                .and_then(|v| vreg_to_arm.get(&v).copied())
+                .or(last_result_vreg_hi_reg);
+
+            if let (Some(lo), Some(hi)) = (lo_reg, hi_reg) {
+                // Move hi first (so we don't clobber lo if hi's source is R1).
+                if hi != Reg::R1 {
+                    arm_instrs.push(ArmOp::Mov {
+                        rd: Reg::R1,
+                        op2: Operand2::Reg(hi),
+                    });
+                }
+                // Now move lo. If lo was R1 originally, it just got smashed by
+                // the hi-move above; but R1's prior contents are now in R1
+                // (the hi value), so we'd actually have wanted to save lo first.
+                // Handle that case explicitly: save lo to R12 (IP scratch) first.
+                if lo == Reg::R1 && hi != Reg::R1 {
+                    // lo was in R1, which we just overwrote. We can't recover it
+                    // unless we saved earlier. The clean fix: detect this
+                    // arrangement up front. For now, swap order via R12.
+                    // (This is reached only on bizarre regalloc choices; the
+                    // common case is lo in R4..R10, which doesn't hit it.)
+                    arm_instrs.pop(); // remove the hi-move we just emitted
+                    arm_instrs.push(ArmOp::Mov {
+                        rd: Reg::R12,
+                        op2: Operand2::Reg(lo),
+                    });
+                    if hi != Reg::R1 {
+                        arm_instrs.push(ArmOp::Mov {
+                            rd: Reg::R1,
+                            op2: Operand2::Reg(hi),
+                        });
+                    }
+                    arm_instrs.push(ArmOp::Mov {
+                        rd: Reg::R0,
+                        op2: Operand2::Reg(Reg::R12),
+                    });
+                } else if lo != Reg::R0 {
+                    arm_instrs.push(ArmOp::Mov {
+                        rd: Reg::R0,
+                        op2: Operand2::Reg(lo),
+                    });
+                }
+            } else if let Some(lo) = lo_reg
+                && lo != Reg::R0
+            {
+                // Hi is unknown — fall back to single-register move (caller of
+                // this function may have set is_i64_result without populating
+                // the hi tracker; preserve old behaviour rather than crash).
+                arm_instrs.push(ArmOp::Mov {
+                    rd: Reg::R0,
+                    op2: Operand2::Reg(lo),
+                });
+            }
+        } else if let Some(result_vreg) = last_result_vreg
             && let Some(&result_reg) = vreg_to_arm.get(&result_vreg)
             && result_reg != Reg::R0
         {

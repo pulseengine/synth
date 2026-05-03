@@ -53,7 +53,7 @@ impl PatternMatcher {
         }
 
         // Sort by priority (highest first)
-        matches.sort_by(|a, b| b.rule.priority.cmp(&a.rule.priority));
+        matches.sort_by_key(|m| std::cmp::Reverse(m.rule.priority));
 
         matches
     }
