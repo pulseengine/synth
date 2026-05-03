@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+#### RISC-V backend (new — Track B in the multi-target plan)
+- New `synth-backend-riscv` crate with RV32IMAC encoder, ELF builder
+  (EM_RISCV=0xF3), PMP allocator, instruction selector, bare-metal startup
+  generator, and linker script generator.
+- CLI integration: `--backend riscv`, `--target riscv32imac/rv32imac/rv32i/rv32gc/rv64imac/rv64gc`.
+- New `synth riscv-runtime` command emits `startup.c` + `linker.ld` for
+  cross-compilation with `riscv64-unknown-elf-gcc`.
+- Selector covers the i32 surface (arithmetic, logic, shifts, comparisons,
+  division with trap-on-zero), i32.load/store + sub-word load8/16 + store8/16,
+  and control flow (block, loop, if/else, br, br_if). Locals for params 0..7.
+- ~30 wasm ops; encoder cross-validated against canonical RV32 hex encodings.
+  98 RISC-V backend tests passing.
+- Renode RV32IMAC platform (`tests/renode/synth_riscv.repl`).
+- Offline smoke tests + calculator end-to-end demo.
+
+#### Cortex-M7 hardening
+- `HardwareCapabilities::imxrt1062()` — Cortex-M7 single-precision FPU,
+  16 MPU regions, 8 MB QSPI flash, 1 MB OCRAM.
+- `HardwareCapabilities::stm32h743()` — Cortex-M7 double-precision FPU,
+  16 MPU regions, 2 MB Flash, 1 MB RAM.
+- CLI `--hardware {imxrt1062,stm32h743}` and target-info wired up.
+- Renode `synth_cortex_m7.repl` profile + `cortex_m7_test.robot`.
+- MPU allocator tests proving 16-region operation on M7-class parts.
+
+### Fixed
+
+#### AAPCS regalloc bugs (real-hardware-found)
+- **Optimized path** — `optimizer_bridge::ir_to_arm` no longer hardcodes
+  i64 ops to R0:R1 / R2:R3. New `alloc_i64_pair` picks free callee-saved
+  pairs (R4..R11) skipping live param registers. Fixes silent corruption
+  of i32 params when an i64 op ran before all params were read.
+- **No-optimize path** — `select_with_stack` now allocates a stack frame
+  for non-param locals and uses 8-byte STR/LDR for i64 locals so the
+  upper half doesn't get dropped. Fixes corruption of the callee-saved
+  spill area when a function has any non-param local.
+
+#### CLI
+- `--relocatable` flag — forces ET_REL output even when the wasm has no
+  imports, for linking into a host build system (e.g. Zephyr).
+
+#### Toolchain hygiene
+- 8 clippy errors fixed (Rust 1.95 lint refresh): `unnecessary_sort_by`,
+  `collapsible_match`, `collapsible_if`, `manual_checked_division`.
+
 ## [0.1.0] - 2026-03-21
 
 ### Added

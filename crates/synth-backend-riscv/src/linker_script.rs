@@ -171,7 +171,9 @@ impl RiscVLinkerScriptGenerator {
         out.push_str("  } > ram\n\n");
 
         // ── GP — small-data linker-relaxation anchor ─────────────
-        out.push_str("  /* Global pointer — points 0x800 above .sdata for short-form RV access */\n");
+        out.push_str(
+            "  /* Global pointer — points 0x800 above .sdata for short-form RV access */\n",
+        );
         out.push_str("  PROVIDE(__global_pointer$ = _data_start + 0x800);\n\n");
 
         out.push_str("}\n");
@@ -250,12 +252,10 @@ mod tests {
 
     #[test]
     fn linear_memory_size_zero_falls_back_to_bss_end() {
-        let g = RiscVLinkerScriptGenerator::new(rv32imac_caps()).with_config(
-            LinkerScriptConfig {
-                linear_memory_size: 0,
-                ..Default::default()
-            },
-        );
+        let g = RiscVLinkerScriptGenerator::new(rv32imac_caps()).with_config(LinkerScriptConfig {
+            linear_memory_size: 0,
+            ..Default::default()
+        });
         let s = g.generate();
         assert!(s.contains("PROVIDE(__linear_memory_base = _bss_end);"));
     }
@@ -279,12 +279,10 @@ mod tests {
 
     #[test]
     fn custom_flash_origin() {
-        let g = RiscVLinkerScriptGenerator::new(rv32imac_caps()).with_config(
-            LinkerScriptConfig {
-                flash_origin: 0x2000_0000,
-                ..Default::default()
-            },
-        );
+        let g = RiscVLinkerScriptGenerator::new(rv32imac_caps()).with_config(LinkerScriptConfig {
+            flash_origin: 0x2000_0000,
+            ..Default::default()
+        });
         let s = g.generate();
         assert!(s.contains("ORIGIN = 0x20000000"));
     }
