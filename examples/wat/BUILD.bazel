@@ -1,6 +1,9 @@
 # WebAssembly Text format examples
 
 exports_files(
-    ["simple_add.wat"],
+    [
+        "simple_add.wat",
+        "riscv_smoke.wat",
+    ],
     visibility = ["//visibility:public"],
 )

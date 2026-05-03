@@ -4,6 +4,7 @@ load("@rules_renode//renode:defs.bzl", "renode_test")
 exports_files([
     "synth_cortex_m.repl",
     "synth_cortex_m7.repl",
+    "synth_riscv.repl",
 ])
 
 # Renode-based integration tests for Synth-generated ARM binaries
@@ -67,6 +68,29 @@ renode_test(
     ],
     variables_with_label = {
         "ELF": "//tests/renode:test_add_m7_elf",
+    },
+    tags = ["renode"],
+)
+
+# RISC-V codegen path: a leaf-only WAT (no `call` — cross-function calls
+# aren't lowered in the RISC-V selector yet). Still exercises the same
+# `add(a, b) → a + b` shape that the Robot test verifies.
+genrule(
+    name = "test_add_riscv_elf",
+    srcs = ["//examples/wat:riscv_smoke.wat"],
+    outs = ["test_add_riscv.elf"],
+    cmd = "$(location //crates:synth) compile $(location //examples/wat:riscv_smoke.wat) -o $@ --backend riscv --target riscv32imac --all-exports",
+    tools = ["//crates:synth"],
+)
+
+renode_test(
+    name = "riscv_add_test",
+    robot_test = "riscv_test.robot",
+    deps = [
+        "synth_riscv.repl",
+    ],
+    variables_with_label = {
+        "ELF": "//tests/renode:test_add_riscv_elf",
     },
     tags = ["renode"],
 )
