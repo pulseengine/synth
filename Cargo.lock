@@ -1913,6 +1913,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "synth-backend-riscv"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "proptest",
+ "synth-core",
+ "synth-synthesis",
+ "thiserror 1.0.69",
+ "tracing",
+]
+
+[[package]]
 name = "synth-backend-wasker"
 version = "0.1.0"
 dependencies = [
@@ -1934,6 +1946,7 @@ dependencies = [
  "serde_json",
  "synth-backend",
  "synth-backend-awsm",
+ "synth-backend-riscv",
  "synth-backend-wasker",
  "synth-core",
  "synth-frontend",
