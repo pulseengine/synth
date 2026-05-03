@@ -17,15 +17,19 @@
 pub mod backend;
 pub mod elf_builder;
 pub mod encoder;
+pub mod linker_script;
 pub mod pmp;
 pub mod register;
 pub mod riscv_op;
 pub mod selector;
+pub mod startup;
 
 pub use backend::RiscVBackend;
 pub use elf_builder::{ElfMode, RiscVElfBuilder, RiscVElfFunction};
 pub use encoder::{RiscVEncoder, RiscVEncodingError};
+pub use linker_script::{LinkerScriptConfig, RiscVLinkerScriptGenerator};
 pub use pmp::{PMPAllocator, PMPEntry, PMPError, PMPMode, PMPPermissions};
 pub use register::{Reg, RegClass};
 pub use riscv_op::{Branch, Csr, RiscVOp};
 pub use selector::{RiscVSelection, SelectorError, select_simple};
+pub use startup::{RiscVStartupGenerator, StartupConfig};
