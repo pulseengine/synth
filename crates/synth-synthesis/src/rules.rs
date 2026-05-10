@@ -1835,7 +1835,7 @@ impl RuleDatabase {
     pub fn add_rule(&mut self, rule: SynthesisRule) {
         self.rules.push(rule);
         // Sort by priority (highest first)
-        self.rules.sort_by(|a, b| b.priority.cmp(&a.priority));
+        self.rules.sort_by_key(|r| std::cmp::Reverse(r.priority));
     }
 
     /// Get all rules

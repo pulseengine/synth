@@ -1,0 +1,29 @@
+// High-end Cortex-M7 platform for Synth-generated binaries
+// Models a typical M7 SoC with single-precision FPU, 16 MPU regions,
+// large OCRAM, and external XIP-capable QuadSPI flash. Vector table
+// lives at 0x60000000 (XIP flash window) on i.MX RT-class chips,
+// but we place the binary at 0x0 here for simple bring-up.
+
+flash: Memory.MappedMemory @ sysbus 0x0
+    size: 0x800000  // 8MB external QSPI flash window
+
+itcm: Memory.MappedMemory @ sysbus 0x00080000
+    size: 0x40000   // 256KB ITCM
+
+dtcm: Memory.MappedMemory @ sysbus 0x20000000
+    size: 0x40000   // 256KB DTCM
+
+ocram: Memory.MappedMemory @ sysbus 0x20200000
+    size: 0x80000   // 512KB OCRAM (FlexRAM-mapped)
+
+ocram2: Memory.MappedMemory @ sysbus 0x20280000
+    size: 0x80000   // 512KB additional OCRAM
+
+nvic: IRQControllers.NVIC @ sysbus 0xE000E000
+    priorityMask: 0xF0
+    systickFrequency: 600000000  // 600 MHz typical for M7-class parts
+    IRQ -> cpu@0
+
+cpu: CPU.CortexM @ sysbus
+    cpuType: "cortex-m7"
+    nvic: nvic

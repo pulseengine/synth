@@ -77,7 +77,7 @@ enum Commands {
         )]
         target: String,
 
-        /// Hardware config (nrf52840, stm32f407, or custom)
+        /// Hardware config (nrf52840, stm32f407, stm32h743, imxrt1062, or custom)
         #[arg(long, value_name = "HARDWARE", default_value = "nrf52840")]
         hardware: String,
 
@@ -170,6 +170,11 @@ enum Commands {
         /// Path to kiln-builtins object file (.o) for linking (used with --link)
         #[arg(long, value_name = "BUILTINS")]
         builtins: Option<PathBuf>,
+
+        /// Force relocatable object (.o, ET_REL) output even when wasm has no imports
+        /// — for linking into a host build system.
+        #[arg(long)]
+        relocatable: bool,
     },
 
     /// Disassemble an ARM ELF file (e.g., synth disasm output.elf)
@@ -248,6 +253,7 @@ fn main() -> Result<()> {
             verify,
             link,
             builtins,
+            relocatable,
         } => {
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
             let target_spec = resolve_target_spec(target.as_deref(), cortex_m)?;
@@ -272,6 +278,7 @@ fn main() -> Result<()> {
                 &backend,
                 verify,
                 &target_spec,
+                relocatable,
             )?;
 
             // If --link requested, invoke the cross-linker
@@ -356,9 +363,11 @@ fn synthesize_command(
     let hw_caps = match hardware.as_str() {
         "nrf52840" => HardwareCapabilities::nrf52840(),
         "stm32f407" => HardwareCapabilities::stm32f407(),
+        "stm32h743" => HardwareCapabilities::stm32h743(),
+        "imxrt1062" => HardwareCapabilities::imxrt1062(),
         _ => {
             anyhow::bail!(
-                "Unsupported hardware: {}. Use nrf52840 or stm32f407",
+                "Unsupported hardware: {}. Use nrf52840, stm32f407, stm32h743, imxrt1062",
                 hardware
             );
         }
@@ -398,8 +407,19 @@ fn target_info_command(target: String) -> Result<()> {
             let caps = HardwareCapabilities::stm32f407();
             print_hardware_info(&caps);
         }
+        "stm32h743" => {
+            let caps = HardwareCapabilities::stm32h743();
+            print_hardware_info(&caps);
+        }
+        "imxrt1062" => {
+            let caps = HardwareCapabilities::imxrt1062();
+            print_hardware_info(&caps);
+        }
         _ => {
-            anyhow::bail!("Unknown target: {}. Supported: nrf52840, stm32f407", target);
+            anyhow::bail!(
+                "Unknown target: {}. Supported: nrf52840, stm32f407, stm32h743, imxrt1062",
+                target
+            );
         }
     }
 
@@ -553,6 +573,7 @@ fn compile_command(
     backend_name: &str,
     verify: bool,
     target_spec: &TargetSpec,
+    relocatable: bool,
 ) -> Result<()> {
     // Validate backend exists
     let registry = build_backend_registry();
@@ -595,6 +616,7 @@ fn compile_command(
             backend,
             verify,
             target_spec,
+            relocatable,
         );
     }
 
@@ -1222,6 +1244,7 @@ fn compile_all_exports(
     backend: &dyn Backend,
     verify: bool,
     target_spec: &TargetSpec,
+    relocatable: bool,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -1428,8 +1451,18 @@ fn compile_all_exports(
     // When there are relocations, produce a relocatable object (.o) instead of
     // an executable. This lets the output be linked with the Kiln bridge crate
     // (which provides __meld_dispatch_import and __meld_get_memory_base).
-    let elf_data = if has_relocations {
-        info!("Module has import calls — producing relocatable object (ET_REL)");
+    // The --relocatable flag forces ET_REL output even when the wasm has no
+    // imports, for linking into a host build system (e.g. Zephyr).
+    let elf_data = if has_relocations || relocatable {
+        let total_relocs: usize = compiled_funcs.iter().map(|f| f.relocations.len()).sum();
+        if has_relocations {
+            info!(
+                "Producing relocatable object (ET_REL): {} import call relocations",
+                total_relocs
+            );
+        } else {
+            info!("Producing relocatable object (ET_REL): forced by --relocatable");
+        }
         build_relocatable_elf(&compiled_funcs, &all_imports)?
     } else if cortex_m {
         build_multi_func_cortex_m_elf(&compiled_funcs, &all_memories, target_spec)?

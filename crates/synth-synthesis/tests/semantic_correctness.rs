@@ -146,8 +146,8 @@ fn interpret_single(state: &mut ArmState, instr: &ArmInstruction) {
         ArmOp::Udiv { rd, rn, rm } => {
             let a = state.get(rn);
             let b = state.get(rm);
-            if b != 0 {
-                state.set(*rd, a / b);
+            if let Some(q) = a.checked_div(b) {
+                state.set(*rd, q);
             }
         }
         ArmOp::Mls { rd, rn, rm, ra } => {
@@ -233,11 +233,9 @@ fn interpret_single(state: &mut ArmState, instr: &ArmInstruction) {
             let sr = result as i32;
             state.flag_v = (sa > 0 && sb > 0 && sr < 0) || (sa < 0 && sb < 0 && sr >= 0);
         }
-        ArmOp::SelectMove { rd, rm, cond } => {
-            if state.condition_met(cond) {
-                let val = state.get(rm);
-                state.set(*rd, val);
-            }
+        ArmOp::SelectMove { rd, rm, cond } if state.condition_met(cond) => {
+            let val = state.get(rm);
+            state.set(*rd, val);
         }
         // Skip non-computational instructions (prologue/epilogue, branches, labels)
         _ => {}

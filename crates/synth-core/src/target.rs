@@ -234,6 +234,49 @@ impl HardwareCapabilities {
             ram_size: 192 * 1024,    // 192KB (128KB + 64KB CCM)
         }
     }
+
+    /// Create capabilities for STM32H743 (Cortex-M7 with double-precision FPU)
+    ///
+    /// 16 MPU regions, 2MB Flash, 1MB RAM (DTCM + AXI SRAM + SRAM1-4).
+    pub fn stm32h743() -> Self {
+        Self {
+            arch: TargetArch::ARMCortexM(CortexMVariant::M7DP),
+            has_mpu: true,
+            mpu_regions: 16,
+            has_pmp: false,
+            pmp_entries: 0,
+            has_fpu: true,
+            fpu_precision: Some(FPUPrecision::Double),
+            has_simd: false,
+            simd_level: None,
+            xip_capable: true,
+            flash_size: 2 * 1024 * 1024, // 2MB
+            ram_size: 1024 * 1024,       // 1MB total
+        }
+    }
+
+    /// Create capabilities for i.MX RT1062 (Cortex-M7 with single-precision FPU)
+    ///
+    /// Representative high-end M7 with 16 MPU regions, single-precision FPU,
+    /// large OCRAM, and external XIP-capable QuadSPI Flash. Matches the
+    /// configuration of safety-grade lockstepped M7 platforms used in
+    /// industrial and embedded automotive contexts.
+    pub fn imxrt1062() -> Self {
+        Self {
+            arch: TargetArch::ARMCortexM(CortexMVariant::M7),
+            has_mpu: true,
+            mpu_regions: 16,
+            has_pmp: false,
+            pmp_entries: 0,
+            has_fpu: true,
+            fpu_precision: Some(FPUPrecision::Single),
+            has_simd: false,
+            simd_level: None,
+            xip_capable: true,
+            flash_size: 8 * 1024 * 1024, // 8MB external QSPI flash (typical)
+            ram_size: 1024 * 1024,       // 1MB OCRAM (FlexRAM 512KB + OCRAM 512KB)
+        }
+    }
 }
 
 // ============================================================================

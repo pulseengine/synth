@@ -1,7 +1,10 @@
 load("@rules_renode//renode:defs.bzl", "renode_test")
 
-# Export platform file for use by other test packages
-exports_files(["synth_cortex_m.repl"])
+# Export platform files for use by other test packages
+exports_files([
+    "synth_cortex_m.repl",
+    "synth_cortex_m7.repl",
+])
 
 # Renode-based integration tests for Synth-generated ARM binaries
 
@@ -43,6 +46,27 @@ renode_test(
     ],
     variables_with_label = {
         "ELF": "//tests/renode:memory_basic_elf",
+    },
+    tags = ["renode"],
+)
+
+# M7 codegen path: same WAT, compiled with --target cortex-m7
+genrule(
+    name = "test_add_m7_elf",
+    srcs = ["//examples/wat:simple_add.wat"],
+    outs = ["test_add_m7.elf"],
+    cmd = "$(location //crates:synth) compile $(location //examples/wat:simple_add.wat) -o $@ --target cortex-m7",
+    tools = ["//crates:synth"],
+)
+
+renode_test(
+    name = "cortex_m7_add_test",
+    robot_test = "cortex_m7_test.robot",
+    deps = [
+        "synth_cortex_m7.repl",
+    ],
+    variables_with_label = {
+        "ELF": "//tests/renode:test_add_m7_elf",
     },
     tags = ["renode"],
 )
