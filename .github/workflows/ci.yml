@@ -12,7 +12,7 @@ env:
 jobs:
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     env:
       RUSTFLAGS: -Dwarnings
     steps:
@@ -33,7 +33,7 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -54,7 +54,7 @@ jobs:
 
   fmt:
     name: Format
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, light]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -75,6 +75,9 @@ jobs:
 
   verify:
     name: Z3 Verification
+    # Stays on ubuntu-latest: needs `sudo apt-get install -y libz3-dev`
+    # (smithy runners have no sudo). Move once libz3-dev is added to
+    # the smithy toolchains role.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -99,7 +102,7 @@ jobs:
   coverage:
     name: Code Coverage
     needs: [test]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -132,6 +135,9 @@ jobs:
 
   kani:
     name: Kani Verification
+    # Stays on ubuntu-latest: Kani-CBMC bundle is not yet provisioned
+    # in the smithy toolchains role (tracked in playbook out-of-scope
+    # table). Move once smithy ships kani-verifier + CBMC.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -143,7 +149,7 @@ jobs:
 
   rivet:
     name: Rivet Validation
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, rust-cpu]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -180,6 +186,9 @@ jobs:
 
   bazel:
     name: Bazel Build & Proofs
+    # Stays on ubuntu-latest: needs Nix + Bazel + Rocq via Bazel
+    # (none provisioned on smithy; tracked in playbook out-of-scope
+    # table for both Bazel and Rocq).
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
