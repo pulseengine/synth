@@ -614,6 +614,11 @@ struct ElfFunction {
     code: Vec<u8>,
     /// Relocations targeting external symbols (from import dispatch stubs)
     relocations: Vec<synth_core::backend::CodeRelocation>,
+    /// Extra symbol names that should resolve to the same address as `name`.
+    /// The RISC-V selector emits cross-function calls as `synth_func_<idx>`,
+    /// so we alias each export name to its `synth_func_<idx>` form so the
+    /// linker can resolve those relocations against this object's symtab.
+    aliases: Vec<String>,
 }
 
 /// Resolve --target / --cortex-m into a TargetSpec
@@ -1593,10 +1598,19 @@ fn compile_all_exports(
             );
         }
 
+        // For RISC-V: alias each export name to `synth_func_<idx>` so the
+        // selector-emitted call relocations resolve back to this function.
+        let aliases =
+            if matches!(target_spec.family, synth_core::target::ArchFamily::RiscV) {
+                vec![format!("synth_func_{}", func.index)]
+            } else {
+                Vec::new()
+            };
         compiled_funcs.push(ElfFunction {
             name: name.clone(),
             code: compiled.code,
             relocations: compiled.relocations,
+            aliases,
         });
 
         // Run verification if requested
@@ -2307,53 +2321,43 @@ fn build_riscv_elf(_code: &[u8], _func_name: &str) -> Result<Vec<u8>> {
 }
 
 /// Build a multi-function RISC-V relocatable ELF.
+///
+/// Uses the `RiscVElfBuilder::build_precompiled` API so per-function
+/// `auipc + jalr` placeholders for cross-function calls turn into proper
+/// `R_RISCV_CALL_PLT` entries in `.rela.text`. Export names are aliased
+/// to `synth_func_<idx>` so the selector-generated symbol references
+/// resolve against this same object.
 #[cfg(feature = "riscv")]
 fn build_multi_func_riscv_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
-    use synth_backend_riscv::{Reg, RiscVElfBuilder, RiscVElfFunction, RiscVOp};
+    use synth_backend_riscv::{
+        PrecompiledFunction, PrecompiledRelocation, RiscVElfBuilder,
+    };
 
-    // Same placeholder-then-overwrite approach as build_riscv_elf.
-    // We accumulate a single .text spanning all functions and patch the
-    // bytes back in after the ELF builder finishes layout.
-    let mut all_code: Vec<u8> = Vec::new();
-    let mut func_byte_ranges: Vec<(usize, usize)> = Vec::new();
-    let mut placeholder_funcs: Vec<RiscVElfFunction> = Vec::new();
-
+    let mut precompiled: Vec<PrecompiledFunction> = Vec::with_capacity(funcs.len());
+    let mut aliases: Vec<(String, String)> = Vec::new();
     for func in funcs {
-        // Align each function to 4 bytes (RISC-V requires 4-byte instruction alignment).
-        while !all_code.len().is_multiple_of(4) {
-            all_code.push(0);
-        }
-        let start = all_code.len();
-        all_code.extend_from_slice(&func.code);
-        let end = all_code.len();
-        func_byte_ranges.push((start, end));
-
-        let n_instrs = (end - start).div_ceil(4);
-        let placeholder_ops: Vec<RiscVOp> = (0..n_instrs)
-            .map(|_| RiscVOp::Addi {
-                rd: Reg::ZERO,
-                rs1: Reg::ZERO,
-                imm: 0,
+        let relocations: Vec<PrecompiledRelocation> = func
+            .relocations
+            .iter()
+            .map(|r| PrecompiledRelocation {
+                offset: r.offset,
+                symbol: r.symbol.clone(),
             })
             .collect();
-        placeholder_funcs.push(RiscVElfFunction {
+        precompiled.push(PrecompiledFunction {
             name: func.name.clone(),
-            ops: placeholder_ops,
+            code: func.code.clone(),
+            relocations,
         });
+        for alias in &func.aliases {
+            aliases.push((alias.clone(), func.name.clone()));
+        }
     }
 
     let builder = RiscVElfBuilder::new_relocatable();
-    let mut elf = builder
-        .build(&placeholder_funcs)
-        .context("RISC-V multi-function ELF generation failed")?;
-
-    // .text starts immediately after the 52-byte ELF header.
-    let text_offset = 52usize;
-    if elf.len() < text_offset + all_code.len() {
-        anyhow::bail!("RISC-V ELF too small to embed code");
-    }
-    elf[text_offset..text_offset + all_code.len()].copy_from_slice(&all_code);
-    Ok(elf)
+    builder
+        .build_precompiled(&precompiled, &aliases)
+        .context("RISC-V multi-function ELF generation failed")
 }
 
 #[cfg(not(feature = "riscv"))]

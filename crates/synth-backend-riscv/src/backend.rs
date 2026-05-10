@@ -6,9 +6,11 @@
 //! Track B2/B3/B4 deliverable.
 
 use crate::elf_builder::{RiscVElfBuilder, RiscVElfFunction};
+use crate::riscv_op::RiscVOp;
 use crate::selector::select_simple;
 use synth_core::backend::{
-    Backend, BackendCapabilities, BackendError, CompilationResult, CompileConfig, CompiledFunction,
+    Backend, BackendCapabilities, BackendError, CodeRelocation, CompilationResult, CompileConfig,
+    CompiledFunction,
 };
 use synth_core::target::{ArchFamily, IsaVariant, TargetSpec};
 use synth_core::wasm_decoder::DecodedModule;
@@ -101,6 +103,12 @@ impl Backend for RiscVBackend {
         let selection = select_simple(ops, num_params)
             .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
 
+        // Record one CodeRelocation per cross-function `Call` so callers
+        // (the CLI, mostly) can re-emit a `.rela.text` entry alongside the
+        // multi-function ELF. We compute offsets by replaying the same
+        // pass-1 byte cursor logic the ELF builder uses.
+        let relocations = collect_call_relocations(&selection.ops);
+
         // Encode the function via the ELF builder's per-function pipeline so
         // we benefit from label resolution. We discard the ELF and keep the
         // raw bytes — that's what `CompiledFunction` carries.
@@ -114,7 +122,7 @@ impl Backend for RiscVBackend {
             name: name.to_string(),
             code: bytes,
             wasm_ops: ops.to_vec(),
-            relocations: Vec::new(),
+            relocations,
         })
     }
 
@@ -202,6 +210,28 @@ fn encode_function_bytes(f: &RiscVElfFunction) -> Result<Vec<u8>, BackendError> 
         elf[text_shdr + 23],
     ]) as usize;
     Ok(elf[sh_offset..sh_offset + sh_size].to_vec())
+}
+
+/// Walk the selector's output and emit one `CodeRelocation` per `Call`,
+/// recording the byte offset where the placeholder `auipc + jalr` pair
+/// starts. Mirrors the cursor logic in `RiscVElfBuilder::assemble_function`.
+fn collect_call_relocations(ops: &[RiscVOp]) -> Vec<CodeRelocation> {
+    let mut relocs = Vec::new();
+    let mut cursor: u32 = 0;
+    for op in ops {
+        match op {
+            RiscVOp::Label { .. } => {}
+            RiscVOp::Call { label } => {
+                relocs.push(CodeRelocation {
+                    offset: cursor,
+                    symbol: label.clone(),
+                });
+                cursor += 8;
+            }
+            _ => cursor += 4,
+        }
+    }
+    relocs
 }
 
 /// Re-run the selector for a function whose `CompiledFunction` we already have.
@@ -300,6 +330,30 @@ mod tests {
             WasmOp::LocalGet(1), // re-read
         ];
         assert_eq!(count_params(&ops), 1);
+    }
+
+    #[test]
+    fn compile_function_records_call_relocation() {
+        let b = RiscVBackend::new();
+        let cfg = CompileConfig {
+            target: TargetSpec::riscv32imac(),
+            ..Default::default()
+        };
+        // `i32.const 3 ; call 1 ; end` — single cross-function call.
+        let ops = vec![
+            WasmOp::I32Const(3),
+            WasmOp::Call(1),
+            WasmOp::End,
+        ];
+        let f = b.compile_function("caller", &ops, &cfg).unwrap();
+        assert_eq!(f.relocations.len(), 1, "expected exactly one relocation");
+        assert_eq!(f.relocations[0].symbol, "synth_func_1");
+        // The relocation offset must point at an `auipc t1, ...` (opcode 0x17).
+        let off = f.relocations[0].offset as usize;
+        assert!(off + 8 <= f.code.len(), "code too short for placeholder pair");
+        let auipc_word =
+            u32::from_le_bytes([f.code[off], f.code[off + 1], f.code[off + 2], f.code[off + 3]]);
+        assert_eq!(auipc_word & 0x7F, 0x17, "relocation must target an auipc");
     }
 
     #[test]

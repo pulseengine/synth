@@ -312,6 +312,32 @@ impl Selector {
                 self.emitted_return = true;
             }
 
+            // ─── Cross-function calls ──────────────────────────────────
+            // We don't know the callee's signature here, so we emit a
+            // plain `call synth_func_<idx>` and leave argument staging
+            // (i.e. ensuring args land in a0..a7) to a future
+            // calling-convention pass. The ELF builder turns the Call
+            // into an `auipc + jalr` pair plus a `R_RISCV_CALL_PLT`
+            // relocation; the linker resolves the symbol against the
+            // sibling function defined in the same object.
+            //
+            // The return value (in a0 by RV calling convention) is pushed
+            // back onto the virtual stack so subsequent ops see it.
+            Call(idx) => {
+                self.out.push(RiscVOp::Call {
+                    label: format!("synth_func_{}", idx),
+                });
+                let dst = self.alloc_temp();
+                // mv dst, a0  (preserve callee's return value into a temp
+                // so we don't trip when the caller reuses a0 later).
+                self.out.push(RiscVOp::Addi {
+                    rd: dst,
+                    rs1: Reg::A0,
+                    imm: 0,
+                });
+                self.push_val(dst);
+            }
+
             other => return Err(SelectorError::Unsupported(other.clone())),
         }
         Ok(())
@@ -1258,5 +1284,48 @@ mod tests {
             1,
         );
         assert!(matches!(r, Err(SelectorError::ImmediateTooLarge { .. })));
+    }
+
+    #[test]
+    fn call_lowers_to_call_op_with_synth_func_label() {
+        let out = s(
+            &[
+                WasmOp::Call(5),
+                WasmOp::End,
+            ],
+            0,
+        );
+        // We expect a `RiscVOp::Call { label: "synth_func_5" }` followed by
+        // a `mv tmp, a0` (an Addi rs1=A0 imm=0) so the return value is on
+        // the virtual stack for downstream ops.
+        let call_idx = out
+            .iter()
+            .position(|op| matches!(op, RiscVOp::Call { label } if label == "synth_func_5"))
+            .expect("call must lower to RiscVOp::Call with synth_func_<idx> label");
+        // The very next op should move a0 into a temp.
+        assert!(matches!(
+            out[call_idx + 1],
+            RiscVOp::Addi {
+                rs1: Reg::A0,
+                imm: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn call_then_add_uses_returned_value() {
+        // (call 0) (local.get 0) i32.add — exercises the return-value plumbing.
+        let out = s(
+            &[
+                WasmOp::Call(0),
+                WasmOp::LocalGet(0),
+                WasmOp::I32Add,
+                WasmOp::End,
+            ],
+            1,
+        );
+        assert!(out.iter().any(|op| matches!(op, RiscVOp::Call { .. })));
+        assert!(out.iter().any(|op| matches!(op, RiscVOp::Add { .. })));
     }
 }
