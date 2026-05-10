@@ -397,6 +397,23 @@ impl OptimizerBridge {
                 while j > 0 && found < count {
                     j -= 1;
                     match &wasm_ops[j] {
+                        // I64ExtendI32U/S consume an i32 LocalGet and produce an
+                        // i64 — so they account for one i64 operand and we must
+                        // skip the i32 LocalGet that immediately precedes them
+                        // (otherwise we'd mistakenly mark that i32 LocalGet as
+                        // i64, double-loading the local). See issue #93.
+                        WasmOp::I64ExtendI32U | WasmOp::I64ExtendI32S => {
+                            found += 1;
+                            // Skip the i32 producer that fed this extend.
+                            if j > 0
+                                && matches!(
+                                    &wasm_ops[j - 1],
+                                    WasmOp::LocalGet(_) | WasmOp::I32Const(_)
+                                )
+                            {
+                                j -= 1;
+                            }
+                        }
                         WasmOp::LocalGet(_) => {
                             i64_local_gets.insert(j);
                             found += 1;
@@ -993,6 +1010,87 @@ impl OptimizerBridge {
                         is_dead: false,
                     });
                     inst_id += 1;
+                    builder.add_instruction();
+                    continue;
+                }
+
+                // i32 -> i64 zero-extend.
+                //
+                // Net stack effect: pop 1 i32 slot, push i64 (= 2 slots).
+                // We REUSE the consumed i32 slot for `dest_lo` (same vreg,
+                // same value semantically) and add 1 fresh slot for
+                // `dest_hi`. This keeps the `inst_id.saturating_sub(K)`
+                // arithmetic in subsequent i64 ops correct without any
+                // off-by-one shift in slot numbering.
+                //
+                // Pre-fix this op fell through to the catch-all `_ =>
+                // Opcode::Nop` arm; subsequent `Opcode::I64ShrU` /
+                // `Opcode::I64Shl` source-vreg lookups missed `vreg_to_arm`
+                // and `get_arm_reg` returned `Reg::R0` as a silent fallback,
+                // causing the i64-shift emitter to clobber AAPCS param R0
+                // (the memset destination pointer). See issue #93.
+                WasmOp::I64ExtendI32U => {
+                    let src_slot = inst_id.saturating_sub(1) as u32;
+                    let opcode = Opcode::I64ExtendI32U {
+                        dest_lo: OptReg(src_slot),
+                        dest_hi: OptReg(inst_id as u32),
+                        src: OptReg(src_slot),
+                    };
+                    instructions.push(Instruction {
+                        id: inst_id,
+                        opcode,
+                        block_id: 0,
+                        is_dead: false,
+                    });
+                    inst_id += 1; // +1 slot net (dest_hi only; dest_lo reuses src)
+                    builder.add_instruction();
+                    continue;
+                }
+
+                // i32 -> i64 sign-extend. Same slot accounting as
+                // `I64ExtendI32U` — see comment there.
+                WasmOp::I64ExtendI32S => {
+                    let src_slot = inst_id.saturating_sub(1) as u32;
+                    let opcode = Opcode::I64ExtendI32S {
+                        dest_lo: OptReg(src_slot),
+                        dest_hi: OptReg(inst_id as u32),
+                        src: OptReg(src_slot),
+                    };
+                    instructions.push(Instruction {
+                        id: inst_id,
+                        opcode,
+                        block_id: 0,
+                        is_dead: false,
+                    });
+                    inst_id += 1;
+                    builder.add_instruction();
+                    continue;
+                }
+
+                // i64 -> i32 wrap (truncate). Net stack effect: pop i64
+                // (2 slots), push i32 (1 slot) = -1 slot. The result IS
+                // the low 32 bits of the input i64, so `dest` aliases
+                // `src_lo` by IR convention. We don't increment `inst_id`
+                // (the natural +1 from the wildcard fallthrough cancels
+                // with the -1 i64-pop, net 0 fresh slot).
+                WasmOp::I32WrapI64 => {
+                    // src_lo is at inst_id-2 (lo of the popped i64),
+                    // src_hi is at inst_id-1 (hi, discarded).
+                    let src_lo_slot = inst_id.saturating_sub(2) as u32;
+                    let opcode = Opcode::I32WrapI64 {
+                        dest: OptReg(src_lo_slot),
+                        src_lo: OptReg(src_lo_slot),
+                    };
+                    instructions.push(Instruction {
+                        id: inst_id,
+                        opcode,
+                        block_id: 0,
+                        is_dead: false,
+                    });
+                    // No inst_id increment: the wildcard `inst_id += 1`
+                    // is balanced by the -1 net slot delta of the wrap.
+                    // We `continue` to skip the wildcard's +1 and emit nothing extra.
+                    inst_id = inst_id.saturating_sub(1);
                     builder.add_instruction();
                     continue;
                 }
@@ -2918,6 +3016,85 @@ impl OptimizerBridge {
                     last_result_vreg = Some(dest_lo.0);
                     last_result_vreg_hi = Some(dest_hi.0);
                     is_i64_result = true;
+                }
+
+                // i32 -> i64 zero-extension (issue #93 fix).
+                //
+                // Critical: we MUST move `src` into a callee-saved register
+                // pair, even if `src` was already in a non-param register.
+                // The downstream `I64Shl/ShrU/ShrS` ARM emitter writes to
+                // both `rm_lo` and `rm_hi` (see `arm_encoder.rs:2872`,
+                // `:2954`, `:3036` — `AND.W rm_lo, rm_lo, #63;
+                // SUBS.W rm_hi, rm_lo, #32; ...`). Pre-fix, `src` could be
+                // an AAPCS param register (R0..R3) and the shift would
+                // clobber the caller's argument. By Mov'ing into a fresh
+                // pair from `alloc_i64_pair` (which excludes params and
+                // live vregs), we guarantee `rm_lo`/`rm_hi` are scratch.
+                Opcode::I64ExtendI32U {
+                    dest_lo,
+                    dest_hi,
+                    src,
+                } => {
+                    let src_arm = get_arm_reg(src, &vreg_to_arm, &spilled_vregs);
+                    let (new_lo, new_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    if src_arm != new_lo {
+                        arm_instrs.push(ArmOp::Mov {
+                            rd: new_lo,
+                            op2: crate::rules::Operand2::Reg(src_arm),
+                        });
+                    }
+                    arm_instrs.push(ArmOp::Movw {
+                        rd: new_hi,
+                        imm16: 0,
+                    });
+                    // Re-map dest_lo (which IS the src vreg by IR convention)
+                    // to the new lo arm reg, AND map dest_hi to the new hi.
+                    vreg_to_arm.insert(dest_lo.0, new_lo);
+                    vreg_to_arm.insert(dest_hi.0, new_hi);
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
+                    is_i64_result = true;
+                }
+
+                // i32 -> i64 sign-extension. Same scratch-pair discipline as
+                // I64ExtendI32U; the high half is `src ASR #31`.
+                Opcode::I64ExtendI32S {
+                    dest_lo,
+                    dest_hi,
+                    src,
+                } => {
+                    let src_arm = get_arm_reg(src, &vreg_to_arm, &spilled_vregs);
+                    let (new_lo, new_hi) =
+                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                    if src_arm != new_lo {
+                        arm_instrs.push(ArmOp::Mov {
+                            rd: new_lo,
+                            op2: crate::rules::Operand2::Reg(src_arm),
+                        });
+                    }
+                    // hi = src ASR #31 — sign bit replicated across all 32 bits.
+                    arm_instrs.push(ArmOp::Asr {
+                        rd: new_hi,
+                        rn: new_lo,
+                        shift: 31,
+                    });
+                    vreg_to_arm.insert(dest_lo.0, new_lo);
+                    vreg_to_arm.insert(dest_hi.0, new_hi);
+                    last_result_vreg = Some(dest_lo.0);
+                    last_result_vreg_hi = Some(dest_hi.0);
+                    is_i64_result = true;
+                }
+
+                // i64 -> i32 wrap. The result IS the low 32 bits of the
+                // input — by IR convention `dest == src_lo` (same vreg),
+                // so the lookup of `dest` is already correctly mapped to
+                // the i64 lo half's ARM register. Emit no ARM code.
+                Opcode::I32WrapI64 { dest, src_lo } => {
+                    let src_arm = get_arm_reg(src_lo, &vreg_to_arm, &spilled_vregs);
+                    vreg_to_arm.insert(dest.0, src_arm);
+                    last_result_vreg = Some(dest.0);
+                    is_i64_result = false;
                 }
 
                 // i64 multiply: UMULL + MLA cross products
