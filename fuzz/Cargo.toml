@@ -1,0 +1,66 @@
+[package]
+name = "synth-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.88"
+
+# Exclude this crate from the main workspace so that the libfuzzer-sys
+# build-script (which depends on a C++ runtime + sanitizers) does not
+# pull in nightly-only features when the main workspace is built with
+# stable rustc.
+[workspace]
+members = []
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+# Compiler crates under test. Paths are relative to /fuzz.
+synth-core = { path = "../crates/synth-core" }
+synth-synthesis = { path = "../crates/synth-synthesis" }
+synth-backend = { path = "../crates/synth-backend" }
+
+# Shared fuzz utilities (FuzzOp -> WasmOp generator, etc.)
+[lib]
+path = "src/lib.rs"
+
+# ---------------------------------------------------------------------------
+# Fuzz targets
+# ---------------------------------------------------------------------------
+# Each [[bin]] below is a libfuzzer entry point. To add a new harness:
+#   1. Drop a new file under fuzz_targets/<name>.rs.
+#   2. Add a matching [[bin]] entry here.
+#   3. Add the target name to .github/workflows/fuzz-smoke.yml `matrix.target`.
+# ---------------------------------------------------------------------------
+
+[[bin]]
+name = "wasm_ops_lower_or_error"
+path = "fuzz_targets/wasm_ops_lower_or_error.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wasm_to_ir_roundtrip_op_coverage"
+path = "fuzz_targets/wasm_to_ir_roundtrip_op_coverage.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "i64_lowering_doesnt_clobber_params"
+path = "fuzz_targets/i64_lowering_doesnt_clobber_params.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "encoder_no_panic"
+path = "fuzz_targets/encoder_no_panic.rs"
+test = false
+doc = false
+bench = false

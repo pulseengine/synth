@@ -1,0 +1,96 @@
+# Fuzz smoke — short cargo-fuzz run (~60s / target) on every PR + push to main.
+#
+# Catches new panics / unencodable instructions / silent op drops in the
+# WASM → IR → ARM lowering pipeline. Long-budget runs (1h / target with
+# corpus persistence) are out of scope for #82; this is the smoke gate.
+#
+# Target list mirrors fuzz/Cargo.toml `[[bin]]` entries. Add a new
+# fuzz_target there → add the binary name to `matrix.target` here.
+#
+# Refs: issue #82, issue #93 (silent-drop class).
+
+name: Fuzz Smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'fuzz/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/fuzz-smoke.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'fuzz/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/fuzz-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fuzz:
+    name: "${{ matrix.target }} (60s)"
+    # Match ci.yml: rust-cpu self-hosted pool, with ubuntu-latest fallback if
+    # the pool is unavailable (cargo-fuzz needs Linux for libfuzzer-sys ASan).
+    runs-on: [self-hosted, linux, x64, rust-cpu]
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - wasm_ops_lower_or_error
+          - wasm_to_ir_roundtrip_op_coverage
+          - i64_lowering_doesnt_clobber_params
+          - encoder_no_panic
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nightly Rust
+        uses: dtolnay/rust-toolchain@nightly
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: fuzz-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'fuzz/Cargo.toml') }}
+          restore-keys: fuzz-${{ runner.os }}-
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+
+      - name: Run fuzz target for 60s
+        env:
+          TARGET: ${{ matrix.target }}
+        # Force the GNU target — cargo-fuzz defaults to musl on Linux,
+        # whose statically-linked libc is incompatible with ASan
+        # (libfuzzer-sys turns ASan on by default). The GNU target has
+        # a dynamic libc and works correctly.
+        run: |
+          mkdir -p fuzz/artifacts fuzz/corpus
+          cargo +nightly fuzz run "${TARGET}" \
+            --target x86_64-unknown-linux-gnu \
+            -- -max_total_time=60 -print_final_stats=1
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash-${{ matrix.target }}
+          path: |
+            fuzz/artifacts/${{ matrix.target }}/
+            fuzz/corpus/${{ matrix.target }}/
+          retention-days: 30
+          if-no-files-found: ignore
