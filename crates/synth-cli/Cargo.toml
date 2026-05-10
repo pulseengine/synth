@@ -12,9 +12,10 @@ name = "synth"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["riscv"]
 awsm = ["synth-backend-awsm"]
 wasker = ["synth-backend-wasker"]
+riscv = ["synth-backend-riscv"]
 verify = ["synth-verify"]
 # Uncomment when loom crate is available:
 # loom = ["dep:loom-opt"]
@@ -28,6 +29,7 @@ synth-backend = { path = "../synth-backend" }
 # Optional external backends
 synth-backend-awsm = { path = "../synth-backend-awsm", optional = true }
 synth-backend-wasker = { path = "../synth-backend-wasker", optional = true }
+synth-backend-riscv = { path = "../synth-backend-riscv", optional = true }
 
 # Optional verification (requires z3)
 synth-verify = { path = "../synth-verify", optional = true, features = ["z3-solver", "arm"] }
