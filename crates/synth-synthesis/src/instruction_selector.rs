@@ -3422,6 +3422,125 @@ impl InstructionSelector {
         self.label_counter = 0;
     }
 
+    /// Try to fold a constant address into the memory access immediate.
+    ///
+    /// Detects the `i32.const C; i32.{load,store}{,8,16}{_s,_u} offset=O` pattern
+    /// and returns the effective imm12 offset `(C as u32).wrapping_add(O)` when:
+    ///
+    /// 1. The previous wasm op (`wasm_ops[idx-1]`) is `I32Const(C)`.
+    /// 2. Bounds checking is `None` (the constant address is assumed to fall in
+    ///    the linear memory range — appropriate for bare-metal targets where
+    ///    addresses are known statically and the MPU enforces protection).
+    /// 3. `(C as u32) + offset <= 4095` — fits the Thumb-2 LDR.W/STR.W imm12.
+    ///
+    /// Returns `Some(effective_offset)` to signal the caller can fold; the caller
+    /// is responsible for popping the address register from the stack and
+    /// dropping the now-unused const-materialization instructions (1-2 entries
+    /// at the tail of `instructions` whose `source_line == Some(idx-1)`).
+    ///
+    /// Issue #95: replaces 10-byte `MOVW+MOVT+LDR.W` with a 4-byte `LDR.W`
+    /// for static-address loads/stores.
+    fn try_fold_const_addr(&self, wasm_ops: &[WasmOp], idx: usize, offset: u32) -> Option<u32> {
+        if !matches!(self.bounds_check, BoundsCheckConfig::None) {
+            return None;
+        }
+        if idx == 0 {
+            return None;
+        }
+        let WasmOp::I32Const(c) = wasm_ops[idx - 1] else {
+            return None;
+        };
+        let eff = (c as u32).wrapping_add(offset);
+        if eff <= 0xFFF { Some(eff) } else { None }
+    }
+
+    /// Pop the const-materialization instructions emitted for the immediately
+    /// preceding `i32.const`. The const handler emits 1 instruction (Movw) for
+    /// values <= 0xFFFF, 2 instructions (Movw + Mvn) for inverted patterns, and
+    /// 2 instructions (Movw + Movt) otherwise — all tagged with the same
+    /// `source_line`. Removing them from the tail is safe because no later
+    /// instruction depends on the materialized value once the load/store is
+    /// folded.
+    fn drop_prev_const_materialization(instructions: &mut Vec<ArmInstruction>, const_idx: usize) {
+        while let Some(last) = instructions.last() {
+            if last.source_line == Some(const_idx) {
+                instructions.pop();
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Try to fold a constant address for an `i32.store{,8,16}` whose pattern is
+    /// `i32.const ADDR; <value-pusher>; i32.store offset=O` where
+    /// `<value-pusher>` is a stack-effect (0,1) op (I32Const, LocalGet, GlobalGet)
+    /// that emits its instructions tagged with `source_line=idx-1`.
+    ///
+    /// Returns `Some(effective_offset)` to signal the caller can fold; the
+    /// caller is responsible for splicing out the addr-const instructions
+    /// (tagged `source_line=idx-2`) from the tail of `instructions` while
+    /// preserving the value chunk on top.
+    fn try_fold_const_addr_store(
+        &self,
+        wasm_ops: &[WasmOp],
+        idx: usize,
+        offset: u32,
+    ) -> Option<u32> {
+        if !matches!(self.bounds_check, BoundsCheckConfig::None) {
+            return None;
+        }
+        if idx < 2 {
+            return None;
+        }
+        // Value-pusher must be a (0,1) op so wasm_ops[idx-2] is reliably the
+        // address-pushing op (no nested stack consumption between addr and store).
+        let value_op = &wasm_ops[idx - 1];
+        if !matches!(
+            value_op,
+            WasmOp::I32Const(_) | WasmOp::LocalGet(_) | WasmOp::GlobalGet(_)
+        ) {
+            return None;
+        }
+        let WasmOp::I32Const(c) = wasm_ops[idx - 2] else {
+            return None;
+        };
+        let eff = (c as u32).wrapping_add(offset);
+        if eff <= 0xFFF { Some(eff) } else { None }
+    }
+
+    /// Splice out the addr-const materialization instructions (those tagged
+    /// `source_line=addr_const_idx`) from the tail of `instructions`, while
+    /// preserving the value-pusher chunk (tagged `source_line=value_idx`) that
+    /// sits on top. Used by the store fold (issue #95) to drop the now-unused
+    /// `MOVW(+MOVT)` for the address.
+    fn splice_out_addr_const_materialization(
+        instructions: &mut Vec<ArmInstruction>,
+        addr_const_idx: usize,
+        value_idx: usize,
+    ) {
+        // Save value chunk from the tail.
+        let mut value_tail: Vec<ArmInstruction> = Vec::new();
+        while let Some(last) = instructions.last() {
+            if last.source_line == Some(value_idx) {
+                value_tail.push(instructions.pop().unwrap());
+            } else {
+                break;
+            }
+        }
+        // Drop the addr-const chunk now exposed at the tail.
+        while let Some(last) = instructions.last() {
+            if last.source_line == Some(addr_const_idx) {
+                instructions.pop();
+            } else {
+                break;
+            }
+        }
+        // Restore value chunk in original order.
+        while let Some(instr) = value_tail.pop() {
+            instructions.push(instr);
+        }
+    }
+
     /// Select ARM instructions using a stack-based approach with AAPCS calling convention
     ///
     /// This method properly tracks the WASM virtual stack and generates code that
@@ -4036,7 +4155,10 @@ impl InstructionSelector {
 
                 // Memory operations need stack-aware handling
                 I32Load { offset, .. } => {
-                    // Pop address from stack
+                    // Issue #95: fold `i32.const C; i32.load offset=O` to a
+                    // single `LDR rd, [R11, #(C+O)]` when the effective offset
+                    // fits in imm12. Drops the MOVW(+MOVT) const materialization.
+                    let folded = self.try_fold_const_addr(wasm_ops, idx, *offset);
                     let addr = stack.pop().ok_or_else(|| {
                         synth_core::Error::synthesis(
                             "stack underflow: malformed WASM or compiler bug".to_string(),
@@ -4052,19 +4174,33 @@ impl InstructionSelector {
                         alloc_temp_safe(&mut next_temp, &stack)?
                     };
 
-                    // Generate load with optional bounds checking
-                    let load_ops =
-                        self.generate_load_with_bounds_check(dst, addr, *offset as i32, 4);
-                    for op in load_ops {
+                    if let Some(eff_offset) = folded {
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
                         instructions.push(ArmInstruction {
-                            op,
+                            op: ArmOp::Ldr {
+                                rd: dst,
+                                addr: MemAddr::imm(Reg::R11, eff_offset as i32),
+                            },
                             source_line: Some(idx),
                         });
+                    } else {
+                        // Generate load with optional bounds checking
+                        let load_ops =
+                            self.generate_load_with_bounds_check(dst, addr, *offset as i32, 4);
+                        for op in load_ops {
+                            instructions.push(ArmInstruction {
+                                op,
+                                source_line: Some(idx),
+                            });
+                        }
                     }
                     stack.push(dst);
                 }
 
                 I32Store { offset, .. } => {
+                    // Issue #95: fold `i32.const C; <pusher>; i32.store offset=O`
+                    // to `STR val_reg, [R11, #(C+O)]` when effective offset fits.
+                    let folded = self.try_fold_const_addr_store(wasm_ops, idx, *offset);
                     // WASM i32.store pops: value first, then address
                     let value = stack.pop().ok_or_else(|| {
                         synth_core::Error::synthesis(
@@ -4077,14 +4213,29 @@ impl InstructionSelector {
                         )
                     })?;
 
-                    // Generate store with optional bounds checking
-                    let store_ops =
-                        self.generate_store_with_bounds_check(value, addr, *offset as i32, 4);
-                    for op in store_ops {
+                    if let Some(eff_offset) = folded {
+                        Self::splice_out_addr_const_materialization(
+                            &mut instructions,
+                            idx - 2,
+                            idx - 1,
+                        );
                         instructions.push(ArmInstruction {
-                            op,
+                            op: ArmOp::Str {
+                                rd: value,
+                                addr: MemAddr::imm(Reg::R11, eff_offset as i32),
+                            },
                             source_line: Some(idx),
                         });
+                    } else {
+                        // Generate store with optional bounds checking
+                        let store_ops =
+                            self.generate_store_with_bounds_check(value, addr, *offset as i32, 4);
+                        for op in store_ops {
+                            instructions.push(ArmInstruction {
+                                op,
+                                source_line: Some(idx),
+                            });
+                        }
                     }
                     // Store doesn't push anything to stack
                 }
@@ -4094,6 +4245,8 @@ impl InstructionSelector {
                 | I32Load8U { offset, .. }
                 | I32Load16S { offset, .. }
                 | I32Load16U { offset, .. } => {
+                    // Issue #95: same const-address fold as I32Load.
+                    let folded = self.try_fold_const_addr(wasm_ops, idx, *offset);
                     let addr = stack.pop().ok_or_else(|| {
                         synth_core::Error::synthesis(
                             "stack underflow: malformed WASM or compiler bug".to_string(),
@@ -4115,24 +4268,42 @@ impl InstructionSelector {
                         _ => unreachable!(),
                     };
 
-                    let load_ops = self.generate_subword_load_with_bounds_check(
-                        dst,
-                        addr,
-                        *offset as i32,
-                        access_size,
-                        sign_extend,
-                    );
-                    for arm_op in load_ops {
+                    if let Some(eff_offset) = folded {
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        let mem = MemAddr::imm(Reg::R11, eff_offset as i32);
+                        let arm_op = match (access_size, sign_extend) {
+                            (1, false) => ArmOp::Ldrb { rd: dst, addr: mem },
+                            (1, true) => ArmOp::Ldrsb { rd: dst, addr: mem },
+                            (2, false) => ArmOp::Ldrh { rd: dst, addr: mem },
+                            (2, true) => ArmOp::Ldrsh { rd: dst, addr: mem },
+                            _ => unreachable!(),
+                        };
                         instructions.push(ArmInstruction {
                             op: arm_op,
                             source_line: Some(idx),
                         });
+                    } else {
+                        let load_ops = self.generate_subword_load_with_bounds_check(
+                            dst,
+                            addr,
+                            *offset as i32,
+                            access_size,
+                            sign_extend,
+                        );
+                        for arm_op in load_ops {
+                            instructions.push(ArmInstruction {
+                                op: arm_op,
+                                source_line: Some(idx),
+                            });
+                        }
                     }
                     stack.push(dst);
                 }
 
                 // Sub-word stores (i32) — like I32Store but with STRB/STRH
                 I32Store8 { offset, .. } | I32Store16 { offset, .. } => {
+                    // Issue #95: same const-address fold as I32Store.
+                    let folded = self.try_fold_const_addr_store(wasm_ops, idx, *offset);
                     let value = stack.pop().ok_or_else(|| {
                         synth_core::Error::synthesis(
                             "stack underflow: malformed WASM or compiler bug".to_string(),
@@ -4150,17 +4321,41 @@ impl InstructionSelector {
                         _ => unreachable!(),
                     };
 
-                    let store_ops = self.generate_subword_store_with_bounds_check(
-                        value,
-                        addr,
-                        *offset as i32,
-                        access_size,
-                    );
-                    for arm_op in store_ops {
+                    if let Some(eff_offset) = folded {
+                        Self::splice_out_addr_const_materialization(
+                            &mut instructions,
+                            idx - 2,
+                            idx - 1,
+                        );
+                        let mem = MemAddr::imm(Reg::R11, eff_offset as i32);
+                        let arm_op = match access_size {
+                            1 => ArmOp::Strb {
+                                rd: value,
+                                addr: mem,
+                            },
+                            2 => ArmOp::Strh {
+                                rd: value,
+                                addr: mem,
+                            },
+                            _ => unreachable!(),
+                        };
                         instructions.push(ArmInstruction {
                             op: arm_op,
                             source_line: Some(idx),
                         });
+                    } else {
+                        let store_ops = self.generate_subword_store_with_bounds_check(
+                            value,
+                            addr,
+                            *offset as i32,
+                            access_size,
+                        );
+                        for arm_op in store_ops {
+                            instructions.push(ArmInstruction {
+                                op: arm_op,
+                                source_line: Some(idx),
+                            });
+                        }
                     }
                 }
 
@@ -10686,6 +10881,256 @@ mod tests {
         assert!(
             has_ldr_from_sp,
             "i32 LocalGet should Ldr from SP-relative slot"
+        );
+    }
+
+    // =========================================================================
+    // Issue #95: constant-address load/store fold to base+offset
+    // =========================================================================
+
+    /// Helper: count `Movw` and `Movt` instructions in the prologue-stripped tail.
+    fn count_movw_movt(instrs: &[ArmInstruction]) -> usize {
+        instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Movw { .. } | ArmOp::Movt { .. }))
+            .count()
+    }
+
+    #[test]
+    fn test_issue_95_const_addr_load_folds_to_base_offset() {
+        // Pattern: (i32.const 0x100) (i32.load offset=8) (end)
+        // Effective offset = 0x100 + 8 = 0x108 (fits imm12).
+        // Expected: ONE Ldr [R11, #0x108]; NO Movw/Movt for the address.
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(0x100),
+            WasmOp::I32Load {
+                offset: 8,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // The Movw/Movt for the address const must be gone — there should be
+        // no Movw/Movt anywhere in the body (only loads).
+        assert_eq!(
+            count_movw_movt(&instrs),
+            0,
+            "issue #95: constant-address load should NOT materialize the address \
+             via Movw/Movt; got: {instrs:#?}"
+        );
+
+        // There should be a single Ldr with base=R11 and offset=0x108.
+        let ldrs: Vec<_> = instrs
+            .iter()
+            .filter_map(|i| match &i.op {
+                ArmOp::Ldr { rd, addr } => Some((rd, addr)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ldrs.len(), 1, "expected exactly one Ldr; got {ldrs:?}");
+        let (_rd, addr) = ldrs[0];
+        assert_eq!(addr.base, Reg::R11, "load base must be R11 (memory base)");
+        assert_eq!(
+            addr.offset, 0x108,
+            "load offset must be folded effective offset"
+        );
+        assert_eq!(
+            addr.offset_reg, None,
+            "folded load must use [base, #imm], not register offset"
+        );
+    }
+
+    #[test]
+    fn test_issue_95_const_addr_load_falls_back_when_offset_too_large() {
+        // Pattern: (i32.const 0x10000) (i32.load offset=8) (end)
+        // Effective offset = 0x10008 > 4095 — must fall back to MOVW+MOVT path.
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(0x10000),
+            WasmOp::I32Load {
+                offset: 8,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        // MOVW for the low half of the address must still be emitted.
+        let has_movw = instrs.iter().any(|i| matches!(&i.op, ArmOp::Movw { .. }));
+        assert!(
+            has_movw,
+            "fallback path: 0x10000 must materialize via Movw; got: {instrs:#?}"
+        );
+        // The Ldr should still appear, but with a register offset (fallback path).
+        let ldr = instrs
+            .iter()
+            .find_map(|i| match &i.op {
+                ArmOp::Ldr { addr, .. } => Some(addr.clone()),
+                _ => None,
+            })
+            .expect("must still emit a Ldr");
+        assert!(
+            ldr.offset_reg.is_some(),
+            "fallback Ldr should use register-offset addressing, not folded imm"
+        );
+    }
+
+    #[test]
+    fn test_issue_95_const_addr_store_folds_to_base_offset() {
+        // Pattern: (i32.const 0x100) (local.get 0) (i32.store offset=4) (end)
+        // Effective offset = 0x104 (fits imm12).
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(0x100),
+            WasmOp::LocalGet(0),
+            WasmOp::I32Store {
+                offset: 4,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        // The address-const Movw must be gone.
+        assert_eq!(
+            count_movw_movt(&instrs),
+            0,
+            "issue #95: const-addr store should NOT materialize the address; got: {instrs:#?}"
+        );
+        // Single Str with base=R11, offset=0x104, no offset_reg.
+        let strs: Vec<_> = instrs
+            .iter()
+            .filter_map(|i| match &i.op {
+                ArmOp::Str { rd, addr } => Some((rd, addr)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(strs.len(), 1, "expected exactly one Str; got {strs:?}");
+        let (_rd, addr) = strs[0];
+        assert_eq!(addr.base, Reg::R11);
+        assert_eq!(addr.offset, 0x104);
+        assert_eq!(addr.offset_reg, None);
+    }
+
+    #[test]
+    fn test_issue_95_const_addr_subword_loads_fold() {
+        let db = RuleDatabase::new();
+
+        // i32.load8_u
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let ops = vec![
+            WasmOp::I32Const(0x10),
+            WasmOp::I32Load8U {
+                offset: 0x20,
+                align: 1,
+            },
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&ops, 0).unwrap();
+        assert_eq!(count_movw_movt(&instrs), 0);
+        let ldrb = instrs
+            .iter()
+            .find_map(|i| match &i.op {
+                ArmOp::Ldrb { addr, .. } => Some(addr),
+                _ => None,
+            })
+            .expect("must emit Ldrb");
+        assert_eq!(ldrb.base, Reg::R11);
+        assert_eq!(ldrb.offset, 0x30);
+        assert_eq!(ldrb.offset_reg, None);
+
+        // i32.load16_s
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let ops = vec![
+            WasmOp::I32Const(0x40),
+            WasmOp::I32Load16S {
+                offset: 2,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&ops, 0).unwrap();
+        assert_eq!(count_movw_movt(&instrs), 0);
+        let ldrsh = instrs
+            .iter()
+            .find_map(|i| match &i.op {
+                ArmOp::Ldrsh { addr, .. } => Some(addr),
+                _ => None,
+            })
+            .expect("must emit Ldrsh");
+        assert_eq!(ldrsh.base, Reg::R11);
+        assert_eq!(ldrsh.offset, 0x42);
+    }
+
+    #[test]
+    fn test_issue_95_const_addr_subword_stores_fold() {
+        let db = RuleDatabase::new();
+
+        // i32.store8 with const value
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let ops = vec![
+            WasmOp::I32Const(0x80),
+            WasmOp::I32Const(42),
+            WasmOp::I32Store8 {
+                offset: 0,
+                align: 1,
+            },
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&ops, 0).unwrap();
+        // Only the *value* const remains as Movw (≤ 0xFFFF: single Movw); addr is folded.
+        assert_eq!(
+            count_movw_movt(&instrs),
+            1,
+            "value Movw must remain, address Movw must be folded; got: {instrs:#?}"
+        );
+        let strb = instrs
+            .iter()
+            .find_map(|i| match &i.op {
+                ArmOp::Strb { addr, .. } => Some(addr),
+                _ => None,
+            })
+            .expect("must emit Strb");
+        assert_eq!(strb.base, Reg::R11);
+        assert_eq!(strb.offset, 0x80);
+        assert_eq!(strb.offset_reg, None);
+    }
+
+    #[test]
+    fn test_issue_95_no_fold_when_value_is_complex_expression() {
+        // For stores, value at idx-1 must be a (0,1) pusher. If it's a complex
+        // expression (e.g., the result of an i32.add), we conservatively skip
+        // the fold to avoid the splice complexity.
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+
+        // Pattern: const 0x100, local.get 0, local.get 1, i32.add, i32.store offset=0
+        // Here wasm_ops[idx-1] is i32.add, which is (2,1). The fold should NOT apply.
+        let ops = vec![
+            WasmOp::I32Const(0x100),
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&ops, 2).unwrap();
+        // Movw for the address must remain since we couldn't safely splice it out.
+        let has_movw = instrs.iter().any(|i| matches!(&i.op, ArmOp::Movw { .. }));
+        assert!(
+            has_movw,
+            "complex-value stores must NOT fold; address Movw should remain. got: {instrs:#?}"
         );
     }
 }
