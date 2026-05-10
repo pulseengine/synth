@@ -1319,6 +1319,17 @@ impl OptimizerBridge {
         // Insertion order tracking for LRU eviction
         let mut vreg_alloc_order: Vec<u32> = Vec::new();
 
+        // Known i64 constant values keyed by their `dest_lo` vreg id. Populated
+        // when we lower `Opcode::I64Const`; consulted by i64 shift / mask
+        // handlers to detect compile-time-constant operands and avoid emitting
+        // the full 38-byte runtime shift sequence.
+        //
+        // Issue #94: when a u64-packed FFI return is split via `i64.shr_u 32`
+        // followed by `i32.wrap_i64`, the hi32 field is already in the high
+        // register of the i64 pair — no shift instructions are needed, just a
+        // vreg rename plus a single `mov rd_hi, #0` for the (now-zero) hi half.
+        let mut known_i64_consts: HashMap<u32, i64> = HashMap::new();
+
         // Helper to get ARM reg from virtual reg.
         // Also checks spill slots — if a vreg was spilled, returns R12 (IP scratch).
         // Callers should also call `reload_spill` to emit the actual load instruction.
@@ -1386,6 +1397,106 @@ impl OptimizerBridge {
                 });
             }
         };
+
+        // Pre-pass for issue #94: find i64 constants whose ONLY use is as the
+        // shift amount of a shr_u/shr_s where the value is 32, or as the mask
+        // operand of an `i64.and 0xFFFFFFFF` — those constants are folded away
+        // by the shift / and handlers below, so the MOVs that load them into
+        // registers are dead. This skip set is consulted in the I64Const
+        // handler to bypass emitting those MOVs (saves ~4 bytes per fold).
+        let mut skip_const_dest_lo: std::collections::HashSet<u32> =
+            std::collections::HashSet::new();
+        {
+            // First, collect simple constant values produced by I64Const (we
+            // only need their `value` and `dest_lo` here — the rest is
+            // determined by the consumer instruction below).
+            let mut const_values: HashMap<u32, i64> = HashMap::new();
+            // Count uses of each const dest_lo across the IR. A const is
+            // skip-eligible only if it has exactly one use and that use is the
+            // folded shift / and pattern.
+            let mut use_count: HashMap<u32, u32> = HashMap::new();
+            for inst in instructions {
+                if let Opcode::I64Const { dest_lo, value, .. } = &inst.opcode {
+                    const_values.insert(dest_lo.0, *value);
+                }
+                let mut bump = |v: u32| {
+                    *use_count.entry(v).or_insert(0) += 1;
+                };
+                match &inst.opcode {
+                    Opcode::I64Add {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64Sub {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64Or {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64Xor {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64Mul {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64DivS {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64DivU {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64RemS {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64RemU {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64Shl {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64ShrU {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64ShrS {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64And {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64Eq {
+                        src1_lo, src2_lo, ..
+                    }
+                    | Opcode::I64Ne {
+                        src1_lo, src2_lo, ..
+                    } => {
+                        bump(src1_lo.0);
+                        bump(src2_lo.0);
+                    }
+                    _ => {}
+                }
+            }
+            // Now mark constants whose only use is the folded pattern.
+            for inst in instructions {
+                match &inst.opcode {
+                    Opcode::I64ShrU { src2_lo, .. } | Opcode::I64ShrS { src2_lo, .. } => {
+                        if use_count.get(&src2_lo.0).copied() == Some(1)
+                            && let Some(v) = const_values.get(&src2_lo.0)
+                            && (*v as u64) & 0x3F == 32
+                        {
+                            skip_const_dest_lo.insert(src2_lo.0);
+                        }
+                    }
+                    Opcode::I64And { src2_lo, .. } => {
+                        if use_count.get(&src2_lo.0).copied() == Some(1)
+                            && let Some(v) = const_values.get(&src2_lo.0)
+                            && (*v as u64) == 0xFFFF_FFFF
+                        {
+                            skip_const_dest_lo.insert(src2_lo.0);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
 
         // First pass: map Load instructions (local.get) to ARM registers
         for inst in instructions {
@@ -2153,6 +2264,16 @@ impl OptimizerBridge {
                     dest_hi,
                     value,
                 } => {
+                    // Record the constant value so downstream i64 shift / mask
+                    // handlers can detect and special-case constant operands.
+                    // See `known_i64_consts` declaration for the rationale (issue #94).
+                    known_i64_consts.insert(dest_lo.0, *value);
+                    // Issue #94: if the pre-pass marked this constant as
+                    // dead-on-arrival (its sole use is folded by the
+                    // shift/and handler), skip emitting it entirely.
+                    if skip_const_dest_lo.contains(&dest_lo.0) {
+                        continue;
+                    }
                     // Load 64-bit constant into register pair
                     let lo = (*value & 0xFFFFFFFF) as u32;
                     let hi = ((*value >> 32) & 0xFFFFFFFF) as u32;
@@ -2282,6 +2403,33 @@ impl OptimizerBridge {
                 } => {
                     let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
+                    // Issue #94: `i64.and` against a constant low-half mask
+                    // (typically `0xFFFFFFFF` to extract the lo32 of a u64-packed
+                    // FFI return). The lo half collapses to a no-op rename, the
+                    // hi half collapses to MOV #0 — saving the two AND.W
+                    // instructions (8 bytes total) plus the MOVW/MOVT for the
+                    // mask constant itself (deduped by ConstantFolding/CSE in
+                    // most cases, but the ANDs always remain).
+                    let mask = known_i64_consts.get(&src2_lo.0).copied();
+                    if let Some(m) = mask {
+                        let m_u64 = m as u64;
+                        if m_u64 == 0xFFFF_FFFF {
+                            // Low 32 bits unchanged, high 32 bits zeroed.
+                            let rd_hi =
+                                alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs).1;
+                            vreg_to_arm.insert(dest_lo.0, rn_lo);
+                            vreg_to_arm.insert(dest_hi.0, rd_hi);
+                            arm_instrs.push(ArmOp::Mov {
+                                rd: rd_hi,
+                                op2: Operand2::Imm(0),
+                            });
+                            last_result_vreg = Some(dest_lo.0);
+                            last_result_vreg_hi = Some(dest_hi.0);
+                            is_i64_result = true;
+                            // Skip the generic AND emit below.
+                            continue;
+                        }
+                    }
                     let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
                     let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
                     let (rd_lo, rd_hi) =
@@ -2843,23 +2991,47 @@ impl OptimizerBridge {
                 } => {
                     let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
-                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
-                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd_lo, rd_hi) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
-                    vreg_to_arm.insert(dest_lo.0, rd_lo);
-                    vreg_to_arm.insert(dest_hi.0, rd_hi);
-                    arm_instrs.push(ArmOp::I64ShrS {
-                        rd_lo,
-                        rd_hi,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                    });
-                    last_result_vreg = Some(dest_lo.0);
-                    last_result_vreg_hi = Some(dest_hi.0);
-                    is_i64_result = true;
+                    // Issue #94 (signed variant): `i64.shr_s 32; i32.wrap_i64`
+                    // also extracts the upper 32 bits unchanged. dest_lo = rn_hi,
+                    // dest_hi = sign-extension of rn_hi (ASR #31 of rn_hi).
+                    let shr_const = known_i64_consts
+                        .get(&src2_lo.0)
+                        .copied()
+                        .map(|v| (v as u64) & 0x3F);
+                    if shr_const == Some(32) {
+                        let rd_hi =
+                            alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs).1;
+                        vreg_to_arm.insert(dest_lo.0, rn_hi);
+                        vreg_to_arm.insert(dest_hi.0, rd_hi);
+                        // ASR rd_hi, rn_hi, #31 — replicate the sign bit across
+                        // the new hi half. 4-byte Thumb-2 encoding via Asr-imm.
+                        arm_instrs.push(ArmOp::Asr {
+                            rd: rd_hi,
+                            rn: rn_hi,
+                            shift: 31,
+                        });
+                        last_result_vreg = Some(dest_lo.0);
+                        last_result_vreg_hi = Some(dest_hi.0);
+                        is_i64_result = true;
+                    } else {
+                        let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                        let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                        let (rd_lo, rd_hi) =
+                            alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                        vreg_to_arm.insert(dest_lo.0, rd_lo);
+                        vreg_to_arm.insert(dest_hi.0, rd_hi);
+                        arm_instrs.push(ArmOp::I64ShrS {
+                            rd_lo,
+                            rd_hi,
+                            rn_lo,
+                            rn_hi,
+                            rm_lo,
+                            rm_hi,
+                        });
+                        last_result_vreg = Some(dest_lo.0);
+                        last_result_vreg_hi = Some(dest_hi.0);
+                        is_i64_result = true;
+                    }
                 }
 
                 // i64 logical shift right
@@ -2873,23 +3045,51 @@ impl OptimizerBridge {
                 } => {
                     let rn_lo = get_arm_reg(src1_lo, &vreg_to_arm, &spilled_vregs);
                     let rn_hi = get_arm_reg(src1_hi, &vreg_to_arm, &spilled_vregs);
-                    let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
-                    let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
-                    let (rd_lo, rd_hi) =
-                        alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
-                    vreg_to_arm.insert(dest_lo.0, rd_lo);
-                    vreg_to_arm.insert(dest_hi.0, rd_hi);
-                    arm_instrs.push(ArmOp::I64ShrU {
-                        rd_lo,
-                        rd_hi,
-                        rn_lo,
-                        rn_hi,
-                        rm_lo,
-                        rm_hi,
-                    });
-                    last_result_vreg = Some(dest_lo.0);
-                    last_result_vreg_hi = Some(dest_hi.0);
-                    is_i64_result = true;
+                    // Issue #94: u64-packed FFI return — `i64.shr_u 32` extracts
+                    // the high 32 bits, which are already sitting in `rn_hi`. Skip
+                    // the 38-byte runtime shift sequence; just rename `dest_lo`
+                    // onto `rn_hi` and zero `dest_hi`. Total cost: a single
+                    // `mov rd_hi, #0` (2-4 bytes) instead of 38 bytes.
+                    //
+                    // Per WASM semantics the shift amount is taken modulo 64, so
+                    // any constant whose low 6 bits == 32 hits this fast path.
+                    let shr_const = known_i64_consts
+                        .get(&src2_lo.0)
+                        .copied()
+                        .map(|v| (v as u64) & 0x3F);
+                    if shr_const == Some(32) {
+                        let rd_hi =
+                            alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs).1;
+                        // dest_lo aliases the source's hi register (no instruction).
+                        vreg_to_arm.insert(dest_lo.0, rn_hi);
+                        // dest_hi is zero — emit a single MOV rd_hi, #0.
+                        vreg_to_arm.insert(dest_hi.0, rd_hi);
+                        arm_instrs.push(ArmOp::Mov {
+                            rd: rd_hi,
+                            op2: Operand2::Imm(0),
+                        });
+                        last_result_vreg = Some(dest_lo.0);
+                        last_result_vreg_hi = Some(dest_hi.0);
+                        is_i64_result = true;
+                    } else {
+                        let rm_lo = get_arm_reg(src2_lo, &vreg_to_arm, &spilled_vregs);
+                        let rm_hi = get_arm_reg(src2_hi, &vreg_to_arm, &spilled_vregs);
+                        let (rd_lo, rd_hi) =
+                            alloc_i64_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs);
+                        vreg_to_arm.insert(dest_lo.0, rd_lo);
+                        vreg_to_arm.insert(dest_hi.0, rd_hi);
+                        arm_instrs.push(ArmOp::I64ShrU {
+                            rd_lo,
+                            rd_hi,
+                            rn_lo,
+                            rn_hi,
+                            rm_lo,
+                            rm_hi,
+                        });
+                        last_result_vreg = Some(dest_lo.0);
+                        last_result_vreg_hi = Some(dest_hi.0);
+                        is_i64_result = true;
+                    }
                 }
 
                 // i64 rotate left
@@ -4207,5 +4407,316 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ========================================================================
+    // Issue #94: u64-packed FFI return — direct hi/lo extraction
+    // ========================================================================
+    //
+    // The canonical wasm sequence emitted by Rust → wasm for extracting the
+    // upper 32 bits of a u64-packed return value is:
+    //
+    //     local.get $packed_i64    ;; the packed u64 in an i64 local
+    //     i64.const 32
+    //     i64.shr_u
+    //     i32.wrap_i64
+    //
+    // Pre-fix, synth lowered this to ~38 bytes of generic 64-bit shift
+    // emulation. After the fix, it should collapse to a single
+    // `mov rd_hi, #0` plus a vreg rename — the hi half of the input pair
+    // is already in a register.
+
+    #[cfg(test)]
+    fn count_arm_byte_size(arm: &[ArmOp]) -> usize {
+        use crate::rules::Operand2;
+        // Mirror the size table in OptimizerBridge::estimate_arm_byte_size
+        // for the ops we care about in these tests. Keep this small and
+        // local so the tests don't depend on encoder reachability — only
+        // a regression in the optimizer bridge should change these counts.
+        arm.iter()
+            .map(|op| match op {
+                ArmOp::I64ShrU { .. } | ArmOp::I64Shl { .. } => 38,
+                ArmOp::I64ShrS { .. } => 40,
+                ArmOp::And { .. }
+                | ArmOp::Orr { .. }
+                | ArmOp::Eor { .. }
+                | ArmOp::Asr { .. }
+                | ArmOp::Adc { .. }
+                | ArmOp::Sbc { .. } => 4,
+                ArmOp::Mov { rd, op2 } => {
+                    // 16-bit Thumb encoding for MOV rd, #imm8 is available
+                    // when rd is a low register (R0..R7) and the immediate
+                    // fits in 8 bits. MOV rd, rm (register form) is 2 bytes
+                    // for low-register destinations.
+                    let rd_n = reg_idx(*rd);
+                    match op2 {
+                        Operand2::Imm(v) if rd_n < 8 && (0..=255).contains(v) => 2,
+                        Operand2::Reg(_) if rd_n < 8 => 2,
+                        _ => 4,
+                    }
+                }
+                ArmOp::Movw { .. } | ArmOp::Movt { .. } => 4,
+                _ => 4,
+            })
+            .sum()
+    }
+
+    #[cfg(test)]
+    fn reg_idx(r: crate::rules::Reg) -> u32 {
+        match r {
+            crate::rules::Reg::R0 => 0,
+            crate::rules::Reg::R1 => 1,
+            crate::rules::Reg::R2 => 2,
+            crate::rules::Reg::R3 => 3,
+            crate::rules::Reg::R4 => 4,
+            crate::rules::Reg::R5 => 5,
+            crate::rules::Reg::R6 => 6,
+            crate::rules::Reg::R7 => 7,
+            crate::rules::Reg::R8 => 8,
+            crate::rules::Reg::R9 => 9,
+            crate::rules::Reg::R10 => 10,
+            crate::rules::Reg::R11 => 11,
+            crate::rules::Reg::R12 => 12,
+            crate::rules::Reg::SP => 13,
+            crate::rules::Reg::LR => 14,
+            crate::rules::Reg::PC => 15,
+        }
+    }
+
+    /// Print before/after sizes for the canonical issue #94 pattern. This
+    /// "test" is informational — it passes regardless and is intended to be
+    /// run with `cargo test ... -- --nocapture` to surface the win in CI logs.
+    #[test]
+    fn test_issue94_size_demo() {
+        let bridge = OptimizerBridge::new();
+
+        // After-fix: shift-by-32 hits the constant-aware fast path.
+        let after_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I64Const(32),
+            WasmOp::I64ShrU,
+            WasmOp::I32WrapI64,
+        ];
+        let (instrs, _, _) = bridge.optimize_full(&after_ops).unwrap();
+        let arm_after = bridge.ir_to_arm(&instrs, 2);
+        let bytes_after = count_arm_byte_size(&arm_after);
+
+        // Pre-fix proxy: shift-by-7 takes the generic ArmOp::I64ShrU path,
+        // which is byte-identical to the unoptimized shift-by-32 emit.
+        let before_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I64Const(7),
+            WasmOp::I64ShrU,
+            WasmOp::I32WrapI64,
+        ];
+        let (instrs, _, _) = bridge.optimize_full(&before_ops).unwrap();
+        let arm_before = bridge.ir_to_arm(&instrs, 2);
+        let bytes_before = count_arm_byte_size(&arm_before);
+
+        println!(
+            "\n[issue #94 demo] hi32 extract: BEFORE = {} bytes, AFTER = {} bytes (saved {})",
+            bytes_before,
+            bytes_after,
+            bytes_before.saturating_sub(bytes_after)
+        );
+        println!("[issue #94 demo] AFTER ops emitted = {}", arm_after.len());
+        for op in &arm_after {
+            println!("[issue #94 demo]   {:?}", op);
+        }
+    }
+
+    /// Issue #94: `i64.shr_u 32` followed by `i32.wrap_i64` should NOT emit
+    /// a runtime 64-bit shift. The hi half of the source pair is already in
+    /// a register; we just need to rename + zero out the (now-unused) hi half.
+    #[test]
+    fn test_issue94_shr_u_32_lowers_to_register_rename() {
+        let bridge = OptimizerBridge::new();
+        // (i64) -> i32, body = `local.get 0; i64.const 32; i64.shr_u; i32.wrap_i64`
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),  // i64 param in R0:R1
+            WasmOp::I64Const(32), // shift amount
+            WasmOp::I64ShrU,
+            WasmOp::I32WrapI64,
+        ];
+
+        let (instrs, _, _) = bridge.optimize_full(&wasm_ops).unwrap();
+        // num_params = 1 (one i64 param occupies R0:R1 per AAPCS — but we
+        // pass 2 to ir_to_arm because each i64 counts as two AAPCS slots
+        // in the codegen's accounting).
+        let arm = bridge.ir_to_arm(&instrs, 2);
+
+        // After fix: NO ArmOp::I64ShrU should be emitted. The 38-byte runtime
+        // shift sequence is the bug we're fixing.
+        let has_runtime_shift = arm.iter().any(|op| matches!(op, ArmOp::I64ShrU { .. }));
+        assert!(
+            !has_runtime_shift,
+            "i64.shr_u with constant 32 should NOT emit ArmOp::I64ShrU; got: {:#?}",
+            arm
+        );
+
+        // Total emitted byte size should drop well below the 38-byte runtime
+        // shift alone. The pre-fix lower bound was 38 bytes for the shift
+        // plus several bytes for the constant-32 load and epilogue moves.
+        let bytes = count_arm_byte_size(&arm);
+        assert!(
+            bytes < 30,
+            "expected < 30 bytes after fix; got {} bytes: {:#?}",
+            bytes,
+            arm
+        );
+    }
+
+    /// Issue #94: signed variant. `i64.shr_s 32` extracts the upper 32 bits
+    /// just like `shr_u`, but the result is sign-extended into the (still-
+    /// unused) hi half via a single `asr rd_hi, rn_hi, #31`.
+    #[test]
+    fn test_issue94_shr_s_32_lowers_to_register_rename_with_sign_extend() {
+        let bridge = OptimizerBridge::new();
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I64Const(32),
+            WasmOp::I64ShrS,
+            WasmOp::I32WrapI64,
+        ];
+
+        let (instrs, _, _) = bridge.optimize_full(&wasm_ops).unwrap();
+        let arm = bridge.ir_to_arm(&instrs, 2);
+
+        let has_runtime_shift = arm.iter().any(|op| matches!(op, ArmOp::I64ShrS { .. }));
+        assert!(
+            !has_runtime_shift,
+            "i64.shr_s with constant 32 should NOT emit ArmOp::I64ShrS; got: {:#?}",
+            arm
+        );
+
+        // We expect exactly one ASR (for the sign-extend of the hi half).
+        let asr_count = arm
+            .iter()
+            .filter(|op| matches!(op, ArmOp::Asr { .. }))
+            .count();
+        assert_eq!(
+            asr_count, 1,
+            "expected one ASR for sign extend; got: {:#?}",
+            arm
+        );
+
+        let bytes = count_arm_byte_size(&arm);
+        assert!(
+            bytes < 30,
+            "expected < 30 bytes after fix; got {} bytes: {:#?}",
+            bytes,
+            arm
+        );
+    }
+
+    /// Issue #94: `i64.and 0xFFFFFFFF` (lo32 mask) followed by `i32.wrap_i64`
+    /// should NOT emit two AND.W instructions; the lo half is unchanged and
+    /// the hi half is zero. Becomes a register rename + `mov rd_hi, #0`.
+    #[test]
+    fn test_issue94_and_mask_low32_lowers_to_register_rename() {
+        let bridge = OptimizerBridge::new();
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I64Const(0xFFFF_FFFF),
+            WasmOp::I64And,
+            WasmOp::I32WrapI64,
+        ];
+
+        let (instrs, _, _) = bridge.optimize_full(&wasm_ops).unwrap();
+        let arm = bridge.ir_to_arm(&instrs, 2);
+
+        // After fix: at most one AND should remain, and it shouldn't be the
+        // pair of ANDs from the generic i64.and lowering. (We allow zero ANDs
+        // because the lo half is unchanged via vreg rename.)
+        let and_count = arm
+            .iter()
+            .filter(|op| matches!(op, ArmOp::And { .. }))
+            .count();
+        assert!(
+            and_count == 0,
+            "i64.and 0xFFFFFFFF should not emit any AND.W; got {} ANDs in {:#?}",
+            and_count,
+            arm
+        );
+    }
+
+    /// Sanity: a non-32 shift constant should still emit the full ArmOp::I64ShrU
+    /// (we don't want to silently regress the general case).
+    #[test]
+    fn test_issue94_shr_u_non_32_still_emits_runtime_shift() {
+        let bridge = OptimizerBridge::new();
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I64Const(7), // not 32 — generic path
+            WasmOp::I64ShrU,
+            WasmOp::I32WrapI64,
+        ];
+
+        let (instrs, _, _) = bridge.optimize_full(&wasm_ops).unwrap();
+        let arm = bridge.ir_to_arm(&instrs, 2);
+
+        let has_runtime_shift = arm.iter().any(|op| matches!(op, ArmOp::I64ShrU { .. }));
+        assert!(
+            has_runtime_shift,
+            "i64.shr_u with non-32 constant must still emit ArmOp::I64ShrU; got: {:#?}",
+            arm
+        );
+    }
+
+    /// Direct IR-level test (independent of wasm_to_ir's vreg numbering):
+    /// construct the IR by hand and verify the lowering eliminates I64ShrU.
+    #[test]
+    fn test_issue94_ir_level_shr_u_32() {
+        let bridge = OptimizerBridge::new();
+        // Pattern:
+        //   v0:v1 = I64Const 0x0123_4567_89AB_CDEF
+        //   v2:v3 = I64Const 32
+        //   v4:v5 = I64ShrU v0:v1, v2:v3
+        //
+        // Expected: no ArmOp::I64ShrU is emitted; v4 maps to the same ARM
+        // register as v1 (the hi of the source pair).
+        let instrs = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::I64Const {
+                    dest_lo: OptReg(0),
+                    dest_hi: OptReg(1),
+                    value: 0x0123_4567_89AB_CDEFi64,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 2,
+                opcode: Opcode::I64Const {
+                    dest_lo: OptReg(2),
+                    dest_hi: OptReg(3),
+                    value: 32,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 4,
+                opcode: Opcode::I64ShrU {
+                    dest_lo: OptReg(4),
+                    dest_hi: OptReg(5),
+                    src1_lo: OptReg(0),
+                    src1_hi: OptReg(1),
+                    src2_lo: OptReg(2),
+                    src2_hi: OptReg(3),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+
+        let arm = bridge.ir_to_arm(&instrs, 0);
+        let has_runtime_shift = arm.iter().any(|op| matches!(op, ArmOp::I64ShrU { .. }));
+        assert!(
+            !has_runtime_shift,
+            "IR-level: i64.shr_u with constant 32 should NOT emit ArmOp::I64ShrU; got: {:#?}",
+            arm
+        );
     }
 }
