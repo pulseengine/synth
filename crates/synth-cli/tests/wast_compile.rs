@@ -289,6 +289,82 @@ fn compile_import_call_produces_relocatable_elf() {
     );
 }
 
+/// PR #86 patch coverage: --relocatable flag must force ET_REL output even
+/// when the wasm has no imports (so no implicit relocations would be
+/// emitted). Uses an existing import-free WAST file from the suite.
+#[test]
+fn compile_with_relocatable_flag_forces_et_rel() {
+    let wast_file = wast_dir().join("i32_arithmetic.wast");
+    assert!(wast_file.exists(), "i32_arithmetic.wast missing");
+    let output = std::env::temp_dir().join("synth_test_relocatable.o");
+
+    let result = Command::new(synth_binary())
+        .args([
+            "compile",
+            wast_file.to_str().unwrap(),
+            "--all-exports",
+            "--cortex-m",
+            "--relocatable",
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to run synth binary");
+
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    let stdout = String::from_utf8_lossy(&result.stdout);
+    assert!(
+        result.status.success(),
+        "synth compile --relocatable failed:\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr,
+    );
+    assert!(output.exists(), "output not created");
+
+    let data = std::fs::read(&output).unwrap();
+    assert_eq!(&data[0..4], b"\x7fELF", "not an ELF");
+    // ET_REL == 1
+    let e_type = u16::from_le_bytes([data[16], data[17]]);
+    assert_eq!(
+        e_type, 1,
+        "--relocatable should produce ET_REL (1), got {}",
+        e_type
+    );
+}
+
+/// PR #86 patch coverage: without --relocatable, an import-free wasm should
+/// still produce ET_EXEC. This is the negative case to make sure we haven't
+/// silently changed default behaviour.
+#[test]
+fn compile_without_relocatable_flag_produces_et_exec_for_no_imports() {
+    let wast_file = wast_dir().join("i32_arithmetic.wast");
+    let output = std::env::temp_dir().join("synth_test_no_relocatable.elf");
+
+    let result = Command::new(synth_binary())
+        .args([
+            "compile",
+            wast_file.to_str().unwrap(),
+            "--all-exports",
+            "--cortex-m",
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to run synth binary");
+
+    assert!(
+        result.status.success(),
+        "default compile (no --relocatable) failed: stderr={}",
+        String::from_utf8_lossy(&result.stderr),
+    );
+    let data = std::fs::read(&output).unwrap();
+    let e_type = u16::from_le_bytes([data[16], data[17]]);
+    assert_eq!(
+        e_type, 2,
+        "default (no --relocatable, no imports) should be ET_EXEC (2)"
+    );
+}
+
 /// Verify that all expected WAST files exist (catch typos/renames)
 #[test]
 fn all_wast_files_present() {

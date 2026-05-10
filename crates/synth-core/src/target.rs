@@ -678,4 +678,82 @@ mod tests {
         let m55_triple = TargetSpec::from_triple("thumbv8.1m.main-none-eabi").unwrap();
         assert_eq!(m55_triple.triple, "thumbv8.1m.main-none-eabi");
     }
+
+    // ========================================================================
+    // M7 hardware constructor tests (PR #86 patch coverage)
+    // ========================================================================
+
+    #[test]
+    fn test_imxrt1062_capabilities() {
+        let caps = HardwareCapabilities::imxrt1062();
+        assert_eq!(caps.arch, TargetArch::ARMCortexM(CortexMVariant::M7));
+        assert!(caps.has_mpu, "i.MX RT1062 has an MPU");
+        assert_eq!(caps.mpu_regions, 16, "M7 parts have 16 MPU regions");
+        assert!(!caps.has_pmp, "ARM parts do not have PMP");
+        assert_eq!(caps.pmp_entries, 0);
+        assert!(caps.has_fpu, "i.MX RT1062 has FPU");
+        assert_eq!(
+            caps.fpu_precision,
+            Some(FPUPrecision::Single),
+            "i.MX RT1062 has single-precision FPU"
+        );
+        assert!(!caps.has_simd);
+        assert!(caps.simd_level.is_none());
+        assert!(caps.xip_capable);
+        assert_eq!(caps.flash_size, 8 * 1024 * 1024, "8MB QSPI typical");
+        assert_eq!(caps.ram_size, 1024 * 1024, "1MB OCRAM");
+    }
+
+    #[test]
+    fn test_stm32h743_capabilities() {
+        let caps = HardwareCapabilities::stm32h743();
+        assert_eq!(caps.arch, TargetArch::ARMCortexM(CortexMVariant::M7DP));
+        assert!(caps.has_mpu);
+        assert_eq!(caps.mpu_regions, 16, "STM32H743 has 16 MPU regions");
+        assert!(!caps.has_pmp);
+        assert!(caps.has_fpu);
+        assert_eq!(
+            caps.fpu_precision,
+            Some(FPUPrecision::Double),
+            "STM32H743 has double-precision FPU"
+        );
+        assert_eq!(caps.flash_size, 2 * 1024 * 1024, "2MB Flash");
+        assert_eq!(caps.ram_size, 1024 * 1024, "1MB RAM total");
+        assert!(caps.xip_capable);
+    }
+
+    #[test]
+    fn test_imxrt1062_arch_target_triple() {
+        // imxrt1062 uses the M7 variant, which maps to thumbv7em-none-eabihf.
+        let caps = HardwareCapabilities::imxrt1062();
+        assert_eq!(caps.arch.target_triple(), "thumbv7em-none-eabihf");
+        assert_eq!(caps.arch.cpu_name(), "cortex-m7");
+        assert!(caps.arch.has_hardware_fp());
+    }
+
+    #[test]
+    fn test_stm32h743_arch_target_triple() {
+        // stm32h743 uses M7DP — same triple as M7 but flagged as double-precision.
+        let caps = HardwareCapabilities::stm32h743();
+        assert_eq!(caps.arch.target_triple(), "thumbv7em-none-eabihf");
+        assert_eq!(caps.arch.cpu_name(), "cortex-m7");
+        assert!(caps.arch.has_hardware_fp());
+    }
+
+    #[test]
+    fn test_m7_hardware_capabilities_distinct_from_m4() {
+        // Regression: M7 hardware must report 16 regions, M4 must report 8.
+        // Previously the CLI's --hardware dispatch silently fell through to
+        // a wrong default — this guards the constructor selection.
+        let m4 = HardwareCapabilities::nrf52840();
+        let m7 = HardwareCapabilities::imxrt1062();
+        let m7dp = HardwareCapabilities::stm32h743();
+        assert_eq!(m4.mpu_regions, 8);
+        assert_eq!(m7.mpu_regions, 16);
+        assert_eq!(m7dp.mpu_regions, 16);
+        // M7DP must report Double, M7 must report Single, M4F must report Single.
+        assert_eq!(m4.fpu_precision, Some(FPUPrecision::Single));
+        assert_eq!(m7.fpu_precision, Some(FPUPrecision::Single));
+        assert_eq!(m7dp.fpu_precision, Some(FPUPrecision::Double));
+    }
 }

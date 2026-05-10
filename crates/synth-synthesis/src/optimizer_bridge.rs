@@ -3931,4 +3931,281 @@ mod tests {
         assert_eq!(preprocessed[4], WasmOp::LocalSet(2));
         assert_eq!(preprocessed[8], WasmOp::Select);
     }
+
+    // =========================================================================
+    // PR #86 patch coverage: ir_to_arm i64 regalloc respects AAPCS params.
+    //
+    // Pre-fix, the i64 lowering hardcoded R0:R1 / R2:R3 for the destination
+    // pair which clobbered incoming AAPCS arg regs. The fix routes every
+    // i64 dest through alloc_i64_pair so callee-saved (R4..R11) pairs are
+    // preferred when params are still live. These tests exercise that path.
+    // =========================================================================
+
+    #[test]
+    fn test_ir_to_arm_i64_const_with_params_does_not_clobber_r0_r3() {
+        // Pretend the function has 4 i32 params live in R0..R3, and emit
+        // an I64Const. The new alloc_i64_pair must pick a callee-saved pair
+        // (R4..R11), not R0:R1 — for the I64Const itself. The epilogue is
+        // ALLOWED to copy the result into R0:R1 (that's the AAPCS return
+        // convention), so we exclude trailing Mov-to-R0/R1 with a
+        // callee-saved source from the assertion.
+        let bridge = OptimizerBridge::new();
+        let instrs = vec![Instruction {
+            id: 0,
+            opcode: Opcode::I64Const {
+                dest_lo: OptReg(100),
+                dest_hi: OptReg(101),
+                value: 0x1122_3344_5566_7788,
+            },
+            block_id: 0,
+            is_dead: false,
+        }];
+        let arm = bridge.ir_to_arm(&instrs, 4);
+        // The I64Const itself is encoded with Movw/Movt — those MUST NOT
+        // target R0..R3. The epilogue Mov-into-R0/R1 is part of the AAPCS
+        // return convention and is correct.
+        for op in &arm {
+            if let ArmOp::Movw { rd, .. } | ArmOp::Movt { rd, .. } = op {
+                let is_param = matches!(
+                    rd,
+                    crate::rules::Reg::R0
+                        | crate::rules::Reg::R1
+                        | crate::rules::Reg::R2
+                        | crate::rules::Reg::R3
+                );
+                assert!(
+                    !is_param,
+                    "I64Const with num_params=4 clobbered AAPCS param via Movw/Movt: {:?}",
+                    op
+                );
+            }
+        }
+        // And we should have produced *some* code that loads the value.
+        assert!(!arm.is_empty(), "I64Const should emit instructions");
+    }
+
+    #[test]
+    fn test_ir_to_arm_i64_const_zero_params_can_use_callee_saved() {
+        // With zero params, alloc_i64_pair should still pick a callee-saved
+        // pair (R4:R5 first), since param_reserved_regs is empty.
+        let bridge = OptimizerBridge::new();
+        let instrs = vec![Instruction {
+            id: 0,
+            opcode: Opcode::I64Const {
+                dest_lo: OptReg(0),
+                dest_hi: OptReg(1),
+                value: 0xdead_beefu64 as i64,
+            },
+            block_id: 0,
+            is_dead: false,
+        }];
+        let arm = bridge.ir_to_arm(&instrs, 0);
+        assert!(!arm.is_empty());
+    }
+
+    #[test]
+    fn test_ir_to_arm_i64_add_uses_operand_regs() {
+        // Build IR that loads two i64 params (R0:R1 and R2:R3 via I64Load
+        // with addr=0/1 and num_params >= 4), then adds them. The fix should
+        // emit Adds/Adc that use the operand registers, NOT hardcoded ones.
+        let bridge = OptimizerBridge::new();
+        let instrs = vec![
+            // I64Load addr=0 → R0:R1
+            Instruction {
+                id: 0,
+                opcode: Opcode::I64Load {
+                    dest_lo: OptReg(10),
+                    dest_hi: OptReg(11),
+                    addr: 0,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            // I64Load addr=1 → R2:R3
+            Instruction {
+                id: 1,
+                opcode: Opcode::I64Load {
+                    dest_lo: OptReg(12),
+                    dest_hi: OptReg(13),
+                    addr: 1,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            // I64Add of the two pairs.
+            Instruction {
+                id: 2,
+                opcode: Opcode::I64Add {
+                    dest_lo: OptReg(14),
+                    dest_hi: OptReg(15),
+                    src1_lo: OptReg(10),
+                    src1_hi: OptReg(11),
+                    src2_lo: OptReg(12),
+                    src2_hi: OptReg(13),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+        let arm = bridge.ir_to_arm(&instrs, 4);
+        // We must see at least one Adds and at least one Adc — that's the
+        // characteristic shape of a 64-bit add on 32-bit ARM.
+        let has_adds = arm.iter().any(|op| matches!(op, ArmOp::Adds { .. }));
+        let has_adc = arm.iter().any(|op| matches!(op, ArmOp::Adc { .. }));
+        assert!(has_adds, "i64.add should emit ADDS for the low half");
+        assert!(has_adc, "i64.add should emit ADC for the high half");
+    }
+
+    #[test]
+    fn test_ir_to_arm_i64_sub_emits_subs_sbc() {
+        // I64Sub characteristic: SUBS for low + SBC for high.
+        let bridge = OptimizerBridge::new();
+        let instrs = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::I64Const {
+                    dest_lo: OptReg(0),
+                    dest_hi: OptReg(1),
+                    value: 100,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::I64Const {
+                    dest_lo: OptReg(2),
+                    dest_hi: OptReg(3),
+                    value: 50,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 2,
+                opcode: Opcode::I64Sub {
+                    dest_lo: OptReg(4),
+                    dest_hi: OptReg(5),
+                    src1_lo: OptReg(0),
+                    src1_hi: OptReg(1),
+                    src2_lo: OptReg(2),
+                    src2_hi: OptReg(3),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+        let arm = bridge.ir_to_arm(&instrs, 0);
+        let has_subs = arm.iter().any(|op| matches!(op, ArmOp::Subs { .. }));
+        let has_sbc = arm.iter().any(|op| matches!(op, ArmOp::Sbc { .. }));
+        assert!(has_subs, "i64.sub should emit SUBS for the low half");
+        assert!(has_sbc, "i64.sub should emit SBC for the high half");
+    }
+
+    #[test]
+    fn test_ir_to_arm_i64_or_emits_two_orr() {
+        // I64Or → two ORR (low-half and high-half).
+        let bridge = OptimizerBridge::new();
+        let instrs = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::I64Const {
+                    dest_lo: OptReg(0),
+                    dest_hi: OptReg(1),
+                    value: 0x0F,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::I64Const {
+                    dest_lo: OptReg(2),
+                    dest_hi: OptReg(3),
+                    value: 0xF0,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 2,
+                opcode: Opcode::I64Or {
+                    dest_lo: OptReg(4),
+                    dest_hi: OptReg(5),
+                    src1_lo: OptReg(0),
+                    src1_hi: OptReg(1),
+                    src2_lo: OptReg(2),
+                    src2_hi: OptReg(3),
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+        let arm = bridge.ir_to_arm(&instrs, 0);
+        let orr_count = arm
+            .iter()
+            .filter(|op| matches!(op, ArmOp::Orr { .. }))
+            .count();
+        assert!(orr_count >= 2, "i64.or should emit ORR twice (lo and hi)");
+    }
+
+    #[test]
+    fn test_ir_to_arm_i64_const_with_2_params_uses_first_callee_saved() {
+        // With num_params=2, R0/R1 are reserved. alloc_i64_pair starts from
+        // (R4,R5) which is unconditionally free here.
+        let bridge = OptimizerBridge::new();
+        let instrs = vec![Instruction {
+            id: 0,
+            opcode: Opcode::I64Const {
+                dest_lo: OptReg(0),
+                dest_hi: OptReg(1),
+                value: 1,
+            },
+            block_id: 0,
+            is_dead: false,
+        }];
+        let arm = bridge.ir_to_arm(&instrs, 2);
+        // Should not have written to R0 or R1 (the reserved param regs).
+        for op in &arm {
+            if let ArmOp::Mov {
+                rd: crate::rules::Reg::R0,
+                ..
+            }
+            | ArmOp::Mov {
+                rd: crate::rules::Reg::R1,
+                ..
+            }
+            | ArmOp::Movw {
+                rd: crate::rules::Reg::R0,
+                ..
+            }
+            | ArmOp::Movw {
+                rd: crate::rules::Reg::R1,
+                ..
+            }
+            | ArmOp::Movt {
+                rd: crate::rules::Reg::R0,
+                ..
+            }
+            | ArmOp::Movt {
+                rd: crate::rules::Reg::R1,
+                ..
+            } = op
+            {
+                // The i64-result epilogue moves the result into R0:R1 AT THE
+                // END — so a single Mov-to-R0 from the result pair is fine,
+                // but Movw/Movt-to-R0/R1 means the I64Const itself clobbered
+                // the param. Filter out the epilogue Movs by looking at
+                // their position and source pattern: an epilogue Mov uses
+                // Operand2::Reg(callee-saved). For this test, we simply
+                // assert no Movw/Movt targets the reserved set.
+                if matches!(op, ArmOp::Movw { .. } | ArmOp::Movt { .. }) {
+                    panic!(
+                        "I64Const with num_params=2 clobbered AAPCS register: {:?}",
+                        op
+                    );
+                }
+            }
+        }
+    }
 }

@@ -10425,4 +10425,267 @@ mod tests {
         // The instruction sequence should compile without errors
         assert!(!instrs.is_empty());
     }
+
+    // =========================================================================
+    // PR #86 patch coverage: i64 stack-frame layout, infer_i64_locals,
+    // alloc_consecutive_pair, and the prologue/epilogue frame instructions.
+    // =========================================================================
+
+    #[test]
+    fn test_compute_local_layout_no_locals() {
+        // Function with only params and no LocalGet/Set produces zero frame.
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add];
+        let layout = compute_local_layout(&ops, 2);
+        assert_eq!(layout.frame_size, 0);
+        assert!(layout.locals.is_empty());
+    }
+
+    #[test]
+    fn test_compute_local_layout_single_i32_local() {
+        // num_params=1, references local index 1 (a non-param i32 local).
+        let ops = vec![
+            WasmOp::I32Const(42),
+            WasmOp::LocalSet(1),
+            WasmOp::LocalGet(1),
+        ];
+        let layout = compute_local_layout(&ops, 1);
+        assert!(layout.locals.contains_key(&1));
+        let (off, is_i64) = layout.locals[&1];
+        assert_eq!(off, 0);
+        assert!(!is_i64, "i32 const → i32 local");
+        // 4 bytes rounded up to 8 for SP alignment.
+        assert_eq!(layout.frame_size, 8);
+    }
+
+    #[test]
+    fn test_compute_local_layout_single_i64_local() {
+        // i64 local must be 8 bytes wide.
+        let ops = vec![
+            WasmOp::I64Const(0xdead_beef_cafe_babeu64 as i64),
+            WasmOp::LocalSet(0),
+            WasmOp::LocalGet(0),
+        ];
+        let layout = compute_local_layout(&ops, 0);
+        let (off, is_i64) = layout.locals[&0];
+        assert_eq!(off, 0);
+        assert!(is_i64);
+        assert_eq!(layout.frame_size, 8);
+    }
+
+    #[test]
+    fn test_compute_local_layout_mixed_i32_then_i64_alignment() {
+        // i32 at idx 0 (offset 0, 4 bytes), then i64 at idx 1 must skip to
+        // offset 8 to maintain 8-byte alignment.
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::LocalSet(0),
+            WasmOp::I64Const(2),
+            WasmOp::LocalSet(1),
+        ];
+        let layout = compute_local_layout(&ops, 0);
+        let (off0, is_i64_0) = layout.locals[&0];
+        let (off1, is_i64_1) = layout.locals[&1];
+        assert_eq!(off0, 0);
+        assert!(!is_i64_0);
+        assert_eq!(off1, 8, "i64 must be 8-byte aligned");
+        assert!(is_i64_1);
+        // i32 (4) + pad (4) + i64 (8) = 16 bytes
+        assert_eq!(layout.frame_size, 16);
+    }
+
+    #[test]
+    fn test_compute_local_layout_skips_param_indices() {
+        // num_params = 2: indices 0 and 1 are params, idx 2 is the local.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::LocalSet(2),
+        ];
+        let layout = compute_local_layout(&ops, 2);
+        // Only idx 2 should be in the layout.
+        assert!(!layout.locals.contains_key(&0));
+        assert!(!layout.locals.contains_key(&1));
+        assert!(layout.locals.contains_key(&2));
+    }
+
+    #[test]
+    fn test_infer_i64_locals_from_localset() {
+        // i64.const → local.set marks that local as i64.
+        let ops = vec![WasmOp::I64Const(7), WasmOp::LocalSet(3)];
+        let i64_locals = infer_i64_locals(&ops);
+        assert!(i64_locals.contains(&3));
+    }
+
+    #[test]
+    fn test_infer_i64_locals_from_localtee() {
+        // local.tee preserves the value on the stack and stores to local —
+        // its width should be inferred from what's on the stack.
+        let ops = vec![WasmOp::I64Const(99), WasmOp::LocalTee(2), WasmOp::Drop];
+        let i64_locals = infer_i64_locals(&ops);
+        assert!(i64_locals.contains(&2));
+    }
+
+    #[test]
+    fn test_infer_i64_locals_does_not_flag_i32_locals() {
+        // i32 ops should not produce i64 locals.
+        let ops = vec![WasmOp::I32Const(1), WasmOp::LocalSet(0)];
+        let i64_locals = infer_i64_locals(&ops);
+        assert!(!i64_locals.contains(&0));
+    }
+
+    #[test]
+    fn test_infer_i64_locals_propagates_through_i64_arith() {
+        // i64.add produces i64 — store to local should mark it i64.
+        let ops = vec![
+            WasmOp::I64Const(1),
+            WasmOp::I64Const(2),
+            WasmOp::I64Add,
+            WasmOp::LocalSet(5),
+        ];
+        let i64_locals = infer_i64_locals(&ops);
+        assert!(i64_locals.contains(&5));
+    }
+
+    #[test]
+    fn test_alloc_consecutive_pair_basic() {
+        // From an empty stack, the pair returned must be consecutive entries
+        // in ALLOCATABLE_REGS.
+        let mut next_temp: u8 = 0;
+        let stack: Vec<Reg> = Vec::new();
+        let (lo, hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[]).unwrap();
+        // Verify hi == i64_pair_hi(lo) — the contract.
+        let expected_hi = i64_pair_hi(lo).unwrap();
+        assert_eq!(hi, expected_hi);
+    }
+
+    #[test]
+    fn test_alloc_consecutive_pair_skips_extra_avoid() {
+        // Reserve the first pair via extra_avoid and confirm a different pair
+        // is allocated.
+        let mut next_temp: u8 = 0;
+        let stack: Vec<Reg> = Vec::new();
+        let (lo1, hi1) = alloc_consecutive_pair(&mut next_temp, &stack, &[]).unwrap();
+        // Now ask again, telling it to avoid lo1 and hi1.
+        let mut next_temp2: u8 = 0;
+        let (lo2, hi2) = alloc_consecutive_pair(&mut next_temp2, &stack, &[lo1, hi1]).unwrap();
+        assert!(lo2 != lo1, "should not reuse lo1");
+        assert!(hi2 != hi1, "should not reuse hi1");
+        // The new pair must still be consecutive.
+        assert_eq!(hi2, i64_pair_hi(lo2).unwrap());
+    }
+
+    #[test]
+    fn test_alloc_consecutive_pair_avoids_implicit_hi_from_stack() {
+        // If the stack has an i64 lo (e.g. R0), then R1 (its implicit hi)
+        // must NOT be returned as a fresh lo by alloc_consecutive_pair.
+        let mut next_temp: u8 = 0;
+        let stack = vec![Reg::R0]; // implicitly reserves R1 as well
+        let (lo, hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[]).unwrap();
+        assert_ne!(lo, Reg::R0, "must skip the live lo");
+        assert_ne!(lo, Reg::R1, "must skip implicit hi of R0");
+        assert_ne!(hi, Reg::R1, "implicit hi must not be allocated");
+        // The returned pair is still consecutive.
+        assert_eq!(hi, i64_pair_hi(lo).unwrap());
+    }
+
+    #[test]
+    fn test_select_with_stack_emits_frame_alloc_for_i64_local() {
+        // When a non-param i64 local exists, select_with_stack must:
+        //  - emit `sub sp, sp, #frame_size` after the prologue Push, AND
+        //  - emit a matching `add sp, sp, #frame_size` before the epilogue Pop.
+        let mut selector = fresh_selector();
+        let ops = vec![
+            WasmOp::I64Const(0x1234_5678_9abc_def0u64 as i64),
+            WasmOp::LocalSet(0),
+            WasmOp::LocalGet(0),
+            WasmOp::Drop,
+            WasmOp::I32Const(0),
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&ops, 0).unwrap();
+        // Find a Sub with rd=SP (frame allocation).
+        let sub_sp = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Sub {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    ..
+                }
+            )
+        });
+        assert!(sub_sp, "frame allocation `sub sp, sp, #N` not emitted");
+        // And a matching Add (frame deallocation).
+        let add_sp = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Add {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    ..
+                }
+            )
+        });
+        assert!(add_sp, "frame deallocation `add sp, sp, #N` not emitted");
+    }
+
+    #[test]
+    fn test_select_with_stack_no_frame_when_only_params_used() {
+        // num_params=2, only LocalGet on params — no frame should be needed.
+        let mut selector = fresh_selector();
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&ops, 2).unwrap();
+        // No `sub sp, sp, #N` should appear in the prologue.
+        let sub_sp = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Sub {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    ..
+                }
+            )
+        });
+        assert!(
+            !sub_sp,
+            "no frame allocation expected for params-only function"
+        );
+    }
+
+    #[test]
+    fn test_select_with_stack_i32_local_uses_str_ldr() {
+        // An i32 non-param local should produce Str/Ldr to the SP-based slot.
+        let mut selector = fresh_selector();
+        let ops = vec![
+            WasmOp::I32Const(7),
+            WasmOp::LocalSet(0),
+            WasmOp::LocalGet(0),
+            WasmOp::Drop,
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&ops, 0).unwrap();
+        let has_str_to_sp = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Str { addr, .. } if addr.base == Reg::SP
+            )
+        });
+        let has_ldr_from_sp = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Ldr { addr, .. } if addr.base == Reg::SP
+            )
+        });
+        assert!(has_str_to_sp, "i32 LocalSet should Str to SP-relative slot");
+        assert!(
+            has_ldr_from_sp,
+            "i32 LocalGet should Ldr from SP-relative slot"
+        );
+    }
 }
