@@ -456,6 +456,36 @@ pub enum Opcode {
         src_lo: Reg,
     },
 
+    /// i32 -> i64 zero-extension. `dest_lo` aliases `src` (same vreg by IR
+    /// convention — see `wasm_to_ir`); `dest_hi` is freshly allocated and
+    /// holds the constant 0. Lowering MUST move `src`'s ARM reg into a
+    /// non-AAPCS-param register before treating it as the i64 lo half — the
+    /// downstream `I64Shl/ShrU/ShrS` emitters use `rm_lo`/`rm_hi` as scratch
+    /// and clobber them, so we must not place a live param register there.
+    /// This was the proximate cause of issue #93 (memset infinite loop on
+    /// silicon) before this opcode existed and the bridge silently fell
+    /// through to `Opcode::Nop` + `R0`-fallback in `get_arm_reg`.
+    I64ExtendI32U {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src: Reg,
+    },
+
+    /// i32 -> i64 sign-extension. Same constraints as I64ExtendI32U; the
+    /// `dest_hi` is filled by an arithmetic shift right by 31 of the src.
+    I64ExtendI32S {
+        dest_lo: Reg,
+        dest_hi: Reg,
+        src: Reg,
+    },
+
+    /// i64 -> i32 wrap (truncate to low 32 bits). `dest` aliases the i64's
+    /// `src_lo` vreg (same value); the high half is simply discarded.
+    I32WrapI64 {
+        dest: Reg,
+        src_lo: Reg,
+    },
+
     // i64 shifts and multiply (result is i64 pair)
     I64Mul {
         dest_lo: Reg,
