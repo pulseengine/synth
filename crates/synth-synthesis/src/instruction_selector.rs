@@ -5758,6 +5758,336 @@ impl InstructionSelector {
                     stack.push(dst);
                 }
 
+                // ============================================================
+                // i64 comparisons (binary: pop 2 i64 pairs, push 1 i32 result)
+                //
+                // Issue #103: previously these fell through to `select_default`,
+                // which hardcodes the operand pairs at R0:R1 / R2:R3 and the
+                // result at R0 — clobbering any AAPCS param register the user
+                // hasn't read yet via `LocalGet`. The fix is to pop the actual
+                // register pairs the stack tracker assigned to the operands and
+                // allocate a result register with `alloc_temp_safe`, which
+                // already skips live stack values.
+                //
+                // Same class as PR #86's i64-const fix in `optimizer_bridge`,
+                // applied here to every i64 op that hardcoded R0..R3.
+                // ============================================================
+                I64Eq | I64Ne | I64LtS | I64LtU | I64LeS | I64LeU | I64GtS | I64GtU | I64GeS
+                | I64GeU => {
+                    let b_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow in i64 comparison".to_string(),
+                        )
+                    })?;
+                    let a_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow in i64 comparison".to_string(),
+                        )
+                    })?;
+                    let b_hi = i64_pair_hi(b_lo)?;
+                    let a_hi = i64_pair_hi(a_lo)?;
+                    // Result is a single i32. alloc_temp_safe avoids any reg
+                    // still on the wasm stack, but the popped operand halves
+                    // are NO LONGER on the stack — they may be reused by the
+                    // allocator. That is fine for I64SetCond which encodes to
+                    // a sequence that reads all four operand halves before
+                    // writing rd (see arm_encoder; the CMP chain is fully
+                    // resolved before SetCond writes the byte).
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    let cond = match op {
+                        I64Eq => Condition::EQ,
+                        I64Ne => Condition::NE,
+                        I64LtS => Condition::LT,
+                        I64LtU => Condition::LO,
+                        I64LeS => Condition::LE,
+                        I64LeU => Condition::LS,
+                        I64GtS => Condition::GT,
+                        I64GtU => Condition::HI,
+                        I64GeS => Condition::GE,
+                        I64GeU => Condition::HS,
+                        _ => unreachable!(),
+                    };
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::I64SetCond {
+                            rd: dst,
+                            rn_lo: a_lo,
+                            rn_hi: a_hi,
+                            rm_lo: b_lo,
+                            rm_hi: b_hi,
+                            cond,
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                // ============================================================
+                // i64 multiply (binary: pop 2 i64 pairs, push 1 i64 pair)
+                //
+                // Issue #103: was hardcoding R0:R1 (operands and result low),
+                // R2:R3 (second operand). Now uses the stack-tracked pairs
+                // and a fresh consecutive pair for the destination.
+                // ============================================================
+                I64Mul => {
+                    let b_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis("stack underflow in I64Mul".to_string())
+                    })?;
+                    let a_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis("stack underflow in I64Mul".to_string())
+                    })?;
+                    let b_hi = i64_pair_hi(b_lo)?;
+                    let a_hi = i64_pair_hi(a_lo)?;
+                    // I64Mul encodes to UMULL + MLA cross products: rd_lo/rd_hi
+                    // are written, and ALL four operand halves are read. dst
+                    // must not overlap any operand half before the encoded
+                    // sequence reads it.
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::I64Mul {
+                            rd_lo: dst_lo,
+                            rd_hi: dst_hi,
+                            rn_lo: a_lo,
+                            rn_hi: a_hi,
+                            rm_lo: b_lo,
+                            rm_hi: b_hi,
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst_lo);
+                }
+
+                // ============================================================
+                // i64 divide / remainder (binary: pop 2 i64 pairs, push 1 pair)
+                //
+                // Issue #103: was hardcoding R0:R1 / R2:R3. The encoded
+                // sequence for these ops is a libcall-style helper that
+                // reads/writes the operand and result registers — using the
+                // stack-tracked pairs keeps AAPCS params intact.
+                // ============================================================
+                I64DivS | I64DivU | I64RemS | I64RemU => {
+                    let b_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis("stack underflow in i64 div/rem".to_string())
+                    })?;
+                    let a_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis("stack underflow in i64 div/rem".to_string())
+                    })?;
+                    let b_hi = i64_pair_hi(b_lo)?;
+                    let a_hi = i64_pair_hi(a_lo)?;
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
+                    let arm_op = match op {
+                        I64DivS => ArmOp::I64DivS {
+                            rdlo: dst_lo,
+                            rdhi: dst_hi,
+                            rnlo: a_lo,
+                            rnhi: a_hi,
+                            rmlo: b_lo,
+                            rmhi: b_hi,
+                        },
+                        I64DivU => ArmOp::I64DivU {
+                            rdlo: dst_lo,
+                            rdhi: dst_hi,
+                            rnlo: a_lo,
+                            rnhi: a_hi,
+                            rmlo: b_lo,
+                            rmhi: b_hi,
+                        },
+                        I64RemS => ArmOp::I64RemS {
+                            rdlo: dst_lo,
+                            rdhi: dst_hi,
+                            rnlo: a_lo,
+                            rnhi: a_hi,
+                            rmlo: b_lo,
+                            rmhi: b_hi,
+                        },
+                        I64RemU => ArmOp::I64RemU {
+                            rdlo: dst_lo,
+                            rdhi: dst_hi,
+                            rnlo: a_lo,
+                            rnhi: a_hi,
+                            rmlo: b_lo,
+                            rmhi: b_hi,
+                        },
+                        _ => unreachable!(),
+                    };
+                    instructions.push(ArmInstruction {
+                        op: arm_op,
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst_lo);
+                }
+
+                // ============================================================
+                // i64 rotations (binary: pop 2 i64 pairs, push 1 pair)
+                //
+                // Issue #103: was hardcoding R0:R1 / R2. ArmOp::I64Rotl/Rotr
+                // takes a SINGLE shift reg (the low half of the i64 shift
+                // amount) — i64.rotl in WASM has an i64 shift amount but
+                // ARM only uses the low 32 bits modulo-64 by convention.
+                // We pop both halves of `b` for stack correctness and pass
+                // b_lo as the shift reg, matching the pre-fix `select_default`
+                // contract (which assumed shift in R2).
+                // ============================================================
+                I64Rotl | I64Rotr => {
+                    let b_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis("stack underflow in i64 rotate".to_string())
+                    })?;
+                    let a_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis("stack underflow in i64 rotate".to_string())
+                    })?;
+                    let b_hi = i64_pair_hi(b_lo)?;
+                    let a_hi = i64_pair_hi(a_lo)?;
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
+                    let arm_op = match op {
+                        I64Rotl => ArmOp::I64Rotl {
+                            rdlo: dst_lo,
+                            rdhi: dst_hi,
+                            rnlo: a_lo,
+                            rnhi: a_hi,
+                            shift: b_lo,
+                        },
+                        I64Rotr => ArmOp::I64Rotr {
+                            rdlo: dst_lo,
+                            rdhi: dst_hi,
+                            rnlo: a_lo,
+                            rnhi: a_hi,
+                            shift: b_lo,
+                        },
+                        _ => unreachable!(),
+                    };
+                    instructions.push(ArmInstruction {
+                        op: arm_op,
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst_lo);
+                }
+
+                // ============================================================
+                // i64 unary bit ops (pop 1 i64 pair, push 1 i32 result)
+                //
+                // I64Clz / I64Ctz / I64Popcnt return a 32-bit count. Was
+                // hardcoding R0 (operand lo + result) and R1 (operand hi).
+                // ============================================================
+                I64Clz | I64Ctz | I64Popcnt => {
+                    let src_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow in i64 unary bit op".to_string(),
+                        )
+                    })?;
+                    let src_hi = i64_pair_hi(src_lo)?;
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    let arm_op = match op {
+                        I64Clz => ArmOp::I64Clz {
+                            rd: dst,
+                            rnlo: src_lo,
+                            rnhi: src_hi,
+                        },
+                        I64Ctz => ArmOp::I64Ctz {
+                            rd: dst,
+                            rnlo: src_lo,
+                            rnhi: src_hi,
+                        },
+                        I64Popcnt => ArmOp::I64Popcnt {
+                            rd: dst,
+                            rnlo: src_lo,
+                            rnhi: src_hi,
+                        },
+                        _ => unreachable!(),
+                    };
+                    instructions.push(ArmInstruction {
+                        op: arm_op,
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
+                // ============================================================
+                // i64 in-place sign extension (pop 1 i64 pair, push 1 pair)
+                //
+                // I64Extend{8,16,32}S take an i64 (the upper bits are
+                // ignored) and sign-extend the low N bits to 64. Was
+                // hardcoding R0:R1 for both operand and result.
+                // ============================================================
+                I64Extend8S | I64Extend16S | I64Extend32S => {
+                    let src_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "stack underflow in i64 sign-extend".to_string(),
+                        )
+                    })?;
+                    let _src_hi = i64_pair_hi(src_lo)?;
+                    // dst must not overlap src_lo before the encoded sequence
+                    // reads it (the encoder issues a SXTB/SXTH/MOV + ASR #31
+                    // pattern that reads src_lo first then writes rdlo/rdhi).
+                    let (dst_lo, dst_hi) =
+                        alloc_consecutive_pair(&mut next_temp, &stack, &[src_lo])?;
+                    let arm_op = match op {
+                        I64Extend8S => ArmOp::I64Extend8S {
+                            rdlo: dst_lo,
+                            rdhi: dst_hi,
+                            rnlo: src_lo,
+                        },
+                        I64Extend16S => ArmOp::I64Extend16S {
+                            rdlo: dst_lo,
+                            rdhi: dst_hi,
+                            rnlo: src_lo,
+                        },
+                        I64Extend32S => ArmOp::I64Extend32S {
+                            rdlo: dst_lo,
+                            rdhi: dst_hi,
+                            rnlo: src_lo,
+                        },
+                        _ => unreachable!(),
+                    };
+                    instructions.push(ArmInstruction {
+                        op: arm_op,
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst_lo);
+                }
+
+                // ============================================================
+                // i64 → i32 wrap (pop 1 i64 pair, push 1 i32)
+                //
+                // I32WrapI64 keeps the low half. Was hardcoding R0 for both
+                // operand low and result.
+                // ============================================================
+                I32WrapI64 => {
+                    let src_lo = stack.pop().ok_or_else(|| {
+                        synth_core::Error::synthesis("stack underflow in I32WrapI64".to_string())
+                    })?;
+                    let _src_hi = i64_pair_hi(src_lo)?;
+                    let dst = if idx == wasm_ops.len() - 1 {
+                        Reg::R0
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack)?
+                    };
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::I32WrapI64 {
+                            rd: dst,
+                            rnlo: src_lo,
+                        },
+                        source_line: Some(idx),
+                    });
+                    cf.add_instruction();
+                    stack.push(dst);
+                }
+
                 // For other operations, fall back to default behavior.
                 // Stack tracking is approximate after this point: select_default
                 // uses its own register allocator and doesn't update the virtual stack.
