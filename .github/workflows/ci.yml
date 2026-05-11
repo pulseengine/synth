@@ -12,7 +12,13 @@ env:
 jobs:
   test:
     name: Test
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    # NOTE: moved back to ubuntu-latest from [self-hosted, linux, x64, rust-cpu]
+    # because z3-sys's C++ build was exhausting the smithy runners' temp disk
+    # ("No space left on device" while compiling z3 AST sources). The Test job
+    # builds the entire workspace including synth-verify (which depends on z3),
+    # so the disk pressure is real. Once the smithy runners get a bigger /tmp
+    # we can move this back.
+    runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -Dwarnings
     steps:
@@ -33,7 +39,8 @@ jobs:
 
   clippy:
     name: Clippy
-    runs-on: [self-hosted, linux, x64, rust-cpu]
+    # Same reasoning as Test — z3-sys build exhausts the smithy runner's /tmp.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
