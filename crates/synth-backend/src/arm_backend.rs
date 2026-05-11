@@ -404,4 +404,66 @@ mod tests {
             "f32 operations should fail on Cortex-M4 (no FPU)"
         );
     }
+
+    /// Issue #94: end-to-end byte-size check for the canonical u64-packed
+    /// FFI-return hi32 extract pattern. Compiles two near-identical
+    /// functions — one with the optimized shift-by-32, one with a generic
+    /// shift-by-7 — and asserts the optimized form is meaningfully smaller.
+    #[test]
+    fn test_issue94_hi32_extract_is_smaller_than_generic_shift() {
+        let backend = ArmBackend::new();
+        let config = CompileConfig {
+            target: TargetSpec::cortex_m4f(),
+            ..CompileConfig::default()
+        };
+
+        // Optimized path: `(local.get 0) >>> 32; wrap_i64`
+        let ops_hi32 = vec![
+            WasmOp::LocalGet(0), // i64 param in R0:R1
+            WasmOp::I64Const(32),
+            WasmOp::I64ShrU,
+            WasmOp::I32WrapI64,
+        ];
+        let func_hi32 = backend
+            .compile_function("hi32_extract", &ops_hi32, &config)
+            .unwrap();
+
+        // Generic path: `(local.get 0) >>> 7; wrap_i64` — same shape, but the
+        // shift amount is not a multiple of 32, so it falls through to the
+        // 38-byte runtime shift.
+        let ops_generic = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I64Const(7),
+            WasmOp::I64ShrU,
+            WasmOp::I32WrapI64,
+        ];
+        let func_generic = backend
+            .compile_function("generic_shr", &ops_generic, &config)
+            .unwrap();
+
+        let bytes_hi32 = func_hi32.code.len();
+        let bytes_generic = func_generic.code.len();
+        println!(
+            "\n[issue #94] hi32 extract: {} bytes (vs generic shift: {} bytes; saved {})",
+            bytes_hi32,
+            bytes_generic,
+            bytes_generic.saturating_sub(bytes_hi32)
+        );
+        let hex: String = func_hi32
+            .code
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!("[issue #94] hi32 bytes: {}", hex);
+        // We expect the optimized form to be at least 30 bytes smaller than
+        // the generic 64-bit shift sequence. (Empirically: 14 vs 50 bytes.)
+        assert!(
+            bytes_hi32 + 30 <= bytes_generic,
+            "issue #94: hi32 extract = {} bytes, generic shift = {} bytes; \
+             expected optimized form to be at least 30 bytes smaller",
+            bytes_hi32,
+            bytes_generic,
+        );
+    }
 }
