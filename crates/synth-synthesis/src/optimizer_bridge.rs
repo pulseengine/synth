@@ -711,49 +711,124 @@ impl OptimizerBridge {
                     let src2_hi = OptReg(inst_id.saturating_sub(1) as u32);
                     let opcode = match wasm_op {
                         WasmOp::I64Add => Opcode::I64Add {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64Sub => Opcode::I64Sub {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64And => Opcode::I64And {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64Or => Opcode::I64Or {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64Xor => Opcode::I64Xor {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64Mul => Opcode::I64Mul {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64DivS => Opcode::I64DivS {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64DivU => Opcode::I64DivU {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64RemS => Opcode::I64RemS {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64RemU => Opcode::I64RemU {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64Shl => Opcode::I64Shl {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64ShrS => Opcode::I64ShrS {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64ShrU => Opcode::I64ShrU {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64Rotl => Opcode::I64Rotl {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64Rotr => Opcode::I64Rotr {
-                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                            dest_lo,
+                            dest_hi,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         _ => unreachable!(),
                     };
@@ -1177,6 +1252,80 @@ impl OptimizerBridge {
                     offset: *offset,
                 },
 
+                // ===== Sub-word linear-memory ops =====
+                //
+                // Pop addr (and value for stores), push value (for loads).
+                // Pre-fix, these fell through to `Opcode::Nop` — their dest
+                // vreg never got mapped to an ARM register, and any
+                // consumer of the loaded value triggered the PR #101
+                // defensive panic (or, pre-PR-101, silently consumed R0).
+                WasmOp::I32Load8S { offset, .. } => Opcode::MemLoadSubword {
+                    dest: OptReg(inst_id as u32),
+                    addr: OptReg(inst_id.saturating_sub(1) as u32),
+                    offset: *offset,
+                    width: 1,
+                    signed: true,
+                },
+                WasmOp::I32Load8U { offset, .. } => Opcode::MemLoadSubword {
+                    dest: OptReg(inst_id as u32),
+                    addr: OptReg(inst_id.saturating_sub(1) as u32),
+                    offset: *offset,
+                    width: 1,
+                    signed: false,
+                },
+                WasmOp::I32Load16S { offset, .. } => Opcode::MemLoadSubword {
+                    dest: OptReg(inst_id as u32),
+                    addr: OptReg(inst_id.saturating_sub(1) as u32),
+                    offset: *offset,
+                    width: 2,
+                    signed: true,
+                },
+                WasmOp::I32Load16U { offset, .. } => Opcode::MemLoadSubword {
+                    dest: OptReg(inst_id as u32),
+                    addr: OptReg(inst_id.saturating_sub(1) as u32),
+                    offset: *offset,
+                    width: 2,
+                    signed: false,
+                },
+                WasmOp::I32Store8 { offset, .. } => Opcode::MemStoreSubword {
+                    src: OptReg(inst_id.saturating_sub(1) as u32),
+                    addr: OptReg(inst_id.saturating_sub(2) as u32),
+                    offset: *offset,
+                    width: 1,
+                },
+                WasmOp::I32Store16 { offset, .. } => Opcode::MemStoreSubword {
+                    src: OptReg(inst_id.saturating_sub(1) as u32),
+                    addr: OptReg(inst_id.saturating_sub(2) as u32),
+                    offset: *offset,
+                    width: 2,
+                },
+
+                // ===== Globals =====
+                //
+                // GlobalGet pushes a fresh i32; GlobalSet pops one. Without
+                // explicit IR ops these silently produced unmapped vregs.
+                WasmOp::GlobalGet(idx) => Opcode::GlobalGet {
+                    dest: OptReg(inst_id as u32),
+                    idx: *idx,
+                },
+                WasmOp::GlobalSet(idx) => Opcode::GlobalSet {
+                    src: OptReg(inst_id.saturating_sub(1) as u32),
+                    idx: *idx,
+                },
+
+                // ===== Memory size / grow =====
+                //
+                // Both push an i32 result. On bare-metal targets with fixed
+                // memory, grow is a stub (returns the size or -1), but the
+                // dest vreg still needs allocation.
+                WasmOp::MemorySize(_) => Opcode::MemorySize {
+                    dest: OptReg(inst_id as u32),
+                },
+                WasmOp::MemoryGrow(_) => Opcode::MemoryGrow {
+                    dest: OptReg(inst_id as u32),
+                    delta: OptReg(inst_id.saturating_sub(1) as u32),
+                },
+
                 // Fallback for unsupported ops
                 _ => Opcode::Nop,
             };
@@ -1480,6 +1629,44 @@ impl OptimizerBridge {
             // workloads we care about; if it does, the architectural fix is
             // proper spilling, not a wider search.)
             (Reg::R4, Reg::R5)
+        };
+
+        // Allocate a SINGLE callee-saved register for an i32 destination.
+        //
+        // Searches `[R4, R5, R6, R7, R8]` for a register not currently held
+        // by a live vreg, bound to a non-param local, or reserved as an
+        // AAPCS param. The extra_avoid list is honoured for transient
+        // operand-region exclusions (e.g. addresses-of operands that must
+        // outlive the destination allocation).
+        //
+        // Falls back to R12 (IP, the universal scratch) if every callee-
+        // saved register is taken — matches the prior pressure-relief
+        // behaviour. R12 is intentionally NOT in the search list because
+        // it's used as a transient by MemLoad/MemStore for the base+offset
+        // pointer math, and would be clobbered before the destination is
+        // read.
+        let alloc_i32_scratch = |vreg_to_arm: &HashMap<u32, Reg>,
+                                 local_to_reg: &HashMap<u32, Reg>,
+                                 param_reserved_regs: &[Reg],
+                                 extra_avoid: &[Reg]|
+         -> Reg {
+            const CANDIDATES: &[Reg] = &[Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+            let is_in_use = |r: Reg| -> bool {
+                vreg_to_arm.values().any(|&v| v == r)
+                    || local_to_reg.values().any(|&v| v == r)
+                    || param_reserved_regs.contains(&r)
+                    || extra_avoid.contains(&r)
+            };
+            for &r in CANDIDATES {
+                if !is_in_use(r) {
+                    return r;
+                }
+            }
+            // Pressure-relief fallback. R12 is acceptable here because
+            // the call sites that use this helper write the destination
+            // BEFORE using R12 as scratch (e.g. MemLoad emits the LDR
+            // last, after the address math).
+            Reg::R12
         };
 
         // Emit a reload instruction if the vreg was spilled to stack.
@@ -3515,11 +3702,25 @@ impl OptimizerBridge {
                 // Linear Memory Operations
                 // ========================================================================
 
-                // MemLoad: load 32-bit value from linear memory
-                // Generates: MOVW R12, #base_lo; MOVT R12, #base_hi; ADD R12, R12, Raddr; LDR Rd, [R12, #offset]
+                // MemLoad: load 32-bit value from linear memory.
+                //
+                // Generates: MOVW R12, #base_lo; MOVT R12, #base_hi;
+                //            ADD R12, R12, Raddr; LDR Rd, [R12, #offset]
+                //
+                // `Rd` MUST NOT alias an AAPCS param register (R0..R3) — a
+                // `local.get` of param N anywhere downstream would otherwise
+                // observe whatever the MemLoad just wrote. Pre-fix this was
+                // hardcoded to `Reg::R3`, which clobbered the 4th AAPCS
+                // argument on every `i32.load`. Use the scratch helper so
+                // the destination is picked from the callee-saved bank.
                 Opcode::MemLoad { dest, addr, offset } => {
                     let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[r_addr],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
 
                     // Linear memory base address: 0x20000100 (in SRAM, above stack area)
@@ -3582,6 +3783,157 @@ impl OptimizerBridge {
                         addr: crate::rules::MemAddr::imm(Reg::R12, *offset as i32),
                     });
                     // MemStore does not produce a value
+                }
+
+                // Sub-word linear memory load (i32.load8_s/u, i32.load16_s/u).
+                //
+                // Generates the same base+addr math as MemLoad, then LDRB/
+                // LDRH/LDRSB/LDRSH into a non-param destination register
+                // chosen by `alloc_i32_scratch`. Pre-fix these wasm ops
+                // had no IR handler; the optimizer pipeline left the
+                // produced vreg unmapped → defensive panic (or pre-PR-101
+                // silent R0 alias).
+                Opcode::MemLoadSubword {
+                    dest,
+                    addr,
+                    offset,
+                    width,
+                    signed,
+                } => {
+                    let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs);
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[r_addr],
+                    );
+                    vreg_to_arm.insert(dest.0, rd);
+
+                    let base: u32 = 0x20000100;
+                    let base_lo = (base & 0xFFFF) as u16;
+                    let base_hi = ((base >> 16) & 0xFFFF) as u16;
+                    arm_instrs.push(ArmOp::Movw {
+                        rd: Reg::R12,
+                        imm16: base_lo,
+                    });
+                    arm_instrs.push(ArmOp::Movt {
+                        rd: Reg::R12,
+                        imm16: base_hi,
+                    });
+                    arm_instrs.push(ArmOp::Add {
+                        rd: Reg::R12,
+                        rn: Reg::R12,
+                        op2: Operand2::Reg(r_addr),
+                    });
+                    let addr_mem = crate::rules::MemAddr::imm(Reg::R12, *offset as i32);
+                    let sub_op = match (*width, *signed) {
+                        (1, false) => ArmOp::Ldrb { rd, addr: addr_mem },
+                        (1, true) => ArmOp::Ldrsb { rd, addr: addr_mem },
+                        (2, false) => ArmOp::Ldrh { rd, addr: addr_mem },
+                        (2, true) => ArmOp::Ldrsh { rd, addr: addr_mem },
+                        // Width 4 is impossible here (caller would use
+                        // `Opcode::MemLoad`); fall through to plain Ldr
+                        // rather than panicking — that keeps the lowering
+                        // total, and the encoder will validate.
+                        _ => ArmOp::Ldr { rd, addr: addr_mem },
+                    };
+                    arm_instrs.push(sub_op);
+                    last_result_vreg = Some(dest.0);
+                }
+
+                // Sub-word linear memory store (i32.store8, i32.store16,
+                // i64.store8/16/32). Generates address math + STRB/STRH/STR.
+                Opcode::MemStoreSubword {
+                    src,
+                    addr,
+                    offset,
+                    width,
+                } => {
+                    let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs);
+                    let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs);
+
+                    let base: u32 = 0x20000100;
+                    let base_lo = (base & 0xFFFF) as u16;
+                    let base_hi = ((base >> 16) & 0xFFFF) as u16;
+                    arm_instrs.push(ArmOp::Movw {
+                        rd: Reg::R12,
+                        imm16: base_lo,
+                    });
+                    arm_instrs.push(ArmOp::Movt {
+                        rd: Reg::R12,
+                        imm16: base_hi,
+                    });
+                    arm_instrs.push(ArmOp::Add {
+                        rd: Reg::R12,
+                        rn: Reg::R12,
+                        op2: Operand2::Reg(r_addr),
+                    });
+                    let addr_mem = crate::rules::MemAddr::imm(Reg::R12, *offset as i32);
+                    let sub_op = match *width {
+                        1 => ArmOp::Strb {
+                            rd: r_src,
+                            addr: addr_mem,
+                        },
+                        2 => ArmOp::Strh {
+                            rd: r_src,
+                            addr: addr_mem,
+                        },
+                        _ => ArmOp::Str {
+                            rd: r_src,
+                            addr: addr_mem,
+                        },
+                    };
+                    arm_instrs.push(sub_op);
+                }
+
+                // `global.get N` — load global N into a fresh non-param
+                // scratch. ARM convention: R9 is the globals base, globals
+                // are packed as 4-byte slots.
+                Opcode::GlobalGet { dest, idx } => {
+                    let rd =
+                        alloc_i32_scratch(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[]);
+                    vreg_to_arm.insert(dest.0, rd);
+                    arm_instrs.push(ArmOp::Ldr {
+                        rd,
+                        addr: crate::rules::MemAddr::imm(Reg::R9, (*idx as i32) * 4),
+                    });
+                    last_result_vreg = Some(dest.0);
+                }
+
+                // `global.set N` — store the popped i32 to global N.
+                Opcode::GlobalSet { src, idx } => {
+                    let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs);
+                    arm_instrs.push(ArmOp::Str {
+                        rd: r_src,
+                        addr: crate::rules::MemAddr::imm(Reg::R9, (*idx as i32) * 4),
+                    });
+                }
+
+                // `memory.size` — current memory size in pages. Convention:
+                // R10 holds the memory size word. Emit `MOV dest, R10`.
+                Opcode::MemorySize { dest } => {
+                    let rd =
+                        alloc_i32_scratch(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[]);
+                    vreg_to_arm.insert(dest.0, rd);
+                    arm_instrs.push(ArmOp::Mov {
+                        rd,
+                        op2: Operand2::Reg(Reg::R10),
+                    });
+                    last_result_vreg = Some(dest.0);
+                }
+
+                // `memory.grow` — embedded targets have fixed memory; emit
+                // a stub that returns -1 (the wasm spec's "grow failed"
+                // sentinel). The `delta` is read but discarded.
+                Opcode::MemoryGrow { dest, delta } => {
+                    let _ = get_arm_reg(delta, &vreg_to_arm, &spilled_vregs);
+                    let rd =
+                        alloc_i32_scratch(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[]);
+                    vreg_to_arm.insert(dest.0, rd);
+                    // mov rd, #-1  →  MOVW rd, #0xFFFF; MOVT rd, #0xFFFF
+                    arm_instrs.push(ArmOp::Movw { rd, imm16: 0xFFFF });
+                    arm_instrs.push(ArmOp::Movt { rd, imm16: 0xFFFF });
+                    last_result_vreg = Some(dest.0);
                 }
             }
 

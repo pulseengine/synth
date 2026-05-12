@@ -255,6 +255,57 @@ pub enum Opcode {
         addr: Reg,
         offset: u32,
     },
+
+    /// Sub-word load: i32.load8_s/u, i32.load16_s/u and the i64 equivalents
+    /// after extension. `width` is 1 or 2 bytes; `signed` is true for the
+    /// `_s` variants. The dest is a single i32 register (sub-word loads on
+    /// ARM expand to a single LDRB/LDRH ± an SXTB/SXTH).
+    MemLoadSubword {
+        dest: Reg,
+        addr: Reg,
+        offset: u32,
+        width: u32, // 1 or 2
+        signed: bool,
+    },
+    /// Sub-word store: i32.store8 / i32.store16 / i64.store8/16/32.
+    /// `width` is 1, 2, or 4. For 4-byte store of an i64's low word we
+    /// just take the lo register.
+    MemStoreSubword {
+        src: Reg,
+        addr: Reg,
+        offset: u32,
+        width: u32, // 1, 2, or 4
+    },
+
+    /// `global.get` — load a global into a fresh vreg. The actual ARM
+    /// lowering is `LDR rd, [R9, #offset]` (R9 is the globals base, by
+    /// convention). The vreg MUST be allocated to a non-AAPCS-param
+    /// register at lowering time — otherwise the LDR would clobber a
+    /// live caller arg.
+    GlobalGet {
+        dest: Reg,
+        idx: u32,
+    },
+    /// `global.set` — store a vreg to a global slot. Emits `STR src,
+    /// [R9, #offset]`. No vreg is written.
+    GlobalSet {
+        src: Reg,
+        idx: u32,
+    },
+
+    /// `memory.size` — returns the current memory size in pages as an
+    /// i32. By convention R10 holds the memory-size word; we emit
+    /// `MOV dest, R10`. `dest` must be allocated to a non-param scratch.
+    MemorySize {
+        dest: Reg,
+    },
+    /// `memory.grow` — pops the grow-by amount, pushes the previous
+    /// page count (or -1 on failure). Embedded targets generally have
+    /// fixed memory, so this is a stub returning -1 in `dest`.
+    MemoryGrow {
+        dest: Reg,
+        delta: Reg,
+    },
     // Control flow
     Branch {
         target: BlockId,
@@ -905,7 +956,11 @@ impl CommonSubexpressionElimination {
                 | Opcode::I64Clz { dest, .. }
                 | Opcode::I64Ctz { dest, .. }
                 | Opcode::I64Popcnt { dest, .. }
-                | Opcode::I32WrapI64 { dest, .. } => vec![*dest],
+                | Opcode::I32WrapI64 { dest, .. }
+                | Opcode::MemLoadSubword { dest, .. }
+                | Opcode::GlobalGet { dest, .. }
+                | Opcode::MemorySize { dest, .. }
+                | Opcode::MemoryGrow { dest, .. } => vec![*dest],
                 Opcode::I64Add {
                     dest_lo, dest_hi, ..
                 }
@@ -1829,6 +1884,55 @@ impl CommonSubexpressionElimination {
                     inst.opcode = Opcode::I32WrapI64 {
                         dest,
                         src_lo: resolve(src_lo),
+                    };
+                }
+
+                // ====================================================
+                // Sub-word memory / globals / memory.{size,grow}
+                //
+                // Same rationale as MemLoad/MemStore: resolve src vregs
+                // through `reg_map` so CSE-killed Loads don't leave
+                // stale references. We do NOT CSE the loads themselves
+                // (no alias analysis), only fix up consumer vregs.
+                // ====================================================
+                Opcode::MemLoadSubword {
+                    dest,
+                    addr,
+                    offset,
+                    width,
+                    signed,
+                } => {
+                    inst.opcode = Opcode::MemLoadSubword {
+                        dest,
+                        addr: resolve(addr),
+                        offset,
+                        width,
+                        signed,
+                    };
+                }
+                Opcode::MemStoreSubword {
+                    src,
+                    addr,
+                    offset,
+                    width,
+                } => {
+                    inst.opcode = Opcode::MemStoreSubword {
+                        src: resolve(src),
+                        addr: resolve(addr),
+                        offset,
+                        width,
+                    };
+                }
+                Opcode::GlobalSet { src, idx } => {
+                    inst.opcode = Opcode::GlobalSet {
+                        src: resolve(src),
+                        idx,
+                    };
+                }
+                Opcode::MemoryGrow { dest, delta } => {
+                    inst.opcode = Opcode::MemoryGrow {
+                        dest,
+                        delta: resolve(delta),
                     };
                 }
 
