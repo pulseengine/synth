@@ -833,6 +833,148 @@ impl CommonSubexpressionElimination {
             // Resolve register mappings
             let resolve = |r: Reg| -> Reg { reg_map.get(&r).copied().unwrap_or(r) };
 
+            // After CSE rewrites this instruction's sources, we must also
+            // clear any `reg_map` entries for the vregs this instruction
+            // *writes to* — otherwise a later use of that vreg would be
+            // rewritten back to the original CSE-aliased source, which by
+            // now is a different (potentially stale) value.
+            //
+            // Concretely: WASM lowering may emit ops whose `dest` aliases a
+            // `src` of the same vreg id (e.g. `I64ExtendI32U` has
+            // `dest_lo == src` by IR convention — see
+            // `optimizer_bridge::wasm_to_ir`). That violates pure SSA, so
+            // CSE's vreg-rename `reg_map` becomes flow-insensitive at the
+            // re-definition site. Forgetting to clear the dest entry means
+            // a *later* op that consumes `dest_lo` would resolve back to
+            // the pre-extend (i32-typed) value — sometimes a live AAPCS
+            // param register — re-introducing the issue-#93 / #104 class
+            // of clobber-via-stale-alias bugs.
+            //
+            // We collect the dests *before* mutating reg_map so the
+            // resolution pass above sees the pre-instruction state, then
+            // drop them after.
+            let dests_to_invalidate: Vec<Reg> = match &opcode {
+                Opcode::Add { dest, .. }
+                | Opcode::Sub { dest, .. }
+                | Opcode::Mul { dest, .. }
+                | Opcode::DivS { dest, .. }
+                | Opcode::DivU { dest, .. }
+                | Opcode::RemS { dest, .. }
+                | Opcode::RemU { dest, .. }
+                | Opcode::And { dest, .. }
+                | Opcode::Or { dest, .. }
+                | Opcode::Xor { dest, .. }
+                | Opcode::Shl { dest, .. }
+                | Opcode::ShrS { dest, .. }
+                | Opcode::ShrU { dest, .. }
+                | Opcode::Rotl { dest, .. }
+                | Opcode::Rotr { dest, .. }
+                | Opcode::Clz { dest, .. }
+                | Opcode::Ctz { dest, .. }
+                | Opcode::Popcnt { dest, .. }
+                | Opcode::Extend8S { dest, .. }
+                | Opcode::Extend16S { dest, .. }
+                | Opcode::Eqz { dest, .. }
+                | Opcode::Eq { dest, .. }
+                | Opcode::Ne { dest, .. }
+                | Opcode::LtS { dest, .. }
+                | Opcode::LtU { dest, .. }
+                | Opcode::LeS { dest, .. }
+                | Opcode::LeU { dest, .. }
+                | Opcode::GtS { dest, .. }
+                | Opcode::GtU { dest, .. }
+                | Opcode::GeS { dest, .. }
+                | Opcode::GeU { dest, .. }
+                | Opcode::Load { dest, .. }
+                | Opcode::MemLoad { dest, .. }
+                | Opcode::Copy { dest, .. }
+                | Opcode::TeeStore { dest, .. }
+                | Opcode::Select { dest, .. }
+                | Opcode::Const { dest, .. }
+                | Opcode::I64Eq { dest, .. }
+                | Opcode::I64Ne { dest, .. }
+                | Opcode::I64LtS { dest, .. }
+                | Opcode::I64LtU { dest, .. }
+                | Opcode::I64LeS { dest, .. }
+                | Opcode::I64LeU { dest, .. }
+                | Opcode::I64GtS { dest, .. }
+                | Opcode::I64GtU { dest, .. }
+                | Opcode::I64GeS { dest, .. }
+                | Opcode::I64GeU { dest, .. }
+                | Opcode::I64Eqz { dest, .. }
+                | Opcode::I64Clz { dest, .. }
+                | Opcode::I64Ctz { dest, .. }
+                | Opcode::I64Popcnt { dest, .. }
+                | Opcode::I32WrapI64 { dest, .. } => vec![*dest],
+                Opcode::I64Add {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Sub {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64And {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Or {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Xor {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Mul {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64DivS {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64DivU {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64RemS {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64RemU {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Shl {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64ShrS {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64ShrU {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Rotl {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Rotr {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Const {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Load {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Extend8S {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Extend16S {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64Extend32S {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64ExtendI32U {
+                    dest_lo, dest_hi, ..
+                }
+                | Opcode::I64ExtendI32S {
+                    dest_lo, dest_hi, ..
+                } => vec![*dest_lo, *dest_hi],
+                _ => Vec::new(),
+            };
+
             match opcode {
                 Opcode::Add { dest, src1, src2 } => {
                     let src1 = resolve(src1);
@@ -1158,7 +1300,551 @@ impl CommonSubexpressionElimination {
                     inst.opcode = Opcode::Copy { dest, src };
                 }
 
+                // ============================================================
+                // i64 operations: resolve all src vregs through reg_map.
+                //
+                // CSE eliminates duplicate `Opcode::Load`s (local.get N) by
+                // marking the later one dead and recording the rewrite
+                // `dead_dest -> original_dest` in `reg_map`. Any later op
+                // that names `dead_dest` as a source MUST be rewritten —
+                // otherwise the producer is gone and `ir_to_arm`'s
+                // `get_arm_reg` panics (post-PR-101) or silently returns
+                // R0 (pre-PR-101 → AAPCS clobber miscompile, see issue #93).
+                //
+                // PR #107 covered MemLoad/MemStore; this batch covers every
+                // i64 opcode. We DO NOT add these to `expr_map` for actual
+                // CSE — i64 expression equivalence isn't tracked here — we
+                // only do the source-vreg rewriting needed for correctness
+                // when an upstream Load is killed.
+                // ============================================================
+                Opcode::I64Load { .. } | Opcode::I64Const { .. } => {
+                    // Pure producers, no src to resolve.
+                }
+                Opcode::I64Add {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64Add {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64Sub {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64Sub {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64And {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64And {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64Or {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64Or {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64Xor {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64Xor {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64Mul {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64Mul {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64DivS {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64DivS {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64DivU {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64DivU {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64RemS {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64RemS {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64RemU {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64RemU {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64Shl {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64Shl {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64ShrS {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64ShrS {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64ShrU {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64ShrU {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64Rotl {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64Rotl {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64Rotr {
+                    dest_lo,
+                    dest_hi,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64Rotr {
+                        dest_lo,
+                        dest_hi,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                // i64 comparisons (i64 -> i32 bool)
+                Opcode::I64Eq {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64Eq {
+                        dest,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64Ne {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64Ne {
+                        dest,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64LtS {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64LtS {
+                        dest,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64GtS {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64GtS {
+                        dest,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64LeS {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64LeS {
+                        dest,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64GeS {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64GeS {
+                        dest,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64LtU {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64LtU {
+                        dest,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64GtU {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64GtU {
+                        dest,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64LeU {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64LeU {
+                        dest,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64GeU {
+                    dest,
+                    src1_lo,
+                    src1_hi,
+                    src2_lo,
+                    src2_hi,
+                } => {
+                    inst.opcode = Opcode::I64GeU {
+                        dest,
+                        src1_lo: resolve(src1_lo),
+                        src1_hi: resolve(src1_hi),
+                        src2_lo: resolve(src2_lo),
+                        src2_hi: resolve(src2_hi),
+                    };
+                }
+                Opcode::I64Eqz {
+                    dest,
+                    src_lo,
+                    src_hi,
+                } => {
+                    inst.opcode = Opcode::I64Eqz {
+                        dest,
+                        src_lo: resolve(src_lo),
+                        src_hi: resolve(src_hi),
+                    };
+                }
+                Opcode::I64Clz {
+                    dest,
+                    src_lo,
+                    src_hi,
+                } => {
+                    inst.opcode = Opcode::I64Clz {
+                        dest,
+                        src_lo: resolve(src_lo),
+                        src_hi: resolve(src_hi),
+                    };
+                }
+                Opcode::I64Ctz {
+                    dest,
+                    src_lo,
+                    src_hi,
+                } => {
+                    inst.opcode = Opcode::I64Ctz {
+                        dest,
+                        src_lo: resolve(src_lo),
+                        src_hi: resolve(src_hi),
+                    };
+                }
+                Opcode::I64Popcnt {
+                    dest,
+                    src_lo,
+                    src_hi,
+                } => {
+                    inst.opcode = Opcode::I64Popcnt {
+                        dest,
+                        src_lo: resolve(src_lo),
+                        src_hi: resolve(src_hi),
+                    };
+                }
+                Opcode::I64Extend8S {
+                    dest_lo,
+                    dest_hi,
+                    src_lo,
+                } => {
+                    inst.opcode = Opcode::I64Extend8S {
+                        dest_lo,
+                        dest_hi,
+                        src_lo: resolve(src_lo),
+                    };
+                }
+                Opcode::I64Extend16S {
+                    dest_lo,
+                    dest_hi,
+                    src_lo,
+                } => {
+                    inst.opcode = Opcode::I64Extend16S {
+                        dest_lo,
+                        dest_hi,
+                        src_lo: resolve(src_lo),
+                    };
+                }
+                Opcode::I64Extend32S {
+                    dest_lo,
+                    dest_hi,
+                    src_lo,
+                } => {
+                    inst.opcode = Opcode::I64Extend32S {
+                        dest_lo,
+                        dest_hi,
+                        src_lo: resolve(src_lo),
+                    };
+                }
+                Opcode::I64ExtendI32U {
+                    dest_lo,
+                    dest_hi,
+                    src,
+                } => {
+                    inst.opcode = Opcode::I64ExtendI32U {
+                        dest_lo,
+                        dest_hi,
+                        src: resolve(src),
+                    };
+                }
+                Opcode::I64ExtendI32S {
+                    dest_lo,
+                    dest_hi,
+                    src,
+                } => {
+                    inst.opcode = Opcode::I64ExtendI32S {
+                        dest_lo,
+                        dest_hi,
+                        src: resolve(src),
+                    };
+                }
+                Opcode::I32WrapI64 { dest, src_lo } => {
+                    inst.opcode = Opcode::I32WrapI64 {
+                        dest,
+                        src_lo: resolve(src_lo),
+                    };
+                }
+
                 _ => {}
+            }
+
+            // See `dests_to_invalidate` above: clear `reg_map` entries for
+            // any vreg this instruction writes, so that downstream uses of
+            // those vregs are NOT rewritten back to a now-stale CSE-aliased
+            // value. Skip if this instruction was itself marked dead by
+            // CSE — its dest is a dead vreg whose alias should remain so
+            // later consumers can re-use the existing live value.
+            if !inst.is_dead {
+                for dest in &dests_to_invalidate {
+                    reg_map.remove(dest);
+                }
             }
         }
 

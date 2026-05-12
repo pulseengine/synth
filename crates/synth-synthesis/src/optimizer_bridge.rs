@@ -669,129 +669,104 @@ impl OptimizerBridge {
                     builder.add_instruction(); // Add extra instruction for hi part
                     continue;
                 }
-                WasmOp::I64Add => Opcode::I64Add {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64Sub => Opcode::I64Sub {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64And => Opcode::I64And {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64Or => Opcode::I64Or {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64Xor => Opcode::I64Xor {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-
-                // i64 multiply and shifts (produce i64 pair result)
-                WasmOp::I64Mul => Opcode::I64Mul {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                // i64 division and remainder (produce i64 pair result)
-                WasmOp::I64DivS => Opcode::I64DivS {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64DivU => Opcode::I64DivU {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64RemS => Opcode::I64RemS {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64RemU => Opcode::I64RemU {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64Shl => Opcode::I64Shl {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64ShrS => Opcode::I64ShrS {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64ShrU => Opcode::I64ShrU {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64Rotl => Opcode::I64Rotl {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I64Rotr => Opcode::I64Rotr {
-                    dest_lo: OptReg(inst_id as u32),
-                    dest_hi: OptReg((inst_id + 1) as u32),
-                    src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                    src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                    src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
-                },
+                // i64 binary arithmetic ops (consume 2 i64 pairs, produce 1 i64 pair).
+                //
+                // Slot accounting: each i64 occupies 2 consecutive vreg slots
+                // (lo, hi). Consuming 2 i64s reads slots [inst_id-4..inst_id-1];
+                // producing 1 i64 reserves slots [inst_id, inst_id+1]. So the
+                // next op must see the new i64 at slots [next_inst_id-2,
+                // next_inst_id-1], which requires `inst_id += 2`.
+                //
+                // Previously these arms fell through to the wildcard `inst_id
+                // += 1`, leaving `dest_hi` at slot `inst_id+1 = next_inst_id`
+                // — i.e. the very slot the NEXT wasm op was about to use as a
+                // fresh dest. The next op clobbered `dest_hi`, and any later
+                // op trying to read `(prev.dest_lo, prev.dest_hi)` would look
+                // at `(next_inst_id-2, next_inst_id-1)` which pointed to the
+                // hi half of the previously consumed src2 and the just-written
+                // current dest_lo — total slot scramble. In some cases the lookup
+                // would find no mapping at all and `get_arm_reg` would silently
+                // return R0 (issue #93 root cause). See PR #100 fuzz harness
+                // and PR #101 defensive panic for the diagnostic plumbing.
+                WasmOp::I64Add
+                | WasmOp::I64Sub
+                | WasmOp::I64And
+                | WasmOp::I64Or
+                | WasmOp::I64Xor
+                | WasmOp::I64Mul
+                | WasmOp::I64DivS
+                | WasmOp::I64DivU
+                | WasmOp::I64RemS
+                | WasmOp::I64RemU
+                | WasmOp::I64Shl
+                | WasmOp::I64ShrS
+                | WasmOp::I64ShrU
+                | WasmOp::I64Rotl
+                | WasmOp::I64Rotr => {
+                    let dest_lo = OptReg(inst_id as u32);
+                    let dest_hi = OptReg((inst_id + 1) as u32);
+                    let src1_lo = OptReg(inst_id.saturating_sub(4) as u32);
+                    let src1_hi = OptReg(inst_id.saturating_sub(3) as u32);
+                    let src2_lo = OptReg(inst_id.saturating_sub(2) as u32);
+                    let src2_hi = OptReg(inst_id.saturating_sub(1) as u32);
+                    let opcode = match wasm_op {
+                        WasmOp::I64Add => Opcode::I64Add {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64Sub => Opcode::I64Sub {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64And => Opcode::I64And {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64Or => Opcode::I64Or {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64Xor => Opcode::I64Xor {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64Mul => Opcode::I64Mul {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64DivS => Opcode::I64DivS {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64DivU => Opcode::I64DivU {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64RemS => Opcode::I64RemS {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64RemU => Opcode::I64RemU {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64Shl => Opcode::I64Shl {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64ShrS => Opcode::I64ShrS {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64ShrU => Opcode::I64ShrU {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64Rotl => Opcode::I64Rotl {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        WasmOp::I64Rotr => Opcode::I64Rotr {
+                            dest_lo, dest_hi, src1_lo, src1_hi, src2_lo, src2_hi,
+                        },
+                        _ => unreachable!(),
+                    };
+                    instructions.push(Instruction {
+                        id: inst_id,
+                        opcode,
+                        block_id: 0,
+                        is_dead: false,
+                    });
+                    inst_id += 2; // produces i64 = 2 slots
+                    builder.add_instruction();
+                    continue;
+                }
 
                 // i64 comparisons (consume 2 i64 pairs, produce single i32 result)
                 WasmOp::I64Eq
@@ -962,7 +937,13 @@ impl OptimizerBridge {
                     continue;
                 }
 
-                // i64 sign extension (takes i64, produces i64)
+                // i64 sign extension (takes i64, produces i64).
+                //
+                // Slot accounting: consume 1 i64 (slots [inst_id-2, inst_id-1]),
+                // produce 1 i64 (slots [inst_id, inst_id+1]). `inst_id += 2`
+                // so the next op's `inst_id-2`/`inst_id-1` lookup lands on
+                // dest_lo/dest_hi. Was `+= 1` which left dest_hi at the slot
+                // the next wasm op would claim as its own dest — clobber.
                 WasmOp::I64Extend8S => {
                     let opcode = Opcode::I64Extend8S {
                         dest_lo: OptReg(inst_id as u32),
@@ -975,7 +956,7 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    inst_id += 1;
+                    inst_id += 2;
                     builder.add_instruction();
                     continue;
                 }
@@ -992,7 +973,7 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    inst_id += 1;
+                    inst_id += 2;
                     builder.add_instruction();
                     continue;
                 }
@@ -1009,7 +990,7 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    inst_id += 1;
+                    inst_id += 2;
                     builder.add_instruction();
                     continue;
                 }
@@ -1431,6 +1412,17 @@ impl OptimizerBridge {
         // Helper to get ARM reg from virtual reg.
         // Also checks spill slots — if a vreg was spilled, returns R12 (IP scratch).
         // Callers should also call `reload_spill` to emit the actual load instruction.
+        //
+        // PANICS if the vreg is neither mapped nor spilled. The previous behavior was
+        // a silent `Reg::R0` fallback, which produced miscompilation: a downstream
+        // instruction reading the "unknown" vreg would silently consume whatever
+        // R0 happens to hold (often a live caller param or memset's dest pointer).
+        // Issue #93 was exactly this — `wasm_to_ir` had no handler for
+        // `I64ExtendI32U`/`I64ExtendI32S`/`I32WrapI64`, so the IR they should have
+        // produced never got mapped to ARM regs, and downstream i64 shifts read R0
+        // as their `rm_lo`/`rm_hi`, destroying the loop counter on real silicon.
+        // A loud panic here is strictly better than a quiet miscompilation —
+        // crash the compiler, not the firmware.
         let get_arm_reg =
             |vreg: &OptReg, map: &HashMap<u32, Reg>, spills: &HashMap<u32, i32>| -> Reg {
                 if let Some(&r) = map.get(&vreg.0) {
@@ -1439,7 +1431,12 @@ impl OptimizerBridge {
                     // Will be reloaded into R12 by reload_spill
                     Reg::R12
                 } else {
-                    Reg::R0
+                    panic!(
+                        "synth internal compiler error: vreg v{} has no assigned \
+                         ARM register and no spill slot. This is a wasm_to_ir bug — \
+                         likely a wasm op whose result is unmapped (see issue #93).",
+                        vreg.0
+                    );
                 }
             };
 
