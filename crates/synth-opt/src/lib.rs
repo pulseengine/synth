@@ -925,14 +925,57 @@ impl CommonSubexpressionElimination {
                     }
                 }
 
-                // Store invalidates loads from same address
-                Opcode::Store { addr, .. } => {
+                // Store invalidates loads from same address.
+                // Also rewrite `src` through `reg_map` so the local-variable
+                // sink picks up CSE-eliminated producers (issue #104).
+                Opcode::Store { src, addr } => {
+                    let src = resolve(src);
+                    inst.opcode = Opcode::Store { src, addr };
                     expr_map.remove(&ExprKey::Load(addr));
                 }
 
-                // TeeStore also invalidates loads from same address
-                Opcode::TeeStore { addr, .. } => {
+                // TeeStore also invalidates loads from same address.
+                // Rewrite `src` through `reg_map` for the same reason as Store.
+                Opcode::TeeStore { dest, src, addr } => {
+                    let src = resolve(src);
+                    inst.opcode = Opcode::TeeStore { dest, src, addr };
                     expr_map.remove(&ExprKey::Load(addr));
+                }
+
+                // Linear-memory load: rewrite the address vreg through
+                // `reg_map` so when a preceding `Opcode::Load` (local.get)
+                // is CSE-killed (its dest replaced by an earlier dest), the
+                // MemLoad consumer still points at the live vreg.
+                //
+                // Issue #104: prior to this arm, the `_ => {}` fallback left
+                // `addr` untouched. The CSE-killed Load was then dropped by
+                // `optimize_full`'s dead-instruction filter and `ir_to_arm`
+                // panicked with "vreg vN has no assigned ARM register".
+                //
+                // We intentionally do NOT CSE MemLoads themselves (there is
+                // no alias analysis for linear memory; any MemStore can
+                // invalidate any address).
+                Opcode::MemLoad { dest, addr, offset } => {
+                    let addr = resolve(addr);
+                    inst.opcode = Opcode::MemLoad { dest, addr, offset };
+                }
+
+                // Linear-memory store: rewrite both `src` and `addr` through
+                // `reg_map`. Same rationale as `MemLoad`.
+                Opcode::MemStore { src, addr, offset } => {
+                    let src = resolve(src);
+                    let addr = resolve(addr);
+                    inst.opcode = Opcode::MemStore { src, addr, offset };
+                }
+
+                // 8/16-bit sign extension (unary): resolve `src`.
+                Opcode::Extend8S { dest, src } => {
+                    let src = resolve(src);
+                    inst.opcode = Opcode::Extend8S { dest, src };
+                }
+                Opcode::Extend16S { dest, src } => {
+                    let src = resolve(src);
+                    inst.opcode = Opcode::Extend16S { dest, src };
                 }
 
                 // Label marks a loop start - clear all Load caches since values
