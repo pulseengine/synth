@@ -3742,9 +3742,14 @@ impl OptimizerBridge {
                 }
 
                 // Copy: move value from src to dest (for local.tee semantics)
+                //
+                // Pre-fix hardcoded `rd = Reg::R0`, which clobbered the
+                // first AAPCS param on every local.tee even when neither
+                // src nor dest had anything to do with R0.
                 Opcode::Copy { dest, src } => {
                     let rs = get_arm_reg(src, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R0;
+                    let rd =
+                        alloc_i32_scratch(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[rs]);
                     vreg_to_arm.insert(dest.0, rd);
                     if rs != rd {
                         arm_instrs.push(ArmOp::Mov {

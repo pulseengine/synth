@@ -4360,6 +4360,13 @@ impl InstructionSelector {
                 }
 
                 // i64 sub-word loads — load sub-word, extend to i64 (register pair)
+                //
+                // Pre-fix `dst_lo` and `dst_hi` were hardcoded to R0:R1,
+                // clobbering AAPCS params 0 and 1 on every i64.load{8,16,32}*
+                // — even when the function had 2+ params and neither was
+                // the address operand. Use `alloc_consecutive_pair` with
+                // `addr` in `extra_avoid` so the destination pair never
+                // overlaps the address register OR a live param.
                 I64Load8S { offset, .. }
                 | I64Load8U { offset, .. }
                 | I64Load16S { offset, .. }
@@ -4371,8 +4378,7 @@ impl InstructionSelector {
                             "stack underflow: malformed WASM or compiler bug".to_string(),
                         )
                     })?;
-                    let dst_lo = Reg::R0;
-                    let dst_hi = Reg::R1;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[addr])?;
 
                     let ops: Vec<ArmOp> = match op {
                         I64Load8S { .. } => {
