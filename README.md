@@ -44,6 +44,25 @@ Part of [PulseEngine](https://github.com/pulseengine) -- a WebAssembly toolchain
 | [**Kiln**](https://github.com/pulseengine/kiln) | WASM runtime for safety-critical systems |
 | [**Sigil**](https://github.com/pulseengine/sigil) | Supply chain attestation and signing |
 
+## Customer narrative
+
+Synth's pitch is that **functional safety is a certification problem, not a
+processor problem**: the right unit of evidence is verifiable code
+generation from a small, well-defined source language (WASM) to a small,
+well-defined target ISA (Thumb-2 / RV32), not a verified silicon core. That
+framing has external academic validation in
+[Andreasyan et al., 2026](https://arxiv.org/abs/2604.17391) — *"RISC-V
+Functional Safety for Autonomous Automotive Systems: An Analytical Framework
+and Research Roadmap for ML-Assisted Certification"* — which argues that
+"the strongest outcome is not a faster core, but an ASIL-D-ready
+certifiable RISC-V platform," and positions the certification workflow
+(diagnostic coverage, ISO 26262 / ISO 21448 / ISO/SAE 21434 alignment) as
+the primary deliverable. Synth contributes the codegen half of that
+workflow: a compiler whose lowering steps come with mechanized proofs and
+an explicit
+[Spectre / speculative-execution policy](docs/spectre-policy.md) per
+lowering rule.
+
 ## Installation
 
 ### From source (Cargo)
