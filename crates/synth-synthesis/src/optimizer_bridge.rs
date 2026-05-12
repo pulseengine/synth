@@ -1959,15 +1959,24 @@ impl OptimizerBridge {
                 }
 
                 // Arithmetic operations
-                // Use a temp register (R8) for intermediate results to avoid clobbering params
-                // The final return value will be moved to R0 at function end
+                //
+                // Pre-fix these hardcoded `rd = Reg::R3`, clobbering the 4th
+                // AAPCS argument on every i32 arith in 4-param functions.
+                // Use `alloc_i32_scratch` so the destination is picked from
+                // the callee-saved bank; sources are added to `extra_avoid`
+                // so a 3-operand op doesn't pick its own input as dest while
+                // it's still live in `vreg_to_arm`.
                 Opcode::Add { dest, src1, src2 } => {
                     reload_spill(src1, &spilled_vregs, &mut arm_instrs);
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     reload_spill(src2, &spilled_vregs, &mut arm_instrs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    // Use R8 for intermediate results to preserve params in R0-R3
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::Add {
                         rd,
@@ -1989,7 +1998,12 @@ impl OptimizerBridge {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     reload_spill(src2, &spilled_vregs, &mut arm_instrs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::Sub {
                         rd,
@@ -2010,7 +2024,12 @@ impl OptimizerBridge {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     reload_spill(src2, &spilled_vregs, &mut arm_instrs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::Mul { rd, rn, rm });
                     last_result_vreg = Some(dest.0);
@@ -2025,7 +2044,12 @@ impl OptimizerBridge {
                 Opcode::DivS { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
 
                     // Trap check 1: divide by zero
@@ -2082,7 +2106,12 @@ impl OptimizerBridge {
                 Opcode::DivU { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R0;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
 
                     // Trap check: divide by zero
@@ -2104,7 +2133,12 @@ impl OptimizerBridge {
                 Opcode::RemS { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R0;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
 
                     // Trap check: divide by zero (rem_s doesn't trap on INT_MIN % -1)
@@ -2136,7 +2170,12 @@ impl OptimizerBridge {
                 Opcode::RemU { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R0;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
 
                     // Trap check: divide by zero
@@ -2168,7 +2207,12 @@ impl OptimizerBridge {
                 Opcode::And { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R0;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::And {
                         rd,
@@ -2181,8 +2225,12 @@ impl OptimizerBridge {
                 Opcode::Or { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    // Use R3 as temp to avoid clobbering R0 (param register)
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::Orr {
                         rd,
@@ -2195,8 +2243,12 @@ impl OptimizerBridge {
                 Opcode::Xor { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    // Use R3 as temp to avoid clobbering R0 (param register)
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::Eor {
                         rd,
@@ -2212,7 +2264,12 @@ impl OptimizerBridge {
                 Opcode::Shl { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
                     // Mask shift amount: R12 = rm & 31
                     arm_instrs.push(ArmOp::And {
@@ -2231,7 +2288,12 @@ impl OptimizerBridge {
                 Opcode::ShrS { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::And {
                         rd: Reg::R12,
@@ -2249,7 +2311,12 @@ impl OptimizerBridge {
                 Opcode::ShrU { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::And {
                         rd: Reg::R12,
@@ -2270,7 +2337,12 @@ impl OptimizerBridge {
                 Opcode::Rotr { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::And {
                         rd: Reg::R12,
@@ -2290,7 +2362,12 @@ impl OptimizerBridge {
                 Opcode::Rotl { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R3;
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
                     // R12 = rm & 31
                     arm_instrs.push(ArmOp::And {
@@ -2316,7 +2393,8 @@ impl OptimizerBridge {
                 // Bit count operations (unary)
                 Opcode::Clz { dest, src } => {
                     let rm = get_arm_reg(src, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R0;
+                    let rd =
+                        alloc_i32_scratch(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[rm]);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::Clz { rd, rm });
                     last_result_vreg = Some(dest.0);
@@ -2324,7 +2402,8 @@ impl OptimizerBridge {
 
                 Opcode::Ctz { dest, src } => {
                     let rm = get_arm_reg(src, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R0;
+                    let rd =
+                        alloc_i32_scratch(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[rm]);
                     vreg_to_arm.insert(dest.0, rd);
                     // CTZ = CLZ(RBIT(x)) - reverse bits, then count leading zeros
                     arm_instrs.push(ArmOp::Rbit { rd, rm });
@@ -2334,7 +2413,8 @@ impl OptimizerBridge {
 
                 Opcode::Popcnt { dest, src } => {
                     let rm = get_arm_reg(src, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R0;
+                    let rd =
+                        alloc_i32_scratch(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[rm]);
                     vreg_to_arm.insert(dest.0, rd);
                     // Popcnt - no direct instruction, use Popcnt pseudo-op
                     arm_instrs.push(ArmOp::Popcnt { rd, rm });
@@ -2344,7 +2424,8 @@ impl OptimizerBridge {
                 // Sign extension operations (unary)
                 Opcode::Extend8S { dest, src } => {
                     let rm = get_arm_reg(src, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R0;
+                    let rd =
+                        alloc_i32_scratch(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[rm]);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::Sxtb { rd, rm });
                     last_result_vreg = Some(dest.0);
@@ -2352,7 +2433,8 @@ impl OptimizerBridge {
 
                 Opcode::Extend16S { dest, src } => {
                     let rm = get_arm_reg(src, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R0;
+                    let rd =
+                        alloc_i32_scratch(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[rm]);
                     vreg_to_arm.insert(dest.0, rd);
                     arm_instrs.push(ArmOp::Sxth { rd, rm });
                     last_result_vreg = Some(dest.0);
@@ -2361,7 +2443,8 @@ impl OptimizerBridge {
                 // Eqz - compare with zero (unary)
                 Opcode::Eqz { dest, src } => {
                     let rn = get_arm_reg(src, &vreg_to_arm, &spilled_vregs);
-                    let rd = Reg::R0;
+                    let rd =
+                        alloc_i32_scratch(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[rn]);
                     vreg_to_arm.insert(dest.0, rd);
 
                     // CMP rn, #0; SetCond rd, EQ
@@ -2389,10 +2472,20 @@ impl OptimizerBridge {
                 | Opcode::GeU { dest, src1, src2 } => {
                     let rn = get_arm_reg(src1, &vreg_to_arm, &spilled_vregs);
                     let rm = get_arm_reg(src2, &vreg_to_arm, &spilled_vregs);
-                    // Use R7 for comparison results to avoid clobbering R0
-                    // R0 is needed for return values in loops
-                    // Note: R7 must be used (not R12) because 16-bit MOV can only address R0-R7
-                    let rd = Reg::R7;
+                    // Pre-fix this hardcoded `Reg::R7` to keep the SetCond
+                    // encodable as 16-bit Thumb (which can only address R0-R7).
+                    // R7 is callee-saved (no AAPCS clobber) but the hardcode
+                    // collided with non-param locals stored in R7. Use
+                    // `alloc_i32_scratch` constrained to the R4..R7 lower-
+                    // bank candidates so SetCond keeps its 16-bit encoding
+                    // when possible. (R4..R7 are all in the helper's
+                    // search list and all 16-bit-MOV-addressable.)
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[rn, rm],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
 
                     let cond = match &inst.opcode {
@@ -2467,9 +2560,15 @@ impl OptimizerBridge {
                     let r_true = get_arm_reg(val_true, &vreg_to_arm, &spilled_vregs);
                     let r_false = get_arm_reg(val_false, &vreg_to_arm, &spilled_vregs);
 
-                    // Use R3 as result to avoid clobbering R0 (may hold param)
-                    // Final return value will be moved to R0 at function end
-                    let rd = Reg::R3;
+                    // Pre-fix this hardcoded R3, clobbering the 4th AAPCS
+                    // arg on every Select. Use `alloc_i32_scratch` so the
+                    // destination is callee-saved by construction.
+                    let rd = alloc_i32_scratch(
+                        &vreg_to_arm,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &[r_cond, r_true, r_false],
+                    );
                     vreg_to_arm.insert(dest.0, rd);
 
                     // CRITICAL: If condition is in rd and we need to move val_true to rd,
