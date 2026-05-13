@@ -1326,6 +1326,34 @@ impl OptimizerBridge {
                     delta: OptReg(inst_id.saturating_sub(1) as u32),
                 },
 
+                // ===== Direct call =====
+                //
+                // Pre-fix, `WasmOp::Call` fell through to `Opcode::Nop`, so
+                // the call's result vreg never got mapped to an ARM register.
+                // A downstream consumer of the call result (e.g., the outer
+                // `i32.add` of two recursive `fib` calls in `simple_add.wat`)
+                // then resolved its `src` vreg via `get_arm_reg`, hit the
+                // unmapped path, and either triggered the PR #101 defensive
+                // panic or silently consumed whatever value happened to be in
+                // R0 — a clobber-via-stale-AAPCS-param bug, same class as #93.
+                //
+                // We emit an `Opcode::Call` here so `ir_to_arm` can bind
+                // `dest` to R0 (where the AAPCS return value lands). This
+                // does NOT model the call's clobber of R0..R3 — a deeper
+                // call-lowering rework is needed for fully correct codegen
+                // across calls (e.g., reloading params after the BL); that's
+                // a follow-up. The narrow goal here is "compile without
+                // panicking on lawful WASM that contains `call`."
+                //
+                // Note: WASM `call` may also pop N args from the stack (for
+                // a function taking N params). The IR doesn't yet model that;
+                // for now arguments are assumed to already be in R0..R3 by
+                // virtue of being the most-recently-produced vregs.
+                WasmOp::Call(func_idx) => Opcode::Call {
+                    dest: OptReg(inst_id as u32),
+                    func_idx: *func_idx,
+                },
+
                 // Fallback for unsupported ops
                 _ => Opcode::Nop,
             };
@@ -1572,11 +1600,12 @@ impl OptimizerBridge {
         // as their `rm_lo`/`rm_hi`, destroying the loop counter on real silicon.
         // A loud panic here is strictly better than a quiet miscompilation —
         // crash the compiler, not the firmware.
-        // Note: the silent R0 fallback is intentionally preserved here while the
-        // remaining latent unmapped-vreg cases are being hunted. PR #101 holds
-        // the defensive panic version of this helper; it will land once every
-        // wasm_to_ir gap is closed (one known v13 case during fib compilation
-        // remains to be tracked down).
+        // Note: the silent R0 fallback is intentionally preserved here. PR #101
+        // holds the defensive panic version of this helper; it will land once
+        // every wasm_to_ir gap is closed. The previously-known `v13` case
+        // during `fib` compilation was fixed in this PR by adding a `Call`
+        // opcode and handler — see `Opcode::Call` below and `WasmOp::Call` in
+        // `wasm_to_ir`.
         let get_arm_reg =
             |vreg: &OptReg, map: &HashMap<u32, Reg>, spills: &HashMap<u32, i32>| -> Reg {
                 if let Some(&r) = map.get(&vreg.0) {
@@ -4039,6 +4068,28 @@ impl OptimizerBridge {
                     arm_instrs.push(ArmOp::Movt { rd, imm16: 0xFFFF });
                     last_result_vreg = Some(dest.0);
                 }
+
+                // Direct call. Emit `BL func_<idx>`; the AAPCS return value
+                // is in R0, so we bind `dest` to R0. This MUST register
+                // `dest` in `vreg_to_arm` — without that mapping, any
+                // downstream consumer of the call result would hit the
+                // unmapped-vreg path in `get_arm_reg` (formerly the silent
+                // R0 fallback, now the PR #101 defensive panic — same class
+                // of bug that motivated this fix).
+                //
+                // Caveat (out of scope for this PR): a call clobbers
+                // R0..R3, so any vreg currently mapped to R0..R3 that
+                // *survives* the call is invalidated by it. We don't model
+                // that here — fully correct call-boundary regalloc in the
+                // optimized path needs a broader rework. The narrow goal
+                // here is "compile cleanly, don't panic on `WasmOp::Call`."
+                Opcode::Call { dest, func_idx } => {
+                    arm_instrs.push(ArmOp::Bl {
+                        label: format!("func_{}", func_idx),
+                    });
+                    vreg_to_arm.insert(dest.0, Reg::R0);
+                    last_result_vreg = Some(dest.0);
+                }
             }
 
             // Track WASM operand value stack for correct br_if semantics.
@@ -4120,6 +4171,14 @@ impl OptimizerBridge {
                     value_stack.pop();
                     value_stack.pop();
                     value_stack.pop();
+                    value_stack.push(dest.0);
+                }
+                // Call: produce 1 (the AAPCS return value in R0). The IR
+                // doesn't yet carry arg-count metadata, so we do NOT pop
+                // arg slots from the value stack — same imprecision as the
+                // unhandled-call case prior to this fix; deferred to a
+                // broader call-lowering rework.
+                Opcode::Call { dest, .. } => {
                     value_stack.push(dest.0);
                 }
                 // Label, Branch, Nop, Return: no stack effect
