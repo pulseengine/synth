@@ -1600,12 +1600,12 @@ impl OptimizerBridge {
         // as their `rm_lo`/`rm_hi`, destroying the loop counter on real silicon.
         // A loud panic here is strictly better than a quiet miscompilation —
         // crash the compiler, not the firmware.
-        // Note: the silent R0 fallback is intentionally preserved here. PR #101
-        // holds the defensive panic version of this helper; it will land once
-        // every wasm_to_ir gap is closed. The previously-known `v13` case
-        // during `fib` compilation was fixed in this PR by adding a `Call`
-        // opcode and handler — see `Opcode::Call` below and `WasmOp::Call` in
-        // `wasm_to_ir`.
+        // History: PR #108 (47-site AAPCS audit) deferred this panic, leaving a
+        // silent R0 fallback while one last v13 case in fib compilation was
+        // tracked down. PR #109 fixed that case (WasmOp::Call had no wasm_to_ir
+        // handler, falling through to Opcode::Nop). With #109 stacked under
+        // this PR, every known wasm_to_ir gap is closed and this panic is safe
+        // to ship as a permanent guard against the class.
         let get_arm_reg =
             |vreg: &OptReg, map: &HashMap<u32, Reg>, spills: &HashMap<u32, i32>| -> Reg {
                 if let Some(&r) = map.get(&vreg.0) {
@@ -1614,7 +1614,12 @@ impl OptimizerBridge {
                     // Will be reloaded into R12 by reload_spill
                     Reg::R12
                 } else {
-                    Reg::R0
+                    panic!(
+                        "synth internal compiler error: vreg v{} has no assigned \
+                         ARM register and no spill slot. This is a wasm_to_ir bug — \
+                         likely a wasm op whose result is unmapped (see issue #93).",
+                        vreg.0
+                    );
                 }
             };
 
