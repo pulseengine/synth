@@ -87,7 +87,12 @@ fuzz_target!(|input: FuzzInput| {
 
     // For each param p, walk the lowered ARM instructions in order. Any
     // instruction whose `source_line` is < first_read_wasm_idx[p] AND
-    // writes R{p} is a clobber.
+    // writes R{p} is a clobber — UNLESS the source wasm op is
+    // `LocalSet(p)` or `LocalTee(p)`, in which case the write to R{p}
+    // is wasm-program-intended (the user explicitly asked to store into
+    // param-local p). Without this carve-out the harness false-positives
+    // on every `LocalSet(p); ...; LocalGet(p)` pattern, since the
+    // LocalSet legitimately emits a Mov writing R{p}.
     for (p, &first_read_idx) in first_read_wasm_idx
         .iter()
         .take(num_params as usize)
@@ -113,6 +118,18 @@ fuzz_target!(|input: FuzzInput| {
             };
             if line >= first_read {
                 break; // Past the param's first read — out of the window.
+            }
+            // Skip the wasm-program-intended write: LocalSet(p) and
+            // LocalTee(p) MAY semantically write R{p} (it's where the
+            // wasm local lives). The compiler is just honoring the wasm
+            // program. A real compiler bug here would be a write from a
+            // different wasm op (e.g., I32WrapI64 hardcoding R0 as its
+            // destination — the bug PR #111 fixed).
+            if let Some(WasmOp::LocalSet(p_op)) | Some(WasmOp::LocalTee(p_op)) =
+                wasm_ops.get(line)
+                && *p_op as usize == p
+            {
+                continue;
             }
             for w in writes(&instr.op) {
                 assert_ne!(
