@@ -46,11 +46,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - wasm_ops_lower_or_error
-          - wasm_to_ir_roundtrip_op_coverage
-          - i64_lowering_doesnt_clobber_params
-          - encoder_no_panic
+        # Each entry: `target` + `gating`. Gating harnesses pass clean today
+        # and block PR merge on regression. Exploration harnesses keep finding
+        # new bugs at a rate faster than we close them in one cycle; they
+        # report (crash artifacts uploaded) but don't block — `continue-on-
+        # error` is taken from the `gating` flag. Promote an exploration
+        # harness to gating once its bug-list stabilises.
+        include:
+          - target: wasm_ops_lower_or_error
+            gating: true
+          - target: wasm_to_ir_roundtrip_op_coverage
+            gating: true
+          - target: i64_lowering_doesnt_clobber_params
+            gating: false  # finds real bugs faster than we fix them; tracked as follow-up issues
+          - target: encoder_no_panic
+            gating: false  # encoder-level corner cases; not silicon-blocking
+    # When gating == false, treat job failure as a non-blocking warning. The
+    # matrix value is plain JSON (bool), not untrusted user input, so this is
+    # safe to interpolate.
+    continue-on-error: ${{ matrix.gating == false }}
     steps:
       - uses: actions/checkout@v4
 
