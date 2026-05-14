@@ -6078,11 +6078,17 @@ impl InstructionSelector {
                         synth_core::Error::synthesis("stack underflow in I32WrapI64".to_string())
                     })?;
                     let _src_hi = i64_pair_hi(src_lo)?;
-                    let dst = if idx == wasm_ops.len() - 1 {
-                        Reg::R0
-                    } else {
-                        alloc_temp_safe(&mut next_temp, &stack)?
-                    };
+                    // Always allocate a fresh temporary. Pre-fix, this picked
+                    // `Reg::R0` when `idx == wasm_ops.len() - 1`, on the theory
+                    // that "the last wasm op is the function's return value, so
+                    // place it directly in R0". That premature R0-pin clobbers
+                    // any AAPCS param the function hasn't yet read — PR #100's
+                    // `i64_lowering_doesnt_clobber_params` fuzz harness caught
+                    // this for the `i64.const; i32.wrap_i64` pattern (rdlo
+                    // landing on R3, then I32WrapI64 pinning rd=R0). The
+                    // function epilogue now handles the return-value Mov to R0
+                    // explicitly via `emit_return_move_if_needed` below.
+                    let dst = alloc_temp_safe(&mut next_temp, &stack)?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::I32WrapI64 {
                             rd: dst,
@@ -6121,8 +6127,33 @@ impl InstructionSelector {
             }
         }
 
-        // Function epilogue: deallocate the local frame, then restore
-        // callee-saved registers and return via PC.
+        // Function epilogue: place the AAPCS return value in R0 (if the last
+        // expression result isn't already there), deallocate the local frame,
+        // then restore callee-saved registers and return via PC.
+        //
+        // Pre-fix, several wasm-op handlers (I32Add, I32Sub, ..., I32WrapI64,
+        // I64ExtendI32U/S) pinned the destination register to R0 when their
+        // `idx == wasm_ops.len() - 1`. That heuristic conflated "lexically
+        // last op handed to select_with_stack" with "function-return
+        // boundary"; with the move to fuzz-driven testing (PR #100) those
+        // are no longer the same thing, and the pin caused AAPCS-param
+        // clobbers. The fix is to keep results in regalloc-chosen temps and
+        // have the epilogue emit the AAPCS return-value move here, ONCE.
+        //
+        // `source_line: None` keeps the move out of the
+        // "writes-param-reg-before-LocalGet" invariant the fuzz harness
+        // checks; it's the function-boundary Mov, not a body-level write.
+        if let Some(&result_reg) = stack.last()
+            && result_reg != Reg::R0
+        {
+            instructions.push(ArmInstruction {
+                op: ArmOp::Mov {
+                    rd: Reg::R0,
+                    op2: Operand2::Reg(result_reg),
+                },
+                source_line: None,
+            });
+        }
         if layout.frame_size > 0 {
             instructions.push(ArmInstruction {
                 op: ArmOp::Add {
