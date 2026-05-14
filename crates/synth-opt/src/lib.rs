@@ -314,6 +314,25 @@ pub enum Opcode {
         cond: Reg,
         target: BlockId,
     },
+    /// Direct function call. Lowered to `BL func_<func_idx>` (or to an import
+    /// dispatch for `func_idx < num_imports`). The AAPCS return value lands in
+    /// `R0`, so `ir_to_arm` binds `dest` to `R0` after the BL.
+    ///
+    /// Prior to this opcode, `WasmOp::Call` fell through to `Opcode::Nop` in
+    /// `wasm_to_ir`, leaving the call result's vreg unmapped. Any downstream
+    /// consumer (e.g., `i32.add` of two `call` results, as in the recursive
+    /// `fib` example) then triggered the PR #101 defensive panic — or, with
+    /// the silent R0 fallback, silently miscompiled. See the issue-#93 family
+    /// of bugs.
+    ///
+    /// NOTE: this opcode does NOT model the call's clobber of R0..R3 — that's
+    /// a separate (deeper) issue around correct AAPCS lowering of calls in
+    /// the optimized path. This fix only closes the unmapped-vreg gap so the
+    /// compiler stops panicking on lawful WASM modules.
+    Call {
+        dest: Reg,
+        func_idx: u32,
+    },
     Return {
         value: Option<Reg>,
     },
@@ -960,7 +979,8 @@ impl CommonSubexpressionElimination {
                 | Opcode::MemLoadSubword { dest, .. }
                 | Opcode::GlobalGet { dest, .. }
                 | Opcode::MemorySize { dest, .. }
-                | Opcode::MemoryGrow { dest, .. } => vec![*dest],
+                | Opcode::MemoryGrow { dest, .. }
+                | Opcode::Call { dest, .. } => vec![*dest],
                 Opcode::I64Add {
                     dest_lo, dest_hi, ..
                 }
