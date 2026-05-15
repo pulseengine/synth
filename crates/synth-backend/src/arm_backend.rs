@@ -6,7 +6,7 @@
 use crate::ArmEncoder;
 use synth_core::backend::{
     Backend, BackendCapabilities, BackendError, CodeRelocation, CompilationResult, CompileConfig,
-    CompiledFunction,
+    CompiledFunction, SafetyBounds,
 };
 use synth_core::target::{IsaVariant, TargetSpec};
 use synth_core::wasm_decoder::DecodedModule;
@@ -144,10 +144,11 @@ fn compile_wasm_to_arm(
 ) -> Result<(Vec<u8>, Vec<CodeRelocation>), String> {
     let num_params = count_params(wasm_ops);
 
-    let bounds_config = if config.bounds_check {
-        BoundsCheckConfig::Software
-    } else {
-        BoundsCheckConfig::None
+    let bounds_config = match config.effective_safety_bounds() {
+        SafetyBounds::None => BoundsCheckConfig::None,
+        SafetyBounds::Mpu => BoundsCheckConfig::Mpu,
+        SafetyBounds::Software => BoundsCheckConfig::Software,
+        SafetyBounds::Mask => BoundsCheckConfig::Masking,
     };
 
     // Instruction selection: optimized or direct
@@ -306,6 +307,68 @@ mod tests {
 
         let func = backend.compile_function("add", &ops, &config).unwrap();
         assert!(func.relocations.is_empty());
+    }
+
+    // ─── Phase 1 safety-bounds plumbing for ARM ──────────────────────────
+
+    #[test]
+    fn arm_safety_bounds_mpu_emits_same_code_as_none() {
+        // Mpu mode must not introduce any inline check on ARM — the MPU
+        // handles faults via hardware. The encoded bytes for an i32.load
+        // should be identical between None and Mpu.
+        let backend = ArmBackend::new();
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        let cfg_none = CompileConfig {
+            no_optimize: true,
+            ..Default::default()
+        };
+        let cfg_mpu = CompileConfig {
+            no_optimize: true,
+            safety_bounds: SafetyBounds::Mpu,
+            ..Default::default()
+        };
+        let n = backend.compile_function("ld", &ops, &cfg_none).unwrap();
+        let m = backend.compile_function("ld", &ops, &cfg_mpu).unwrap();
+        assert_eq!(
+            n.code, m.code,
+            "Mpu and None should produce identical ARM bytes (Mpu relies on hardware)"
+        );
+    }
+
+    #[test]
+    fn arm_legacy_bounds_check_still_emits_software_check() {
+        // Legacy CLI users with `--bounds-check` should keep getting the
+        // software path even though the new SafetyBounds field defaults to None.
+        let backend = ArmBackend::new();
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        let cfg_legacy = CompileConfig {
+            no_optimize: true,
+            bounds_check: true,
+            ..Default::default()
+        };
+        let cfg_software = CompileConfig {
+            no_optimize: true,
+            safety_bounds: SafetyBounds::Software,
+            ..Default::default()
+        };
+        let l = backend.compile_function("ld", &ops, &cfg_legacy).unwrap();
+        let s = backend.compile_function("ld", &ops, &cfg_software).unwrap();
+        assert_eq!(
+            l.code, s.code,
+            "--bounds-check should produce the same bytes as --safety-bounds=software"
+        );
     }
 
     // ========================================================================

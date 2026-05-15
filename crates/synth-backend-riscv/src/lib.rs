@@ -31,5 +31,8 @@ pub use linker_script::{LinkerScriptConfig, RiscVLinkerScriptGenerator};
 pub use pmp::{PMPAllocator, PMPEntry, PMPError, PMPMode, PMPPermissions};
 pub use register::{Reg, RegClass};
 pub use riscv_op::{Branch, Csr, RiscVOp};
-pub use selector::{RiscVSelection, SelectorError, select_simple};
+pub use selector::{
+    RiscVSelection, RvBoundsMode, SelectorError, SelectorOptions, select_simple,
+    select_with_options,
+};
 pub use startup::{RiscVStartupGenerator, StartupConfig};

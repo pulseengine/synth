@@ -25,6 +25,53 @@ pub enum BackendError {
     ExternalToolError(String),
 }
 
+/// Memory-bounds safety strategy. Phase 1 of `docs/binary-safety-design.md` §3.1.
+///
+/// - `Mpu`/PMP: rely on hardware (ARM MPU or RV32 PMP) — no inline check.
+/// - `Software`: emit a `CMP/BHS Trap_Handler` (ARM) or `bgeu addr, mem_size, ebreak` (RV32)
+///   before every load/store.
+/// - `Mask`: emit `AND addr, addr, #(mem_size - 1)` — only valid when memory size
+///   is a power of two. Wraps on OOB rather than trapping (fuzz-profile semantics).
+/// - `None`: no bounds enforcement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SafetyBounds {
+    /// No bounds check (caller assumes the WASM module is trusted)
+    #[default]
+    None,
+    /// ARM MPU / RV32 PMP — hardware enforcement, no inline guard
+    Mpu,
+    /// Software CMP/BHS (ARM) or BGEU+EBREAK (RV32) per access
+    Software,
+    /// AND-mask, requires power-of-two memory size
+    Mask,
+}
+
+impl SafetyBounds {
+    /// Parse the `--safety-bounds` argument value.
+    pub fn parse(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "none" => Ok(SafetyBounds::None),
+            "mpu" | "pmp" => Ok(SafetyBounds::Mpu),
+            "software" | "soft" => Ok(SafetyBounds::Software),
+            "mask" | "masking" => Ok(SafetyBounds::Mask),
+            other => Err(format!(
+                "unknown --safety-bounds value '{}'; expected one of: none, mpu, software, mask",
+                other
+            )),
+        }
+    }
+
+    /// String form used in the safety manifest.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SafetyBounds::None => "none",
+            SafetyBounds::Mpu => "mpu",
+            SafetyBounds::Software => "software",
+            SafetyBounds::Mask => "mask",
+        }
+    }
+}
+
 /// Configuration for a compilation run
 #[derive(Debug, Clone)]
 pub struct CompileConfig {
@@ -32,8 +79,15 @@ pub struct CompileConfig {
     pub opt_level: u8,
     /// Target specification
     pub target: TargetSpec,
-    /// Enable software bounds checking for memory operations
+    /// Legacy: enable software bounds checking for memory operations.
+    /// Deprecated in favor of `safety_bounds`. When set, equivalent to
+    /// `SafetyBounds::Software`. Kept for backwards compatibility with
+    /// callers that haven't migrated yet.
     pub bounds_check: bool,
+    /// Phase-1 unified safety-bounds knob. If `bounds_check` is `true` and
+    /// this is `None`, the legacy field wins (back-compat). If both are set,
+    /// `safety_bounds` wins.
+    pub safety_bounds: SafetyBounds,
     /// Hardware profile name (e.g. "nrf52840", "stm32f407")
     pub hardware: String,
     /// Skip optimization passes (direct instruction selection)
@@ -44,12 +98,25 @@ pub struct CompileConfig {
     pub num_imports: u32,
 }
 
+impl CompileConfig {
+    /// Resolve the effective safety-bounds setting, honouring the legacy
+    /// `bounds_check` field as a fallback. Used by backends to pick the
+    /// inline-check shape.
+    pub fn effective_safety_bounds(&self) -> SafetyBounds {
+        match (self.safety_bounds, self.bounds_check) {
+            (SafetyBounds::None, true) => SafetyBounds::Software,
+            (s, _) => s,
+        }
+    }
+}
+
 impl Default for CompileConfig {
     fn default() -> Self {
         Self {
             opt_level: 2,
             target: TargetSpec::cortex_m4(),
             bounds_check: false,
+            safety_bounds: SafetyBounds::None,
             hardware: String::new(),
             no_optimize: false,
             loom_compat: false,
@@ -199,6 +266,37 @@ mod tests {
         let config = CompileConfig::default();
         assert_eq!(config.opt_level, 2);
         assert!(!config.bounds_check);
+        assert_eq!(config.safety_bounds, SafetyBounds::None);
         assert!(!config.no_optimize);
+    }
+
+    #[test]
+    fn safety_bounds_parse_round_trip() {
+        for s in ["none", "mpu", "software", "mask"] {
+            let sb = SafetyBounds::parse(s).unwrap();
+            assert_eq!(sb.as_str(), s);
+        }
+        assert_eq!(SafetyBounds::parse("pmp").unwrap(), SafetyBounds::Mpu);
+        assert_eq!(SafetyBounds::parse("soft").unwrap(), SafetyBounds::Software);
+        assert!(SafetyBounds::parse("nonsense").is_err());
+    }
+
+    #[test]
+    fn effective_safety_bounds_legacy_promotes_to_software() {
+        let cfg = CompileConfig {
+            bounds_check: true,
+            ..Default::default()
+        };
+        assert_eq!(cfg.effective_safety_bounds(), SafetyBounds::Software);
+    }
+
+    #[test]
+    fn effective_safety_bounds_new_field_wins() {
+        let cfg = CompileConfig {
+            bounds_check: true,
+            safety_bounds: SafetyBounds::Mpu,
+            ..Default::default()
+        };
+        assert_eq!(cfg.effective_safety_bounds(), SafetyBounds::Mpu);
     }
 }

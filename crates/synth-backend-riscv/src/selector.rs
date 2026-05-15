@@ -21,6 +21,57 @@ use crate::riscv_op::{Branch, RiscVOp};
 use synth_core::wasm_op::WasmOp;
 use thiserror::Error;
 
+/// Per-access memory-bounds policy for the RV32 selector. Mirrors the ARM
+/// `BoundsCheckConfig` in spirit — see `docs/binary-safety-design.md` §3.1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RvBoundsMode {
+    /// No inline check (default; relies on PMP or trusted-module assumption).
+    #[default]
+    None,
+    /// Hardware PMP enforcement. Same code-gen as `None` but distinguished
+    /// so the safety-manifest can record the intent.
+    Pmp,
+    /// Software check: `bgeu addr, mem_size, Ltrap; ...; Ltrap: ebreak`
+    /// emitted before each load/store. The memory size is materialised
+    /// inline (`emit_load_imm`) per access — Phase 1 acceptably simple;
+    /// Phase 2 will reserve a callee-saved register for it.
+    Software {
+        /// Linear-memory size in bytes. Anything `addr + offset + access_size`
+        /// `>=` this triggers the trap.
+        mem_size: u32,
+    },
+    /// AND-mask: `andi addr, addr, (mem_size - 1)` — power-of-two only.
+    /// Wraps on OOB rather than trapping; matches the ARM "Masking" mode.
+    Mask {
+        /// Must be `mem_size - 1`, where `mem_size` is a power of two.
+        mask: u32,
+    },
+}
+
+/// Options for RV32 instruction selection. Phase 1 of the binary-safety
+/// roadmap surfaces a small set of safety knobs here; later phases will
+/// likely group them into a `SafetyProfile` struct shared between backends.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SelectorOptions {
+    /// Memory-bounds policy. See `RvBoundsMode`.
+    pub bounds: RvBoundsMode,
+    /// Emit the `INT_MIN / -1` overflow guard around signed-division ops.
+    /// Always on for spec-compliant WASM output; exposed as a knob so the
+    /// fuzz harness can disable it when comparing IR-level behaviour only.
+    pub signed_div_overflow_trap: bool,
+}
+
+impl SelectorOptions {
+    /// Construct an options bundle with both safety knobs at their compliant
+    /// defaults (signed-div overflow trap on, bounds-check off).
+    pub fn wasm_compliant() -> Self {
+        Self {
+            bounds: RvBoundsMode::None,
+            signed_div_overflow_trap: true,
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum SelectorError {
     #[error("unsupported wasm op for RV32 skeleton: {0:?}")]
@@ -67,10 +118,7 @@ const LINEAR_MEM_BASE: Reg = Reg::S11;
 /// - control: block, loop, if, else, end, br, br_if, return
 /// - misc: drop, nop, unreachable
 pub fn select(wasm_ops: &[WasmOp], num_params: u32) -> Result<RiscVSelection, SelectorError> {
-    let mut ctx = Selector::new(num_params);
-    ctx.lower_seq(wasm_ops)?;
-    ctx.emit_return_epilogue();
-    Ok(RiscVSelection { ops: ctx.out })
+    select_with_options(wasm_ops, num_params, SelectorOptions::wasm_compliant())
 }
 
 /// Backwards-compatible alias for the original simple selector. The new
@@ -81,6 +129,19 @@ pub fn select_simple(
     num_params: u32,
 ) -> Result<RiscVSelection, SelectorError> {
     select(wasm_ops, num_params)
+}
+
+/// Same as [`select`], but lets the caller dial in safety options.
+/// Phase 1 of `docs/binary-safety-design.md` §3.1 / §3.3.
+pub fn select_with_options(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    options: SelectorOptions,
+) -> Result<RiscVSelection, SelectorError> {
+    let mut ctx = Selector::new_with_options(num_params, options);
+    ctx.lower_seq(wasm_ops)?;
+    ctx.emit_return_epilogue();
+    Ok(RiscVSelection { ops: ctx.out })
 }
 
 /// Internal control-flow frame. Every wasm `block`/`loop`/`if` pushes one.
@@ -125,10 +186,12 @@ struct Selector {
     next_label: u32,
     /// Tracks whether we already emitted the function-final return.
     emitted_return: bool,
+    /// Phase-1 safety options (bounds-check policy, signed-div overflow trap).
+    options: SelectorOptions,
 }
 
 impl Selector {
-    fn new(num_params: u32) -> Self {
+    fn new_with_options(num_params: u32, options: SelectorOptions) -> Self {
         // a0..a(min(7,num_params-1)) hold params, t0..t6 + s1..s10 are
         // available as temporaries. Note we deliberately do NOT use s0 (fp)
         // or s11 (linear-memory base) — they're reserved for the runtime.
@@ -156,6 +219,7 @@ impl Selector {
             next_temp: 0,
             next_label: 0,
             emitted_return: false,
+            options,
         }
     }
 
@@ -216,11 +280,15 @@ impl Selector {
             I32Add => self.bin(op, |rd, rs1, rs2| RiscVOp::Add { rd, rs1, rs2 })?,
             I32Sub => self.bin(op, |rd, rs1, rs2| RiscVOp::Sub { rd, rs1, rs2 })?,
             I32Mul => self.bin(op, |rd, rs1, rs2| RiscVOp::Mul { rd, rs1, rs2 })?,
-            I32DivS => self.bin_with_zero_trap(op, |rd, rs1, rs2| RiscVOp::Div { rd, rs1, rs2 })?,
+            I32DivS => {
+                self.bin_with_signed_div_traps(op, |rd, rs1, rs2| RiscVOp::Div { rd, rs1, rs2 })?
+            }
             I32DivU => {
                 self.bin_with_zero_trap(op, |rd, rs1, rs2| RiscVOp::Divu { rd, rs1, rs2 })?
             }
-            I32RemS => self.bin_with_zero_trap(op, |rd, rs1, rs2| RiscVOp::Rem { rd, rs1, rs2 })?,
+            I32RemS => {
+                self.bin_with_signed_div_traps(op, |rd, rs1, rs2| RiscVOp::Rem { rd, rs1, rs2 })?
+            }
             I32RemU => {
                 self.bin_with_zero_trap(op, |rd, rs1, rs2| RiscVOp::Remu { rd, rs1, rs2 })?
             }
@@ -408,6 +476,77 @@ impl Selector {
         Ok(())
     }
 
+    /// Variant of `bin_with_zero_trap` that also guards `INT_MIN / -1`, which
+    /// `div`/`rem` would silently return as `INT_MIN` / `0` respectively — WASM
+    /// semantics require a trap. See `docs/binary-safety-design.md` §3.3.
+    ///
+    /// Sequence:
+    /// ```text
+    ///   bne   rs2, zero, .Ldiv_ok   ; divide-by-zero guard (existing)
+    ///   ebreak
+    /// .Ldiv_ok:
+    ///   ; signed-overflow guard (only when options.signed_div_overflow_trap)
+    ///   lui   tmin, %hi(INT_MIN)
+    ///   addi  tmin, tmin, %lo(INT_MIN)         ; t = 0x80000000
+    ///   bne   rs1, tmin, .Lsdiv_ok
+    ///   li    tneg1, -1
+    ///   bne   rs2, tneg1, .Lsdiv_ok
+    ///   ebreak
+    /// .Lsdiv_ok:
+    ///   div   rd, rs1, rs2
+    /// ```
+    fn bin_with_signed_div_traps<F>(&mut self, op: &WasmOp, build: F) -> Result<(), SelectorError>
+    where
+        F: FnOnce(Reg, Reg, Reg) -> RiscVOp,
+    {
+        let (rs1, rs2) = self.pop_pair(op)?;
+        let rd = self.alloc_temp();
+        // Trap 1: divisor == 0
+        let ok_zero = self.fresh_label("Ldiv_ok");
+        self.out.push(RiscVOp::Branch {
+            cond: Branch::Ne,
+            rs1: rs2,
+            rs2: Reg::ZERO,
+            label: ok_zero.clone(),
+        });
+        self.out.push(RiscVOp::Ebreak);
+        self.out.push(RiscVOp::Label { name: ok_zero });
+
+        // Trap 2: INT_MIN / -1
+        if self.options.signed_div_overflow_trap {
+            let ok_overflow = self.fresh_label("Lsdiv_ok");
+            let tmin = self.alloc_temp();
+            // INT_MIN = 0x80000000. emit_load_imm decomposes into lui+addi.
+            emit_load_imm(&mut self.out, tmin, i32::MIN);
+            // bne rs1, tmin, .Lsdiv_ok → dividend != INT_MIN, no overflow
+            self.out.push(RiscVOp::Branch {
+                cond: Branch::Ne,
+                rs1,
+                rs2: tmin,
+                label: ok_overflow.clone(),
+            });
+            let neg1 = self.alloc_temp();
+            self.out.push(RiscVOp::Addi {
+                rd: neg1,
+                rs1: Reg::ZERO,
+                imm: -1,
+            });
+            // bne rs2, -1, .Lsdiv_ok → divisor != -1, no overflow
+            self.out.push(RiscVOp::Branch {
+                cond: Branch::Ne,
+                rs1: rs2,
+                rs2: neg1,
+                label: ok_overflow.clone(),
+            });
+            self.out.push(RiscVOp::Ebreak);
+            self.out.push(RiscVOp::Label { name: ok_overflow });
+        }
+
+        self.out.push(build(rd, rs1, rs2));
+        self.push_val(rd);
+        Ok(())
+    }
+
     // ────────── Comparisons ──────────
 
     fn lower_eqz(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
@@ -504,8 +643,109 @@ impl Selector {
 
     // ────────── Memory ──────────
 
+    /// Emit the per-access safety guard before a load/store, returning a
+    /// (possibly rewritten) address register. The returned register is what
+    /// later code uses as the effective wasm-side address.
+    ///
+    /// Behaviour by mode:
+    /// - `None` / `Pmp`: pass-through (no instructions emitted; PMP handles
+    ///   faults via hardware).
+    /// - `Software { mem_size }`: emit
+    ///   `addi guard, addr, +(offset + access_size - 1)`
+    ///   `lui/addi mlim, mem_size`
+    ///   `bgeu guard, mlim, Ltrap`
+    ///   `j Lok ; Ltrap: ebreak ; Lok:`
+    ///   The check guards the last byte of the access, matching the ARM
+    ///   software-bounds-check from §3.1.
+    /// - `Mask { mask }`: emit `andi rd, addr, mask` (when `mask` fits in 12 bits)
+    ///   or `lui/addi mtmp, mask; and rd, addr, mtmp` otherwise. The result is
+    ///   the masked address; the caller uses *that* for the subsequent access.
+    fn emit_bounds_check(
+        &mut self,
+        addr: Reg,
+        offset: u32,
+        access_size: u32,
+    ) -> Result<Reg, SelectorError> {
+        match self.options.bounds {
+            RvBoundsMode::None | RvBoundsMode::Pmp => Ok(addr),
+            RvBoundsMode::Software { mem_size } => {
+                let end_byte = offset.checked_add(access_size.saturating_sub(1)).ok_or(
+                    SelectorError::ImmediateTooLarge {
+                        value: offset as i64 + access_size as i64,
+                        context: "bounds-check end byte",
+                    },
+                )?;
+                let guard = self.alloc_temp();
+                if end_byte == 0 {
+                    self.out.push(RiscVOp::Addi {
+                        rd: guard,
+                        rs1: addr,
+                        imm: 0,
+                    });
+                } else if end_byte < 2048 {
+                    self.out.push(RiscVOp::Addi {
+                        rd: guard,
+                        rs1: addr,
+                        imm: end_byte as i32,
+                    });
+                } else {
+                    // Materialise the offset into a temporary, then add.
+                    let off_tmp = self.alloc_temp();
+                    emit_load_imm(&mut self.out, off_tmp, end_byte as i32);
+                    self.out.push(RiscVOp::Add {
+                        rd: guard,
+                        rs1: addr,
+                        rs2: off_tmp,
+                    });
+                }
+                let mlim = self.alloc_temp();
+                emit_load_imm(&mut self.out, mlim, mem_size as i32);
+                let ok_label = self.fresh_label("Lbnd_ok");
+                let trap_label = self.fresh_label("Lbnd_trap");
+                // bgeu guard, mlim, Lbnd_trap → branch to trap when OOB
+                self.out.push(RiscVOp::Branch {
+                    cond: Branch::Geu,
+                    rs1: guard,
+                    rs2: mlim,
+                    label: trap_label.clone(),
+                });
+                // happy path falls through to the load/store; insert an
+                // unconditional jump past the trap so we can place the
+                // ebreak at the end of the sequence.
+                self.out.push(RiscVOp::Jal {
+                    rd: Reg::ZERO,
+                    label: ok_label.clone(),
+                });
+                self.out.push(RiscVOp::Label { name: trap_label });
+                self.out.push(RiscVOp::Ebreak);
+                self.out.push(RiscVOp::Label { name: ok_label });
+                Ok(addr)
+            }
+            RvBoundsMode::Mask { mask } => {
+                let masked = self.alloc_temp();
+                if mask <= 0x7FF {
+                    self.out.push(RiscVOp::Andi {
+                        rd: masked,
+                        rs1: addr,
+                        imm: mask as i32,
+                    });
+                } else {
+                    let mtmp = self.alloc_temp();
+                    emit_load_imm(&mut self.out, mtmp, mask as i32);
+                    self.out.push(RiscVOp::And {
+                        rd: masked,
+                        rs1: addr,
+                        rs2: mtmp,
+                    });
+                }
+                Ok(masked)
+            }
+        }
+    }
+
     fn lower_load_word(&mut self, op: &WasmOp, offset: u32) -> Result<(), SelectorError> {
         let addr = self.pop_val(op)?;
+        let addr = self.emit_bounds_check(addr, offset, 4)?;
         let dst = self.alloc_temp();
         // tmp = base + addr
         let tmp = self.alloc_temp();
@@ -531,6 +771,11 @@ impl Selector {
         kind: LoadKind,
     ) -> Result<(), SelectorError> {
         let addr = self.pop_val(op)?;
+        let access_size = match kind {
+            LoadKind::I8S | LoadKind::I8U => 1,
+            LoadKind::I16S | LoadKind::I16U => 2,
+        };
+        let addr = self.emit_bounds_check(addr, offset, access_size)?;
         let dst = self.alloc_temp();
         let tmp = self.alloc_temp();
         self.out.push(RiscVOp::Add {
@@ -574,6 +819,12 @@ impl Selector {
     ) -> Result<(), SelectorError> {
         let value = self.pop_val(op)?;
         let addr = self.pop_val(op)?;
+        let access_size = match kind {
+            StoreKind::Byte => 1,
+            StoreKind::Half => 2,
+            StoreKind::Word => 4,
+        };
+        let addr = self.emit_bounds_check(addr, offset, access_size)?;
         let tmp = self.alloc_temp();
         self.out.push(RiscVOp::Add {
             rd: tmp,
@@ -1258,5 +1509,251 @@ mod tests {
             1,
         );
         assert!(matches!(r, Err(SelectorError::ImmediateTooLarge { .. })));
+    }
+
+    // ─── Phase 1 binary-safety tests ────────────────────────────────────
+
+    fn s_with_opts(ops: &[WasmOp], num_params: u32, o: SelectorOptions) -> Vec<RiscVOp> {
+        select_with_options(ops, num_params, o).unwrap().ops
+    }
+
+    #[test]
+    fn rv32_software_bounds_emits_bgeu_and_ebreak() {
+        let opts = SelectorOptions {
+            bounds: RvBoundsMode::Software { mem_size: 0x10000 },
+            signed_div_overflow_trap: true,
+        };
+        let out = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Load {
+                    offset: 0,
+                    align: 2,
+                },
+                WasmOp::End,
+            ],
+            1,
+            opts,
+        );
+        // Expect at least one BGEU against the memsize and one ebreak in the
+        // trap basic block.
+        assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Geu,
+                    ..
+                }
+            )) >= 1,
+            "expected at least one bgeu for the bounds check, got: {:?}",
+            out
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Ebreak)) >= 1,
+            "expected an ebreak in the trap path"
+        );
+    }
+
+    #[test]
+    fn rv32_no_bounds_check_emits_no_bgeu() {
+        let opts = SelectorOptions::wasm_compliant();
+        let out = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Load {
+                    offset: 0,
+                    align: 2,
+                },
+                WasmOp::End,
+            ],
+            1,
+            opts,
+        );
+        // No bgeu should be emitted when the bounds mode is `None`.
+        assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Geu,
+                    ..
+                }
+            )) == 0,
+            "no bounds-check bgeu expected when mode is None, got: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn rv32_pmp_mode_emits_no_inline_check() {
+        let opts = SelectorOptions {
+            bounds: RvBoundsMode::Pmp,
+            signed_div_overflow_trap: true,
+        };
+        let out = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Load {
+                    offset: 0,
+                    align: 2,
+                },
+                WasmOp::End,
+            ],
+            1,
+            opts,
+        );
+        // PMP mode behaves the same as None in code-gen — hardware handles it.
+        assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Geu,
+                    ..
+                }
+            )) == 0
+        );
+    }
+
+    #[test]
+    fn rv32_mask_mode_emits_andi() {
+        // mask = 65535 (= 0x10000 - 1). 0xFFFF > 0x7FF so emit_load_imm + and.
+        let opts = SelectorOptions {
+            bounds: RvBoundsMode::Mask { mask: 0xFFFF },
+            signed_div_overflow_trap: true,
+        };
+        let out = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Load {
+                    offset: 0,
+                    align: 2,
+                },
+                WasmOp::End,
+            ],
+            1,
+            opts,
+        );
+        // Either Andi (small mask) or And (large mask) appears for the mask op.
+        assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::And { .. } | RiscVOp::Andi { .. }
+            )) >= 1
+        );
+    }
+
+    #[test]
+    fn rv32_signed_div_emits_overflow_guard() {
+        let opts = SelectorOptions::wasm_compliant();
+        let out = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::I32DivS,
+                WasmOp::End,
+            ],
+            2,
+            opts,
+        );
+        // Expect: bne rs2,zero (zero-divisor guard) AND bne rs1,INT_MIN (overflow)
+        // AND bne rs2,-1 (overflow). So at least 3 BNE-shaped branches.
+        let bne_count = count(&out, |op| {
+            matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Ne,
+                    ..
+                }
+            )
+        });
+        assert!(
+            bne_count >= 3,
+            "expected at least 3 BNEs (zero + INT_MIN + -1 guards), got {} in: {:?}",
+            bne_count,
+            out
+        );
+        // And two ebreaks: one for div-by-zero, one for the overflow trap.
+        assert!(count(&out, |op| matches!(op, RiscVOp::Ebreak)) >= 2);
+    }
+
+    #[test]
+    fn rv32_signed_div_overflow_trap_disabled_only_emits_zero_guard() {
+        let opts = SelectorOptions {
+            bounds: RvBoundsMode::None,
+            signed_div_overflow_trap: false,
+        };
+        let out = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::I32DivS,
+                WasmOp::End,
+            ],
+            2,
+            opts,
+        );
+        // Only the zero-divisor BNE; no overflow guards.
+        let bne_count = count(&out, |op| {
+            matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Ne,
+                    ..
+                }
+            )
+        });
+        assert_eq!(bne_count, 1);
+        assert_eq!(count(&out, |op| matches!(op, RiscVOp::Ebreak)), 1);
+    }
+
+    #[test]
+    fn rv32_unsigned_div_skips_overflow_guard() {
+        // Unsigned division has no INT_MIN/-1 special case.
+        let opts = SelectorOptions::wasm_compliant();
+        let out = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::I32DivU,
+                WasmOp::End,
+            ],
+            2,
+            opts,
+        );
+        let bne_count = count(&out, |op| {
+            matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Ne,
+                    ..
+                }
+            )
+        });
+        assert_eq!(bne_count, 1, "only zero-divisor guard expected for div_u");
+    }
+
+    #[test]
+    fn rv32_signed_rem_also_gets_overflow_guard() {
+        let opts = SelectorOptions::wasm_compliant();
+        let out = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::I32RemS,
+                WasmOp::End,
+            ],
+            2,
+            opts,
+        );
+        let bne_count = count(&out, |op| {
+            matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Ne,
+                    ..
+                }
+            )
+        });
+        assert!(bne_count >= 3);
+        assert!(count(&out, |op| matches!(op, RiscVOp::Rem { .. })) == 1);
     }
 }

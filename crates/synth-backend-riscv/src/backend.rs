@@ -6,9 +6,10 @@
 //! Track B2/B3/B4 deliverable.
 
 use crate::elf_builder::{RiscVElfBuilder, RiscVElfFunction};
-use crate::selector::select_simple;
+use crate::selector::{RvBoundsMode, SelectorOptions, select_with_options};
 use synth_core::backend::{
     Backend, BackendCapabilities, BackendError, CompilationResult, CompileConfig, CompiledFunction,
+    SafetyBounds,
 };
 use synth_core::target::{ArchFamily, IsaVariant, TargetSpec};
 use synth_core::wasm_decoder::DecodedModule;
@@ -65,14 +66,23 @@ impl Backend for RiscVBackend {
             ));
         }
 
+        // Resolve the bounds-check mode once, using the module's first memory
+        // (if any) to populate the size for Software/Mask modes.
+        let mem_size = module
+            .memories
+            .first()
+            .map(|m| m.initial_bytes())
+            .unwrap_or(0);
+        let opts = build_options(config, mem_size)?;
+
         let mut functions = Vec::new();
         let mut elf_funcs = Vec::new();
         for func in &exports {
             let name = func.export_name.clone().unwrap();
-            let compiled = self.compile_function(&name, &func.ops, config)?;
+            let compiled = compile_function_with_opts(&name, &func.ops, config, opts)?;
             elf_funcs.push(RiscVElfFunction {
                 name: compiled.name.clone(),
-                ops: compile_to_riscv_ops(&func.ops, &compiled)?,
+                ops: compile_to_riscv_ops(&func.ops, opts, &compiled)?,
             });
             functions.push(compiled);
         }
@@ -96,31 +106,70 @@ impl Backend for RiscVBackend {
         config: &CompileConfig,
     ) -> Result<CompiledFunction, BackendError> {
         ensure_supported_target(&config.target)?;
-
-        let num_params = count_params(ops);
-        let selection = select_simple(ops, num_params)
-            .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
-
-        // Encode the function via the ELF builder's per-function pipeline so
-        // we benefit from label resolution. We discard the ELF and keep the
-        // raw bytes — that's what `CompiledFunction` carries.
-        let elf_func = RiscVElfFunction {
-            name: name.to_string(),
-            ops: selection.ops,
-        };
-        let bytes = encode_function_bytes(&elf_func)?;
-
-        Ok(CompiledFunction {
-            name: name.to_string(),
-            code: bytes,
-            wasm_ops: ops.to_vec(),
-            relocations: Vec::new(),
-        })
+        // No module context — default the memory size to 1 wasm page so that
+        // Software/Mask modes can still synthesise the guard. Callers that
+        // need a different size go through `compile_module`.
+        let opts = build_options(config, 64 * 1024)?;
+        compile_function_with_opts(name, ops, config, opts)
     }
 
     fn is_available(&self) -> bool {
         true
     }
+}
+
+/// Build `SelectorOptions` from the `CompileConfig`'s safety knobs.
+///
+/// Errors out (compile-time) when the user picks `SafetyBounds::Mask` with a
+/// non-power-of-two memory size, per the design doc §3.1 path C.
+fn build_options(config: &CompileConfig, mem_size: u32) -> Result<SelectorOptions, BackendError> {
+    let bounds = match config.effective_safety_bounds() {
+        SafetyBounds::None => RvBoundsMode::None,
+        SafetyBounds::Mpu => RvBoundsMode::Pmp,
+        SafetyBounds::Software => RvBoundsMode::Software { mem_size },
+        SafetyBounds::Mask => {
+            if mem_size == 0 || !mem_size.is_power_of_two() {
+                return Err(BackendError::UnsupportedConfig(format!(
+                    "--safety-bounds mask requires a power-of-two linear-memory size, got {} bytes — switch to --safety-bounds software for the deterministic check",
+                    mem_size
+                )));
+            }
+            RvBoundsMode::Mask { mask: mem_size - 1 }
+        }
+    };
+    Ok(SelectorOptions {
+        bounds,
+        signed_div_overflow_trap: true,
+    })
+}
+
+fn compile_function_with_opts(
+    name: &str,
+    ops: &[WasmOp],
+    config: &CompileConfig,
+    opts: SelectorOptions,
+) -> Result<CompiledFunction, BackendError> {
+    ensure_supported_target(&config.target)?;
+
+    let num_params = count_params(ops);
+    let selection = select_with_options(ops, num_params, opts)
+        .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
+
+    // Encode the function via the ELF builder's per-function pipeline so
+    // we benefit from label resolution. We discard the ELF and keep the
+    // raw bytes — that's what `CompiledFunction` carries.
+    let elf_func = RiscVElfFunction {
+        name: name.to_string(),
+        ops: selection.ops,
+    };
+    let bytes = encode_function_bytes(&elf_func)?;
+
+    Ok(CompiledFunction {
+        name: name.to_string(),
+        code: bytes,
+        wasm_ops: ops.to_vec(),
+        relocations: Vec::new(),
+    })
 }
 
 fn ensure_supported_target(target: &TargetSpec) -> Result<(), BackendError> {
@@ -209,10 +258,11 @@ fn encode_function_bytes(f: &RiscVElfFunction) -> Result<Vec<u8>, BackendError> 
 /// arch-neutral, so this re-derives it on demand for ELF emission.
 fn compile_to_riscv_ops(
     ops: &[WasmOp],
+    opts: SelectorOptions,
     _compiled: &CompiledFunction,
 ) -> Result<Vec<crate::riscv_op::RiscVOp>, BackendError> {
     let num_params = count_params(ops);
-    let selection = select_simple(ops, num_params)
+    let selection = select_with_options(ops, num_params, opts)
         .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
     Ok(selection.ops)
 }
@@ -317,7 +367,7 @@ mod tests {
             wasm_ops: ops.clone(),
             relocations: Vec::new(),
         };
-        let rv = compile_to_riscv_ops(&ops, &dummy).unwrap();
+        let rv = compile_to_riscv_ops(&ops, SelectorOptions::wasm_compliant(), &dummy).unwrap();
         // First two ops should move param regs into temporaries (immediate 0).
         assert!(matches!(
             rv[0],
@@ -346,5 +396,81 @@ mod tests {
                 imm: 0,
             }
         ));
+    }
+
+    // ─── Phase 1 safety-bounds plumbing ────────────────────────────────
+
+    #[test]
+    fn build_options_default_is_none() {
+        let cfg = CompileConfig::default();
+        let opts = build_options(&cfg, 65536).unwrap();
+        assert!(matches!(opts.bounds, RvBoundsMode::None));
+        assert!(opts.signed_div_overflow_trap);
+    }
+
+    #[test]
+    fn build_options_legacy_bounds_check_promotes_to_software() {
+        let cfg = CompileConfig {
+            bounds_check: true,
+            ..Default::default()
+        };
+        let opts = build_options(&cfg, 65536).unwrap();
+        assert!(matches!(
+            opts.bounds,
+            RvBoundsMode::Software { mem_size: 65536 }
+        ));
+    }
+
+    #[test]
+    fn build_options_safety_bounds_mpu_maps_to_pmp() {
+        let cfg = CompileConfig {
+            safety_bounds: SafetyBounds::Mpu,
+            ..Default::default()
+        };
+        let opts = build_options(&cfg, 65536).unwrap();
+        assert!(matches!(opts.bounds, RvBoundsMode::Pmp));
+    }
+
+    #[test]
+    fn build_options_mask_requires_power_of_two() {
+        let cfg = CompileConfig {
+            safety_bounds: SafetyBounds::Mask,
+            ..Default::default()
+        };
+        // 3000 bytes is not a power of two — should error.
+        let err = build_options(&cfg, 3000).unwrap_err();
+        assert!(matches!(err, BackendError::UnsupportedConfig(_)));
+
+        // 65536 bytes is a power of two — should succeed.
+        let opts = build_options(&cfg, 65536).unwrap();
+        assert!(matches!(opts.bounds, RvBoundsMode::Mask { mask: 0xFFFF }));
+    }
+
+    #[test]
+    fn compile_with_software_bounds_emits_bgeu_in_function_bytes() {
+        // i32.load + safety-bounds software should produce a 32-bit instruction
+        // whose lowest 7 bits == 0b1100011 (BRANCH opcode).
+        let b = RiscVBackend::new();
+        let cfg = CompileConfig {
+            target: TargetSpec::riscv32imac(),
+            safety_bounds: SafetyBounds::Software,
+            ..Default::default()
+        };
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let f = b.compile_function("ldsafe", &ops, &cfg).unwrap();
+        // Look for at least one branch-opcode (0x63) instruction in the bytes.
+        let has_branch_opcode = f.code.chunks_exact(4).any(|w| (w[0] & 0x7F) == 0x63);
+        assert!(
+            has_branch_opcode,
+            "expected at least one BRANCH-opcode (0x63) word in: {:?}",
+            f.code
+        );
     }
 }

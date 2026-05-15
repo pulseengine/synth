@@ -14,7 +14,8 @@ use synth_backend::{
     VectorTable, W2C2Backend,
 };
 use synth_core::HardwareCapabilities;
-use synth_core::backend::{Backend, BackendRegistry, CompileConfig};
+use synth_core::SafetyManifest;
+use synth_core::backend::{Backend, BackendRegistry, CompileConfig, SafetyBounds};
 use synth_core::target::TargetSpec;
 use synth_core::wasm_decoder::ImportEntry;
 use synth_synthesis::{FunctionOps, WasmMemory, WasmOp, decode_wasm_functions, decode_wasm_module};
@@ -150,10 +151,20 @@ enum Commands {
         #[arg(long)]
         loom: bool,
 
-        /// Enable software bounds checking for memory operations
-        /// Generates CMP/BHS before each load/store (~25% overhead)
+        /// DEPRECATED: alias for `--safety-bounds software`. Will be removed
+        /// in a future release. Prints a deprecation notice when used.
         #[arg(long)]
         bounds_check: bool,
+
+        /// Memory bounds safety profile (Phase 1 of binary-safety design).
+        ///
+        /// Accepted values:
+        /// - `none`     — no inline check, no MPU/PMP setup (fastest, unsafe)
+        /// - `mpu`      — rely on ARM MPU / RV32 PMP hardware enforcement
+        /// - `software` — emit CMP/BHS (ARM) or BGEU+EBREAK (RV32) per access
+        /// - `mask`     — AND addr with `mem_size - 1` (requires power-of-two size)
+        #[arg(long, value_name = "MODE")]
+        safety_bounds: Option<String>,
 
         /// Compilation backend (arm, w2c2, awsm, wasker)
         #[arg(short, long, default_value = "arm")]
@@ -281,6 +292,7 @@ fn main() -> Result<()> {
             loom_compat,
             loom,
             bounds_check,
+            safety_bounds,
             backend,
             verify,
             link,
@@ -295,6 +307,12 @@ fn main() -> Result<()> {
             // --loom implies --loom-compat (skip redundant synth passes)
             let loom_compat = loom_compat || loom;
 
+            // Phase 1 safety-bounds resolution. `--safety-bounds` takes
+            // precedence; `--bounds-check` is the legacy alias and emits a
+            // single-line deprecation notice when used.
+            let resolved_safety_bounds =
+                resolve_safety_bounds(safety_bounds.as_deref(), bounds_check)?;
+
             compile_command(
                 input,
                 output.clone(),
@@ -306,7 +324,7 @@ fn main() -> Result<()> {
                 no_optimize,
                 loom_compat,
                 loom,
-                bounds_check,
+                resolved_safety_bounds,
                 &backend,
                 verify,
                 &target_spec,
@@ -722,6 +740,63 @@ fn maybe_run_loom(enabled: bool, wasm_bytes: Vec<u8>) -> Result<Vec<u8>> {
     );
 }
 
+/// Reconcile `--safety-bounds` and the legacy `--bounds-check` flag. Prints a
+/// one-line deprecation notice when the legacy flag is used. Phase 1 of
+/// `docs/binary-safety-design.md` §2 (CLI surface).
+fn resolve_safety_bounds(
+    safety_bounds: Option<&str>,
+    legacy_bounds_check: bool,
+) -> Result<SafetyBounds> {
+    if let Some(v) = safety_bounds {
+        let parsed = SafetyBounds::parse(v).map_err(|e| anyhow::anyhow!(e))?;
+        if legacy_bounds_check {
+            eprintln!(
+                "warning: --bounds-check is deprecated; --safety-bounds={} takes precedence",
+                parsed.as_str()
+            );
+        }
+        return Ok(parsed);
+    }
+    if legacy_bounds_check {
+        eprintln!("warning: --bounds-check is deprecated; use --safety-bounds=software instead");
+        return Ok(SafetyBounds::Software);
+    }
+    Ok(SafetyBounds::None)
+}
+
+/// Emit the `safety-manifest.json` sidecar when any safety knob is active.
+/// Phase 1 only records bounds + division traps; later phases will extend
+/// the schema. Silently no-ops when `safety_bounds == None` (the default,
+/// for back-compat with callers that don't opt in).
+fn maybe_emit_safety_manifest(
+    elf_path: &std::path::Path,
+    target_spec: &TargetSpec,
+    safety_bounds: SafetyBounds,
+    linear_memory_bytes: u32,
+) -> Result<()> {
+    if safety_bounds == SafetyBounds::None {
+        return Ok(());
+    }
+    let manifest = SafetyManifest {
+        synth_version: env!("CARGO_PKG_VERSION").to_string(),
+        target_triple: target_spec.triple.clone(),
+        safety_bounds,
+        // Phase 1: div-by-zero and signed-div-overflow are always enabled
+        // for WASM-compliant output on both backends. The columns will gain
+        // independent knobs in Phase 2 when `--safety-div` / `--safety-div-overflow`
+        // CLI flags land.
+        safety_div_zero: true,
+        safety_div_overflow: true,
+        linear_memory_bytes,
+    };
+    let sidecar = SafetyManifest::sidecar_path(elf_path);
+    let json = manifest.to_json();
+    std::fs::write(&sidecar, json)
+        .with_context(|| format!("Failed to write safety manifest: {}", sidecar.display()))?;
+    info!("Wrote safety manifest: {}", sidecar.display());
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compile_command(
     input: Option<PathBuf>,
@@ -734,7 +809,7 @@ fn compile_command(
     no_optimize: bool,
     loom_compat: bool,
     loom: bool,
-    bounds_check: bool,
+    safety_bounds: SafetyBounds,
     backend_name: &str,
     verify: bool,
     target_spec: &TargetSpec,
@@ -777,7 +852,7 @@ fn compile_command(
             no_optimize,
             loom_compat,
             loom,
-            bounds_check,
+            safety_bounds,
             backend,
             verify,
             target_spec,
@@ -882,7 +957,7 @@ fn compile_command(
     let config = CompileConfig {
         no_optimize,
         loom_compat,
-        bounds_check,
+        safety_bounds,
         target: target_spec.clone(),
         ..CompileConfig::default()
     };
@@ -911,6 +986,12 @@ fn compile_command(
     ))?;
     file.write_all(&elf_data)
         .context("Failed to write ELF data")?;
+
+    // Phase 1: write the safety-manifest sidecar whenever any safety knob
+    // is active. Single-function path uses 0 for linear-memory-bytes because
+    // the WASM was supplied as a raw function-body slice — `compile_all_exports`
+    // has the module context and threads through the real value.
+    maybe_emit_safety_manifest(&output, target_spec, safety_bounds, 0)?;
 
     println!("Compiled {} to {}", func_name, output.display());
     println!("  Code size: {} bytes", code.len());
@@ -1407,7 +1488,7 @@ fn compile_all_exports(
     no_optimize: bool,
     loom_compat: bool,
     loom: bool,
-    bounds_check: bool,
+    safety_bounds: SafetyBounds,
     backend: &dyn Backend,
     verify: bool,
     target_spec: &TargetSpec,
@@ -1561,7 +1642,7 @@ fn compile_all_exports(
     let config = CompileConfig {
         no_optimize,
         loom_compat,
-        bounds_check,
+        safety_bounds,
         num_imports: max_num_imported_funcs,
         target: target_spec.clone(),
         ..CompileConfig::default()
@@ -1650,6 +1731,11 @@ fn compile_all_exports(
     ))?;
     file.write_all(&elf_data)
         .context("Failed to write ELF data")?;
+
+    // Phase 1: emit safety-manifest.json next to the ELF when any
+    // safety knob is active.
+    let linear_mem_bytes = all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0);
+    maybe_emit_safety_manifest(&output, target_spec, safety_bounds, linear_mem_bytes)?;
 
     let total_code: usize = compiled_funcs.iter().map(|f| f.code.len()).sum();
     let total_relocs: usize = compiled_funcs.iter().map(|f| f.relocations.len()).sum();
