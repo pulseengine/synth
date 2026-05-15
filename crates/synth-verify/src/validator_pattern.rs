@@ -199,11 +199,7 @@ impl Z3ArmValidator {
 
     /// Encode an ARM sequence on top of symbolic input registers, returning
     /// the symbolic value of R0 after execution (the ARM result register).
-    fn encode_arm_sequence(
-        &self,
-        arm_ops: &[ArmOp],
-        inputs: &[BV],
-    ) -> Result<BV, ValidationError> {
+    fn encode_arm_sequence(&self, arm_ops: &[ArmOp], inputs: &[BV]) -> Result<BV, ValidationError> {
         let mut state = ArmState::new_symbolic();
 
         for (i, input) in inputs.iter().enumerate() {
