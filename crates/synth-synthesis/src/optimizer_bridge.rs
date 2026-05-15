@@ -1389,6 +1389,13 @@ impl OptimizerBridge {
             ));
         }
 
+        // Pre-flight: reject obvious stack underflow as a typed error instead
+        // of letting wasm_to_ir produce ill-formed IR whose downstream
+        // unmapped-vreg panic would surface as a libfuzzer crash. The defensive
+        // panic in `get_arm_reg` (line 1617) still catches internal compiler
+        // bugs — this just disambiguates "malformed wasm input" from "synth bug".
+        synth_core::wasm_stack_check::check_no_underflow(wasm_ops)?;
+
         // Preprocess: convert if-else patterns to select
         let preprocessed = self.preprocess_wasm_ops(wasm_ops);
 

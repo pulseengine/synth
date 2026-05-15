@@ -92,8 +92,18 @@ jobs:
         # whose statically-linked libc is incompatible with ASan
         # (libfuzzer-sys turns ASan on by default). The GNU target has
         # a dynamic libc and works correctly.
+        #
+        # We seed the corpus from `fuzz/seed_corpus/<target>/` (checked into
+        # git) so known-crash inputs are always replayed — see PR #117 which
+        # introduced `seed_corpus/wasm_ops_lower_or_error/seed-pr117-i32divs-
+        # empty-stack`. Without seeding, a regression that re-introduces the
+        # panic might be missed if libfuzzer doesn't rediscover the exact
+        # input within 60s.
         run: |
-          mkdir -p fuzz/artifacts fuzz/corpus
+          mkdir -p fuzz/artifacts fuzz/corpus "fuzz/corpus/${TARGET}"
+          if [ -d "fuzz/seed_corpus/${TARGET}" ]; then
+            cp -n fuzz/seed_corpus/"${TARGET}"/* "fuzz/corpus/${TARGET}/" || true
+          fi
           cargo +nightly fuzz run "${TARGET}" \
             --target x86_64-unknown-linux-gnu \
             -- -max_total_time=60 -print_final_stats=1
