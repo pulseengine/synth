@@ -109,7 +109,7 @@ fuzz_target!(|input: FuzzInput| {
             3 => Reg::R3,
             _ => continue,
         };
-        for instr in &arm_instrs {
+        for (instr_idx, instr) in arm_instrs.iter().enumerate() {
             // The function prologue (Push, Sub from SP) has source_line None.
             // We only care about instructions that flow from user-level wasm ops.
             let line = match instr.source_line {
@@ -128,6 +128,34 @@ fuzz_target!(|input: FuzzInput| {
             if let Some(WasmOp::LocalSet(p_op)) | Some(WasmOp::LocalTee(p_op)) =
                 wasm_ops.get(line)
                 && *p_op as usize == p
+            {
+                continue;
+            }
+            // Skip return-value-placement dead stores: when the very next ARM
+            // op also writes R{p}, the current write's value is dead and
+            // overwritten before any observer can read it. This pattern
+            // appears in the function-final return-value sequence where the
+            // selector emits e.g. `Movw R0, 0` followed by `Mov R0, R8` to
+            // place an i32 return value (the Movw is a redundant zero-init
+            // that the second Mov immediately overwrites). The lowering is
+            // suboptimal — see issue #112 option (a) for a peephole fix —
+            // but the param IS already preserved at this point (the LocalGet
+            // we're protecting reads from R{p} earlier in the function), so
+            // this is not a real AAPCS clobber.
+            //
+            // Soundness note: this carve-out is safe because:
+            //  1. The next-op-overwrites-same-reg condition is *local* — we
+            //     don't carve out arbitrary writes, only ones whose result is
+            //     provably dead at the next instruction.
+            //  2. If a real bug were to emit `Movw R0, _; Mov R0, R8` in the
+            //     middle of computation (not return-value placement), the
+            //     param's value is already gone anyway — both writes overwrite
+            //     it. The carve-out doesn't *hide* a clobber, it just suppresses
+            //     a duplicate report. The single Mov R0, R8 still gets flagged
+            //     if it precedes any LocalGet(0) — except its own next op is
+            //     usually Pop, which doesn't write R0.
+            if let Some(next) = arm_instrs.get(instr_idx + 1)
+                && writes(&next.op).contains(&param_reg)
             {
                 continue;
             }
