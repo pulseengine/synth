@@ -36,6 +36,11 @@ pub mod wasm_semantics;
 #[cfg(all(feature = "z3-solver", feature = "arm"))]
 pub mod translation_validator;
 
+// Validator-pattern prototype (issue #76 — CompCert-style certifying
+// validator scaffolding; see docs/validator-pattern.md).
+#[cfg(all(feature = "z3-solver", feature = "arm"))]
+pub mod validator_pattern;
+
 // Property-based testing (always available)
 pub mod properties;
 
@@ -45,6 +50,11 @@ pub use properties::CompilerProperties;
 pub use arm_semantics::{ArmSemantics, ArmState};
 #[cfg(all(feature = "z3-solver", feature = "arm"))]
 pub use translation_validator::{TranslationValidator, ValidationResult, VerificationError};
+#[cfg(all(feature = "z3-solver", feature = "arm"))]
+pub use validator_pattern::{
+    CertifiedSelection, SolverResultKind, ValidationError as PatternValidationError, Validator,
+    Witness, Z3ArmValidator,
+};
 #[cfg(feature = "z3-solver")]
 pub use wasm_semantics::WasmSemantics;
 
