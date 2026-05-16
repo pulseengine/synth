@@ -82,3 +82,31 @@ fn unreachable_then_binary_op_does_not_panic_non_optimized_path() {
     let mut selector = InstructionSelector::new(db.rules().to_vec());
     let _ = selector.select_with_stack(&wasm_ops, 4);
 }
+
+/// Second follow-up crash from the same fuzz harness:
+///
+///     FuzzInput { num_params: 30736388, ops: [Return, I64Eqz, I32Const(0)] }
+///
+/// Same shape as the `Unreachable` case — `Return` was also bailing in
+/// the pre-flight, letting the I64Eqz reach `wasm_to_ir` with empty
+/// stack. Fixed by modeling all wasm terminators (`Return`, `Br`,
+/// `BrTable`) as stack-neutral so subsequent ops still get underflow-
+/// checked.
+#[test]
+fn return_then_binary_op_does_not_panic_optimized_path() {
+    let wasm_ops = vec![WasmOp::Return, WasmOp::I64Eqz, WasmOp::I32Const(0)];
+
+    let bridge = OptimizerBridge::new();
+    if let Ok((instructions, _cfg, _stats)) = bridge.optimize_full(&wasm_ops) {
+        let _ = bridge.ir_to_arm(&instructions, 4);
+    }
+}
+
+#[test]
+fn return_then_binary_op_does_not_panic_non_optimized_path() {
+    let wasm_ops = vec![WasmOp::Return, WasmOp::I64Eqz, WasmOp::I32Const(0)];
+
+    let db = RuleDatabase::with_standard_rules();
+    let mut selector = InstructionSelector::new(db.rules().to_vec());
+    let _ = selector.select_with_stack(&wasm_ops, 4);
+}

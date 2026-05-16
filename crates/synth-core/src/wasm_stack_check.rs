@@ -180,11 +180,25 @@ fn stack_effect_or_bail(op: &WasmOp) -> StackEffect {
         // construction, not a real wasm pattern.
         Unreachable => modeled(0, 0),
 
-        // ---- control flow — bail conservatively --------------------------
-        // We don't have block types / call signatures at this level, so we
-        // can't compute precise effects. Yielding to upstream validation
-        // is safer than rejecting valid input.
-        Block | Loop | If | Else | End | Br(_) | BrIf(_) | Return | Call(_) => StackEffect::Bail,
+        // ---- terminators (stack-polymorphic in wasm spec) ----------------
+        // Same reasoning as `Unreachable`: model as stack-neutral so the
+        // pre-flight catches subsequent ops that would underflow `wasm_to_ir`'s
+        // mechanical IR generation. The fuzz harness found follow-up crashes
+        // on `[Return, I64Eqz, ...]` (PR #117 second-round) — Return was
+        // bailing the same way Unreachable did. `Br`/`BrTable` have the same
+        // shape semantically.
+        Return | Br(_) | BrTable { .. } => modeled(0, 0),
+        // BrIf pops the condition (i32) but doesn't terminate — fall-through
+        // path keeps executing. After it, the stack lost the condition.
+        BrIf(_) => modeled(1, 0),
+        // Block / Loop / If / Else / End — control region delimiters. Their
+        // stack effect depends on block type, which we don't have. Treat as
+        // stack-neutral; if a real underflow lurks past one of these, we
+        // accept it (matches the pre-flight's "best-effort safety net" intent).
+        Block | Loop | If | Else | End => modeled(0, 0),
+        // Call — pops N args, pushes M results. Without the callee's
+        // signature we can't compute this. Yield to upstream validation.
+        Call(_) => StackEffect::Bail,
 
         // ---- SIMD lane ops, etc. — bail ---------------------------------
         // The selector doesn't fully support these yet; their stack effects
@@ -256,11 +270,51 @@ mod tests {
     }
 
     #[test]
-    fn control_flow_bails_conservatively() {
-        // A binary op after a Call would underflow if we modeled Call as
-        // stack-neutral. We bail instead — accept the input, let upstream
-        // wasm validation reject it if needed.
+    fn call_bails_conservatively() {
+        // Call(_) has a callee-signature-dependent stack effect we can't
+        // compute here, so we bail (accept). Upstream wasm validation
+        // catches real signature mismatches.
         let ops = vec![WasmOp::Call(0), WasmOp::I32Add];
+        assert!(check_no_underflow(&ops).is_ok());
+    }
+
+    #[test]
+    fn return_then_binary_op_at_depth_zero_is_underflow() {
+        // PR #117 second follow-up crash: `[Return, I64Eqz, I32Const(0)]`
+        // had the same shape as the Unreachable crash — Return was bailing
+        // and letting the subsequent op slip through to wasm_to_ir.
+        let ops = vec![WasmOp::Return, WasmOp::I64Eqz];
+        let err = check_no_underflow(&ops).unwrap_err();
+        assert!(matches!(err, Error::ValidationError(_)));
+    }
+
+    #[test]
+    fn br_then_binary_op_at_depth_zero_is_underflow() {
+        // Mirror of the Return case for unconditional branch.
+        let ops = vec![WasmOp::Br(0), WasmOp::I32Add];
+        let err = check_no_underflow(&ops).unwrap_err();
+        assert!(matches!(err, Error::ValidationError(_)));
+    }
+
+    #[test]
+    fn br_if_pops_condition() {
+        // BrIf pops one (the i32 condition). At depth 0, the BrIf itself
+        // underflows.
+        let ops = vec![WasmOp::BrIf(0)];
+        let err = check_no_underflow(&ops).unwrap_err();
+        assert!(matches!(err, Error::ValidationError(_)));
+    }
+
+    #[test]
+    fn br_if_with_condition_then_op_is_ok() {
+        // BrIf pops 1 (the condition), then I32Const pushes 1, then
+        // I32Eqz pops 1 / pushes 1 — no underflow.
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::BrIf(0),
+            WasmOp::I32Const(0),
+            WasmOp::I32Eqz,
+        ];
         assert!(check_no_underflow(&ops).is_ok());
     }
 
