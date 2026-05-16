@@ -162,9 +162,23 @@ fn stack_effect_or_bail(op: &WasmOp) -> StackEffect {
         // select: pops two values and a condition (i32), pushes one value
         Select => modeled(3, 1),
         Nop => modeled(0, 0),
-        // unreachable is a stack-polymorphic terminator; treat as bail since
-        // anything after it is unreachable code with a poison stack.
-        Unreachable => StackEffect::Bail,
+        // `unreachable` is wasm's stack-polymorphic terminator: the wasm
+        // validator treats subsequent ops in the same block as type-checking
+        // against an infinite-depth polymorphic stack. We don't model that
+        // (we'd need a real type system). Pragmatically we keep tracking
+        // with `pops: 0, pushes: 0` so dead-code shapes that would crash
+        // `wasm_to_ir` (e.g. `[Unreachable, I32GeS]` from PR #117 fuzz
+        // follow-up — I32GeS would underflow at depth 0) get rejected with
+        // a typed Err instead of triggering the unmapped-vreg panic.
+        //
+        // Cost: formally-valid wasm with code-after-Unreachable that doesn't
+        // re-push values (e.g. `(unreachable) (i32.ge_s)`) is rejected. Real
+        // compilers don't emit this shape — wasmparser-decoded production
+        // input always has `i32.const`/`local.get` between the `unreachable`
+        // and any binary op, so depth is non-zero when the op fires and the
+        // check passes. The pathological-input case is a fuzz-harness
+        // construction, not a real wasm pattern.
+        Unreachable => modeled(0, 0),
 
         // ---- control flow — bail conservatively --------------------------
         // We don't have block types / call signatures at this level, so we
@@ -251,9 +265,29 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_terminates_check() {
-        // After Unreachable, the stack is poisoned. We bail.
-        let ops = vec![WasmOp::Unreachable, WasmOp::I32Add];
+    fn unreachable_then_binary_op_at_depth_zero_is_underflow() {
+        // The PR #117 CI follow-up crash: `[Unreachable, I32GeS]` would
+        // crash `wasm_to_ir` (the i32.ge_s after a depth-0 unreachable
+        // generates IR referencing unmapped vregs). With `Unreachable` now
+        // modeled as `pops: 0, pushes: 0`, the subsequent binary op sees
+        // depth 0 and is correctly rejected as an underflow.
+        let ops = vec![WasmOp::Unreachable, WasmOp::I32GeS];
+        let err = check_no_underflow(&ops).unwrap_err();
+        assert!(matches!(err, Error::ValidationError(_)));
+    }
+
+    #[test]
+    fn unreachable_then_consts_then_binary_op_is_ok() {
+        // Formally-valid wasm pattern: after `unreachable` the wasm spec
+        // makes the stack polymorphic, but a real compiler always re-pushes
+        // values before any binary op. Our check accepts this shape because
+        // the consts lift depth back above the op's pop count.
+        let ops = vec![
+            WasmOp::Unreachable,
+            WasmOp::I32Const(1),
+            WasmOp::I32Const(2),
+            WasmOp::I32GeS,
+        ];
         assert!(check_no_underflow(&ops).is_ok());
     }
 

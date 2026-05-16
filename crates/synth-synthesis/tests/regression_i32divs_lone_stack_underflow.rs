@@ -54,3 +54,31 @@ fn i32_divs_with_empty_stack_mirrors_fuzz_harness_contract() {
     let mut selector = InstructionSelector::new(db.rules().to_vec());
     let _ = selector.select_with_stack(&wasm_ops, num_params.min(4));
 }
+
+/// Follow-up crash found by the same fuzz harness on this PR's CI run:
+///
+///     FuzzInput { num_params: 2424832, ops: [Unreachable, I32GeS] }
+///
+/// The original `Unreachable => Bail` rule in the pre-flight check let
+/// the input slip through to `wasm_to_ir`, where I32GeS at stack depth 0
+/// produced IR referencing unmapped vregs and tripped the defensive
+/// panic. Fixed by modeling `Unreachable` as a stack-neutral op (`pops: 0,
+/// pushes: 0`) so the pre-flight catches the subsequent op's underflow.
+#[test]
+fn unreachable_then_binary_op_does_not_panic_optimized_path() {
+    let wasm_ops = vec![WasmOp::Unreachable, WasmOp::I32GeS];
+
+    let bridge = OptimizerBridge::new();
+    if let Ok((instructions, _cfg, _stats)) = bridge.optimize_full(&wasm_ops) {
+        let _ = bridge.ir_to_arm(&instructions, 4);
+    }
+}
+
+#[test]
+fn unreachable_then_binary_op_does_not_panic_non_optimized_path() {
+    let wasm_ops = vec![WasmOp::Unreachable, WasmOp::I32GeS];
+
+    let db = RuleDatabase::with_standard_rules();
+    let mut selector = InstructionSelector::new(db.rules().to_vec());
+    let _ = selector.select_with_stack(&wasm_ops, 4);
+}
