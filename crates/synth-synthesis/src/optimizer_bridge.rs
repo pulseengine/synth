@@ -1376,6 +1376,30 @@ impl OptimizerBridge {
                 // "silent miscompilation" — strictly worse.
                 WasmOp::Nop => continue,
 
+                // Same slot-accounting rule as Nop for the wasm terminators
+                // that produce no IR-level value AND have no explicit handler
+                // above (so they currently fall through to the catch-all and
+                // emit an `Opcode::Nop` that just consumes a slot). Skipping
+                // their slot prevents the round-4 bug class (back-reference
+                // past a non-producer lands on its unmapped slot).
+                //
+                // Round 5 (PR #117): `[LocalGet(0), Unreachable, I64ExtendI32U]`
+                // — same shape as round 4's Nop crash, just with Unreachable
+                // in the middle. Pre-emptively add `Return` here too — it
+                // falls through the same catch-all and would trip the same
+                // class with one more fuzz round.
+                //
+                // NOT skipped here: `Br`/`BrIf`/`BrTable` — they have
+                // explicit handlers above that emit `Opcode::Branch` for
+                // branch-target resolution. Skipping their slots would
+                // break branch resolution. If a sibling crash surfaces with
+                // dead code after Br, that needs a separate fix (decouple
+                // `inst_id` from `vreg_slot`, which is larger surgery).
+                //
+                // NOT skipped: `Block`/`Loop`/`End` — they emit `Opcode::Label`
+                // referenced by branch targets via inst_id. Same reason.
+                WasmOp::Unreachable | WasmOp::Return => continue,
+
                 // Fallback for unsupported ops
                 _ => Opcode::Nop,
             };

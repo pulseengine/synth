@@ -143,3 +143,49 @@ fn local_get_then_nop_then_extend_does_not_panic_non_optimized_path() {
     let mut selector = InstructionSelector::new(db.rules().to_vec());
     let _ = selector.select_with_stack(&wasm_ops, 4);
 }
+
+/// Round 5: sibling of round 4's Nop crash, but with `Unreachable` in
+/// the middle. `Unreachable` had no explicit handler in `wasm_to_ir`,
+/// fell through `_ => Opcode::Nop`, consumed a slot — same shape, same
+/// crash. Fixed by adding it (and `Return`, preemptively) next to the
+/// existing `WasmOp::Nop => continue` arm.
+///
+///     FuzzInput { num_params: ..., ops: [LocalGet(0), Unreachable, I64ExtendI32U] }
+#[test]
+fn local_get_then_unreachable_then_extend_does_not_panic_optimized_path() {
+    let wasm_ops = vec![
+        WasmOp::LocalGet(0),
+        WasmOp::Unreachable,
+        WasmOp::I64ExtendI32U,
+    ];
+
+    let bridge = OptimizerBridge::new();
+    if let Ok((instructions, _cfg, _stats)) = bridge.optimize_full(&wasm_ops) {
+        let _ = bridge.ir_to_arm(&instructions, 4);
+    }
+}
+
+#[test]
+fn local_get_then_unreachable_then_extend_does_not_panic_non_optimized_path() {
+    let wasm_ops = vec![
+        WasmOp::LocalGet(0),
+        WasmOp::Unreachable,
+        WasmOp::I64ExtendI32U,
+    ];
+
+    let db = RuleDatabase::with_standard_rules();
+    let mut selector = InstructionSelector::new(db.rules().to_vec());
+    let _ = selector.select_with_stack(&wasm_ops, 4);
+}
+
+/// Round 5 preemptive sibling: same shape with `Return`. Caught here
+/// before the fuzz harness finds it.
+#[test]
+fn local_get_then_return_then_extend_does_not_panic_optimized_path() {
+    let wasm_ops = vec![WasmOp::LocalGet(0), WasmOp::Return, WasmOp::I64ExtendI32U];
+
+    let bridge = OptimizerBridge::new();
+    if let Ok((instructions, _cfg, _stats)) = bridge.optimize_full(&wasm_ops) {
+        let _ = bridge.ir_to_arm(&instructions, 4);
+    }
+}
