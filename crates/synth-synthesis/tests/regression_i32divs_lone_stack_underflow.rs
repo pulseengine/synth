@@ -110,3 +110,36 @@ fn return_then_binary_op_does_not_panic_non_optimized_path() {
     let mut selector = InstructionSelector::new(db.rules().to_vec());
     let _ = selector.select_with_stack(&wasm_ops, 4);
 }
+
+/// Third follow-up crash — a wasm_to_ir slot-accounting bug, not a pre-
+/// flight gap:
+///
+///     FuzzInput { num_params: ..., ops: [LocalGet(0), Nop, I64ExtendI32U] }
+///
+/// `wasm_to_ir` uses `inst_id` for both "instruction position" and "vreg
+/// slot index". Every wasm op consumed one inst_id slot, including
+/// `Nop` (which fell through to the `_ => Opcode::Nop` catch-all).
+/// The subsequent `I64ExtendI32U` referenced `inst_id - 1` for its src
+/// slot — which was the Nop's unmapped slot, panic.
+///
+/// Fix: explicit `WasmOp::Nop => continue` arm in wasm_to_ir, BEFORE
+/// the catch-all. The catch-all stays as Opcode::Nop (keeps its bug-
+/// finder role for unsupported-op back-references — issue #93's class).
+#[test]
+fn local_get_then_nop_then_extend_does_not_panic_optimized_path() {
+    let wasm_ops = vec![WasmOp::LocalGet(0), WasmOp::Nop, WasmOp::I64ExtendI32U];
+
+    let bridge = OptimizerBridge::new();
+    if let Ok((instructions, _cfg, _stats)) = bridge.optimize_full(&wasm_ops) {
+        let _ = bridge.ir_to_arm(&instructions, 4);
+    }
+}
+
+#[test]
+fn local_get_then_nop_then_extend_does_not_panic_non_optimized_path() {
+    let wasm_ops = vec![WasmOp::LocalGet(0), WasmOp::Nop, WasmOp::I64ExtendI32U];
+
+    let db = RuleDatabase::with_standard_rules();
+    let mut selector = InstructionSelector::new(db.rules().to_vec());
+    let _ = selector.select_with_stack(&wasm_ops, 4);
+}

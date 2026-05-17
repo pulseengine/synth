@@ -1354,6 +1354,28 @@ impl OptimizerBridge {
                     func_idx: *func_idx,
                 },
 
+                // `nop` is a wasm no-op — it does not produce a value, so it
+                // must not consume an `inst_id` slot. Otherwise downstream
+                // back-references via `inst_id.saturating_sub(N)` (e.g.
+                // I64ExtendI32U's src_slot or any binary op's src1/src2)
+                // would point to this Nop's "slot" and trip the unmapped-
+                // vreg panic at the bottom of this match.
+                //
+                // The PR #117 fuzz harness found this with
+                // `[LocalGet(0), Nop, I64ExtendI32U]`: the extend reads
+                // `inst_id - 1` and expected LocalGet's vreg but got Nop's
+                // unmapped slot. Skipping the slot allocation here lets
+                // back-references jump cleanly over the Nop.
+                //
+                // The catch-all `_ => Opcode::Nop` below is *not* changed
+                // — its purpose is the opposite: when wasm_to_ir encounters
+                // an op it doesn't know about, the unmapped-vreg panic on
+                // any subsequent back-reference is a deliberate bug-finder
+                // for missing handlers (the class behind issues #93, #109).
+                // Skipping the slot there would convert "loud panic" into
+                // "silent miscompilation" — strictly worse.
+                WasmOp::Nop => continue,
+
                 // Fallback for unsupported ops
                 _ => Opcode::Nop,
             };
