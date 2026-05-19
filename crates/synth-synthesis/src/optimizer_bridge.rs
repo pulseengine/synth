@@ -1817,6 +1817,15 @@ impl OptimizerBridge {
             ));
         }
 
+        // Pre-flight: reject obvious stack underflow as a typed error so the
+        // slot_stack model in `wasm_to_ir` never has to `.expect()` on an
+        // empty stack. Without this, the fuzz harness can construct inputs
+        // like `[I32Sub, I32Const(0)]` that bypass wasm validation and trip
+        // `slot_stack.pop().expect(...)` directly. Production callers come
+        // through wasmparser (which validates); this safety net catches
+        // direct callers (fuzz harnesses, hand-built `Vec<WasmOp>`).
+        synth_core::wasm_stack_check::check_no_underflow(wasm_ops)?;
+
         // Preprocess: convert if-else patterns to select
         let preprocessed = self.preprocess_wasm_ops(wasm_ops);
 
