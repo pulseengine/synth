@@ -26,6 +26,40 @@
 use synth_opt::Opcode;
 use synth_synthesis::{OptimizerBridge, WasmOp};
 
+/// Type-mismatched malformed wasm: `[I32Const, I64Clz, ...]` — I64Clz
+/// expects i64 (2 slots) but only an i32 (1 slot) is on the stack.
+/// Pre-flight's depth-only check doesn't catch this; wasm_to_ir's
+/// slot_stack model would pop on empty stack. Fix: wasm_to_ir returns
+/// Result and propagates Err on underflow. Both lowering paths must
+/// return cleanly (Ok or Err) — never panic.
+#[test]
+fn type_mismatch_i32_then_i64_clz_does_not_panic() {
+    let ops = vec![
+        WasmOp::I32Const(1059004415),
+        WasmOp::I64Clz,
+        WasmOp::I32Const(0),
+    ];
+    let bridge = OptimizerBridge::new();
+    // Either Ok or Err is acceptable — panic is not.
+    let _ = bridge.optimize_full(&ops);
+}
+
+#[test]
+fn i64_unary_on_empty_stack_does_not_panic() {
+    // Even more degenerate: I64Clz with nothing on the stack.
+    let ops = vec![WasmOp::I64Clz];
+    let bridge = OptimizerBridge::new();
+    let _ = bridge.optimize_full(&ops);
+}
+
+#[test]
+fn i64_binary_on_partial_stack_does_not_panic() {
+    // I64Add wants 4 slots (two i64s), only 2 slots present.
+    let ops = vec![WasmOp::I64Const(7), WasmOp::I64Add];
+    let bridge = OptimizerBridge::new();
+    let _ = bridge.optimize_full(&ops);
+}
+
 fn compile_through_optimized(ops: &[WasmOp]) {
     let bridge = OptimizerBridge::new();
     let (instrs, _cfg, _stats) = bridge

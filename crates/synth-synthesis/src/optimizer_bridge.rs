@@ -463,7 +463,7 @@ impl OptimizerBridge {
     /// BrIf, …) broke that assumption and the next binary/unary op read a
     /// stale or unmapped slot — either silently miscompiling or tripping the
     /// `get_arm_reg` defensive panic (issue #121, Gale silicon report).
-    fn wasm_to_ir(&self, wasm_ops: &[WasmOp]) -> (Vec<Instruction>, Cfg) {
+    fn wasm_to_ir(&self, wasm_ops: &[WasmOp]) -> Result<(Vec<Instruction>, Cfg)> {
         let mut builder = CfgBuilder::new();
         let mut instructions = Vec::new();
         let mut inst_id: usize = 0;
@@ -501,12 +501,16 @@ impl OptimizerBridge {
             // loop alongside the `inst_id += 1` for the fall-through arms.
             macro_rules! pop_i32_binary {
                 () => {{
-                    let src2 = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src1 = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src2 = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src1 = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     (OptReg(src1), OptReg(src2))
                 }};
             }
@@ -801,9 +805,11 @@ impl OptimizerBridge {
                 // binary op, it would read the same slot, double-using it.
                 // Issue #121.
                 WasmOp::LocalSet(idx) => {
-                    let src = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::Store {
                         src: OptReg(src),
                         addr: *idx,
@@ -860,18 +866,26 @@ impl OptimizerBridge {
                 | WasmOp::I64ShrU
                 | WasmOp::I64Rotl
                 | WasmOp::I64Rotr => {
-                    let src2_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src2_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src1_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src1_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src2_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src2_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src1_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src1_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let dest_lo_v = inst_id as u32;
                     let dest_hi_v = (inst_id + 1) as u32;
                     let dest_lo = OptReg(dest_lo_v);
@@ -1028,18 +1042,26 @@ impl OptimizerBridge {
                 | WasmOp::I64LeU
                 | WasmOp::I64GeS
                 | WasmOp::I64GeU => {
-                    let src2_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src2_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src1_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src1_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src2_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src2_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src1_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src1_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let dest_v = inst_id as u32;
                     let dest = OptReg(dest_v);
                     let src1_lo = OptReg(src1_lo_v);
@@ -1134,12 +1156,16 @@ impl OptimizerBridge {
 
                 // i64 equal-to-zero: pops 2 (1 i64) / pushes 1 (i32).
                 WasmOp::I64Eqz => {
-                    let src_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let dest_v = inst_id as u32;
                     let opcode = Opcode::I64Eqz {
                         dest: OptReg(dest_v),
@@ -1160,12 +1186,16 @@ impl OptimizerBridge {
 
                 // i64 count leading zeros: pops 2 (1 i64) / pushes 1 (i32).
                 WasmOp::I64Clz => {
-                    let src_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let dest_v = inst_id as u32;
                     let opcode = Opcode::I64Clz {
                         dest: OptReg(dest_v),
@@ -1186,12 +1216,16 @@ impl OptimizerBridge {
 
                 // i64 count trailing zeros: pops 2 (1 i64) / pushes 1 (i32).
                 WasmOp::I64Ctz => {
-                    let src_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let dest_v = inst_id as u32;
                     let opcode = Opcode::I64Ctz {
                         dest: OptReg(dest_v),
@@ -1212,12 +1246,16 @@ impl OptimizerBridge {
 
                 // i64 population count: pops 2 (1 i64) / pushes 1 (i32).
                 WasmOp::I64Popcnt => {
-                    let src_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let dest_v = inst_id as u32;
                     let opcode = Opcode::I64Popcnt {
                         dest: OptReg(dest_v),
@@ -1239,12 +1277,16 @@ impl OptimizerBridge {
                 // i64 in-place sign extension: pops 2 (1 i64) / pushes 2 (1 i64).
                 // src_hi is discarded; dest is freshly allocated.
                 WasmOp::I64Extend8S => {
-                    let _src_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let _src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let dest_lo_v = inst_id as u32;
                     let dest_hi_v = (inst_id + 1) as u32;
                     let opcode = Opcode::I64Extend8S {
@@ -1266,12 +1308,16 @@ impl OptimizerBridge {
                 }
 
                 WasmOp::I64Extend16S => {
-                    let _src_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let _src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let dest_lo_v = inst_id as u32;
                     let dest_hi_v = (inst_id + 1) as u32;
                     let opcode = Opcode::I64Extend16S {
@@ -1293,12 +1339,16 @@ impl OptimizerBridge {
                 }
 
                 WasmOp::I64Extend32S => {
-                    let _src_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let _src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let dest_lo_v = inst_id as u32;
                     let dest_hi_v = (inst_id + 1) as u32;
                     let opcode = Opcode::I64Extend32S {
@@ -1327,9 +1377,11 @@ impl OptimizerBridge {
                 // push the fresh dest_hi — so a subsequent i64 op pops
                 // (dest_hi, dest_lo=src) correctly.
                 WasmOp::I64ExtendI32U => {
-                    let src_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let dest_hi_v = inst_id as u32;
                     let opcode = Opcode::I64ExtendI32U {
                         dest_lo: OptReg(src_v),
@@ -1351,9 +1403,11 @@ impl OptimizerBridge {
 
                 // i32 -> i64 sign-extend. Same slot accounting as I64ExtendI32U.
                 WasmOp::I64ExtendI32S => {
-                    let src_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let dest_hi_v = inst_id as u32;
                     let opcode = Opcode::I64ExtendI32S {
                         dest_lo: OptReg(src_v),
@@ -1377,12 +1431,16 @@ impl OptimizerBridge {
                 // The result IS the low 32 bits of the input i64, so `dest`
                 // aliases `src_lo` by IR convention. `src_hi` is discarded.
                 WasmOp::I32WrapI64 => {
-                    let _src_hi_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let src_lo_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let _src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let opcode = Opcode::I32WrapI64 {
                         dest: OptReg(src_lo_v),
                         src_lo: OptReg(src_lo_v),
@@ -1407,15 +1465,21 @@ impl OptimizerBridge {
                 // Select: dest = cond != 0 ? val_true : val_false
                 // Stack: pops 3 (val_true, val_false, cond), pushes 1.
                 WasmOp::Select => {
-                    let cond_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let val_false_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let val_true_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let cond_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let val_false_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let val_true_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::Select {
                         dest: OptReg(inst_id as u32),
                         val_true: OptReg(val_true_v),
@@ -1465,9 +1529,11 @@ impl OptimizerBridge {
                 // BrIf: pops cond (i32). The value beneath remains on the
                 // wasm stack — slot_stack reflects that: pop 1 only.
                 WasmOp::BrIf(depth) => {
-                    let cond_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let cond_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let target_idx = block_stack.len().saturating_sub(1 + *depth as usize);
                     let target = if target_idx < block_stack.len() {
                         let (_block_type, target_inst) = block_stack[target_idx];
@@ -1485,9 +1551,11 @@ impl OptimizerBridge {
                 // TeeStore = Store + Copy: writes to local and produces a
                 // fresh dest vreg holding the same value for the next op.
                 WasmOp::LocalTee(idx) => {
-                    let src_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::TeeStore {
                         dest: OptReg(inst_id as u32),
                         src: OptReg(src_v),
@@ -1501,9 +1569,11 @@ impl OptimizerBridge {
 
                 // I32Load: pops 1 (addr), pushes 1 (value).
                 WasmOp::I32Load { offset, .. } => {
-                    let addr_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::MemLoad {
                         dest: OptReg(inst_id as u32),
                         addr: OptReg(addr_v),
@@ -1513,12 +1583,16 @@ impl OptimizerBridge {
 
                 // I32Store: pops 2 (addr, value), pushes 0.
                 WasmOp::I32Store { offset, .. } => {
-                    let value_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let addr_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let value_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::MemStore {
                         src: OptReg(value_v),
                         addr: OptReg(addr_v),
@@ -1531,9 +1605,11 @@ impl OptimizerBridge {
                 // Loads: pops 1 (addr), pushes 1 (value).
                 // Stores: pops 2 (addr, value), pushes 0.
                 WasmOp::I32Load8S { offset, .. } => {
-                    let addr_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::MemLoadSubword {
                         dest: OptReg(inst_id as u32),
                         addr: OptReg(addr_v),
@@ -1543,9 +1619,11 @@ impl OptimizerBridge {
                     }
                 }
                 WasmOp::I32Load8U { offset, .. } => {
-                    let addr_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::MemLoadSubword {
                         dest: OptReg(inst_id as u32),
                         addr: OptReg(addr_v),
@@ -1555,9 +1633,11 @@ impl OptimizerBridge {
                     }
                 }
                 WasmOp::I32Load16S { offset, .. } => {
-                    let addr_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::MemLoadSubword {
                         dest: OptReg(inst_id as u32),
                         addr: OptReg(addr_v),
@@ -1567,9 +1647,11 @@ impl OptimizerBridge {
                     }
                 }
                 WasmOp::I32Load16U { offset, .. } => {
-                    let addr_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::MemLoadSubword {
                         dest: OptReg(inst_id as u32),
                         addr: OptReg(addr_v),
@@ -1579,12 +1661,16 @@ impl OptimizerBridge {
                     }
                 }
                 WasmOp::I32Store8 { offset, .. } => {
-                    let value_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let addr_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let value_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::MemStoreSubword {
                         src: OptReg(value_v),
                         addr: OptReg(addr_v),
@@ -1593,12 +1679,16 @@ impl OptimizerBridge {
                     }
                 }
                 WasmOp::I32Store16 { offset, .. } => {
-                    let value_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
-                    let addr_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let value_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::MemStoreSubword {
                         src: OptReg(value_v),
                         addr: OptReg(addr_v),
@@ -1615,9 +1705,11 @@ impl OptimizerBridge {
                     idx: *idx,
                 },
                 WasmOp::GlobalSet(idx) => {
-                    let src_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let src_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::GlobalSet {
                         src: OptReg(src_v),
                         idx: *idx,
@@ -1632,9 +1724,11 @@ impl OptimizerBridge {
                     dest: OptReg(inst_id as u32),
                 },
                 WasmOp::MemoryGrow(_) => {
-                    let delta_v = slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    let delta_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::MemoryGrow {
                         dest: OptReg(inst_id as u32),
                         delta: OptReg(delta_v),
@@ -1682,9 +1776,11 @@ impl OptimizerBridge {
                 // misread `inst_id-1` as "the value Drop discarded" instead
                 // of "the value beneath Drop's consumed slot." Issue #121.
                 WasmOp::Drop => {
-                    slot_stack
-                        .pop()
-                        .expect("wasm validator + pre-flight check guarantee stack depth");
+                    slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     continue;
                 }
 
@@ -1797,7 +1893,7 @@ impl OptimizerBridge {
         }
 
         let cfg = builder.build();
-        (instructions, cfg)
+        Ok((instructions, cfg))
     }
 
     /// Optimize WASM operation sequence and return the optimized IR
@@ -1830,7 +1926,7 @@ impl OptimizerBridge {
         let preprocessed = self.preprocess_wasm_ops(wasm_ops);
 
         // Convert to IR
-        let (mut instructions, mut cfg) = self.wasm_to_ir(&preprocessed);
+        let (mut instructions, mut cfg) = self.wasm_to_ir(&preprocessed)?;
 
         // Build and run optimization pipeline
         let result = self.run_passes(&mut cfg, &mut instructions);
@@ -1934,7 +2030,7 @@ impl OptimizerBridge {
 
         // Preprocess and convert to IR
         let preprocessed = self.preprocess_wasm_ops(wasm_ops);
-        let (mut instructions, mut cfg) = self.wasm_to_ir(&preprocessed);
+        let (mut instructions, mut cfg) = self.wasm_to_ir(&preprocessed)?;
         let result = self.run_passes(&mut cfg, &mut instructions);
 
         Ok(OptimizationStats {
