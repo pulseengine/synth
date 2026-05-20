@@ -14,8 +14,8 @@
 use crate::Condition;
 use crate::rules::ArmOp;
 use synth_cfg::{Cfg, CfgBuilder};
-use synth_core::Result;
 use synth_core::WasmOp;
+use synth_core::{Error, Result};
 use synth_opt::{
     AlgebraicSimplification, CommonSubexpressionElimination, ConstantFolding, DeadCodeElimination,
     Instruction, Opcode, OptResult, PassManager, PeepholeOptimization, Reg as OptReg,
@@ -361,6 +361,105 @@ impl OptimizerBridge {
                 | WasmOp::I32GtU
                 | WasmOp::I32GeS
                 | WasmOp::I32GeU
+        )
+    }
+
+    /// Returns true if `op` is a scalar f32/f64 operation that the optimized
+    /// lowering path (`wasm_to_ir` → `ir_to_arm`) cannot handle.
+    ///
+    /// Issue #120: `wasm_to_ir` has zero handlers for f32/f64 ops, so every
+    /// float op falls through the catch-all `_ => Opcode::Nop`. A value-producing
+    /// float op that emits `Nop` produces no vreg; any downstream consumer then
+    /// references an unmapped vreg and trips the defensive `get_arm_reg` panic
+    /// added by PR #101 (the #93 silent-drop class, for floats).
+    ///
+    /// The IR `Opcode` enum (`synth-opt`) has no float opcodes at all, so the
+    /// optimized path cannot lower floats without a large feature addition.
+    /// Instead, `optimize_full` detects these ops up front and returns a typed
+    /// `Err`, letting the backend fall back to the non-optimized
+    /// `InstructionSelector::select_with_stack` path, which *does* handle f32
+    /// (VFP/FPU). This includes float→int / int→float conversion ops and float
+    /// loads/stores, since they too produce or consume float-typed values the
+    /// optimized path can neither map to a vreg nor lower to VFP.
+    fn is_unsupported_float_op(op: &WasmOp) -> bool {
+        matches!(
+            op,
+            // f32 arithmetic
+            WasmOp::F32Add
+                | WasmOp::F32Sub
+                | WasmOp::F32Mul
+                | WasmOp::F32Div
+                // f32 comparisons
+                | WasmOp::F32Eq
+                | WasmOp::F32Ne
+                | WasmOp::F32Lt
+                | WasmOp::F32Le
+                | WasmOp::F32Gt
+                | WasmOp::F32Ge
+                // f32 math functions
+                | WasmOp::F32Abs
+                | WasmOp::F32Neg
+                | WasmOp::F32Ceil
+                | WasmOp::F32Floor
+                | WasmOp::F32Trunc
+                | WasmOp::F32Nearest
+                | WasmOp::F32Sqrt
+                | WasmOp::F32Min
+                | WasmOp::F32Max
+                | WasmOp::F32Copysign
+                // f32 constants and memory
+                | WasmOp::F32Const(_)
+                | WasmOp::F32Load { .. }
+                | WasmOp::F32Store { .. }
+                // f32 conversions
+                | WasmOp::F32ConvertI32S
+                | WasmOp::F32ConvertI32U
+                | WasmOp::F32ConvertI64S
+                | WasmOp::F32ConvertI64U
+                | WasmOp::F32DemoteF64
+                | WasmOp::F32ReinterpretI32
+                | WasmOp::I32ReinterpretF32
+                | WasmOp::I32TruncF32S
+                | WasmOp::I32TruncF32U
+                // f64 arithmetic
+                | WasmOp::F64Add
+                | WasmOp::F64Sub
+                | WasmOp::F64Mul
+                | WasmOp::F64Div
+                // f64 comparisons
+                | WasmOp::F64Eq
+                | WasmOp::F64Ne
+                | WasmOp::F64Lt
+                | WasmOp::F64Le
+                | WasmOp::F64Gt
+                | WasmOp::F64Ge
+                // f64 math functions
+                | WasmOp::F64Abs
+                | WasmOp::F64Neg
+                | WasmOp::F64Ceil
+                | WasmOp::F64Floor
+                | WasmOp::F64Trunc
+                | WasmOp::F64Nearest
+                | WasmOp::F64Sqrt
+                | WasmOp::F64Min
+                | WasmOp::F64Max
+                | WasmOp::F64Copysign
+                // f64 constants and memory
+                | WasmOp::F64Const(_)
+                | WasmOp::F64Load { .. }
+                | WasmOp::F64Store { .. }
+                // f64 conversions
+                | WasmOp::F64ConvertI32S
+                | WasmOp::F64ConvertI32U
+                | WasmOp::F64ConvertI64S
+                | WasmOp::F64ConvertI64U
+                | WasmOp::F64PromoteF32
+                | WasmOp::F64ReinterpretI64
+                | WasmOp::I64ReinterpretF64
+                | WasmOp::I64TruncF64S
+                | WasmOp::I64TruncF64U
+                | WasmOp::I32TruncF64S
+                | WasmOp::I32TruncF64U
         )
     }
 
@@ -1387,6 +1486,20 @@ impl OptimizerBridge {
                 CfgBuilder::new().build(),
                 OptimizationStats::default(),
             ));
+        }
+
+        // Issue #120: the optimized path (`wasm_to_ir` → `ir_to_arm`) has no
+        // handlers for scalar f32/f64 ops — the IR `Opcode` enum has no float
+        // opcodes. Rather than silently emit `Opcode::Nop` for a value-producing
+        // float op (which leaves a downstream consumer with an unmapped vreg and
+        // trips the PR #101 defensive panic), decline the whole module here with
+        // a typed error. The backend falls back to `select_with_stack`, the
+        // non-optimized path, which handles f32 via VFP/FPU.
+        if let Some(float_op) = wasm_ops.iter().find(|op| Self::is_unsupported_float_op(op)) {
+            return Err(Error::UnsupportedInstruction(format!(
+                "optimized lowering path does not support float ops ({float_op:?}); \
+                 the non-optimized instruction selector handles f32 — issue #120"
+            )));
         }
 
         // Preprocess: convert if-else patterns to select
