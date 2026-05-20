@@ -51,8 +51,11 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             cross: true
+          # x86_64-apple-darwin cross-compiles on the arm64 macos-14
+          # runner — matches pulseengine/rivet and pulseengine/witness
+          # (both Rust-workspace CLIs, the closest analogs to synth).
           - target: x86_64-apple-darwin
-            os: macos-15-intel
+            os: macos-14
             archive: tar.gz
           - target: aarch64-apple-darwin
             os: macos-latest
