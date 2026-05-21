@@ -371,6 +371,14 @@ impl OptimizerBridge {
             WasmOp::I64Add | WasmOp::I64Sub | WasmOp::I64And | WasmOp::I64Or
             | WasmOp::I64Xor | WasmOp::I64Mul | WasmOp::I64Shl | WasmOp::I64ShrS
             | WasmOp::I64ShrU | WasmOp::I64Rotl | WasmOp::I64Rotr
+            // Division / remainder (previously omitted from this list,
+            // which made `analyze_i64_local_gets` miss the i64 LocalGets
+            // feeding into `i64.div_*`/`i64.rem_*` — they were then
+            // emitted as 1-slot i32 Loads and the binary handler
+            // underflowed `inst_id.saturating_sub(4)`. The slot_stack
+            // refactor (issue #121) made this manifest as a pop-of-empty
+            // panic instead of a silent miscompilation.)
+            | WasmOp::I64DivS | WasmOp::I64DivU | WasmOp::I64RemS | WasmOp::I64RemU
             // Comparisons also consume 2 i64 values (but produce i32)
             | WasmOp::I64Eq | WasmOp::I64Ne | WasmOp::I64LtS | WasmOp::I64LtU
             | WasmOp::I64GtS | WasmOp::I64GtU | WasmOp::I64LeS | WasmOp::I64LeU
@@ -431,11 +439,41 @@ impl OptimizerBridge {
         i64_local_gets
     }
 
-    /// Convert WASM operations to optimization IR
-    fn wasm_to_ir(&self, wasm_ops: &[WasmOp]) -> (Vec<Instruction>, Cfg) {
+    /// Convert WASM operations to optimization IR.
+    ///
+    /// ## Slot-stack model (issue #121)
+    ///
+    /// Each wasm op operates on a *value stack*; the IR represents that stack
+    /// as `slot_stack: Vec<u32>` where each entry is the vreg id of a value
+    /// currently live on the wasm stack. Producers push their `dest` vreg;
+    /// consumers `pop()` to learn which vreg holds their source.
+    ///
+    /// `inst_id` is the unique IR instruction id (used for `Instruction::id`,
+    /// `Opcode::Label::id`, branch targets, etc.). It is **independent** of
+    /// `slot_stack` — incrementing `inst_id` does NOT push a slot, and popping
+    /// a slot does NOT decrement `inst_id`.
+    ///
+    /// i64 values occupy **two** entries on `slot_stack` (lo first, then hi),
+    /// matching the two-vreg-pair representation `(dest_lo, dest_hi)`.
+    ///
+    /// History — before this refactor `inst_id` was overloaded as both unique
+    /// id AND vreg-slot index, and back-references like `inst_id-2` assumed
+    /// a one-to-one correspondence with the wasm stack. Any op that consumed
+    /// a stack slot without producing one (Drop, LocalSet, GlobalSet, stores,
+    /// BrIf, …) broke that assumption and the next binary/unary op read a
+    /// stale or unmapped slot — either silently miscompiling or tripping the
+    /// `get_arm_reg` defensive panic (issue #121, Gale silicon report).
+    fn wasm_to_ir(&self, wasm_ops: &[WasmOp]) -> Result<(Vec<Instruction>, Cfg)> {
         let mut builder = CfgBuilder::new();
         let mut instructions = Vec::new();
         let mut inst_id: usize = 0;
+
+        // Producer-vreg stack mirroring the wasm value stack. See doc-comment
+        // above. Pre-flight `wasm_stack_check` (in synth-frontend) plus the
+        // wasm validator guarantee depth is sufficient for every pop, so
+        // `.expect("wasm validator + pre-flight check guarantee stack depth")`
+        // documents the invariant rather than masking a real bug.
+        let mut slot_stack: Vec<u32> = Vec::new();
 
         // Analyze which LocalGets should produce i64 values (using 2 register slots)
         let i64_local_gets = Self::analyze_i64_local_gets(wasm_ops);
@@ -447,216 +485,347 @@ impl OptimizerBridge {
         for (wasm_idx, wasm_op) in wasm_ops.iter().enumerate() {
             builder.add_instruction();
 
+            // Slot-stack convention (issue #121): producer arms compute their
+            // src vreg ids by popping from `slot_stack`, then push their
+            // dest's vreg id (= `inst_id as u32`). Pure consumer arms (Drop,
+            // LocalSet, GlobalSet, stores, BrIf) pop and DO NOT push.
+            //
+            // Each i32-producer / i32-consumer arm below uses the helper
+            // `let src? = slot_stack.pop().expect(...)`. The expect message
+            // documents the invariant that the wasm validator + pre-flight
+            // stack check have already proven depth is sufficient.
+
+            // Helper macro for binary i32 ops: pops 2 (rhs first, then lhs in
+            // wasm-stack order) and binds dest to a fresh vreg at `inst_id`.
+            // We don't push `dest` here — that happens at the bottom of the
+            // loop alongside the `inst_id += 1` for the fall-through arms.
+            macro_rules! pop_i32_binary {
+                () => {{
+                    let src2 = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src1 = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    (OptReg(src1), OptReg(src2))
+                }};
+            }
+
+            // Helper for unary i32 ops: pops 1 source.
+            macro_rules! pop_i32_unary {
+                () => {{
+                    OptReg(
+                        slot_stack
+                            .pop()
+                            .expect("wasm validator + pre-flight check guarantee stack depth"),
+                    )
+                }};
+            }
+
             let opcode = match wasm_op {
                 WasmOp::I32Const(val) => Opcode::Const {
                     dest: OptReg(inst_id as u32),
                     value: *val,
                 },
 
-                // Arithmetic operations
-                WasmOp::I32Add => Opcode::Add {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32Sub => Opcode::Sub {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32Mul => Opcode::Mul {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32DivS => Opcode::DivS {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32DivU => Opcode::DivU {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32RemS => Opcode::RemS {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32RemU => Opcode::RemU {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
+                // Arithmetic operations (pop 2, push 1)
+                WasmOp::I32Add => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::Add {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32Sub => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::Sub {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32Mul => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::Mul {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32DivS => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::DivS {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32DivU => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::DivU {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32RemS => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::RemS {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32RemU => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::RemU {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
 
-                // Bitwise operations
-                WasmOp::I32And => Opcode::And {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32Or => Opcode::Or {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32Xor => Opcode::Xor {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32Shl => Opcode::Shl {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32ShrS => Opcode::ShrS {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32ShrU => Opcode::ShrU {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32Rotl => Opcode::Rotl {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32Rotr => Opcode::Rotr {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
+                // Bitwise operations (pop 2, push 1)
+                WasmOp::I32And => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::And {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32Or => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::Or {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32Xor => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::Xor {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32Shl => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::Shl {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32ShrS => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::ShrS {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32ShrU => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::ShrU {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32Rotl => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::Rotl {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32Rotr => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::Rotr {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
 
-                // Comparison operations
-                WasmOp::I32Eq => Opcode::Eq {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32Ne => Opcode::Ne {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32LtS => Opcode::LtS {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32LtU => Opcode::LtU {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32LeS => Opcode::LeS {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32LeU => Opcode::LeU {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32GtS => Opcode::GtS {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32GtU => Opcode::GtU {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32GeS => Opcode::GeS {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
-                WasmOp::I32GeU => Opcode::GeU {
-                    dest: OptReg(inst_id as u32),
-                    src1: OptReg(inst_id.saturating_sub(2) as u32),
-                    src2: OptReg(inst_id.saturating_sub(1) as u32),
-                },
+                // Comparison operations (pop 2, push 1)
+                WasmOp::I32Eq => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::Eq {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32Ne => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::Ne {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32LtS => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::LtS {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32LtU => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::LtU {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32LeS => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::LeS {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32LeU => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::LeU {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32GtS => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::GtS {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32GtU => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::GtU {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32GeS => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::GeS {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
+                WasmOp::I32GeU => {
+                    let (src1, src2) = pop_i32_binary!();
+                    Opcode::GeU {
+                        dest: OptReg(inst_id as u32),
+                        src1,
+                        src2,
+                    }
+                }
 
-                // Equal to zero (unary comparison)
+                // Equal to zero (unary comparison: pop 1, push 1)
                 WasmOp::I32Eqz => Opcode::Eqz {
                     dest: OptReg(inst_id as u32),
-                    src: OptReg(inst_id.saturating_sub(1) as u32),
+                    src: pop_i32_unary!(),
                 },
 
-                // Bit count operations (unary)
+                // Bit count operations (pop 1, push 1)
                 WasmOp::I32Clz => Opcode::Clz {
                     dest: OptReg(inst_id as u32),
-                    src: OptReg(inst_id.saturating_sub(1) as u32),
+                    src: pop_i32_unary!(),
                 },
                 WasmOp::I32Ctz => Opcode::Ctz {
                     dest: OptReg(inst_id as u32),
-                    src: OptReg(inst_id.saturating_sub(1) as u32),
+                    src: pop_i32_unary!(),
                 },
                 WasmOp::I32Popcnt => Opcode::Popcnt {
                     dest: OptReg(inst_id as u32),
-                    src: OptReg(inst_id.saturating_sub(1) as u32),
+                    src: pop_i32_unary!(),
                 },
 
-                // Sign extension (unary)
+                // Sign extension (pop 1, push 1)
                 WasmOp::I32Extend8S => Opcode::Extend8S {
                     dest: OptReg(inst_id as u32),
-                    src: OptReg(inst_id.saturating_sub(1) as u32),
+                    src: pop_i32_unary!(),
                 },
                 WasmOp::I32Extend16S => Opcode::Extend16S {
                     dest: OptReg(inst_id as u32),
-                    src: OptReg(inst_id.saturating_sub(1) as u32),
+                    src: pop_i32_unary!(),
                 },
 
                 // Memory and locals
                 // For i64 LocalGets, we use I64Load which produces 2 register slots
                 WasmOp::LocalGet(idx) => {
                     if i64_local_gets.contains(&wasm_idx) {
-                        // This LocalGet is for an i64 value - use I64Load
-                        // I64Load produces dest_lo at inst_id and dest_hi at inst_id+1
+                        // i64 LocalGet pushes (lo, hi) onto slot_stack.
+                        let lo = inst_id as u32;
+                        let hi = (inst_id + 1) as u32;
                         let opcode = Opcode::I64Load {
-                            dest_lo: OptReg(inst_id as u32),
-                            dest_hi: OptReg((inst_id + 1) as u32),
+                            dest_lo: OptReg(lo),
+                            dest_hi: OptReg(hi),
                             addr: *idx,
                         };
-                        // We need to "consume" an extra instruction slot for the hi register
-                        // This is done by incrementing inst_id by 2 instead of 1 later
                         instructions.push(Instruction {
                             id: inst_id,
                             opcode,
                             block_id: 0,
                             is_dead: false,
                         });
-                        inst_id += 2; // Skip an extra slot for hi register
+                        slot_stack.push(lo);
+                        slot_stack.push(hi);
+                        inst_id += 2; // Two unique IR ids for lo/hi
                         builder.add_instruction(); // Add extra instruction for hi part
                         continue; // Skip the normal instruction push at end of loop
                     } else {
+                        // i32 LocalGet pushes its dest vreg.
                         Opcode::Load {
                             dest: OptReg(inst_id as u32),
                             addr: *idx,
                         }
                     }
                 }
-                WasmOp::LocalSet(idx) => Opcode::Store {
-                    src: OptReg(inst_id.saturating_sub(1) as u32),
-                    addr: *idx,
-                },
+                // LocalSet pops 1 (i32 value) and emits a Store. No slot push.
+                // Pre-fix: relied on `inst_id.saturating_sub(1)` which read the
+                // most recently produced vreg — but if the next op was a
+                // binary op, it would read the same slot, double-using it.
+                // Issue #121.
+                WasmOp::LocalSet(idx) => {
+                    let src = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::Store {
+                        src: OptReg(src),
+                        addr: *idx,
+                    }
+                }
 
                 // i64 operations (use register pairs on 32-bit ARM)
-                // For i64, we use pairs of virtual registers:
-                // - First i64 operand: inst_id-4 (lo), inst_id-3 (hi)
-                // - Second i64 operand: inst_id-2 (lo), inst_id-1 (hi)
-                // - Result: inst_id (lo), inst_id+1 (hi)
+                // i64 values occupy 2 consecutive entries on slot_stack
+                // (lo first, then hi), matching the (dest_lo, dest_hi) layout.
                 WasmOp::I64Const(val) => {
+                    // pushes 2 (lo, hi)
+                    let lo = inst_id as u32;
+                    let hi = (inst_id + 1) as u32;
                     let opcode = Opcode::I64Const {
-                        dest_lo: OptReg(inst_id as u32),
-                        dest_hi: OptReg((inst_id + 1) as u32),
+                        dest_lo: OptReg(lo),
+                        dest_hi: OptReg(hi),
                         value: *val,
                     };
                     instructions.push(Instruction {
@@ -665,29 +834,23 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    inst_id += 2; // Consume 2 slots for lo and hi
-                    builder.add_instruction(); // Add extra instruction for hi part
+                    slot_stack.push(lo);
+                    slot_stack.push(hi);
+                    inst_id += 2;
+                    builder.add_instruction();
                     continue;
                 }
-                // i64 binary arithmetic ops (consume 2 i64 pairs, produce 1 i64 pair).
+                // i64 binary arithmetic ops: pops 4 / pushes 2.
                 //
-                // Slot accounting: each i64 occupies 2 consecutive vreg slots
-                // (lo, hi). Consuming 2 i64s reads slots [inst_id-4..inst_id-1];
-                // producing 1 i64 reserves slots [inst_id, inst_id+1]. So the
-                // next op must see the new i64 at slots [next_inst_id-2,
-                // next_inst_id-1], which requires `inst_id += 2`.
+                // Each i64 is 2 slot_stack entries (lo, hi). We pop the
+                // top-of-stack i64 first (src2_hi, src2_lo) then the next
+                // (src1_hi, src1_lo). The result is pushed as (dest_lo,
+                // dest_hi) so subsequent ops see the new i64 in the expected
+                // order.
                 //
-                // Previously these arms fell through to the wildcard `inst_id
-                // += 1`, leaving `dest_hi` at slot `inst_id+1 = next_inst_id`
-                // — i.e. the very slot the NEXT wasm op was about to use as a
-                // fresh dest. The next op clobbered `dest_hi`, and any later
-                // op trying to read `(prev.dest_lo, prev.dest_hi)` would look
-                // at `(next_inst_id-2, next_inst_id-1)` which pointed to the
-                // hi half of the previously consumed src2 and the just-written
-                // current dest_lo — total slot scramble. In some cases the lookup
-                // would find no mapping at all and `get_arm_reg` would silently
-                // return R0 (issue #93 root cause). See PR #100 fuzz harness
-                // and PR #101 defensive panic for the diagnostic plumbing.
+                // Pre-fix this used `inst_id.saturating_sub(K)` arithmetic
+                // which broke whenever an intervening op popped a slot
+                // without producing one (Drop, LocalSet, …). Issue #121.
                 WasmOp::I64Add
                 | WasmOp::I64Sub
                 | WasmOp::I64And
@@ -703,12 +866,34 @@ impl OptimizerBridge {
                 | WasmOp::I64ShrU
                 | WasmOp::I64Rotl
                 | WasmOp::I64Rotr => {
-                    let dest_lo = OptReg(inst_id as u32);
-                    let dest_hi = OptReg((inst_id + 1) as u32);
-                    let src1_lo = OptReg(inst_id.saturating_sub(4) as u32);
-                    let src1_hi = OptReg(inst_id.saturating_sub(3) as u32);
-                    let src2_lo = OptReg(inst_id.saturating_sub(2) as u32);
-                    let src2_hi = OptReg(inst_id.saturating_sub(1) as u32);
+                    let src2_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src2_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src1_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src1_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let dest_lo_v = inst_id as u32;
+                    let dest_hi_v = (inst_id + 1) as u32;
+                    let dest_lo = OptReg(dest_lo_v);
+                    let dest_hi = OptReg(dest_hi_v);
+                    let src1_lo = OptReg(src1_lo_v);
+                    let src1_hi = OptReg(src1_hi_v);
+                    let src2_lo = OptReg(src2_lo_v);
+                    let src2_hi = OptReg(src2_hi_v);
                     let opcode = match wasm_op {
                         WasmOp::I64Add => Opcode::I64Add {
                             dest_lo,
@@ -838,12 +1023,15 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    inst_id += 2; // produces i64 = 2 slots
+                    // pushes 2 (dest_lo, dest_hi)
+                    slot_stack.push(dest_lo_v);
+                    slot_stack.push(dest_hi_v);
+                    inst_id += 2;
                     builder.add_instruction();
                     continue;
                 }
 
-                // i64 comparisons (consume 2 i64 pairs, produce single i32 result)
+                // i64 comparisons: pops 4 (2 i64 pairs) / pushes 1 (i32 result).
                 WasmOp::I64Eq
                 | WasmOp::I64Ne
                 | WasmOp::I64LtS
@@ -854,98 +1042,135 @@ impl OptimizerBridge {
                 | WasmOp::I64LeU
                 | WasmOp::I64GeS
                 | WasmOp::I64GeU => {
-                    // Comparisons take 2 i64 values (4 regs) and produce 1 i32 (1 reg)
+                    let src2_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src2_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src1_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src1_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let dest_v = inst_id as u32;
+                    let dest = OptReg(dest_v);
+                    let src1_lo = OptReg(src1_lo_v);
+                    let src1_hi = OptReg(src1_hi_v);
+                    let src2_lo = OptReg(src2_lo_v);
+                    let src2_hi = OptReg(src2_hi_v);
                     let opcode = match wasm_op {
                         WasmOp::I64Eq => Opcode::I64Eq {
-                            dest: OptReg(inst_id as u32),
-                            src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                            src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                            src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                            src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                            dest,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64Ne => Opcode::I64Ne {
-                            dest: OptReg(inst_id as u32),
-                            src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                            src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                            src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                            src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                            dest,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64LtS => Opcode::I64LtS {
-                            dest: OptReg(inst_id as u32),
-                            src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                            src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                            src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                            src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                            dest,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64LtU => Opcode::I64LtU {
-                            dest: OptReg(inst_id as u32),
-                            src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                            src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                            src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                            src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                            dest,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64GtS => Opcode::I64GtS {
-                            dest: OptReg(inst_id as u32),
-                            src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                            src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                            src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                            src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                            dest,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64GtU => Opcode::I64GtU {
-                            dest: OptReg(inst_id as u32),
-                            src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                            src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                            src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                            src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                            dest,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64LeS => Opcode::I64LeS {
-                            dest: OptReg(inst_id as u32),
-                            src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                            src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                            src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                            src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                            dest,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64LeU => Opcode::I64LeU {
-                            dest: OptReg(inst_id as u32),
-                            src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                            src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                            src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                            src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                            dest,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64GeS => Opcode::I64GeS {
-                            dest: OptReg(inst_id as u32),
-                            src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                            src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                            src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                            src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                            dest,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         WasmOp::I64GeU => Opcode::I64GeU {
-                            dest: OptReg(inst_id as u32),
-                            src1_lo: OptReg(inst_id.saturating_sub(4) as u32),
-                            src1_hi: OptReg(inst_id.saturating_sub(3) as u32),
-                            src2_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                            src2_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                            dest,
+                            src1_lo,
+                            src1_hi,
+                            src2_lo,
+                            src2_hi,
                         },
                         _ => unreachable!(),
                     };
-                    // Single i32 result: don't increment by 2
                     instructions.push(Instruction {
                         id: inst_id,
                         opcode,
                         block_id: 0,
                         is_dead: false,
                     });
+                    // Single i32 result pushed.
+                    slot_stack.push(dest_v);
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
                 }
 
-                // i64 equal-to-zero (consumes 1 i64 value, produces i32)
+                // i64 equal-to-zero: pops 2 (1 i64) / pushes 1 (i32).
                 WasmOp::I64Eqz => {
+                    let src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let dest_v = inst_id as u32;
                     let opcode = Opcode::I64Eqz {
-                        dest: OptReg(inst_id as u32),
-                        src_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                        src_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                        dest: OptReg(dest_v),
+                        src_lo: OptReg(src_lo_v),
+                        src_hi: OptReg(src_hi_v),
                     };
                     instructions.push(Instruction {
                         id: inst_id,
@@ -953,17 +1178,29 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
+                    slot_stack.push(dest_v);
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
                 }
 
-                // i64 count leading zeros (consumes 1 i64 value, produces i32)
+                // i64 count leading zeros: pops 2 (1 i64) / pushes 1 (i32).
                 WasmOp::I64Clz => {
+                    let src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let dest_v = inst_id as u32;
                     let opcode = Opcode::I64Clz {
-                        dest: OptReg(inst_id as u32),
-                        src_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                        src_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                        dest: OptReg(dest_v),
+                        src_lo: OptReg(src_lo_v),
+                        src_hi: OptReg(src_hi_v),
                     };
                     instructions.push(Instruction {
                         id: inst_id,
@@ -971,17 +1208,29 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
+                    slot_stack.push(dest_v);
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
                 }
 
-                // i64 count trailing zeros (consumes 1 i64 value, produces i32)
+                // i64 count trailing zeros: pops 2 (1 i64) / pushes 1 (i32).
                 WasmOp::I64Ctz => {
+                    let src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let dest_v = inst_id as u32;
                     let opcode = Opcode::I64Ctz {
-                        dest: OptReg(inst_id as u32),
-                        src_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                        src_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                        dest: OptReg(dest_v),
+                        src_lo: OptReg(src_lo_v),
+                        src_hi: OptReg(src_hi_v),
                     };
                     instructions.push(Instruction {
                         id: inst_id,
@@ -989,17 +1238,29 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
+                    slot_stack.push(dest_v);
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
                 }
 
-                // i64 population count (consumes 1 i64 value, produces i32)
+                // i64 population count: pops 2 (1 i64) / pushes 1 (i32).
                 WasmOp::I64Popcnt => {
+                    let src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let dest_v = inst_id as u32;
                     let opcode = Opcode::I64Popcnt {
-                        dest: OptReg(inst_id as u32),
-                        src_lo: OptReg(inst_id.saturating_sub(2) as u32),
-                        src_hi: OptReg(inst_id.saturating_sub(1) as u32),
+                        dest: OptReg(dest_v),
+                        src_lo: OptReg(src_lo_v),
+                        src_hi: OptReg(src_hi_v),
                     };
                     instructions.push(Instruction {
                         id: inst_id,
@@ -1007,23 +1268,31 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
+                    slot_stack.push(dest_v);
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
                 }
 
-                // i64 sign extension (takes i64, produces i64).
-                //
-                // Slot accounting: consume 1 i64 (slots [inst_id-2, inst_id-1]),
-                // produce 1 i64 (slots [inst_id, inst_id+1]). `inst_id += 2`
-                // so the next op's `inst_id-2`/`inst_id-1` lookup lands on
-                // dest_lo/dest_hi. Was `+= 1` which left dest_hi at the slot
-                // the next wasm op would claim as its own dest — clobber.
+                // i64 in-place sign extension: pops 2 (1 i64) / pushes 2 (1 i64).
+                // src_hi is discarded; dest is freshly allocated.
                 WasmOp::I64Extend8S => {
+                    let _src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let dest_lo_v = inst_id as u32;
+                    let dest_hi_v = (inst_id + 1) as u32;
                     let opcode = Opcode::I64Extend8S {
-                        dest_lo: OptReg(inst_id as u32),
-                        dest_hi: OptReg((inst_id + 1) as u32),
-                        src_lo: OptReg(inst_id.saturating_sub(2) as u32),
+                        dest_lo: OptReg(dest_lo_v),
+                        dest_hi: OptReg(dest_hi_v),
+                        src_lo: OptReg(src_lo_v),
                     };
                     instructions.push(Instruction {
                         id: inst_id,
@@ -1031,16 +1300,30 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
+                    slot_stack.push(dest_lo_v);
+                    slot_stack.push(dest_hi_v);
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
                 }
 
                 WasmOp::I64Extend16S => {
+                    let _src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let dest_lo_v = inst_id as u32;
+                    let dest_hi_v = (inst_id + 1) as u32;
                     let opcode = Opcode::I64Extend16S {
-                        dest_lo: OptReg(inst_id as u32),
-                        dest_hi: OptReg((inst_id + 1) as u32),
-                        src_lo: OptReg(inst_id.saturating_sub(2) as u32),
+                        dest_lo: OptReg(dest_lo_v),
+                        dest_hi: OptReg(dest_hi_v),
+                        src_lo: OptReg(src_lo_v),
                     };
                     instructions.push(Instruction {
                         id: inst_id,
@@ -1048,16 +1331,30 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
+                    slot_stack.push(dest_lo_v);
+                    slot_stack.push(dest_hi_v);
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
                 }
 
                 WasmOp::I64Extend32S => {
+                    let _src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let dest_lo_v = inst_id as u32;
+                    let dest_hi_v = (inst_id + 1) as u32;
                     let opcode = Opcode::I64Extend32S {
-                        dest_lo: OptReg(inst_id as u32),
-                        dest_hi: OptReg((inst_id + 1) as u32),
-                        src_lo: OptReg(inst_id.saturating_sub(2) as u32),
+                        dest_lo: OptReg(dest_lo_v),
+                        dest_hi: OptReg(dest_hi_v),
+                        src_lo: OptReg(src_lo_v),
                     };
                     instructions.push(Instruction {
                         id: inst_id,
@@ -1065,32 +1362,31 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
+                    slot_stack.push(dest_lo_v);
+                    slot_stack.push(dest_hi_v);
                     inst_id += 2;
                     builder.add_instruction();
                     continue;
                 }
 
-                // i32 -> i64 zero-extend.
+                // i32 -> i64 zero-extend: pops 1 (i32) / pushes 2 (i64).
                 //
-                // Net stack effect: pop 1 i32 slot, push i64 (= 2 slots).
-                // We REUSE the consumed i32 slot for `dest_lo` (same vreg,
-                // same value semantically) and add 1 fresh slot for
-                // `dest_hi`. This keeps the `inst_id.saturating_sub(K)`
-                // arithmetic in subsequent i64 ops correct without any
-                // off-by-one shift in slot numbering.
-                //
-                // Pre-fix this op fell through to the catch-all `_ =>
-                // Opcode::Nop` arm; subsequent `Opcode::I64ShrU` /
-                // `Opcode::I64Shl` source-vreg lookups missed `vreg_to_arm`
-                // and `get_arm_reg` returned `Reg::R0` as a silent fallback,
-                // causing the i64-shift emitter to clobber AAPCS param R0
-                // (the memset destination pointer). See issue #93.
+                // By IR convention `dest_lo` aliases `src` (same vreg, same
+                // value semantically); `dest_hi` is a fresh slot holding 0.
+                // We push the SAME src vreg as dest_lo onto slot_stack, then
+                // push the fresh dest_hi — so a subsequent i64 op pops
+                // (dest_hi, dest_lo=src) correctly.
                 WasmOp::I64ExtendI32U => {
-                    let src_slot = inst_id.saturating_sub(1) as u32;
+                    let src_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let dest_hi_v = inst_id as u32;
                     let opcode = Opcode::I64ExtendI32U {
-                        dest_lo: OptReg(src_slot),
-                        dest_hi: OptReg(inst_id as u32),
-                        src: OptReg(src_slot),
+                        dest_lo: OptReg(src_v),
+                        dest_hi: OptReg(dest_hi_v),
+                        src: OptReg(src_v),
                     };
                     instructions.push(Instruction {
                         id: inst_id,
@@ -1098,19 +1394,25 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    inst_id += 1; // +1 slot net (dest_hi only; dest_lo reuses src)
+                    slot_stack.push(src_v); // dest_lo aliases src
+                    slot_stack.push(dest_hi_v);
+                    inst_id += 1; // only dest_hi is a fresh IR id; dest_lo reuses src
                     builder.add_instruction();
                     continue;
                 }
 
-                // i32 -> i64 sign-extend. Same slot accounting as
-                // `I64ExtendI32U` — see comment there.
+                // i32 -> i64 sign-extend. Same slot accounting as I64ExtendI32U.
                 WasmOp::I64ExtendI32S => {
-                    let src_slot = inst_id.saturating_sub(1) as u32;
+                    let src_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let dest_hi_v = inst_id as u32;
                     let opcode = Opcode::I64ExtendI32S {
-                        dest_lo: OptReg(src_slot),
-                        dest_hi: OptReg(inst_id as u32),
-                        src: OptReg(src_slot),
+                        dest_lo: OptReg(src_v),
+                        dest_hi: OptReg(dest_hi_v),
+                        src: OptReg(src_v),
                     };
                     instructions.push(Instruction {
                         id: inst_id,
@@ -1118,24 +1420,30 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
+                    slot_stack.push(src_v);
+                    slot_stack.push(dest_hi_v);
                     inst_id += 1;
                     builder.add_instruction();
                     continue;
                 }
 
-                // i64 -> i32 wrap (truncate). Net stack effect: pop i64
-                // (2 slots), push i32 (1 slot) = -1 slot. The result IS
-                // the low 32 bits of the input i64, so `dest` aliases
-                // `src_lo` by IR convention. We don't increment `inst_id`
-                // (the natural +1 from the wildcard fallthrough cancels
-                // with the -1 i64-pop, net 0 fresh slot).
+                // i64 -> i32 wrap (truncate): pops 2 (i64) / pushes 1 (i32).
+                // The result IS the low 32 bits of the input i64, so `dest`
+                // aliases `src_lo` by IR convention. `src_hi` is discarded.
                 WasmOp::I32WrapI64 => {
-                    // src_lo is at inst_id-2 (lo of the popped i64),
-                    // src_hi is at inst_id-1 (hi, discarded).
-                    let src_lo_slot = inst_id.saturating_sub(2) as u32;
+                    let _src_hi_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let src_lo_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let opcode = Opcode::I32WrapI64 {
-                        dest: OptReg(src_lo_slot),
-                        src_lo: OptReg(src_lo_slot),
+                        dest: OptReg(src_lo_v),
+                        src_lo: OptReg(src_lo_v),
                     };
                     instructions.push(Instruction {
                         id: inst_id,
@@ -1143,57 +1451,73 @@ impl OptimizerBridge {
                         block_id: 0,
                         is_dead: false,
                     });
-                    // No inst_id increment: the wildcard `inst_id += 1`
-                    // is balanced by the -1 net slot delta of the wrap.
-                    // We `continue` to skip the wildcard's +1 and emit nothing extra.
-                    inst_id = inst_id.saturating_sub(1);
+                    // dest aliases src_lo (same vreg, same value); we push
+                    // src_lo back onto slot_stack so consumers see the wrap
+                    // result. No new inst_id needed because dest reuses
+                    // src_lo's vreg — but we still consumed one Instruction
+                    // slot for the I32WrapI64 op itself, so inst_id += 1.
+                    slot_stack.push(src_lo_v);
+                    inst_id += 1;
                     builder.add_instruction();
                     continue;
                 }
 
                 // Select: dest = cond != 0 ? val_true : val_false
-                // Stack: [val_true, val_false, cond] -> [result]
-                WasmOp::Select => Opcode::Select {
-                    dest: OptReg(inst_id as u32),
-                    val_true: OptReg(inst_id.saturating_sub(3) as u32),
-                    val_false: OptReg(inst_id.saturating_sub(2) as u32),
-                    cond: OptReg(inst_id.saturating_sub(1) as u32),
-                },
+                // Stack: pops 3 (val_true, val_false, cond), pushes 1.
+                WasmOp::Select => {
+                    let cond_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let val_false_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let val_true_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::Select {
+                        dest: OptReg(inst_id as u32),
+                        val_true: OptReg(val_true_v),
+                        val_false: OptReg(val_false_v),
+                        cond: OptReg(cond_v),
+                    }
+                }
 
                 // ========================================================================
                 // Control Flow Operations (Loop Support)
                 // ========================================================================
 
-                // Loop: emit a label at the start (backward branch target)
-                // WASM loop semantics: br to a loop jumps to START of loop
+                // Loop: emit a label at the start (backward branch target).
+                // No stack effect — does not touch slot_stack.
                 WasmOp::Loop => {
-                    // Push loop onto block stack - target is the CURRENT instruction
                     block_stack.push((1, inst_id)); // 1 = loop
                     Opcode::Label { id: inst_id }
                 }
 
-                // Block: emit a label placeholder (forward branch target at End)
+                // Block: emit a label placeholder (forward branch target at End).
+                // No stack effect.
                 WasmOp::Block => {
-                    // Push block onto stack - target will be at End
                     block_stack.push((0, inst_id)); // 0 = block
                     Opcode::Nop // Label will be at End
                 }
 
-                // End: marks the end of a block/loop/function
-                // For blocks, this is where forward branches land
+                // End: marks the end of a block/loop/function. No stack effect.
                 WasmOp::End => {
-                    // Pop the block stack
                     block_stack.pop();
                     Opcode::Label { id: inst_id }
                 }
 
-                // Br: unconditional branch to label
+                // Br: unconditional branch to label. No stack effect at IR
+                // level (the wasm validator handles unreachable stack after Br).
                 WasmOp::Br(depth) => {
-                    // Find the target block at given depth
                     let target_idx = block_stack.len().saturating_sub(1 + *depth as usize);
                     if target_idx < block_stack.len() {
                         let (_block_type, target_inst) = block_stack[target_idx];
-                        // For loops, branch to start; for blocks, target will be resolved later
                         Opcode::Branch {
                             target: target_inst,
                         }
@@ -1202,32 +1526,39 @@ impl OptimizerBridge {
                     }
                 }
 
-                // BrIf: conditional branch - branch if top of stack is non-zero
+                // BrIf: pops cond (i32). The value beneath remains on the
+                // wasm stack — slot_stack reflects that: pop 1 only.
                 WasmOp::BrIf(depth) => {
-                    // Find the target block at given depth
+                    let cond_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     let target_idx = block_stack.len().saturating_sub(1 + *depth as usize);
                     let target = if target_idx < block_stack.len() {
                         let (_block_type, target_inst) = block_stack[target_idx];
-                        // For loops (type 1), branch to start instruction
                         target_inst
                     } else {
                         0
                     };
                     Opcode::CondBranch {
-                        cond: OptReg(inst_id.saturating_sub(1) as u32),
+                        cond: OptReg(cond_v),
                         target,
                     }
                 }
 
-                // LocalTee: store value AND keep it on stack
-                // This is store + copy (value stays on stack for next op)
+                // LocalTee: pops 1, pushes 1 (value stays on stack as a copy).
+                // TeeStore = Store + Copy: writes to local and produces a
+                // fresh dest vreg holding the same value for the next op.
                 WasmOp::LocalTee(idx) => {
-                    // TeeStore combines Store + Copy:
-                    // 1. Store src to local[addr]
-                    // 2. Copy src to dest (keeps value available for next op)
+                    let src_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
                     Opcode::TeeStore {
                         dest: OptReg(inst_id as u32),
-                        src: OptReg(inst_id.saturating_sub(1) as u32),
+                        src: OptReg(src_v),
                         addr: *idx,
                     }
                 }
@@ -1236,95 +1567,173 @@ impl OptimizerBridge {
                 // Linear Memory Operations (i32.load / i32.store)
                 // ========================================================================
 
-                // I32Load: pop address, load 32-bit value from linear memory
-                // Stack: [addr] -> [value]
-                WasmOp::I32Load { offset, .. } => Opcode::MemLoad {
-                    dest: OptReg(inst_id as u32),
-                    addr: OptReg(inst_id.saturating_sub(1) as u32),
-                    offset: *offset,
-                },
+                // I32Load: pops 1 (addr), pushes 1 (value).
+                WasmOp::I32Load { offset, .. } => {
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::MemLoad {
+                        dest: OptReg(inst_id as u32),
+                        addr: OptReg(addr_v),
+                        offset: *offset,
+                    }
+                }
 
-                // I32Store: pop value and address, store to linear memory
-                // Stack: [addr, value] -> []
-                WasmOp::I32Store { offset, .. } => Opcode::MemStore {
-                    src: OptReg(inst_id.saturating_sub(1) as u32),
-                    addr: OptReg(inst_id.saturating_sub(2) as u32),
-                    offset: *offset,
-                },
+                // I32Store: pops 2 (addr, value), pushes 0.
+                WasmOp::I32Store { offset, .. } => {
+                    let value_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::MemStore {
+                        src: OptReg(value_v),
+                        addr: OptReg(addr_v),
+                        offset: *offset,
+                    }
+                }
 
                 // ===== Sub-word linear-memory ops =====
                 //
-                // Pop addr (and value for stores), push value (for loads).
-                // Pre-fix, these fell through to `Opcode::Nop` — their dest
-                // vreg never got mapped to an ARM register, and any
-                // consumer of the loaded value triggered the PR #101
-                // defensive panic (or, pre-PR-101, silently consumed R0).
-                WasmOp::I32Load8S { offset, .. } => Opcode::MemLoadSubword {
-                    dest: OptReg(inst_id as u32),
-                    addr: OptReg(inst_id.saturating_sub(1) as u32),
-                    offset: *offset,
-                    width: 1,
-                    signed: true,
-                },
-                WasmOp::I32Load8U { offset, .. } => Opcode::MemLoadSubword {
-                    dest: OptReg(inst_id as u32),
-                    addr: OptReg(inst_id.saturating_sub(1) as u32),
-                    offset: *offset,
-                    width: 1,
-                    signed: false,
-                },
-                WasmOp::I32Load16S { offset, .. } => Opcode::MemLoadSubword {
-                    dest: OptReg(inst_id as u32),
-                    addr: OptReg(inst_id.saturating_sub(1) as u32),
-                    offset: *offset,
-                    width: 2,
-                    signed: true,
-                },
-                WasmOp::I32Load16U { offset, .. } => Opcode::MemLoadSubword {
-                    dest: OptReg(inst_id as u32),
-                    addr: OptReg(inst_id.saturating_sub(1) as u32),
-                    offset: *offset,
-                    width: 2,
-                    signed: false,
-                },
-                WasmOp::I32Store8 { offset, .. } => Opcode::MemStoreSubword {
-                    src: OptReg(inst_id.saturating_sub(1) as u32),
-                    addr: OptReg(inst_id.saturating_sub(2) as u32),
-                    offset: *offset,
-                    width: 1,
-                },
-                WasmOp::I32Store16 { offset, .. } => Opcode::MemStoreSubword {
-                    src: OptReg(inst_id.saturating_sub(1) as u32),
-                    addr: OptReg(inst_id.saturating_sub(2) as u32),
-                    offset: *offset,
-                    width: 2,
-                },
+                // Loads: pops 1 (addr), pushes 1 (value).
+                // Stores: pops 2 (addr, value), pushes 0.
+                WasmOp::I32Load8S { offset, .. } => {
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::MemLoadSubword {
+                        dest: OptReg(inst_id as u32),
+                        addr: OptReg(addr_v),
+                        offset: *offset,
+                        width: 1,
+                        signed: true,
+                    }
+                }
+                WasmOp::I32Load8U { offset, .. } => {
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::MemLoadSubword {
+                        dest: OptReg(inst_id as u32),
+                        addr: OptReg(addr_v),
+                        offset: *offset,
+                        width: 1,
+                        signed: false,
+                    }
+                }
+                WasmOp::I32Load16S { offset, .. } => {
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::MemLoadSubword {
+                        dest: OptReg(inst_id as u32),
+                        addr: OptReg(addr_v),
+                        offset: *offset,
+                        width: 2,
+                        signed: true,
+                    }
+                }
+                WasmOp::I32Load16U { offset, .. } => {
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::MemLoadSubword {
+                        dest: OptReg(inst_id as u32),
+                        addr: OptReg(addr_v),
+                        offset: *offset,
+                        width: 2,
+                        signed: false,
+                    }
+                }
+                WasmOp::I32Store8 { offset, .. } => {
+                    let value_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::MemStoreSubword {
+                        src: OptReg(value_v),
+                        addr: OptReg(addr_v),
+                        offset: *offset,
+                        width: 1,
+                    }
+                }
+                WasmOp::I32Store16 { offset, .. } => {
+                    let value_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    let addr_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::MemStoreSubword {
+                        src: OptReg(value_v),
+                        addr: OptReg(addr_v),
+                        offset: *offset,
+                        width: 2,
+                    }
+                }
 
                 // ===== Globals =====
                 //
-                // GlobalGet pushes a fresh i32; GlobalSet pops one. Without
-                // explicit IR ops these silently produced unmapped vregs.
+                // GlobalGet pushes a fresh i32; GlobalSet pops one.
                 WasmOp::GlobalGet(idx) => Opcode::GlobalGet {
                     dest: OptReg(inst_id as u32),
                     idx: *idx,
                 },
-                WasmOp::GlobalSet(idx) => Opcode::GlobalSet {
-                    src: OptReg(inst_id.saturating_sub(1) as u32),
-                    idx: *idx,
-                },
+                WasmOp::GlobalSet(idx) => {
+                    let src_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::GlobalSet {
+                        src: OptReg(src_v),
+                        idx: *idx,
+                    }
+                }
 
                 // ===== Memory size / grow =====
                 //
-                // Both push an i32 result. On bare-metal targets with fixed
-                // memory, grow is a stub (returns the size or -1), but the
-                // dest vreg still needs allocation.
+                // MemorySize: pushes 1 (i32 result). No stack input.
+                // MemoryGrow: pops 1 (delta in pages), pushes 1 (previous size).
                 WasmOp::MemorySize(_) => Opcode::MemorySize {
                     dest: OptReg(inst_id as u32),
                 },
-                WasmOp::MemoryGrow(_) => Opcode::MemoryGrow {
-                    dest: OptReg(inst_id as u32),
-                    delta: OptReg(inst_id.saturating_sub(1) as u32),
-                },
+                WasmOp::MemoryGrow(_) => {
+                    let delta_v = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    Opcode::MemoryGrow {
+                        dest: OptReg(inst_id as u32),
+                        delta: OptReg(delta_v),
+                    }
+                }
 
                 // ===== Direct call =====
                 //
@@ -1354,9 +1763,124 @@ impl OptimizerBridge {
                     func_idx: *func_idx,
                 },
 
-                // Fallback for unsupported ops
+                // ===== Pure consumers (pop without producing IR) =====
+                //
+                // Drop pops the top wasm-stack value and emits nothing —
+                // it's a wasm-stack hygiene op with no IR semantics. We
+                // `continue` after popping to skip both the instruction
+                // push and the inst_id increment (no IR id is consumed).
+                //
+                // Pre-fix Drop fell through to `_ => Opcode::Nop`. The Nop
+                // emission was harmless on its own, but Drop's lack of a
+                // `slot_stack.pop()` meant the very next binary op would
+                // misread `inst_id-1` as "the value Drop discarded" instead
+                // of "the value beneath Drop's consumed slot." Issue #121.
+                WasmOp::Drop => {
+                    slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    continue;
+                }
+
+                // ===== Stack-neutral control-flow / no-op ops =====
+                //
+                // Nop / Unreachable / Return have no slot_stack effect at
+                // this layer (Return's value handling is done later by the
+                // function-epilogue codegen in `ir_to_arm`). They still
+                // emit an IR Nop placeholder so the IR length is in lockstep
+                // with the wasm op index for any downstream pass that
+                // relies on positional alignment.
+                WasmOp::Nop | WasmOp::Unreachable | WasmOp::Return => {
+                    instructions.push(Instruction {
+                        id: inst_id,
+                        opcode: Opcode::Nop,
+                        block_id: 0,
+                        is_dead: false,
+                    });
+                    inst_id += 1;
+                    continue;
+                }
+
+                // Fallback for unsupported ops.
+                //
+                // We do NOT touch slot_stack here — by design. If an unknown
+                // op had a stack effect, downstream consumers will fail
+                // *loudly* via `slot_stack.pop().expect(...)` instead of
+                // silently mis-binding vregs. That's exactly the bug-finder
+                // class introduced for issue #93; the slot_stack rework
+                // (#121) preserves it.
                 _ => Opcode::Nop,
             };
+
+            // Determine slot_stack effect from the opcode just produced.
+            // Arms that already `continue` above handle their slot_stack
+            // updates inline; this fallback covers single-producer i32 arms
+            // (Const, Load, GlobalGet, MemorySize, MemLoad, MemLoadSubword,
+            // Add/Sub/.../Eqz, Select, TeeStore, MemoryGrow, Call) and
+            // pure label/branch/store arms (Loop, Block, End, Br, CondBranch,
+            // Store, MemStore, MemStoreSubword, GlobalSet).
+            match &opcode {
+                // Single-i32-producer opcodes: push `inst_id` as the dest slot.
+                Opcode::Add { .. }
+                | Opcode::Sub { .. }
+                | Opcode::Mul { .. }
+                | Opcode::DivS { .. }
+                | Opcode::DivU { .. }
+                | Opcode::RemS { .. }
+                | Opcode::RemU { .. }
+                | Opcode::And { .. }
+                | Opcode::Or { .. }
+                | Opcode::Xor { .. }
+                | Opcode::Shl { .. }
+                | Opcode::ShrS { .. }
+                | Opcode::ShrU { .. }
+                | Opcode::Rotl { .. }
+                | Opcode::Rotr { .. }
+                | Opcode::Eq { .. }
+                | Opcode::Ne { .. }
+                | Opcode::LtS { .. }
+                | Opcode::LtU { .. }
+                | Opcode::LeS { .. }
+                | Opcode::LeU { .. }
+                | Opcode::GtS { .. }
+                | Opcode::GtU { .. }
+                | Opcode::GeS { .. }
+                | Opcode::GeU { .. }
+                | Opcode::Eqz { .. }
+                | Opcode::Clz { .. }
+                | Opcode::Ctz { .. }
+                | Opcode::Popcnt { .. }
+                | Opcode::Extend8S { .. }
+                | Opcode::Extend16S { .. }
+                | Opcode::Const { .. }
+                | Opcode::Load { .. }
+                | Opcode::GlobalGet { .. }
+                | Opcode::MemorySize { .. }
+                | Opcode::MemoryGrow { .. }
+                | Opcode::MemLoad { .. }
+                | Opcode::MemLoadSubword { .. }
+                | Opcode::Select { .. }
+                | Opcode::TeeStore { .. }
+                | Opcode::Call { .. } => {
+                    slot_stack.push(inst_id as u32);
+                }
+                // Pure consumers / control flow / no-ops: no slot push.
+                Opcode::Store { .. }
+                | Opcode::MemStore { .. }
+                | Opcode::MemStoreSubword { .. }
+                | Opcode::GlobalSet { .. }
+                | Opcode::Branch { .. }
+                | Opcode::CondBranch { .. }
+                | Opcode::Label { .. }
+                | Opcode::Return { .. }
+                | Opcode::Copy { .. }
+                | Opcode::Nop => {}
+                // i64 ops have their own continue paths above and do not
+                // reach this match — defensively skip if they ever do.
+                _ => {}
+            }
 
             instructions.push(Instruction {
                 id: inst_id,
@@ -1369,7 +1893,7 @@ impl OptimizerBridge {
         }
 
         let cfg = builder.build();
-        (instructions, cfg)
+        Ok((instructions, cfg))
     }
 
     /// Optimize WASM operation sequence and return the optimized IR
@@ -1389,11 +1913,20 @@ impl OptimizerBridge {
             ));
         }
 
+        // Pre-flight: reject obvious stack underflow as a typed error so the
+        // slot_stack model in `wasm_to_ir` never has to error on an empty
+        // stack. Without this, the fuzz harness can construct inputs like
+        // `[I32Sub, I32Const(0)]` that bypass wasm validation and trip
+        // `slot_stack.pop()` directly. Production callers come through
+        // wasmparser (which validates); this safety net catches direct
+        // callers (fuzz harnesses, hand-built `Vec<WasmOp>`).
+        synth_core::wasm_stack_check::check_no_underflow(wasm_ops)?;
+
         // Preprocess: convert if-else patterns to select
         let preprocessed = self.preprocess_wasm_ops(wasm_ops);
 
         // Convert to IR
-        let (mut instructions, mut cfg) = self.wasm_to_ir(&preprocessed);
+        let (mut instructions, mut cfg) = self.wasm_to_ir(&preprocessed)?;
 
         // Build and run optimization pipeline
         let result = self.run_passes(&mut cfg, &mut instructions);
@@ -1497,7 +2030,7 @@ impl OptimizerBridge {
 
         // Preprocess and convert to IR
         let preprocessed = self.preprocess_wasm_ops(wasm_ops);
-        let (mut instructions, mut cfg) = self.wasm_to_ir(&preprocessed);
+        let (mut instructions, mut cfg) = self.wasm_to_ir(&preprocessed)?;
         let result = self.run_passes(&mut cfg, &mut instructions);
 
         Ok(OptimizationStats {

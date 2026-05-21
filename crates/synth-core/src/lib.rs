@@ -12,6 +12,7 @@ pub mod safety_manifest;
 pub mod target;
 pub mod wasm_decoder;
 pub mod wasm_op;
+pub mod wasm_stack_check;
 
 pub use backend::*;
 pub use component::*;

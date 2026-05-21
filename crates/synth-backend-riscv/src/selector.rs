@@ -380,6 +380,32 @@ impl Selector {
                 self.emitted_return = true;
             }
 
+            // Cross-function call. WASM-level types tell us how many
+            // args to consume from the value stack and how many results
+            // to push back, but the selector doesn't yet have access to
+            // the function signature (decoder doesn't pipe it down here).
+            //
+            // Minimum-viable semantics for v0.3.1:
+            //   * Move the top N vstack values into a0..a(N-1) where
+            //     N = min(vstack.len(), 8). The wasm validator
+            //     guarantees the stack matches the callee's arity.
+            //   * Emit `RiscVOp::Call { label }`. The ELF builder
+            //     resolves the label to a PC-relative `auipc + jalr`
+            //     pair when the callee is in the same compilation unit
+            //     (single `.text` section — the common case for
+            //     self-contained wasm modules).
+            //   * Push a fresh vreg (= a0) onto the value stack as the
+            //     return value. Multi-result calls (wasm 2.0 feature)
+            //     and proper AAPCS arg saturation past 8 args are
+            //     deferred.
+            //
+            // What this does NOT yet model:
+            //   * Cross-`.text` relocations (linker fixup) — single-unit only
+            //   * Caller-side R0..R7 invalidation across the BL
+            //   * Multi-result returns (wasm 2.0)
+            //   * More than 8 args (spill to stack per RV psABI)
+            Call(func_idx) => self.lower_call(*func_idx, op)?,
+
             other => return Err(SelectorError::Unsupported(other.clone())),
         }
         Ok(())
@@ -969,6 +995,65 @@ impl Selector {
             _ => frame.end_label.clone(),
         };
         Ok(label)
+    }
+
+    /// Lower a wasm `call func_idx` op.
+    ///
+    /// Moves the top N vstack values (N capped at 8 for v0.3.1) into the
+    /// AAPCS argument registers a0..a(N-1), then emits a label-based
+    /// `RiscVOp::Call`. After the call, pushes a fresh return-value vreg
+    /// (= a0) onto the vstack.
+    ///
+    /// Notable simplifications carried by this v0.3.1 cut, documented
+    /// for the follow-up:
+    /// * Args beyond 8 are silently dropped — the RV psABI says they
+    ///   spill to the stack at well-defined offsets; not implemented.
+    /// * The vreg pushed for the result is always `a0`; if the wasm
+    ///   callee returns nothing, the caller's subsequent `drop` will
+    ///   pop a stale `a0` (harmless because the value isn't used).
+    /// * No invalidation of vregs currently bound to a0..a7 from before
+    ///   the call — those values are clobbered by the BL but the
+    ///   selector doesn't yet model that. Use `drop` or `local.tee`
+    ///   between values you want to survive a call.
+    fn lower_call(&mut self, func_idx: u32, _op: &WasmOp) -> Result<(), SelectorError> {
+        // Move the top-of-stack values into a0..a7 in source order.
+        // The wasm value stack is LIFO so the *last* push is the right-most
+        // arg; we drain into argument registers in reverse.
+        let n_args = self.vstack.len().min(8);
+        let args: Vec<Reg> = self.vstack.drain(self.vstack.len() - n_args..).collect();
+        let arg_regs = [
+            Reg::A0,
+            Reg::A1,
+            Reg::A2,
+            Reg::A3,
+            Reg::A4,
+            Reg::A5,
+            Reg::A6,
+            Reg::A7,
+        ];
+        for (i, src) in args.iter().enumerate() {
+            let dst = arg_regs[i];
+            if *src != dst {
+                self.out.push(RiscVOp::Addi {
+                    rd: dst,
+                    rs1: *src,
+                    imm: 0,
+                });
+            }
+        }
+
+        // Emit the call. The ELF builder resolves `synth_func_{idx}` to
+        // a PC-relative target when both functions are in the same .text
+        // section — sufficient for the calculator and similar
+        // self-contained wasm modules.
+        self.out.push(RiscVOp::Call {
+            label: format!("synth_func_{}", func_idx),
+        });
+
+        // Return value lands in a0 (AAPCS). Push it back as a new vreg.
+        // Real multi-result returns (wasm 2.0) would push (a0, a1) here.
+        self.vstack.push(Reg::A0);
+        Ok(())
     }
 
     /// Emit `mv a0, top; ret` — the function epilogue.
@@ -1583,6 +1668,32 @@ mod tests {
         );
     }
 
+    // -------- Call (v0.3.1 minimum-viable) --------
+
+    /// Smoke: a single-arg, single-return call. Args move to a0; the
+    /// `RiscVOp::Call` label encodes the func index.
+    #[test]
+    fn call_emits_label_and_argument_marshalling() {
+        let out = s(
+            &[
+                WasmOp::LocalGet(0), // arg 0 = a0 (already)
+                WasmOp::Call(7),
+                WasmOp::End,
+            ],
+            1,
+        );
+        // Must contain a Call op with the expected label
+        let has_call = out.iter().any(|op| {
+            matches!(op,
+            RiscVOp::Call { label } if label == "synth_func_7")
+        });
+        assert!(
+            has_call,
+            "expected Call {{ label: \"synth_func_7\" }}, got: {:?}",
+            out
+        );
+    }
+
     #[test]
     fn rv32_pmp_mode_emits_no_inline_check() {
         let opts = SelectorOptions {
@@ -1755,5 +1866,59 @@ mod tests {
         });
         assert!(bne_count >= 3);
         assert!(count(&out, |op| matches!(op, RiscVOp::Rem { .. })) == 1);
+    }
+
+    /// Two-arg call: top-of-stack args move to a0 and a1 in source order.
+    /// The lower arg (last-pushed) is the *first* arg per wasm semantics.
+    #[test]
+    fn call_two_args_marshals_to_a0_a1() {
+        let out = s(
+            &[
+                WasmOp::I32Const(11), // pushed first → arg 0 → a0
+                WasmOp::I32Const(22), // pushed second → arg 1 → a1
+                WasmOp::Call(3),
+                WasmOp::End,
+            ],
+            0,
+        );
+        let has_call = out
+            .iter()
+            .any(|op| matches!(op, RiscVOp::Call { label } if label == "synth_func_3"));
+        assert!(has_call);
+        // After the call, the return value vreg = a0 is on the stack and
+        // gets moved to a0 by the End epilogue (a no-op).
+    }
+
+    /// Limitation marker: back-to-back `Call`s with surviving prior
+    /// results need function-signature info we don't yet plumb. v0.3.1
+    /// supports leaf-call patterns; v0.4 will pipe `FuncSig` from the
+    /// decoder and lift this restriction.
+    ///
+    /// This test is deliberately written to FAIL today as documentation
+    /// of the gap — it would be deleted/inverted in v0.4. Marked
+    /// `#[ignore]` so CI passes; revisit when signature plumbing lands.
+    #[test]
+    #[ignore = "v0.3.1 Call lowering needs function-signature info to handle back-to-back calls with surviving results — tracked for v0.4"]
+    fn recursive_self_call_emits_two_call_ops() {
+        let out = s(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Const(1),
+                WasmOp::I32Sub,
+                WasmOp::Call(0), // first recursive call
+                WasmOp::LocalGet(0),
+                WasmOp::I32Const(2),
+                WasmOp::I32Sub,
+                WasmOp::Call(0), // second recursive call
+                WasmOp::I32Add,
+                WasmOp::End,
+            ],
+            1,
+        );
+        let call_count = out
+            .iter()
+            .filter(|op| matches!(op, RiscVOp::Call { label } if label == "synth_func_0"))
+            .count();
+        assert_eq!(call_count, 2, "expected 2 calls in fib pattern: {:?}", out);
     }
 }

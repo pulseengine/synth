@@ -198,7 +198,8 @@ enum Commands {
     /// List available compilation backends and their status
     Backends,
 
-    /// Verify compilation correctness via Z3 (e.g., synth verify input.wat output.elf)
+    /// Verify compilation correctness via Z3 — requires a build with
+    /// `--features verify` (e.g., synth verify input.wat output.elf)
     Verify {
         /// Input WASM or WAT file (source)
         #[arg(value_name = "WASM")]
@@ -2322,8 +2323,19 @@ fn verify_command(wasm_input: PathBuf, elf_input: PathBuf, backend_name: &str) -
 
         #[cfg(not(feature = "verify"))]
         {
-            println!("\n  Rebuild with verification support:");
-            println!("    cargo build --features verify");
+            // This binary was built without the `verify` feature, so no Z3
+            // translation validation can run. Returning Ok here would make
+            // `synth verify` exit success-shaped while doing nothing — a
+            // script or CI step gating on `synth verify` would silently
+            // believe the binary was validated (issue #124). Fail loudly
+            // with a non-zero exit instead.
+            anyhow::bail!(
+                "this `synth` binary was built without the `verify` feature — \
+                 Z3 translation validation is unavailable.\n  \
+                 Rebuild with verification support:\n    \
+                 cargo build --features verify\n  \
+                 (or `cargo install --path crates/synth-cli --features verify`)"
+            );
         }
     } else if caps.supports_binary_verification {
         println!("  Strategy: Binary-level translation validation (ASIL B path)");
