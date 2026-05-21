@@ -1,0 +1,231 @@
+name: Release
+
+# Release variant: serialize per-tag, never cancel. A cancelled release
+# mid-publish leaves the GitHub Release page, build attestations, and
+# per-target binary archives in an inconsistent state — better to queue
+# than abort. Mirrors the pulseengine/rivet and pulseengine/witness
+# release workflows.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Manual re-run for a tag whose initial run failed partway. The tag
+  # must already exist; this does not create tags.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)build (e.g. v0.3.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Cross-platform binary builds ──────────────────────────────────────
+  # synth-cli builds with `--features riscv` only (the workspace default).
+  # The `verify` feature (Z3 / z3-sys) is intentionally NOT enabled here:
+  # z3-sys vendors and compiles z3 from source, needs network + a large
+  # C++ build, and the CLI degrades gracefully without it (`synth verify`
+  # prints "rebuild with --features verify"). Keeping it out makes the
+  # release build fast, hermetic, and free of the libz3-dev / temp-disk
+  # problems documented in ci.yml.
+  build-binaries:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          # x86_64-apple-darwin cross-compiles on the arm64 macos-14
+          # runner — matches pulseengine/rivet and pulseengine/witness
+          # (both Rust-workspace CLIs, the closest analogs to synth).
+          - target: x86_64-apple-darwin
+            os: macos-14
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --locked
+
+      - name: Build synth (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }} -p synth-cli
+
+      - name: Build synth (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} -p synth-cli
+
+      - name: Strip binary
+        if: ${{ !matrix.cross }}
+        run: strip "target/${{ matrix.target }}/release/synth" 2>/dev/null || true
+
+      - name: Package archive
+        env:
+          TARGET: ${{ matrix.target }}
+          # Resolve the version once: tag push -> refs/tags/vX.Y.Z;
+          # workflow_dispatch -> the user-supplied tag input. Bound via
+          # env: and dereferenced as $VERSION below — never expand
+          # ${{ ... }} directly inside run: (command-injection vector).
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          ARCHIVE="synth-${VERSION}-${TARGET}.tar.gz"
+          mkdir -p staging
+          cp "target/${TARGET}/release/synth" staging/
+          cp README.md LICENSE staging/ 2>/dev/null || true
+          tar -czf "$ARCHIVE" -C staging .
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+          retention-days: 7
+
+  # ── Create the GitHub Release: checksums, provenance, signing ─────────
+  create-release:
+    name: Create GitHub Release
+    needs: [build-binaries]
+    runs-on: ubuntu-latest
+    permissions:
+      # Keyless signing + provenance need an OIDC token; release-asset
+      # upload needs contents: write; build provenance attestation
+      # needs attestations: write. This block mirrors the permissions
+      # set used by the pulseengine/sigil release workflow.
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten release assets
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          find artifacts -type f -name "*.tar.gz" -exec cp {} release-assets/ \;
+          ls -la release-assets/
+
+      - name: Generate SHA256 checksums
+        run: |
+          set -euo pipefail
+          cd release-assets
+          sha256sum ./* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # ── SLSA build provenance (GitHub-native) ──────────────────────────
+      # actions/attest-build-provenance generates an in-toto SLSA v1
+      # provenance statement for every binary archive, signs it keyless
+      # via Sigstore (Fulcio cert bound to this workflow's OIDC identity),
+      # and records it in the Rekor transparency log. Consumers verify
+      # with `gh attestation verify <file> --repo pulseengine/synth`.
+      # GitHub-native attestation (not the standalone SLSA generator)
+      # keeps the workflow self-contained — see docs/release-process.md.
+      - name: Generate SLSA build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: "release-assets/*.tar.gz"
+
+      # ── Sigstore keyless signing (cosign) ──────────────────────────────
+      # Signs SHA256SUMS.txt so a consumer can verify the checksum file
+      # itself was produced by this workflow (closes the gap where an
+      # attacker who can replace a release asset could also replace the
+      # plain checksum file). Mirrors the pulseengine/witness and
+      # pulseengine/rivet cosign sign-blob pattern. The .cosign.bundle is
+      # the verifier-friendly artifact; .sig + .pem are the detached
+      # signature and Fulcio certificate. Verify with:
+      #   cosign verify-blob \
+      #     --certificate-identity-regexp \
+      #       'https://github.com/pulseengine/synth/.github/workflows/release.yml@.*' \
+      #     --certificate-oidc-issuer \
+      #       'https://token.actions.githubusercontent.com' \
+      #     --bundle SHA256SUMS.txt.cosign.bundle \
+      #     SHA256SUMS.txt
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Sign SHA256SUMS with cosign (keyless OIDC)
+        run: |
+          set -euo pipefail
+          cd release-assets
+          cosign sign-blob \
+            --yes \
+            --bundle SHA256SUMS.txt.cosign.bundle \
+            --output-signature SHA256SUMS.txt.sig \
+            --output-certificate SHA256SUMS.txt.pem \
+            SHA256SUMS.txt
+          echo "::notice::SHA256SUMS signed via Sigstore keyless flow."
+          ls -la ./*
+
+      - name: Capture build environment
+        run: |
+          set -euo pipefail
+          {
+            echo "rustc: $(rustc --version)"
+            echo "cargo: $(cargo --version)"
+            echo "cosign: $(cosign version 2>&1 | head -1)"
+            echo "runner: $(uname -srm)"
+          } > release-assets/build-env.txt
+          cat release-assets/build-env.txt
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Untrusted-input safety: the tag name flows in via env: and is
+          # dereferenced through $VERSION, never expanded into the shell.
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          # Idempotent: re-running the workflow for an existing release
+          # uploads/overwrites assets rather than failing. --clobber lets
+          # a re-run replace assets a previous partial run left behind.
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "::notice::Release $VERSION exists; uploading assets"
+            gh release upload "$VERSION" --clobber release-assets/*
+          else
+            echo "::notice::Creating Release $VERSION with assets"
+            gh release create "$VERSION" \
+              --title "synth $VERSION" \
+              --generate-notes \
+              release-assets/*
+          fi
