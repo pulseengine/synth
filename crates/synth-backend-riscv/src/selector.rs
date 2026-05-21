@@ -5,10 +5,9 @@
 //! flow (block / loop / if / br / br_if), and local variable access.
 //!
 //! Out of scope (see `select_simple` doc comments for the full list):
-//! - i64 multiply / divide / remainder / shifts / rotates / count-leading-or-
-//!   trailing-zeros / popcount / signed-and-unsigned compare ladders /
-//!   sign-extending sub-word loads (Phase 2 — needs runtime helpers and
-//!   shamt branching at the 32-bit boundary)
+//! - i64 divide / remainder (Phase 3 — needs a `__divdi3`-style software
+//!   long-division routine; RV32 has no 64-bit divide instruction)
+//! - sign-extending sub-word i64 loads (`i64.load8_s` etc.)
 //! - F32/F64 (RV32F/D — not yet wired)
 //! - br_table (lowered in B3 alongside jump tables)
 //! - Cross-function calls (need linker-resolvable Call ops + relocations)
@@ -417,15 +416,52 @@ impl Selector {
             I64Or => self.lower_i64_bitwise(op, |rd, rs1, rs2| RiscVOp::Or { rd, rs1, rs2 })?,
             I64Xor => self.lower_i64_bitwise(op, |rd, rs1, rs2| RiscVOp::Xor { rd, rs1, rs2 })?,
 
+            // ─── i64 multiply ───────────────────────────────────────────
+            I64Mul => self.lower_i64_mul(op)?,
+
+            // ─── i64 shifts / rotates ───────────────────────────────────
+            I64Shl => self.lower_i64_shift(op, ShiftKind::Shl)?,
+            I64ShrS => self.lower_i64_shift(op, ShiftKind::ShrS)?,
+            I64ShrU => self.lower_i64_shift(op, ShiftKind::ShrU)?,
+            I64Rotl => self.lower_i64_rotate(op, true)?,
+            I64Rotr => self.lower_i64_rotate(op, false)?,
+
+            // ─── i64 bit-counting ───────────────────────────────────────
+            I64Clz => self.lower_i64_clz(op)?,
+            I64Ctz => self.lower_i64_ctz(op)?,
+            I64Popcnt => self.lower_i64_popcnt(op)?,
+
             // ─── i64 comparisons (result is an i32 0/1) ─────────────────
             I64Eq => self.lower_i64_eq(op, false)?,
             I64Ne => self.lower_i64_eq(op, true)?,
             I64Eqz => self.lower_i64_eqz(op)?,
+            I64LtS => self.lower_i64_cmp(op, CmpKind::Lt, true)?,
+            I64LtU => self.lower_i64_cmp(op, CmpKind::Lt, false)?,
+            I64LeS => self.lower_i64_cmp(op, CmpKind::Le, true)?,
+            I64LeU => self.lower_i64_cmp(op, CmpKind::Le, false)?,
+            I64GtS => self.lower_i64_cmp(op, CmpKind::Gt, true)?,
+            I64GtU => self.lower_i64_cmp(op, CmpKind::Gt, false)?,
+            I64GeS => self.lower_i64_cmp(op, CmpKind::Ge, true)?,
+            I64GeU => self.lower_i64_cmp(op, CmpKind::Ge, false)?,
 
             // ─── i64 / i32 conversions ──────────────────────────────────
             I64ExtendI32U => self.lower_i64_extend_i32_u(op)?,
             I64ExtendI32S => self.lower_i64_extend_i32_s(op)?,
             I32WrapI64 => self.lower_i32_wrap_i64(op)?,
+
+            // ─── i64 in-place sign extension ────────────────────────────
+            I64Extend8S => self.lower_i64_extend_sub(op, 8)?,
+            I64Extend16S => self.lower_i64_extend_sub(op, 16)?,
+            I64Extend32S => self.lower_i64_extend_sub(op, 32)?,
+
+            // i64 division / remainder is deferred to Phase 3 — RV32 has no
+            // 64-bit divide instruction, so these need a `__divdi3`-style
+            // software long-division routine (multi-block loop). Implementing
+            // it inline would balloon the selector; emitting it as a runtime
+            // helper needs a call-out the selector doesn't yet support.
+            // Until then they fall through to the `Unsupported` arm below —
+            // fail loudly rather than silently miscompile.
+            // I64DivS / I64DivU / I64RemS / I64RemU — Phase 3.
 
             // ─── i64 memory ─────────────────────────────────────────────
             I64Load { offset, align: _ } => self.lower_i64_load(op, *offset)?,
@@ -1499,6 +1535,1019 @@ impl Selector {
         });
         Ok(())
     }
+
+    // ────────── i64 lowerings (Phase 2) ──────────
+    //
+    // Phase 2 adds the harder i64 surface: multiply, the cross-word shifts
+    // and rotates, the bit-counting trio, the signed/unsigned compare
+    // ladders, and the in-place sub-word sign extensions. Division and
+    // remainder are deferred to Phase 3 (need a __divdi3-style runtime).
+
+    /// 64×64 → low-64 multiply.
+    ///
+    /// A full 128-bit product isn't needed — wasm `i64.mul` keeps only the
+    /// low 64 bits. Writing `a = a_hi·2^32 + a_lo`, `b = b_hi·2^32 + b_lo`:
+    /// ```text
+    ///   a·b = a_hi·b_hi·2^64            (drops — above bit 63)
+    ///       + (a_hi·b_lo + a_lo·b_hi)·2^32
+    ///       + a_lo·b_lo
+    /// ```
+    /// So the low half is just `mul(a_lo, b_lo)` and the high half is the
+    /// carry out of that product (`mulhu(a_lo, b_lo)` — the *unsigned* upper
+    /// 32 bits, since the halves are treated as unsigned limbs) plus the two
+    /// cross terms `mul(a_lo, b_hi)` and `mul(a_hi, b_lo)`. The `a_hi·b_hi`
+    /// term lands entirely above bit 63 and is discarded.
+    fn lower_i64_mul(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
+        let ((al, ah), (bl, bh)) = self.pop_pair_i64(op)?;
+        let lo = self.alloc_temp();
+        let hi_carry = self.alloc_temp();
+        let cross1 = self.alloc_temp();
+        let cross2 = self.alloc_temp();
+        let hi_partial = self.alloc_temp();
+        let hi = self.alloc_temp();
+        // lo = a_lo * b_lo  (low 32 bits of the limb product)
+        self.out.push(RiscVOp::Mul {
+            rd: lo,
+            rs1: al,
+            rs2: bl,
+        });
+        // hi_carry = mulhu(a_lo, b_lo)  — upper 32 bits of the same product,
+        // i.e. the carry from the low limb into the high limb.
+        self.out.push(RiscVOp::Mulhu {
+            rd: hi_carry,
+            rs1: al,
+            rs2: bl,
+        });
+        // cross1 = a_lo * b_hi  (only the low 32 bits matter at the 2^32 place)
+        self.out.push(RiscVOp::Mul {
+            rd: cross1,
+            rs1: al,
+            rs2: bh,
+        });
+        // cross2 = a_hi * b_lo
+        self.out.push(RiscVOp::Mul {
+            rd: cross2,
+            rs1: ah,
+            rs2: bl,
+        });
+        // hi = hi_carry + cross1 + cross2
+        self.out.push(RiscVOp::Add {
+            rd: hi_partial,
+            rs1: hi_carry,
+            rs2: cross1,
+        });
+        self.out.push(RiscVOp::Add {
+            rd: hi,
+            rs1: hi_partial,
+            rs2: cross2,
+        });
+        self.push_i64(lo, hi);
+        Ok(())
+    }
+
+    /// 64-bit shift by a runtime amount (shl / shr_s / shr_u).
+    ///
+    /// The wasm shift amount is itself an i64 on the stack, but only the low
+    /// 6 bits matter (`shamt mod 64`). RV32's register shifts (`sll`/`srl`/
+    /// `sra`) already mask the amount to its low 5 bits, so a within-word
+    /// shift "for free" computes `x << (shamt & 31)`. The hard part is the
+    /// carry between halves and the `shamt >= 32` case.
+    ///
+    /// We emit a data-dependent branch on bit 5 of the shift amount:
+    ///
+    /// **Left shift, `shamt < 32`:**
+    /// ```text
+    ///   lo' = lo << s
+    ///   hi' = (hi << s) | (lo >> (32 - s))     ; bits carried up from lo
+    /// ```
+    /// The `lo >> (32 - s)` term needs care when `s == 0`: `32 - 0 == 32`
+    /// which RV masks back to `0`, so `lo >> 0 == lo` would wrongly OR the
+    /// whole of lo into hi. We guard that by computing the carry as
+    /// `(lo >> 1) >> (31 - s)` — a two-step shift that is well-defined for
+    /// every `s` in `0..=31` and yields 0 when `s == 0`.
+    ///
+    /// **Left shift, `shamt >= 32`:** all of lo moves into hi.
+    /// ```text
+    ///   hi' = lo << (s - 32)        ; s-32 in 0..=31, RV masks it anyway
+    ///   lo' = 0
+    /// ```
+    /// Right shifts are the mirror image (carry goes downward; for shr_s the
+    /// fill is the sign bit, materialised once via `sra hi, 31`).
+    fn lower_i64_shift(&mut self, op: &WasmOp, kind: ShiftKind) -> Result<(), SelectorError> {
+        // rhs is the i64 shift amount; only its low limb is relevant.
+        let ((vlo, vhi), (samt, _samt_hi)) = self.pop_pair_i64(op)?;
+        // s = shamt & 63 — clamp to the 0..=63 window wasm guarantees.
+        let s = self.alloc_temp();
+        self.out.push(RiscVOp::Andi {
+            rd: s,
+            rs1: samt,
+            imm: 63,
+        });
+        // s_lo = s & 31 — the within-word part (also what RV's shift uses).
+        let s_lo = self.alloc_temp();
+        self.out.push(RiscVOp::Andi {
+            rd: s_lo,
+            rs1: s,
+            imm: 31,
+        });
+        // Result registers — written by both arms of the branch, so they
+        // must be allocated once up front (a fresh temp per arm would leave
+        // the join point reading an undefined register).
+        let res_lo = self.alloc_temp();
+        let res_hi = self.alloc_temp();
+
+        let big_label = self.fresh_label("Lshift_big");
+        let done_label = self.fresh_label("Lshift_done");
+        // andi test, s, 32 ; bne test, zero, Lshift_big → take the cross-word
+        // path when bit 5 of the shift amount is set (shamt >= 32).
+        let test = self.alloc_temp();
+        self.out.push(RiscVOp::Andi {
+            rd: test,
+            rs1: s,
+            imm: 32,
+        });
+        self.out.push(RiscVOp::Branch {
+            cond: Branch::Ne,
+            rs1: test,
+            rs2: Reg::ZERO,
+            label: big_label.clone(),
+        });
+
+        // ── small case: shamt < 32 ───────────────────────────────────────
+        // `inv = 31 - s_lo` is the complementary shift used to extract the
+        // bits crossing the half boundary. Built once, reused below.
+        let inv = self.alloc_temp();
+        self.out.push(RiscVOp::Addi {
+            rd: inv,
+            rs1: Reg::ZERO,
+            imm: 31,
+        });
+        self.out.push(RiscVOp::Sub {
+            rd: inv,
+            rs1: inv,
+            rs2: s_lo,
+        });
+        match kind {
+            ShiftKind::Shl => {
+                // lo' = lo << s
+                self.out.push(RiscVOp::Sll {
+                    rd: res_lo,
+                    rs1: vlo,
+                    rs2: s_lo,
+                });
+                // carry = (lo >> 1) >> (31 - s)  — well-defined for s==0..31
+                let carry = self.alloc_temp();
+                self.out.push(RiscVOp::Srli {
+                    rd: carry,
+                    rs1: vlo,
+                    shamt: 1,
+                });
+                self.out.push(RiscVOp::Srl {
+                    rd: carry,
+                    rs1: carry,
+                    rs2: inv,
+                });
+                // hi' = (hi << s) | carry
+                let hi_shifted = self.alloc_temp();
+                self.out.push(RiscVOp::Sll {
+                    rd: hi_shifted,
+                    rs1: vhi,
+                    rs2: s_lo,
+                });
+                self.out.push(RiscVOp::Or {
+                    rd: res_hi,
+                    rs1: hi_shifted,
+                    rs2: carry,
+                });
+            }
+            ShiftKind::ShrS | ShiftKind::ShrU => {
+                // hi' = hi >> s  (sra for shr_s, srl for shr_u)
+                self.out.push(if kind == ShiftKind::ShrS {
+                    RiscVOp::Sra {
+                        rd: res_hi,
+                        rs1: vhi,
+                        rs2: s_lo,
+                    }
+                } else {
+                    RiscVOp::Srl {
+                        rd: res_hi,
+                        rs1: vhi,
+                        rs2: s_lo,
+                    }
+                });
+                // carry = (hi << 1) << (31 - s)  — bits dropping down from hi
+                let carry = self.alloc_temp();
+                self.out.push(RiscVOp::Slli {
+                    rd: carry,
+                    rs1: vhi,
+                    shamt: 1,
+                });
+                self.out.push(RiscVOp::Sll {
+                    rd: carry,
+                    rs1: carry,
+                    rs2: inv,
+                });
+                // lo' = (lo >> s) | carry  — lo is always logical-shifted.
+                let lo_shifted = self.alloc_temp();
+                self.out.push(RiscVOp::Srl {
+                    rd: lo_shifted,
+                    rs1: vlo,
+                    rs2: s_lo,
+                });
+                self.out.push(RiscVOp::Or {
+                    rd: res_lo,
+                    rs1: lo_shifted,
+                    rs2: carry,
+                });
+            }
+        }
+        self.out.push(RiscVOp::Jal {
+            rd: Reg::ZERO,
+            label: done_label.clone(),
+        });
+
+        // ── big case: shamt >= 32 ────────────────────────────────────────
+        // The whole of one half moves into the other; `s_lo` (= s & 31) is
+        // exactly `s - 32` because bit 5 is set, so it doubles as the
+        // residual shift amount within the surviving half.
+        self.out.push(RiscVOp::Label { name: big_label });
+        match kind {
+            ShiftKind::Shl => {
+                // hi' = lo << (s - 32) ; lo' = 0
+                self.out.push(RiscVOp::Sll {
+                    rd: res_hi,
+                    rs1: vlo,
+                    rs2: s_lo,
+                });
+                self.out.push(RiscVOp::Addi {
+                    rd: res_lo,
+                    rs1: Reg::ZERO,
+                    imm: 0,
+                });
+            }
+            ShiftKind::ShrU => {
+                // lo' = hi >> (s - 32) ; hi' = 0
+                self.out.push(RiscVOp::Srl {
+                    rd: res_lo,
+                    rs1: vhi,
+                    rs2: s_lo,
+                });
+                self.out.push(RiscVOp::Addi {
+                    rd: res_hi,
+                    rs1: Reg::ZERO,
+                    imm: 0,
+                });
+            }
+            ShiftKind::ShrS => {
+                // lo' = hi >>s (s - 32) ; hi' = sign(hi) = hi >>s 31
+                self.out.push(RiscVOp::Sra {
+                    rd: res_lo,
+                    rs1: vhi,
+                    rs2: s_lo,
+                });
+                self.out.push(RiscVOp::Srai {
+                    rd: res_hi,
+                    rs1: vhi,
+                    shamt: 31,
+                });
+            }
+        }
+        self.out.push(RiscVOp::Label { name: done_label });
+        self.push_i64(res_lo, res_hi);
+        Ok(())
+    }
+
+    /// 64-bit rotate (rotl / rotr) by a runtime amount.
+    ///
+    /// Composed from the two shifts: `rotl(x, n) = (x << n) | (x >> (64-n))`
+    /// and `rotr(x, n) = (x >> n) | (x << (64-n))`. The shift helper already
+    /// handles the cross-word logic, so the rotate just feeds it the right
+    /// amounts and ORs the two i64 results half-by-half.
+    ///
+    /// `n` is masked to `0..=63`; `64 - (n mod 64)` is computed as
+    /// `(64 - n) mod 64` so that `n == 0` maps to a `0` counter-shift rather
+    /// than a 64-bit shift (which the shift helper would treat as `shamt &
+    /// 63 == 0` anyway — but computing it explicitly keeps the intent clear).
+    fn lower_i64_rotate(&mut self, op: &WasmOp, left: bool) -> Result<(), SelectorError> {
+        let ((vlo, vhi), (namt, _namt_hi)) = self.pop_i64_then_amount(op)?;
+        // n = amount & 63
+        let n = self.alloc_temp();
+        self.out.push(RiscVOp::Andi {
+            rd: n,
+            rs1: namt,
+            imm: 63,
+        });
+        // comp = (64 - n) & 63  — the complementary rotate distance.
+        let comp = self.alloc_temp();
+        self.out.push(RiscVOp::Addi {
+            rd: comp,
+            rs1: Reg::ZERO,
+            imm: 64,
+        });
+        self.out.push(RiscVOp::Sub {
+            rd: comp,
+            rs1: comp,
+            rs2: n,
+        });
+        self.out.push(RiscVOp::Andi {
+            rd: comp,
+            rs1: comp,
+            imm: 63,
+        });
+        // For rotl: part_a = x << n, part_b = x >> comp.
+        // For rotr: part_a = x >> n, part_b = x << comp.
+        let (amt_a, amt_b) = (n, comp);
+        let (a_lo, a_hi) = if left {
+            self.emit_i64_shift_inline(vlo, vhi, amt_a, ShiftKind::Shl)
+        } else {
+            self.emit_i64_shift_inline(vlo, vhi, amt_a, ShiftKind::ShrU)
+        };
+        let (b_lo, b_hi) = if left {
+            self.emit_i64_shift_inline(vlo, vhi, amt_b, ShiftKind::ShrU)
+        } else {
+            self.emit_i64_shift_inline(vlo, vhi, amt_b, ShiftKind::Shl)
+        };
+        // result = part_a | part_b, half by half.
+        let res_lo = self.alloc_temp();
+        let res_hi = self.alloc_temp();
+        self.out.push(RiscVOp::Or {
+            rd: res_lo,
+            rs1: a_lo,
+            rs2: b_lo,
+        });
+        self.out.push(RiscVOp::Or {
+            rd: res_hi,
+            rs1: a_hi,
+            rs2: b_hi,
+        });
+        self.push_i64(res_lo, res_hi);
+        Ok(())
+    }
+
+    /// Pop an i64 value and an i64 shift/rotate amount, returning
+    /// `((v_lo, v_hi), (amt_lo, amt_hi))`. Identical to `pop_pair_i64` —
+    /// kept as a named helper so the rotate code reads naturally.
+    fn pop_i64_then_amount(&mut self, op: &WasmOp) -> Result<(I64Pair, I64Pair), SelectorError> {
+        self.pop_pair_i64(op)
+    }
+
+    /// Emit an i64 shift whose value and amount are already in registers
+    /// (rather than on the vstack), returning the `(lo, hi)` result pair.
+    /// This is the register-level core of `lower_i64_shift`, factored out so
+    /// the rotate lowering can issue two shifts without round-tripping
+    /// through the value stack. The cross-word branching logic is identical
+    /// to `lower_i64_shift` — see that method's doc comment for the math.
+    fn emit_i64_shift_inline(
+        &mut self,
+        vlo: Reg,
+        vhi: Reg,
+        amount: Reg,
+        kind: ShiftKind,
+    ) -> I64Pair {
+        let s = self.alloc_temp();
+        self.out.push(RiscVOp::Andi {
+            rd: s,
+            rs1: amount,
+            imm: 63,
+        });
+        let s_lo = self.alloc_temp();
+        self.out.push(RiscVOp::Andi {
+            rd: s_lo,
+            rs1: s,
+            imm: 31,
+        });
+        let res_lo = self.alloc_temp();
+        let res_hi = self.alloc_temp();
+        let big_label = self.fresh_label("Lshift_big");
+        let done_label = self.fresh_label("Lshift_done");
+        let test = self.alloc_temp();
+        self.out.push(RiscVOp::Andi {
+            rd: test,
+            rs1: s,
+            imm: 32,
+        });
+        self.out.push(RiscVOp::Branch {
+            cond: Branch::Ne,
+            rs1: test,
+            rs2: Reg::ZERO,
+            label: big_label.clone(),
+        });
+        // small case
+        let inv = self.alloc_temp();
+        self.out.push(RiscVOp::Addi {
+            rd: inv,
+            rs1: Reg::ZERO,
+            imm: 31,
+        });
+        self.out.push(RiscVOp::Sub {
+            rd: inv,
+            rs1: inv,
+            rs2: s_lo,
+        });
+        match kind {
+            ShiftKind::Shl => {
+                self.out.push(RiscVOp::Sll {
+                    rd: res_lo,
+                    rs1: vlo,
+                    rs2: s_lo,
+                });
+                let carry = self.alloc_temp();
+                self.out.push(RiscVOp::Srli {
+                    rd: carry,
+                    rs1: vlo,
+                    shamt: 1,
+                });
+                self.out.push(RiscVOp::Srl {
+                    rd: carry,
+                    rs1: carry,
+                    rs2: inv,
+                });
+                let hi_shifted = self.alloc_temp();
+                self.out.push(RiscVOp::Sll {
+                    rd: hi_shifted,
+                    rs1: vhi,
+                    rs2: s_lo,
+                });
+                self.out.push(RiscVOp::Or {
+                    rd: res_hi,
+                    rs1: hi_shifted,
+                    rs2: carry,
+                });
+            }
+            ShiftKind::ShrS | ShiftKind::ShrU => {
+                self.out.push(if kind == ShiftKind::ShrS {
+                    RiscVOp::Sra {
+                        rd: res_hi,
+                        rs1: vhi,
+                        rs2: s_lo,
+                    }
+                } else {
+                    RiscVOp::Srl {
+                        rd: res_hi,
+                        rs1: vhi,
+                        rs2: s_lo,
+                    }
+                });
+                let carry = self.alloc_temp();
+                self.out.push(RiscVOp::Slli {
+                    rd: carry,
+                    rs1: vhi,
+                    shamt: 1,
+                });
+                self.out.push(RiscVOp::Sll {
+                    rd: carry,
+                    rs1: carry,
+                    rs2: inv,
+                });
+                let lo_shifted = self.alloc_temp();
+                self.out.push(RiscVOp::Srl {
+                    rd: lo_shifted,
+                    rs1: vlo,
+                    rs2: s_lo,
+                });
+                self.out.push(RiscVOp::Or {
+                    rd: res_lo,
+                    rs1: lo_shifted,
+                    rs2: carry,
+                });
+            }
+        }
+        self.out.push(RiscVOp::Jal {
+            rd: Reg::ZERO,
+            label: done_label.clone(),
+        });
+        // big case
+        self.out.push(RiscVOp::Label { name: big_label });
+        match kind {
+            ShiftKind::Shl => {
+                self.out.push(RiscVOp::Sll {
+                    rd: res_hi,
+                    rs1: vlo,
+                    rs2: s_lo,
+                });
+                self.out.push(RiscVOp::Addi {
+                    rd: res_lo,
+                    rs1: Reg::ZERO,
+                    imm: 0,
+                });
+            }
+            ShiftKind::ShrU => {
+                self.out.push(RiscVOp::Srl {
+                    rd: res_lo,
+                    rs1: vhi,
+                    rs2: s_lo,
+                });
+                self.out.push(RiscVOp::Addi {
+                    rd: res_hi,
+                    rs1: Reg::ZERO,
+                    imm: 0,
+                });
+            }
+            ShiftKind::ShrS => {
+                self.out.push(RiscVOp::Sra {
+                    rd: res_lo,
+                    rs1: vhi,
+                    rs2: s_lo,
+                });
+                self.out.push(RiscVOp::Srai {
+                    rd: res_hi,
+                    rs1: vhi,
+                    shamt: 31,
+                });
+            }
+        }
+        self.out.push(RiscVOp::Label { name: done_label });
+        (res_lo, res_hi)
+    }
+
+    /// 64-bit count-leading-zeros → i32 result in `0..=64`.
+    ///
+    /// RV32IMAC has no `clz` (that's Zbb), so each 32-bit half uses a
+    /// software `clz_word` (an unrolled binary-search sequence — see
+    /// `emit_clz_word`). The 64-bit answer branches on whether the high
+    /// half is non-zero:
+    /// ```text
+    ///   if hi != 0 { clz = clz_word(hi) }
+    ///   else       { clz = 32 + clz_word(lo) }
+    /// ```
+    fn lower_i64_clz(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
+        let (lo, hi) = self.pop_i64(op)?;
+        let result = self.alloc_temp();
+        let hi_zero = self.fresh_label("Lclz_hizero");
+        let done = self.fresh_label("Lclz_done");
+        // beq hi, zero, Lclz_hizero → all leading zeros are in (or past) lo.
+        self.out.push(RiscVOp::Branch {
+            cond: Branch::Eq,
+            rs1: hi,
+            rs2: Reg::ZERO,
+            label: hi_zero.clone(),
+        });
+        // hi != 0: the answer is entirely within the high word.
+        let hi_clz = self.emit_clz_word(hi);
+        self.out.push(RiscVOp::Addi {
+            rd: result,
+            rs1: hi_clz,
+            imm: 0,
+        });
+        self.out.push(RiscVOp::Jal {
+            rd: Reg::ZERO,
+            label: done.clone(),
+        });
+        // hi == 0: 32 leading zeros from the high word + clz of the low word.
+        self.out.push(RiscVOp::Label { name: hi_zero });
+        let lo_clz = self.emit_clz_word(lo);
+        self.out.push(RiscVOp::Addi {
+            rd: result,
+            rs1: lo_clz,
+            imm: 32,
+        });
+        self.out.push(RiscVOp::Label { name: done });
+        self.push_i32(result);
+        Ok(())
+    }
+
+    /// 64-bit count-trailing-zeros → i32 result in `0..=64`.
+    ///
+    /// Mirror of clz: branch on the *low* half.
+    /// ```text
+    ///   if lo != 0 { ctz = ctz_word(lo) }
+    ///   else       { ctz = 32 + ctz_word(hi) }
+    /// ```
+    fn lower_i64_ctz(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
+        let (lo, hi) = self.pop_i64(op)?;
+        let result = self.alloc_temp();
+        let lo_zero = self.fresh_label("Lctz_lozero");
+        let done = self.fresh_label("Lctz_done");
+        self.out.push(RiscVOp::Branch {
+            cond: Branch::Eq,
+            rs1: lo,
+            rs2: Reg::ZERO,
+            label: lo_zero.clone(),
+        });
+        // lo != 0: answer is within the low word.
+        let lo_ctz = self.emit_ctz_word(lo);
+        self.out.push(RiscVOp::Addi {
+            rd: result,
+            rs1: lo_ctz,
+            imm: 0,
+        });
+        self.out.push(RiscVOp::Jal {
+            rd: Reg::ZERO,
+            label: done.clone(),
+        });
+        // lo == 0: 32 trailing zeros from the low word + ctz of the high word.
+        self.out.push(RiscVOp::Label { name: lo_zero });
+        let hi_ctz = self.emit_ctz_word(hi);
+        self.out.push(RiscVOp::Addi {
+            rd: result,
+            rs1: hi_ctz,
+            imm: 32,
+        });
+        self.out.push(RiscVOp::Label { name: done });
+        self.push_i32(result);
+        Ok(())
+    }
+
+    /// 64-bit population count → i32 result in `0..=64`.
+    ///
+    /// `popcnt(x) = popcnt(x_lo) + popcnt(x_hi)` — the two halves are
+    /// independent, no carry. Each `popcnt_word` is the classic SWAR
+    /// bit-twiddle (see `emit_popcnt_word`).
+    fn lower_i64_popcnt(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
+        let (lo, hi) = self.pop_i64(op)?;
+        let lo_pc = self.emit_popcnt_word(lo);
+        let hi_pc = self.emit_popcnt_word(hi);
+        let result = self.alloc_temp();
+        self.out.push(RiscVOp::Add {
+            rd: result,
+            rs1: lo_pc,
+            rs2: hi_pc,
+        });
+        self.push_i32(result);
+        Ok(())
+    }
+
+    /// Software count-leading-zeros for a single 32-bit word, returning the
+    /// register holding the `0..=32` result.
+    ///
+    /// Uses the standard branchless binary-search reduction: at each step,
+    /// test whether the value's set bits all live in the lower `k` bits; if
+    /// so the top `k` bits were all zero — add `k` to the count and shift
+    /// the value left by `k` to bring the next window into view. Probing
+    /// k = 16, 8, 4, 2, 1 narrows to the exact leading-zero count. A final
+    /// correction handles the all-zero input (which would otherwise report
+    /// 31 instead of 32).
+    ///
+    /// The sequence is fully unrolled and branch-free, so it costs a fixed
+    /// number of instructions regardless of input — preferable to a loop in
+    /// a leaf compiler with no spill slots.
+    fn emit_clz_word(&mut self, src: Reg) -> Reg {
+        // x is the running value; n accumulates the count.
+        let x = self.alloc_temp();
+        let n = self.alloc_temp();
+        self.out.push(RiscVOp::Addi {
+            rd: x,
+            rs1: src,
+            imm: 0,
+        });
+        self.out.push(RiscVOp::Addi {
+            rd: n,
+            rs1: Reg::ZERO,
+            imm: 0,
+        });
+        // For each probe width k: if (x >> (32-k)) == 0 then the top k bits
+        // are zero — add k to n and shift x up by k. Implemented branchlessly
+        // via a 0/1 mask derived from sltiu.
+        for k in [16u8, 8, 4, 2, 1] {
+            let probe = self.alloc_temp();
+            // probe = x >> (32 - k)  — the top k bits, right-justified.
+            self.out.push(RiscVOp::Srli {
+                rd: probe,
+                rs1: x,
+                shamt: 32 - k,
+            });
+            // is_zero = (probe == 0) ? 1 : 0
+            let is_zero = self.alloc_temp();
+            self.out.push(RiscVOp::Sltiu {
+                rd: is_zero,
+                rs1: probe,
+                imm: 1,
+            });
+            // n += is_zero * k  → add k only when the window was all zeros.
+            let add = self.alloc_temp();
+            self.out.push(RiscVOp::Slli {
+                rd: add,
+                rs1: is_zero,
+                shamt: k.trailing_zeros() as u8,
+            });
+            self.out.push(RiscVOp::Add {
+                rd: n,
+                rs1: n,
+                rs2: add,
+            });
+            // shift = is_zero * k, then x <<= shift (no-op when window had a 1).
+            self.out.push(RiscVOp::Sll {
+                rd: x,
+                rs1: x,
+                rs2: add,
+            });
+        }
+        // After the five probes, n is 31 for an all-zero input (each window
+        // contributed) and the true count for anything else. Correct the
+        // off-by-one: if the original src was 0, the answer is 32.
+        let is_src_zero = self.alloc_temp();
+        self.out.push(RiscVOp::Sltiu {
+            rd: is_src_zero,
+            rs1: src,
+            imm: 1,
+        });
+        let result = self.alloc_temp();
+        self.out.push(RiscVOp::Add {
+            rd: result,
+            rs1: n,
+            rs2: is_src_zero,
+        });
+        result
+    }
+
+    /// Software count-trailing-zeros for a 32-bit word → register with the
+    /// `0..=32` result.
+    ///
+    /// Trick: `x & -x` isolates the lowest set bit, then `ctz(x) =
+    /// 31 - clz(x & -x)` for any non-zero `x`. The all-zero input is handled
+    /// separately because `x & -x == 0` would feed clz a zero (clz → 32,
+    /// giving `31 - 32 = -1`), so we add a correction that forces the answer
+    /// to 32 when `src == 0`.
+    fn emit_ctz_word(&mut self, src: Reg) -> Reg {
+        // neg = -src ; iso = src & neg  — isolates the lowest set bit.
+        let neg = self.alloc_temp();
+        self.out.push(RiscVOp::Sub {
+            rd: neg,
+            rs1: Reg::ZERO,
+            rs2: src,
+        });
+        let iso = self.alloc_temp();
+        self.out.push(RiscVOp::And {
+            rd: iso,
+            rs1: src,
+            rs2: neg,
+        });
+        // clz_iso = clz(iso). For non-zero src, ctz = 31 - clz_iso.
+        let clz_iso = self.emit_clz_word(iso);
+        let thirty_one = self.alloc_temp();
+        self.out.push(RiscVOp::Addi {
+            rd: thirty_one,
+            rs1: Reg::ZERO,
+            imm: 31,
+        });
+        let ctz = self.alloc_temp();
+        self.out.push(RiscVOp::Sub {
+            rd: ctz,
+            rs1: thirty_one,
+            rs2: clz_iso,
+        });
+        // src == 0 correction: `iso` is 0, clz_iso is 32, so ctz computed as
+        // -1. Add 33 in that case to land on 32 ( -1 + 33 = 32 ).
+        let is_src_zero = self.alloc_temp();
+        self.out.push(RiscVOp::Sltiu {
+            rd: is_src_zero,
+            rs1: src,
+            imm: 1,
+        });
+        // correction = is_src_zero * 33
+        let corr = self.alloc_temp();
+        self.out.push(RiscVOp::Slli {
+            rd: corr,
+            rs1: is_src_zero,
+            shamt: 5,
+        });
+        // corr is now is_src_zero*32; add is_src_zero once more for *33.
+        self.out.push(RiscVOp::Add {
+            rd: corr,
+            rs1: corr,
+            rs2: is_src_zero,
+        });
+        let result = self.alloc_temp();
+        self.out.push(RiscVOp::Add {
+            rd: result,
+            rs1: ctz,
+            rs2: corr,
+        });
+        result
+    }
+
+    /// Software population count for a 32-bit word → register with the
+    /// `0..=32` result.
+    ///
+    /// The classic SWAR (SIMD-within-a-register) bit-twiddle:
+    /// ```text
+    ///   x = x - ((x >> 1) & 0x55555555)               ; sum bits in pairs
+    ///   x = (x & 0x33333333) + ((x >> 2) & 0x33333333) ; sum pairs into nibbles
+    ///   x = (x + (x >> 4)) & 0x0F0F0F0F                ; sum nibbles into bytes
+    ///   x = (x * 0x01010101) >> 24                     ; sum bytes via mul
+    /// ```
+    /// The final `mul` collapses the four byte-sums into the top byte — this
+    /// is why the routine needs the M extension (which RV32IMAC has).
+    fn emit_popcnt_word(&mut self, src: Reg) -> Reg {
+        let m1 = self.alloc_temp(); // 0x55555555
+        let m2 = self.alloc_temp(); // 0x33333333
+        let m4 = self.alloc_temp(); // 0x0F0F0F0F
+        let m8 = self.alloc_temp(); // 0x01010101
+        emit_load_imm(&mut self.out, m1, 0x5555_5555u32 as i32);
+        emit_load_imm(&mut self.out, m2, 0x3333_3333u32 as i32);
+        emit_load_imm(&mut self.out, m4, 0x0F0F_0F0Fu32 as i32);
+        emit_load_imm(&mut self.out, m8, 0x0101_0101u32 as i32);
+
+        // step 1: x = x - ((x >> 1) & m1)
+        let x = self.alloc_temp();
+        let t = self.alloc_temp();
+        self.out.push(RiscVOp::Srli {
+            rd: t,
+            rs1: src,
+            shamt: 1,
+        });
+        self.out.push(RiscVOp::And {
+            rd: t,
+            rs1: t,
+            rs2: m1,
+        });
+        self.out.push(RiscVOp::Sub {
+            rd: x,
+            rs1: src,
+            rs2: t,
+        });
+        // step 2: x = (x & m2) + ((x >> 2) & m2)
+        let a = self.alloc_temp();
+        let b = self.alloc_temp();
+        self.out.push(RiscVOp::And {
+            rd: a,
+            rs1: x,
+            rs2: m2,
+        });
+        self.out.push(RiscVOp::Srli {
+            rd: b,
+            rs1: x,
+            shamt: 2,
+        });
+        self.out.push(RiscVOp::And {
+            rd: b,
+            rs1: b,
+            rs2: m2,
+        });
+        self.out.push(RiscVOp::Add {
+            rd: x,
+            rs1: a,
+            rs2: b,
+        });
+        // step 3: x = (x + (x >> 4)) & m4
+        self.out.push(RiscVOp::Srli {
+            rd: t,
+            rs1: x,
+            shamt: 4,
+        });
+        self.out.push(RiscVOp::Add {
+            rd: x,
+            rs1: x,
+            rs2: t,
+        });
+        self.out.push(RiscVOp::And {
+            rd: x,
+            rs1: x,
+            rs2: m4,
+        });
+        // step 4: x = (x * m8) >> 24  — the byte-sum collapse.
+        self.out.push(RiscVOp::Mul {
+            rd: x,
+            rs1: x,
+            rs2: m8,
+        });
+        let result = self.alloc_temp();
+        self.out.push(RiscVOp::Srli {
+            rd: result,
+            rs1: x,
+            shamt: 24,
+        });
+        result
+    }
+
+    /// 64-bit comparison ladder (lt / le / gt / ge, signed or unsigned).
+    /// Result is an i32 0/1.
+    ///
+    /// The standard hi-then-lo decomposition. For `a < b`:
+    /// ```text
+    ///   if a_hi != b_hi { result = (a_hi <cmp> b_hi) }   ; hi decides
+    ///   else            { result = (a_lo <u  b_lo) }     ; lo is the tie-break
+    /// ```
+    /// The hi-half comparison uses the *signed* relation for signed ops
+    /// (`slt`) and the unsigned relation otherwise (`sltu`). The lo-half
+    /// comparison is **always unsigned** — the low 32 bits are a magnitude,
+    /// the sign lives entirely in the high word.
+    ///
+    /// `le` / `gt` / `ge` are derived from `lt` by the usual identities:
+    /// `a > b ≡ b < a` (swap operands) and `a >= b ≡ !(a < b)`,
+    /// `a <= b ≡ !(b < a)` (swap + invert). We compute a base `lt` with the
+    /// possibly-swapped operands, then optionally flip the 0/1 result.
+    fn lower_i64_cmp(
+        &mut self,
+        op: &WasmOp,
+        kind: CmpKind,
+        signed: bool,
+    ) -> Result<(), SelectorError> {
+        let ((al, ah), (bl, bh)) = self.pop_pair_i64(op)?;
+        // Reduce every variant to a "strictly-less-than" on a chosen operand
+        // ordering, plus an optional final invert:
+        //   lt : less(a, b)            ge : !less(a, b)
+        //   gt : less(b, a)            le : !less(b, a)
+        let (swap, invert) = match kind {
+            CmpKind::Lt => (false, false),
+            CmpKind::Ge => (false, true),
+            CmpKind::Gt => (true, false),
+            CmpKind::Le => (true, true),
+        };
+        let ((xl, xh), (yl, yh)) = if swap {
+            ((bl, bh), (al, ah))
+        } else {
+            ((al, ah), (bl, bh))
+        };
+        // result holds the 0/1 outcome; written by both arms of the branch.
+        let result = self.alloc_temp();
+        let hi_eq = self.fresh_label("Lcmp_hieq");
+        let done = self.fresh_label("Lcmp_done");
+        // beq x_hi, y_hi, Lcmp_hieq → hi halves tie, fall through to lo test.
+        self.out.push(RiscVOp::Branch {
+            cond: Branch::Eq,
+            rs1: xh,
+            rs2: yh,
+            label: hi_eq.clone(),
+        });
+        // hi halves differ: the hi comparison is the whole answer. Signed
+        // ops compare the hi halves *signed* (the sign bit lives here).
+        self.out.push(if signed {
+            RiscVOp::Slt {
+                rd: result,
+                rs1: xh,
+                rs2: yh,
+            }
+        } else {
+            RiscVOp::Sltu {
+                rd: result,
+                rs1: xh,
+                rs2: yh,
+            }
+        });
+        self.out.push(RiscVOp::Jal {
+            rd: Reg::ZERO,
+            label: done.clone(),
+        });
+        // hi halves equal: tie-break on the lo halves, always *unsigned*.
+        self.out.push(RiscVOp::Label { name: hi_eq });
+        self.out.push(RiscVOp::Sltu {
+            rd: result,
+            rs1: xl,
+            rs2: yl,
+        });
+        self.out.push(RiscVOp::Label { name: done });
+        // For ge / le, flip the strict-less result: a >= b ≡ !(a < b).
+        if invert {
+            let flipped = self.alloc_temp();
+            self.out.push(RiscVOp::Xori {
+                rd: flipped,
+                rs1: result,
+                imm: 1,
+            });
+            self.push_i32(flipped);
+        } else {
+            self.push_i32(result);
+        }
+        Ok(())
+    }
+
+    /// In-place sign extension `i64.extend{8,16,32}_s`.
+    ///
+    /// Wasm semantics: the input is an i64; sign-extend its low `width` bits
+    /// across the whole 64-bit value. The high `64 - width` bits of the
+    /// input are discarded.
+    ///
+    /// For width 8 / 16 we sign-extend within the low word by a shift pair
+    /// `(x << (32-width)) >>s (32-width)`, then propagate the sign into the
+    /// high word with `sra lo, 31` (all-ones if negative, all-zeros if not).
+    /// For width 32 the low word is already the full value, so we only need
+    /// the sign-propagation step.
+    fn lower_i64_extend_sub(&mut self, op: &WasmOp, width: u8) -> Result<(), SelectorError> {
+        let (lo_in, _hi_in) = self.pop_i64(op)?;
+        let lo = self.alloc_temp();
+        if width < 32 {
+            // shift = 32 - width ; lo = (lo_in << shift) >>s shift
+            let shift = 32 - width;
+            self.out.push(RiscVOp::Slli {
+                rd: lo,
+                rs1: lo_in,
+                shamt: shift,
+            });
+            self.out.push(RiscVOp::Srai {
+                rd: lo,
+                rs1: lo,
+                shamt: shift,
+            });
+        } else {
+            // width == 32: the low word is already the sign-extended value;
+            // just carry it forward (mv lo, lo_in).
+            self.out.push(RiscVOp::Addi {
+                rd: lo,
+                rs1: lo_in,
+                imm: 0,
+            });
+        }
+        // hi = sra(lo, 31) — broadcast the sign bit across the high word.
+        let hi = self.alloc_temp();
+        self.out.push(RiscVOp::Srai {
+            rd: hi,
+            rs1: lo,
+            shamt: 31,
+        });
+        self.push_i64(lo, hi);
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1514,6 +2563,30 @@ enum StoreKind {
     Word,
     Half,
     Byte,
+}
+
+/// Which 64-bit shift to lower. Drives the `lower_i64_shift` cross-word
+/// branching — all three share the same `shamt >= 32` structure but differ
+/// in the per-half instruction (logical vs. arithmetic) and the direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShiftKind {
+    /// `i64.shl` — logical left.
+    Shl,
+    /// `i64.shr_s` — arithmetic right (sign-propagating).
+    ShrS,
+    /// `i64.shr_u` — logical right (zero-fill).
+    ShrU,
+}
+
+/// Which 64-bit comparison to lower. The signed/unsigned distinction is a
+/// separate flag because only the *hi*-half comparison changes with
+/// signedness — the lo half is always compared unsigned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CmpKind {
+    Lt,
+    Le,
+    Gt,
+    Ge,
 }
 
 fn offset_to_imm(offset: u32) -> Result<i32, SelectorError> {
@@ -2624,5 +3697,545 @@ mod tests {
             .filter(|op| matches!(op, RiscVOp::Call { label } if label == "synth_func_0"))
             .count();
         assert_eq!(call_count, 2, "expected 2 calls in fib pattern: {:?}", out);
+    }
+
+    // ──────────── i64 Phase-2 tests ────────────
+    //
+    // Same shape-assertion style as the Phase-1 i64 tests: count/kind of the
+    // emitted `RiscVOp`s, plus structural pins on the hardest lowerings (the
+    // shift cross-word branch and the clz hi-vs-lo branch).
+
+    /// Slice the output starting at the first op matching `pred` — used to
+    /// isolate one op's emitted sequence past the const-materialisation noise.
+    fn slice_from<F: Fn(&RiscVOp) -> bool>(out: &[RiscVOp], pred: F) -> Vec<RiscVOp> {
+        out.iter().skip_while(|o| !pred(o)).cloned().collect()
+    }
+
+    // -------- I64Mul --------
+
+    #[test]
+    fn i64_mul_emits_mul_mulhu_cross_terms() {
+        // lo = mul(al,bl); hi = mulhu(al,bl) + mul(al,bh) + mul(ah,bl).
+        // → 3 Mul, 1 Mulhu, 2 Add.
+        let out = run_i64(&[
+            WasmOp::I64Const(3),
+            WasmOp::I64Const(5),
+            WasmOp::I64Mul,
+            WasmOp::Drop,
+        ]);
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Mul { .. })),
+            3,
+            "I64Mul emits 3 mul (low product + 2 cross terms)"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Mulhu { .. })),
+            1,
+            "I64Mul emits 1 mulhu for the low-product carry"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Add { .. })),
+            2,
+            "I64Mul sums the carry and two cross terms with 2 adds"
+        );
+    }
+
+    // -------- I64Shl / I64ShrS / I64ShrU --------
+
+    #[test]
+    fn i64_shl_emits_cross_word_branch_and_two_sequences() {
+        // The shift lowering is data-dependent: it emits a branch on bit 5
+        // of the shift amount plus a small-case and a big-case sequence.
+        let out = run_i64(&[
+            WasmOp::I64Const(0xFF),
+            WasmOp::I64Const(4),
+            WasmOp::I64Shl,
+            WasmOp::Drop,
+        ]);
+        // One bne branches to the >= 32 (cross-word) path.
+        assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Ne,
+                    ..
+                }
+            )) >= 1,
+            "I64Shl must branch on shamt >= 32"
+        );
+        // One Jal skips the big-case sequence after the small case.
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Jal { .. })) >= 1,
+            "I64Shl small-case path jumps over the big-case sequence"
+        );
+        // Two labels: the big-case entry + the join point.
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Label { .. })) >= 2,
+            "I64Shl emits a big-case label and a done label"
+        );
+    }
+
+    #[test]
+    fn i64_shl_small_case_uses_register_shifts_and_carry_or() {
+        // Pin the within-word (< 32) sequence structure: the small case does
+        // `lo << s`, a carry extracted via `(lo >> 1) >> inv`, `hi << s`, and
+        // ORs the carry in. So the small-case region has Sll/Srl/Or ops and
+        // an Srli (the `>> 1` of the carry extraction).
+        let out = run_i64(&[
+            WasmOp::I64Const(0x1234),
+            WasmOp::I64Const(8),
+            WasmOp::I64Shl,
+            WasmOp::Drop,
+        ]);
+        // The carry path uses `srli rd, lo, 1`.
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Srli { shamt: 1, .. })) >= 1,
+            "I64Shl small case extracts the cross-half carry via `>> 1`"
+        );
+        // At least two register Sll: `lo << s` and `hi << s`.
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Sll { .. })) >= 2,
+            "I64Shl small case shifts both halves with register Sll"
+        );
+        // The carry is merged into hi with an Or.
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Or { .. })) >= 1,
+            "I64Shl small case ORs the carry into the high half"
+        );
+    }
+
+    #[test]
+    fn i64_shl_big_case_zeroes_low_half() {
+        // The >= 32 (big-case) sequence sets lo' = 0 via `addi rd, zero, 0`.
+        let out = run_i64(&[
+            WasmOp::I64Const(0xABCD),
+            WasmOp::I64Const(40),
+            WasmOp::I64Shl,
+            WasmOp::Drop,
+        ]);
+        // After the Lshift_big label, an addi-from-zero with imm 0 zeroes lo.
+        let big = slice_from(
+            &out,
+            |op| matches!(op, RiscVOp::Label { name } if name.starts_with("Lshift_big")),
+        );
+        assert!(
+            big.iter().any(|op| matches!(
+                op,
+                RiscVOp::Addi {
+                    rs1: Reg::ZERO,
+                    imm: 0,
+                    ..
+                }
+            )),
+            "I64Shl big case must zero the low half"
+        );
+    }
+
+    #[test]
+    fn i64_shr_s_uses_sra_in_both_cases() {
+        // shr_s arithmetic-shifts the high half; the big case also produces
+        // the sign fill via `srai hi, 31`.
+        let out = run_i64(&[
+            WasmOp::I64Const(-1),
+            WasmOp::I64Const(3),
+            WasmOp::I64ShrS,
+            WasmOp::Drop,
+        ]);
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Sra { .. })) >= 1,
+            "I64ShrS uses arithmetic register shift on the high half"
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Srai { shamt: 31, .. })) >= 1,
+            "I64ShrS big case fills the high half with the sign via srai 31"
+        );
+    }
+
+    #[test]
+    fn i64_shr_u_uses_only_logical_shifts() {
+        // shr_u must never emit an arithmetic shift — zero-fill throughout.
+        let out = run_i64(&[
+            WasmOp::I64Const(-1),
+            WasmOp::I64Const(5),
+            WasmOp::I64ShrU,
+            WasmOp::Drop,
+        ]);
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Sra { .. })),
+            0,
+            "I64ShrU is logical — no arithmetic register shift"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Srai { .. })),
+            0,
+            "I64ShrU is logical — no arithmetic immediate shift"
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Srl { .. })) >= 1,
+            "I64ShrU uses logical register shifts"
+        );
+    }
+
+    // -------- I64Rotl / I64Rotr --------
+
+    #[test]
+    fn i64_rotl_composes_two_shifts() {
+        // rotl(x,n) = (x << n) | (x >> (64-n)). Each shift is a full
+        // cross-word lowering, so we get two branches and a final pair of
+        // ORs joining the two i64 results.
+        let out = run_i64(&[
+            WasmOp::I64Const(0x1),
+            WasmOp::I64Const(7),
+            WasmOp::I64Rotl,
+            WasmOp::Drop,
+        ]);
+        // Two cross-word shift branches (one per composed shift).
+        assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Ne,
+                    ..
+                }
+            )) >= 2,
+            "I64Rotl composes two shifts, each with its own cross-word branch"
+        );
+        // The two i64 shift results are ORed half-by-half at the end.
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Or { .. })) >= 2,
+            "I64Rotl ORs the two shift results half by half"
+        );
+    }
+
+    #[test]
+    fn i64_rotr_composes_two_shifts() {
+        let out = run_i64(&[
+            WasmOp::I64Const(0x8000_0000),
+            WasmOp::I64Const(9),
+            WasmOp::I64Rotr,
+            WasmOp::Drop,
+        ]);
+        assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Ne,
+                    ..
+                }
+            )) >= 2
+        );
+        assert!(count(&out, |op| matches!(op, RiscVOp::Or { .. })) >= 2);
+    }
+
+    // -------- I64Clz / I64Ctz / I64Popcnt --------
+
+    #[test]
+    fn i64_clz_branches_on_high_half() {
+        // clz: `if hi != 0 { clz_word(hi) } else { 32 + clz_word(lo) }`.
+        // The hi-vs-lo decision is a `beq hi, zero, ...`.
+        let out = run_i64(&[WasmOp::I64Const(0x1234), WasmOp::I64Clz, WasmOp::Drop]);
+        assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Eq,
+                    rs2: Reg::ZERO,
+                    ..
+                }
+            )) >= 1,
+            "I64Clz branches on whether the high half is zero"
+        );
+        // The hi==0 arm adds 32 to the low-word clz — `addi rd, _, 32`.
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Addi { imm: 32, .. })) >= 1,
+            "I64Clz hi==0 arm adds 32 for the all-zero high word"
+        );
+    }
+
+    #[test]
+    fn i64_clz_word_helper_uses_binary_search_probes() {
+        // emit_clz_word probes widths 16/8/4/2/1; each probe shifts the
+        // value down by 32-k. So the clz lowering must contain srli ops at
+        // shamts 16, 24, 28, 30, 31 (one set per half → at least one of each).
+        let out = run_i64(&[WasmOp::I64Const(0x40), WasmOp::I64Clz, WasmOp::Drop]);
+        for shamt in [16u8, 24, 28, 30, 31] {
+            assert!(
+                count(
+                    &out,
+                    |op| matches!(op, RiscVOp::Srli { shamt: s, .. } if *s == shamt)
+                ) >= 1,
+                "I64Clz binary-search probe at shamt {} missing",
+                shamt
+            );
+        }
+    }
+
+    #[test]
+    fn i64_ctz_branches_on_low_half() {
+        // ctz mirrors clz: branch on whether the *low* half is zero.
+        let out = run_i64(&[WasmOp::I64Const(0x100), WasmOp::I64Ctz, WasmOp::Drop]);
+        assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Eq,
+                    rs2: Reg::ZERO,
+                    ..
+                }
+            )) >= 1,
+            "I64Ctz branches on whether the low half is zero"
+        );
+        // ctz_word isolates the lowest set bit via `x & -x`: a Sub-from-zero
+        // (negate) followed by an And.
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Sub { rs1: Reg::ZERO, .. })) >= 1,
+            "I64Ctz isolates the lowest set bit (negate via sub from zero)"
+        );
+    }
+
+    #[test]
+    fn i64_popcnt_sums_two_word_popcounts() {
+        // popcnt(x) = popcnt(lo) + popcnt(hi). Each word popcount ends with a
+        // `mul` by 0x01010101; so two Muls, and a final Add joining them.
+        let out = run_i64(&[
+            WasmOp::I64Const(0xFFFF_FFFF),
+            WasmOp::I64Popcnt,
+            WasmOp::Drop,
+        ]);
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Mul { .. })),
+            2,
+            "I64Popcnt runs the SWAR mul-collapse once per half"
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Srli { shamt: 24, .. })) >= 2,
+            "each word popcount finishes with `>> 24`"
+        );
+    }
+
+    // -------- I64 comparisons --------
+
+    #[test]
+    fn i64_lt_s_uses_signed_hi_unsigned_lo() {
+        // Signed lt: hi-half compared with slt (signed), lo-half with sltu.
+        let out = run_i64(&[
+            WasmOp::I64Const(-5),
+            WasmOp::I64Const(7),
+            WasmOp::I64LtS,
+            WasmOp::Drop,
+        ]);
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Slt { .. })) >= 1,
+            "I64LtS compares the high halves signed"
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Sltu { .. })) >= 1,
+            "I64LtS tie-breaks the low halves unsigned"
+        );
+        // The hi-equal tie-break is gated by a `beq hi, hi`.
+        assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Eq,
+                    ..
+                }
+            )) >= 1,
+            "I64LtS branches when the high halves are equal"
+        );
+    }
+
+    #[test]
+    fn i64_lt_u_uses_unsigned_hi_compare() {
+        // Unsigned lt: the hi-half comparison must be sltu, never slt.
+        let out = run_i64(&[
+            WasmOp::I64Const(1),
+            WasmOp::I64Const(2),
+            WasmOp::I64LtU,
+            WasmOp::Drop,
+        ]);
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Slt { .. })),
+            0,
+            "I64LtU never uses a signed compare"
+        );
+        // Two sltu: one for the hi half, one for the lo tie-break.
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Sltu { .. })),
+            2,
+            "I64LtU compares hi and lo halves, both unsigned"
+        );
+    }
+
+    #[test]
+    fn i64_ge_s_inverts_the_lt_result() {
+        // ge = !lt, so the lowering ends with an `xori rd, _, 1`.
+        let out = run_i64(&[
+            WasmOp::I64Const(9),
+            WasmOp::I64Const(4),
+            WasmOp::I64GeS,
+            WasmOp::Drop,
+        ]);
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Xori { imm: 1, .. })),
+            1,
+            "I64GeS flips the strict-less result with xori 1"
+        );
+    }
+
+    #[test]
+    fn i64_gt_u_swaps_operands_no_invert() {
+        // gt = less(b, a): operand swap, no final invert → no xori.
+        let out = run_i64(&[
+            WasmOp::I64Const(3),
+            WasmOp::I64Const(8),
+            WasmOp::I64GtU,
+            WasmOp::Drop,
+        ]);
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Xori { imm: 1, .. })),
+            0,
+            "I64GtU is a swapped less-than — no result inversion"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Sltu { .. })),
+            2,
+            "I64GtU still does the hi + lo unsigned compares"
+        );
+    }
+
+    #[test]
+    fn i64_le_s_swaps_and_inverts() {
+        // le = !less(b, a): both a swap and a final invert.
+        let out = run_i64(&[
+            WasmOp::I64Const(2),
+            WasmOp::I64Const(2),
+            WasmOp::I64LeS,
+            WasmOp::Drop,
+        ]);
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Xori { imm: 1, .. })),
+            1,
+            "I64LeS inverts the swapped less-than result"
+        );
+    }
+
+    // -------- I64Extend8S / I64Extend16S / I64Extend32S --------
+
+    #[test]
+    fn i64_extend8_s_shifts_24_then_sign_propagates() {
+        // extend8_s: low byte sign-extended via (x << 24) >>s 24, then the
+        // high word filled via srai 31.
+        let out = run_i64(&[WasmOp::I64Const(0xFF), WasmOp::I64Extend8S, WasmOp::Drop]);
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Slli { shamt: 24, .. })) == 1,
+            "I64Extend8S left-shifts the low byte by 24"
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Srai { shamt: 24, .. })) == 1,
+            "I64Extend8S arithmetic-shifts back by 24"
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Srai { shamt: 31, .. })) == 1,
+            "I64Extend8S broadcasts the sign into the high word via srai 31"
+        );
+    }
+
+    #[test]
+    fn i64_extend16_s_shifts_16() {
+        let out = run_i64(&[WasmOp::I64Const(0xFFFF), WasmOp::I64Extend16S, WasmOp::Drop]);
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Slli { shamt: 16, .. })),
+            1,
+            "I64Extend16S left-shifts the low halfword by 16"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Srai { shamt: 16, .. })),
+            1,
+        );
+    }
+
+    #[test]
+    fn i64_extend32_s_only_sign_propagates() {
+        // width 32: the low word is already the value, so no 32-width shift
+        // pair — only the `srai 31` sign propagation into the high word.
+        let out = run_i64(&[
+            WasmOp::I64Const(0x7FFF_FFFF),
+            WasmOp::I64Extend32S,
+            WasmOp::Drop,
+        ]);
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Slli { .. })),
+            0,
+            "I64Extend32S needs no low-word shift — the word is already 32-bit"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Srai { shamt: 31, .. })),
+            1,
+            "I64Extend32S propagates the sign into the high word"
+        );
+    }
+
+    // -------- deferred ops fail loudly --------
+
+    #[test]
+    fn i64_div_rem_are_unsupported_phase3() {
+        // Division/remainder on i64 are deferred to Phase 3 — they must
+        // surface as `Unsupported`, never silently miscompile.
+        for op in [
+            WasmOp::I64DivS,
+            WasmOp::I64DivU,
+            WasmOp::I64RemS,
+            WasmOp::I64RemU,
+        ] {
+            let r = select(
+                &[
+                    WasmOp::I64Const(10),
+                    WasmOp::I64Const(3),
+                    op.clone(),
+                    WasmOp::End,
+                ],
+                0,
+            )
+            .map(|_| ()); // RiscVSelection isn't Debug — drop the Ok payload.
+            assert!(
+                matches!(r, Err(SelectorError::Unsupported(_))),
+                "{:?} should be Unsupported (Phase 3), got {:?}",
+                op,
+                r
+            );
+        }
+    }
+
+    // -------- type-state plumbing --------
+
+    #[test]
+    fn i64_cmp_result_is_i32_typed() {
+        // An i64 comparison pushes an i32; a following i32 consumer must not
+        // hit a type mismatch.
+        let out = run_i64(&[
+            WasmOp::I64Const(1),
+            WasmOp::I64Const(2),
+            WasmOp::I64LtU,
+            WasmOp::I32Eqz, // consumes the i32 result of the i64 compare
+            WasmOp::Drop,
+        ]);
+        // I32Eqz lowered fine → the vstack carried an i32 after I64LtU.
+        assert!(count(&out, |op| matches!(op, RiscVOp::Sltiu { imm: 1, .. })) >= 1);
+    }
+
+    #[test]
+    fn i64_shift_result_is_i64_typed() {
+        // A shift pushes an i64; a following i64 consumer (I64Add) must lower.
+        let out = run_i64(&[
+            WasmOp::I64Const(1),
+            WasmOp::I64Const(4),
+            WasmOp::I64Shl,
+            WasmOp::I64Const(1),
+            WasmOp::I64Add,
+            WasmOp::Drop,
+        ]);
+        // I64Add emits its add/sltu/add/add quartet → at least 3 Add ops.
+        assert!(count(&out, |op| matches!(op, RiscVOp::Add { .. })) >= 3);
     }
 }
