@@ -58,9 +58,15 @@ fn try_optimized(wasm_ops: &[WasmOp], num_params: usize) -> Result<usize, String
 /// Post-fix: `optimize_full` returns `Err` — no panic.
 #[test]
 fn f32_div_does_not_panic_in_optimized_path() {
+    // Stack-balanced: LocalGet(0) is the store address; LocalGet(1)/(2)
+    // are the f32.div operands. f32.div pops 2 / pushes 1, then f32.store
+    // pops the address + the div result. Depth: 3 -> 2 -> 0. A balanced
+    // sequence is required so the pre-flight underflow check passes and
+    // the float-decline path (issue #120) is the one exercised.
     let ops = vec![
         WasmOp::LocalGet(0),
         WasmOp::LocalGet(1),
+        WasmOp::LocalGet(2),
         WasmOp::F32Div,
         WasmOp::F32Store {
             offset: 0,
@@ -68,7 +74,7 @@ fn f32_div_does_not_panic_in_optimized_path() {
         },
     ];
 
-    let result = try_optimized(&ops, /* num_params = */ 2);
+    let result = try_optimized(&ops, /* num_params = */ 3);
     assert!(
         result.is_err(),
         "optimized path must cleanly decline f32.div (issue #120), got Ok: {result:?}"

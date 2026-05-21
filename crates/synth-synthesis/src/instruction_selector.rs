@@ -3553,6 +3553,12 @@ impl InstructionSelector {
     ) -> Result<Vec<ArmInstruction>> {
         use WasmOp::*;
 
+        // Pre-flight: catch obvious wasm stack underflow as a typed error
+        // before we walk the ops. The fuzz harness `wasm_ops_lower_or_error`
+        // intentionally feeds malformed `Vec<WasmOp>` and expects `Err`, not
+        // a panic deep in the selector's pop sequence (see PR #117).
+        synth_core::wasm_stack_check::check_no_underflow(wasm_ops)?;
+
         let mut instructions = Vec::new();
 
         // Function prologue: save callee-saved registers and LR, then
