@@ -150,8 +150,10 @@ fn compile_wasm_to_arm(
         BoundsCheckConfig::None
     };
 
-    // Instruction selection: optimized or direct
-    let arm_instrs = if config.no_optimize {
+    // The non-optimized (direct) instruction-selection path. Handles f32 via
+    // VFP/FPU. Used directly when `--no-optimize` is set, and as the fallback
+    // when the optimized path declines a module (see issue #120 below).
+    let select_direct = || -> Result<Vec<ArmInstruction>, String> {
         let db = RuleDatabase::with_standard_rules();
         let mut selector =
             InstructionSelector::with_bounds_check(db.rules().to_vec(), bounds_config);
@@ -161,7 +163,12 @@ fn compile_wasm_to_arm(
         }
         selector
             .select_with_stack(wasm_ops, num_params)
-            .map_err(|e| format!("instruction selection failed: {}", e))?
+            .map_err(|e| format!("instruction selection failed: {}", e))
+    };
+
+    // Instruction selection: optimized or direct
+    let arm_instrs = if config.no_optimize {
+        select_direct()?
     } else {
         let opt_config = if config.loom_compat {
             OptimizationConfig::loom_compat()
@@ -170,18 +177,24 @@ fn compile_wasm_to_arm(
         };
 
         let bridge = OptimizerBridge::with_config(opt_config);
-        let (opt_ir, _cfg, _stats) = bridge
-            .optimize_full(wasm_ops)
-            .map_err(|e| format!("optimization failed: {}", e))?;
-
-        let arm_ops = bridge.ir_to_arm(&opt_ir, num_params as usize);
-        arm_ops
-            .into_iter()
-            .map(|op| ArmInstruction {
-                op,
-                source_line: None,
-            })
-            .collect()
+        match bridge.optimize_full(wasm_ops) {
+            Ok((opt_ir, _cfg, _stats)) => {
+                let arm_ops = bridge.ir_to_arm(&opt_ir, num_params as usize);
+                arm_ops
+                    .into_iter()
+                    .map(|op| ArmInstruction {
+                        op,
+                        source_line: None,
+                    })
+                    .collect()
+            }
+            // Issue #120: the optimized path declines modules it cannot lower
+            // (notably scalar f32/f64 ops — the IR has no float opcodes). Fall
+            // back to the direct instruction selector, which handles f32 via
+            // VFP/FPU. This is honest degradation: the function still compiles
+            // correctly, just without IR-level optimization.
+            Err(_) => select_direct()?,
+        }
     };
 
     // ISA feature gate: validate that all generated instructions are supported
@@ -402,6 +415,109 @@ mod tests {
         assert!(
             result.is_err(),
             "f32 operations should fail on Cortex-M4 (no FPU)"
+        );
+    }
+
+    // ========================================================================
+    // Issue #120 — f32 ops in the optimized lowering path
+    //
+    // `OptimizerBridge::wasm_to_ir` has no handlers for f32/f64 ops, so a
+    // value-producing float op fell through to `Opcode::Nop`, leaving a
+    // downstream consumer with an unmapped vreg and tripping the PR #101
+    // defensive panic in `ir_to_arm`. Customer reproducer: `compiler_builtins
+    // float::div` and `gale_compute_ipi_mask` in the `falcon-rate-component`
+    // module.
+    //
+    // Fix: `optimize_full` declines float modules with a typed `Err`;
+    // `compile_wasm_to_arm` falls back to the non-optimized `select_with_stack`
+    // path, which handles f32 via VFP/FPU. These tests use the *default*
+    // (optimized) config — `no_optimize` is NOT set — which is the exact
+    // configuration that panicked pre-fix.
+    // ========================================================================
+
+    /// Pre-fix: this panicked with "vreg vN has no assigned ARM register and
+    /// no spill slot" inside `ir_to_arm`. Post-fix: the optimized path declines
+    /// the module and the backend falls back to direct selection, producing a
+    /// non-empty f32.div lowering on a Cortex-M4F.
+    #[test]
+    fn test_issue120_f32_div_compiles_via_optimized_default() {
+        let backend = ArmBackend::new();
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::F32Div];
+        let config = CompileConfig {
+            target: TargetSpec::cortex_m4f(),
+            // no_optimize NOT set — this exercises the optimized path that
+            // panicked in issue #120, then the fallback to direct selection.
+            ..CompileConfig::default()
+        };
+
+        let result = backend.compile_function("fdiv", &ops, &config);
+        assert!(
+            result.is_ok(),
+            "f32.div must compile on Cortex-M4F via the optimized->direct \
+             fallback (issue #120), got: {:?}",
+            result.as_ref().err()
+        );
+        assert!(
+            !result.unwrap().code.is_empty(),
+            "f32.div must produce non-empty machine code"
+        );
+    }
+
+    /// A spread of f32 ops, all through the optimized (default) config, must
+    /// compile via the fallback on an FPU target without panicking.
+    #[test]
+    fn test_issue120_assorted_f32_ops_compile_via_optimized_default() {
+        let backend = ArmBackend::new();
+        let config = CompileConfig {
+            target: TargetSpec::cortex_m4f(),
+            ..CompileConfig::default()
+        };
+
+        let cases: Vec<(&str, Vec<WasmOp>)> = vec![
+            (
+                "fadd",
+                vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::F32Add],
+            ),
+            (
+                "fmul",
+                vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::F32Mul],
+            ),
+            (
+                "fsub",
+                vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::F32Sub],
+            ),
+        ];
+
+        for (name, ops) in cases {
+            let result = backend.compile_function(name, &ops, &config);
+            assert!(
+                result.is_ok(),
+                "{name} must compile via the optimized->direct fallback \
+                 (issue #120), got: {:?}",
+                result.as_ref().err()
+            );
+            assert!(
+                !result.unwrap().code.is_empty(),
+                "{name} must produce non-empty machine code"
+            );
+        }
+    }
+
+    /// The fallback must still honor the ISA feature gate: f32 on a no-FPU
+    /// target must fail cleanly (not panic) even on the optimized path.
+    #[test]
+    fn test_issue120_f32_div_rejected_on_no_fpu_via_optimized() {
+        let backend = ArmBackend::new();
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::F32Div];
+        let config = CompileConfig {
+            target: TargetSpec::cortex_m3(),
+            ..CompileConfig::default()
+        };
+
+        let result = backend.compile_function("fdiv", &ops, &config);
+        assert!(
+            result.is_err(),
+            "f32.div must be rejected on Cortex-M3 (no FPU), not panic"
         );
     }
 
