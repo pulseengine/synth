@@ -7,9 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(In flight: PR #113 validator-pattern prototype for issues #73/#76;
-PR for Phase 1 binary-safety implementation per docs/binary-safety-design.md;
-RISC-V cross-function calls + i64 lowering for parity with ARM.)
+## [0.3.1] - 2026-05-21
+
+First release built and published by the automated release pipeline:
+cross-platform binaries, SHA256 checksums, SLSA build provenance, and
+cosign keyless signatures (see `docs/release-process.md`).
+
+### Added
+
+#### RISC-V backend — toward ARM parity
+- **`WasmOp::Call` leaf-call lowering** — arguments marshalled into
+  `a0..a7` per the RV psABI, label-based `RiscVOp::Call` resolved by the
+  ELF builder. i64 call args and back-to-back calls with surviving
+  results are deferred to v0.4 (need function-signature plumbing). (#116)
+- **i64 Phase 1** — the selector's value stack is now a typed
+  `Vec<VstackVal>` (`I32` / `I64 { lo, hi }`). i64 const, add, sub,
+  and/or/xor, eq/ne/eqz, extend_i32_s/u, wrap_i64, and load/store. (#119)
+
+#### Binary safety — Phase 1
+- **`--safety-bounds` umbrella flag** (`mpu` / `software` / `mask` /
+  `none`) with `--bounds-check` kept as a deprecated alias. RV32
+  software bounds checks (`bgeu` + `ebreak` trap block), RV32 signed
+  division overflow trap, and `safety-manifest.json` emission. (#115)
+
+#### Verification
+- **Validator-pattern prototype** — `CertifiedSelection` + `Validator`
+  trait + `Z3ArmValidator` for `I32Add`. First step of the CompCert-
+  style certifying-validator strategy toward retiring divergent Rocq
+  proofs. (#113, issues #73 / #76)
+
+#### Release engineering
+- **Automated release pipeline** (`release.yml`) — tag-triggered
+  cross-platform binary matrix, `SHA256SUMS.txt`, SLSA provenance via
+  `actions/attest-build-provenance`, cosign keyless signing, GitHub
+  release automation. `docs/release-process.md` documents the process
+  and a 5-phase rollout plan. (#123)
+
+### Fixed
+
+#### Silicon-blocking codegen
+- **`wasm_to_ir` slot-model rewrite** — `inst_id` was overloaded as both
+  the unique IR id and the vreg-slot index, so any op that consumed a
+  stack slot without producing one (`Drop`, `LocalSet`, stores, …)
+  corrupted downstream back-references — a silent miscompilation Gale
+  caught on real silicon. Decoupled via an explicit `slot_stack`. (#122,
+  issue #121)
+- **f32/f64 in the optimized path** — float ops fell through to
+  `Opcode::Nop`, leaving downstream consumers with unmapped vregs and
+  tripping the defensive panic. `optimize_full` now declines float
+  modules with a typed error and the backend falls back to the
+  non-optimized selector, which lowers f32 via VFP/FPU. (#126, issue
+  #120)
+
+#### Robustness
+- **Pre-flight wasm stack-underflow check** (`wasm_stack_check`) — the
+  lowering pipeline returns a typed `Err` on malformed input instead of
+  panicking. `wasm_to_ir` now returns `Result` and propagates
+  slot-stack underflow rather than `.expect()`-panicking. (#117)
+- **`synth verify` exits non-zero** when the binary was built without
+  `--features verify`, instead of printing a hint and exiting
+  success-shaped — a no-op verify step silently passing CI is a
+  correctness-of-process bug. (#125, issue #124)
+
+### Changed
+- CHANGELOG backfilled with per-version sections for v0.1.1–v0.3.0. (#114)
+
+### Internal
+- cargo-fuzz harness `i64_lowering_doesnt_clobber_params` gained a
+  carve-out for return-value-placement dead stores. (#118, closes #112)
+- `fuzz/seed_corpus/` directory layout for committed regression seeds;
+  the fuzz-smoke workflow replays them on every run.
 
 ## [0.3.0] - 2026-05-15
 
