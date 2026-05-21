@@ -16,14 +16,27 @@ use synth_core::target::FPUPrecision;
 /// Bounds checking configuration for memory operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoundsCheckConfig {
-    /// No bounds checking (relies on MPU or other hardware protection)
+    /// No bounds checking (no inline guard).
     None,
+    /// Hardware MPU enforcement (ARM) / PMP (RV32). The backend does not emit
+    /// any inline check — the MPU/PMP raises a fault on out-of-bounds accesses.
+    /// Equivalent to `None` from the selector's point of view but distinguished
+    /// here so the safety-manifest can record the intent.
+    Mpu,
     /// Software bounds checking with CMP/BHS before each access
     /// R10 holds the memory size, initialized by startup code
     Software,
     /// Masking: AND address with (memory_size - 1) for power-of-2 sizes
     /// Lower overhead but only works with power-of-2 memory sizes
     Masking,
+}
+
+impl BoundsCheckConfig {
+    /// `true` when no inline guard instructions are emitted (either disabled
+    /// entirely or hardware-enforced via MPU/PMP).
+    pub fn is_passthrough(self) -> bool {
+        matches!(self, BoundsCheckConfig::None | BoundsCheckConfig::Mpu)
+    }
 }
 
 /// ARM instruction with operands
@@ -2962,7 +2975,7 @@ impl InstructionSelector {
         };
 
         match self.bounds_check {
-            BoundsCheckConfig::None => vec![load_op],
+            BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![load_op],
             BoundsCheckConfig::Software => {
                 // Software bounds check: verify last byte of access is in bounds
                 // ADD temp, addr_reg, #(offset + access_size - 1)
@@ -3026,7 +3039,7 @@ impl InstructionSelector {
         };
 
         match self.bounds_check {
-            BoundsCheckConfig::None => vec![store_op],
+            BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![store_op],
             BoundsCheckConfig::Software => {
                 // Software bounds check: verify last byte of access is in bounds
                 let temp = Reg::R12;
@@ -3082,7 +3095,7 @@ impl InstructionSelector {
         };
 
         match self.bounds_check {
-            BoundsCheckConfig::None => vec![load_op],
+            BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![load_op],
             BoundsCheckConfig::Software => {
                 // Software bounds check: verify last byte of 8-byte access is in bounds
                 // ADD temp, addr_reg, #(offset + 8 - 1)
@@ -3141,7 +3154,7 @@ impl InstructionSelector {
         };
 
         match self.bounds_check {
-            BoundsCheckConfig::None => vec![store_op],
+            BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![store_op],
             BoundsCheckConfig::Software => {
                 // Software bounds check: verify last byte of 8-byte access is in bounds
                 let temp = Reg::R12;
@@ -3195,7 +3208,7 @@ impl InstructionSelector {
         };
 
         match self.bounds_check {
-            BoundsCheckConfig::None => vec![load_op],
+            BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![load_op],
             BoundsCheckConfig::Software => {
                 let temp = Reg::R12;
                 let end_offset = offset + (access_size as i32) - 1;
@@ -3248,7 +3261,7 @@ impl InstructionSelector {
         };
 
         match self.bounds_check {
-            BoundsCheckConfig::None => vec![store_op],
+            BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![store_op],
             BoundsCheckConfig::Software => {
                 let temp = Reg::R12;
                 let end_offset = offset + (access_size as i32) - 1;
@@ -3309,7 +3322,7 @@ impl InstructionSelector {
         };
 
         match self.bounds_check {
-            BoundsCheckConfig::None => vec![load_op],
+            BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![load_op],
             BoundsCheckConfig::Software => {
                 let temp = Reg::R12;
                 let end_offset = offset + (access_size as i32) - 1;
@@ -3375,7 +3388,7 @@ impl InstructionSelector {
         };
 
         match self.bounds_check {
-            BoundsCheckConfig::None => vec![store_op],
+            BoundsCheckConfig::None | BoundsCheckConfig::Mpu => vec![store_op],
             BoundsCheckConfig::Software => {
                 let temp = Reg::R12;
                 let end_offset = offset + (access_size as i32) - 1;
@@ -3441,7 +3454,7 @@ impl InstructionSelector {
     /// Issue #95: replaces 10-byte `MOVW+MOVT+LDR.W` with a 4-byte `LDR.W`
     /// for static-address loads/stores.
     fn try_fold_const_addr(&self, wasm_ops: &[WasmOp], idx: usize, offset: u32) -> Option<u32> {
-        if !matches!(self.bounds_check, BoundsCheckConfig::None) {
+        if !self.bounds_check.is_passthrough() {
             return None;
         }
         if idx == 0 {
@@ -3486,7 +3499,7 @@ impl InstructionSelector {
         idx: usize,
         offset: u32,
     ) -> Option<u32> {
-        if !matches!(self.bounds_check, BoundsCheckConfig::None) {
+        if !self.bounds_check.is_passthrough() {
             return None;
         }
         if idx < 2 {
