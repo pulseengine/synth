@@ -7,14 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-22
+
 ### Added
 
-- **CycloneDX SBOM emission** — `synth compile --sbom` writes a CycloneDX 1.5
-  JSON SBOM (`<output>.cdx.json`, or an explicit path) documenting the synth
-  compiler, the input WASM module (SHA-256 + size), the output ELF (SHA-256,
-  size, target triple, backend), and the WASM module's imports as a
-  dependency graph. This is the artifact consumed by `rivet import --format
-  cyclonedx` for rivet #107's `sbom-record`. See `docs/sbom.md`.
+#### RISC-V backend — i64 Phase 2
+- **16 new i64 ops** in the RV32IMAC selector, building on the Phase 1
+  typed register-pair model (v0.3.1):
+  - `I64Mul` — low-64 product via `mul` + `mulhu`.
+  - `I64Shl` / `I64ShrS` / `I64ShrU` — runtime-amount shifts with the
+    cross-word (`shamt >= 32`) case handled.
+  - `I64Rotl` / `I64Rotr` — composed from cross-word shifts.
+  - `I64Clz` / `I64Ctz` / `I64Popcnt` — base-ISA software sequences
+    (no Zbb dependency).
+  - `I64{Lt,Le,Gt,Ge}{S,U}` — the hi-then-lo 64-bit comparison ladder.
+  - `I64Extend8S` / `I64Extend16S` / `I64Extend32S`.
+- i64 `div`/`rem` remain deferred to Phase 3 (need a `__divdi3`-style
+  runtime); they fail loudly with `Unsupported`, not silently. (#128)
+
+#### Supply chain — CycloneDX SBOM
+- **`synth compile --sbom`** writes a CycloneDX 1.5 JSON SBOM
+  (`<output>.cdx.json`, or an explicit path) documenting the synth
+  compiler, the input WASM module (SHA-256 + size), the output ELF
+  (SHA-256, size, target triple, backend), and the WASM module's
+  imports as a dependency graph. This is the artifact consumed by
+  `rivet import --format cyclonedx` for rivet #107's `sbom-record`.
+  See `docs/sbom.md`. (#129)
+
+### Changed
+- Closed #72 (explicit WASM value-stack tracking): the production
+  lowering path (`select_with_stack`) already tracks the value stack
+  deterministically, and the `Replacement::Var`/`Inline` silent-`Nop`
+  variants now error. The round-robin `select_default` flagged by the
+  issue is test-only and never reaches a compiled binary.
 
 ## [0.3.1] - 2026-05-21
 
