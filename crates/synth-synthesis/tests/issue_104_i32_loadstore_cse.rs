@@ -249,7 +249,9 @@ fn compile_optimized(wasm: &[WasmOp]) -> Vec<ArmOp> {
     let (ir, _cfg, _stats) = bridge
         .optimize_full(wasm)
         .expect("optimize_full should succeed for the store-load pattern");
-    bridge.ir_to_arm(&ir, /* num_params = */ 2)
+    bridge
+        .ir_to_arm(&ir, /* num_params = */ 2)
+        .expect("ir_to_arm should succeed for the store-load pattern")
 }
 
 /// Execute the swapped-operand variant: param 1 = addr (in R1),

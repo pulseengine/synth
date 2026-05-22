@@ -41,9 +41,13 @@ fn try_optimized(wasm_ops: &[WasmOp], num_params: usize) -> Result<usize, String
     match bridge.optimize_full(wasm_ops) {
         Ok((ir, _cfg, _stats)) => {
             // ir_to_arm is the function that hosts the defensive get_arm_reg
-            // panic. Exercising it here proves no unmapped vreg is reached.
-            let arm = bridge.ir_to_arm(&ir, num_params);
-            Ok(arm.len())
+            // check. It now returns `Result` instead of panicking — an `Err`
+            // is a clean decline, not a crash. Exercising it here proves no
+            // unmapped vreg ever reaches a process-killing panic.
+            bridge
+                .ir_to_arm(&ir, num_params)
+                .map(|arm| arm.len())
+                .map_err(|e| e.to_string())
         }
         Err(e) => Err(e.to_string()),
     }

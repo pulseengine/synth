@@ -178,17 +178,21 @@ fn compile_wasm_to_arm(
         };
 
         let bridge = OptimizerBridge::with_config(opt_config);
-        match bridge.optimize_full(wasm_ops) {
-            Ok((opt_ir, _cfg, _stats)) => {
-                let arm_ops = bridge.ir_to_arm(&opt_ir, num_params as usize);
-                arm_ops
-                    .into_iter()
-                    .map(|op| ArmInstruction {
-                        op,
-                        source_line: None,
-                    })
-                    .collect()
-            }
+        // `ir_to_arm` now returns `Result` — an `Err` means the optimized path
+        // hit an unmapped vreg (issue-#93-class). Treat it identically to an
+        // `optimize_full` failure: fall back to the direct selector rather
+        // than propagating, so the function still compiles correctly.
+        match bridge
+            .optimize_full(wasm_ops)
+            .and_then(|(opt_ir, _cfg, _stats)| bridge.ir_to_arm(&opt_ir, num_params as usize))
+        {
+            Ok(arm_ops) => arm_ops
+                .into_iter()
+                .map(|op| ArmInstruction {
+                    op,
+                    source_line: None,
+                })
+                .collect(),
             // Issue #120: the optimized path declines modules it cannot lower
             // (notably scalar f32/f64 ops — the IR has no float opcodes). Fall
             // back to the direct instruction selector, which handles f32 via
