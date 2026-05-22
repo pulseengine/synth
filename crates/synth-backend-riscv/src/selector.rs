@@ -4,9 +4,10 @@
 //! with trap-on-zero), loads/stores against linear memory, simple control
 //! flow (block / loop / if / br / br_if), and local variable access.
 //!
+//! i64 divide / remainder is lowered to an inline software long-division
+//! loop (RV32 has no 64-bit divide instruction) — see `lower_i64_div`.
+//!
 //! Out of scope (see `select_simple` doc comments for the full list):
-//! - i64 divide / remainder (Phase 3 — needs a `__divdi3`-style software
-//!   long-division routine; RV32 has no 64-bit divide instruction)
 //! - sign-extending sub-word i64 loads (`i64.load8_s` etc.)
 //! - F32/F64 (RV32F/D — not yet wired)
 //! - br_table (lowered in B3 alongside jump tables)
@@ -454,14 +455,15 @@ impl Selector {
             I64Extend16S => self.lower_i64_extend_sub(op, 16)?,
             I64Extend32S => self.lower_i64_extend_sub(op, 32)?,
 
-            // i64 division / remainder is deferred to Phase 3 — RV32 has no
-            // 64-bit divide instruction, so these need a `__divdi3`-style
-            // software long-division routine (multi-block loop). Implementing
-            // it inline would balloon the selector; emitting it as a runtime
-            // helper needs a call-out the selector doesn't yet support.
-            // Until then they fall through to the `Unsupported` arm below —
-            // fail loudly rather than silently miscompile.
-            // I64DivS / I64DivU / I64RemS / I64RemU — Phase 3.
+            // ─── i64 division / remainder (Phase 3) ─────────────────────
+            // RV32's M extension only has 32-bit div/rem, so a 64-bit divide
+            // is lowered to an inline software long-division loop. See
+            // `emit_i64_udiv_inline` for the unsigned core; the signed ops
+            // wrap it with magnitude/sign handling.
+            I64DivS => self.lower_i64_div(op, /*signed=*/ true, /*want_rem=*/ false)?,
+            I64DivU => self.lower_i64_div(op, /*signed=*/ false, /*want_rem=*/ false)?,
+            I64RemS => self.lower_i64_div(op, /*signed=*/ true, /*want_rem=*/ true)?,
+            I64RemU => self.lower_i64_div(op, /*signed=*/ false, /*want_rem=*/ true)?,
 
             // ─── i64 memory ─────────────────────────────────────────────
             I64Load { offset, align: _ } => self.lower_i64_load(op, *offset)?,
@@ -2548,6 +2550,530 @@ impl Selector {
         self.push_i64(lo, hi);
         Ok(())
     }
+
+    // ────────── i64 division / remainder (Phase 3) ──────────
+    //
+    // RV32IMAC's M extension only provides 32-bit `div`/`divu`/`rem`/`remu`.
+    // A 64-bit divide has no single instruction, so synth lowers it to an
+    // inline software long-division loop — the moral equivalent of
+    // compiler-rt's `__udivdi3` / `__divdi3` / `__umoddi3` / `__moddi3`.
+    //
+    // We pick the *inline* approach (rather than emitting a `Call` to a
+    // runtime helper) because synth produces self-contained bare-metal ELF
+    // and has no runtime-library contract; an inline loop keeps the output
+    // dependency-free at a modest code-size cost (~30 instructions per op).
+    //
+    // The unsigned core is `emit_i64_udiv_inline`; `lower_i64_div` is the
+    // single entry point for all four ops, dispatching on `signed`/`want_rem`
+    // and wrapping the core with sign handling for the signed variants.
+
+    /// Fixed register file used by the inline long-division core. RV32's
+    /// `temps` pool is recycled round-robin with no liveness tracking, which
+    /// is fine for straight-line code but unsafe across a loop body where
+    /// many values stay live for all 64 iterations. So the long-division
+    /// loop instead claims a fixed, non-overlapping set of registers for its
+    /// exclusive use: it copies its inputs in at entry and hands its outputs
+    /// back via dedicated result registers, after which the caller is free
+    /// to move them into `alloc_temp` temporaries.
+    ///
+    /// The seven state registers (`q_lo, q_hi, r_lo, r_hi, d_lo, d_hi, cnt`)
+    /// plus three loop-body scratch registers are all distinct and avoid the
+    /// reserved `s0` (fp) / `s11` (linear-memory base).
+    const DIV_Q_LO: Reg = Reg::T0;
+    const DIV_Q_HI: Reg = Reg::T1;
+    const DIV_R_LO: Reg = Reg::T2;
+    const DIV_R_HI: Reg = Reg::T3;
+    const DIV_D_LO: Reg = Reg::T4;
+    const DIV_D_HI: Reg = Reg::T5;
+    const DIV_CNT: Reg = Reg::T6;
+    const DIV_SCRATCH0: Reg = Reg::S1;
+    const DIV_SCRATCH1: Reg = Reg::S2;
+    const DIV_SCRATCH2: Reg = Reg::S3;
+    /// Cycle-breaking scratch for the input parallel-move. Must be outside
+    /// the `temps` pool (a div input could otherwise alias it) — `s7` is
+    /// callee-saved and never handed out by `alloc_temp`.
+    const DIV_MOVE_SCRATCH: Reg = Reg::S7;
+
+    /// Emit a set of parallel register moves `dst <- src` such that every
+    /// source is read before any move overwrites it — i.e. the moves behave
+    /// as if performed simultaneously. `scratch` is a free register used to
+    /// break dependency cycles (e.g. the swap `a<-b, b<-a`); the caller must
+    /// guarantee `scratch` is neither a source nor a destination.
+    ///
+    /// Standard parallel-copy algorithm:
+    ///  - repeatedly emit any move whose destination is not still needed as
+    ///    a source by a pending move (safe, no clobber);
+    ///  - when only cycles remain, save one node's value to `scratch`,
+    ///    rewrite the move that sourced it to read `scratch` instead, and
+    ///    continue. A permutation of N registers needs at most N+1 moves.
+    ///
+    /// `mv` is `addi rd, rs, 0`. Trivial `dst == src` moves are skipped.
+    fn emit_parallel_move(&mut self, moves: &[(Reg, Reg)], scratch: Reg) {
+        // Working list of (dst, src) pairs still to perform.
+        let mut pending: Vec<(Reg, Reg)> = moves.iter().copied().filter(|(d, s)| d != s).collect();
+        while !pending.is_empty() {
+            // Find a move whose dst is not the src of any *other* pending
+            // move — emitting it cannot clobber a value still needed.
+            let ready = pending
+                .iter()
+                .position(|&(d, _)| !pending.iter().any(|&(_, s)| s == d));
+            match ready {
+                Some(idx) => {
+                    let (d, s) = pending.remove(idx);
+                    self.out.push(RiscVOp::Addi {
+                        rd: d,
+                        rs1: s,
+                        imm: 0,
+                    });
+                }
+                None => {
+                    // Only cycles remain. Break one: stash the first move's
+                    // source into `scratch`, then redirect whichever pending
+                    // move read that source to read `scratch` instead.
+                    let (_, cyc_src) = pending[0];
+                    self.out.push(RiscVOp::Addi {
+                        rd: scratch,
+                        rs1: cyc_src,
+                        imm: 0,
+                    });
+                    for m in pending.iter_mut() {
+                        if m.1 == cyc_src {
+                            m.1 = scratch;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Emit the unsigned 64-bit long-division core.
+    ///
+    /// Inputs `num = (num_lo, num_hi)` and `den = (den_lo, den_hi)` are
+    /// **unsigned** 64-bit values. The caller must already have guaranteed a
+    /// non-zero divisor (see `lower_i64_div`, which emits the trap). On
+    /// return, the quotient lives in `(DIV_Q_LO, DIV_Q_HI)` and the
+    /// remainder in `(DIV_R_LO, DIV_R_HI)`.
+    ///
+    /// Algorithm — classic restoring binary long division, numerator held in
+    /// the quotient register (the "shift the dividend out, shift the quotient
+    /// in" trick), 64 loop iterations:
+    /// ```text
+    ///   q = num ; r = 0 ; cnt = 64
+    /// loop:
+    ///   r = (r << 1) | (q >> 63)     ; shift the MSB of q into r's LSB
+    ///   q = q << 1                   ; q's LSB is now free for a quotient bit
+    ///   if r >=u den:                ; does the divisor fit?
+    ///       r = r - den
+    ///       q = q | 1                ; record a 1 quotient bit
+    ///   cnt = cnt - 1
+    ///   if cnt != 0: goto loop
+    /// ```
+    /// All of `<< 1`, the 64-bit unsigned compare, and the 64-bit subtract
+    /// are open-coded over the lo/hi register pair.
+    fn emit_i64_udiv_inline(&mut self, num: I64Pair, den: I64Pair) {
+        let (q_lo, q_hi) = (Self::DIV_Q_LO, Self::DIV_Q_HI);
+        let (r_lo, r_hi) = (Self::DIV_R_LO, Self::DIV_R_HI);
+        let (d_lo, d_hi) = (Self::DIV_D_LO, Self::DIV_D_HI);
+        let cnt = Self::DIV_CNT;
+        let (s0, s1, s2) = (Self::DIV_SCRATCH0, Self::DIV_SCRATCH1, Self::DIV_SCRATCH2);
+
+        // ── set-up: copy inputs into the fixed state registers ───────────
+        // q = num, d = den. The four inputs came from `alloc_temp` and may
+        // alias the fixed `DIV_*` state registers in any permutation, so a
+        // naive sequence of copies could clobber a source before it's read.
+        // `emit_parallel_move` schedules the four `mv`s so every source is
+        // read before it's overwritten (cycle-breaking via one scratch).
+        self.emit_parallel_move(
+            &[(q_lo, num.0), (q_hi, num.1), (d_lo, den.0), (d_hi, den.1)],
+            Self::DIV_MOVE_SCRATCH,
+        );
+        // r = 0 (the running remainder accumulator).
+        self.out.push(RiscVOp::Addi {
+            rd: r_lo,
+            rs1: Reg::ZERO,
+            imm: 0,
+        });
+        self.out.push(RiscVOp::Addi {
+            rd: r_hi,
+            rs1: Reg::ZERO,
+            imm: 0,
+        });
+        // cnt = 64 (one loop pass per dividend bit).
+        self.out.push(RiscVOp::Addi {
+            rd: cnt,
+            rs1: Reg::ZERO,
+            imm: 64,
+        });
+
+        let loop_label = self.fresh_label("Ludiv_loop");
+        let no_sub = self.fresh_label("Ludiv_nosub");
+        self.out.push(RiscVOp::Label {
+            name: loop_label.clone(),
+        });
+
+        // ── r = (r << 1) | (q >> 63) ─────────────────────────────────────
+        // The MSB of the 64-bit quotient register becomes the new LSB of the
+        // remainder. `q >> 63` is just bit 31 of q_hi.
+        // s0 = q_hi >> 31  (the bit crossing from q into r).
+        self.out.push(RiscVOp::Srli {
+            rd: s0,
+            rs1: q_hi,
+            shamt: 31,
+        });
+        // r_hi = (r_hi << 1) | (r_lo >> 31) — carry r_lo's MSB up into r_hi.
+        self.out.push(RiscVOp::Srli {
+            rd: s1,
+            rs1: r_lo,
+            shamt: 31,
+        });
+        self.out.push(RiscVOp::Slli {
+            rd: r_hi,
+            rs1: r_hi,
+            shamt: 1,
+        });
+        self.out.push(RiscVOp::Or {
+            rd: r_hi,
+            rs1: r_hi,
+            rs2: s1,
+        });
+        // r_lo = (r_lo << 1) | s0 — shift r_lo up and drop in the bit from q.
+        self.out.push(RiscVOp::Slli {
+            rd: r_lo,
+            rs1: r_lo,
+            shamt: 1,
+        });
+        self.out.push(RiscVOp::Or {
+            rd: r_lo,
+            rs1: r_lo,
+            rs2: s0,
+        });
+
+        // ── q = q << 1 ───────────────────────────────────────────────────
+        // Frees q's LSB to receive a quotient bit below.
+        self.out.push(RiscVOp::Srli {
+            rd: s1,
+            rs1: q_lo,
+            shamt: 31,
+        });
+        self.out.push(RiscVOp::Slli {
+            rd: q_hi,
+            rs1: q_hi,
+            shamt: 1,
+        });
+        self.out.push(RiscVOp::Or {
+            rd: q_hi,
+            rs1: q_hi,
+            rs2: s1,
+        });
+        self.out.push(RiscVOp::Slli {
+            rd: q_lo,
+            rs1: q_lo,
+            shamt: 1,
+        });
+
+        // ── if r >=u den: r -= den ; q |= 1 ──────────────────────────────
+        // 64-bit unsigned compare `r <u den`: compare hi halves, tie-break on
+        // lo. s2 = 1 iff r <u den → if s2 != 0 we must NOT subtract.
+        let lo_lt = self.fresh_label("Ludiv_lolt");
+        let cmp_done = self.fresh_label("Ludiv_cmpd");
+        // hi halves equal → fall through to the lo-half compare.
+        self.out.push(RiscVOp::Branch {
+            cond: Branch::Eq,
+            rs1: r_hi,
+            rs2: d_hi,
+            label: lo_lt.clone(),
+        });
+        // hi halves differ: r <u den iff r_hi <u d_hi.
+        self.out.push(RiscVOp::Sltu {
+            rd: s2,
+            rs1: r_hi,
+            rs2: d_hi,
+        });
+        self.out.push(RiscVOp::Jal {
+            rd: Reg::ZERO,
+            label: cmp_done.clone(),
+        });
+        self.out.push(RiscVOp::Label { name: lo_lt });
+        // hi halves equal: tie-break unsigned on the lo halves.
+        self.out.push(RiscVOp::Sltu {
+            rd: s2,
+            rs1: r_lo,
+            rs2: d_lo,
+        });
+        self.out.push(RiscVOp::Label { name: cmp_done });
+        // bne s2, zero, Ludiv_nosub → r <u den, divisor doesn't fit, skip.
+        self.out.push(RiscVOp::Branch {
+            cond: Branch::Ne,
+            rs1: s2,
+            rs2: Reg::ZERO,
+            label: no_sub.clone(),
+        });
+        // r >= den: 64-bit subtract r -= den with borrow.
+        // borrow = (r_lo <u d_lo), captured before the subtraction.
+        self.out.push(RiscVOp::Sltu {
+            rd: s0,
+            rs1: r_lo,
+            rs2: d_lo,
+        });
+        self.out.push(RiscVOp::Sub {
+            rd: r_lo,
+            rs1: r_lo,
+            rs2: d_lo,
+        });
+        self.out.push(RiscVOp::Sub {
+            rd: r_hi,
+            rs1: r_hi,
+            rs2: d_hi,
+        });
+        self.out.push(RiscVOp::Sub {
+            rd: r_hi,
+            rs1: r_hi,
+            rs2: s0,
+        });
+        // q |= 1 — record the quotient bit.
+        self.out.push(RiscVOp::Ori {
+            rd: q_lo,
+            rs1: q_lo,
+            imm: 1,
+        });
+        self.out.push(RiscVOp::Label { name: no_sub });
+
+        // ── cnt -= 1 ; loop while cnt != 0 ───────────────────────────────
+        self.out.push(RiscVOp::Addi {
+            rd: cnt,
+            rs1: cnt,
+            imm: -1,
+        });
+        self.out.push(RiscVOp::Branch {
+            cond: Branch::Ne,
+            rs1: cnt,
+            rs2: Reg::ZERO,
+            label: loop_label,
+        });
+        // On exit: quotient in (q_lo,q_hi), remainder in (r_lo,r_hi).
+    }
+
+    /// Lower all four i64 div/rem ops. `signed` selects div_s/rem_s vs
+    /// div_u/rem_u; `want_rem` selects rem vs div.
+    ///
+    /// Shared structure:
+    ///  1. **Zero-divisor trap** — wasm traps when the *full 64-bit* divisor
+    ///     is zero, so we OR the lo and hi halves and trap when the OR is 0.
+    ///  2. **Signed-overflow trap** (div_s only) — `INT64_MIN / -1` has an
+    ///     unrepresentable quotient (`2^63`); wasm traps. `rem_s` of the same
+    ///     operands does NOT trap (the remainder is 0), so the guard is
+    ///     emitted for `div_s` but not `rem_s`.
+    ///  3. **Signed magnitude reduction** — the unsigned core handles only
+    ///     non-negative operands. For signed ops we record each operand's
+    ///     sign, take absolute values, divide, then fix the result sign:
+    ///       - quotient sign = sign(dividend) XOR sign(divisor)
+    ///       - remainder sign = sign(dividend)   (wasm/C truncated division)
+    ///  4. **Unsigned core** — `emit_i64_udiv_inline`.
+    fn lower_i64_div(
+        &mut self,
+        op: &WasmOp,
+        signed: bool,
+        want_rem: bool,
+    ) -> Result<(), SelectorError> {
+        let ((nl, nh), (dl, dh)) = self.pop_pair_i64(op)?;
+
+        // ── Trap 1: divide/remainder by zero ─────────────────────────────
+        // The divisor is zero iff *both* halves are zero. `or` them and
+        // branch when the result is non-zero.
+        let zero_or = self.alloc_temp();
+        self.out.push(RiscVOp::Or {
+            rd: zero_or,
+            rs1: dl,
+            rs2: dh,
+        });
+        let div_ok = self.fresh_label("Li64div_ok");
+        self.out.push(RiscVOp::Branch {
+            cond: Branch::Ne,
+            rs1: zero_or,
+            rs2: Reg::ZERO,
+            label: div_ok.clone(),
+        });
+        self.out.push(RiscVOp::Ebreak);
+        self.out.push(RiscVOp::Label { name: div_ok });
+
+        // ── Trap 2: signed INT64_MIN / -1 overflow (div_s only) ──────────
+        // INT64_MIN = 0x8000_0000_0000_0000 → lo == 0, hi == 0x8000_0000.
+        // -1 (64-bit) → lo == -1, hi == -1. `rem_s` does NOT trap here
+        // (INT64_MIN % -1 == 0), so this guard is div_s-exclusive.
+        if signed && !want_rem && self.options.signed_div_overflow_trap {
+            let sdiv_ok = self.fresh_label("Li64sdiv_ok");
+            // dividend != INT64_MIN ? skip. Test the hi half against
+            // 0x8000_0000 and the lo half against 0.
+            let tmin_hi = self.alloc_temp();
+            emit_load_imm(&mut self.out, tmin_hi, i32::MIN);
+            self.out.push(RiscVOp::Branch {
+                cond: Branch::Ne,
+                rs1: nh,
+                rs2: tmin_hi,
+                label: sdiv_ok.clone(),
+            });
+            self.out.push(RiscVOp::Branch {
+                cond: Branch::Ne,
+                rs1: nl,
+                rs2: Reg::ZERO,
+                label: sdiv_ok.clone(),
+            });
+            // divisor != -1 ? skip. -1 has both halves all-ones.
+            let neg1 = self.alloc_temp();
+            self.out.push(RiscVOp::Addi {
+                rd: neg1,
+                rs1: Reg::ZERO,
+                imm: -1,
+            });
+            self.out.push(RiscVOp::Branch {
+                cond: Branch::Ne,
+                rs1: dl,
+                rs2: neg1,
+                label: sdiv_ok.clone(),
+            });
+            self.out.push(RiscVOp::Branch {
+                cond: Branch::Ne,
+                rs1: dh,
+                rs2: neg1,
+                label: sdiv_ok.clone(),
+            });
+            // dividend == INT64_MIN and divisor == -1 → overflow, trap.
+            self.out.push(RiscVOp::Ebreak);
+            self.out.push(RiscVOp::Label { name: sdiv_ok });
+        }
+
+        if !signed {
+            // ── Unsigned: feed the operands straight to the core. ────────
+            self.emit_i64_udiv_inline((nl, nh), (dl, dh));
+            let res = self.copy_div_result(want_rem);
+            self.push_i64(res.0, res.1);
+            return Ok(());
+        }
+
+        // ── Signed: reduce to magnitudes, divide, fix up the sign. ───────
+        // The sign of each operand is bit 63 = the MSB of its hi half;
+        // `sra hi, 31` broadcasts it to an all-ones / all-zeros mask.
+        let nsign = self.alloc_temp();
+        self.out.push(RiscVOp::Srai {
+            rd: nsign,
+            rs1: nh,
+            shamt: 31,
+        });
+        let dsign = self.alloc_temp();
+        self.out.push(RiscVOp::Srai {
+            rd: dsign,
+            rs1: dh,
+            shamt: 31,
+        });
+
+        // |dividend| and |divisor|. Negating unconditionally then selecting
+        // would also work, but the operands here came from `alloc_temp`, so
+        // we just negate into fresh temps and branch-select.
+        let (nabs_lo, nabs_hi) = self.emit_i64_abs(nl, nh, nsign);
+        let (dabs_lo, dabs_hi) = self.emit_i64_abs(dl, dh, dsign);
+
+        self.emit_i64_udiv_inline((nabs_lo, nabs_hi), (dabs_lo, dabs_hi));
+        let (mag_lo, mag_hi) = self.copy_div_result(want_rem);
+
+        // Result sign:
+        //  - quotient: negative iff the operand signs differ → nsign ^ dsign
+        //  - remainder: matches the dividend's sign           → nsign
+        let result_sign = if want_rem {
+            nsign
+        } else {
+            let xs = self.alloc_temp();
+            self.out.push(RiscVOp::Xor {
+                rd: xs,
+                rs1: nsign,
+                rs2: dsign,
+            });
+            xs
+        };
+
+        // Conditionally negate the magnitude when result_sign is all-ones.
+        let (final_lo, final_hi) = self.emit_i64_apply_sign(mag_lo, mag_hi, result_sign);
+        self.push_i64(final_lo, final_hi);
+        Ok(())
+    }
+
+    /// Copy the long-division core's fixed result registers into fresh
+    /// `alloc_temp` temporaries — `want_rem` picks the remainder pair, else
+    /// the quotient pair. Done immediately after the core so the fixed
+    /// `DIV_*` registers can be reused by any later op.
+    fn copy_div_result(&mut self, want_rem: bool) -> I64Pair {
+        let (src_lo, src_hi) = if want_rem {
+            (Self::DIV_R_LO, Self::DIV_R_HI)
+        } else {
+            (Self::DIV_Q_LO, Self::DIV_Q_HI)
+        };
+        let lo = self.alloc_temp();
+        let hi = self.alloc_temp();
+        self.out.push(RiscVOp::Addi {
+            rd: lo,
+            rs1: src_lo,
+            imm: 0,
+        });
+        self.out.push(RiscVOp::Addi {
+            rd: hi,
+            rs1: src_hi,
+            imm: 0,
+        });
+        (lo, hi)
+    }
+
+    /// Absolute value of a 64-bit value, given a precomputed sign mask
+    /// (`sra hi, 31` — all-ones if negative). Returns `(lo, hi)` of `|x|`.
+    ///
+    /// Branchless: `abs(x) = (x ^ mask) - mask`. When `mask` is all-ones
+    /// this is `~x + 1 = -x`; when all-zeros it is `x` unchanged. The `- mask`
+    /// is a 64-bit subtract (`- (-1) = +1` carries into the hi half).
+    fn emit_i64_abs(&mut self, lo: Reg, hi: Reg, mask: Reg) -> I64Pair {
+        let xl = self.alloc_temp();
+        let xh = self.alloc_temp();
+        self.out.push(RiscVOp::Xor {
+            rd: xl,
+            rs1: lo,
+            rs2: mask,
+        });
+        self.out.push(RiscVOp::Xor {
+            rd: xh,
+            rs1: hi,
+            rs2: mask,
+        });
+        // 64-bit subtract (xl,xh) - (mask,mask), with borrow from lo to hi.
+        let borrow = self.alloc_temp();
+        self.out.push(RiscVOp::Sltu {
+            rd: borrow,
+            rs1: xl,
+            rs2: mask,
+        });
+        let res_lo = self.alloc_temp();
+        let res_hi = self.alloc_temp();
+        self.out.push(RiscVOp::Sub {
+            rd: res_lo,
+            rs1: xl,
+            rs2: mask,
+        });
+        self.out.push(RiscVOp::Sub {
+            rd: res_hi,
+            rs1: xh,
+            rs2: mask,
+        });
+        self.out.push(RiscVOp::Sub {
+            rd: res_hi,
+            rs1: res_hi,
+            rs2: borrow,
+        });
+        (res_lo, res_hi)
+    }
+
+    /// Conditionally negate a 64-bit value: returns `-x` when `sign` is
+    /// all-ones, `x` when `sign` is all-zeros. Same `(x ^ mask) - mask`
+    /// branchless identity as `emit_i64_abs` — reused here for the result
+    /// sign fix-up of signed div/rem.
+    fn emit_i64_apply_sign(&mut self, lo: Reg, hi: Reg, sign: Reg) -> I64Pair {
+        self.emit_i64_abs(lo, hi, sign)
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4178,10 +4704,12 @@ mod tests {
 
     // -------- deferred ops fail loudly --------
 
+    // -------- I64DivS / I64DivU / I64RemS / I64RemU (Phase 3) --------
+
     #[test]
-    fn i64_div_rem_are_unsupported_phase3() {
-        // Division/remainder on i64 are deferred to Phase 3 — they must
-        // surface as `Unsupported`, never silently miscompile.
+    fn i64_div_rem_no_longer_unsupported() {
+        // Phase 3 implements all four i64 div/rem ops via inline software
+        // long division — the `Unsupported` arm must no longer fire for them.
         for op in [
             WasmOp::I64DivS,
             WasmOp::I64DivU,
@@ -4193,18 +4721,230 @@ mod tests {
                     WasmOp::I64Const(10),
                     WasmOp::I64Const(3),
                     op.clone(),
+                    WasmOp::Drop,
                     WasmOp::End,
                 ],
                 0,
             )
             .map(|_| ()); // RiscVSelection isn't Debug — drop the Ok payload.
             assert!(
-                matches!(r, Err(SelectorError::Unsupported(_))),
-                "{:?} should be Unsupported (Phase 3), got {:?}",
+                r.is_ok(),
+                "{:?} should now lower (Phase 3), got {:?}",
                 op,
                 r
             );
         }
+    }
+
+    /// Shared assertion: every i64 div/rem op must emit the zero-divisor
+    /// trap (`bne or, zero, ok ; ebreak ; ok:`) and the long-division loop
+    /// (a backward `Branch` to a labelled loop head, plus the inner subtract
+    /// guard). We pin the *shape*, not register allocation.
+    fn assert_i64_divrem_shape(out: &[RiscVOp]) {
+        // The long-division core branches/loops, so several Branch + Label
+        // ops appear. The zero-divisor trap contributes an Ebreak.
+        assert!(
+            count(out, |op| matches!(op, RiscVOp::Ebreak)) >= 1,
+            "i64 div/rem must emit a trap (ebreak) for the zero divisor"
+        );
+        // The long-division loop body shifts via slli/srli — the core uses
+        // `slli/srli ..., 1` and `srli ..., 31` for the shift-in carries.
+        assert!(
+            count(out, |op| matches!(op, RiscVOp::Slli { shamt: 1, .. })) >= 1,
+            "long-division loop shifts the quotient/remainder by 1"
+        );
+        assert!(
+            count(out, |op| matches!(op, RiscVOp::Srli { shamt: 31, .. })) >= 1,
+            "long-division loop extracts the crossing MSB via `>> 31`"
+        );
+        // The loop subtracts the divisor; the core uses Sub for the 64-bit
+        // remainder subtraction.
+        assert!(
+            count(out, |op| matches!(op, RiscVOp::Sub { .. })) >= 1,
+            "long-division loop subtracts the divisor"
+        );
+        // At least one backward branch closes the loop, plus the labels.
+        assert!(
+            count(out, |op| matches!(op, RiscVOp::Label { .. })) >= 3,
+            "long-division core emits a loop label + inner-branch labels"
+        );
+    }
+
+    #[test]
+    fn i64_div_u_emits_zero_trap_and_long_division() {
+        let out = run_i64(&[
+            WasmOp::I64Const(100),
+            WasmOp::I64Const(7),
+            WasmOp::I64DivU,
+            WasmOp::Drop,
+        ]);
+        assert_i64_divrem_shape(&out);
+        // The divide-by-zero guard ORs the two divisor halves and branches
+        // when the OR is non-zero.
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Or { .. })) >= 1,
+            "zero-divisor guard ORs the two divisor halves"
+        );
+    }
+
+    #[test]
+    fn i64_rem_u_emits_zero_trap_and_long_division() {
+        let out = run_i64(&[
+            WasmOp::I64Const(100),
+            WasmOp::I64Const(7),
+            WasmOp::I64RemU,
+            WasmOp::Drop,
+        ]);
+        assert_i64_divrem_shape(&out);
+    }
+
+    #[test]
+    fn i64_div_s_emits_zero_trap_and_long_division() {
+        let out = run_i64(&[
+            WasmOp::I64Const(-100),
+            WasmOp::I64Const(7),
+            WasmOp::I64DivS,
+            WasmOp::Drop,
+        ]);
+        assert_i64_divrem_shape(&out);
+        // Signed div reduces operands to magnitudes via `sra hi, 31` sign
+        // masks, then fixes the result sign — at least two Srai-by-31.
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Srai { shamt: 31, .. })) >= 2,
+            "signed div derives operand sign masks via `sra hi, 31`"
+        );
+    }
+
+    #[test]
+    fn i64_rem_s_emits_zero_trap_and_long_division() {
+        let out = run_i64(&[
+            WasmOp::I64Const(-100),
+            WasmOp::I64Const(7),
+            WasmOp::I64RemS,
+            WasmOp::Drop,
+        ]);
+        assert_i64_divrem_shape(&out);
+        // rem_s also needs the sign masks (remainder takes the dividend sign).
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Srai { shamt: 31, .. })) >= 2,
+            "signed rem derives operand sign masks via `sra hi, 31`"
+        );
+    }
+
+    #[test]
+    fn i64_div_s_emits_signed_overflow_trap() {
+        // INT64_MIN / -1 overflows: div_s must emit the overflow guard. The
+        // guard materialises INT64_MIN's high half (0x8000_0000) via
+        // emit_load_imm and branches against it; with the trap there are at
+        // least two Ebreak ops (zero-divisor + overflow).
+        let out = run_i64(&[
+            WasmOp::I64Const(i64::MIN),
+            WasmOp::I64Const(-1),
+            WasmOp::I64DivS,
+            WasmOp::Drop,
+        ]);
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Ebreak)) >= 2,
+            "div_s emits both the zero-divisor and the INT64_MIN/-1 traps"
+        );
+    }
+
+    #[test]
+    fn i64_rem_s_does_not_emit_overflow_trap() {
+        // INT64_MIN % -1 == 0 and must NOT trap — rem_s emits only the
+        // zero-divisor trap, so the Ebreak count is exactly one less than
+        // the equivalent div_s. We compare the two directly.
+        let rem_out = run_i64(&[
+            WasmOp::I64Const(i64::MIN),
+            WasmOp::I64Const(-1),
+            WasmOp::I64RemS,
+            WasmOp::Drop,
+        ]);
+        let div_out = run_i64(&[
+            WasmOp::I64Const(i64::MIN),
+            WasmOp::I64Const(-1),
+            WasmOp::I64DivS,
+            WasmOp::Drop,
+        ]);
+        let rem_ebreaks = count(&rem_out, |op| matches!(op, RiscVOp::Ebreak));
+        let div_ebreaks = count(&div_out, |op| matches!(op, RiscVOp::Ebreak));
+        assert_eq!(
+            rem_ebreaks + 1,
+            div_ebreaks,
+            "rem_s must omit the INT64_MIN/-1 overflow trap that div_s emits"
+        );
+    }
+
+    #[test]
+    fn i64_div_result_is_i64_typed() {
+        // The quotient is pushed as an i64 pair — a following i64 consumer
+        // (I64Add) must lower without a type mismatch.
+        let out = run_i64(&[
+            WasmOp::I64Const(40),
+            WasmOp::I64Const(8),
+            WasmOp::I64DivU,
+            WasmOp::I64Const(1),
+            WasmOp::I64Add,
+            WasmOp::Drop,
+        ]);
+        // I64Add emits its add/sltu/add/add quartet → at least 3 Add ops.
+        assert!(count(&out, |op| matches!(op, RiscVOp::Add { .. })) >= 3);
+    }
+
+    #[test]
+    fn parallel_move_breaks_a_swap_cycle() {
+        // The input copy-in for the long-division core must be alias-safe
+        // even when the inputs form a permutation cycle. A pure swap
+        // `t0<-t1, t1<-t0` needs a scratch-mediated 3-move expansion.
+        let mut ctx = Selector::new_with_options(0, SelectorOptions::wasm_compliant());
+        ctx.emit_parallel_move(&[(Reg::T0, Reg::T1), (Reg::T1, Reg::T0)], Reg::S7);
+        // A 2-cycle expands to exactly 3 moves (save + 2 copies).
+        let mvs = count(&ctx.out, |op| matches!(op, RiscVOp::Addi { imm: 0, .. }));
+        assert_eq!(mvs, 3, "a swap cycle expands to 3 scratch-mediated moves");
+        // The scratch register must appear as a move destination (the save).
+        assert!(
+            ctx.out
+                .iter()
+                .any(|op| matches!(op, RiscVOp::Addi { rd: Reg::S7, .. })),
+            "swap cycle is broken through the scratch register"
+        );
+    }
+
+    #[test]
+    fn parallel_move_skips_trivial_self_moves() {
+        // `dst == src` pairs are no-ops and must not be emitted at all.
+        let mut ctx = Selector::new_with_options(0, SelectorOptions::wasm_compliant());
+        ctx.emit_parallel_move(&[(Reg::T0, Reg::T0), (Reg::T1, Reg::T2)], Reg::S7);
+        let mvs = count(&ctx.out, |op| matches!(op, RiscVOp::Addi { .. }));
+        assert_eq!(mvs, 1, "only the non-trivial move is emitted");
+    }
+
+    #[test]
+    fn i64_div_u_runs_64_iteration_loop() {
+        // Pin the long-division loop structure: the core sets the iteration
+        // counter to 64 (`addi cnt, zero, 64`) and decrements it (`addi cnt,
+        // cnt, -1`) — both immediates must appear.
+        let out = run_i64(&[
+            WasmOp::I64Const(99),
+            WasmOp::I64Const(4),
+            WasmOp::I64DivU,
+            WasmOp::Drop,
+        ]);
+        assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Addi {
+                    rs1: Reg::ZERO,
+                    imm: 64,
+                    ..
+                }
+            )) >= 1,
+            "long-division core initialises the loop counter to 64"
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Addi { imm: -1, .. })) >= 1,
+            "long-division core decrements the loop counter"
+        );
     }
 
     // -------- type-state plumbing --------
