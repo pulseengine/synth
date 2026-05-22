@@ -23,6 +23,11 @@ use tracing::{Level, info};
 use wast::parser::{self, ParseBuffer};
 use wast::{Wast, WastDirective};
 
+/// Sentinel value clap substitutes when `--sbom` is given without a path.
+/// Resolved to `<output>.cdx.json` by [`resolve_sbom_path`]. Unlikely to
+/// collide with a real path the user would pass.
+const SBOM_DEFAULT_SENTINEL: &str = "\u{0}sbom-default\u{0}";
+
 #[derive(Parser)]
 #[command(name = "synth")]
 #[command(about = "WebAssembly-to-ARM Cortex-M AOT compiler")]
@@ -186,6 +191,19 @@ enum Commands {
         /// — for linking into a host build system.
         #[arg(long)]
         relocatable: bool,
+
+        /// Emit a CycloneDX 1.5 SBOM for the compiled ELF. With a path, writes
+        /// there; as a bare flag (`--sbom`) writes `<output>.cdx.json` next to
+        /// the ELF. The SBOM documents the synth compiler, the input WASM, the
+        /// output ELF (hashes + sizes), and the WASM module's imports. It is
+        /// the artifact consumed by `rivet import --format cyclonedx`.
+        #[arg(
+            long,
+            value_name = "PATH",
+            num_args = 0..=1,
+            default_missing_value = SBOM_DEFAULT_SENTINEL
+        )]
+        sbom: Option<PathBuf>,
     },
 
     /// Disassemble an ARM ELF file (e.g., synth disasm output.elf)
@@ -299,6 +317,7 @@ fn main() -> Result<()> {
             link,
             builtins,
             relocatable,
+            sbom,
         } => {
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
             let target_spec = resolve_target_spec(target.as_deref(), cortex_m)?;
@@ -313,6 +332,11 @@ fn main() -> Result<()> {
             // single-line deprecation notice when used.
             let resolved_safety_bounds =
                 resolve_safety_bounds(safety_bounds.as_deref(), bounds_check)?;
+
+            // Resolve the CycloneDX SBOM destination. `--sbom` with no value
+            // means "next to the ELF" (`<output>.cdx.json`); `--sbom PATH`
+            // writes there; absent means no SBOM.
+            let sbom_path = resolve_sbom_path(sbom, &output);
 
             compile_command(
                 input,
@@ -330,6 +354,7 @@ fn main() -> Result<()> {
                 verify,
                 &target_spec,
                 relocatable,
+                sbom_path,
             )?;
 
             // If --link requested, invoke the cross-linker
@@ -798,6 +823,63 @@ fn maybe_emit_safety_manifest(
     Ok(())
 }
 
+/// Resolve the `--sbom` flag into a concrete destination path (or `None`).
+///
+/// clap substitutes [`SBOM_DEFAULT_SENTINEL`] when the flag is given with no
+/// value, so:
+/// - flag absent            -> `None`              (no SBOM)
+/// - bare `--sbom`          -> `Some(<sentinel>)`   -> `<output>.cdx.json`
+/// - `--sbom path.cdx.json` -> `Some("path...")`    -> that path verbatim
+fn resolve_sbom_path(sbom: Option<PathBuf>, output: &std::path::Path) -> Option<PathBuf> {
+    match sbom {
+        None => None,
+        Some(p) if p.as_os_str() == SBOM_DEFAULT_SENTINEL => {
+            Some(synth_core::CycloneDxSbom::sidecar_path(output))
+        }
+        Some(p) => Some(p),
+    }
+}
+
+/// Emit a CycloneDX 1.5 SBOM next to the compiled ELF when `--sbom` was
+/// requested. The SBOM documents the synth compiler, the input WASM module
+/// (hash + size), the output ELF (hash + size + target + backend), and the
+/// WASM module's imports as a CycloneDX dependency graph. It is the artifact
+/// consumed by rivet #107's `sbom-record` (`rivet import --format cyclonedx`).
+///
+/// `input_wasm_bytes` is the post-WAT-decode WASM (the bytes synth actually
+/// compiled). When the input was a built-in demo (no file), `input_path` is a
+/// synthetic name.
+fn emit_sbom(
+    sbom_path: &std::path::Path,
+    input_path: &std::path::Path,
+    input_wasm_bytes: &[u8],
+    output_path: &std::path::Path,
+    output_elf_bytes: &[u8],
+    target_spec: &TargetSpec,
+    backend_name: &str,
+    imports: &[ImportEntry],
+) -> Result<()> {
+    let inputs = synth_core::SbomInputs {
+        synth_version: env!("CARGO_PKG_VERSION"),
+        input_path,
+        input_bytes: input_wasm_bytes,
+        output_path,
+        output_bytes: output_elf_bytes,
+        target_triple: &target_spec.triple,
+        backend: backend_name,
+        imports,
+    };
+    let sbom = synth_core::CycloneDxSbom::new(&inputs, synth_core::sbom::now_rfc3339());
+    std::fs::write(sbom_path, sbom.to_json())
+        .with_context(|| format!("Failed to write SBOM: {}", sbom_path.display()))?;
+    info!(
+        "Wrote CycloneDX SBOM ({} components): {}",
+        sbom.components.len(),
+        sbom_path.display()
+    );
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn compile_command(
     input: Option<PathBuf>,
@@ -815,6 +897,7 @@ fn compile_command(
     verify: bool,
     target_spec: &TargetSpec,
     relocatable: bool,
+    sbom_path: Option<PathBuf>,
 ) -> Result<()> {
     // Validate backend exists
     let registry = build_backend_registry();
@@ -858,11 +941,16 @@ fn compile_command(
             verify,
             target_spec,
             relocatable,
+            sbom_path,
         );
     }
 
     // Single function compilation (when --func-index or --func-name is specified)
     let func_index = func_index.unwrap_or(0);
+    // Captured for SBOM emission: the WASM bytes synth actually compiled and
+    // the module's imports. `None` for the demo path (no input module).
+    let mut sbom_wasm_bytes: Option<Vec<u8>> = None;
+    let mut sbom_imports: Vec<ImportEntry> = Vec::new();
     let (wasm_ops, func_name): (Vec<WasmOp>, String) = match (&input, &demo) {
         (Some(path), _) => {
             info!("Compiling WASM file: {}", path.display());
@@ -886,6 +974,15 @@ fn compile_command(
 
             // Run Loom WASM optimizer if --loom is enabled
             let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;
+
+            // Capture the WASM bytes + imports for the SBOM (the bytes synth
+            // actually compiles, after WAT decode and any Loom pass).
+            if sbom_path.is_some() {
+                if let Ok(module) = decode_wasm_module(&wasm_bytes) {
+                    sbom_imports = module.imports;
+                }
+                sbom_wasm_bytes = Some(wasm_bytes.clone());
+            }
 
             let functions =
                 decode_wasm_functions(&wasm_bytes).context("Failed to decode WASM functions")?;
@@ -993,6 +1090,31 @@ fn compile_command(
     // the WASM was supplied as a raw function-body slice — `compile_all_exports`
     // has the module context and threads through the real value.
     maybe_emit_safety_manifest(&output, target_spec, safety_bounds, 0)?;
+
+    // Emit a CycloneDX SBOM when requested. Only possible when synth compiled
+    // an actual WASM module (not a built-in demo, which has no input file).
+    if let Some(ref sbom_dest) = sbom_path {
+        match (sbom_wasm_bytes.as_deref(), input.as_deref()) {
+            (Some(wasm), Some(in_path)) => {
+                emit_sbom(
+                    sbom_dest,
+                    in_path,
+                    wasm,
+                    &output,
+                    &elf_data,
+                    target_spec,
+                    backend_name,
+                    &sbom_imports,
+                )?;
+            }
+            _ => {
+                eprintln!(
+                    "warning: --sbom requires a WASM/WAT input file; \
+                     skipping SBOM for demo compilation"
+                );
+            }
+        }
+    }
 
     println!("Compiled {} to {}", func_name, output.display());
     println!("  Code size: {} bytes", code.len());
@@ -1494,6 +1616,7 @@ fn compile_all_exports(
     verify: bool,
     target_spec: &TargetSpec,
     relocatable: bool,
+    sbom_path: Option<PathBuf>,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -1501,6 +1624,11 @@ fn compile_all_exports(
 
     let file_bytes =
         std::fs::read(&path).context(format!("Failed to read input file: {}", path.display()))?;
+
+    // WASM bytes captured for the SBOM (the post-decode bytes synth compiles).
+    // For a WAST file with multiple modules this holds the representative
+    // module (the one whose imports were merged), set inside the match below.
+    let mut sbom_wasm_bytes: Option<Vec<u8>> = None;
 
     // Decode module(s) — for WAST files we merge exports across all modules
     let (all_exports, all_memories, all_imports, max_num_imported_funcs) =
@@ -1522,6 +1650,11 @@ fn compile_all_exports(
             for (idx, wasm_bytes) in module_binaries.iter().enumerate() {
                 // Run Loom optimizer on each module if --loom is enabled
                 let wasm_bytes = maybe_run_loom(loom, wasm_bytes.clone())?;
+                // First decoded module is the SBOM default; refined below to
+                // the module whose imports get merged.
+                if sbom_wasm_bytes.is_none() {
+                    sbom_wasm_bytes = Some(wasm_bytes.clone());
+                }
                 match decode_wasm_module(&wasm_bytes) {
                     Ok(module) => {
                         let export_count = module
@@ -1559,6 +1692,9 @@ fn compile_all_exports(
                         if module.num_imported_funcs > max_imports {
                             max_imports = module.num_imported_funcs;
                             merged_imports = module.imports.clone();
+                            // Keep the SBOM input aligned with the merged
+                            // imports (the module the dependency graph reflects).
+                            sbom_wasm_bytes = Some(wasm_bytes.clone());
                         }
                     }
                     Err(e) => {
@@ -1583,6 +1719,7 @@ fn compile_all_exports(
             let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;
 
             let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
+            sbom_wasm_bytes = Some(wasm_bytes);
 
             let exports: Vec<_> = module
                 .functions
@@ -1737,6 +1874,21 @@ fn compile_all_exports(
     // safety knob is active.
     let linear_mem_bytes = all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0);
     maybe_emit_safety_manifest(&output, target_spec, safety_bounds, linear_mem_bytes)?;
+
+    // Emit a CycloneDX SBOM when requested.
+    if let Some(ref sbom_dest) = sbom_path {
+        let wasm = sbom_wasm_bytes.as_deref().unwrap_or(&[]);
+        emit_sbom(
+            sbom_dest,
+            &path,
+            wasm,
+            &output,
+            &elf_data,
+            target_spec,
+            backend.name(),
+            &all_imports,
+        )?;
+    }
 
     let total_code: usize = compiled_funcs.iter().map(|f| f.code.len()).sum();
     let total_relocs: usize = compiled_funcs.iter().map(|f| f.relocations.len()).sum();

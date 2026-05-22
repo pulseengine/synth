@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CycloneDX SBOM emission** — `synth compile --sbom` writes a CycloneDX 1.5
+  JSON SBOM (`<output>.cdx.json`, or an explicit path) documenting the synth
+  compiler, the input WASM module (SHA-256 + size), the output ELF (SHA-256,
+  size, target triple, backend), and the WASM module's imports as a
+  dependency graph. This is the artifact consumed by `rivet import --format
+  cyclonedx` for rivet #107's `sbom-record`. See `docs/sbom.md`.
+
 ## [0.3.1] - 2026-05-21
 
 First release built and published by the automated release pipeline:

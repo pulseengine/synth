@@ -205,3 +205,18 @@ The maintainer asked for the rollout to be staged. The committed
 - **Depends on:** Phases 1–4 and a separate design doc. **Out of scope for
   the current release-pipeline work** — noted here only as the intended
   future direction.
+
+## Phase 6 — CycloneDX SBOM auto-emit  ⬜ future
+
+- **Delivers:** the release workflow passes `--sbom` whenever it exercises
+  synth, so every published firmware artifact ships a CycloneDX 1.5 SBOM
+  (`.cdx.json`) as a release asset, signed alongside the binaries.
+- **Already implemented in the compiler:** `synth compile --sbom` emits the
+  SBOM today — see [`docs/sbom.md`](sbom.md). The SBOM documents the synth
+  compiler, the input WASM, the output ELF (hashes + sizes), and the WASM
+  module's imports, and is the artifact consumed by `rivet import --format
+  cyclonedx` for rivet #107's `sbom-record`.
+- **Remaining work:** wire `--sbom` into `release.yml` and upload the
+  `.cdx.json` as a release asset. **Not done here** — the compiler-side
+  capability is complete; only the CI plumbing is outstanding.
+- **Depends on:** Phase 1.

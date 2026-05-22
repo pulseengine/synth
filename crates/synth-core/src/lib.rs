@@ -9,6 +9,7 @@ pub mod component;
 pub mod error;
 pub mod ir;
 pub mod safety_manifest;
+pub mod sbom;
 pub mod target;
 pub mod wasm_decoder;
 pub mod wasm_op;
@@ -19,6 +20,7 @@ pub use component::*;
 pub use error::{Error, Result};
 pub use ir::*;
 pub use safety_manifest::SafetyManifest;
+pub use sbom::{CycloneDxSbom, SbomInputs};
 pub use target::*;
 pub use wasm_decoder::{
     DecodedModule, FunctionOps, ImportEntry, ImportKind, WasmMemory, decode_wasm_functions,
