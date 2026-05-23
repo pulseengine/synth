@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-23
+
+Verification & robustness release. Three workstreams: prototype-to-
+production validator pattern, panic-free optimized lowering with the
+gating fuzz harness restored, and the RV32 i64 integer surface
+completed.
+
+### Added
+
+#### Verification — validator pattern reaches production (#76)
+- **`Z3ArmValidator` now covers the full i32 + i64 op surface** —
+  arithmetic, logic, shifts/rotates, comparisons, unary ops, div/rem
+  for i32; the same arithmetic/logic/shift/comparison surface for
+  i64, modeled as 64-bit bitvectors and decomposed into the (lo, hi)
+  register pair the ARM lowering uses. Per-op Z3 SMT validation
+  replaces hand-written Rocq lemmas for the i64 surface (the layer
+  where Rocq is most painful). Negative tests confirm the validator
+  rejects deliberately wrong lowerings. **133 synth-verify tests.**
+  Closes #76 (CompCert-style untrusted-solver + trusted-validator
+  strategy); sidesteps #73 (Rocq divergence). (#133)
+
+#### RISC-V — i64 div/rem (Phase 3 completes the i64 integer surface)
+- **`I64DivS` / `I64DivU` / `I64RemS` / `I64RemU`** lower to inline
+  software long division (one shared 64-iteration restoring-binary-
+  division core; signed wrappers compute magnitudes via branchless
+  abs and fix the result sign). Wasm trap semantics honored:
+  divide-by-zero traps via 64-bit-or-of-halves; `INT64_MIN / -1`
+  overflow trap is emitted only for `div_s` — `rem_s` correctly does
+  not trap there. **+11 tests, 158 RV32 selector tests.** (#131)
+
+### Fixed
+
+#### Optimized path — panic-free, fuzz re-gated
+- **`ir_to_arm` returns `Result` instead of panicking** on an
+  unmapped vreg. The `get_arm_reg` defensive panic (PR #101) was the
+  last remaining panic site in the optimized lowering pipeline;
+  166 call sites threaded through `?`. The backend falls back to
+  the direct selector on `Err` (same shape as the issue-#120 float
+  fallback). The diagnostic content of the original panic is
+  preserved in the `Err` message — the bug-finder role still holds.
+- **`pop_i32_unary!` macro converted to `?`** — sibling fix. The
+  earlier slot_stack Result conversion missed this macro because
+  its `.expect(...)` ended with `,` (macro-arg) not `;`
+  (statement); the re-gated fuzz harness caught it on the first
+  run.
+- **`wasm_ops_lower_or_error` fuzz harness re-promoted to gating**
+  (`gating: true`) — closes debt open since v0.3.1 / PR #117. The
+  gating harness now serves as a permanent clean-room verifier of
+  the panic-free invariant. (#132)
+
 ## [0.4.0] - 2026-05-22
 
 ### Added
