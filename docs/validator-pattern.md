@@ -1,6 +1,7 @@
 # Validator-Pattern Verification Architecture
 
-**Status:** Proposed (prototype landed in `crates/synth-verify/src/validator_pattern.rs`)
+**Status:** Implemented for the i32 + i64 integer surface
+(`crates/synth-verify/src/validator_pattern.rs`)
 **Issues:** [#76](https://github.com/pulseengine/synth/issues/76) (proposal), [#73](https://github.com/pulseengine/synth/issues/73) (the gap this closes)
 **Date:** May 2026
 
@@ -219,31 +220,86 @@ like `(* Subsumed by validator_pattern::Z3ArmValidator for I32X; kept for
 historical reference *)`. The `.v` file still compiles, the proof still
 passes; we just no longer claim it carries the trust burden.
 
-### Per-Phase Op Coverage
+### Op Coverage
 
-This PR ships the prototype with `I32Add` only. Subsequent PRs (v0.5
-milestone) extend coverage roughly in this order:
+The validator (`Z3ArmValidator`) now covers the **full i32 + i64 integer
+arithmetic / logic / shift / comparison surface**. Each op below has a
+dedicated Z3-validation test asserting it certifies (`unsat` of the negated
+equivalence), plus negative tests proving deliberately wrong lowerings are
+rejected.
 
-1. **i32 arithmetic** (`I32Add`, `I32Sub`, `I32Mul`) — direct bvadd/bvsub/bvmul
-2. **i32 bitwise** (`I32And`, `I32Or`, `I32Xor`) — direct bvand/bvor/bvxor
-3. **i32 shifts** (`I32Shl`, `I32ShrS`, `I32ShrU`, `I32Rotl`, `I32Rotr`) —
-   modulo-32 shift amount per WASM spec
-4. **i32 comparisons** (11 ops) — flags-based encoding; validator handles
-   the "single CMP" vs "CMP+MOV+MOVEQ" divergence (#73 item 2) directly
-5. **i32 division** (`I32DivS`, `I32DivU`, `I32RemS`, `I32RemU`) — must model
-   the trap-guard sequence (#73 item 1)
-6. **i32 bit-manipulation** (`I32Clz`, `I32Ctz`, `I32Popcnt`) — encoders
-   already exist in `wasm_semantics.rs`
-7. **i32 constants** (`I32Const`) — must handle `MOVW`/`MVN`/`MOVW+MOVT`
-   selection (#73 item 4)
-8. **i64 operations** — register-pair encoding (#73 item 5); the validator
-   models pairs as two parallel 32-bit BVs concatenated to a 64-bit BV
-9. **f32/f64** — requires Z3's floating-point theory, more work
+**Covered — i32** (33 ops):
 
-Each phase is one PR landing 10–20 validator entries and the test cases that
-exercise them. Per-op work after the prototype is small (~20 LoC of encoding
-per op, mostly delegated to the existing `WasmSemantics` and `ArmSemantics`
-encoders).
+- arithmetic: `I32Add`, `I32Sub`, `I32Mul`
+- logic: `I32And`, `I32Or`, `I32Xor`
+- shift / rotate: `I32Shl`, `I32ShrS`, `I32ShrU`, `I32Rotl`, `I32Rotr`
+  (WASM masks the count mod 32; the lowering masks `R1` with `#31`)
+- comparison: `I32Eq`, `I32Ne`, `I32LtS`, `I32LtU`, `I32LeS`, `I32LeU`,
+  `I32GtS`, `I32GtU`, `I32GeS`, `I32GeU` — lowered as `CMP` + the `SetCond`
+  flag-materialisation pseudo-op, which is the value-domain face of the
+  "single CMP" divergence (#73 item 2)
+- unary: `I32Eqz`
+- division: `I32DivS`, `I32DivU`
+
+**Covered — i64** (26 ops):
+
+- arithmetic: `I64Add`, `I64Sub`, `I64Mul`
+- logic: `I64And`, `I64Or`, `I64Xor`
+- shift / rotate: `I64Shl`, `I64ShrS`, `I64ShrU`, `I64Rotl`, `I64Rotr`
+- comparison: `I64Eq`, `I64Ne`, `I64LtS`, `I64LtU`, `I64LeS`, `I64LeU`,
+  `I64GtS`, `I64GtU`, `I64GeS`, `I64GeU`
+- unary: `I64Eqz`
+
+The i64 ops are the heart of #76: they are exactly where hand-written Rocq
+lemmas are most painful. The validator carries an i64 value as the `(lo, hi)`
+**register pair** the ARM lowering uses — it never builds an opaque 64-bit
+bitvector for the arithmetic/logic/shift surface. The reference semantics are
+written in 32-bit limbs with carry / borrow propagated explicitly:
+
+- `i64.add` — `lo = a_lo + b_lo`; `carry = (lo <u a_lo)`;
+  `hi = a_hi + b_hi + carry`. The ARM side runs the genuine `ADDS` + `ADC`
+  carry-flag pair, so Z3 cross-checks two independent encodings.
+- `i64.sub` — symmetric, with borrow; ARM `SUBS` + `SBC`.
+- `i64` shifts — case-split on whether the (mod-64) amount is `< 32` or
+  `>= 32`, with the cross-limb bit transfer made explicit.
+- `i64` comparisons — lexicographic: the high limbs decide, the low limbs
+  break ties; the lexicographic helpers are themselves proved equal to Z3's
+  native 64-bit `bvult` / `bvslt` for all inputs.
+
+**Scoped out, with reasons:**
+
+- **i32 `rem_s` / `rem_u`** — the ARM lowering is `SDIV`/`UDIV` then `MLS`,
+  i.e. the identity `r = a - (a / b) * b`. Proving this equals WASM's
+  `bvsrem` / `bvurem` for all input pairs makes Z3 reason about a *symbolic*
+  32-bit multiply `(a / b) * b`, which bit-blasts past any practical solver
+  budget (no convergence in 5 minutes). `div_s` and `div_u` certify in well
+  under a second — the divide instruction maps straight onto `bvsdiv` /
+  `bvudiv` with no multiply — but *remainder* crosses the tractability line.
+  Deferred until the validator can discharge the `MLS` identity with a
+  multiplier-aware tactic rather than raw bit-blasting.
+- **i64 `div_s` / `div_u` / `rem_s` / `rem_u`** — synth lowers 64-bit
+  division to a runtime-library call (`__aeabi_ldivmod` and friends); there
+  is no fixed 32-bit ARM instruction sequence to symbolically execute.
+  Modeling a fictitious native 64-bit divide would certify a lowering the
+  compiler never emits. Deferred until the validator can reason about
+  helper-call summaries.
+- **`Clz` / `Ctz` / `Popcnt`** (i32 and i64) and **`Extend8S` / `Extend16S`**
+  — bit-counting and sign-extension. `wasm_semantics.rs` already has
+  binary-search encoders for the bit-counting ops; wiring them (and `SXTB` /
+  `SXTH`) through the validator's ARM-side executor is follow-up work outside
+  the #76 arithmetic/logic/shift/comparison core.
+- **f32 / f64** — requires Z3's floating-point theory; tracked separately.
+
+### Trap modeling for division
+
+WASM `div` *traps* (rather than producing a value) when the divisor is zero,
+or — for `div_s` — when the dividend is `INT_MIN` and the divisor is `-1`.
+The validator certifies the **non-trapping** behaviour: it asserts a
+precondition (`div_rem_precondition`) so Z3 only considers inputs on which
+WASM actually produces a value. The trap path itself — the selector's
+`CMP / BNE / UDF` guard — is *control flow*, validated at the CFG level rather
+than per-op. This keeps the div query honest: the value-domain equivalence it
+proves is real, and it does not overclaim coverage of the trap branch.
 
 ## Trusted Base
 
