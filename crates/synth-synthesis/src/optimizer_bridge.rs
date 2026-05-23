@@ -1911,11 +1911,13 @@ impl OptimizerBridge {
                 // Fallback for unsupported ops.
                 //
                 // We do NOT touch slot_stack here — by design. If an unknown
-                // op had a stack effect, downstream consumers will fail
-                // *loudly* via `slot_stack.pop().expect(...)` instead of
-                // silently mis-binding vregs. That's exactly the bug-finder
-                // class introduced for issue #93; the slot_stack rework
-                // (#121) preserves it.
+                // op had a stack effect, downstream consumers will surface a
+                // typed `Err` via `slot_stack.pop().ok_or_else(...)?` instead
+                // of silently mis-binding vregs. That's the same bug-finder
+                // class introduced for issue #93 (the slot_stack rework, #121,
+                // preserved it); the only change is that the failure mode is
+                // now an `Err` propagation, not a `panic!`, per the harness
+                // contract that lowering returns Err on malformed input.
                 _ => Opcode::Nop,
             };
 
