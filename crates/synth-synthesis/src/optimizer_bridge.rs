@@ -614,14 +614,20 @@ impl OptimizerBridge {
                 }};
             }
 
-            // Helper for unary i32 ops: pops 1 source.
+            // Helper for unary i32 ops: pops 1 source. Returns `?` on
+            // underflow so a malformed input that slipped past the pre-flight
+            // check produces a typed Err instead of panicking — matches the
+            // pop_i32_binary! handling. (The earlier slot_stack Result
+            // conversion missed this macro because its `.expect(...)` ended
+            // with `,` not `;`; the re-gated fuzz harness caught it.)
             macro_rules! pop_i32_unary {
                 () => {{
-                    OptReg(
-                        slot_stack
-                            .pop()
-                            .expect("wasm validator + pre-flight check guarantee stack depth"),
-                    )
+                    let src = slot_stack.pop().ok_or_else(|| {
+                        synth_core::Error::validation(
+                            "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
+                        )
+                    })?;
+                    OptReg(src)
                 }};
             }
 
