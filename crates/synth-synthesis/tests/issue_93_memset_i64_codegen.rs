@@ -42,7 +42,9 @@ fn compile_optimized(wasm_ops: &[WasmOp], num_params: usize) -> Vec<ArmOp> {
     let (ir, _cfg, _stats) = bridge
         .optimize_full(wasm_ops)
         .expect("optimize_full should succeed for valid input");
-    bridge.ir_to_arm(&ir, num_params)
+    bridge
+        .ir_to_arm(&ir, num_params)
+        .expect("ir_to_arm should succeed for valid input")
 }
 
 /// Returns true if the ARM op is one of the 64-bit shift pseudo-ops (the

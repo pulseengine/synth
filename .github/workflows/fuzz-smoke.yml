@@ -53,15 +53,16 @@ jobs:
         # error` is taken from the `gating` flag. Promote an exploration
         # harness to gating once its bug-list stabilises.
         include:
-          # `wasm_ops_lower_or_error` temporarily demoted from gating per
-          # issue #121 — wasm_to_ir's inst_id-as-vreg-slot model breaks for
-          # Drop / LocalSet / Store / Block / etc. The five rounds of fixes
-          # in PR #117 close the Nop/Unreachable/Return slot crashes; the
-          # remaining Drop-class shapes need the proper slot_stack refactor
-          # tracked in #121. Will re-promote to `gating: true` when that
-          # lands.
+          # `wasm_ops_lower_or_error` is gating again. It was demoted in
+          # PR #117 because wasm_to_ir's inst_id-as-vreg-slot model crashed
+          # on Drop / LocalSet / Store / Block shapes; the slot_stack
+          # refactor (issue #121) closed those. The last panic site in the
+          # optimized path was `ir_to_arm`'s defensive `get_arm_reg`, which
+          # now returns `Result` instead of `panic!`-ing — the whole
+          # `optimize_full` + `ir_to_arm` path is panic-free, so this
+          # harness (contract: "lower or Err, never panic") gates again.
           - target: wasm_ops_lower_or_error
-            gating: false  # demoted pending issue #121
+            gating: true
           - target: wasm_to_ir_roundtrip_op_coverage
             gating: true
           - target: i64_lowering_doesnt_clobber_params

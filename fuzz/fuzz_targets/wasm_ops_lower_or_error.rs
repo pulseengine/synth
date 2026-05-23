@@ -40,8 +40,12 @@ fuzz_target!(|input: FuzzInput| {
     // -----------------------------------------------------------------
     let bridge = OptimizerBridge::new();
     if let Ok((instructions, _cfg, _stats)) = bridge.optimize_full(&wasm_ops) {
-        let arm_ops = bridge.ir_to_arm(&instructions, input.num_params.min(4) as usize);
-        encode_each_or_typed_error(&arm_ops);
+        // `ir_to_arm` returns `Result`: `Ok` on success, `Err` for the
+        // issue-#93-class unmapped-vreg condition. Either is contract-
+        // compliant — only a panic is a crash.
+        if let Ok(arm_ops) = bridge.ir_to_arm(&instructions, input.num_params.min(4) as usize) {
+            encode_each_or_typed_error(&arm_ops);
+        }
     }
 
     // -----------------------------------------------------------------

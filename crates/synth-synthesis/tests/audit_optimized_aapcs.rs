@@ -11,7 +11,7 @@ use synth_synthesis::{ArmOp, OptimizerBridge, Reg, WasmOp};
 fn compile_optimized(wasm_ops: &[WasmOp], num_params: usize) -> Vec<ArmOp> {
     let bridge = OptimizerBridge::new();
     let (ir, _cfg, _stats) = bridge.optimize_full(wasm_ops).expect("optimize_full");
-    bridge.ir_to_arm(&ir, num_params)
+    bridge.ir_to_arm(&ir, num_params).expect("ir_to_arm")
 }
 
 fn writes(op: &ArmOp) -> Vec<Reg> {
