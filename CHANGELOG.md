@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-05-24
+
+Supply-chain close-out — synth produces all six evidence layers from
+rivet#107's table (SLSA + cosign + SBOM + build-attest + signed-output
++ sbom-record). PRs #135 (Phase 5) and #136 (Phases 4 + 6).
+
 ### Added
 
 #### CLI — sign synth's output ELF binaries (release roadmap Phase 5)
