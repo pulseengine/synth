@@ -193,18 +193,22 @@ The maintainer asked for the rollout to be staged. The committed
 - **Decision needed:** confirm whether synth crates should go to crates.io
   at all; if yes, set up trusted publishing on crates.io for the repo.
 
-## Phase 5 — signing synth's *output* ELF binaries  ⬜ future
+## Phase 5 — signing synth's *output* ELF binaries  ✅ compiler-side implemented
 
-- **Delivers:** synth invokes `sigil` to sign the ARM/RISC-V ELF binaries it
-  *produces* (not the compiler itself). This is the natural PulseEngine
-  integration: synth compiles, `sigil` attests the firmware artifact.
-- **Effort:** unknown — a design spike is needed first. `sigil` already has
-  an ELF signing format (`sigil sign --format elf --keyless`); the work is
-  wiring a `synth compile --sign` path and deciding the trust model for
-  embedded firmware.
-- **Depends on:** Phases 1–4 and a separate design doc. **Out of scope for
-  the current release-pipeline work** — noted here only as the intended
-  future direction.
+- **Delivers:** `synth compile --sign-output` invokes sigil's `wsc sign
+  --keyless --format elf` after writing the ELF, attaching a Sigstore
+  keyless signature in place. Off by default — opt in per-invocation; the
+  unsigned compile path is unchanged for consumers without `wsc` installed.
+  See [`sigil-integration.md`](sigil-integration.md) for the full design,
+  trust model, verification command, and the wsc-contract assumption.
+- **Status:** compiler-side wired (`crates/synth-cli/src/sign.rs`); the
+  signing subprocess shape, missing-wsc error path, and `--all-exports`
+  interaction are unit-tested. End-to-end signing + verification against a
+  live `wsc` binary was deferred to the maintainer (the implementing agent
+  did not have `wsc` on PATH).
+- **Pipeline integration is out of scope here** — wiring `--sign-output`
+  into `release.yml` (and uploading signed firmware as a release asset) is
+  the natural follow-up alongside Phase 6's `--sbom` plumbing.
 
 ## Phase 6 — CycloneDX SBOM auto-emit  ⬜ future
 

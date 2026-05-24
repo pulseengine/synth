@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### CLI — sign synth's output ELF binaries (release roadmap Phase 5)
+- **`synth compile --sign-output`** invokes sigil's
+  `wsc sign --keyless --format elf` after writing the ELF, attaching a
+  Sigstore keyless signature in place. Off by default — opt in per
+  invocation; the unsigned compile path is unchanged for consumers
+  without `wsc` installed. Composes with `--all-exports` (one signing
+  call covers the multi-function ELF) and with `--sbom` (the SBOM
+  records the unsigned synth output; the on-disk ELF after this
+  command is the signed version). When `wsc` is missing, synth exits
+  non-zero with an actionable error pointing at sigil's install
+  instructions. See [`docs/sigil-integration.md`](docs/sigil-integration.md)
+  for the trust model, verification command, and the wsc-version
+  contract assumption.
+
 ## [0.5.0] - 2026-05-23
 
 Verification & robustness release. Three workstreams: prototype-to-
