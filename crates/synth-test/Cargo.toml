@@ -6,6 +6,9 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "WAST-to-Robot Framework test generator for Renode emulation"
+# In-tree test tooling, not a public dependency surface; withheld
+# from crates.io.
+publish = false
 
 [dependencies]
 wast = { workspace = true }

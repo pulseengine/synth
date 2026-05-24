@@ -5,10 +5,16 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "WASM/WAT parser and module decoder frontend for the Synth compiler"
 
 [dependencies]
-synth-core = { path = "../synth-core" }
+# Internal path deps carry an explicit version so `cargo publish`
+# can rewrite to the crates.io coordinate. `path` is used for
+# in-workspace builds; `version` is what crates.io sees.
+synth-core = { path = "../synth-core", version = "0.6.0" }
 
 wasmparser.workspace = true
 wasm-encoder.workspace = true

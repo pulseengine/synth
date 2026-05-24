@@ -143,6 +143,31 @@ jobs:
           find artifacts -type f -name "*.tar.gz" -exec cp {} release-assets/ \;
           ls -la release-assets/
 
+      # Phase 6: CycloneDX SBOM for the synth toolchain itself. The
+      # SBOM is generated *before* SHA256SUMS so its digest is captured
+      # in the checksum manifest; the existing cosign signature over
+      # SHA256SUMS.txt transitively covers the SBOM. See docs/sbom.md
+      # for the distinction between this and `synth compile --sbom`.
+      - name: Install cargo-cyclonedx
+        run: cargo install --locked cargo-cyclonedx
+
+      - name: Generate toolchain SBOM (CycloneDX)
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
+          BARE="${VERSION#v}"
+          cargo cyclonedx --format json --spec-version 1.5 -p synth-cli
+          SBOM_SRC="crates/synth-cli/synth-cli.cdx.json"
+          if [ ! -f "$SBOM_SRC" ]; then
+            SBOM_SRC=$(find crates/synth-cli -maxdepth 2 -name '*.cdx.json' | head -1)
+          fi
+          test -n "$SBOM_SRC" && test -f "$SBOM_SRC"
+          cp "$SBOM_SRC" "release-assets/synth-${BARE}.cdx.json"
+          echo "::notice::Toolchain SBOM written to release-assets/synth-${BARE}.cdx.json"
+          ls -la release-assets/
+
       - name: Generate SHA256 checksums
         run: |
           set -euo pipefail

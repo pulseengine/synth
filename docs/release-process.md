@@ -44,14 +44,22 @@ an existing tag).
    free of the `libz3-dev` / temp-disk issues documented in `ci.yml`.
 
 2. **`create-release`** — collects all archives, then:
-   - Generates `SHA256SUMS.txt` over every archive.
+   - Generates a CycloneDX 1.5 JSON SBOM for the synth toolchain via
+     `cargo cyclonedx` (Phase 6) and writes it to
+     `release-assets/synth-<VERSION>.cdx.json`.
+   - Generates `SHA256SUMS.txt` over every archive *and* the SBOM.
    - Generates **SLSA build provenance** for every `.tar.gz` via
      `actions/attest-build-provenance` (GitHub-native attestation).
    - Signs `SHA256SUMS.txt` with **cosign keyless** (Sigstore), emitting
-     `SHA256SUMS.txt.cosign.bundle`, `.sig`, and `.pem`.
+     `SHA256SUMS.txt.cosign.bundle`, `.sig`, and `.pem`. The signature
+     transitively covers the SBOM (its digest is in SHA256SUMS.txt).
    - Captures a `build-env.txt` (rustc / cargo / cosign / runner versions).
    - Creates (or updates, idempotently) the GitHub Release and attaches all
      assets.
+
+3. **`publish-to-crates-io.yml`** (parallel workflow, same `v*` trigger)
+   — see Phase 4 below. Pushes the publishable workspace crates to
+   crates.io via OIDC trusted publishing.
 
 ## Provenance and signing model
 
@@ -117,9 +125,13 @@ Before pushing a `v*` tag:
 After the workflow finishes:
 
 - [ ] GitHub Release page shows 4 `.tar.gz` archives + `SHA256SUMS.txt` +
-      `SHA256SUMS.txt.{cosign.bundle,sig,pem}` + `build-env.txt`.
+      `SHA256SUMS.txt.{cosign.bundle,sig,pem}` + `build-env.txt` +
+      `synth-<VERSION>.cdx.json` (toolchain SBOM, Phase 6).
 - [ ] Spot-check one binary: download, `gh attestation verify`, run
       `synth --version`.
+- [ ] `publish-to-crates-io.yml` ran green: confirm
+      `cargo install synth-cli` works on a clean machine, or check
+      <https://crates.io/crates/synth-cli> shows the new version.
 
 ## CHANGELOG.md mapping
 
@@ -179,19 +191,86 @@ The maintainer asked for the rollout to be staged. The committed
   `sign-blob` step.
 - **Depends on:** Phases 1–2 and the `id-token: write` permission.
 
-## Phase 4 — crates.io publishing  ⬜ future
+## Phase 4 — crates.io publishing  ✅ implemented
 
-- **Delivers:** `cargo publish` of the workspace crates on tag push, so
-  `cargo install synth-cli` works.
-- **Effort:** ~0.5–1 day. The 17-crate workspace must be published in
-  dependency order; `sigil` solves this with a `scripts/publish.rs` helper —
-  synth would mirror that, or use a publish-ordering tool.
-- **Depends on:** a `CRATES_IO_TOKEN` secret (or crates.io **trusted
-  publishing** via OIDC, which `sigil` uses and is preferred — no token to
-  store). All crate metadata (`description`, `license`, `repository`) must be
-  complete and every dependency must be a published version, not a `path`.
-- **Decision needed:** confirm whether synth crates should go to crates.io
-  at all; if yes, set up trusted publishing on crates.io for the repo.
+- **Delivers:** the workspace's publishable crates are pushed to crates.io
+  on every `v*` tag, in parallel with `release.yml`. The workflow is
+  `.github/workflows/publish-to-crates-io.yml`; the dependency-order walk
+  is in `scripts/publish.rs` (compiled at workflow start by `rustc`).
+  Final user-visible result: `cargo install synth-cli` works after the
+  first release that runs this pipeline.
+- **Trust model:** crates.io **trusted publishing** via GitHub OIDC.
+  No `CRATES_IO_TOKEN` is stored on the repo;
+  `rust-lang/crates-io-auth-action@v1` exchanges the workflow's OIDC token
+  for a short-lived crates.io token scoped to the listed crates. There is
+  nothing to rotate.
+- **Versioning convention.** Trusted publishing requires a real semver, so
+  the workspace `version` is now bumped pre-tag in lockstep with the
+  release tag (e.g. `v0.6.0` ⇔ `version = "0.6.0"`). The publish workflow
+  verifies the tag matches the `[workspace.package]` version and refuses
+  to run otherwise.
+- **Published crate set (curated, conservative — leans toward
+  *less* publishing).** Internal-only crates are marked
+  `publish = false` and never reach crates.io.
+
+  | Crate                  | Published? | Notes |
+  | ---------------------- | ---------- | ----- |
+  | `synth-cli`            | yes        | the public CLI |
+  | `synth-core`           | yes        | dep of CLI |
+  | `synth-frontend`       | yes        | dep of CLI |
+  | `synth-synthesis`      | yes        | dep of CLI |
+  | `synth-backend`        | yes        | dep of CLI |
+  | `synth-backend-awsm`   | yes        | optional dep of CLI |
+  | `synth-backend-wasker` | yes        | optional dep of CLI |
+  | `synth-backend-riscv`  | yes        | default optional dep of CLI |
+  | `synth-cfg`            | yes        | transitive dep |
+  | `synth-opt`            | yes        | transitive dep |
+  | `synth-verify`         | yes        | optional `verify` feature |
+  | `synth-analysis`       | no         | not on the public face |
+  | `synth-abi`            | no         | not on the public face |
+  | `synth-memory`         | no         | not on the public face |
+  | `synth-qemu`           | no         | dev/test only |
+  | `synth-test`           | no         | dev/test binary |
+  | `synth-wit`            | no         | not on the public face |
+
+  Crates marked `publish = false` can be promoted later; promotion only
+  requires removing the line, adding `description`/`license` if not
+  inherited, and updating `scripts/publish.rs` so the order is right.
+- **Internal path deps.** Every published crate's internal deps now carry
+  both `path` and `version` (e.g. `synth-core = { path = "../synth-core",
+  version = "0.6.0" }`). cargo uses `path` for in-workspace builds and
+  rewrites to `version` on publish; both must be kept in lockstep with the
+  workspace version bump.
+
+### Phase 4 — user-side setup (required before the first publish)
+
+Trusted publishing requires a per-crate registration on crates.io.
+Until those are registered, the workflow will fail at the
+`rust-lang/crates-io-auth-action` step (or, for crates that *do* have
+trusted publishing but new ones don't, partway through `./publish
+publish`). This step **cannot be automated** — it requires the
+crates.io account that owns the crate (or, for first publishes, the
+account that will own it) to manually configure trusted publishing.
+
+For each crate in the "Published? yes" table above:
+
+1. Sign in to <https://crates.io> with the account that will own the crate.
+2. For a crate that does not yet exist, do a one-time manual
+   `cargo publish` from a local trusted-publishing-compatible setup
+   (or use the legacy token-based publish for the first version), so
+   crates.io has a record to attach the trusted publisher to.
+3. Navigate to <https://crates.io/crates/CRATENAME/settings> →
+   *Trusted Publishing*. Click **Add GitHub Publisher** with:
+   - Repository owner: `pulseengine`
+   - Repository name: `synth`
+   - Workflow filename: `publish-to-crates-io.yml`
+   - Environment: *(leave empty)*
+4. Repeat for every crate in the publishable set.
+
+After registration, the next `v*` tag push triggers an end-to-end
+publish without a stored token. Until registration is complete, the
+workflow may need to be re-run from the Actions tab via
+`workflow_dispatch` after each crate is registered.
 
 ## Phase 5 — signing synth's *output* ELF binaries  ✅ compiler-side implemented
 
@@ -210,17 +289,26 @@ The maintainer asked for the rollout to be staged. The committed
   into `release.yml` (and uploading signed firmware as a release asset) is
   the natural follow-up alongside Phase 6's `--sbom` plumbing.
 
-## Phase 6 — CycloneDX SBOM auto-emit  ⬜ future
+## Phase 6 — CycloneDX SBOM auto-emit  ✅ implemented
 
-- **Delivers:** the release workflow passes `--sbom` whenever it exercises
-  synth, so every published firmware artifact ships a CycloneDX 1.5 SBOM
-  (`.cdx.json`) as a release asset, signed alongside the binaries.
-- **Already implemented in the compiler:** `synth compile --sbom` emits the
-  SBOM today — see [`docs/sbom.md`](sbom.md). The SBOM documents the synth
-  compiler, the input WASM, the output ELF (hashes + sizes), and the WASM
-  module's imports, and is the artifact consumed by `rivet import --format
-  cyclonedx` for rivet #107's `sbom-record`.
-- **Remaining work:** wire `--sbom` into `release.yml` and upload the
-  `.cdx.json` as a release asset. **Not done here** — the compiler-side
-  capability is complete; only the CI plumbing is outstanding.
-- **Depends on:** Phase 1.
+- **Delivers:** the release workflow emits a CycloneDX 1.5 JSON SBOM for
+  the **synth toolchain itself** and attaches it to the GitHub Release.
+  Asset name: `synth-v<VERSION>.cdx.json` (e.g. `synth-v0.6.0.cdx.json`).
+  The SBOM is produced by `cargo cyclonedx --format json --spec-version
+  1.5 -p synth-cli` and covers every Rust dependency that goes into the
+  released `synth` binary.
+- **Two distinct SBOMs.** Do not conflate them — see [`docs/sbom.md`](sbom.md)
+  for the full distinction.
+  - The **toolchain SBOM** added in Phase 6 (this section) is shipped
+    *with the release* and documents what synth itself is built from.
+  - The **per-compilation SBOM** emitted by `synth compile --sbom` (added
+    in #129) is produced *by* synth at use time and documents one
+    compilation transaction (compiler + input WASM + output ELF + WASM
+    imports).
+- **Signing.** The toolchain SBOM is written into `release-assets/`
+  *before* the SHA256SUMS step, so its digest is captured in the
+  signed checksum manifest. The cosign keyless signature over
+  `SHA256SUMS.txt` (Phase 3) transitively covers the SBOM — no
+  separate signing step is needed.
+- **Depends on:** Phase 1 (Release-asset upload path; the new step
+  reuses `release-assets/` and the existing `gh release upload`).
