@@ -8,8 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Release pipeline Phase 4 — crates.io trusted publishing.** New
-  workflow `.github/workflows/publish-to-crates-io.yml` publishes the
+
+#### CLI — sign synth's output ELF binaries (release roadmap Phase 5)
+- **`synth compile --sign-output`** invokes sigil's
+  `wsc sign --keyless --format elf` after writing the ELF, attaching a
+  Sigstore keyless signature in place. Off by default — opt in per
+  invocation; the unsigned compile path is unchanged for consumers
+  without `wsc` installed. Composes with `--all-exports` (one signing
+  call covers the multi-function ELF) and with `--sbom` (the SBOM
+  records the unsigned synth output; the on-disk ELF after this
+  command is the signed version). When `wsc` is missing, synth exits
+  non-zero with an actionable error pointing at sigil's install
+  instructions. See [`docs/sigil-integration.md`](docs/sigil-integration.md)
+  for the trust model, verification command, and the wsc-version
+  contract assumption.
+
+#### Release pipeline — Phases 4 + 6
+- **Phase 4 — crates.io trusted publishing.** New workflow
+  `.github/workflows/publish-to-crates-io.yml` publishes the
   workspace's public crates (`synth-cli`, `synth-core`, `synth-frontend`,
   `synth-synthesis`, `synth-backend`, `synth-backend-{awsm,wasker,riscv}`,
   `synth-cfg`, `synth-opt`, `synth-verify`) on every `v*` tag via
@@ -19,12 +35,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Dependency-order walk lives in `scripts/publish.rs` (compiled by
   `rustc` at workflow start). User-side step still required:
   per-crate trusted-publisher registration on crates.io.
-- **Release pipeline Phase 6 — toolchain SBOM auto-emit.** `release.yml`
-  now installs `cargo-cyclonedx` and writes
-  `synth-v<VERSION>.cdx.json` (CycloneDX 1.5 JSON) into the release
-  assets before the SHA256SUMS step, so the existing cosign signature
-  over `SHA256SUMS.txt` transitively covers the SBOM. Complements (does
-  not replace) the per-compilation SBOM from `synth compile --sbom`.
+- **Phase 6 — toolchain SBOM auto-emit.** `release.yml` now installs
+  `cargo-cyclonedx` and writes `synth-v<VERSION>.cdx.json` (CycloneDX
+  1.5 JSON) into the release assets before the SHA256SUMS step, so the
+  existing cosign signature over `SHA256SUMS.txt` transitively covers
+  the SBOM. Complements (does not replace) the per-compilation SBOM
+  from `synth compile --sbom`.
 
 ### Changed
 - Workspace `version` bumped from `0.1.0` to `0.6.0` to support

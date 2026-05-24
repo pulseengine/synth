@@ -23,6 +23,8 @@ use tracing::{Level, info};
 use wast::parser::{self, ParseBuffer};
 use wast::{Wast, WastDirective};
 
+mod sign;
+
 /// Sentinel value clap substitutes when `--sbom` is given without a path.
 /// Resolved to `<output>.cdx.json` by [`resolve_sbom_path`]. Unlikely to
 /// collide with a real path the user would pass.
@@ -204,6 +206,15 @@ enum Commands {
             default_missing_value = SBOM_DEFAULT_SENTINEL
         )]
         sbom: Option<PathBuf>,
+
+        /// Sign the compiled ELF (in place) via sigil's `wsc sign --keyless
+        /// --format elf`. Requires the `wsc` binary from
+        /// https://github.com/pulseengine/sigil on PATH, plus an OIDC token
+        /// in the environment (e.g. GitHub Actions with `id-token: write`).
+        /// Off by default — opt in per-invocation. See
+        /// `docs/sigil-integration.md`.
+        #[arg(long)]
+        sign_output: bool,
     },
 
     /// Disassemble an ARM ELF file (e.g., synth disasm output.elf)
@@ -318,6 +329,7 @@ fn main() -> Result<()> {
             builtins,
             relocatable,
             sbom,
+            sign_output,
         } => {
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
             let target_spec = resolve_target_spec(target.as_deref(), cortex_m)?;
@@ -355,6 +367,7 @@ fn main() -> Result<()> {
                 &target_spec,
                 relocatable,
                 sbom_path,
+                sign_output,
             )?;
 
             // If --link requested, invoke the cross-linker
@@ -898,6 +911,7 @@ fn compile_command(
     target_spec: &TargetSpec,
     relocatable: bool,
     sbom_path: Option<PathBuf>,
+    sign_output: bool,
 ) -> Result<()> {
     // Validate backend exists
     let registry = build_backend_registry();
@@ -942,6 +956,7 @@ fn compile_command(
             target_spec,
             relocatable,
             sbom_path,
+            sign_output,
         );
     }
 
@@ -1114,6 +1129,14 @@ fn compile_command(
                 );
             }
         }
+    }
+
+    // Phase 5: sign the ELF via sigil's `wsc sign --keyless --format elf`.
+    // Done last so the SBOM (if any) records the hash of the unsigned synth
+    // output; the on-disk ELF after this step is the signed version. See
+    // docs/sigil-integration.md.
+    if sign_output {
+        sign::sign_elf(&output)?;
     }
 
     println!("Compiled {} to {}", func_name, output.display());
@@ -1617,6 +1640,7 @@ fn compile_all_exports(
     target_spec: &TargetSpec,
     relocatable: bool,
     sbom_path: Option<PathBuf>,
+    sign_output: bool,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -1888,6 +1912,13 @@ fn compile_all_exports(
             backend.name(),
             &all_imports,
         )?;
+    }
+
+    // Phase 5: sign the multi-function ELF via sigil. `--all-exports` produces
+    // a single multi-function ELF (all exports linked together), so one signing
+    // call covers every exported function. See docs/sigil-integration.md.
+    if sign_output {
+        sign::sign_elf(&output)?;
     }
 
     let total_code: usize = compiled_funcs.iter().map(|f| f.code.len()).sum();
