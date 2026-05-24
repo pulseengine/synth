@@ -21,7 +21,13 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+# Bumped from 0.1.0 to match the next release tag (v0.6.0). Prior
+# releases (v0.3.x, v0.4.0, v0.5.0) tagged without bumping Cargo
+# versions; crates.io trusted publishing (Phase 4) requires a real
+# semver to publish, so the convention now catches up: workspace
+# version follows the release tag, bumped pre-tag in the release
+# checklist. See docs/release-process.md.
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.88"
 authors = ["PulseEngine Team"]

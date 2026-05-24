@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Release pipeline Phase 4 — crates.io trusted publishing.** New
+  workflow `.github/workflows/publish-to-crates-io.yml` publishes the
+  workspace's public crates (`synth-cli`, `synth-core`, `synth-frontend`,
+  `synth-synthesis`, `synth-backend`, `synth-backend-{awsm,wasker,riscv}`,
+  `synth-cfg`, `synth-opt`, `synth-verify`) on every `v*` tag via
+  crates.io OIDC trusted publishing — no stored `CRATES_IO_TOKEN`.
+  Internal-only crates (`synth-analysis`, `synth-abi`, `synth-memory`,
+  `synth-qemu`, `synth-test`, `synth-wit`) carry `publish = false`.
+  Dependency-order walk lives in `scripts/publish.rs` (compiled by
+  `rustc` at workflow start). User-side step still required:
+  per-crate trusted-publisher registration on crates.io.
+- **Release pipeline Phase 6 — toolchain SBOM auto-emit.** `release.yml`
+  now installs `cargo-cyclonedx` and writes
+  `synth-v<VERSION>.cdx.json` (CycloneDX 1.5 JSON) into the release
+  assets before the SHA256SUMS step, so the existing cosign signature
+  over `SHA256SUMS.txt` transitively covers the SBOM. Complements (does
+  not replace) the per-compilation SBOM from `synth compile --sbom`.
+
+### Changed
+- Workspace `version` bumped from `0.1.0` to `0.6.0` to support
+  crates.io trusted publishing (real semvers required) and to align
+  the in-tree version with the next release tag. Going forward the
+  workspace version is bumped pre-tag in lockstep with the release
+  tag. Every published crate's internal `path` deps now also carry
+  an explicit `version = "0.6.0"` so `cargo publish` can resolve
+  them on crates.io.
+
 ## [0.5.0] - 2026-05-23
 
 Verification & robustness release. Three workstreams: prototype-to-

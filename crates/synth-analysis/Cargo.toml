@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SSA and control flow analysis for the Synth compiler"
+# Internal-only: not on the synth-cli published face. Kept in-tree
+# for analysis / experimentation, but withheld from crates.io until
+# someone needs to consume it as a library.
+publish = false
 
 [dependencies]
 synth-core = { path = "../synth-core" }

@@ -1,9 +1,20 @@
 # SBOM — CycloneDX Software Bill of Materials
 
-synth can emit a **CycloneDX 1.5 JSON SBOM** alongside every ELF it compiles.
-The SBOM documents the compilation transaction: what compiled the binary, what
-went in, and what came out. It is synth's contribution to the PulseEngine
-supply-chain story — see [rivet #107](#rivet-107-linkage) below.
+synth produces **two distinct CycloneDX 1.5 JSON SBOMs**; they are
+complementary, not duplicates. Get the distinction right when consuming
+or reasoning about supply-chain claims.
+
+| SBOM                       | Emitted by                              | Describes                                                         | Shipped where                                  |
+| -------------------------- | --------------------------------------- | ----------------------------------------------------------------- | ---------------------------------------------- |
+| **Per-compilation SBOM**   | `synth compile --sbom`                  | One compilation transaction: synth + input WASM + output ELF + WASM imports | next to the ELF, as `<stem>.cdx.json`          |
+| **Toolchain SBOM** (Phase 6) | `cargo cyclonedx` in `release.yml`     | The synth binary itself: every Rust dependency in the release build | GitHub Release asset, `synth-v<VERSION>.cdx.json` |
+
+The rest of this document is about the **per-compilation SBOM** —
+that is the older feature and the one the rivet #107 traceability
+chain consumes. The toolchain SBOM is described in
+[`docs/release-process.md` § Phase 6](release-process.md#phase-6--cyclonedx-sbom-auto-emit--implemented);
+its content is whatever `cargo cyclonedx --format json --spec-version
+1.5 -p synth-cli` produces from the workspace at the tagged commit.
 
 This is a **build SBOM**, not a transitive dependency scan. synth is a
 compiler, not a linker, so the SBOM records what synth actually knows.
@@ -125,11 +136,10 @@ IEC 62304 Ed.2 — require machine-readable SBOMs. CycloneDX is the format rivet
 
 ## Follow-ups
 
-- **Release-pipeline auto-emit.** The release workflow
-  (`.github/workflows/release.yml`) does not yet pass `--sbom` when it
-  exercises synth. Wiring the SBOM into a release artifact would let every
-  published firmware ship its CycloneDX SBOM. Noted as a follow-up; not done
-  here.
+- **Toolchain SBOM in the release.** Done in Phase 6 of the release
+  pipeline — see [`docs/release-process.md`](release-process.md). The
+  *per-compilation* SBOM described above is separate work (it is what
+  rivet #107 consumes) and not affected.
 - **SPDX export.** If a downstream consumer needs SPDX rather than CycloneDX,
   an `--sbom-format spdx` option could be added. Out of scope for now.
 - **Component versions for imports.** Imports are currently recorded with

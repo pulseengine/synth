@@ -6,5 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "QEMU integration utilities for testing Synth-compiled ARM binaries"
+# Test/dev helper only; not part of the public publish set.
+publish = false
 
 [dependencies]

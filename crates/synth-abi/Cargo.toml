@@ -6,6 +6,10 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "WebAssembly Component Model ABI (lift/lower) for the Synth compiler"
+# Internal-only: not on the synth-cli published face today. Phase 4
+# of the release plan publishes only what's needed for
+# `cargo install synth-cli`; this crate may join later.
+publish = false
 
 [dependencies]
 synth-wit = { path = "../synth-wit" }

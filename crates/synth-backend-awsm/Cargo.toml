@@ -5,9 +5,12 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "aWsm backend integration for the Synth compiler"
 
 [dependencies]
-synth-core = { path = "../synth-core" }
+synth-core = { path = "../synth-core", version = "0.6.0" }
 anyhow.workspace = true
 thiserror.workspace = true
