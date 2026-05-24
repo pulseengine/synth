@@ -1,12 +1,14 @@
 # Publishes the synth workspace to crates.io on every `v*` tag push,
 # in parallel with release.yml (binaries + provenance + cosign).
 #
-# Trust model: crates.io OIDC trusted publishing. No long-lived
-# CRATES_IO_TOKEN secret is stored on the repo; rust-lang/crates-io-auth-action
-# exchanges the GitHub OIDC token for a short-lived crates.io token
-# scoped to the listed crates. This requires a one-time per-crate
-# trusted-publisher registration on crates.io (see
-# docs/release-process.md "Phase 4 — user-side setup").
+# Trust model: an org-wide CRATES_IO_TOKEN secret (set at the
+# pulseengine GitHub organization, inherited by this repo).
+# Cargo reads it from `CARGO_REGISTRY_TOKEN`. We considered OIDC
+# trusted publishing (matches sigil) but chose the simpler token
+# path because the org secret already exists and OIDC requires
+# per-crate trusted-publisher registration on crates.io (11 forms).
+# Migration to OIDC is tracked as a future-work item in
+# docs/release-process.md "Phase 4 — auth model".
 #
 # Mirrors pulseengine/sigil's publish-to-crates-io.yml plus a Rust
 # helper script (scripts/publish.rs) that walks the dependency order.
@@ -40,7 +42,6 @@ jobs:
     if: github.repository == 'pulseengine/synth'
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v4
@@ -79,18 +80,14 @@ jobs:
           echo "::notice::tag $VERSION matches workspace version $ACTUAL"
 
       - name: Build publish helper
-        run: rustc scripts/publish.rs -o publish
-
-      - name: Authenticate with crates.io (OIDC trusted publishing)
-        id: auth
-        uses: rust-lang/crates-io-auth-action@v1
+        run: rustc --edition 2024 scripts/publish.rs -o publish
 
       - name: Verify all crates can publish
         run: ./publish verify
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
 
       - name: Publish workspace to crates.io
         run: ./publish publish
         env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
