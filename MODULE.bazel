@@ -5,7 +5,9 @@ Bazel module definition
 
 module(
     name = "synth",
-    version = "0.1.0",
+    # Kept in lockstep with [workspace.package] version in Cargo.toml.
+    # Both are bumped pre-tag — see docs/release-process.md.
+    version = "0.6.0",
 )
 
 # Bazel dependencies

@@ -5,10 +5,13 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Peephole optimization passes for the Synth compiler"
 
 [dependencies]
-synth-cfg = { path = "../synth-cfg" }
+synth-cfg = { path = "../synth-cfg", version = "0.6.0" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
