@@ -583,6 +583,36 @@ fn index_to_vfp_reg(index: u8) -> VfpReg {
     }
 }
 
+/// Convert VFP D-register index to VfpReg enum (D0-D15 for linear allocation).
+///
+/// ARMv7-M VFPv4-D16 (e.g., Cortex-M7DP) exposes 16 double-precision registers
+/// D0..D15. Each D-register aliases a pair of S-registers (D0=S0:S1, ...),
+/// so the f32 and f64 allocators share the same underlying register file.
+/// For the non-optimized selector we use a simple wrapping counter — register
+/// pressure is rare in straight-line WASM functions, and the encoder accepts
+/// any D0..D15. The same allocator is used regardless of S-register pressure
+/// because the round-robin policy already wraps.
+fn index_to_vfp_dreg(index: u8) -> VfpReg {
+    match index % 16 {
+        0 => VfpReg::D0,
+        1 => VfpReg::D1,
+        2 => VfpReg::D2,
+        3 => VfpReg::D3,
+        4 => VfpReg::D4,
+        5 => VfpReg::D5,
+        6 => VfpReg::D6,
+        7 => VfpReg::D7,
+        8 => VfpReg::D8,
+        9 => VfpReg::D9,
+        10 => VfpReg::D10,
+        11 => VfpReg::D11,
+        12 => VfpReg::D12,
+        13 => VfpReg::D13,
+        14 => VfpReg::D14,
+        _ => VfpReg::D15,
+    }
+}
+
 /// Convert Q-register index to QReg enum (Q0-Q7, wrapping)
 fn index_to_qreg(index: u8) -> QReg {
     match index % 8 {
@@ -613,6 +643,9 @@ pub struct InstructionSelector {
     target_name: String,
     /// Next available VFP S-register (S0-S15, wrapping)
     next_vfp_reg: u8,
+    /// Next available VFP D-register (D0-D15, wrapping). Used only on
+    /// targets with `FPUPrecision::Double` (e.g., Cortex-M7DP).
+    next_vfp_dreg: u8,
     /// Label counter for generating unique label names
     label_counter: u32,
     /// Whether this target has Helium MVE (Cortex-M55)
@@ -632,6 +665,7 @@ impl InstructionSelector {
             fpu: None,
             target_name: "cortex-m3".to_string(),
             next_vfp_reg: 0,
+            next_vfp_dreg: 0,
             label_counter: 0,
             has_helium: false,
             next_qreg: 0,
@@ -648,6 +682,7 @@ impl InstructionSelector {
             fpu: None,
             target_name: "cortex-m3".to_string(),
             next_vfp_reg: 0,
+            next_vfp_dreg: 0,
             label_counter: 0,
             has_helium: false,
             next_qreg: 0,
@@ -694,6 +729,19 @@ impl InstructionSelector {
         let reg = index_to_vfp_reg(self.next_vfp_reg);
         self.next_vfp_reg = (self.next_vfp_reg + 1) % 16;
         reg
+    }
+
+    /// Allocate a VFP D-register (D0-D15, wrapping). Used for f64 lowering on
+    /// targets with `FPUPrecision::Double` (e.g., Cortex-M7DP).
+    fn alloc_vfp_dreg(&mut self) -> VfpReg {
+        let reg = index_to_vfp_dreg(self.next_vfp_dreg);
+        self.next_vfp_dreg = (self.next_vfp_dreg + 1) % 16;
+        reg
+    }
+
+    /// Returns true if the configured target has a double-precision FPU.
+    fn has_double_fpu(&self) -> bool {
+        matches!(self.fpu, Some(FPUPrecision::Double))
     }
 
     /// Select ARM instructions for a sequence of WASM operations
@@ -1957,8 +2005,207 @@ impl InstructionSelector {
                 )));
             }
 
-            // F64 ops — always rejected (single-precision targets don't support F64,
-            // and no-FPU targets don't support any float)
+            // ===== F64 operations =====
+            // Path A: target has double-precision FPU (e.g., Cortex-M7DP) → generate VFP-D
+            // Path B: no DP FPU (no FPU or single-precision only) → error
+            //
+            // F64 values live in VFP D-registers (D0..D15). Each D-register
+            // aliases a pair of S-registers, so the encoder reuses the same
+            // VFP register file. Allocation follows the same wrap-around
+            // policy as f32 (alloc_vfp_dreg).
+
+            // F64 Arithmetic
+            F64Add if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Add { dd, dn, dm }]
+            }
+            F64Sub if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Sub { dd, dn, dm }]
+            }
+            F64Mul if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Mul { dd, dn, dm }]
+            }
+            F64Div if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Div { dd, dn, dm }]
+            }
+
+            // F64 Math Functions (unary)
+            F64Abs if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Abs { dd, dm }]
+            }
+            F64Neg if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Neg { dd, dm }]
+            }
+            F64Sqrt if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Sqrt { dd, dm }]
+            }
+
+            // F64 Comparisons (result in integer register)
+            F64Eq if self.has_double_fpu() => {
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Eq { rd, dn, dm }]
+            }
+            F64Ne if self.has_double_fpu() => {
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Ne { rd, dn, dm }]
+            }
+            F64Lt if self.has_double_fpu() => {
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Lt { rd, dn, dm }]
+            }
+            F64Le if self.has_double_fpu() => {
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Le { rd, dn, dm }]
+            }
+            F64Gt if self.has_double_fpu() => {
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Gt { rd, dn, dm }]
+            }
+            F64Ge if self.has_double_fpu() => {
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Ge { rd, dn, dm }]
+            }
+
+            // F64 Constants and Memory
+            F64Const(val) if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Const { dd, value: *val }]
+            }
+            F64Load { offset, .. } if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let addr_reg = self.regs.alloc_reg();
+                vec![ArmOp::F64Load {
+                    dd,
+                    addr: MemAddr::reg_imm(Reg::R11, addr_reg, *offset as i32),
+                }]
+            }
+            F64Store { offset, .. } if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let addr_reg = self.regs.alloc_reg();
+                vec![ArmOp::F64Store {
+                    dd,
+                    addr: MemAddr::reg_imm(Reg::R11, addr_reg, *offset as i32),
+                }]
+            }
+
+            // F64 Conversions (i32 ↔ f64, f32 → f64, bitcasts)
+            F64ConvertI32S if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                vec![ArmOp::F64ConvertI32S { dd, rm }]
+            }
+            F64ConvertI32U if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                vec![ArmOp::F64ConvertI32U { dd, rm }]
+            }
+            F64PromoteF32 if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let sm = self.alloc_vfp_reg();
+                vec![ArmOp::F64PromoteF32 { dd, sm }]
+            }
+            F64ReinterpretI64 if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                // i64 lives in a register pair (rmlo, rmhi). Use the
+                // existing integer allocator for both halves.
+                let rmlo = self.regs.alloc_reg();
+                let rmhi = self.regs.alloc_reg();
+                vec![ArmOp::F64ReinterpretI64 { dd, rmlo, rmhi }]
+            }
+            I64ReinterpretF64 if self.has_double_fpu() => {
+                let dm = self.alloc_vfp_dreg();
+                let rdlo = self.regs.alloc_reg();
+                let rdhi = self.regs.alloc_reg();
+                vec![ArmOp::I64ReinterpretF64 { rdlo, rdhi, dm }]
+            }
+            I32TruncF64S if self.has_double_fpu() => {
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::I32TruncF64S { rd, dm }]
+            }
+            I32TruncF64U if self.has_double_fpu() => {
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::I32TruncF64U { rd, dm }]
+            }
+
+            // F64 rounding pseudo-ops — emit ArmOp variants; encoder expands
+            // them into FPSCR-rounding-mode + VCVT sequences.
+            F64Ceil if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Ceil { dd, dm }]
+            }
+            F64Floor if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Floor { dd, dm }]
+            }
+            F64Trunc if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Trunc { dd, dm }]
+            }
+            F64Nearest if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Nearest { dd, dm }]
+            }
+            // F64 min/max — emit ArmOp variants, encoder expands to VCMP + conditional VMOV
+            F64Min if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Min { dd, dn, dm }]
+            }
+            F64Max if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Max { dd, dn, dm }]
+            }
+            // F64 copysign — emit ArmOp variant, encoder expands to bitwise sequence
+            F64Copysign if self.has_double_fpu() => {
+                let dd = self.alloc_vfp_dreg();
+                let dn = self.alloc_vfp_dreg();
+                let dm = self.alloc_vfp_dreg();
+                vec![ArmOp::F64Copysign { dd, dn, dm }]
+            }
+
+            // F64 i64 conversions: VCVT.{F64,S32}.{S32,F64} with i64 register
+            // pairs is not implemented in the backend. Surface a typed error.
+            op @ (F64ConvertI64S | F64ConvertI64U | I64TruncF64S | I64TruncF64U)
+                if self.has_double_fpu() =>
+            {
+                return Err(synth_core::Error::synthesis(format!(
+                    "{op:?} not supported (requires i64 register pairs on 32-bit ARM)"
+                )));
+            }
+
+            // Path B: F64 op but target lacks double-precision FPU.
+            // The validate_instructions feature gate at codegen time emits
+            // a "requires double-precision FPU" error for any leaked F64
+            // ArmOp; this path catches the op *before* selection and gives
+            // a target-specific message.
             op @ (F64Add
             | F64Sub
             | F64Mul
@@ -1994,8 +2241,11 @@ impl InstructionSelector {
             | I32TruncF64S
             | I32TruncF64U) => {
                 let msg = if self.fpu.is_some() {
+                    // Single-precision FPU target (e.g., Cortex-M4F): VFP-D
+                    // instructions exist as encodings but the hardware lacks
+                    // the double-precision unit to execute them.
                     format!(
-                        "F64 not supported on single-precision target {} for {op:?}",
+                        "target {} lacks double-precision FPU; cannot compile {op:?}",
                         self.target_name
                     )
                 } else {
