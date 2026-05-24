@@ -158,7 +158,14 @@ jobs:
           set -euo pipefail
           VERSION="${INPUT_TAG:-${GITHUB_REF#refs/tags/}}"
           BARE="${VERSION#v}"
-          cargo cyclonedx --format json --spec-version 1.5 -p synth-cli
+          # cargo-cyclonedx doesn't proxy cargo's `-p` package-selection flag
+          # (caught the hard way on the first v0.6.0 release attempt). Use
+          # `--manifest-path` to target synth-cli's Cargo.toml directly; the
+          # generated SBOM lands next to that Cargo.toml.
+          cargo cyclonedx \
+            --manifest-path crates/synth-cli/Cargo.toml \
+            --format json \
+            --spec-version 1.5
           SBOM_SRC="crates/synth-cli/synth-cli.cdx.json"
           if [ ! -f "$SBOM_SRC" ]; then
             SBOM_SRC=$(find crates/synth-cli -maxdepth 2 -name '*.cdx.json' | head -1)
