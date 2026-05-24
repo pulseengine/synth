@@ -76,6 +76,21 @@ exits non-zero with the wsc stderr captured in the error message.
 
 ### Verification (consumer side)
 
+> **Status note (sigil v0.9.0, May 2026).** `wsc sign --keyless --format
+> elf` is currently rejected by sigil with the literal error string
+> *"Keyless signing is currently supported only for WASM format. Use
+> key-based signing for ELF and MCUboot artifacts."* See
+> [`src/cli/main.rs`](https://github.com/pulseengine/sigil/blob/v0.9.0/src/cli/main.rs#L770-L779).
+> Until sigil ships keyless ELF support, `synth compile --sign-output`
+> exits non-zero with the wsc rejection surfaced verbatim. The CI test
+> (`tests/wsc_sign_e2e.sh`, workflow `signing-e2e.yml`) asserts exactly
+> that current behaviour AND auto-detects when the situation flips,
+> alerting maintainers via a `::notice::` GitHub annotation. The
+> command below documents the *intended* verification UX once sigil
+> ships ELF keyless; today the round-trip is only achievable for WASM
+> modules (see [Verifying a signed WASM module locally](#verifying-a-signed-wasm-module-locally)
+> below).
+
 ```bash
 wsc verify --keyless --format elf \
   --cert-identity "https://github.com/pulseengine/synth/.github/workflows/release.yml@refs/tags/v0.6.0" \
@@ -83,11 +98,48 @@ wsc verify --keyless --format elf \
   -i firmware.elf
 ```
 
-The exact `--cert-identity` regex depends on how the firmware was signed
+The exact `--cert-identity` value depends on how the firmware was signed
 (local developer signs with their own GitHub identity; CI signs with the
 workflow identity). Producers should publish the expected identity alongside
-the firmware. See [sigil's `docs/keyless.md`](https://github.com/pulseengine/sigil/blob/main/docs/keyless.md)
+the firmware. Sigil's `wsc verify --keyless` accepts the literal
+`--cert-identity` (string match) and `--cert-oidc-issuer` flags; there is
+**no** `--cert-identity-regexp` flag in sigil v0.9.0 (see sigil's
+[`src/cli/main.rs` lines 247-258](https://github.com/pulseengine/sigil/blob/v0.9.0/src/cli/main.rs#L247-L258)).
+See [sigil's `docs/keyless.md`](https://github.com/pulseengine/sigil/blob/main/docs/keyless.md)
 for the full verification surface.
+
+### Verifying a signed WASM module locally
+
+This is the path that actually works today. It is what `tests/wsc_sign_e2e.sh`
+case 1 exercises in CI on every PR that touches the signing contract.
+
+```bash
+# 1. Build a WASM module (synth's WAT fixtures work, or any wasmparser-valid
+#    module). For a developer-identity signature, install wsc from sigil:
+cargo install --git https://github.com/pulseengine/sigil --bin wsc
+wat2wasm tests/integration/add.wat -o /tmp/add.wasm
+
+# 2. Sign with your developer GitHub identity (wsc opens an OIDC browser flow
+#    for keyless signing outside CI).
+wsc sign --keyless --format wasm -i /tmp/add.wasm -o /tmp/add.signed.wasm
+
+# 3. Verify. With --cert-identity bound to your GitHub identity:
+wsc verify --keyless --format wasm \
+  --cert-identity 'you@example.com' \
+  --cert-oidc-issuer 'https://github.com/login/oauth' \
+  -i /tmp/add.signed.wasm
+
+# Or, in a GitHub Actions workflow with id-token: write, the certificate
+# identity is the workflow ref:
+wsc verify --keyless --format wasm \
+  --cert-identity 'https://github.com/pulseengine/synth/.github/workflows/signing-e2e.yml@refs/heads/main' \
+  --cert-oidc-issuer 'https://token.actions.githubusercontent.com' \
+  -i /tmp/add.signed.wasm
+```
+
+Omitting `--cert-identity` makes verify accept any identity that's anchored
+in Rekor — useful for a quick health check but **insufficient for trust**
+in production. Always pin the expected identity in any consumer-side script.
 
 ## Interaction with `--sbom`
 
@@ -170,16 +222,55 @@ long-lived signing key needs to be managed.
 
 ## Status
 
-Implemented in `feat/sigil-elf-signing`. Validated:
+Implemented in `feat/sigil-elf-signing` (PR #135). End-to-end validation
+landed in `feat/wsc-ci-end-to-end` via the `signing-e2e.yml` workflow.
+
+Validated:
 
 - Unit tests pin the `wsc` argv shape and the missing-wsc error path
   (`crates/synth-cli/src/sign.rs::tests`).
 - Manual smoke test of `synth compile --demo add --sign-output` (without
   wsc installed) confirms exit code 1 with the actionable error.
-- End-to-end signing + verification **was not validated by the implementing
-  agent** — `wsc` was not available in that environment. A maintainer with
-  `wsc` installed should run the verification command above against an ELF
-  signed locally to confirm the wsc contract assumption.
+- **End-to-end CI validation**: `.github/workflows/signing-e2e.yml`
+  downloads a sha256-pinned `wsc` from sigil's releases (currently
+  `v0.9.0`) and runs `tests/wsc_sign_e2e.sh`, which exercises three
+  load-bearing cases:
+  1. **WASM keyless sign + verify round-trip** — proves wsc is healthy,
+     Fulcio + Rekor are reachable, the OIDC token works, and the keyless
+     code path that sigil currently supports does sign and re-verify a
+     module end-to-end.
+  2. **Synth's actual ELF contract** — runs `synth compile --sign-output`
+     and asserts the current sigil-v0.9.0 behaviour: wsc rejects keyless
+     ELF with *"Keyless signing is currently supported only for WASM
+     format"*; synth surfaces that error verbatim; the unsigned ELF
+     stays untouched on disk; no stale `.signing.tmp` is left behind.
+     The test also emits a GitHub `::notice::` annotation when sigil
+     eventually lifts the ELF restriction, alerting maintainers to
+     update the test (and ship a proper signed ELF in the release
+     workflow).
+  3. **Tamper-negative** — flips a byte in the case-1 signed WASM and
+     asserts `wsc verify --keyless` rejects it. A signature scheme that
+     never rejects anything is useless.
+
+### Known contract gap (sigil v0.9.0)
+
+Keyless ELF signing **does not work end-to-end** today, by sigil's design:
+`wsc sign --keyless --format elf` returns an explicit usage error
+(sigil's [`src/cli/main.rs:770-779`](https://github.com/pulseengine/sigil/blob/v0.9.0/src/cli/main.rs#L770-L779)).
+synth-cli's `sign_elf` invokes exactly that argv shape, so `synth compile
+--sign-output` currently always fails when a real `wsc` is on PATH.
+
+This is a planned, tracked situation, not a bug in synth: synth-cli's
+implementation is forward-compatible with the keyless-ELF support sigil
+intends to add (the argv shape matches sigil's existing `--format elf` +
+`--keyless` flag wiring). When sigil ships that, the `signing-e2e.yml`
+job will start producing a real signed ELF, the test's case 2 will flip
+into a positive assertion, and the release workflow can begin attaching
+signed firmware to GitHub Releases.
+
+A maintainer who wants to dogfood the synth-side path today can use the
+[WASM verification recipe above](#verifying-a-signed-wasm-module-locally),
+which exercises the same Fulcio/Rekor surface synth-cli relies on.
 
 ## Out of scope
 
