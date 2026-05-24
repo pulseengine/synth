@@ -199,11 +199,14 @@ The maintainer asked for the rollout to be staged. The committed
   is in `scripts/publish.rs` (compiled at workflow start by `rustc`).
   Final user-visible result: `cargo install synth-cli` works after the
   first release that runs this pipeline.
-- **Trust model:** crates.io **trusted publishing** via GitHub OIDC.
-  No `CRATES_IO_TOKEN` is stored on the repo;
-  `rust-lang/crates-io-auth-action@v1` exchanges the workflow's OIDC token
-  for a short-lived crates.io token scoped to the listed crates. There is
-  nothing to rotate.
+- **Trust model:** an org-wide `CRATES_IO_TOKEN` secret on the
+  `pulseengine` GitHub organization, inherited by this repo. The
+  workflow exports it as `CARGO_REGISTRY_TOKEN` for `./publish verify`
+  and `./publish publish`. Migration to OIDC trusted publishing (to
+  match sigil) is tracked as future work — see "Phase 4 — auth model"
+  below; we chose the token path first because the org secret already
+  exists and OIDC requires per-crate trusted-publisher registration
+  (11 forms) before any publish succeeds.
 - **Versioning convention.** Trusted publishing requires a real semver, so
   the workspace `version` is now bumped pre-tag in lockstep with the
   release tag (e.g. `v0.6.0` ⇔ `version = "0.6.0"`). The publish workflow
@@ -242,35 +245,35 @@ The maintainer asked for the rollout to be staged. The committed
   rewrites to `version` on publish; both must be kept in lockstep with the
   workspace version bump.
 
-### Phase 4 — user-side setup (required before the first publish)
+### Phase 4 — auth model
 
-Trusted publishing requires a per-crate registration on crates.io.
-Until those are registered, the workflow will fail at the
-`rust-lang/crates-io-auth-action` step (or, for crates that *do* have
-trusted publishing but new ones don't, partway through `./publish
-publish`). This step **cannot be automated** — it requires the
-crates.io account that owns the crate (or, for first publishes, the
-account that will own it) to manually configure trusted publishing.
+The current workflow uses an **org-wide `CRATES_IO_TOKEN`** secret
+inherited from `pulseengine`. No per-crate registration is required.
+The token's scope (which crates it can publish) is determined by the
+crates.io account that issued it; for fresh crate names the token's
+owner must have the right to claim them.
 
-For each crate in the "Published? yes" table above:
+**First-time publishes** still need a one-time manual step per crate
+to claim each name on crates.io (crates.io rejects automated publishes
+of crate names that have never existed). After the manual claim, every
+subsequent `v*` tag publishes that crate automatically.
 
-1. Sign in to <https://crates.io> with the account that will own the crate.
-2. For a crate that does not yet exist, do a one-time manual
-   `cargo publish` from a local trusted-publishing-compatible setup
-   (or use the legacy token-based publish for the first version), so
-   crates.io has a record to attach the trusted publisher to.
-3. Navigate to <https://crates.io/crates/CRATENAME/settings> →
-   *Trusted Publishing*. Click **Add GitHub Publisher** with:
-   - Repository owner: `pulseengine`
-   - Repository name: `synth`
-   - Workflow filename: `publish-to-crates-io.yml`
-   - Environment: *(leave empty)*
-4. Repeat for every crate in the publishable set.
+For each crate in the "Published? yes" table above that has never been
+published:
 
-After registration, the next `v*` tag push triggers an end-to-end
-publish without a stored token. Until registration is complete, the
-workflow may need to be re-run from the Actions tab via
-`workflow_dispatch` after each crate is registered.
+```bash
+# Get the token from `pulseengine` org settings or your crates.io account
+export CARGO_REGISTRY_TOKEN=<token>
+cargo publish -p <crate>   # in dependency order — see scripts/publish.rs
+```
+
+After this one-time claim, the automated workflow takes over on every
+`v*` tag.
+
+**Future work — migrate to OIDC trusted publishing.** Matching sigil's
+pattern is the long-term plan (short-lived tokens, no stored secret),
+but requires per-crate trusted-publisher registration on crates.io
+(11 forms). Tracked as a follow-up; not blocking v0.6.x / v0.7.x.
 
 ## Phase 5 — signing synth's *output* ELF binaries  ✅ compiler-side implemented
 
