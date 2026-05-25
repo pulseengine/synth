@@ -144,9 +144,9 @@ Notation in each subsection:
 
 ### 3.1 Memory bounds (MPU / PMP / software / mask)
 
-**Threat.** WASM `i32.load`, `i32.store`, `i64.load`, `f32.load`, etc.
-with an attacker-controlled address can read or write outside the
-linear-memory region. WASM semantics require a trap.
+**Threat.** WASM `i32.load`, `i32.store`, `i64.load`, `f32.load`,
+`f64.load`, etc. with an attacker-controlled address can read or
+write outside the linear-memory region. WASM semantics require a trap.
 
 **Fast path A — ARM MPU.** Program one MPU region covering the linear
 memory (R/W, NX). Allocate the WASM heap inside that region. The MPU

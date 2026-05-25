@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+#### f64 codegen — ARM VFP-D end-to-end
+- **WASM f64 modules now compile on Cortex-M7DP targets**
+  (double-precision FPU, `FPUPrecision::Double`). The non-optimized
+  selector (`InstructionSelector::select_with_stack`) lowers every
+  f64 op for which the backend has a direct VFP-D encoding:
+  arithmetic (`F64Add/Sub/Mul/Div`), comparison
+  (`F64Eq/Ne/Lt/Le/Gt/Ge`), unary math
+  (`F64Abs/Neg/Sqrt/Ceil/Floor/Trunc/Nearest`), binary math
+  (`F64Min/Max/Copysign`), constants (`F64Const`), memory
+  (`F64Load/Store`), and the i32/f32 conversion / bitcast family
+  (`F64ConvertI32S/U`, `F64PromoteF32`, `F64ReinterpretI64`,
+  `I64ReinterpretF64`, `I32TruncF64S/U`). Values live in VFP
+  D-registers (D0..D15), allocated via a wrap-around counter
+  mirroring the f32 S-register allocator.
+- **Targets without double-precision FPU fail cleanly.** F64 ops
+  on Cortex-M3 (no FPU) or Cortex-M4F (single-precision only) now
+  surface a typed `Error::Synthesis` whose message names the
+  missing capability ("target {} has no FPU" or "target {} lacks
+  double-precision FPU"). Replaces the previous blanket "F64 not
+  supported" path, and matches the existing validate_instructions
+  feature-gate behavior. Silent miscompilation or panic is
+  impossible — every f64 op is matched explicitly.
+- **VFP-D encoding test coverage.** 24 new byte-level encoder
+  tests cross-checked against the ARMv7-M Architecture Reference
+  Manual (Section A7.5) cover VADD/VSUB/VMUL/VDIV.F64,
+  VABS/VNEG/VSQRT.F64, VLDR/VSTR.64, VCVT.F64.F32, and
+  VMOV core ↔ D-register. The coprocessor-11 (cp11 / 0xB)
+  selection bit is verified independently from each arithmetic
+  op's bit pattern.
+- The optimized path (`optimize_full` in `synth-synthesis`) still
+  declines modules containing f64 ops and falls back to the
+  non-optimized selector (PR #126 behavior, unchanged); the
+  fallback path is what now compiles f64 modules end-to-end.
+
+#### Deferred to follow-up
+- f64 ↔ i64 conversions (`F64ConvertI64S/U`, `I64TruncF64S/U`)
+  remain unimplemented — they require i64 register-pair handling
+  in the VFP-D backend. The selector emits a typed error
+  mentioning "i64 register pairs on 32-bit ARM" when these ops
+  are encountered, consistent with the existing f32 behavior.
+- `F32DemoteF64` (round f64 to f32) is not yet handled — needs a
+  `VCVT.F32.F64 Sd, Dm` ArmOp variant in the encoder.
+- Extending the optimized IR path (`wasm_to_ir` → `ir_to_arm`) to
+  model f64 is a separate, larger feature.
+
 ### Internal
 - CI: `signing-e2e.yml` workflow added (Phase 5 end-to-end). Runs three
   wsc keyless cases against a sha256-pinned wsc v0.9.0. Case 3
