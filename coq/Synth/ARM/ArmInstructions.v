@@ -60,6 +60,17 @@ Inductive arm_instr : Type :=
   | MLS : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_instr
         (* MLS rd rn rm ra: rd = ra - (rn * rm) *)
 
+  (* Multi-precision arithmetic — for i64 lo/hi pair codegen.
+     These mirror Rust ArmOp::Adds / Adc / Subs / Sbc
+     (synth-backend/src/arm_encoder.rs:80–114).
+     ADDS sets the C flag from unsigned overflow of the low half;
+     ADC reads that C flag while computing the high half.
+     SUBS / SBC follow the same pattern with borrow. *)
+  | ADDS : arm_reg -> arm_reg -> operand2 -> arm_instr  (* ADD setting flags *)
+  | ADC  : arm_reg -> arm_reg -> operand2 -> arm_instr  (* ADD with carry, reads C *)
+  | SUBS : arm_reg -> arm_reg -> operand2 -> arm_instr  (* SUB setting flags *)
+  | SBC  : arm_reg -> arm_reg -> operand2 -> arm_instr  (* SUB with carry, reads C *)
+
   (* Bitwise operations *)
   | AND : arm_reg -> arm_reg -> operand2 -> arm_instr
   | ORR : arm_reg -> arm_reg -> operand2 -> arm_instr
@@ -156,7 +167,74 @@ Inductive arm_instr : Type :=
   | VLDR_F32 : vfp_reg -> arm_reg -> Z -> arm_instr
   | VSTR_F32 : vfp_reg -> arm_reg -> Z -> arm_instr
   | VLDR_F64 : vfp_reg -> arm_reg -> Z -> arm_instr
-  | VSTR_F64 : vfp_reg -> arm_reg -> Z -> arm_instr.
+  | VSTR_F64 : vfp_reg -> arm_reg -> Z -> arm_instr
+
+  (* ===== i64 high-level pseudo-instructions =====
+     These mirror the ArmOp::I64* opcodes in
+     crates/synth-synthesis/src/instruction_selector.rs (lines 1393–1786).
+     In Rust they are *opaque pseudo-ops* whose encoded behavior is defined by
+     the encoder, not by any single ARM instruction. The Coq model treats them
+     analogously: each pseudo-op has axiomatized semantics in ArmSemantics.v
+     that reads/writes the documented register pair. This parallels how VFP
+     ops are axiomatized (see f32_*_bits).
+
+     Convention (Rust hard-codes the same):
+       i64 operand 1 in (rnlo, rnhi)
+       i64 operand 2 in (rmlo, rmhi)
+       i64 result    in (rdlo, rdhi)
+  *)
+
+  (* Multiplication: rd_lo:rd_hi = (rn_lo:rn_hi) * (rm_lo:rm_hi) *)
+  | I64MulPseudo : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_instr
+        (* I64MulPseudo rdlo rdhi rnlo rnhi rmlo rmhi *)
+
+  (* Shifts/rotates: shift amount in (rmlo, rmhi) for shifts, in single reg for rotates *)
+  | I64ShlPseudo  : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_instr
+  | I64ShrUPseudo : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_instr
+  | I64ShrSPseudo : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_instr
+  | I64RotlPseudo : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_instr
+        (* I64RotlPseudo rdlo rdhi rnlo rnhi shift *)
+  | I64RotrPseudo : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_instr
+
+  (* Bit manipulation: rd is a single 32-bit count register (clz/ctz/popcnt of i64 fit in 32 bits) *)
+  | I64ClzPseudo    : arm_reg -> arm_reg -> arm_reg -> arm_instr
+        (* I64ClzPseudo rd rnlo rnhi *)
+  | I64CtzPseudo    : arm_reg -> arm_reg -> arm_reg -> arm_instr
+  | I64PopcntPseudo : arm_reg -> arm_reg -> arm_reg -> arm_instr
+
+  (* Comparisons: rd receives 0/1; reads (rnlo, rnhi) vs (rmlo, rmhi).
+     The condition field selects which i64 comparison (EQ/NE/LT/LE/GT/GE in signed and
+     unsigned variants). For I64SetCondZ (unary i64.eqz) there is no rm pair. *)
+  | I64SetCond  : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> condition -> arm_instr
+        (* I64SetCond rd rnlo rnhi rmlo rmhi cond *)
+  | I64SetCondZ : arm_reg -> arm_reg -> arm_reg -> arm_instr
+        (* I64SetCondZ rd rnlo rnhi *)
+
+  (* Division / remainder: trap semantics (returns None) on divide-by-zero / signed overflow.
+     The Rust encoder lowers these to software helper calls (gale runtime
+     __aeabi_ldivmod / __aeabi_uldivmod on Cortex-M); the Coq model treats them as
+     opaque pseudo-ops with axiomatized result. *)
+  | I64DivSPseudo : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_instr
+  | I64DivUPseudo : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_instr
+  | I64RemSPseudo : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_instr
+  | I64RemUPseudo : arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_reg -> arm_instr
+
+  (* Constants: I64Const loads both halves *)
+  | I64ConstPseudo : arm_reg -> arm_reg -> I64.int -> arm_instr
+        (* I64ConstPseudo rdlo rdhi value *)
+
+  (* Conversions: sign/zero-extend i32 -> i64; wrap i64 -> i32 (drops high half) *)
+  | I64ExtendI32SPseudo : arm_reg -> arm_reg -> arm_reg -> arm_instr
+        (* I64ExtendI32SPseudo rdlo rdhi rn *)
+  | I64ExtendI32UPseudo : arm_reg -> arm_reg -> arm_reg -> arm_instr
+  | I32WrapI64Pseudo    : arm_reg -> arm_reg -> arm_instr
+        (* I32WrapI64Pseudo rd rnlo — keeps low half, drops high half *)
+
+  (* Memory: 8-byte load/store *)
+  | I64LoadPseudo  : arm_reg -> arm_reg -> arm_reg -> Z -> arm_instr
+        (* I64LoadPseudo rdlo rdhi addr offset *)
+  | I64StorePseudo : arm_reg -> arm_reg -> arm_reg -> Z -> arm_instr.
+        (* I64StorePseudo rnlo rnhi addr offset *)
 
 (** ** Instruction Sequences *)
 

@@ -1,24 +1,38 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated:** April 2026
+**Last Updated:** May 2026 (v0.8.0 PR 1a: Compilation.v i64 alignment)
 
 ## Overview
 
 Synth's Rocq proof suite verifies that `compile_wasm_to_arm` preserves WASM semantics.
-After aligning Compilation.v with the actual Rust compiler (trap guard sequences for
-division, MOVW+MOVT for large constants), 7 proofs were re-admitted pending exec_program
-extensions for PC-relative branching. 10 total admits remain.
+
+**v0.8.0 PR 1a (Compilation.v i64 alignment):** Aligned the i64 compilation
+clauses with what the Rust compiler actually emits — dual-register
+(R0:R1 / R2:R3) sequences, ADDS/ADC and SUBS/SBC for arithmetic, and
+high-level pseudo-ops (`I64Mul`, `I64SetCond`, `I64Shl*`, `I64Div*`, etc.)
+mirroring the Rust `ArmOp::I64*` variants. The previous Compilation.v
+modeled all i64 ops as single 32-bit instructions on (R0, R1) — proving
+the wrong theorem. See `docs/analysis/I64_CODEGEN_SURVEY.md`.
+
+The 4 T1 i64 division/remainder proofs and the `i64_const_correct` proof
+were re-admitted: their concrete result claims relied on the old simplified
+codegen. They will be lifted by v0.8.0 PRs 2–5 (the lift queue under
+umbrella #147).
 
 ## Proof Tiers
 
 | Tier | Meaning | Count |
 |------|---------|-------|
-| **T1: Result Correspondence** | ARM output register = WASM result value | 35 |
+| **T1: Result Correspondence** | ARM output register = WASM result value | 30 |
 | **T2: Existence-Only** | ARM execution succeeds (no result claim) | 142 |
-| **T3: Admitted** | Not yet proven | 10 |
+| **T3: Admitted** | Not yet proven | 15 |
 | **Infrastructure** | Properties of integers, states, flag lemmas | 56 |
 
-**Total: 233 Qed / 10 Admitted across all files**
+**Total: 228 Qed / 15 Admitted across all files**
+
+Net change from the prior baseline: −5 Qed, +5 Admitted (4 i64 div/rem + 1 i64
+const_correct), reflecting the honest accounting that the previous T1 i64
+div/rem proofs were stated against a model that did not match the compiler.
 
 ## T1: Result Correspondence (35 Qed)
 
@@ -78,17 +92,21 @@ current sequential exec_program model. See T3 section below.
 | CorrectnessI32.v | `i32_rotl_correct` | I32Rotl | `RSB R2 R1 #32; ROR_reg R0 R0 R2` |
 | CorrectnessI32.v | `i32_rotr_correct` | I32Rotr | `ROR_reg R0 R0 R1` |
 
-### i64 Division (4) — uses I32 division (32-bit register limitation)
+### i64 Division (0 — moved to T3 by v0.8.0 PR 1a)
 
-| File | Theorem | Operation |
-|------|---------|-----------|
-| CorrectnessI64.v | `i64_divs_correct` | I64DivS |
-| CorrectnessI64.v | `i64_divu_correct` | I64DivU |
-| CorrectnessI64.v | `i64_rems_correct` | I64RemS |
-| CorrectnessI64.v | `i64_remu_correct` | I64RemU |
+| File | Theorem | Operation | Status |
+|------|---------|-----------|--------|
+| CorrectnessI64.v | `i64_divs_correct` | I64DivS | Admitted (PR 1a) |
+| CorrectnessI64.v | `i64_divu_correct` | I64DivU | Admitted (PR 1a) |
+| CorrectnessI64.v | `i64_rems_correct` | I64RemS | Admitted (PR 1a) |
+| CorrectnessI64.v | `i64_remu_correct` | I64RemU | Admitted (PR 1a) |
 
-Note: i64 div/rem proofs use `I32.divs`/`I32.divu` hypotheses (what ARM actually computes
-with 32-bit registers), not `I64.divs`/`I64.divu`.
+The previous "proofs" used `I32.divs` / `I32.divu` hypotheses against a model
+where `I64DivS → [SDIV R0 R0 R1]` — i.e., a single 32-bit signed divide. That
+is **not** what the Rust compiler emits. The real codegen emits an opaque
+`ArmOp::I64DivS` pseudo-op that lowers to a software helper call. These
+admits will close in v0.8.0 PR 2 by replacing the `i64_divs_pair` /
+`i64_divu_pair` axioms with concrete `I64.divs` / `I64.divu`-based defs.
 
 Each T1 proof proves: `get_reg astate' R0 = <result>` after executing the compiled ARM program.
 
@@ -108,7 +126,7 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 | CorrectnessMemory.v | 8 | 4 i32/i64 + 4 f32/f64 load/store |
 | CorrectnessComplete.v | 1 | Master compilation theorem |
 
-## T3: Admitted (10)
+## T3: Admitted (15)
 
 | File | Count | Root Cause | Unblocking Strategy |
 |------|-------|------------|---------------------|
@@ -116,6 +134,8 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 | Integers.v | 1 | `i64_to_i32_to_i64_wrap` — Rocq 9 `Z.mod_mod` signature changed | Rework proof for new Z.mod_mod API |
 | CorrectnessI32.v | 4 | `i32_divs/divu/rems/remu_correct` — trap guard sequences (CMP+BCondOffset+UDF) cannot be verified in the sequential exec_program model | Extend exec_program to support PC-relative branching |
 | CorrectnessSimple.v | 1 | `i32_const_correct` — compilation now branches on `I32.unsigned n <= 65535`; large-constant case requires Z.land/Z.shiftr lemmas | Prove MOVW+MOVT reconstruction lemma |
+| CorrectnessSimple.v | 1 | `i64_const_correct` — v0.8.0 PR 1a aligned codegen to `I64ConstPseudo` (loads both halves); proof claimed R0 = low 16 bits via stale MOVW model | v0.8.0 PR 5: concrete `i64_const_lo`/`i64_const_hi` definitions |
+| CorrectnessI64.v | 4 | `i64_divs/divu/rems/remu_correct` — v0.8.0 PR 1a aligned codegen to `I64Div*Pseudo` (software helper calls); proofs claimed `I32.divs/divu` results | v0.8.0 PR 2: concrete `i64_*_pair` definitions matching helper ABI |
 | Compilation.v | 2 | `ex_compile_simple_add`, `ex_compile_increment_local` — `simpl` cannot reduce `Z.leb (I32.unsigned (I32.repr n)) 65535` | Use `vm_compute` or prove I32.unsigned reduction lemma |
 
 ## VFP Semantics (Phase 5 — New)
@@ -221,9 +241,9 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 | File | Qed | Admitted | Tier |
 |------|-----|----------|------|
 | Correctness.v | 6 | 0 | T1 |
-| CorrectnessSimple.v | 29 | 0 | T2 |
+| CorrectnessSimple.v | 28 | 1 | T2 + 1 admitted (i64_const_correct) |
 | CorrectnessI32.v | 29 | 0 | T1 |
-| CorrectnessI64.v | 29 | 0 | T1+T2 |
+| CorrectnessI64.v | 22 | 4 | T2 + 4 admitted (div/rem T1, pending lift) |
 | CorrectnessI64Comparisons.v | 19 | 0 | T2 |
 | CorrectnessF32.v | 20 | 0 | T2 |
 | CorrectnessF64.v | 20 | 0 | T2 |

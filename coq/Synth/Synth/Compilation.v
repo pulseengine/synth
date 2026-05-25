@@ -218,125 +218,79 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
        MOV R0 (Imm I32.zero);    (* Set R0 to 0 (assume false) *)
        MOVHS R0 (Imm I32.one)]   (* If C set (higher or same), set R0 to 1 *)
 
-  (* i64 arithmetic - simplified to operate on low 32 bits only *)
-  (* Full implementation would use register pairs: R0:R1 for first i64, R2:R3 for second *)
+  (* ===== i64 operations — aligned with Rust codegen =====
+     The Rust compiler (crates/synth-synthesis/src/instruction_selector.rs:1392–1786)
+     uses a (R0,R1) / (R2,R3) register-pair convention for i64 values:
+       i64 operand 1 in (R0,R1)   [R0 = low half, R1 = high half]
+       i64 operand 2 in (R2,R3)   [R2 = low half, R3 = high half]
+       i64 result    in (R0,R1)
+     See docs/analysis/I64_CODEGEN_SURVEY.md for the per-op breakdown. *)
+
+  (* I64Add: ADDS lo + ADC hi.  ADDS sets the C flag from the unsigned
+     overflow of the low half; ADC adds rn + op2 + C for the high half. *)
   | I64Add =>
-      (* Simplified: just add low 32 bits *)
-      [ADD R0 R0 (Reg R1)]
+      [ADDS R0 R0 (Reg R2);
+       ADC  R1 R1 (Reg R3)]
 
+  (* I64Sub: SUBS lo + SBC hi. *)
   | I64Sub =>
-      [SUB R0 R0 (Reg R1)]
+      [SUBS R0 R0 (Reg R2);
+       SBC  R1 R1 (Reg R3)]
 
+  (* I64Mul: high-level pseudo-op (UMULL + MLA cross products at encode time). *)
   | I64Mul =>
-      [MUL R0 R0 R1]
+      [I64MulPseudo R0 R1 R0 R1 R2 R3]
 
+  (* I64DivS / DivU / RemS / RemU: software-helper pseudo-ops. *)
   | I64DivS =>
-      [SDIV R0 R0 R1]
+      [I64DivSPseudo R0 R1 R0 R1 R2 R3]
 
   | I64DivU =>
-      [UDIV R0 R0 R1]
+      [I64DivUPseudo R0 R1 R0 R1 R2 R3]
 
   | I64RemS =>
-      [SDIV R2 R0 R1;
-       MLS R0 R2 R1 R0]
+      [I64RemSPseudo R0 R1 R0 R1 R2 R3]
 
   | I64RemU =>
-      [UDIV R2 R0 R1;
-       MLS R0 R2 R1 R0]
+      [I64RemUPseudo R0 R1 R0 R1 R2 R3]
 
-  (* i64 bitwise *)
+  (* i64 bitwise: AND/OR/XOR on each half independently. *)
   | I64And =>
-      [AND R0 R0 (Reg R1)]
+      [AND R0 R0 (Reg R2);
+       AND R1 R1 (Reg R3)]
 
   | I64Or =>
-      [ORR R0 R0 (Reg R1)]
+      [ORR R0 R0 (Reg R2);
+       ORR R1 R1 (Reg R3)]
 
   | I64Xor =>
-      [EOR R0 R0 (Reg R1)]
+      [EOR R0 R0 (Reg R2);
+       EOR R1 R1 (Reg R3)]
 
-  (* i64 comparison - simplified *)
-  | I64Eqz =>
-      [CMP R0 (Imm I32.zero);
-       MOV R0 (Imm I32.zero);
-       MOVEQ R0 (Imm I32.one)]
+  (* i64 comparisons: single high-level I64SetCond / I64SetCondZ pseudo-op. *)
+  | I64Eqz => [I64SetCondZ R0 R0 R1]
+  | I64Eq  => [I64SetCond R0 R0 R1 R2 R3 Cond_EQ]
+  | I64Ne  => [I64SetCond R0 R0 R1 R2 R3 Cond_NE]
+  | I64LtS => [I64SetCond R0 R0 R1 R2 R3 Cond_LT]
+  | I64LtU => [I64SetCond R0 R0 R1 R2 R3 Cond_CC]  (* LO = CC *)
+  | I64GtS => [I64SetCond R0 R0 R1 R2 R3 Cond_GT]
+  | I64GtU => [I64SetCond R0 R0 R1 R2 R3 Cond_HI]
+  | I64LeS => [I64SetCond R0 R0 R1 R2 R3 Cond_LE]
+  | I64LeU => [I64SetCond R0 R0 R1 R2 R3 Cond_LS]
+  | I64GeS => [I64SetCond R0 R0 R1 R2 R3 Cond_GE]
+  | I64GeU => [I64SetCond R0 R0 R1 R2 R3 Cond_CS]  (* HS = CS *)
 
-  | I64Eq =>
-      [CMP R0 (Reg R1);
-       MOV R0 (Imm I32.zero);
-       MOVEQ R0 (Imm I32.one)]
+  (* i64 shift/rotate: high-level pseudo-ops. *)
+  | I64Shl  => [I64ShlPseudo  R0 R1 R0 R1 R2 R3]
+  | I64ShrU => [I64ShrUPseudo R0 R1 R0 R1 R2 R3]
+  | I64ShrS => [I64ShrSPseudo R0 R1 R0 R1 R2 R3]
+  | I64Rotl => [I64RotlPseudo R0 R1 R0 R1 R2]
+  | I64Rotr => [I64RotrPseudo R0 R1 R0 R1 R2]
 
-  | I64Ne =>
-      [CMP R0 (Reg R1);
-       MOV R0 (Imm I32.zero);
-       MOVNE R0 (Imm I32.one)]
-
-  | I64LtS =>
-      [CMP R0 (Reg R1);
-       MOV R0 (Imm I32.zero);
-       MOVLT R0 (Imm I32.one)]
-
-  | I64LtU =>
-      [CMP R0 (Reg R1);
-       MOV R0 (Imm I32.zero);
-       MOVLO R0 (Imm I32.one)]
-
-  | I64GtS =>
-      [CMP R0 (Reg R1);
-       MOV R0 (Imm I32.zero);
-       MOVGT R0 (Imm I32.one)]
-
-  | I64GtU =>
-      [CMP R0 (Reg R1);
-       MOV R0 (Imm I32.zero);
-       MOVHI R0 (Imm I32.one)]
-
-  | I64LeS =>
-      [CMP R0 (Reg R1);
-       MOV R0 (Imm I32.zero);
-       MOVLE R0 (Imm I32.one)]
-
-  | I64LeU =>
-      [CMP R0 (Reg R1);
-       MOV R0 (Imm I32.zero);
-       MOVLS R0 (Imm I32.one)]
-
-  | I64GeS =>
-      [CMP R0 (Reg R1);
-       MOV R0 (Imm I32.zero);
-       MOVGE R0 (Imm I32.one)]
-
-  | I64GeU =>
-      [CMP R0 (Reg R1);
-       MOV R0 (Imm I32.zero);
-       MOVHS R0 (Imm I32.one)]
-
-  (* i64 shift/rotate — register-based, matching i32 pattern *)
-  | I64Shl =>
-      [LSL_reg R0 R0 R1]
-
-  | I64ShrU =>
-      [LSR_reg R0 R0 R1]
-
-  | I64ShrS =>
-      [ASR_reg R0 R0 R1]
-
-  | I64Rotl =>
-      [RSB R2 R1 (Imm (I32.repr 32));
-       ROR_reg R0 R0 R2]
-
-  | I64Rotr =>
-      [ROR_reg R0 R0 R1]
-
-  (* i64 bit manipulation - simplified *)
-  | I64Clz =>
-      [CLZ R0 R0]
-
-  | I64Ctz =>
-      [RBIT R0 R0;
-       CLZ R0 R0]
-
-  | I64Popcnt =>
-      [POPCNT R0 R0]
+  (* i64 bit manipulation: high-level pseudo-ops; result fits in single 32-bit reg. *)
+  | I64Clz    => [I64ClzPseudo    R0 R0 R1]
+  | I64Ctz    => [I64CtzPseudo    R0 R0 R1]
+  | I64Popcnt => [I64PopcntPseudo R0 R0 R1]
 
   (* Constants *)
   | I32Const n =>
@@ -349,9 +303,11 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
          MOVT R0 (I32.repr (Z.shiftr (I32.unsigned n) 16))]
 
   | I64Const n =>
-      (* Load 64-bit constant: low 32 bits in R0, high 32 bits in R1 *)
-      (* Simplified: just load low bits to R0 for now *)
-      [MOVW R0 (I32.repr ((I64.unsigned n) mod I32.modulus))]
+      (* Load 64-bit constant: low 32 bits in R0, high 32 bits in R1.
+         The Rust compiler emits a single I64Const pseudo-op
+         (instruction_selector.rs:1393–1399); the encoder expands it
+         to MOVW/MOVT for each half. *)
+      [I64ConstPseudo R0 R1 n]
 
   (* Local variables *)
   | LocalGet idx =>
@@ -441,16 +397,19 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
 
   (* Conversion operations *)
   | I32WrapI64 =>
-      (* Extract low 32 bits from i64 - already in R0 *)
-      []
+      (* Extract low 32 bits from i64: keeps R0 (lo), drops R1 (hi).
+         Rust emits ArmOp::I32WrapI64 (instruction_selector.rs:1417–1423). *)
+      [I32WrapI64Pseudo R0 R0]
 
   | I64ExtendI32S =>
-      (* Sign-extend i32 to i64 - simplified, just keep in R0 *)
-      []
+      (* Sign-extend i32 to i64: low half stays in R0, high half = sign-extension.
+         Rust emits ArmOp::I64ExtendI32S (instruction_selector.rs:1401–1407). *)
+      [I64ExtendI32SPseudo R0 R1 R0]
 
   | I64ExtendI32U =>
-      (* Zero-extend i32 to i64 - simplified, just keep in R0 *)
-      []
+      (* Zero-extend i32 to i64: low half stays in R0, high half = 0.
+         Rust emits ArmOp::I64ExtendI32U (instruction_selector.rs:1409–1415). *)
+      [I64ExtendI32UPseudo R0 R1 R0]
 
   | I32TruncF32S | I32TruncF32U =>
       [VCVT_S32_F32 S0 S0;           (* Convert float to int *)
@@ -498,8 +457,10 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
       [LDR R0 R0 (Z.of_nat offset)]
 
   | I64Load offset =>
-      (* Simplified: load only low 32 bits *)
-      [LDR R0 R0 (Z.of_nat offset)]
+      (* 8-byte load: low half into R0, high half into R1.
+         Rust dispatches to generate_i64_load_with_bounds_check
+         (instruction_selector.rs:1782). *)
+      [I64LoadPseudo R0 R1 R0 (Z.of_nat offset)]
 
   | F32Load offset =>
       [VLDR_F32 S0 R0 (Z.of_nat offset)]
@@ -512,8 +473,11 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
       [STR R1 R0 (Z.of_nat offset)]
 
   | I64Store offset =>
-      (* Simplified: store only low 32 bits *)
-      [STR R1 R0 (Z.of_nat offset)]
+      (* 8-byte store: low half from R0/R1 value, high half follows.
+         Convention (Rust dispatches to generate_i64_store_with_bounds_check at
+         instruction_selector.rs:1784): the i64 value is in (R0, R1) and the
+         address base register is R2. *)
+      [I64StorePseudo R0 R1 R2 (Z.of_nat offset)]
 
   | F32Store offset =>
       [VSTR_F32 S1 R0 (Z.of_nat offset)]
