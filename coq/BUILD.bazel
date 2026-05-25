@@ -49,21 +49,21 @@ rocq_library(
     name = "arm_state",
     srcs = ["Synth/ARM/ArmState.v"],
     include_path = "Synth",
-    deps = [":common"],
+    deps = [":base", ":common"],
 )
 
 rocq_library(
     name = "arm_instructions",
     srcs = ["Synth/ARM/ArmInstructions.v"],
     include_path = "Synth",
-    deps = [":arm_state"],
+    deps = [":base", ":common", ":arm_state"],
 )
 
 rocq_library(
     name = "arm_semantics",
     srcs = ["Synth/ARM/ArmSemantics.v"],
     include_path = "Synth",
-    deps = [":arm_instructions"],
+    deps = [":base", ":common", ":arm_state", ":arm_instructions"],
 )
 
 rocq_library(
