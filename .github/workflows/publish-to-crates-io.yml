@@ -82,11 +82,17 @@ jobs:
       - name: Build publish helper
         run: rustc --edition 2024 scripts/publish.rs -o publish
 
-      - name: Verify all crates can publish
-        run: ./publish verify
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
-
+      # NOTE: the historical `./publish verify` step was removed in v0.7.0
+      # because `cargo publish --dry-run -p <name>` resolves dependencies
+      # through the public crates.io index — so dependent workspace crates
+      # always fail until their synth-* deps are already on the registry
+      # at the new version (chicken-and-egg for any first publish of a new
+      # version). The actual `cargo publish` performs the same metadata
+      # validation before upload, and `./publish publish` has a 10-attempt
+      # retry loop with a 40s sleep that rides out registry index
+      # propagation. The verify step is recoverable as `cargo package`
+      # (which uses path deps) if a fail-fast metadata check is needed —
+      # tracked as a follow-up.
       - name: Publish workspace to crates.io
         run: ./publish publish
         env:
