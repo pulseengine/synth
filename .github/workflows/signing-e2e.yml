@@ -1,0 +1,172 @@
+name: Signing E2E
+
+# End-to-end validation of the `synth compile --sign-output` Phase 5 path
+# against a real `wsc` binary from pulseengine/sigil. This workflow closes the
+# "not validated end-to-end" gap explicitly flagged when Phase 5 shipped in
+# PR #135 — synth-cli's unit test only pins the argv shape, not the actual
+# sign + verify round-trip. The test script lives at `tests/wsc_sign_e2e.sh`.
+#
+# Trust model: the wsc binary is downloaded from a pinned sigil release,
+# its sha256 is verified against a value pinned in this workflow file. The
+# sha256 reference value was taken from the sigil v0.9.0 release's
+# `wsc-linux-x86_64.sha256` sidecar at publish time. If sigil rotates the
+# binary without bumping the version, this workflow fails loudly — that is
+# the rigor pattern: pin the contract.
+#
+# Why release-download and not Bazel:
+# - sigil ships ready-to-run binaries with per-asset sha256 sidecars and
+#   SLSA build provenance. Pinning by version + sha256 is sufficient to
+#   guarantee a known binary.
+# - rules_wasm_component (already in MODULE.bazel) is a WASM-component
+#   toolchain ruleset, not a `wsc` CLI distribution. Wiring wsc through
+#   Bazel would require a custom binary-import rule for marginal hermetic
+#   benefit over a sha256-pinned curl.
+# - Sigil's own CI builds wsc from source (cargo build), which is even
+#   slower than downloading a release binary and offers nothing we can't
+#   reproduce locally with `cargo install --git ...`.
+#
+# Untrusted-input safety: this workflow does NOT read PR titles, comment
+# bodies, head_ref, or any other user-controlled field into `run:` blocks.
+# All values interpolated into shell commands come from workflow `env:`
+# keys (pinned in this file) or from `secrets`/`runner.temp` (controlled
+# by GitHub). Bound via env: and dereferenced as $VAR per the standard
+# workflow-injection mitigation.
+
+on:
+  push:
+    tags:
+      - "v*"
+    branches: [main]
+    paths:
+      # PR triggers below already cover crates/synth-cli/src/sign.rs and the
+      # release workflow; on push-to-main we run on the same set so a
+      # branch-protection bypass doesn't skip the e2e.
+      - "crates/synth-cli/src/sign.rs"
+      - "crates/synth-cli/src/main.rs"
+      - "tests/wsc_sign_e2e.sh"
+      - "tests/integration/add.wat"
+      - ".github/workflows/signing-e2e.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      # Run on PRs that touch the synth-side signing contract or the test
+      # itself. Catches future breaks where someone changes the argv shape
+      # in sign.rs without updating the wsc pin.
+      - "crates/synth-cli/src/sign.rs"
+      - "crates/synth-cli/src/main.rs"
+      - "tests/wsc_sign_e2e.sh"
+      - "tests/integration/add.wat"
+      - ".github/workflows/signing-e2e.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pinned wsc release. Bumped manually in lockstep with the wsc CLI
+  # contract assumption documented in crates/synth-cli/src/sign.rs. If
+  # sigil ships a new wsc with a different CLI shape (e.g. dropping
+  # --keyless in favor of --mode keyless), bumping this here without
+  # updating sign.rs is intended to make the test fail loudly.
+  WSC_VERSION: "v0.9.0"
+  # sha256 of the Linux x86_64 wsc binary at $WSC_VERSION. Source:
+  # https://github.com/pulseengine/sigil/releases/download/v0.9.0/wsc-linux-x86_64.sha256
+  WSC_SHA256_LINUX_X86_64: "9054b4b066e2b0a954110851a43266ff0e9ef12b4e1ecc03c333943fd52cecb6"
+
+jobs:
+  signing-e2e:
+    name: synth compile --sign-output e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      # Required for `wsc sign --keyless` to obtain an OIDC token from
+      # GitHub Actions; Fulcio short-lived certs are bound to that token's
+      # workflow identity. Without `id-token: write` the keyless flow
+      # cannot produce a Fulcio certificate at all.
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-sign-e2e-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-sign-e2e-
+
+      - name: Build synth-cli (release)
+        run: cargo build --release -p synth-cli
+
+      - name: Install wabt for wat2wasm
+        # wat2wasm is used by tests/wsc_sign_e2e.sh case 1 to turn the WAT
+        # fixture into a real WASM module for the keyless sign+verify
+        # round-trip. wabt is a small package in the standard Ubuntu repos.
+        run: sudo apt-get update && sudo apt-get install -y wabt
+
+      - name: Download pinned wsc binary
+        env:
+          # Bound through env: per the workflow-injection-mitigation pattern.
+          # Values come from workflow-level env (pinned in this file), not
+          # from any user-controlled field.
+          WSC_TAG: ${{ env.WSC_VERSION }}
+          WSC_SHA: ${{ env.WSC_SHA256_LINUX_X86_64 }}
+        run: |
+          set -euo pipefail
+          ASSET="wsc-linux-x86_64"
+          URL="https://github.com/pulseengine/sigil/releases/download/${WSC_TAG}/${ASSET}"
+          echo "::notice::Downloading wsc from $URL"
+          curl --fail --location --silent --show-error \
+            -o "$RUNNER_TEMP/wsc" "$URL"
+
+          # Verify sha256 against the pinned digest. Use `sha256sum -c` with
+          # the pinned value rather than parsing the upstream .sha256 sidecar
+          # (which would also need to be downloaded and trusted, leaving a
+          # TOCTOU window). This makes the workflow file itself the trust
+          # anchor — auditable in one place.
+          echo "${WSC_SHA}  $RUNNER_TEMP/wsc" | sha256sum --check --strict
+          echo "::notice::wsc sha256 matches pinned value"
+
+          chmod +x "$RUNNER_TEMP/wsc"
+          # Make wsc discoverable on PATH for synth-cli's `Command::new("wsc")`.
+          mkdir -p "$RUNNER_TEMP/wsc-bin"
+          mv "$RUNNER_TEMP/wsc" "$RUNNER_TEMP/wsc-bin/wsc"
+          echo "$RUNNER_TEMP/wsc-bin" >> "$GITHUB_PATH"
+
+      - name: Show wsc version
+        run: |
+          set -euo pipefail
+          which wsc
+          wsc --version
+
+      - name: Run end-to-end signing test
+        env:
+          SYNTH: ${{ github.workspace }}/target/release/synth
+          # WSC is set from PATH inside the script (via `command -v wsc`), but
+          # the script also accepts $WSC as an env override; pass it for
+          # belt-and-suspenders.
+          WSC: ${{ runner.temp }}/wsc-bin/wsc
+        run: |
+          set -euo pipefail
+          chmod +x ./tests/wsc_sign_e2e.sh
+          ./tests/wsc_sign_e2e.sh
+
+      - name: Upload test artefacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wsc-sign-e2e-artefacts
+          path: |
+            /tmp/wsc-sign-e2e.*/**
+          retention-days: 7
+          if-no-files-found: ignore

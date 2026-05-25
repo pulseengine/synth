@@ -275,7 +275,7 @@ pattern is the long-term plan (short-lived tokens, no stored secret),
 but requires per-crate trusted-publisher registration on crates.io
 (11 forms). Tracked as a follow-up; not blocking v0.6.x / v0.7.x.
 
-## Phase 5 — signing synth's *output* ELF binaries  ✅ compiler-side implemented
+## Phase 5 — signing synth's *output* ELF binaries  ✅ compiler-side implemented + CI-validated end-to-end
 
 - **Delivers:** `synth compile --sign-output` invokes sigil's `wsc sign
   --keyless --format elf` after writing the ELF, attaching a Sigstore
@@ -285,12 +285,26 @@ but requires per-crate trusted-publisher registration on crates.io
   trust model, verification command, and the wsc-contract assumption.
 - **Status:** compiler-side wired (`crates/synth-cli/src/sign.rs`); the
   signing subprocess shape, missing-wsc error path, and `--all-exports`
-  interaction are unit-tested. End-to-end signing + verification against a
-  live `wsc` binary was deferred to the maintainer (the implementing agent
-  did not have `wsc` on PATH).
+  interaction are unit-tested. End-to-end against a real `wsc` binary is
+  CI-validated via `.github/workflows/signing-e2e.yml` +
+  `tests/wsc_sign_e2e.sh`:
+  - The workflow downloads a sha256-pinned `wsc` (currently
+    `pulseengine/sigil` `v0.9.0`) and runs the e2e script on every PR
+    that touches `crates/synth-cli/src/sign.rs`, `main.rs`, or the test
+    itself, plus on every `v*` tag push.
+  - Three cases are checked: (a) WASM keyless sign+verify round-trip,
+    (b) synth's actual `--sign-output` invocation against ELF, and
+    (c) a tamper-negative on the case-(a) signed WASM. Case (b)
+    currently pins the **known sigil-v0.9.0 ELF-keyless gap** (sigil
+    rejects keyless ELF with an explicit usage error); the test
+    asserts the gap and emits a GitHub `::notice::` annotation if
+    sigil ever lifts it, alerting us to promote the test to a real
+    "signed ELF" assertion.
 - **Pipeline integration is out of scope here** — wiring `--sign-output`
   into `release.yml` (and uploading signed firmware as a release asset) is
-  the natural follow-up alongside Phase 6's `--sbom` plumbing.
+  blocked on sigil shipping keyless-ELF support. Once the e2e job starts
+  producing a real signed ELF (case (b) flips to positive), the release
+  workflow can add a signing step alongside Phase 6's SBOM emission.
 
 ## Phase 6 — CycloneDX SBOM auto-emit  ✅ implemented
 
