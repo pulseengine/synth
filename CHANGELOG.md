@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- **Architectural finding: ARMv7-M FPv5 has no F64↔I64 VCVT.** The four
+  WASM ops `F64ConvertI64S/U` and `I64TruncF64S/U` listed under v0.7.0's
+  "Deferred to follow-up" cannot be implemented as single-instruction
+  VCVTs on Cortex-M7DP — the 64-bit integer ↔ floating-point VCVT
+  encodings are ARMv8-A FEAT_FP only, not present in M-profile FPv5-D16
+  (Cortex-M7DP, M33-DP, M55, M85). Closing these properly requires a
+  multi-instruction software sequence (or a soft-float helper) plus
+  WASM-trap integration for the trunc family, plus matching Rocq
+  proofs — out of scope for v0.8.0's i64-T1-promotion theme. Deferred
+  to a later floating-point milestone. Full analysis in
+  [`docs/analysis/ARMV7M_F64_I64_VCVT_FINDING.md`](docs/analysis/ARMV7M_F64_I64_VCVT_FINDING.md).
+  The selector continues to surface a typed `Error::Synthesis` for
+  these ops; no behavior change vs. v0.7.0.
+
 ## [0.7.0] - 2026-05-25
 
 Floating-point breadth + verifiable signing CI — synth now compiles
