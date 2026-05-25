@@ -273,3 +273,341 @@ Proof.
     rewrite Z.compare_refl in Hcmp. discriminate.
 Qed.
 
+(** ** I64 Flag-Correspondence Lemmas
+
+    Architectural note (v0.8.0 foundation):
+    Per [Compilation.v], i64 ops are compiled to the same single 32-bit
+    ARM instructions as i32 ops ("Simplified: just add low 32 bits"). The
+    ARM `CMP R0 (Reg R1)` therefore computes flags from `I32.sub v1 v2`,
+    not from an i64 subtraction. The i64 flag lemmas below mirror the i32
+    ones but carry an explicit boundedness side-condition on the operands.
+
+    Two boundedness shapes appear:
+    - UNSIGNED lemmas (eq, ne, ltu, leu, gtu, geu): require
+      [0 <= v < I32.modulus] (32-bit unsigned range). Under this bound
+      [I64.unsigned v = I32.unsigned v = v], so I64.<cmp> = I32.<cmp>.
+    - SIGNED lemmas (lts, les, gts, ges): require
+      [0 <= v < I32.half_modulus] (31-bit range — both signed views agree).
+      A bare 32-bit bound is NOT enough: a value in [2^31, 2^32) has
+      I32.signed = v - 2^32 (negative) but I64.signed = v (positive),
+      so the two signed views disagree on that band.
+
+    Honesty note: these bounds make the simplified 32-bit i64 ARM compilation
+    sound exactly when the original i64 values fit in the appropriate 32-bit
+    (or 31-bit, for signed) envelope. This is the same kind of envelope
+    the i64 div/rem T1 proofs already live in — they take
+    [I32.divs v1 v2 = Some result] (not I64.divs) as a hypothesis
+    (see CorrectnessI64.v::i64_divs_correct). *)
+
+(** Helper: under 32-bit boundedness, I64.unsigned is the identity. *)
+Lemma i64_unsigned_bounded_id : forall v : I64.int,
+  0 <= v -> v < I32.modulus -> I64.unsigned v = v.
+Proof.
+  intros v Hlo Hhi.
+  unfold I64.unsigned.
+  apply Z.mod_small.
+  unfold I64.modulus.
+  unfold I32.modulus in Hhi.
+  split; [assumption | lia].
+Qed.
+
+(** Helper: under 32-bit boundedness, I32.unsigned is the identity. *)
+Lemma i32_unsigned_bounded_id : forall v : I32.int,
+  0 <= v -> v < I32.modulus -> I32.unsigned v = v.
+Proof.
+  intros v Hlo Hhi.
+  unfold I32.unsigned.
+  apply Z.mod_small. lia.
+Qed.
+
+(** Helper: under 32-bit boundedness, I32.eq agrees with I64.eq.
+    The underlying type is shared (Z), so this is a propositional
+    equality between bool expressions, not a coercion lemma. *)
+Lemma i32_eq_i64_eq_bounded : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.modulus ->
+  0 <= v2 -> v2 < I32.modulus ->
+  I32.eq v1 v2 = I64.eq v1 v2.
+Proof.
+  intros v1 v2 H1lo H1hi H2lo H2hi.
+  unfold I32.eq, I64.eq.
+  rewrite (i32_unsigned_bounded_id v1 H1lo H1hi).
+  rewrite (i32_unsigned_bounded_id v2 H2lo H2hi).
+  rewrite (i64_unsigned_bounded_id v1 H1lo H1hi).
+  rewrite (i64_unsigned_bounded_id v2 H2lo H2hi).
+  reflexivity.
+Qed.
+
+(** Helper: under 32-bit boundedness, I32.ltu agrees with I64.ltu. *)
+Lemma i32_ltu_i64_ltu_bounded : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.modulus ->
+  0 <= v2 -> v2 < I32.modulus ->
+  I32.ltu v1 v2 = I64.ltu v1 v2.
+Proof.
+  intros v1 v2 H1lo H1hi H2lo H2hi.
+  unfold I32.ltu, I64.ltu.
+  rewrite (i32_unsigned_bounded_id v1 H1lo H1hi).
+  rewrite (i32_unsigned_bounded_id v2 H2lo H2hi).
+  rewrite (i64_unsigned_bounded_id v1 H1lo H1hi).
+  rewrite (i64_unsigned_bounded_id v2 H2lo H2hi).
+  reflexivity.
+Qed.
+
+(** Helper: under 32-bit boundedness, I32.leu agrees with I64.leu. *)
+Lemma i32_leu_i64_leu_bounded : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.modulus ->
+  0 <= v2 -> v2 < I32.modulus ->
+  I32.leu v1 v2 = I64.leu v1 v2.
+Proof.
+  intros v1 v2 H1lo H1hi H2lo H2hi.
+  unfold I32.leu, I64.leu.
+  rewrite (i32_unsigned_bounded_id v1 H1lo H1hi).
+  rewrite (i32_unsigned_bounded_id v2 H2lo H2hi).
+  rewrite (i64_unsigned_bounded_id v1 H1lo H1hi).
+  rewrite (i64_unsigned_bounded_id v2 H2lo H2hi).
+  reflexivity.
+Qed.
+
+(** Helper: under 32-bit boundedness, I32.gtu agrees with I64.gtu. *)
+Lemma i32_gtu_i64_gtu_bounded : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.modulus ->
+  0 <= v2 -> v2 < I32.modulus ->
+  I32.gtu v1 v2 = I64.gtu v1 v2.
+Proof.
+  intros v1 v2 H1lo H1hi H2lo H2hi.
+  unfold I32.gtu, I64.gtu.
+  rewrite (i32_unsigned_bounded_id v1 H1lo H1hi).
+  rewrite (i32_unsigned_bounded_id v2 H2lo H2hi).
+  rewrite (i64_unsigned_bounded_id v1 H1lo H1hi).
+  rewrite (i64_unsigned_bounded_id v2 H2lo H2hi).
+  reflexivity.
+Qed.
+
+(** Helper: under 32-bit boundedness, I32.geu agrees with I64.geu. *)
+Lemma i32_geu_i64_geu_bounded : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.modulus ->
+  0 <= v2 -> v2 < I32.modulus ->
+  I32.geu v1 v2 = I64.geu v1 v2.
+Proof.
+  intros v1 v2 H1lo H1hi H2lo H2hi.
+  unfold I32.geu, I64.geu.
+  rewrite (i32_unsigned_bounded_id v1 H1lo H1hi).
+  rewrite (i32_unsigned_bounded_id v2 H2lo H2hi).
+  rewrite (i64_unsigned_bounded_id v1 H1lo H1hi).
+  rewrite (i64_unsigned_bounded_id v2 H2lo H2hi).
+  reflexivity.
+Qed.
+
+(** Helper: when signed views agree, I32.signed v = I64.signed v.
+    This is the natural precondition for signed i64 lemmas — note that
+    raw 32-bit boundedness (0 <= v < 2^32) is NOT enough, because values
+    in [2^31, 2^32) have I32.signed v = v - 2^32 (negative) but
+    I64.signed v = v (positive). The honest precondition is to require
+    the signed views to agree directly. The strict 31-bit bound
+    (0 <= v < 2^31) is the natural sufficient condition. *)
+Lemma i64_signed_eq_i32_signed_31bit : forall v : I64.int,
+  0 <= v -> v < I32.half_modulus -> I64.signed v = I32.signed v.
+Proof.
+  intros v Hlo Hhi.
+  assert (Hhi_raw : v < 2^31) by (unfold I32.half_modulus in Hhi; exact Hhi).
+  assert (Hhi32 : v < I32.modulus) by (unfold I32.modulus; lia).
+  unfold I64.signed, I32.signed.
+  rewrite (i64_unsigned_bounded_id v Hlo Hhi32).
+  rewrite (i32_unsigned_bounded_id v Hlo Hhi32).
+  unfold I32.half_modulus, I64.half_modulus.
+  destruct (Z.ltb_spec v (2^31)) as [H31|H31];
+    destruct (Z.ltb_spec v (2^63)) as [H63|H63];
+    try reflexivity; lia.
+Qed.
+
+(** Helper: under 31-bit boundedness, I32.lts agrees with I64.lts. *)
+Lemma i32_lts_i64_lts_bounded : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.half_modulus ->
+  0 <= v2 -> v2 < I32.half_modulus ->
+  I32.lts v1 v2 = I64.lts v1 v2.
+Proof.
+  intros v1 v2 H1lo H1hi H2lo H2hi.
+  unfold I32.lts, I64.lts.
+  rewrite <- (i64_signed_eq_i32_signed_31bit v1 H1lo H1hi).
+  rewrite <- (i64_signed_eq_i32_signed_31bit v2 H2lo H2hi).
+  reflexivity.
+Qed.
+
+(** Helper: under 31-bit boundedness, I32.les agrees with I64.les. *)
+Lemma i32_les_i64_les_bounded : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.half_modulus ->
+  0 <= v2 -> v2 < I32.half_modulus ->
+  I32.les v1 v2 = I64.les v1 v2.
+Proof.
+  intros v1 v2 H1lo H1hi H2lo H2hi.
+  unfold I32.les, I64.les.
+  rewrite <- (i64_signed_eq_i32_signed_31bit v1 H1lo H1hi).
+  rewrite <- (i64_signed_eq_i32_signed_31bit v2 H2lo H2hi).
+  reflexivity.
+Qed.
+
+(** Helper: under 31-bit boundedness, I32.gts agrees with I64.gts. *)
+Lemma i32_gts_i64_gts_bounded : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.half_modulus ->
+  0 <= v2 -> v2 < I32.half_modulus ->
+  I32.gts v1 v2 = I64.gts v1 v2.
+Proof.
+  intros v1 v2 H1lo H1hi H2lo H2hi.
+  unfold I32.gts, I64.gts.
+  rewrite <- (i64_signed_eq_i32_signed_31bit v1 H1lo H1hi).
+  rewrite <- (i64_signed_eq_i32_signed_31bit v2 H2lo H2hi).
+  reflexivity.
+Qed.
+
+(** Helper: under 31-bit boundedness, I32.ges agrees with I64.ges. *)
+Lemma i32_ges_i64_ges_bounded : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.half_modulus ->
+  0 <= v2 -> v2 < I32.half_modulus ->
+  I32.ges v1 v2 = I64.ges v1 v2.
+Proof.
+  intros v1 v2 H1lo H1hi H2lo H2hi.
+  unfold I32.ges, I64.ges.
+  rewrite <- (i64_signed_eq_i32_signed_31bit v1 H1lo H1hi).
+  rewrite <- (i64_signed_eq_i32_signed_31bit v2 H2lo H2hi).
+  reflexivity.
+Qed.
+
+(** Z flag after CMP correctly reflects i64 equality (under 32-bit bound). *)
+Lemma z_flag_sub_eq_i64 : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.modulus ->
+  0 <= v2 -> v2 < I32.modulus ->
+  compute_z_flag (I32.sub v1 v2) = I64.eq v1 v2.
+Proof.
+  intros. rewrite z_flag_sub_eq.
+  apply i32_eq_i64_eq_bounded; assumption.
+Qed.
+
+(** NE condition: i64 inequality (under 32-bit bound). *)
+Lemma flags_ne_i64 : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.modulus ->
+  0 <= v2 -> v2 < I32.modulus ->
+  negb (compute_z_flag (I32.sub v1 v2)) = I64.ne v1 v2.
+Proof.
+  intros. unfold I64.ne.
+  rewrite (z_flag_sub_eq_i64 v1 v2) by assumption.
+  reflexivity.
+Qed.
+
+(** Signed less-than: N!=V flag (under 31-bit bound — signed views agree). *)
+Lemma nv_flag_sub_lts_i64 : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.half_modulus ->
+  0 <= v2 -> v2 < I32.half_modulus ->
+  negb (Bool.eqb (compute_n_flag (I32.sub v1 v2)) (compute_v_flag_sub v1 v2))
+  = I64.lts v1 v2.
+Proof.
+  intros. rewrite nv_flag_sub_lts.
+  apply i32_lts_i64_lts_bounded; assumption.
+Qed.
+
+(** Unsigned less-than: !C (under 32-bit bound). *)
+Lemma flags_ltu_i64 : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.modulus ->
+  0 <= v2 -> v2 < I32.modulus ->
+  negb (compute_c_flag_sub v1 v2) = I64.ltu v1 v2.
+Proof.
+  intros. rewrite flags_ltu.
+  apply i32_ltu_i64_ltu_bounded; assumption.
+Qed.
+
+(** Signed greater-or-equal: N=V (under 31-bit bound). *)
+Lemma flags_ges_i64 : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.half_modulus ->
+  0 <= v2 -> v2 < I32.half_modulus ->
+  Bool.eqb (compute_n_flag (I32.sub v1 v2)) (compute_v_flag_sub v1 v2)
+  = I64.ges v1 v2.
+Proof.
+  intros. rewrite flags_ges.
+  apply i32_ges_i64_ges_bounded; assumption.
+Qed.
+
+(** Unsigned greater-or-equal: C (under 32-bit bound). *)
+Lemma flags_geu_i64 : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.modulus ->
+  0 <= v2 -> v2 < I32.modulus ->
+  compute_c_flag_sub v1 v2 = I64.geu v1 v2.
+Proof.
+  intros. rewrite flags_geu.
+  apply i32_geu_i64_geu_bounded; assumption.
+Qed.
+
+(** Signed greater-than: !Z && N=V (under 31-bit bound). *)
+Lemma flags_gts_i64 : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.half_modulus ->
+  0 <= v2 -> v2 < I32.half_modulus ->
+  negb (compute_z_flag (I32.sub v1 v2)) &&
+  Bool.eqb (compute_n_flag (I32.sub v1 v2)) (compute_v_flag_sub v1 v2)
+  = I64.gts v1 v2.
+Proof.
+  intros. rewrite flags_gts.
+  apply i32_gts_i64_gts_bounded; assumption.
+Qed.
+
+(** Unsigned greater-than: C && !Z (under 32-bit bound). *)
+Lemma flags_gtu_i64 : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.modulus ->
+  0 <= v2 -> v2 < I32.modulus ->
+  compute_c_flag_sub v1 v2 && negb (compute_z_flag (I32.sub v1 v2))
+  = I64.gtu v1 v2.
+Proof.
+  intros. rewrite flags_gtu.
+  apply i32_gtu_i64_gtu_bounded; assumption.
+Qed.
+
+(** Signed less-or-equal: Z || N!=V (under 31-bit bound). *)
+Lemma flags_les_i64 : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.half_modulus ->
+  0 <= v2 -> v2 < I32.half_modulus ->
+  compute_z_flag (I32.sub v1 v2) ||
+  negb (Bool.eqb (compute_n_flag (I32.sub v1 v2)) (compute_v_flag_sub v1 v2))
+  = I64.les v1 v2.
+Proof.
+  intros. rewrite flags_les.
+  apply i32_les_i64_les_bounded; assumption.
+Qed.
+
+(** Unsigned less-or-equal: !C || Z (under 32-bit bound). *)
+Lemma flags_leu_i64 : forall v1 v2 : I64.int,
+  0 <= v1 -> v1 < I32.modulus ->
+  0 <= v2 -> v2 < I32.modulus ->
+  negb (compute_c_flag_sub v1 v2) || compute_z_flag (I32.sub v1 v2)
+  = I64.leu v1 v2.
+Proof.
+  intros. rewrite flags_leu.
+  apply i32_leu_i64_leu_bounded; assumption.
+Qed.
+
+(** I32.zero and I64.zero are both definitionally 0. *)
+Lemma i32_zero_eq_zero : I32.zero = 0.
+Proof.
+  unfold I32.zero, I32.repr, I32.modulus.
+  apply Z.mod_0_l. lia.
+Qed.
+
+Lemma i64_zero_eq_zero : I64.zero = 0.
+Proof.
+  unfold I64.zero, I64.repr, I64.modulus.
+  apply Z.mod_0_l. lia.
+Qed.
+
+Lemma i32_zero_eq_i64_zero : I32.zero = I64.zero.
+Proof.
+  rewrite i32_zero_eq_zero, i64_zero_eq_zero. reflexivity.
+Qed.
+
+(** Z flag after CMP with zero correctly reflects i64 eqz (under 32-bit bound).
+    Convenience corollary for I64Eqz which compares R0 against the immediate 0. *)
+Lemma z_flag_sub_eqz_i64 : forall v : I64.int,
+  0 <= v -> v < I32.modulus ->
+  compute_z_flag (I32.sub v I32.zero) = I64.eq v I64.zero.
+Proof.
+  intros v Hlo Hhi.
+  rewrite <- i32_zero_eq_i64_zero.
+  apply z_flag_sub_eq_i64; try assumption.
+  - rewrite i32_zero_eq_zero. lia.
+  - rewrite i32_zero_eq_zero. unfold I32.modulus. lia.
+Qed.
+

@@ -10,6 +10,7 @@ Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
 Require Import Synth.ARM.ArmInstructions.
 Require Import Synth.ARM.ArmSemantics.
+Require Import Synth.ARM.ArmFlagLemmas.
 Require Import Synth.WASM.WasmValues.
 Require Import Synth.WASM.WasmInstructions.
 Require Import Synth.WASM.WasmSemantics.
@@ -88,6 +89,89 @@ Ltac synth_cmp_unop_proof flag_lemma :=
   rewrite flag_lemma;
   destruct (I32.eq v I32.zero);
   (eexists; split; [reflexivity | apply get_set_reg_eq]).
+
+(** ** I64 Tactics (v0.8.0 foundation)
+
+    Architectural note: i64 ops in this codebase compile to single 32-bit
+    ARM instructions (see Compilation.v — "Simplified: just add low 32 bits").
+    There is NO R0:R1 register pair — i64 values live in a single 32-bit
+    register, and ARM operations compute the I32 result on the underlying Z
+    representation. The T1 obligation discharged by these tactics therefore
+    has shape `get_reg astate' R0 = I32.op v1 v2` (matching the actual ARM
+    behavior), not `lo(I64.op v1 v2) /\ hi(I64.op v1 v2)` (which would
+    presume a register-pair representation that does not exist here).
+
+    This mirrors how the existing i64 div/rem T1 proofs in CorrectnessI64.v
+    already work — they take `I32.divs v1 v2 = Some result` (not I64.divs)
+    as a hypothesis. The foundation PR follows the same convention. *)
+
+(** ** Tactic: synth_binop_proof_i64
+
+    Automates the standard proof pattern for i64 binary operations.
+    Discharges obligations of the shape:
+    [
+      wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
+      get_reg astate R0 = v1 -> get_reg astate R1 = v2 ->
+      exec_wasm_instr <I64Op> wstate = Some (...) ->
+      exists astate',
+        exec_program (compile_wasm_to_arm <I64Op>) astate = Some astate' /\
+        get_reg astate' R0 = I32.<op> v1 v2.
+    ]
+
+    The conclusion uses `I32.<op>` (matching the actual ARM instruction
+    semantics on 32-bit registers); v1, v2 have type I64.int. *)
+
+Ltac synth_binop_proof_i64 :=
+  intros;
+  match goal with
+  | [ HR0 : get_reg _ R0 = _, HR1 : get_reg _ R1 = _ |- _ ] =>
+      unfold compile_wasm_to_arm;
+      unfold exec_program, exec_instr;
+      simpl;
+      rewrite HR0, HR1;
+      eexists; split;
+      [ reflexivity
+      | simpl; apply get_set_reg_eq ]
+  end.
+
+(** ** Tactic: synth_cmp_binop_proof_i64
+
+    Automates i64 comparison proofs (CMP + MOV + conditional-MOV).
+    Takes an i64 flag-correspondence lemma (from ArmFlagLemmas.v) as
+    argument. The lemma must close the boundedness preconditions; we
+    feed it via `apply` so the caller's i64 boundedness hypotheses
+    surface as residual goals. *)
+
+Ltac synth_cmp_binop_proof_i64 flag_lemma :=
+  intros;
+  match goal with
+  | [ HR0 : get_reg _ R0 = _, HR1 : get_reg _ R1 = _ |- _ ] =>
+      unfold compile_wasm_to_arm; simpl;
+      rewrite HR0, HR1; simpl;
+      rewrite flag_lemma by assumption;
+      match goal with
+      | |- context [if ?b then _ else _] => destruct b
+      end;
+      (eexists; split; [reflexivity | apply get_set_reg_eq])
+  end.
+
+(** ** Tactic: synth_cmp_unop_proof_i64
+
+    i64 eqz variant of [synth_cmp_unop_proof]. The compilation pattern
+    is CMP R0 (Imm I32.zero); MOV; MOVEQ. *)
+
+Ltac synth_cmp_unop_proof_i64 flag_lemma :=
+  intros;
+  match goal with
+  | [ HR0 : get_reg _ R0 = _ |- _ ] =>
+      unfold compile_wasm_to_arm; simpl;
+      rewrite HR0; simpl;
+      rewrite flag_lemma by assumption;
+      match goal with
+      | |- context [if ?b then _ else _] => destruct b
+      end;
+      (eexists; split; [reflexivity | apply get_set_reg_eq])
+  end.
 
 (** ** Tactic: synth_simplify
 
