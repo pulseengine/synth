@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-05-25
+
+Floating-point breadth + verifiable signing CI — synth now compiles
+WASM modules with double-precision FP on Cortex-M7DP targets (i.MX RT1062
+class), and the sigil keyless-signing path is now exercised end-to-end
+in CI against a sha256-pinned wsc v0.9.0. PRs #140 (Phase 5 e2e),
+#141 (f64 codegen).
+
+**Falsification statement.** v0.7.0 would be wrong if (a) a WASM module
+using only the f64 ops listed below produces an ELF that fails to link,
+returns a synthesis error on a Cortex-M7DP target, or computes a result
+that disagrees with the WASM reference on a covered op; or (b) the new
+`signing-e2e.yml` workflow goes red on a clean `v0.7.0` checkout (cases
+1 and 2 must remain hard checks; case 3 is xfail against
+[sigil#135](https://github.com/pulseengine/sigil/issues/135)).
+
 ### Added
 
 #### f64 codegen — ARM VFP-D end-to-end
