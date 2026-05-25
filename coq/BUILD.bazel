@@ -87,21 +87,21 @@ rocq_library(
     name = "wasm_values",
     srcs = ["Synth/WASM/WasmValues.v"],
     include_path = "Synth",
-    deps = [":common"],
+    deps = [":base", ":common"],
 )
 
 rocq_library(
     name = "wasm_instructions",
     srcs = ["Synth/WASM/WasmInstructions.v"],
     include_path = "Synth",
-    deps = [":wasm_values"],
+    deps = [":base", ":common", ":wasm_values"],
 )
 
 rocq_library(
     name = "wasm_semantics",
     srcs = ["Synth/WASM/WasmSemantics.v"],
     include_path = "Synth",
-    deps = [":wasm_instructions"],
+    deps = [":base", ":common", ":wasm_values", ":wasm_instructions"],
 )
 
 # ─── Compilation ──────────────────────────────────────────────────────────────
@@ -111,7 +111,15 @@ rocq_library(
     name = "compilation",
     srcs = ["Synth/Synth/Compilation.v"],
     include_path = "Synth",
-    deps = [":arm_instructions", ":wasm_semantics"],
+    deps = [
+        ":base",
+        ":common",
+        ":arm_state",
+        ":arm_instructions",
+        ":wasm_values",
+        ":wasm_instructions",
+        ":wasm_semantics",
+    ],
 )
 
 # Tactics depends on Compilation + ArmSemantics
@@ -119,12 +127,34 @@ rocq_library(
     name = "tactics",
     srcs = ["Synth/Synth/Tactics.v"],
     include_path = "Synth",
-    deps = [":compilation", ":arm_semantics"],
+    deps = [
+        ":base",
+        ":common",
+        ":arm_state",
+        ":arm_instructions",
+        ":arm_semantics",
+        ":wasm_values",
+        ":wasm_instructions",
+        ":wasm_semantics",
+        ":compilation",
+    ],
 )
 
 # ─── Correctness proofs ──────────────────────────────────────────────────────
 # Split by dependency: some need Tactics, some don't.
 # Files within each group don't import each other.
+
+_CORRECTNESS_FULL_DEPS = [
+    ":base",
+    ":common",
+    ":arm_state",
+    ":arm_instructions",
+    ":arm_semantics",
+    ":wasm_values",
+    ":wasm_instructions",
+    ":wasm_semantics",
+    ":compilation",
+]
 
 # Group A: depend on Compilation + ArmSemantics (no Tactics)
 rocq_library(
@@ -138,7 +168,7 @@ rocq_library(
         "Synth/Synth/CorrectnessI64Comparisons.v",
     ],
     include_path = "Synth",
-    deps = [":compilation", ":arm_semantics"],
+    deps = _CORRECTNESS_FULL_DEPS,
 )
 
 # Group B: depend on Tactics (which transitively provides Compilation)
@@ -150,7 +180,7 @@ rocq_library(
         "Synth/Synth/CorrectnessConversions.v",
     ],
     include_path = "Synth",
-    deps = [":tactics", ":arm_flag_lemmas"],
+    deps = _CORRECTNESS_FULL_DEPS + [":tactics", ":arm_flag_lemmas"],
 )
 
 # Master index: imports all correctness proofs
