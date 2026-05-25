@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+- CI: `signing-e2e.yml` workflow added (Phase 5 end-to-end). Runs three
+  wsc keyless cases against a sha256-pinned wsc v0.9.0. Case 3
+  (tamper-negative) is `xfail` against current wsc — see
+  [pulseengine/sigil#135](https://github.com/pulseengine/sigil/issues/135):
+  `wsc verify --keyless` accepts WASM modules whose signed payload has
+  been byte-modified after signing. Documented in
+  `docs/sigil-integration.md`.
+
 ## [0.6.0] - 2026-05-24
 
 Supply-chain close-out — synth produces all six evidence layers from

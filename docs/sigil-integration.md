@@ -248,9 +248,19 @@ Validated:
      eventually lifts the ELF restriction, alerting maintainers to
      update the test (and ship a proper signed ELF in the release
      workflow).
-  3. **Tamper-negative** — flips a byte in the case-1 signed WASM and
-     asserts `wsc verify --keyless` rejects it. A signature scheme that
-     never rejects anything is useless.
+  3. **Tamper-negative** (currently xfail — sigil#135) — flips a byte
+     in the case-1 signed WASM and asserts `wsc verify --keyless`
+     rejects it. **The CI run on commit 7f1a9c9 surfaced that
+     wsc v0.9.0 accepts the tampered file (exit 0)** — verification
+     is not detecting modifications inside the signed payload (offset
+     64 in a 15 218-byte signed module, well before the trailing
+     signature section). Filed upstream as
+     [pulseengine/sigil#135](https://github.com/pulseengine/sigil/issues/135).
+     The test is intentionally `xfail` against current wsc and will
+     auto-`xpass`-notify when sigil#135 ships a fix; the assertion
+     should then flip back to a hard rejection check. Until then,
+     `wsc verify --keyless` should be treated as proving signature-blob
+     well-formedness, **not** module integrity.
 
 ### Known contract gap (sigil v0.9.0)
 
