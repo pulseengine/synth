@@ -122,7 +122,7 @@ rocq_library(
     ],
 )
 
-# Tactics depends on Compilation + ArmSemantics
+# Tactics depends on Compilation + ArmSemantics + ArmFlagLemmas
 rocq_library(
     name = "tactics",
     srcs = ["Synth/Synth/Tactics.v"],
@@ -133,6 +133,7 @@ rocq_library(
         ":arm_state",
         ":arm_instructions",
         ":arm_semantics",
+        ":arm_flag_lemmas",
         ":wasm_values",
         ":wasm_instructions",
         ":wasm_semantics",
