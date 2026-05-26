@@ -7,20 +7,104 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-26
+
+**Theme: honest i64 verification foundation.**
+
+v0.8.0 was originally scoped as "i64 T1 result-correspondence parity"
+(umbrella issue #147). A clean-room check of the first foundation PR
+(#149) surfaced that `coq/Synth/Synth/Compilation.v` modeled i64 ops
+as single 32-bit ARM instructions (e.g., `I64Add → [ADD R0 R0 R1]`,
+inline comment: *"Simplified: just add low 32 bits"*) while the real
+Rust compiler at `crates/synth-synthesis/src/instruction_selector.rs:1450`
+emits proper register-pair sequences (`ADDS R0,R0,R2; ADC R1,R1,R3`).
+The umbrella's own falsification clause forbade shipping T1 proofs
+that "prove a different operation than the compiler emits."
+
+Rather than overclaim or paper over the gap, v0.8.0 ships the
+**aligned model + proof tooling** layer, and the actual T2→T1
+promotions become v0.9.0's theme. This is a smaller user-visible
+delta but a much bigger verification-soundness delta: the existing
+i64 proofs now reason about the operation the compiler actually
+emits, instead of a degenerate 32-bit slice of it.
+
+**Falsification statement.** v0.8.0 is wrong if (a) the aligned
+`Compilation.v` clauses do not match what the Rust compiler emits
+(cross-checked against the per-op survey in
+[`docs/analysis/I64_CODEGEN_SURVEY.md`](docs/analysis/I64_CODEGEN_SURVEY.md)),
+(b) `bazel test //coq:verify_proofs` goes red on a clean v0.8.0
+checkout, or (c) any of the 5 strategically-`Admitted` i64 theorems
+(4 div/rem + 1 i64_const) are claimed to be Qed anywhere in the
+release artifacts.
+
+### Changed
+- **`coq/Synth/Synth/Compilation.v` aligned with real Rust i64 codegen** (PR #150).
+  28 i64 op clauses updated: I64Add/Sub now emit `ADDS R0,R0,R2; ADC R1,R1,R3`
+  (and SUBS/SBC); I64And/Or/Xor emit parallel lo/hi binops; i64 comparison ops
+  emit a single `I64SetCond[Z]` pseudo-op; div/rem/mul/shifts/rotates/bit-manip
+  emit ArmOp::I64* pseudo-ops mirroring the Rust ArmOp variants. ArmSemantics.v
+  gains the real ADDS/ADC/SUBS/SBC instructions plus ~25 axiomatized result
+  functions for the pseudo-ops (parallel to how VFP is axiomatized).
+  Per-op cross-check against the Rust source is documented in
+  [`docs/analysis/I64_CODEGEN_SURVEY.md`](docs/analysis/I64_CODEGEN_SURVEY.md).
+- ~36 existence-only (T2) i64 proofs re-proved against the aligned model
+  using the existing `solve_single_arm` / `solve_cmp_mov` / `solve_mem_single`
+  tactics. **Net: previously had 29 i64 theorems Qed against a model that
+  proved the wrong operation; now has 36 i64 theorems Qed against the
+  correct model, plus 5 strategically-Admitted theorems pending the
+  v0.9.0 lift queue.**
+
+### Added
+- **Proof tooling for i64 T1 lifts** (PR #149). Three new tactics in
+  `coq/Synth/Synth/Tactics.v`: `synth_binop_proof_i64`,
+  `synth_cmp_binop_proof_i64`, and `synth_cmp_unop_proof_i64`. Eleven
+  new i64 flag-correspondence lemmas in `coq/Synth/ARM/ArmFlagLemmas.v`
+  (`z_flag_sub_eq_i64`, `flags_ne_i64`, `nv_flag_sub_lts_i64`,
+  `flags_ltu_i64`, `flags_ges_i64`, `flags_geu_i64`, `flags_gts_i64`,
+  `flags_gtu_i64`, `flags_les_i64`, `flags_leu_i64`,
+  `z_flag_sub_eqz_i64`), plus 14 supporting boundedness helpers. All
+  proofs Qed; 0 Admitted in #149's diff. These are the infrastructure
+  the v0.9.0 lift PRs will consume.
+
 ### Documentation
-- **Architectural finding: ARMv7-M FPv5 has no F64↔I64 VCVT.** The four
-  WASM ops `F64ConvertI64S/U` and `I64TruncF64S/U` listed under v0.7.0's
-  "Deferred to follow-up" cannot be implemented as single-instruction
-  VCVTs on Cortex-M7DP — the 64-bit integer ↔ floating-point VCVT
-  encodings are ARMv8-A FEAT_FP only, not present in M-profile FPv5-D16
-  (Cortex-M7DP, M33-DP, M55, M85). Closing these properly requires a
-  multi-instruction software sequence (or a soft-float helper) plus
-  WASM-trap integration for the trunc family, plus matching Rocq
-  proofs — out of scope for v0.8.0's i64-T1-promotion theme. Deferred
-  to a later floating-point milestone. Full analysis in
-  [`docs/analysis/ARMV7M_F64_I64_VCVT_FINDING.md`](docs/analysis/ARMV7M_F64_I64_VCVT_FINDING.md).
-  The selector continues to surface a typed `Error::Synthesis` for
-  these ops; no behavior change vs. v0.7.0.
+- **Architectural finding: ARMv7-M FPv5 has no F64↔I64 VCVT** (PR #148).
+  The four WASM ops `F64ConvertI64S/U` and `I64TruncF64S/U` listed under
+  v0.7.0's "Deferred to follow-up" cannot be implemented as
+  single-instruction VCVTs on Cortex-M7DP — the 64-bit integer ↔
+  floating-point VCVT encodings are ARMv8-A FEAT_FP only, not present
+  in M-profile FPv5-D16. Closing these requires a multi-instruction
+  software sequence plus WASM-trap integration plus matching Rocq
+  proofs — deferred to a later floating-point milestone. Full analysis
+  in [`docs/analysis/ARMV7M_F64_I64_VCVT_FINDING.md`](docs/analysis/ARMV7M_F64_I64_VCVT_FINDING.md).
+  Selector continues to surface a typed `Error::Synthesis`; no
+  behavior change vs. v0.7.0.
+- **I64 codegen survey** at [`docs/analysis/I64_CODEGEN_SURVEY.md`](docs/analysis/I64_CODEGEN_SURVEY.md):
+  per-op extraction of what the Rust compiler emits for every i64 WASM
+  op, with line citations into `instruction_selector.rs`. Reviewers
+  audit Compilation.v against the Rust source mechanically using this
+  file.
+
+### Fixed
+- **Bazel rocq_library dep wiring**. `rules_rocq_rust` requires every
+  `Require Import Synth.X.Y.` in a `.v` file to be matched by a
+  corresponding `:y` target in the library's `deps` list — transitive
+  deps through intermediate targets do **not** propagate the `-Q`
+  flags to `coqc`. Synth's `:arm_instructions`, `:arm_semantics`,
+  `:compilation`, `:tactics`, and `:correctness_*` rocq_libraries were
+  relying on transitive resolution that happened to work on main only
+  because cached `.vo` files masked the missing flags. PR #150's
+  alignment changes broke the happy accident; the deps are now
+  explicit (matches the pattern in
+  `pulseengine/loom/proofs/BUILD.bazel`).
+
+### Deferred to v0.9.0
+- **i64 T1 result-correspondence promotions.** The original umbrella's
+  scope: 30 T2 → T1 lifts (arithmetic, bitwise, shifts/rotates,
+  comparisons, bit-manip) plus discharging the 5 admits #150 introduced
+  (4 div/rem T1 + 1 i64_const T1). These now ride into v0.9.0 as the
+  primary theme, against the now-aligned model. Tracked in #147.
+- F64↔I64 conversion implementations (see Documentation section).
+- F32DemoteF64 (deferred from v0.7.0).
 
 ## [0.7.0] - 2026-05-25
 
