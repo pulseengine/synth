@@ -415,11 +415,11 @@ Qed.
 
     I64 Operations: 26 theorems in this file
     - Arithmetic existence: 3 Qed (Add, Sub, Mul)
-    - Division/remainder T1: 4 Admitted, pending v0.8.0 lift queue (#147 PRs 2–5)
+    - Division/remainder T1: 4 Admitted, pending v0.8.0 lift queue (#147 PRs 2-5)
     - Bitwise existence: 3 Qed (And, Or, Xor)
     - Shift/rotate existence: 5 Qed (Shl, ShrU, ShrS, Rotl, Rotr)
-    - Comparison existence: 11 Qed (Eqz, Eq, Ne, Lt*, Gt*, Le*, Ge*)
-    - Bit-manipulation existence: 3 Qed (Clz, Ctz, Popcnt) — note: also stated
+    - Comparison existence: 11 Qed (Eqz, Eq, Ne, Lt[SU], Le[SU], Gt[SU], Ge[SU])
+    - Bit-manipulation existence: 3 Qed (Clz, Ctz, Popcnt) -- note: also stated
       in CorrectnessI64Comparisons.v with I64-typed hypotheses
 
     Status: 22 Qed / 4 Admitted (down from 29 Qed / 0 Admitted).
