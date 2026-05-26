@@ -57,6 +57,65 @@ Axiom cvt_f64_to_f32_bits : I32.int -> I32.int.  (** F64 -> F32 demote *)
 Axiom cvt_s32_to_f32_bits : I32.int -> I32.int.  (** Signed int -> F32 *)
 Axiom cvt_f32_to_s32_bits : I32.int -> I32.int.  (** F32 -> Signed int *)
 
+(** ** Axiomatized I64 pseudo-op result functions
+
+    Each i64 pseudo-op writes its result(s) as a function of the inputs.
+    These axioms are placeholders — they assert the existence of some result
+    value matching the corresponding ArmOp encoder output. The current
+    correctness proofs are existence-only (T2): they prove the program runs
+    to a Some-state, not that the resulting bit-pattern equals the WASM
+    semantics. Lifting these to T1 result-correspondence is the job of
+    follow-up PRs (the umbrella issue #147 v0.8.0 lift queue: PRs 2–5).
+
+    The (lo, hi) decomposition follows the Rust convention:
+      i64 value v <-> (rdlo := low 32 bits of v, rdhi := high 32 bits of v).
+*)
+
+(** i64.mul: full 64-bit product *)
+Axiom i64_mul_lo_bits : I32.int -> I32.int -> I32.int -> I32.int -> I32.int.
+Axiom i64_mul_hi_bits : I32.int -> I32.int -> I32.int -> I32.int -> I32.int.
+
+(** i64.shl / i64.shr_u / i64.shr_s — shift count's low half in rmlo *)
+Axiom i64_shl_lo_bits  : I32.int -> I32.int -> I32.int -> I32.int.
+Axiom i64_shl_hi_bits  : I32.int -> I32.int -> I32.int -> I32.int.
+Axiom i64_shru_lo_bits : I32.int -> I32.int -> I32.int -> I32.int.
+Axiom i64_shru_hi_bits : I32.int -> I32.int -> I32.int -> I32.int.
+Axiom i64_shrs_lo_bits : I32.int -> I32.int -> I32.int -> I32.int.
+Axiom i64_shrs_hi_bits : I32.int -> I32.int -> I32.int -> I32.int.
+
+(** i64.rotl / i64.rotr — shift count in single register *)
+Axiom i64_rotl_lo_bits : I32.int -> I32.int -> I32.int -> I32.int.
+Axiom i64_rotl_hi_bits : I32.int -> I32.int -> I32.int -> I32.int.
+Axiom i64_rotr_lo_bits : I32.int -> I32.int -> I32.int -> I32.int.
+Axiom i64_rotr_hi_bits : I32.int -> I32.int -> I32.int -> I32.int.
+
+(** i64.clz / i64.ctz / i64.popcnt — single 32-bit result *)
+Axiom i64_clz_bits    : I32.int -> I32.int -> I32.int.
+Axiom i64_ctz_bits    : I32.int -> I32.int -> I32.int.
+Axiom i64_popcnt_bits : I32.int -> I32.int -> I32.int.
+
+(** i64 comparison: 0/1 result selected by condition *)
+Axiom i64_setcond_bits  : I32.int -> I32.int -> I32.int -> I32.int -> condition -> I32.int.
+Axiom i64_setcondz_bits : I32.int -> I32.int -> I32.int.
+
+(** i64.div_s/_u and i64.rem_s/_u — option result for trap semantics *)
+Axiom i64_divs_pair : I32.int -> I32.int -> I32.int -> I32.int -> option (I32.int * I32.int).
+Axiom i64_divu_pair : I32.int -> I32.int -> I32.int -> I32.int -> option (I32.int * I32.int).
+Axiom i64_rems_pair : I32.int -> I32.int -> I32.int -> I32.int -> option (I32.int * I32.int).
+Axiom i64_remu_pair : I32.int -> I32.int -> I32.int -> I32.int -> option (I32.int * I32.int).
+
+(** i64.const: split a 64-bit value into 32-bit halves *)
+Axiom i64_const_lo : I64.int -> I32.int.
+Axiom i64_const_hi : I64.int -> I32.int.
+
+(** i64.extend_i32_s/_u: low half is rn, high half is sign-extension or zero *)
+Axiom i64_extend_s_hi : I32.int -> I32.int.
+  (** sign-extension of i32 -> high half of i64; equals 0 if rn >= 0, all-ones otherwise *)
+
+(** Memory: 8-byte load splits into two halves *)
+Axiom i64_load_lo : memory -> Z -> I32.int.
+Axiom i64_load_hi : memory -> Z -> I32.int.
+
 (** ** Flag Computation Helpers *)
 
 (** Compute negative flag: result < 0 (signed) *)
@@ -122,6 +181,45 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       let v1 := get_reg s rn in
       let v2 := eval_operand2 op2 s in
       let result := I32.sub v1 v2 in
+      Some (set_reg s rd result)
+
+  (* ADDS: ADD setting flags from unsigned overflow.
+     C flag is set iff rn + op2 overflows the 32-bit range. *)
+  | ADDS rd rn op2 =>
+      let v1 := get_reg s rn in
+      let v2 := eval_operand2 op2 s in
+      let result := I32.add v1 v2 in
+      let c := compute_c_flag_add v1 v2 in
+      let v := compute_v_flag_add v1 v2 result in
+      let new_flags := update_flags_arith result c v in
+      Some (set_flags (set_reg s rd result) new_flags)
+
+  (* ADC: ADD with carry, reading the C flag set by a prior ADDS.
+     Computes rn + op2 + C. Does not set flags itself (unlike ADCS). *)
+  | ADC rd rn op2 =>
+      let v1 := get_reg s rn in
+      let v2 := eval_operand2 op2 s in
+      let carry_in := if s.(flags).(flag_c) then I32.one else I32.zero in
+      let result := I32.add (I32.add v1 v2) carry_in in
+      Some (set_reg s rd result)
+
+  (* SUBS: SUB setting flags from unsigned borrow. *)
+  | SUBS rd rn op2 =>
+      let v1 := get_reg s rn in
+      let v2 := eval_operand2 op2 s in
+      let result := I32.sub v1 v2 in
+      let c := compute_c_flag_sub v1 v2 in
+      let v := compute_v_flag_sub v1 v2 in
+      let new_flags := update_flags_arith result c v in
+      Some (set_flags (set_reg s rd result) new_flags)
+
+  (* SBC: SUB with carry (borrow inverted), reading the C flag set by a prior SUBS.
+     Computes rn - op2 - NOT(C) = rn - op2 - 1 + C. *)
+  | SBC rd rn op2 =>
+      let v1 := get_reg s rn in
+      let v2 := eval_operand2 op2 s in
+      let borrow_in := if s.(flags).(flag_c) then I32.zero else I32.one in
+      let result := I32.sub (I32.sub v1 v2) borrow_in in
       Some (set_reg s rd result)
 
   | MUL rd rn rm =>
@@ -548,6 +646,158 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       let addr := I32.add base (I32.repr offset) in
       let value := get_vfp_reg s dd in
       Some (store_mem s (I32.signed addr) value)
+
+  (* ===== i64 pseudo-op semantics =====
+     Each pseudo-op reads the relevant register pair(s) and writes the axiomatized
+     result(s) into the destination pair. These are existence-level semantics
+     suitable for T2 proofs; T1 lifting requires replacing the bit-pattern axioms
+     with concrete I64.* operations (umbrella issue #147 v0.8.0 lift queue). *)
+
+  | I64MulPseudo rdlo rdhi rnlo rnhi rmlo rmhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      let vmlo := get_reg s rmlo in
+      let vmhi := get_reg s rmhi in
+      let lo := i64_mul_lo_bits vnlo vnhi vmlo vmhi in
+      let hi := i64_mul_hi_bits vnlo vnhi vmlo vmhi in
+      Some (set_reg (set_reg s rdlo lo) rdhi hi)
+
+  | I64ShlPseudo rdlo rdhi rnlo rnhi rmlo _rmhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      let cnt  := get_reg s rmlo in
+      let lo := i64_shl_lo_bits vnlo vnhi cnt in
+      let hi := i64_shl_hi_bits vnlo vnhi cnt in
+      Some (set_reg (set_reg s rdlo lo) rdhi hi)
+
+  | I64ShrUPseudo rdlo rdhi rnlo rnhi rmlo _rmhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      let cnt  := get_reg s rmlo in
+      let lo := i64_shru_lo_bits vnlo vnhi cnt in
+      let hi := i64_shru_hi_bits vnlo vnhi cnt in
+      Some (set_reg (set_reg s rdlo lo) rdhi hi)
+
+  | I64ShrSPseudo rdlo rdhi rnlo rnhi rmlo _rmhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      let cnt  := get_reg s rmlo in
+      let lo := i64_shrs_lo_bits vnlo vnhi cnt in
+      let hi := i64_shrs_hi_bits vnlo vnhi cnt in
+      Some (set_reg (set_reg s rdlo lo) rdhi hi)
+
+  | I64RotlPseudo rdlo rdhi rnlo rnhi shift =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      let cnt  := get_reg s shift in
+      let lo := i64_rotl_lo_bits vnlo vnhi cnt in
+      let hi := i64_rotl_hi_bits vnlo vnhi cnt in
+      Some (set_reg (set_reg s rdlo lo) rdhi hi)
+
+  | I64RotrPseudo rdlo rdhi rnlo rnhi shift =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      let cnt  := get_reg s shift in
+      let lo := i64_rotr_lo_bits vnlo vnhi cnt in
+      let hi := i64_rotr_hi_bits vnlo vnhi cnt in
+      Some (set_reg (set_reg s rdlo lo) rdhi hi)
+
+  | I64ClzPseudo rd rnlo rnhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      Some (set_reg s rd (i64_clz_bits vnlo vnhi))
+
+  | I64CtzPseudo rd rnlo rnhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      Some (set_reg s rd (i64_ctz_bits vnlo vnhi))
+
+  | I64PopcntPseudo rd rnlo rnhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      Some (set_reg s rd (i64_popcnt_bits vnlo vnhi))
+
+  | I64SetCond rd rnlo rnhi rmlo rmhi cond =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      let vmlo := get_reg s rmlo in
+      let vmhi := get_reg s rmhi in
+      Some (set_reg s rd (i64_setcond_bits vnlo vnhi vmlo vmhi cond))
+
+  | I64SetCondZ rd rnlo rnhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      Some (set_reg s rd (i64_setcondz_bits vnlo vnhi))
+
+  | I64DivSPseudo rdlo rdhi rnlo rnhi rmlo rmhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      let vmlo := get_reg s rmlo in
+      let vmhi := get_reg s rmhi in
+      match i64_divs_pair vnlo vnhi vmlo vmhi with
+      | Some (lo, hi) => Some (set_reg (set_reg s rdlo lo) rdhi hi)
+      | None => None  (* trap: divide by zero / signed overflow *)
+      end
+
+  | I64DivUPseudo rdlo rdhi rnlo rnhi rmlo rmhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      let vmlo := get_reg s rmlo in
+      let vmhi := get_reg s rmhi in
+      match i64_divu_pair vnlo vnhi vmlo vmhi with
+      | Some (lo, hi) => Some (set_reg (set_reg s rdlo lo) rdhi hi)
+      | None => None  (* trap: divide by zero *)
+      end
+
+  | I64RemSPseudo rdlo rdhi rnlo rnhi rmlo rmhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      let vmlo := get_reg s rmlo in
+      let vmhi := get_reg s rmhi in
+      match i64_rems_pair vnlo vnhi vmlo vmhi with
+      | Some (lo, hi) => Some (set_reg (set_reg s rdlo lo) rdhi hi)
+      | None => None
+      end
+
+  | I64RemUPseudo rdlo rdhi rnlo rnhi rmlo rmhi =>
+      let vnlo := get_reg s rnlo in
+      let vnhi := get_reg s rnhi in
+      let vmlo := get_reg s rmlo in
+      let vmhi := get_reg s rmhi in
+      match i64_remu_pair vnlo vnhi vmlo vmhi with
+      | Some (lo, hi) => Some (set_reg (set_reg s rdlo lo) rdhi hi)
+      | None => None
+      end
+
+  | I64ConstPseudo rdlo rdhi v =>
+      Some (set_reg (set_reg s rdlo (i64_const_lo v)) rdhi (i64_const_hi v))
+
+  | I64ExtendI32SPseudo rdlo rdhi rn =>
+      let v := get_reg s rn in
+      (* Low half is rn; high half is sign-extension axiom *)
+      Some (set_reg (set_reg s rdlo v) rdhi (i64_extend_s_hi v))
+
+  | I64ExtendI32UPseudo rdlo rdhi rn =>
+      let v := get_reg s rn in
+      (* Low half is rn; high half is zero *)
+      Some (set_reg (set_reg s rdlo v) rdhi I32.zero)
+
+  | I32WrapI64Pseudo rd rnlo =>
+      (* Keeps low half in rd; drops high half *)
+      let v := get_reg s rnlo in
+      Some (set_reg s rd v)
+
+  | I64LoadPseudo rdlo rdhi addr offset =>
+      let base := get_reg s addr in
+      let a := I32.signed (I32.add base (I32.repr offset)) in
+      Some (set_reg (set_reg s rdlo (i64_load_lo s.(mem) a)) rdhi (i64_load_hi s.(mem) a))
+
+  | I64StorePseudo rnlo rnhi addr offset =>
+      let base := get_reg s addr in
+      let a := I32.signed (I32.add base (I32.repr offset)) in
+      let lo := get_reg s rnlo in
+      let hi := get_reg s rnhi in
+      Some (store_mem (store_mem s a lo) (a + 4) hi)
   end.
 
 (** Execute a sequence of instructions *)

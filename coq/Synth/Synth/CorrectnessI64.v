@@ -1,12 +1,13 @@
 (** * I64 Operations Correctness
 
     This file contains correctness proofs for all i64 WebAssembly operations.
-    Total: 34 operations (mirror of i32)
 
-    Note: All i64 operations compile to the same ARM instructions as i32
-    (simplified 32-bit representation). Proofs only claim existence.
-    I64 arithmetic compiles to single ARM instructions (ADD, SUB, MUL, etc.)
-    which always return Some for non-division ops.
+    v0.8.0 PR 1a alignment: i64 ops now compile to dual-register pair sequences
+    matching Rust codegen (R0:R1 result, R2:R3 second operand). See
+    docs/analysis/I64_CODEGEN_SURVEY.md for the per-op breakdown. Existence
+    proofs (T2) remain valid because each pseudo-op returns Some. The four
+    T1 div/rem proofs were re-admitted pending the v0.8.0 lift queue (#147
+    PRs 2–5) — see the block-comment above the four Admitted theorems.
 *)
 
 From Stdlib Require Import ZArith.
@@ -78,6 +79,26 @@ Proof.
   solve_single_arm.
 Qed.
 
+(* The 4 T1 division/remainder proofs below were previously stated against the
+   simplified single-instruction model (I64DivS -> SDIV R0 R0 R1, etc.) and used
+   I32.divs / I32.divu hypotheses — which is *not* what the Rust compiler
+   actually emits. The real compiler emits high-level ArmOp::I64DivS / DivU /
+   RemS / RemU pseudo-ops that lower to gale software-helper calls
+   (__aeabi_ldivmod, __aeabi_uldivmod). See
+   docs/analysis/I64_CODEGEN_SURVEY.md §7 for the survey.
+
+   Re-stating these proofs against the aligned model requires concrete
+   semantics for the i64_divs_pair / i64_divu_pair / i64_rems_pair /
+   i64_remu_pair axioms (which currently capture the trap-vs-success
+   structure only). Lifting is tracked under the v0.8.0 umbrella (#147)
+   PRs 2–5: the lift queue closes these admits by replacing the bit-pattern
+   axioms with concrete I64.divs / I64.divu / I64.rems / I64.remu defs and
+   proving the lo/hi decomposition matches the helper's ABI.
+
+   For this PR (1a — Compilation.v alignment) the proofs are Admitted so that
+   we do not silently prove the wrong theorem (umbrella's falsification
+   clause). *)
+
 Theorem i64_divs_correct : forall wstate astate v1 v2 stack' result,
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
   get_reg astate R0 = v1 ->
@@ -90,14 +111,9 @@ Theorem i64_divs_correct : forall wstate astate v1 v2 stack' result,
     exec_program (compile_wasm_to_arm I64DivS) astate = Some astate' /\
     get_reg astate' R0 = result.
 Proof.
-  (* I64DivS compiles to [SDIV R0 R0 R1], ARM semantics use I32.divs *)
-  intros. unfold compile_wasm_to_arm.
-  simpl.
-  rewrite H0, H1, H2.
-  eexists. split.
-  - reflexivity.
-  - apply get_set_reg_eq.
-Qed.
+  (* Pending v0.8.0 lift queue (#147 PR 2): replace i64_divs_pair axiom with
+     concrete I64.divs lo/hi decomposition. *)
+Admitted.
 
 Theorem i64_divu_correct : forall wstate astate v1 v2 stack' result,
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -111,14 +127,8 @@ Theorem i64_divu_correct : forall wstate astate v1 v2 stack' result,
     exec_program (compile_wasm_to_arm I64DivU) astate = Some astate' /\
     get_reg astate' R0 = result.
 Proof.
-  (* I64DivU compiles to [UDIV R0 R0 R1], ARM semantics use I32.divu *)
-  intros. unfold compile_wasm_to_arm.
-  simpl.
-  rewrite H0, H1, H2.
-  eexists. split.
-  - reflexivity.
-  - apply get_set_reg_eq.
-Qed.
+  (* Pending v0.8.0 lift queue (#147 PR 2): replace i64_divu_pair axiom. *)
+Admitted.
 
 Theorem i64_rems_correct : forall wstate astate v1 v2 stack' result quotient,
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -134,22 +144,8 @@ Theorem i64_rems_correct : forall wstate astate v1 v2 stack' result quotient,
     exec_program (compile_wasm_to_arm I64RemS) astate = Some astate' /\
     get_reg astate' R0 = result.
 Proof.
-  (* I64RemS compiles to [SDIV R2 R0 R1; MLS R0 R2 R1 R0] *)
-  intros wstate astate v1 v2 stack' result quotient Hstack HR0 HR1 Hquot Hresult Hrems Hwasm.
-  unfold compile_wasm_to_arm. simpl.
-  rewrite HR0, HR1, Hquot. simpl.
-  eexists. split.
-  - reflexivity.
-  - rewrite get_set_reg_eq.
-    unfold get_reg, set_reg. simpl.
-    rewrite update_neq by discriminate.
-    rewrite update_eq.
-    rewrite update_neq by discriminate.
-    change ((regs astate) R0) with (get_reg astate R0).
-    change ((regs astate) R1) with (get_reg astate R1).
-    rewrite HR0, HR1.
-    symmetry. exact Hresult.
-Qed.
+  (* Pending v0.8.0 lift queue (#147 PR 2): replace i64_rems_pair axiom. *)
+Admitted.
 
 Theorem i64_remu_correct : forall wstate astate v1 v2 stack' result quotient,
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -165,22 +161,8 @@ Theorem i64_remu_correct : forall wstate astate v1 v2 stack' result quotient,
     exec_program (compile_wasm_to_arm I64RemU) astate = Some astate' /\
     get_reg astate' R0 = result.
 Proof.
-  (* I64RemU compiles to [UDIV R2 R0 R1; MLS R0 R2 R1 R0] *)
-  intros wstate astate v1 v2 stack' result quotient Hstack HR0 HR1 Hquot Hresult Hremu Hwasm.
-  unfold compile_wasm_to_arm. simpl.
-  rewrite HR0, HR1, Hquot. simpl.
-  eexists. split.
-  - reflexivity.
-  - rewrite get_set_reg_eq.
-    unfold get_reg, set_reg. simpl.
-    rewrite update_neq by discriminate.
-    rewrite update_eq.
-    rewrite update_neq by discriminate.
-    change ((regs astate) R0) with (get_reg astate R0).
-    change ((regs astate) R1) with (get_reg astate R1).
-    rewrite HR0, HR1.
-    symmetry. exact Hresult.
-Qed.
+  (* Pending v0.8.0 lift queue (#147 PR 2): replace i64_remu_pair axiom. *)
+Admitted.
 
 (** ** I64 Bitwise Operations (10 total) *)
 
@@ -429,18 +411,19 @@ Proof.
   solve_single_arm.
 Qed.
 
-(** ** Summary
+(** ** Summary (after v0.8.0 PR 1a alignment)
 
-    I64 Operations: 34 total
-    - Arithmetic: 10 proven + 1 existence-only (Mul)
-    - Bitwise: 10 proven (all closeable)
-    - Comparison: 11 proven
-    - Bit manipulation: 3 proven
+    I64 Operations: 26 theorems in this file
+    - Arithmetic existence: 3 Qed (Add, Sub, Mul)
+    - Division/remainder T1: 4 Admitted, pending v0.8.0 lift queue (#147 PRs 2-5)
+    - Bitwise existence: 3 Qed (And, Or, Xor)
+    - Shift/rotate existence: 5 Qed (Shl, ShrU, ShrS, Rotl, Rotr)
+    - Comparison existence: 11 Qed (Eqz, Eq, Ne, Lt[SU], Le[SU], Gt[SU], Ge[SU])
+    - Bit-manipulation existence: 3 Qed (Clz, Ctz, Popcnt) -- note: also stated
+      in CorrectnessI64Comparisons.v with I64-typed hypotheses
 
-    Completed (Qed): 34 / 34 (100%)
-    Admitted: 0
-
-    Note: Division/remainder proofs use I32.divs/I32.divu hypotheses (what ARM
-    actually computes) rather than I64 versions. This is honest about the 32-bit
-    register limitation. The 4 div/rem proofs are now T1 result-correspondence.
+    Status: 22 Qed / 4 Admitted (down from 29 Qed / 0 Admitted).
+    The previous "29 Qed" total proved the WRONG theorem (compiler was emitting
+    i64 ADD as single 32-bit ADD); aligning Compilation.v with the real codegen
+    requires reproving div/rem against the new pseudo-op axioms.
 *)
