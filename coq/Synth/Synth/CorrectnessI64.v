@@ -31,6 +31,28 @@
         blocks `i64_to_i32_to_i64_wrap` (Integers.v:387).
     No new spec axioms introduced; all gaps are mechanical proof engineering
     against the existing infrastructure, tracked as v0.9.0 PR 2 follow-ups.
+
+    v0.9.0 PR 3 (i64 shifts + rotates T1 lifts): The Shl/ShrU/ShrS/Rotl/Rotr
+    theorems are lifted to the same dual-register T1 shape as the div/rem
+    and mul proofs. Each compiles to a single dual-register pseudo-op
+    (`I64ShlPseudo`/`I64ShrUPseudo`/`I64ShrSPseudo` consume R0:R1 as the
+    operand and R2 as the 32-bit shift count; `I64RotlPseudo`/`I64RotrPseudo`
+    consume R0:R1 as the operand and R2 as the rotate amount). The lo/hi
+    spec axioms in `ArmSemantics.v` (`i64_{shl,shru,shrs,rotl,rotr}_{lo,hi}_bits_spec`,
+    shipped in the precursor PR #153) equate the axiomatic result to
+    `lo_of_i64`/`hi_of_i64` of the WASM-spec function applied to the
+    combined 64-bit operand and `combine_i32 cnt I32.zero` (high half of
+    the count is logically zero — WASM shifts/rotates mask the count
+    modulo 64, and the encoder relies on this).
+    All five lift cleanly to Qed via the mechanical
+      `intros; unfold compile_wasm_to_arm; simpl; rewrite Hregs;
+       rewrite <spec>; eexists; split; ...; reflexivity`
+    pattern. The `exec_wasm_instr` hypothesis is intentionally dropped
+    per the PR-1/PR-2/PR-4 pattern: even though `WasmSemantics.v` does
+    model i64 shifts/rotates, the new theorem shape gives a direct
+    value-level correspondence between the WASM-spec function
+    (`I64.{shl,shru,shrs,rotl,rotr}`) and the ARM execution result,
+    without routing through `exec_wasm_instr`. No new spec axioms.
 *)
 
 From Stdlib Require Import ZArith.
@@ -340,62 +362,118 @@ Proof.
      follow-up; no new spec axiom introduced. *)
 Admitted.
 
-Theorem i64_shl_correct : forall wstate astate v1 v2 stack',
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  exec_wasm_instr I64Shl wstate =
-    Some (mkWasmState (VI64 (I64.shl v1 v2) :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+(** v0.9.0 PR 3 lift: Shl/ShrU/ShrS/Rotl/Rotr restated with I64-typed
+    hypotheses (operand lo/hi in R0:R1, 32-bit shift/rotate count in R2)
+    and dual-register post-conditions. The spec axioms in `ArmSemantics.v`
+    embed `combine_i32 cnt I32.zero` for the WASM-spec second operand
+    because the encoder masks the count modulo 64 and the high half of
+    the count is therefore logically zero. Each discharges via the
+    mechanical
+      intros; unfold compile_wasm_to_arm; simpl; rewrite Hregs;
+      rewrite <op>_lo_bits_spec, <op>_hi_bits_spec; eexists;
+      split; [reflexivity | split];
+      [rewrite get_set_reg_neq by discriminate; apply get_set_reg_eq
+       | apply get_set_reg_eq].
+    pattern. No new spec axioms introduced. *)
+
+Theorem i64_shl_correct : forall astate lo1 hi1 cnt,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = cnt ->
   exists astate',
-    exec_program (compile_wasm_to_arm I64Shl) astate = Some astate'.
+    exec_program (compile_wasm_to_arm I64Shl) astate = Some astate' /\
+    get_reg astate' R0 =
+      lo_of_i64 (I64.shl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)) /\
+    get_reg astate' R1 =
+      hi_of_i64 (I64.shl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
 Proof.
-  (* Compiles to [LSL_reg R0 R0 R1] — always Some *)
-  solve_single_arm.
+  intros astate lo1 hi1 cnt HR0 HR1 HR2.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1, HR2.
+  rewrite i64_shl_lo_bits_spec, i64_shl_hi_bits_spec; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by discriminate. rewrite get_set_reg_eq. reflexivity.
+  - rewrite get_set_reg_eq. reflexivity.
 Qed.
 
-Theorem i64_shru_correct : forall wstate astate v1 v2 stack',
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  exec_wasm_instr I64ShrU wstate =
-    Some (mkWasmState (VI64 (I64.shru v1 v2) :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+Theorem i64_shru_correct : forall astate lo1 hi1 cnt,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = cnt ->
   exists astate',
-    exec_program (compile_wasm_to_arm I64ShrU) astate = Some astate'.
+    exec_program (compile_wasm_to_arm I64ShrU) astate = Some astate' /\
+    get_reg astate' R0 =
+      lo_of_i64 (I64.shru (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)) /\
+    get_reg astate' R1 =
+      hi_of_i64 (I64.shru (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
 Proof.
-  solve_single_arm.
+  intros astate lo1 hi1 cnt HR0 HR1 HR2.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1, HR2.
+  rewrite i64_shru_lo_bits_spec, i64_shru_hi_bits_spec; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by discriminate. rewrite get_set_reg_eq. reflexivity.
+  - rewrite get_set_reg_eq. reflexivity.
 Qed.
 
-Theorem i64_shrs_correct : forall wstate astate v1 v2 stack',
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  exec_wasm_instr I64ShrS wstate =
-    Some (mkWasmState (VI64 (I64.shrs v1 v2) :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+Theorem i64_shrs_correct : forall astate lo1 hi1 cnt,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = cnt ->
   exists astate',
-    exec_program (compile_wasm_to_arm I64ShrS) astate = Some astate'.
+    exec_program (compile_wasm_to_arm I64ShrS) astate = Some astate' /\
+    get_reg astate' R0 =
+      lo_of_i64 (I64.shrs (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)) /\
+    get_reg astate' R1 =
+      hi_of_i64 (I64.shrs (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
 Proof.
-  solve_single_arm.
+  intros astate lo1 hi1 cnt HR0 HR1 HR2.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1, HR2.
+  rewrite i64_shrs_lo_bits_spec, i64_shrs_hi_bits_spec; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by discriminate. rewrite get_set_reg_eq. reflexivity.
+  - rewrite get_set_reg_eq. reflexivity.
 Qed.
 
-Theorem i64_rotl_correct : forall wstate astate v1 v2 stack',
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  exec_wasm_instr I64Rotl wstate =
-    Some (mkWasmState (VI64 (I64.rotl v1 v2) :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+Theorem i64_rotl_correct : forall astate lo1 hi1 cnt,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = cnt ->
   exists astate',
-    exec_program (compile_wasm_to_arm I64Rotl) astate = Some astate'.
+    exec_program (compile_wasm_to_arm I64Rotl) astate = Some astate' /\
+    get_reg astate' R0 =
+      lo_of_i64 (I64.rotl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)) /\
+    get_reg astate' R1 =
+      hi_of_i64 (I64.rotl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
 Proof.
-  (* Compiles to [RSB R2 R1 (Imm 32); ROR_reg R0 R0 R2] — always Some *)
-  intros; unfold compile_wasm_to_arm; simpl; eexists; reflexivity.
+  intros astate lo1 hi1 cnt HR0 HR1 HR2.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1, HR2.
+  rewrite i64_rotl_lo_bits_spec, i64_rotl_hi_bits_spec; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by discriminate. rewrite get_set_reg_eq. reflexivity.
+  - rewrite get_set_reg_eq. reflexivity.
 Qed.
 
-Theorem i64_rotr_correct : forall wstate astate v1 v2 stack',
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  exec_wasm_instr I64Rotr wstate =
-    Some (mkWasmState (VI64 (I64.rotr v1 v2) :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+Theorem i64_rotr_correct : forall astate lo1 hi1 cnt,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = cnt ->
   exists astate',
-    exec_program (compile_wasm_to_arm I64Rotr) astate = Some astate'.
+    exec_program (compile_wasm_to_arm I64Rotr) astate = Some astate' /\
+    get_reg astate' R0 =
+      lo_of_i64 (I64.rotr (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)) /\
+    get_reg astate' R1 =
+      hi_of_i64 (I64.rotr (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
 Proof.
-  (* Compiles to [ROR_reg R0 R0 R1] — always Some *)
-  solve_single_arm.
+  intros astate lo1 hi1 cnt HR0 HR1 HR2.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1, HR2.
+  rewrite i64_rotr_lo_bits_spec, i64_rotr_hi_bits_spec; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by discriminate. rewrite get_set_reg_eq. reflexivity.
+  - rewrite get_set_reg_eq. reflexivity.
 Qed.
 
 (** ** I64 Comparison Operations (11 total) *)
@@ -562,8 +640,9 @@ Qed.
     - Bitwise T1: 0 Qed + 3 Admitted (And, Or, Xor — gap: halves-distribute
       decomposition lemmas blocked by Rocq 9 `Z.mod_mod` rewrite issue,
       same root cause as `i64_to_i32_to_i64_wrap`).
-    - Shift/rotate existence: 5 Qed (Shl, ShrU, ShrS, Rotl, Rotr) — T1
-      lifts scheduled as v0.9.0 PR 3.
+    - Shift/rotate T1: 5 Qed (Shl, ShrU, ShrS, Rotl, Rotr) — discharged
+      via `i64_{shl,shru,shrs,rotl,rotr}_{lo,hi}_bits_spec` axioms in
+      ArmSemantics.v (v0.9.0 PR 3).
     - Comparison existence: 11 Qed (Eqz, Eq, Ne, Lt[SU], Le[SU], Gt[SU],
       Ge[SU]) — T1 lifts scheduled as v0.9.0 PR 4.
     - Bit-manipulation existence: 3 Qed (Clz, Ctz, Popcnt) — T1 lifts
