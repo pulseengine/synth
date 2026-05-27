@@ -1,6 +1,6 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated:** May 2026 (v0.9.0 PR 1 precursor + discharge: i64 result-correspondence axioms + 5 admits discharged)
+**Last Updated:** May 2026 (v0.9.0 PR 2: i64_mul T1 lifted; Add/Sub/And/Or/Xor restated to T1 shape, Admitted pending follow-up lemmas)
 
 ## v0.9.0 PR 1 outcome: PRECURSOR + DISCHARGE
 
@@ -49,9 +49,9 @@ umbrella #147).
 
 | Tier | Meaning | Count |
 |------|---------|-------|
-| **T1: Result Correspondence** | ARM output register = WASM result value | 35 |
-| **T2: Existence-Only** | ARM execution succeeds (no result claim) | 142 |
-| **T3: Admitted** | Not yet proven | 10 |
+| **T1: Result Correspondence** | ARM output register = WASM result value | 36 |
+| **T2: Existence-Only** | ARM execution succeeds (no result claim) | 139 |
+| **T3: Admitted** | Not yet proven | 15 |
 | **Infrastructure** | Properties of integers, states, flag lemmas | 56 |
 
 **Total: 233 Qed / 10 Admitted across all files**
@@ -269,7 +269,7 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 | Correctness.v | 6 | 0 | T1 |
 | CorrectnessSimple.v | 28 | 1 | T2 + 1 admitted (i64_const_correct) |
 | CorrectnessI32.v | 29 | 0 | T1 |
-| CorrectnessI64.v | 22 | 4 | T2 + 4 admitted (div/rem T1, pending lift) |
+| CorrectnessI64.v | 24 | 5 | T1 (mul+div+rem) + T2 (shifts/cmps/bit-manip) + 5 admitted (Add, Sub, And, Or, Xor — restated to T1 shape, pending follow-up helper lemmas) |
 | CorrectnessI64Comparisons.v | 19 | 0 | T2 |
 | CorrectnessF32.v | 20 | 0 | T2 |
 | CorrectnessF64.v | 20 | 0 | T2 |
