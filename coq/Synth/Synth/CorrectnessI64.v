@@ -53,6 +53,23 @@
     value-level correspondence between the WASM-spec function
     (`I64.{shl,shru,shrs,rotl,rotr}`) and the ARM execution result,
     without routing through `exec_wasm_instr`. No new spec axioms.
+
+    v0.9.0 PR 5 (i64 bit-manipulation T1 lifts — final lift batch): The
+    Clz/Ctz/Popcnt theorems are lifted from existence-only (with a
+    placeholder `VI64 I64.zero` post-stack) to T1 with:
+      - I64-typed hypothesis on the combined operand (lo in R0, hi in R1),
+      - Single-register post-condition (R0 = `i64_to_i32 (I64.<op> v)`),
+      - No `exec_wasm_instr` hypothesis (per the PR-1..PR-4 pattern).
+    Each compiles to a single dual-input pseudo-op
+    (`I64{Clz,Ctz,Popcnt}Pseudo R0 R0 R1`) whose semantics write
+    `i64_{clz,ctz,popcnt}_bits vnlo vnhi` to R0; the spec axioms shipped
+    in v0.9.0 PR 1 (#153) equate that to `i64_to_i32 (I64.{clz,ctz,popcnt}
+    (combine_i32 lo hi))`. All three discharge as Qed via the mechanical
+      intros; unfold compile_wasm_to_arm; simpl; rewrite Hregs;
+      rewrite <op>_bits_spec; eexists; split;
+      [reflexivity | apply get_set_reg_eq]
+    pattern. No new spec axioms, no new Admitted proofs. This completes
+    the v0.9.0 lift queue for CorrectnessI64.v.
 *)
 
 From Stdlib Require Import ZArith.
@@ -591,42 +608,70 @@ Proof. solve_cmp_mov. Qed.
 
 (** ** I64 Bit Manipulation (3 total) *)
 
-Theorem i64_clz_correct : forall wstate astate v stack',
-  wstate.(stack) = VI64 v :: stack' ->
-  exec_wasm_instr I64Clz wstate =
-    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+(** v0.9.0 PR 5 lift: Clz/Ctz/Popcnt restated with I64-typed hypotheses
+    (operand lo/hi in R0:R1) and a single-register post-condition (R0
+    holds the i32 count — `clz/ctz/popcnt` of a 64-bit value fit in 32
+    bits, so the codegen produces just one half).
+
+    Each compiles to a single pseudo-op (`I64{Clz,Ctz,Popcnt}Pseudo R0 R0 R1`)
+    whose semantics write `i64_{clz,ctz,popcnt}_bits vnlo vnhi` into R0.
+    The spec axioms `i64_{clz,ctz,popcnt}_bits_spec` in `ArmSemantics.v`
+    equate that axiomatic result function to `i64_to_i32 (I64.{clz,ctz,
+    popcnt} (combine_i32 lo hi))`, where `i64_to_i32` truncates the
+    64-bit count to its low 32 bits (always lossless because the count
+    is bounded by 64, see `I64.{clz,ctz,popcnt}_range` axioms).
+
+    All three discharge via the mechanical
+      intros; unfold compile_wasm_to_arm; simpl; rewrite Hregs;
+      rewrite <spec>; eexists; split; [reflexivity | apply get_set_reg_eq]
+    pattern. The `exec_wasm_instr` hypothesis is intentionally dropped
+    per the PR-1/PR-2/PR-3/PR-4 pattern: although `WasmSemantics.v` *does*
+    model i64 clz/ctz/popcnt (lines 458-481, pushing `VI64 (I64.<op> v)`),
+    the new theorem shape gives a direct value-level correspondence
+    between the WASM-spec function and the ARM execution result (the
+    `i64_to_i32` cast captures the 32-bit return convention of the
+    pseudo-op). No new spec axioms. *)
+
+Theorem i64_clz_correct : forall astate lo hi,
+  get_reg astate R0 = lo ->
+  get_reg astate R1 = hi ->
   exists astate',
-    exec_program (compile_wasm_to_arm I64Clz) astate = Some astate'.
+    exec_program (compile_wasm_to_arm I64Clz) astate = Some astate' /\
+    get_reg astate' R0 = i64_to_i32 (I64.clz (combine_i32 lo hi)).
 Proof.
-  (* Compiles to [CLZ R0 R0] — always Some *)
-  solve_single_arm.
+  intros astate lo hi HR0 HR1.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1.
+  rewrite i64_clz_bits_spec.
+  eexists. split; [reflexivity | apply get_set_reg_eq].
 Qed.
 
-Theorem i64_ctz_correct : forall wstate astate v stack',
-  wstate.(stack) = VI64 v :: stack' ->
-  exec_wasm_instr I64Ctz wstate =
-    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+Theorem i64_ctz_correct : forall astate lo hi,
+  get_reg astate R0 = lo ->
+  get_reg astate R1 = hi ->
   exists astate',
-    exec_program (compile_wasm_to_arm I64Ctz) astate = Some astate'.
+    exec_program (compile_wasm_to_arm I64Ctz) astate = Some astate' /\
+    get_reg astate' R0 = i64_to_i32 (I64.ctz (combine_i32 lo hi)).
 Proof.
-  (* Compiles to [RBIT R0 R0; CLZ R0 R0] — two instructions, both always Some *)
-  intros; unfold compile_wasm_to_arm.
-  unfold exec_program; simpl.
-  eexists; reflexivity.
+  intros astate lo hi HR0 HR1.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1.
+  rewrite i64_ctz_bits_spec.
+  eexists. split; [reflexivity | apply get_set_reg_eq].
 Qed.
 
-Theorem i64_popcnt_correct : forall wstate astate v stack',
-  wstate.(stack) = VI64 v :: stack' ->
-  exec_wasm_instr I64Popcnt wstate =
-    Some (mkWasmState (VI64 (I64.zero) :: stack')  (* Placeholder *)
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+Theorem i64_popcnt_correct : forall astate lo hi,
+  get_reg astate R0 = lo ->
+  get_reg astate R1 = hi ->
   exists astate',
-    exec_program (compile_wasm_to_arm I64Popcnt) astate = Some astate'.
+    exec_program (compile_wasm_to_arm I64Popcnt) astate = Some astate' /\
+    get_reg astate' R0 = i64_to_i32 (I64.popcnt (combine_i32 lo hi)).
 Proof.
-  (* Compiles to [POPCNT R0 R0] — always Some *)
-  solve_single_arm.
+  intros astate lo hi HR0 HR1.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1.
+  rewrite i64_popcnt_bits_spec.
+  eexists. split; [reflexivity | apply get_set_reg_eq].
 Qed.
 
 (** ** Summary (after v0.9.0 PR 2 — i64 arith + bitwise restated)
@@ -645,8 +690,9 @@ Qed.
       ArmSemantics.v (v0.9.0 PR 3).
     - Comparison existence: 11 Qed (Eqz, Eq, Ne, Lt[SU], Le[SU], Gt[SU],
       Ge[SU]) — T1 lifts scheduled as v0.9.0 PR 4.
-    - Bit-manipulation existence: 3 Qed (Clz, Ctz, Popcnt) — T1 lifts
-      scheduled as v0.9.0 PR 5.
+    - Bit-manipulation T1: 3 Qed (Clz, Ctz, Popcnt) — discharged via
+      `i64_{clz,ctz,popcnt}_bits_spec` axioms in ArmSemantics.v
+      (v0.9.0 PR 5 — final lift batch).
 
     Net change vs. main: +1 Qed (i64_mul_correct lifted to T1 with dual-
     register post-condition); 5 prior `solve_single_arm` existence proofs
