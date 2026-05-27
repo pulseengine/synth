@@ -1,22 +1,31 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated:** May 2026 (v0.9.0 PR 1 smoke-test: axiom shape blocker surfaced; no discharges)
+**Last Updated:** May 2026 (v0.9.0 PR 1 precursor + discharge: i64 result-correspondence axioms + 5 admits discharged)
 
-## v0.9.0 PR 1 outcome (smoke-test): NEGATIVE
+## v0.9.0 PR 1 outcome: PRECURSOR + DISCHARGE
 
-The 5 strategic admits introduced by v0.8.0 #150 (4 div/rem in CorrectnessI64.v,
-1 i64_const_correct in CorrectnessSimple.v) **cannot be discharged under the
-v0.8.0 axiom shape**. The relevant axioms in `coq/Synth/ARM/ArmSemantics.v`
-(`i64_divs_pair` / `i64_divu_pair` / `i64_rems_pair` / `i64_remu_pair` /
-`i64_const_lo` / `i64_const_hi`) are pure type declarations with no equation
-tying their results to `I64.divs` / `I64.divu` / `I64.rems` / `I64.remu` /
-`I32.repr ((I64.unsigned n) mod I32.modulus)`. Without those result-equation
-axioms, the T1 theorems are not provable by any tactic. See the PR body of
-`feat/v0.9.0-discharge-i64-admits` for the full report and the recommended
-precursor work that must land before PRs 2-5 of the v0.9.0 lift queue can
-fan out.
+The 5 strategic admits introduced by v0.8.0 #150 are now discharged. The
+initial scope of PR 1 — discharge under the v0.8.0 axiom shape — was found to
+be impossible (the v0.8.0 axioms were pure type declarations with no
+result-correspondence equations). PR 1 was re-scoped into the full precursor:
 
-The numbers below are unchanged by PR 1 (no theorems closed, no theorems opened).
+1. **New result-equation axioms in `coq/Synth/ARM/ArmSemantics.v`**: 26 new
+   `_spec` axioms covering every i64 pseudo-op result function. Each axiom is
+   cross-checked against `docs/analysis/I64_CODEGEN_SURVEY.md`.
+
+2. **Restated theorems in `CorrectnessI64.v` and `CorrectnessSimple.v`**: the
+   5 prior admits are now stated with sound shape — I64-typed hypotheses on
+   combined operand pairs, high-half register pinning, and dual-register
+   post-conditions (R0 = lo_of_i64 result, R1 = hi_of_i64 result).
+
+3. **Discharges**: 5/5 admits closed as `Qed` (4 div/rem + 1 i64_const).
+
+Net change: +5 Qed (the 5 discharges), 0 admits added.
+
+The fan-out PRs 2-5 of umbrella #152 (the remaining T2->T1 lifts for I64
+add/sub/mul/and/or/xor/shifts/rotates/comparisons/clz/ctz/popcnt) are now
+unblocked. Each lift is a mechanical `unfold; rewrite <op>_spec; reflexivity`
+against the spec axioms now in place.
 
 
 ## Overview
@@ -40,16 +49,16 @@ umbrella #147).
 
 | Tier | Meaning | Count |
 |------|---------|-------|
-| **T1: Result Correspondence** | ARM output register = WASM result value | 30 |
+| **T1: Result Correspondence** | ARM output register = WASM result value | 35 |
 | **T2: Existence-Only** | ARM execution succeeds (no result claim) | 142 |
-| **T3: Admitted** | Not yet proven | 15 |
+| **T3: Admitted** | Not yet proven | 10 |
 | **Infrastructure** | Properties of integers, states, flag lemmas | 56 |
 
-**Total: 228 Qed / 15 Admitted across all files**
+**Total: 233 Qed / 10 Admitted across all files**
 
-Net change from the prior baseline: −5 Qed, +5 Admitted (4 i64 div/rem + 1 i64
-const_correct), reflecting the honest accounting that the previous T1 i64
-div/rem proofs were stated against a model that did not match the compiler.
+Net change from the v0.8.0 baseline: +5 Qed, −5 Admitted (4 i64 div/rem + 1 i64
+const_correct discharged via the new result-correspondence axioms in
+`ArmSemantics.v`).
 
 ## T1: Result Correspondence (35 Qed)
 

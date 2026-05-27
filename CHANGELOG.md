@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **i64 pseudo-op result-correspondence axioms (v0.9.0 PR 1 precursor).**
+  `coq/Synth/ARM/ArmSemantics.v` gains 26 new `_spec` axioms that pin the
+  axiomatic i64 pseudo-op result functions (`i64_const_lo`, `i64_divs_pair`,
+  `i64_mul_lo_bits`, etc., introduced as opaque types by v0.8.0 #150) to the
+  WASM-spec operation on the combined 64-bit operand pair via the new
+  `combine_i32 / lo_of_i64 / hi_of_i64` helpers in `Common/Integers.v`. Each
+  axiom is cross-referenced to `docs/analysis/I64_CODEGEN_SURVEY.md` and to
+  the `instruction_selector.rs` line numbers that emit the pseudo-op. This
+  layer was the missing precursor blocking PRs 2-5 of umbrella #152.
+- **5 i64 T1 admit discharges (v0.9.0 PR 1).** `i64_const_correct` in
+  `CorrectnessSimple.v` and `i64_{divs,divu,rems,remu}_correct` in
+  `CorrectnessI64.v` are now `Qed` via the new spec axioms. Each theorem is
+  restated with dual-register hypotheses and dual-register post-conditions
+  (R0 = lo_of_i64 result, R1 = hi_of_i64 result), reflecting that an i64
+  result spans both halves of the (R0, R1) register pair.
+- `I64.rems` and `I64.remu` definitions in `Common/Integers.v` to provide a
+  WASM-spec target for the new `i64_rems_pair_spec` / `i64_remu_pair_spec`
+  axioms (previously only `I64.divs` and `I64.divu` were defined).
+
 ## [0.8.0] - 2026-05-26
 
 **Theme: honest i64 verification foundation.**

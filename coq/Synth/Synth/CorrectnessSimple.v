@@ -179,6 +179,12 @@ Proof.
        (I32.shl (I32.repr high) 16) = n, which needs Z.land/Z.shiftr lemmas. *)
 Admitted.
 
+(** v0.9.0 PR 1 (precursor + discharge): I64Const compiles to
+    `I64ConstPseudo R0 R1 n`, which writes `(i64_const_lo n, i64_const_hi n)`
+    to (R0, R1). The new result-equation axioms `i64_const_lo_spec` and
+    `i64_const_hi_spec` in ArmSemantics.v pin those to `lo_of_i64 n` and
+    `hi_of_i64 n` respectively. The theorem is now dual-register: it covers
+    both halves. *)
 Theorem i64_const_correct : forall wstate astate n,
   exec_wasm_instr (I64Const n) wstate =
     Some (mkWasmState
@@ -188,24 +194,20 @@ Theorem i64_const_correct : forall wstate astate n,
             wstate.(memory)) ->
   exists astate',
     exec_program (compile_wasm_to_arm (I64Const n)) astate = Some astate' /\
-    get_reg astate' R0 = I32.repr ((I64.unsigned n) mod I32.modulus).
+    get_reg astate' R0 = lo_of_i64 n /\
+    get_reg astate' R1 = hi_of_i64 n.
 Proof.
-  (* v0.8.0 PR 1a: I64Const now compiles to I64ConstPseudo R0 R1 n, which
-     writes (i64_const_lo n, i64_const_hi n) to (R0, R1). The previous proof
-     claimed R0 = I32.repr (I64.unsigned n mod I32.modulus) by virtue of a
-     simplified single-MOVW codegen that truncated the constant to its low
-     16 bits — that codegen no longer exists.
-
-     v0.9.0 PR 1 smoke-test outcome: this admit is blocked by the abstract
-     `i64_const_lo` axiom in ArmSemantics.v (`Axiom i64_const_lo : I64.int ->
-     I32.int.` — no equation to `I32.repr ((I64.unsigned n) mod I32.modulus)`
-     or any other reduction). Discharging requires either (a) adding a
-     result-equation axiom `i64_const_lo_spec` to ArmSemantics.v, or (b)
-     restating this theorem with a post-condition that consumes the
-     abstract `i64_const_lo n` directly. Neither was in scope for v0.9.0
-     PR 1 (which forbade ArmSemantics.v / Compilation.v edits). See PR
-     `feat/v0.9.0-discharge-i64-admits` for the full smoke-test report. *)
-Admitted.
+  intros wstate astate n _Hwasm.
+  unfold compile_wasm_to_arm; simpl.
+  eexists. split; [reflexivity | split].
+  - (* R0 = lo_of_i64 n *)
+    rewrite get_set_reg_neq by discriminate.
+    rewrite get_set_reg_eq.
+    apply i64_const_lo_spec.
+  - (* R1 = hi_of_i64 n *)
+    rewrite get_set_reg_eq.
+    apply i64_const_hi_spec.
+Qed.
 
 (** LocalTee sets local and keeps value on stack *)
 Theorem local_tee_correct : forall wstate astate v stack' (idx : nat),
