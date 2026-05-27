@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-27
+
+**Theme: i64 T1 result-correspondence lifts against the aligned model.**
+
+v0.9.0 picks up what v0.8.0 set up. v0.8.0 (the "honest foundation") aligned
+`Compilation.v` with the real Rust codegen and shipped 26 type-only pseudo-op
+axioms + tactics + flag-correspondence lemmas. v0.9.0 layers the value-correspondence
+on top: 26 new `_spec` axioms equate every i64 pseudo-op's result to the WASM-spec
+function, then 30 existence-only (T2) i64 proofs are lifted to result-correspondence
+(T1), and the 5 strategically-`Admitted` theorems #150 carried over are discharged.
+
+**Net delta:** previously had 36 i64 theorems Qed at T2 plus 5 admits.
+Now has **30 new T1 Qeds + 5 discharged T1 Qeds = 35 i64 T1 Qeds**, with 5 honest
+admit carry-overs (Add/Sub/And/Or/Xor) whose proofs depend on missing helper
+lemmas (ADDS/ADC carry-propagation; SUBS/SBC borrow-propagation; halves-distribute
+over bitwise, blocked by Rocq 9 `Z.mod_mod`).
+
+**Falsification statement.** v0.9.0 is wrong if (a) any of the 35 newly-T1 i64
+theorems is shown to disagree with the WASM reference for a value pair the
+theorem covers (the `_spec` axioms are inconsistent with `Compilation.v`),
+(b) any of the 5 honest-Admitted carry-overs is claimed `Qed.` anywhere in the
+release artifacts, (c) `bazel test //coq:verify_proofs` goes red on a clean
+v0.9.0 checkout, or (d) any newly-added `_spec` axiom claims a result the Rust
+codegen does not actually produce (cross-checked against `docs/analysis/I64_CODEGEN_SURVEY.md`).
+
 ### Added
 
 - **i64 pseudo-op result-correspondence axioms (v0.9.0 PR 1 precursor).**
