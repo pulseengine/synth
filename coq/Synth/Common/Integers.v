@@ -276,6 +276,18 @@ Module I64.
     if Z.eqb y 0 then None
     else Some (repr (unsigned x / unsigned y)).
 
+  (** Signed remainder (i64.rem_s): traps on division by zero.
+      Note: unlike i64.div_s, WASM i64.rem_s does NOT trap on
+      min_signed % -1; it returns 0. So no second guard. *)
+  Definition rems (x y : int) : option int :=
+    if Z.eqb y 0 then None
+    else Some (repr (signed x mod signed y)).
+
+  (** Unsigned remainder (i64.rem_u): traps only on division by zero. *)
+  Definition remu (x y : int) : option int :=
+    if Z.eqb y 0 then None
+    else Some (repr (unsigned x mod unsigned y)).
+
   Definition and (x y : int) : int := repr (Z.land x y).
   Definition or (x y : int) : int := repr (Z.lor x y).
   Definition xor (x y : int) : int := repr (Z.lxor x y).
@@ -349,6 +361,27 @@ Definition i32_to_i64_signed (x : I32.int) : I64.int :=
 
 Definition i64_to_i32 (x : I64.int) : I32.int :=
   I32.repr (I64.unsigned x).
+
+(** ** I64 lo/hi register-pair helpers (v0.9.0 precursor)
+
+    The ARM dual-register convention stores an i64 value across two i32
+    registers: the low 32 bits in `rdlo` and the high 32 bits in `rdhi`.
+    These helpers express that decomposition formally so that result-equation
+    axioms for the i64 pseudo-ops in `ArmSemantics.v` can refer to a canonical
+    "combine" and "project" pair. *)
+
+(** Low 32 bits of an i64 value. *)
+Definition lo_of_i64 (n : I64.int) : I32.int :=
+  I32.repr (I64.unsigned n mod I32.modulus).
+
+(** High 32 bits of an i64 value. *)
+Definition hi_of_i64 (n : I64.int) : I32.int :=
+  I32.repr (I64.unsigned n / I32.modulus).
+
+(** Combine two i32 halves into an i64 value: result = lo + 2^32 * hi
+    (modulo 2^64). Both halves are interpreted unsigned. *)
+Definition combine_i32 (lo hi : I32.int) : I64.int :=
+  I64.repr (I32.unsigned lo + I32.modulus * I32.unsigned hi).
 
 (** Wrap a 64-bit value to 32-bit *)
 Theorem i64_to_i32_to_i64_wrap : forall x,

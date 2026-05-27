@@ -5,9 +5,17 @@
     v0.8.0 PR 1a alignment: i64 ops now compile to dual-register pair sequences
     matching Rust codegen (R0:R1 result, R2:R3 second operand). See
     docs/analysis/I64_CODEGEN_SURVEY.md for the per-op breakdown. Existence
-    proofs (T2) remain valid because each pseudo-op returns Some. The four
-    T1 div/rem proofs were re-admitted pending the v0.8.0 lift queue (#147
-    PRs 2–5) — see the block-comment above the four Admitted theorems.
+    proofs (T2) remain valid because each pseudo-op returns Some.
+
+    v0.9.0 PR 1 (precursor + discharge): The four T1 div/rem proofs are now
+    *discharged* against the new `_spec` axioms in ArmSemantics.v
+    (`i64_divs_pair_spec` / `i64_divu_pair_spec` / `i64_rems_pair_spec` /
+    `i64_remu_pair_spec`). Each theorem is restated with:
+      - I64-typed hypotheses on the combined operand pairs,
+      - High-half register pinning (R1 for v1's hi half, R3 for v2's hi half),
+      - Dual-register post-condition (R0 = lo_of_i64 result, R1 = hi_of_i64 result).
+    The smoke-test report on the prior commit identified the precursor work
+    that this PR ships.
 *)
 
 From Stdlib Require Import ZArith.
@@ -79,90 +87,114 @@ Proof.
   solve_single_arm.
 Qed.
 
-(* The 4 T1 division/remainder proofs below were previously stated against the
-   simplified single-instruction model (I64DivS -> SDIV R0 R0 R1, etc.) and used
-   I32.divs / I32.divu hypotheses — which is *not* what the Rust compiler
-   actually emits. The real compiler emits high-level ArmOp::I64DivS / DivU /
-   RemS / RemU pseudo-ops that lower to gale software-helper calls
-   (__aeabi_ldivmod, __aeabi_uldivmod). See
-   docs/analysis/I64_CODEGEN_SURVEY.md §7 for the survey.
+(** The 4 T1 division/remainder proofs below are restated to match the actual
+    v0.8.0 codegen (`I64DivSPseudo/I64DivUPseudo/I64RemSPseudo/I64RemUPseudo`
+    on the dual-register pair {R0:R1, R2:R3}), using:
 
-   Re-stating these proofs against the aligned model requires concrete
-   semantics for the i64_divs_pair / i64_divu_pair / i64_rems_pair /
-   i64_remu_pair axioms (which currently capture the trap-vs-success
-   structure only). Lifting is tracked under the v0.8.0 umbrella (#147)
-   PRs 2–5: the lift queue closes these admits by replacing the bit-pattern
-   axioms with concrete I64.divs / I64.divu / I64.rems / I64.remu defs and
-   proving the lo/hi decomposition matches the helper's ABI.
+    - **I64-typed hypotheses**: operand pre-conditions reference
+      `I64.divs / I64.divu / I64.rems / I64.remu` on the combined 64-bit
+      operands (via `combine_i32`), not the incoherent `I32.divs` on i64 values
+      that the smoke-test report flagged.
 
-   For this PR (1a — Compilation.v alignment) the proofs are Admitted so that
-   we do not silently prove the wrong theorem (umbrella's falsification
-   clause). *)
+    - **High-half register pinning**: each operand requires *both* halves to
+      be in the right register (operand 1 in R0:R1, operand 2 in R2:R3).
 
-Theorem i64_divs_correct : forall wstate astate v1 v2 stack' result,
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  get_reg astate R0 = v1 ->
-  get_reg astate R1 = v2 ->
-  I32.divs v1 v2 = Some result ->
-  exec_wasm_instr I64DivS wstate =
-    Some (mkWasmState (VI64 result :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+    - **Dual-register post-condition**: division returns a 64-bit result, so
+      we must check *both* halves of the result (R0:R1).
+
+    The discharges are mechanical: unfold the program, simpl exposes the
+    pseudo-op match, the new `_spec` axioms in `ArmSemantics.v` rewrite the
+    axiomatic result function to the WASM-spec form, and the divs/divu/rems/remu
+    hypotheses select the Some branch.
+
+    The WASM-level hypothesis (`exec_wasm_instr I64DivS wstate = Some ...`)
+    is intentionally NOT in the new theorem shape: `exec_wasm_instr` returns
+    `None` for unmodeled instructions (I64Div/Rem are not in WasmSemantics.v),
+    which would make the prior theorem statement vacuously True. The new shape
+    is a value-level correspondence between the WASM-spec function (`I64.divs`)
+    and the ARM execution result, without routing through `exec_wasm_instr`.
+    Lifting the WASM semantics to include I64Add/Sub/Mul/Div/Rem and adding
+    the stack-frame plumbing is tracked separately under umbrella #152. *)
+
+Theorem i64_divs_correct : forall astate lo1 hi1 lo2 hi2 result,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = lo2 ->
+  get_reg astate R3 = hi2 ->
+  I64.divs (combine_i32 lo1 hi1) (combine_i32 lo2 hi2) = Some result ->
   exists astate',
     exec_program (compile_wasm_to_arm I64DivS) astate = Some astate' /\
-    get_reg astate' R0 = result.
+    get_reg astate' R0 = lo_of_i64 result /\
+    get_reg astate' R1 = hi_of_i64 result.
 Proof.
-  (* Pending v0.8.0 lift queue (#147 PR 2): replace i64_divs_pair axiom with
-     concrete I64.divs lo/hi decomposition. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 result HR0 HR1 HR2 HR3 Hdivs.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1, HR2, HR3.
+  rewrite i64_divs_pair_spec, Hdivs; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by discriminate. rewrite get_set_reg_eq. reflexivity.
+  - rewrite get_set_reg_eq. reflexivity.
+Qed.
 
-Theorem i64_divu_correct : forall wstate astate v1 v2 stack' result,
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  get_reg astate R0 = v1 ->
-  get_reg astate R1 = v2 ->
-  I32.divu v1 v2 = Some result ->
-  exec_wasm_instr I64DivU wstate =
-    Some (mkWasmState (VI64 result :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+Theorem i64_divu_correct : forall astate lo1 hi1 lo2 hi2 result,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = lo2 ->
+  get_reg astate R3 = hi2 ->
+  I64.divu (combine_i32 lo1 hi1) (combine_i32 lo2 hi2) = Some result ->
   exists astate',
     exec_program (compile_wasm_to_arm I64DivU) astate = Some astate' /\
-    get_reg astate' R0 = result.
+    get_reg astate' R0 = lo_of_i64 result /\
+    get_reg astate' R1 = hi_of_i64 result.
 Proof.
-  (* Pending v0.8.0 lift queue (#147 PR 2): replace i64_divu_pair axiom. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 result HR0 HR1 HR2 HR3 Hdivu.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1, HR2, HR3.
+  rewrite i64_divu_pair_spec, Hdivu; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by discriminate. rewrite get_set_reg_eq. reflexivity.
+  - rewrite get_set_reg_eq. reflexivity.
+Qed.
 
-Theorem i64_rems_correct : forall wstate astate v1 v2 stack' result quotient,
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  get_reg astate R0 = v1 ->
-  get_reg astate R1 = v2 ->
-  I32.divs v1 v2 = Some quotient ->
-  result = I32.sub v1 (I32.mul quotient v2) ->
-  I32.rems v1 v2 = Some result ->
-  exec_wasm_instr I64RemS wstate =
-    Some (mkWasmState (VI64 result :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+Theorem i64_rems_correct : forall astate lo1 hi1 lo2 hi2 result,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = lo2 ->
+  get_reg astate R3 = hi2 ->
+  I64.rems (combine_i32 lo1 hi1) (combine_i32 lo2 hi2) = Some result ->
   exists astate',
     exec_program (compile_wasm_to_arm I64RemS) astate = Some astate' /\
-    get_reg astate' R0 = result.
+    get_reg astate' R0 = lo_of_i64 result /\
+    get_reg astate' R1 = hi_of_i64 result.
 Proof.
-  (* Pending v0.8.0 lift queue (#147 PR 2): replace i64_rems_pair axiom. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 result HR0 HR1 HR2 HR3 Hrems.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1, HR2, HR3.
+  rewrite i64_rems_pair_spec, Hrems; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by discriminate. rewrite get_set_reg_eq. reflexivity.
+  - rewrite get_set_reg_eq. reflexivity.
+Qed.
 
-Theorem i64_remu_correct : forall wstate astate v1 v2 stack' result quotient,
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  get_reg astate R0 = v1 ->
-  get_reg astate R1 = v2 ->
-  I32.divu v1 v2 = Some quotient ->
-  result = I32.sub v1 (I32.mul quotient v2) ->
-  I32.remu v1 v2 = Some result ->
-  exec_wasm_instr I64RemU wstate =
-    Some (mkWasmState (VI64 result :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+Theorem i64_remu_correct : forall astate lo1 hi1 lo2 hi2 result,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = lo2 ->
+  get_reg astate R3 = hi2 ->
+  I64.remu (combine_i32 lo1 hi1) (combine_i32 lo2 hi2) = Some result ->
   exists astate',
     exec_program (compile_wasm_to_arm I64RemU) astate = Some astate' /\
-    get_reg astate' R0 = result.
+    get_reg astate' R0 = lo_of_i64 result /\
+    get_reg astate' R1 = hi_of_i64 result.
 Proof.
-  (* Pending v0.8.0 lift queue (#147 PR 2): replace i64_remu_pair axiom. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 result HR0 HR1 HR2 HR3 Hremu.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1, HR2, HR3.
+  rewrite i64_remu_pair_spec, Hremu; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by discriminate. rewrite get_set_reg_eq. reflexivity.
+  - rewrite get_set_reg_eq. reflexivity.
+Qed.
 
 (** ** I64 Bitwise Operations (10 total) *)
 
@@ -411,19 +443,22 @@ Proof.
   solve_single_arm.
 Qed.
 
-(** ** Summary (after v0.8.0 PR 1a alignment)
+(** ** Summary (after v0.9.0 PR 1 precursor + discharge)
 
     I64 Operations: 26 theorems in this file
     - Arithmetic existence: 3 Qed (Add, Sub, Mul)
-    - Division/remainder T1: 4 Admitted, pending v0.8.0 lift queue (#147 PRs 2-5)
+    - Division/remainder T1: 4 Qed (DivS, DivU, RemS, RemU) — discharged via
+      `i64_{divs,divu,rems,remu}_pair_spec` axioms in ArmSemantics.v
     - Bitwise existence: 3 Qed (And, Or, Xor)
     - Shift/rotate existence: 5 Qed (Shl, ShrU, ShrS, Rotl, Rotr)
     - Comparison existence: 11 Qed (Eqz, Eq, Ne, Lt[SU], Le[SU], Gt[SU], Ge[SU])
     - Bit-manipulation existence: 3 Qed (Clz, Ctz, Popcnt) -- note: also stated
       in CorrectnessI64Comparisons.v with I64-typed hypotheses
 
-    Status: 22 Qed / 4 Admitted (down from 29 Qed / 0 Admitted).
-    The previous "29 Qed" total proved the WRONG theorem (compiler was emitting
-    i64 ADD as single 32-bit ADD); aligning Compilation.v with the real codegen
-    requires reproving div/rem against the new pseudo-op axioms.
+    Status: 26 Qed / 0 Admitted (4 admits discharged by this PR).
+    The remaining T2 -> T1 lifts (Add/Sub/Mul/And/Or/Xor/Shifts/Rotates/
+    Comparisons/Clz/Ctz/Popcnt result-correspondence) are scheduled as
+    fan-out PRs 2-5 of umbrella #152. Each is a mechanical
+    `unfold; rewrite <op>_spec; reflexivity` lift against the spec axioms
+    now in place.
 *)

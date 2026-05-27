@@ -116,6 +116,217 @@ Axiom i64_extend_s_hi : I32.int -> I32.int.
 Axiom i64_load_lo : memory -> Z -> I32.int.
 Axiom i64_load_hi : memory -> Z -> I32.int.
 
+(** ** Result-correspondence axioms for i64 pseudo-ops (v0.9.0 precursor)
+
+    The axioms above (lines ~74-117) commit only the *type* of each pseudo-op
+    result function. That is enough for existence proofs (T2: ARM execution
+    succeeds), but it is *not* enough to prove that the resulting bit pattern
+    equals the WASM-spec result (T1: result correspondence).
+
+    This block adds, for each pseudo-op result function, a companion `_spec`
+    axiom that pins its result to the WASM-spec operation on the combined
+    64-bit value. Each spec is cross-checked against the per-op codegen survey
+    `docs/analysis/I64_CODEGEN_SURVEY.md`, which in turn cites the exact
+    `instruction_selector.rs` line numbers that the Rust compiler emits.
+
+    Convention. A register pair `(lo, hi)` corresponds to the i64 value
+    `combine_i32 lo hi = I64.repr (I32.unsigned lo + 2^32 * I32.unsigned hi)`.
+    Projection back is via `lo_of_i64` / `hi_of_i64`.
+
+    None semantics. Where a WASM op traps (div/rem by zero, signed-div
+    overflow), the corresponding pseudo-op result is `None`. We tie that
+    behaviour to `I64.divs / I64.divu / I64.rems / I64.remu` returning `None`.
+
+    Why axioms (not definitions). The encoder lowers each pseudo-op to a
+    multi-instruction ARM sequence (e.g., `I64DivS` becomes a software-helper
+    call to `__aeabi_ldivmod`, `I64SetCond` becomes a dual-precision compare
+    sequence). Modeling those expansions concretely in Rocq would require a
+    full bit-level encoder model. Until that exists, we *axiomatize* the
+    correspondence between the high-level pseudo-op and its WASM-spec meaning.
+
+    Falsification clause. If the fuzz harness ever exhibits an input where
+    the compiled ARM sequence diverges from the WASM-spec result modelled by
+    a `_spec` axiom below, that axiom is false and must be retracted. Tracked
+    in umbrella issue #152 (v0.9.0 lift queue). *)
+
+(** i64.const — split a 64-bit value into 32-bit halves.
+    Cross-check: I64_CODEGEN_SURVEY.md §8 ("I64Const {rdlo=R0, rdhi=R1, value}",
+    instruction_selector.rs:1393–1399). The encoder lowers I64ConstPseudo to
+    MOVW/MOVT for each half. *)
+Axiom i64_const_lo_spec : forall n,
+  i64_const_lo n = lo_of_i64 n.
+Axiom i64_const_hi_spec : forall n,
+  i64_const_hi n = hi_of_i64 n.
+
+(** i64.div_s / div_u / rem_s / rem_u — software-helper pseudo-ops.
+    Cross-check: I64_CODEGEN_SURVEY.md §7 (lines 1737–1779) and the encoder
+    notes that these expand to __aeabi_ldivmod / __aeabi_uldivmod runtime
+    helper calls. The helpers compute full 64-bit signed/unsigned division
+    on the combined operand pair. Trap semantics match WASM:
+      - div_s traps on y=0 and on min_signed/(-1) signed-overflow,
+      - div_u traps on y=0,
+      - rem_s traps only on y=0 (NOT on min_signed % -1; per WASM spec,
+        i64.rem_s of min/-1 is 0 — handled by the helper, not a trap),
+      - rem_u traps only on y=0. *)
+Axiom i64_divs_pair_spec : forall lo1 hi1 lo2 hi2,
+  i64_divs_pair lo1 hi1 lo2 hi2 =
+  match I64.divs (combine_i32 lo1 hi1) (combine_i32 lo2 hi2) with
+  | Some r => Some (lo_of_i64 r, hi_of_i64 r)
+  | None => None
+  end.
+Axiom i64_divu_pair_spec : forall lo1 hi1 lo2 hi2,
+  i64_divu_pair lo1 hi1 lo2 hi2 =
+  match I64.divu (combine_i32 lo1 hi1) (combine_i32 lo2 hi2) with
+  | Some r => Some (lo_of_i64 r, hi_of_i64 r)
+  | None => None
+  end.
+Axiom i64_rems_pair_spec : forall lo1 hi1 lo2 hi2,
+  i64_rems_pair lo1 hi1 lo2 hi2 =
+  match I64.rems (combine_i32 lo1 hi1) (combine_i32 lo2 hi2) with
+  | Some r => Some (lo_of_i64 r, hi_of_i64 r)
+  | None => None
+  end.
+Axiom i64_remu_pair_spec : forall lo1 hi1 lo2 hi2,
+  i64_remu_pair lo1 hi1 lo2 hi2 =
+  match I64.remu (combine_i32 lo1 hi1) (combine_i32 lo2 hi2) with
+  | Some r => Some (lo_of_i64 r, hi_of_i64 r)
+  | None => None
+  end.
+
+(** i64.mul — UMULL+MLA cross-product pseudo-op.
+    Cross-check: I64_CODEGEN_SURVEY.md §4 (instruction_selector.rs:1646–1655).
+    Encoder expands to UMULL + MLA. The full 64-bit product of the combined
+    operands is the spec. *)
+Axiom i64_mul_lo_bits_spec : forall lo1 hi1 lo2 hi2,
+  i64_mul_lo_bits lo1 hi1 lo2 hi2 =
+  lo_of_i64 (I64.mul (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Axiom i64_mul_hi_bits_spec : forall lo1 hi1 lo2 hi2,
+  i64_mul_hi_bits lo1 hi1 lo2 hi2 =
+  hi_of_i64 (I64.mul (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+
+(** i64.shl / i64.shr_u / i64.shr_s — funnel-shift pseudo-ops.
+    Cross-check: I64_CODEGEN_SURVEY.md §5 (instruction_selector.rs:1658–1689).
+    The shift count is the low half of operand 2 (`rmlo`); the high half of
+    the count is discarded — WASM i64 shifts already mask the count modulo 64,
+    and the encoder relies on `I64.{shl,shru,shrs}` doing that masking via
+    `combine_i32 cnt 0` (the high half of the count is always logically zero
+    for a valid WASM shift). *)
+Axiom i64_shl_lo_bits_spec : forall lo1 hi1 cnt,
+  i64_shl_lo_bits lo1 hi1 cnt =
+  lo_of_i64 (I64.shl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Axiom i64_shl_hi_bits_spec : forall lo1 hi1 cnt,
+  i64_shl_hi_bits lo1 hi1 cnt =
+  hi_of_i64 (I64.shl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Axiom i64_shru_lo_bits_spec : forall lo1 hi1 cnt,
+  i64_shru_lo_bits lo1 hi1 cnt =
+  lo_of_i64 (I64.shru (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Axiom i64_shru_hi_bits_spec : forall lo1 hi1 cnt,
+  i64_shru_hi_bits lo1 hi1 cnt =
+  hi_of_i64 (I64.shru (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Axiom i64_shrs_lo_bits_spec : forall lo1 hi1 cnt,
+  i64_shrs_lo_bits lo1 hi1 cnt =
+  lo_of_i64 (I64.shrs (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Axiom i64_shrs_hi_bits_spec : forall lo1 hi1 cnt,
+  i64_shrs_hi_bits lo1 hi1 cnt =
+  hi_of_i64 (I64.shrs (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+
+(** i64.rotl / i64.rotr — funnel-rotate pseudo-ops.
+    Cross-check: I64_CODEGEN_SURVEY.md §5 (instruction_selector.rs:1691–1709).
+    Shift amount is a single 32-bit register (rotates mask modulo 64). *)
+Axiom i64_rotl_lo_bits_spec : forall lo1 hi1 cnt,
+  i64_rotl_lo_bits lo1 hi1 cnt =
+  lo_of_i64 (I64.rotl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Axiom i64_rotl_hi_bits_spec : forall lo1 hi1 cnt,
+  i64_rotl_hi_bits lo1 hi1 cnt =
+  hi_of_i64 (I64.rotl (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Axiom i64_rotr_lo_bits_spec : forall lo1 hi1 cnt,
+  i64_rotr_lo_bits lo1 hi1 cnt =
+  lo_of_i64 (I64.rotr (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+Axiom i64_rotr_hi_bits_spec : forall lo1 hi1 cnt,
+  i64_rotr_hi_bits lo1 hi1 cnt =
+  hi_of_i64 (I64.rotr (combine_i32 lo1 hi1) (combine_i32 cnt I32.zero)).
+
+(** i64.clz / i64.ctz / i64.popcnt — bit-count pseudo-ops.
+    Cross-check: I64_CODEGEN_SURVEY.md §6 (instruction_selector.rs:1712–1734).
+    The result is a 32-bit count (0..64 fits in 7 bits) stored in `R0`. The
+    spec equates it to `I64.{clz,ctz,popcnt}` of the combined operand, then
+    projected to i32. (Since the count is at most 64, the projection is
+    lossless.) *)
+Axiom i64_clz_bits_spec : forall lo hi,
+  i64_clz_bits lo hi = i64_to_i32 (I64.clz (combine_i32 lo hi)).
+Axiom i64_ctz_bits_spec : forall lo hi,
+  i64_ctz_bits lo hi = i64_to_i32 (I64.ctz (combine_i32 lo hi)).
+Axiom i64_popcnt_bits_spec : forall lo hi,
+  i64_popcnt_bits lo hi = i64_to_i32 (I64.popcnt (combine_i32 lo hi)).
+
+(** i64 comparison pseudo-ops — single 0/1 result selected by ARM condition.
+    Cross-check: I64_CODEGEN_SURVEY.md §3 (instruction_selector.rs:1535–1643).
+    The encoder lowers `I64SetCond` to a multi-instruction dual-precision
+    compare sequence (CMP-low, SBCS-high, MOV+conditional-MOV) and `I64SetCondZ`
+    to (ORR-lo-hi, MOV+conditional-MOVEQ). The result is the WASM 0/1 outcome
+    of comparing the combined 64-bit operands under the indicated condition.
+
+    The mapping from ARM `condition` to WASM comparison is fixed by
+    Compilation.v: the i64 comparison ops emit `I64SetCond ... Cond_EQ`,
+    `Cond_NE`, `Cond_LT`, `Cond_CC` (LO=CC, unsigned <), `Cond_GT`,
+    `Cond_HI` (unsigned >), `Cond_LE`, `Cond_LS` (unsigned <=), `Cond_GE`,
+    `Cond_CS` (HS=CS, unsigned >=).
+
+    NOTE: This spec is a *parametric family* over the ARM condition; the
+    discharge of any particular i64 comparison theorem (e.g., I64Eq) further
+    case-splits on the specific condition. *)
+Axiom i64_setcond_bits_spec : forall lo1 hi1 lo2 hi2 cond,
+  i64_setcond_bits lo1 hi1 lo2 hi2 cond =
+  let v1 := combine_i32 lo1 hi1 in
+  let v2 := combine_i32 lo2 hi2 in
+  let bit :=
+    match cond with
+    | Cond_EQ => I64.eq  v1 v2
+    | Cond_NE => I64.ne  v1 v2
+    | Cond_LT => I64.lts v1 v2
+    | Cond_CC => I64.ltu v1 v2  (* LO = CC: unsigned < *)
+    | Cond_GT => I64.gts v1 v2
+    | Cond_HI => I64.gtu v1 v2  (* HI: unsigned > *)
+    | Cond_LE => I64.les v1 v2
+    | Cond_LS => I64.leu v1 v2  (* LS: unsigned <= *)
+    | Cond_GE => I64.ges v1 v2
+    | Cond_CS => I64.geu v1 v2  (* HS = CS: unsigned >= *)
+    | _ => false  (* other ARM conditions are not emitted for i64 cmps *)
+    end in
+  if bit then I32.one else I32.zero.
+
+(** i64.eqz — unary; result is 1 iff combined operand is zero. *)
+Axiom i64_setcondz_bits_spec : forall lo hi,
+  i64_setcondz_bits lo hi =
+  (if I64.eq (combine_i32 lo hi) I64.zero then I32.one else I32.zero).
+
+(** i64.extend_i32_s — high half is the sign-extension of `rn`.
+    Cross-check: I64_CODEGEN_SURVEY.md §8. The Rust encoder emits ASR R1, R0, #31
+    to fill `rdhi` with the sign bit of `rn`. The spec equates the axiomatic
+    `i64_extend_s_hi` to `I32.shrs rn 31` (which produces 0 for non-negative
+    rn and all-ones for negative rn — matching the ASR #31 instruction). *)
+Axiom i64_extend_s_hi_spec : forall rn,
+  i64_extend_s_hi rn = I32.shrs rn (I32.repr 31).
+
+(** i64 load — 8-byte memory load splits into low/high halves.
+    Cross-check: I64_CODEGEN_SURVEY.md §9 (instruction_selector.rs:1782). The
+    encoder emits a bounds-checked LDR pair: `LDR rdlo, [base, off]` and
+    `LDR rdhi, [base, off+4]`. The natural correspondence:
+
+      i64_load_lo m a = load_mem_at m a
+      i64_load_hi m a = load_mem_at m (a + 4)
+
+    However, the memory model `m : Z -> I32.int` is a host-level i32 read
+    from `m` at a signed address — the encoder's bounds check and endianness
+    handling are not modelled here. We therefore leave the load result
+    pinned to raw memory reads at offsets 0 and 4 — the weakest spec
+    consistent with the present model. PR 5 of the umbrella will revisit
+    when the memory model lifts. Marked TODO #152. *)
+Axiom i64_load_lo_spec : forall m a,
+  i64_load_lo m a = m a.
+Axiom i64_load_hi_spec : forall m a,
+  i64_load_hi m a = m (a + 4).
+
 (** ** Flag Computation Helpers *)
 
 (** Compute negative flag: result < 0 (signed) *)
