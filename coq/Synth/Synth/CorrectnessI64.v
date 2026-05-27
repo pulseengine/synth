@@ -16,6 +16,21 @@
       - Dual-register post-condition (R0 = lo_of_i64 result, R1 = hi_of_i64 result).
     The smoke-test report on the prior commit identified the precursor work
     that this PR ships.
+
+    v0.9.0 PR 2 (i64 arith + bitwise T1 lifts): The Add/Sub/Mul/And/Or/Xor
+    theorems are restated to the same shape (I64-typed hypotheses, high-half
+    register pinning, dual-register post-condition):
+      - **i64_mul_correct** is discharged as Qed via `i64_mul_{lo,hi}_bits_spec`.
+      - **i64_add_correct** / **i64_sub_correct** are Admitted pending a
+        carry-/borrow-propagation lemma over the existing ArmSemantics.v
+        ADDS+ADC and SUBS+SBC pairs (no new axiom needed; the property is
+        a derivable consequence of the existing flag semantics).
+      - **i64_and_correct** / **i64_or_correct** / **i64_xor_correct** are
+        Admitted pending halves-distribute-over-bitwise decomposition lemmas
+        in Common/Integers.v — same Rocq 9 `Z.mod_mod` obstacle that already
+        blocks `i64_to_i32_to_i64_wrap` (Integers.v:387).
+    No new spec axioms introduced; all gaps are mechanical proof engineering
+    against the existing infrastructure, tracked as v0.9.0 PR 2 follow-ups.
 *)
 
 From Stdlib Require Import ZArith.
@@ -52,39 +67,88 @@ Ltac solve_cmp_mov :=
 
 (** ** I64 Arithmetic Operations (10 total) *)
 
-Theorem i64_add_correct : forall wstate astate v1 v2 stack',
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  (* I64 values span two 32-bit registers in ARM *)
-  exec_wasm_instr I64Add wstate =
-    Some (mkWasmState (VI64 (I64.add v1 v2) :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
-  exists astate',
-    exec_program (compile_wasm_to_arm I64Add) astate = Some astate'.
-Proof.
-  (* I64Add compiles to [ADD R0 R0 (Reg R1)] — single instruction, always Some *)
-  solve_single_arm.
-Qed.
+(** v0.9.0 PR 2 lift: Add/Sub/Mul restated with I64-typed hypotheses,
+    high-half register pinning, and dual-register post-conditions —
+    matching the shape established by PR 1 (#153) for div/rem and const.
 
-Theorem i64_sub_correct : forall wstate astate v1 v2 stack',
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  exec_wasm_instr I64Sub wstate =
-    Some (mkWasmState (VI64 (I64.sub v1 v2) :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
-  exists astate',
-    exec_program (compile_wasm_to_arm I64Sub) astate = Some astate'.
-Proof.
-  solve_single_arm.
-Qed.
+    - **i64_mul_correct** discharges cleanly via the spec axioms
+      `i64_mul_lo_bits_spec` / `i64_mul_hi_bits_spec` added in PR 1.
+    - **i64_add_correct** / **i64_sub_correct** require a carry-propagation
+      lemma over the real ARM ADDS+ADC / SUBS+SBC pair (the C flag set by
+      ADDS/SUBS feeds the carry-in of ADC/SBC). That lemma does not exist
+      yet in the proof infrastructure — see PR-body follow-up — so these
+      remain `Admitted` with a precise gap citation. Per the v0.9.0 PR 2
+      task brief, no new spec axiom is introduced; the carry-propagation
+      lemma is a *provable* property of the existing ARM semantics in
+      `ArmSemantics.v` and is tracked as a follow-up.
 
-Theorem i64_mul_correct : forall wstate astate v1 v2 stack',
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  exec_wasm_instr I64Mul wstate =
-    Some (mkWasmState (VI64 (I64.mul v1 v2) :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+    The previous theorem shape (existence-only with a vacuous
+    `exec_wasm_instr I64<Op> wstate = Some ...` hypothesis) has been
+    removed: `WasmSemantics.v` does not model i64 Add/Sub/Mul, so that
+    hypothesis was always False (vacuous truth). The restated shape gives
+    a real correspondence between the WASM-spec function (`I64.{add,sub,
+    mul}`) and the ARM execution result, mirroring how PR 1 restated
+    div/rem and const. *)
+
+Theorem i64_add_correct : forall astate lo1 hi1 lo2 hi2,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = lo2 ->
+  get_reg astate R3 = hi2 ->
   exists astate',
-    exec_program (compile_wasm_to_arm I64Mul) astate = Some astate'.
+    exec_program (compile_wasm_to_arm I64Add) astate = Some astate' /\
+    get_reg astate' R0 = lo_of_i64 (I64.add (combine_i32 lo1 hi1)
+                                            (combine_i32 lo2 hi2)) /\
+    get_reg astate' R1 = hi_of_i64 (I64.add (combine_i32 lo1 hi1)
+                                            (combine_i32 lo2 hi2)).
 Proof.
-  solve_single_arm.
+  (* ADMITTED: I64Add compiles to ADDS R0 R0 (Reg R2); ADC R1 R1 (Reg R3).
+     The ADDS sets the C flag from `compute_c_flag_add lo1 lo2`, and ADC
+     reads that C flag to compute `hi1 + hi2 + C`. Closing the result
+     correspondence requires a carry-propagation lemma over the existing
+     ArmSemantics.v ADDS/ADC pair (no new axiom needed — the property is
+     provable, but the helper is not yet present). Tracked as v0.9.0 PR 2
+     follow-up; no new spec axiom is introduced. *)
+Admitted.
+
+Theorem i64_sub_correct : forall astate lo1 hi1 lo2 hi2,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = lo2 ->
+  get_reg astate R3 = hi2 ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64Sub) astate = Some astate' /\
+    get_reg astate' R0 = lo_of_i64 (I64.sub (combine_i32 lo1 hi1)
+                                            (combine_i32 lo2 hi2)) /\
+    get_reg astate' R1 = hi_of_i64 (I64.sub (combine_i32 lo1 hi1)
+                                            (combine_i32 lo2 hi2)).
+Proof.
+  (* ADMITTED: I64Sub compiles to SUBS R0 R0 (Reg R2); SBC R1 R1 (Reg R3).
+     SUBS sets the C flag (borrow inverted) via `compute_c_flag_sub`, and
+     SBC reads it to compute `hi1 - hi2 - NOT(C)`. Same gap as i64_add:
+     needs a borrow-propagation lemma over the ArmSemantics.v SUBS/SBC
+     pair. No new spec axiom introduced; tracked as v0.9.0 PR 2 follow-up. *)
+Admitted.
+
+Theorem i64_mul_correct : forall astate lo1 hi1 lo2 hi2,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = lo2 ->
+  get_reg astate R3 = hi2 ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64Mul) astate = Some astate' /\
+    get_reg astate' R0 = lo_of_i64 (I64.mul (combine_i32 lo1 hi1)
+                                            (combine_i32 lo2 hi2)) /\
+    get_reg astate' R1 = hi_of_i64 (I64.mul (combine_i32 lo1 hi1)
+                                            (combine_i32 lo2 hi2)).
+Proof.
+  intros astate lo1 hi1 lo2 hi2 HR0 HR1 HR2 HR3.
+  unfold compile_wasm_to_arm; simpl.
+  rewrite HR0, HR1, HR2, HR3.
+  rewrite i64_mul_lo_bits_spec, i64_mul_hi_bits_spec; simpl.
+  eexists. split; [reflexivity | split].
+  - rewrite get_set_reg_neq by discriminate. rewrite get_set_reg_eq. reflexivity.
+  - rewrite get_set_reg_eq. reflexivity.
 Qed.
 
 (** The 4 T1 division/remainder proofs below are restated to match the actual
@@ -198,39 +262,83 @@ Qed.
 
 (** ** I64 Bitwise Operations (10 total) *)
 
-Theorem i64_and_correct : forall wstate astate v1 v2 stack',
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  exec_wasm_instr I64And wstate =
-    Some (mkWasmState (VI64 (I64.and v1 v2) :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
-  exists astate',
-    exec_program (compile_wasm_to_arm I64And) astate = Some astate'.
-Proof.
-  (* Compiles to [AND R0 R0 (Reg R1)] — always Some *)
-  solve_single_arm.
-Qed.
+(** v0.9.0 PR 2 lift: And/Or/Xor restated with dual-register
+    post-conditions referencing `I64.and / I64.or / I64.xor` on the
+    combined operand pair.
 
-Theorem i64_or_correct : forall wstate astate v1 v2 stack',
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  exec_wasm_instr I64Or wstate =
-    Some (mkWasmState (VI64 (I64.or v1 v2) :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
-  exists astate',
-    exec_program (compile_wasm_to_arm I64Or) astate = Some astate'.
-Proof.
-  solve_single_arm.
-Qed.
+    Each compiles to two parallel 32-bit bitwise ops on the lo/hi pair:
+      I64And => [AND R0 R0 (Reg R2); AND R1 R1 (Reg R3)]
+      I64Or  => [ORR R0 R0 (Reg R2); ORR R1 R1 (Reg R3)]
+      I64Xor => [EOR R0 R0 (Reg R2); EOR R1 R1 (Reg R3)]
 
-Theorem i64_xor_correct : forall wstate astate v1 v2 stack',
-  wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
-  exec_wasm_instr I64Xor wstate =
-    Some (mkWasmState (VI64 (I64.xor v1 v2) :: stack')
-            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+    Result correspondence requires a "halves-distribute-over-bitwise"
+    lemma in `Common/Integers.v`:
+      lo_of_i64 (I64.and a b) = I32.and (lo_of_i64 a) (lo_of_i64 b)
+      hi_of_i64 (I64.and a b) = I32.and (hi_of_i64 a) (hi_of_i64 b)
+    (and the same for or/xor). These lemmas are provable from
+    `Z.land_ones` / `Z.lor_spec` / `Z.lxor_spec` plus modular
+    arithmetic, but the existing `i64_to_i32_to_i64_wrap` (Integers.v:387)
+    is already `Admitted` because Rocq 9's `Z.mod_mod` signature changed
+    and `rewrite` cannot disambiguate nested mod subterms — the same
+    obstacle blocks a clean discharge here.
+
+    Per the v0.9.0 PR 2 task brief, no new spec axiom is introduced. The
+    decomposition lemma is purely arithmetic (no codegen claim), and is
+    tracked as a follow-up alongside the Rocq 9 `Z.mod_mod` rework. *)
+
+Theorem i64_and_correct : forall astate lo1 hi1 lo2 hi2,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = lo2 ->
+  get_reg astate R3 = hi2 ->
   exists astate',
-    exec_program (compile_wasm_to_arm I64Xor) astate = Some astate'.
+    exec_program (compile_wasm_to_arm I64And) astate = Some astate' /\
+    get_reg astate' R0 = lo_of_i64 (I64.and (combine_i32 lo1 hi1)
+                                            (combine_i32 lo2 hi2)) /\
+    get_reg astate' R1 = hi_of_i64 (I64.and (combine_i32 lo1 hi1)
+                                            (combine_i32 lo2 hi2)).
 Proof.
-  solve_single_arm.
-Qed.
+  (* ADMITTED: needs `lo_of_i64_and` / `hi_of_i64_and` helper lemmas in
+     Common/Integers.v. The ARM execution yields R0 = I32.and lo1 lo2 and
+     R1 = I32.and hi1 hi2; correspondence with the dual-register post-
+     condition reduces to the halves-distribute-over-Z.land property,
+     blocked by the same Rocq 9 Z.mod_mod issue as
+     `i64_to_i32_to_i64_wrap`. No new spec axiom introduced. *)
+Admitted.
+
+Theorem i64_or_correct : forall astate lo1 hi1 lo2 hi2,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = lo2 ->
+  get_reg astate R3 = hi2 ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64Or) astate = Some astate' /\
+    get_reg astate' R0 = lo_of_i64 (I64.or (combine_i32 lo1 hi1)
+                                           (combine_i32 lo2 hi2)) /\
+    get_reg astate' R1 = hi_of_i64 (I64.or (combine_i32 lo1 hi1)
+                                           (combine_i32 lo2 hi2)).
+Proof.
+  (* ADMITTED: same shape as i64_and_correct — needs `lo_of_i64_or` /
+     `hi_of_i64_or` decomposition lemmas. Tracked as v0.9.0 PR 2
+     follow-up; no new spec axiom introduced. *)
+Admitted.
+
+Theorem i64_xor_correct : forall astate lo1 hi1 lo2 hi2,
+  get_reg astate R0 = lo1 ->
+  get_reg astate R1 = hi1 ->
+  get_reg astate R2 = lo2 ->
+  get_reg astate R3 = hi2 ->
+  exists astate',
+    exec_program (compile_wasm_to_arm I64Xor) astate = Some astate' /\
+    get_reg astate' R0 = lo_of_i64 (I64.xor (combine_i32 lo1 hi1)
+                                            (combine_i32 lo2 hi2)) /\
+    get_reg astate' R1 = hi_of_i64 (I64.xor (combine_i32 lo1 hi1)
+                                            (combine_i32 lo2 hi2)).
+Proof.
+  (* ADMITTED: same shape as i64_and_correct — needs `lo_of_i64_xor` /
+     `hi_of_i64_xor` decomposition lemmas. Tracked as v0.9.0 PR 2
+     follow-up; no new spec axiom introduced. *)
+Admitted.
 
 Theorem i64_shl_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI64 v2 :: VI64 v1 :: stack' ->
@@ -443,22 +551,26 @@ Proof.
   solve_single_arm.
 Qed.
 
-(** ** Summary (after v0.9.0 PR 1 precursor + discharge)
+(** ** Summary (after v0.9.0 PR 2 — i64 arith + bitwise restated)
 
     I64 Operations: 26 theorems in this file
-    - Arithmetic existence: 3 Qed (Add, Sub, Mul)
-    - Division/remainder T1: 4 Qed (DivS, DivU, RemS, RemU) — discharged via
-      `i64_{divs,divu,rems,remu}_pair_spec` axioms in ArmSemantics.v
-    - Bitwise existence: 3 Qed (And, Or, Xor)
-    - Shift/rotate existence: 5 Qed (Shl, ShrU, ShrS, Rotl, Rotr)
-    - Comparison existence: 11 Qed (Eqz, Eq, Ne, Lt[SU], Le[SU], Gt[SU], Ge[SU])
-    - Bit-manipulation existence: 3 Qed (Clz, Ctz, Popcnt) -- note: also stated
-      in CorrectnessI64Comparisons.v with I64-typed hypotheses
+    - Arithmetic T1: 1 Qed (Mul via `i64_mul_{lo,hi}_bits_spec`) +
+      2 Admitted (Add, Sub — gap: ADDS/ADC + SUBS/SBC carry-propagation
+      lemma over existing ArmSemantics.v; no new spec axiom needed).
+    - Division/remainder T1: 4 Qed (DivS, DivU, RemS, RemU) — discharged
+      via `i64_{divs,divu,rems,remu}_pair_spec` axioms in ArmSemantics.v.
+    - Bitwise T1: 0 Qed + 3 Admitted (And, Or, Xor — gap: halves-distribute
+      decomposition lemmas blocked by Rocq 9 `Z.mod_mod` rewrite issue,
+      same root cause as `i64_to_i32_to_i64_wrap`).
+    - Shift/rotate existence: 5 Qed (Shl, ShrU, ShrS, Rotl, Rotr) — T1
+      lifts scheduled as v0.9.0 PR 3.
+    - Comparison existence: 11 Qed (Eqz, Eq, Ne, Lt[SU], Le[SU], Gt[SU],
+      Ge[SU]) — T1 lifts scheduled as v0.9.0 PR 4.
+    - Bit-manipulation existence: 3 Qed (Clz, Ctz, Popcnt) — T1 lifts
+      scheduled as v0.9.0 PR 5.
 
-    Status: 26 Qed / 0 Admitted (4 admits discharged by this PR).
-    The remaining T2 -> T1 lifts (Add/Sub/Mul/And/Or/Xor/Shifts/Rotates/
-    Comparisons/Clz/Ctz/Popcnt result-correspondence) are scheduled as
-    fan-out PRs 2-5 of umbrella #152. Each is a mechanical
-    `unfold; rewrite <op>_spec; reflexivity` lift against the spec axioms
-    now in place.
+    Net change vs. main: +1 Qed (i64_mul_correct lifted to T1 with dual-
+    register post-condition); 5 prior `solve_single_arm` existence proofs
+    (Add/Sub/And/Or/Xor) restated to the umbrella's required T1 shape and
+    Admitted with explicit gap citations — no new axioms.
 *)
