@@ -1,6 +1,23 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated:** May 2026 (v0.8.0 PR 1a: Compilation.v i64 alignment)
+**Last Updated:** May 2026 (v0.9.0 PR 1 smoke-test: axiom shape blocker surfaced; no discharges)
+
+## v0.9.0 PR 1 outcome (smoke-test): NEGATIVE
+
+The 5 strategic admits introduced by v0.8.0 #150 (4 div/rem in CorrectnessI64.v,
+1 i64_const_correct in CorrectnessSimple.v) **cannot be discharged under the
+v0.8.0 axiom shape**. The relevant axioms in `coq/Synth/ARM/ArmSemantics.v`
+(`i64_divs_pair` / `i64_divu_pair` / `i64_rems_pair` / `i64_remu_pair` /
+`i64_const_lo` / `i64_const_hi`) are pure type declarations with no equation
+tying their results to `I64.divs` / `I64.divu` / `I64.rems` / `I64.remu` /
+`I32.repr ((I64.unsigned n) mod I32.modulus)`. Without those result-equation
+axioms, the T1 theorems are not provable by any tactic. See the PR body of
+`feat/v0.9.0-discharge-i64-admits` for the full report and the recommended
+precursor work that must land before PRs 2-5 of the v0.9.0 lift queue can
+fan out.
+
+The numbers below are unchanged by PR 1 (no theorems closed, no theorems opened).
+
 
 ## Overview
 

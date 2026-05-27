@@ -196,9 +196,15 @@ Proof.
      simplified single-MOVW codegen that truncated the constant to its low
      16 bits — that codegen no longer exists.
 
-     Lifting requires replacing the i64_const_lo / i64_const_hi axioms with
-     concrete low/high decomposition lemmas. Tracked under v0.8.0 lift
-     queue (#147 PR 5). *)
+     v0.9.0 PR 1 smoke-test outcome: this admit is blocked by the abstract
+     `i64_const_lo` axiom in ArmSemantics.v (`Axiom i64_const_lo : I64.int ->
+     I32.int.` — no equation to `I32.repr ((I64.unsigned n) mod I32.modulus)`
+     or any other reduction). Discharging requires either (a) adding a
+     result-equation axiom `i64_const_lo_spec` to ArmSemantics.v, or (b)
+     restating this theorem with a post-condition that consumes the
+     abstract `i64_const_lo n` directly. Neither was in scope for v0.9.0
+     PR 1 (which forbade ArmSemantics.v / Compilation.v edits). See PR
+     `feat/v0.9.0-discharge-i64-admits` for the full smoke-test report. *)
 Admitted.
 
 (** LocalTee sets local and keeps value on stack *)
