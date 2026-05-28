@@ -1,6 +1,27 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated:** May 2026 (v0.9.0 PR 2: i64_mul T1 lifted; Add/Sub/And/Or/Xor restated to T1 shape, Admitted pending follow-up lemmas)
+**Last Updated:** May 2026 (v0.10.0 PR 1: i64_add/i64_sub closed as T1 Qed via ADDS/ADC + SUBS/SBC carry/borrow-propagation lemmas — no new axioms)
+
+## v0.10.0 PR 1 outcome: i64 add/sub carry/borrow propagation
+
+`i64_add_correct` and `i64_sub_correct` (Admitted in v0.9.0) are now Qed.
+The discharge steps `exec_program` over the real ARM instruction pairs
+`[ADDS R0 R0 (Reg R2); ADC R1 R1 (Reg R3)]` and
+`[SUBS R0 R0 (Reg R2); SBC R1 R1 (Reg R3)]` emitted by `Compilation.v`,
+reading the C flag set by the low-half instruction and applying two new
+helper lemmas in `ArmFlagLemmas.v`:
+
+- `i64_add_via_adds_adc` — (lo,hi) of ADDS+ADC = lo/hi of `I64.add` on the
+  combined operands;
+- `i64_sub_via_subs_sbc` — same shape for `I64.sub`.
+
+Both helpers are derived from the existing ArmSemantics.v flag clauses
+(`compute_c_flag_add` / `compute_c_flag_sub`) plus base-2^32 modular
+arithmetic (`carry_split_add` / `borrow_split_sub`). **No new axioms.**
+
+Net change vs. v0.9.0: +2 T1 Qed (i64 arithmetic 35 -> 37), -2 Admitted
+(CorrectnessI64.v 5 -> 3); the 3 remaining i64 admits (And/Or/Xor) are a
+separate PR blocked on the Rocq 9 Z.mod_mod halves-distribute rework.
 
 ## v0.9.0 PR 1 outcome: PRECURSOR + DISCHARGE
 
@@ -49,21 +70,37 @@ umbrella #147).
 
 | Tier | Meaning | Count |
 |------|---------|-------|
-| **T1: Result Correspondence** | ARM output register = WASM result value | 36 |
+| **T1: Result Correspondence** | ARM output register = WASM result value | 37 |
 | **T2: Existence-Only** | ARM execution succeeds (no result claim) | 139 |
-| **T3: Admitted** | Not yet proven | 15 |
-| **Infrastructure** | Properties of integers, states, flag lemmas | 56 |
+| **T3: Admitted** | Not yet proven | 13 |
+| **Infrastructure** | Properties of integers, states, flag lemmas | 65 |
 
-**Total: 233 Qed / 10 Admitted across all files**
+**Total: 244 Qed / 8 Admitted across all files**
+
+v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
+infrastructure Qed (combine_i32_unsigned, carry_split_add,
+borrow_split_sub, i64_add_via_adds_adc, i64_sub_via_subs_sbc in
+ArmFlagLemmas.v; get_reg_set_flags, flags_set_flags, flags_set_flags_set_reg
+in ArmState.v; flag_c_update_flags_arith in ArmSemantics.v); -2 Admitted.
 
 Net change from the v0.8.0 baseline: +5 Qed, −5 Admitted (4 i64 div/rem + 1 i64
 const_correct discharged via the new result-correspondence axioms in
 `ArmSemantics.v`).
 
-## T1: Result Correspondence (35 Qed)
+## T1: Result Correspondence (37 Qed)
 
 These are the crown jewels — they prove the compiled ARM code produces the exact same
 value as the WASM operation.
+
+### i64 Arithmetic (2) — dual-register carry/borrow propagation
+
+| File | Theorem | Operation | Helper Lemma |
+|------|---------|-----------|--------------|
+| CorrectnessI64.v | `i64_add_correct` | I64Add | `i64_add_via_adds_adc` (ADDS+ADC) |
+| CorrectnessI64.v | `i64_sub_correct` | I64Sub | `i64_sub_via_subs_sbc` (SUBS+SBC) |
+
+(i64 Mul + 4 div/rem T1 proofs are also Qed; see the i64 Division row below
+and CorrectnessI64.v.)
 
 ### i32 Arithmetic (6)
 
@@ -152,7 +189,11 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 | CorrectnessMemory.v | 8 | 4 i32/i64 + 4 f32/f64 load/store |
 | CorrectnessComplete.v | 1 | Master compilation theorem |
 
-## T3: Admitted (15)
+## T3: Admitted (13)
+
+> v0.10.0 PR 1: `i64_add_correct` / `i64_sub_correct` moved out of T3 to T1
+> (Qed via the ADDS/ADC + SUBS/SBC carry/borrow-propagation lemmas). The
+> remaining i64 admits are the And/Or/Xor halves-distribute trio.
 
 | File | Count | Root Cause | Unblocking Strategy |
 |------|-------|------------|---------------------|
@@ -161,7 +202,7 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 | CorrectnessI32.v | 4 | `i32_divs/divu/rems/remu_correct` — trap guard sequences (CMP+BCondOffset+UDF) cannot be verified in the sequential exec_program model | Extend exec_program to support PC-relative branching |
 | CorrectnessSimple.v | 1 | `i32_const_correct` — compilation now branches on `I32.unsigned n <= 65535`; large-constant case requires Z.land/Z.shiftr lemmas | Prove MOVW+MOVT reconstruction lemma |
 | CorrectnessSimple.v | 1 | `i64_const_correct` — v0.8.0 PR 1a aligned codegen to `I64ConstPseudo` (loads both halves); proof claimed R0 = low 16 bits via stale MOVW model | v0.8.0 PR 5: concrete `i64_const_lo`/`i64_const_hi` definitions |
-| CorrectnessI64.v | 4 | `i64_divs/divu/rems/remu_correct` — v0.8.0 PR 1a aligned codegen to `I64Div*Pseudo` (software helper calls); proofs claimed `I32.divs/divu` results | v0.8.0 PR 2: concrete `i64_*_pair` definitions matching helper ABI |
+| CorrectnessI64.v | 3 | `i64_and/or/xor_correct` — halves-distribute-over-bitwise decomposition blocked by the same Rocq 9 `Z.mod_mod` rewrite issue as `i64_to_i32_to_i64_wrap` | Rework with new Z.mod_mod API (separate PR) |
 | Compilation.v | 2 | `ex_compile_simple_add`, `ex_compile_increment_local` — `simpl` cannot reduce `Z.leb (I32.unsigned (I32.repr n)) 65535` | Use `vm_compute` or prove I32.unsigned reduction lemma |
 
 ## VFP Semantics (Phase 5 — New)
@@ -262,6 +303,18 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 | `flags_les` | Z || N!=V <-> I32.les (derived) |
 | `flags_leu` | !C || Z <-> I32.leu (derived) |
 
+### i64 carry/borrow-propagation lemmas (v0.10.0 PR 1)
+
+| Lemma | Meaning |
+|-------|---------|
+| `combine_i32_unsigned` | `I64.unsigned (combine_i32 lo hi) = lo_u + 2^32*hi_u` (repr is identity, both halves fit) |
+| `carry_split_add` | base-2^32 carry split of `(lo+2^32*hi)+(lo'+2^32*hi')` mod 2^64 (pure Z) |
+| `borrow_split_sub` | base-2^32 borrow split of the analogous subtraction (pure Z) |
+| `i64_add_via_adds_adc` | (lo,hi) of ADDS+ADC = lo/hi of `I64.add` on combined operands |
+| `i64_sub_via_subs_sbc` | (lo,hi) of SUBS+SBC = lo/hi of `I64.sub` on combined operands |
+
+All fully proved (Qed); no new axioms.
+
 ## Per-File Breakdown
 
 | File | Qed | Admitted | Tier |
@@ -269,7 +322,7 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 | Correctness.v | 6 | 0 | T1 |
 | CorrectnessSimple.v | 28 | 1 | T2 + 1 admitted (i64_const_correct) |
 | CorrectnessI32.v | 29 | 0 | T1 |
-| CorrectnessI64.v | 24 | 5 | T1 (mul+div+rem) + T2 (shifts/cmps/bit-manip) + 5 admitted (Add, Sub, And, Or, Xor — restated to T1 shape, pending follow-up helper lemmas) |
+| CorrectnessI64.v | 26 | 3 | T1 (add+sub+mul+div+rem) + T2 (shifts/cmps/bit-manip) + 3 admitted (And, Or, Xor — restated to T1 shape, pending Z.mod_mod halves-distribute rework) |
 | CorrectnessI64Comparisons.v | 19 | 0 | T2 |
 | CorrectnessF32.v | 20 | 0 | T2 |
 | CorrectnessF64.v | 20 | 0 | T2 |
@@ -278,10 +331,10 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 | CorrectnessComplete.v | 1 | 0 | T2 |
 | ArmRefinement.v | 0 | 2 | T3 |
 | Integers.v | 10 | 1 | Infra/T3 |
-| ArmFlagLemmas.v | 10 | 0 | Infra |
+| ArmFlagLemmas.v | 15 | 0 | Infra (+5: combine_i32_unsigned, carry_split_add, borrow_split_sub, i64_add_via_adds_adc, i64_sub_via_subs_sbc) |
 | Tactics.v | 1 | 0 | Infra |
-| ArmState.v | 11 | 0 | Infra |
-| ArmSemantics.v | 7 | 0 | Infra |
+| ArmState.v | 14 | 0 | Infra (+3: get_reg_set_flags, flags_set_flags, flags_set_flags_set_reg) |
+| ArmSemantics.v | 8 | 0 | Infra (+1: flag_c_update_flags_arith) |
 | WasmSemantics.v | 6 | 0 | Infra |
 | Compilation.v | 5 | 0 | Infra |
 | Base.v | 4 | 0 | Infra |
