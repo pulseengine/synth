@@ -641,6 +641,57 @@ Proof.
   rewrite Z.mod_small; [reflexivity | lia].
 Qed.
 
+(** The inner `mod I32.modulus` in `lo_of_i64` is redundant: I32.repr
+    already reduces mod 2^32. *)
+Lemma lo_of_i64_repr : forall n : I64.int,
+  lo_of_i64 n = I32.repr (I64.unsigned n).
+Proof.
+  intros n. unfold lo_of_i64, I32.repr, I32.modulus.
+  rewrite Zmod_mod. reflexivity.
+Qed.
+
+(** Normalization helper: a sum of two values plus a constant is unchanged
+    mod n when each value is first reduced mod n. Pure Z; closes the final
+    step of both carry/borrow helpers. *)
+Lemma sum2_mod_norm : forall x y k n : Z,
+  (x + y + k) mod n = (x mod n + y mod n + k) mod n.
+Proof.
+  intros x y k n.
+  rewrite (Zplus_mod (x + y) k).
+  rewrite (Zplus_mod x y).
+  rewrite (Zplus_mod (x mod n + y mod n) k).
+  reflexivity.
+Qed.
+
+(** Same normalization for a difference of two values minus a constant. *)
+Lemma diff2_mod_norm : forall x y k n : Z,
+  (x - y - k) mod n = (x mod n - y mod n - k) mod n.
+Proof.
+  intros x y k n.
+  rewrite (Zminus_mod (x - y) k).
+  rewrite (Zminus_mod x y).
+  rewrite (Zminus_mod (x mod n - y mod n) k).
+  reflexivity.
+Qed.
+
+(** `I64.unsigned` distributes over `I64.add` modulo 2^64. *)
+Lemma i64_unsigned_add : forall a b : I64.int,
+  I64.unsigned (I64.add a b) = (I64.unsigned a + I64.unsigned b) mod 2^64.
+Proof.
+  intros a b. unfold I64.add, I64.unsigned, I64.repr, I64.modulus.
+  rewrite Zmod_mod.
+  rewrite Zplus_mod. reflexivity.
+Qed.
+
+(** `I64.unsigned` distributes over `I64.sub` modulo 2^64. *)
+Lemma i64_unsigned_sub : forall a b : I64.int,
+  I64.unsigned (I64.sub a b) = (I64.unsigned a - I64.unsigned b) mod 2^64.
+Proof.
+  intros a b. unfold I64.sub, I64.unsigned, I64.repr, I64.modulus.
+  rewrite Zmod_mod.
+  rewrite Zminus_mod. reflexivity.
+Qed.
+
 (** Core base-2^32 carry-split fact for addition.
     Let `lo = la + 2^32*ha`, `lo2 = lb + 2^32*hb` with all four parts in
     [0, 2^32). Then `(lo + lo2) mod 2^64`, projected to its low and high
@@ -773,43 +824,60 @@ Lemma i64_add_via_adds_adc : forall lo1 hi1 lo2 hi2 : I32.int,
     = hi_of_i64 (I64.add (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
 Proof.
   intros lo1 hi1 lo2 hi2.
-  unfold I64.add, lo_of_i64, hi_of_i64, I64.unsigned, I64.repr.
-  rewrite (combine_i32_unsigned lo1 hi1).
-  rewrite (combine_i32_unsigned lo2 hi2).
-  (* Abbreviate the unsigned halves. *)
+  (* Name the four unsigned 32-bit halves and bound them. *)
   set (la := I32.unsigned lo1).
   set (ha := I32.unsigned hi1).
   set (lb := I32.unsigned lo2).
   set (hb := I32.unsigned hi2).
-  assert (Hla : 0 <= la < 2^32) by (subst la; unfold I32.unsigned; apply Z_mod_lt; unfold I32.modulus; lia).
-  assert (Hha : 0 <= ha < 2^32) by (subst ha; unfold I32.unsigned; apply Z_mod_lt; unfold I32.modulus; lia).
-  assert (Hlb : 0 <= lb < 2^32) by (subst lb; unfold I32.unsigned; apply Z_mod_lt; unfold I32.modulus; lia).
-  assert (Hhb : 0 <= hb < 2^32) by (subst hb; unfold I32.unsigned; apply Z_mod_lt; unfold I32.modulus; lia).
-  (* Collapse the outer (._ mod 2^64) mod 2^64 to a single mod. *)
-  unfold I32.modulus, I64.modulus.
-  rewrite (Zmod_mod (la + 2 ^ 32 * ha + (lb + 2 ^ 32 * hb)) (2 ^ 64)).
-  pose proof (carry_split_add la ha lb hb Hla Hha Hlb Hhb) as [Hlo Hhi].
-  simpl in Hlo, Hhi.
-  (* Relate compute_c_flag_add's boolean to the (2^32 <=? la+lb) carry. *)
-  unfold I32.repr, I32.add, I32.repr, compute_c_flag_add, I32.unsigned,
-         I32.max_unsigned, I32.modulus, I32.one, I32.zero, I32.repr.
-  fold la lb ha hb.
+  assert (Hla : 0 <= la < 2^32)
+    by (unfold la, I32.unsigned; apply Z_mod_lt; lia).
+  assert (Hha : 0 <= ha < 2^32)
+    by (unfold ha, I32.unsigned; apply Z_mod_lt; lia).
+  assert (Hlb : 0 <= lb < 2^32)
+    by (unfold lb, I32.unsigned; apply Z_mod_lt; lia).
+  assert (Hhb : 0 <= hb < 2^32)
+    by (unfold hb, I32.unsigned; apply Z_mod_lt; lia).
+  (* The 64-bit unsigned value of the I64.add, in base-2^32 form. *)
+  assert (Hadd : I64.unsigned (I64.add (combine_i32 lo1 hi1) (combine_i32 lo2 hi2))
+                 = (la + 2^32 * ha + (lb + 2^32 * hb)) mod 2^64). {
+    rewrite i64_unsigned_add.
+    rewrite (combine_i32_unsigned lo1 hi1), (combine_i32_unsigned lo2 hi2).
+    unfold I32.modulus. fold la ha lb hb. reflexivity.
+  }
+  pose proof (carry_split_add la ha lb hb Hla Hha Hlb Hhb) as Hsplit.
+  cbv zeta in Hsplit. destruct Hsplit as [Hlo Hhi].
   split.
-  - (* low half *)
-    rewrite Hlo. reflexivity.
-  - (* high half *)
-    (* (ha + hb + 0/1) mod 2^32 with the carry coming from compute_c_flag_add. *)
-    assert (Hcarry : (if 2 ^ 32 - 1 <? la + lb then 1 mod 2 ^ 32 else 0 mod 2 ^ 32)
-                     = (if 2 ^ 32 <=? la + lb then 1 else 0)). {
+  - (* low half: I32.add lo1 lo2 = lo_of_i64 (I64.add ..) *)
+    rewrite lo_of_i64_repr. rewrite Hadd.
+    unfold I32.repr, I32.modulus.
+    rewrite Hlo.
+    (* I32.add lo1 lo2 = (lo1 + lo2) mod 2^32 = (la + lb) mod 2^32 *)
+    unfold I32.add, I32.repr, I32.modulus.
+    rewrite (Zplus_mod lo1 lo2).
+    unfold la, lb, I32.unsigned, I32.modulus.
+    reflexivity.
+  - (* high half: I32.add (I32.add hi1 hi2) carry = hi_of_i64 (I64.add ..) *)
+    (* Relate compute_c_flag_add's boolean to (2^32 <=? la+lb). *)
+    assert (Hcarry : (if compute_c_flag_add lo1 lo2 then I32.one else I32.zero)
+                     = (if 2^32 <=? la + lb then 1 else 0)). {
+      unfold compute_c_flag_add, I32.max_unsigned, I32.modulus, I32.one,
+             I32.zero, I32.repr. fold la lb.
       destruct (Z.ltb_spec (2^32 - 1) (la + lb)) as [H1|H1];
       destruct (Z.leb_spec (2^32) (la + lb)) as [H2|H2];
-      try (rewrite Z.mod_small by lia; reflexivity);
-      try lia.
+      try (rewrite Z.mod_small by lia; reflexivity); lia.
     }
-    rewrite <- Hhi.
-    (* goal: (ha + hb + (if .. then 1 mod _ else 0 mod _)) mod 2^32
-             = (ha + hb + (if 2^32 <=? la+lb then 1 else 0)) mod 2^32 *)
-    rewrite Hcarry. reflexivity.
+    (* RHS = (ha + hb + carry) mod 2^32 *)
+    unfold hi_of_i64. rewrite Hadd. unfold I32.repr, I32.modulus.
+    rewrite Hhi.
+    (* LHS: I32.add (I32.add hi1 hi2) (if .. then I32.one else I32.zero) *)
+    rewrite Hcarry.
+    unfold I32.add, I32.repr, I32.modulus.
+    (* LHS = ((hi1 + hi2) mod 2^32 + carry) mod 2^32 = (hi1 + hi2 + carry) mod 2^32 *)
+    rewrite Zplus_mod_idemp_l.
+    (* RHS uses ha = hi1 mod 2^32, hb = hi2 mod 2^32; normalize via sum2. *)
+    unfold ha, hb, I32.unsigned, I32.modulus.
+    rewrite (sum2_mod_norm hi1 hi2 (if 2^32 <=? la + lb then 1 else 0) (2^32)).
+    reflexivity.
 Qed.
 
 (** SUBS+SBC borrow propagation: the (lo, hi) pair produced by
@@ -828,39 +896,56 @@ Lemma i64_sub_via_subs_sbc : forall lo1 hi1 lo2 hi2 : I32.int,
     = hi_of_i64 (I64.sub (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
 Proof.
   intros lo1 hi1 lo2 hi2.
-  unfold I64.sub, lo_of_i64, hi_of_i64, I64.unsigned, I64.repr.
-  rewrite (combine_i32_unsigned lo1 hi1).
-  rewrite (combine_i32_unsigned lo2 hi2).
   set (la := I32.unsigned lo1).
   set (ha := I32.unsigned hi1).
   set (lb := I32.unsigned lo2).
   set (hb := I32.unsigned hi2).
-  assert (Hla : 0 <= la < 2^32) by (subst la; unfold I32.unsigned; apply Z_mod_lt; unfold I32.modulus; lia).
-  assert (Hha : 0 <= ha < 2^32) by (subst ha; unfold I32.unsigned; apply Z_mod_lt; unfold I32.modulus; lia).
-  assert (Hlb : 0 <= lb < 2^32) by (subst lb; unfold I32.unsigned; apply Z_mod_lt; unfold I32.modulus; lia).
-  assert (Hhb : 0 <= hb < 2^32) by (subst hb; unfold I32.unsigned; apply Z_mod_lt; unfold I32.modulus; lia).
-  unfold I32.modulus, I64.modulus.
-  rewrite (Zmod_mod (la + 2 ^ 32 * ha - (lb + 2 ^ 32 * hb)) (2 ^ 64)).
-  pose proof (borrow_split_sub la ha lb hb Hla Hha Hlb Hhb) as [Hlo Hhi].
-  simpl in Hlo, Hhi.
-  unfold I32.repr, I32.sub, I32.repr, compute_c_flag_sub, I32.unsigned,
-         I32.modulus, I32.one, I32.zero, I32.repr.
-  fold la lb ha hb.
+  assert (Hla : 0 <= la < 2^32)
+    by (unfold la, I32.unsigned; apply Z_mod_lt; lia).
+  assert (Hha : 0 <= ha < 2^32)
+    by (unfold ha, I32.unsigned; apply Z_mod_lt; lia).
+  assert (Hlb : 0 <= lb < 2^32)
+    by (unfold lb, I32.unsigned; apply Z_mod_lt; lia).
+  assert (Hhb : 0 <= hb < 2^32)
+    by (unfold hb, I32.unsigned; apply Z_mod_lt; lia).
+  (* The 64-bit unsigned value of the I64.sub, in base-2^32 form. *)
+  assert (Hsub : I64.unsigned (I64.sub (combine_i32 lo1 hi1) (combine_i32 lo2 hi2))
+                 = (la + 2^32 * ha - (lb + 2^32 * hb)) mod 2^64). {
+    rewrite i64_unsigned_sub.
+    rewrite (combine_i32_unsigned lo1 hi1), (combine_i32_unsigned lo2 hi2).
+    unfold I32.modulus. fold la ha lb hb. reflexivity.
+  }
+  pose proof (borrow_split_sub la ha lb hb Hla Hha Hlb Hhb) as Hsplit.
+  cbv zeta in Hsplit. destruct Hsplit as [Hlo Hhi].
   split.
-  - (* low half *)
-    rewrite Hlo. reflexivity.
-  - (* high half *)
-    (* borrow = NOT(C); C = (lb <=? la). So borrow = 1 iff la < lb. *)
-    assert (Hborrow : (if lb <=? la then 0 mod 2 ^ 32 else 1 mod 2 ^ 32)
+  - (* low half: I32.sub lo1 lo2 = lo_of_i64 (I64.sub ..) *)
+    rewrite lo_of_i64_repr. rewrite Hsub.
+    unfold I32.repr, I32.modulus.
+    rewrite Hlo.
+    (* I32.sub lo1 lo2 = (lo1 - lo2) mod 2^32 = (la - lb) mod 2^32 *)
+    unfold I32.sub, I32.repr, I32.modulus.
+    rewrite (Zminus_mod lo1 lo2).
+    unfold la, lb, I32.unsigned, I32.modulus.
+    reflexivity.
+  - (* high half: I32.sub (I32.sub hi1 hi2) borrow = hi_of_i64 (I64.sub ..) *)
+    (* borrow = NOT(C); C = compute_c_flag_sub lo1 lo2 = (lb <=? la). *)
+    assert (Hborrow : (if compute_c_flag_sub lo1 lo2 then I32.zero else I32.one)
                       = (if la <? lb then 1 else 0)). {
+      unfold compute_c_flag_sub, I32.unsigned, I32.modulus, I32.one,
+             I32.zero, I32.repr. fold la lb.
       destruct (Z.leb_spec lb la) as [H1|H1];
       destruct (Z.ltb_spec la lb) as [H2|H2];
-      try (rewrite Z.mod_small by lia; reflexivity);
-      try lia.
+      try (rewrite Z.mod_small by lia; reflexivity); lia.
     }
-    rewrite <- Hhi.
-    (* goal: (ha - hb - (if lb<=?la then 0mod_ else 1mod_)) mod 2^32
-             = (ha - hb - (if la<?lb then 1 else 0)) mod 2^32 *)
-    rewrite Hborrow. reflexivity.
+    (* RHS = (ha - hb - borrow) mod 2^32 *)
+    unfold hi_of_i64. rewrite Hsub. unfold I32.repr, I32.modulus.
+    rewrite Hhi.
+    rewrite Hborrow.
+    unfold I32.sub, I32.repr, I32.modulus.
+    (* LHS = ((hi1 - hi2) mod 2^32 - borrow) mod 2^32 = (hi1 - hi2 - borrow) mod 2^32 *)
+    rewrite Zminus_mod_idemp_l.
+    unfold ha, hb, I32.unsigned, I32.modulus.
+    rewrite (diff2_mod_norm hi1 hi2 (if la <? lb then 1 else 0) (2^32)).
+    reflexivity.
 Qed.
 
