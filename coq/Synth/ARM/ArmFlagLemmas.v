@@ -723,30 +723,33 @@ Proof.
     - (* carry = 0: la + lb < 2^32, already in canonical range. *)
       rewrite Z.mod_small by lia. lia.
   }
-  (* The 64-bit sum, before mod, is exactly representable. *)
+  (* The raw 64-bit sum, before reduction. Note ha+hb may overflow 2^32, so
+     `raw` can exceed 2^64 — we must reduce mod 2^64 canonically rather than
+     assume representability. *)
   set (raw := la + 2^32 * ha + (lb + 2^32 * hb)).
-  assert (Hraw_lo : 0 <= raw) by (subst raw; nia).
-  assert (Hraw_hi : raw < 2^64) by (subst raw; nia).
-  assert (Hs : raw mod 2^64 = raw) by (apply Z.mod_small; lia).
+  set (low := (la + lb) mod 2^32).
+  assert (Hlow_rng : 0 <= low < 2^32) by (subst low; apply Z_mod_lt; lia).
+  (* raw mod 2^64 = low + (ha+hb+carry mod 2^32) * 2^32. *)
+  assert (Hs : raw mod 2^64 = low + (ha + hb + carry) mod 2^32 * 2^32). {
+    assert (Hraw : raw = low + (ha + hb + carry) * 2^32)
+      by (subst raw low; rewrite Hlow; lia).
+    rewrite Hraw.
+    set (H := ha + hb + carry).
+    rewrite (Z.div_mod H (2^32)) at 1 by lia.
+    replace (low + (2^32 * (H / 2^32) + H mod 2^32) * 2^32)
+      with ((low + H mod 2^32 * 2^32) + (H / 2^32) * 2^64) by lia.
+    rewrite Z_mod_plus_full.
+    apply Z.mod_small.
+    assert (0 <= H mod 2^32 < 2^32) by (apply Z_mod_lt; lia). nia.
+  }
   rewrite Hs.
+  assert (HHmod : 0 <= (ha + hb + carry) mod 2^32 < 2^32) by (apply Z_mod_lt; lia).
   split.
-  - (* low half: raw mod 2^32 = (la+lb) mod 2^32 *)
-    subst raw.
-    replace (la + 2^32 * ha + (lb + 2^32 * hb))
-      with ((la + lb) + (ha + hb) * 2^32) by lia.
-    rewrite Z_mod_plus_full. reflexivity.
-  - (* high half: raw / 2^32 mod 2^32 = (ha+hb+carry) mod 2^32 *)
-    subst raw.
-    (* raw = (la+lb) mod 2^32 + (ha+hb+carry)*2^32. *)
-    assert (Hrewrite : la + 2^32 * ha + (lb + 2^32 * hb)
-                       = (la + lb) mod 2^32 + (ha + hb + carry) * 2^32). {
-      rewrite Hlow. lia.
-    }
-    rewrite Hrewrite.
-    assert (Hmod_lt : 0 <= (la + lb) mod 2^32 < 2^32) by (apply Z_mod_lt; lia).
-    rewrite Z.div_add by lia.
-    rewrite (Z.div_small _ _ Hmod_lt).
-    rewrite Z.add_0_l. reflexivity.
+  - (* low half: (low + H32*2^32) mod 2^32 = low = (la+lb) mod 2^32 *)
+    rewrite Z_mod_plus_full. rewrite Z.mod_small by lia. reflexivity.
+  - (* high half: (low + H32*2^32) / 2^32 mod 2^32 = (ha+hb+carry) mod 2^32 *)
+    rewrite Z.div_add by lia. rewrite Z.div_small by lia.
+    rewrite Z.add_0_l. rewrite Z.mod_mod by lia. reflexivity.
 Qed.
 
 (** Core base-2^32 borrow-split fact for subtraction.
@@ -767,7 +770,9 @@ Proof.
   (* (la - lb) mod 2^32 = la - lb + borrow*2^32 *)
   assert (Hlow : (la - lb) mod 2^32 = la - lb + borrow * 2^32). {
     subst borrow. destruct (Z.ltb_spec la lb).
-    - rewrite (Z.mod_small (la - lb + 1 * 2^32)) by lia. lia.
+    - (* la < lb: borrow = 1, add one modulus to land in [0, 2^32). *)
+      rewrite <- (Z_mod_plus_full (la - lb) 1 (2^32)).
+      apply Z.mod_small. lia.
     - rewrite Z.mod_small by lia. lia.
   }
   (* The raw difference, rewritten in carry-normalized base-2^32 form. *)
@@ -866,8 +871,11 @@ Proof.
                      = (if 2^32 <=? I32.unsigned lo1 + I32.unsigned lo2 then 1 else 0)). {
       unfold compute_c_flag_add, I32.max_unsigned, I32.modulus, I32.one,
              I32.zero, I32.repr.
-      destruct (Z.ltb_spec (2^32 - 1) (I32.unsigned lo1 + I32.unsigned lo2)) as [H1|H1];
-      destruct (Z.leb_spec (2^32) (I32.unsigned lo1 + I32.unsigned lo2)) as [H2|H2];
+      cbv zeta.
+      destruct (Z.ltb_spec (2 ^ 32 - 1) (I32.unsigned lo1 + I32.unsigned lo2)) as [H1|H1];
+      destruct (Z.leb_spec (2 ^ 32) (I32.unsigned lo1 + I32.unsigned lo2)) as [H2|H2];
+      unfold I32.modulus;
+      change (2 ^ 32) with 4294967296 in *;
       try (rewrite Z.mod_small by lia; reflexivity); lia.
     }
     (* RHS = (ha + hb + carry) mod 2^32 *)
@@ -880,9 +888,7 @@ Proof.
     rewrite Zplus_mod_idemp_l.
     (* RHS uses ha = hi1 mod 2^32, hb = hi2 mod 2^32; normalize via sum2. *)
     unfold I32.unsigned, I32.modulus.
-    rewrite (sum2_mod_norm hi1 hi2
-               (if 2^32 <=? lo1 mod 2^32 + lo2 mod 2^32 then 1 else 0) (2^32)).
-    reflexivity.
+    apply sum2_mod_norm.
 Qed.
 
 (** SUBS+SBC borrow propagation: the (lo, hi) pair produced by
@@ -948,8 +954,6 @@ Proof.
     (* LHS = ((hi1 - hi2) mod 2^32 - borrow) mod 2^32 = (hi1 - hi2 - borrow) mod 2^32 *)
     rewrite Zminus_mod_idemp_l.
     unfold I32.unsigned, I32.modulus.
-    rewrite (diff2_mod_norm hi1 hi2
-               (if lo1 mod 2^32 <? lo2 mod 2^32 then 1 else 0) (2^32)).
-    reflexivity.
+    apply diff2_mod_norm.
 Qed.
 
