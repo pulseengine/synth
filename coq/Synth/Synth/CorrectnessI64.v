@@ -21,10 +21,13 @@
     theorems are restated to the same shape (I64-typed hypotheses, high-half
     register pinning, dual-register post-condition):
       - **i64_mul_correct** is discharged as Qed via `i64_mul_{lo,hi}_bits_spec`.
-      - **i64_add_correct** / **i64_sub_correct** are Admitted pending a
-        carry-/borrow-propagation lemma over the existing ArmSemantics.v
-        ADDS+ADC and SUBS+SBC pairs (no new axiom needed; the property is
-        a derivable consequence of the existing flag semantics).
+      - **i64_add_correct** / **i64_sub_correct** were Admitted in v0.9.0
+        pending a carry-/borrow-propagation lemma over the existing
+        ArmSemantics.v ADDS+ADC and SUBS+SBC pairs. **v0.10.0 PR 1 closes
+        both as Qed** via the new `i64_add_via_adds_adc` /
+        `i64_sub_via_subs_sbc` lemmas in `ArmFlagLemmas.v` (derived from
+        the existing flag clauses + base-2^32 modular arithmetic; no new
+        axiom).
       - **i64_and_correct** / **i64_or_correct** / **i64_xor_correct** are
         Admitted pending halves-distribute-over-bitwise decomposition lemmas
         in Common/Integers.v — same Rocq 9 `Z.mod_mod` obstacle that already
@@ -78,6 +81,7 @@ Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
 Require Import Synth.ARM.ArmInstructions.
 Require Import Synth.ARM.ArmSemantics.
+Require Import Synth.ARM.ArmFlagLemmas.
 Require Import Synth.WASM.WasmValues.
 Require Import Synth.WASM.WasmInstructions.
 Require Import Synth.WASM.WasmSemantics.
@@ -141,14 +145,32 @@ Theorem i64_add_correct : forall astate lo1 hi1 lo2 hi2,
     get_reg astate' R1 = hi_of_i64 (I64.add (combine_i32 lo1 hi1)
                                             (combine_i32 lo2 hi2)).
 Proof.
-  (* ADMITTED: I64Add compiles to ADDS R0 R0 (Reg R2); ADC R1 R1 (Reg R3).
-     The ADDS sets the C flag from `compute_c_flag_add lo1 lo2`, and ADC
-     reads that C flag to compute `hi1 + hi2 + C`. Closing the result
-     correspondence requires a carry-propagation lemma over the existing
-     ArmSemantics.v ADDS/ADC pair (no new axiom needed — the property is
-     provable, but the helper is not yet present). Tracked as v0.9.0 PR 2
-     follow-up; no new spec axiom is introduced. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 HR0 HR1 HR2 HR3.
+  (* I64Add => [ADDS R0 R0 (Reg R2); ADC R1 R1 (Reg R3)]. ADDS writes
+     I32.add lo1 lo2 to R0 and sets flag_c = compute_c_flag_add lo1 lo2;
+     ADC then reads that flag and R1/R3 (untouched by ADDS, which only
+     wrote R0 + flags) to write I32.add (I32.add hi1 hi2) carry into R1. *)
+  unfold compile_wasm_to_arm.
+  cbn [exec_program exec_instr eval_operand2].
+  (* The ADC reads R1, R3 and flag_c from the post-ADDS state
+     set_flags (set_reg astate R0 _) (update_flags_arith _ c _). *)
+  rewrite flags_set_flags_set_reg.
+  rewrite flag_c_update_flags_arith.
+  pose proof (i64_add_via_adds_adc lo1 hi1 lo2 hi2) as [Hlo Hhi].
+  eexists. split; [reflexivity | split].
+  - (* R0 half: the ADC wrote R1, so R0 still holds the ADDS result.
+       Final state = set_reg (set_flags (set_reg astate R0 _) _) R1 _. *)
+    rewrite (get_set_reg_neq _ R1 R0) by discriminate.
+    rewrite get_reg_set_flags.
+    rewrite get_set_reg_eq.
+    rewrite HR0, HR2. exact Hlo.
+  - (* R1 half: the ADC result equals the hi half. *)
+    rewrite get_set_reg_eq.
+    rewrite !get_reg_set_flags.
+    rewrite (get_set_reg_neq astate R0 R1) by discriminate.
+    rewrite (get_set_reg_neq astate R0 R3) by discriminate.
+    rewrite HR0, HR1, HR2, HR3. exact Hhi.
+Qed.
 
 Theorem i64_sub_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
@@ -162,12 +184,30 @@ Theorem i64_sub_correct : forall astate lo1 hi1 lo2 hi2,
     get_reg astate' R1 = hi_of_i64 (I64.sub (combine_i32 lo1 hi1)
                                             (combine_i32 lo2 hi2)).
 Proof.
-  (* ADMITTED: I64Sub compiles to SUBS R0 R0 (Reg R2); SBC R1 R1 (Reg R3).
-     SUBS sets the C flag (borrow inverted) via `compute_c_flag_sub`, and
-     SBC reads it to compute `hi1 - hi2 - NOT(C)`. Same gap as i64_add:
-     needs a borrow-propagation lemma over the ArmSemantics.v SUBS/SBC
-     pair. No new spec axiom introduced; tracked as v0.9.0 PR 2 follow-up. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 HR0 HR1 HR2 HR3.
+  (* I64Sub => [SUBS R0 R0 (Reg R2); SBC R1 R1 (Reg R3)]. SUBS writes
+     I32.sub lo1 lo2 to R0 and sets flag_c = compute_c_flag_sub lo1 lo2
+     (C = no-borrow); SBC then reads that flag and R1/R3 to write
+     I32.sub (I32.sub hi1 hi2) NOT(C) into R1. *)
+  unfold compile_wasm_to_arm.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite flags_set_flags_set_reg.
+  rewrite flag_c_update_flags_arith.
+  pose proof (i64_sub_via_subs_sbc lo1 hi1 lo2 hi2) as [Hlo Hhi].
+  eexists. split; [reflexivity | split].
+  - (* R0 half: the SBC wrote R1, so R0 still holds the SUBS result.
+       Final state = set_reg (set_flags (set_reg astate R0 _) _) R1 _. *)
+    rewrite (get_set_reg_neq _ R1 R0) by discriminate.
+    rewrite get_reg_set_flags.
+    rewrite get_set_reg_eq.
+    rewrite HR0, HR2. exact Hlo.
+  - (* R1 half: the SBC result equals the hi half. *)
+    rewrite get_set_reg_eq.
+    rewrite !get_reg_set_flags.
+    rewrite (get_set_reg_neq astate R0 R1) by discriminate.
+    rewrite (get_set_reg_neq astate R0 R3) by discriminate.
+    rewrite HR0, HR1, HR2, HR3. exact Hhi.
+Qed.
 
 Theorem i64_mul_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
@@ -677,9 +717,9 @@ Qed.
 (** ** Summary (after v0.9.0 PR 2 — i64 arith + bitwise restated)
 
     I64 Operations: 26 theorems in this file
-    - Arithmetic T1: 1 Qed (Mul via `i64_mul_{lo,hi}_bits_spec`) +
-      2 Admitted (Add, Sub — gap: ADDS/ADC + SUBS/SBC carry-propagation
-      lemma over existing ArmSemantics.v; no new spec axiom needed).
+    - Arithmetic T1: 3 Qed (Mul via `i64_mul_{lo,hi}_bits_spec`; Add via
+      `i64_add_via_adds_adc`; Sub via `i64_sub_via_subs_sbc` — v0.10.0 PR 1
+      closed the Add/Sub carry/borrow-propagation gap with no new axioms).
     - Division/remainder T1: 4 Qed (DivS, DivU, RemS, RemU) — discharged
       via `i64_{divs,divu,rems,remu}_pair_spec` axioms in ArmSemantics.v.
     - Bitwise T1: 0 Qed + 3 Admitted (And, Or, Xor — gap: halves-distribute
@@ -694,8 +734,9 @@ Qed.
       `i64_{clz,ctz,popcnt}_bits_spec` axioms in ArmSemantics.v
       (v0.9.0 PR 5 — final lift batch).
 
-    Net change vs. main: +1 Qed (i64_mul_correct lifted to T1 with dual-
-    register post-condition); 5 prior `solve_single_arm` existence proofs
-    (Add/Sub/And/Or/Xor) restated to the umbrella's required T1 shape and
-    Admitted with explicit gap citations — no new axioms.
+    v0.10.0 PR 1 net change vs. v0.9.0: +2 Qed (i64_add_correct,
+    i64_sub_correct closed via the ADDS/ADC + SUBS/SBC carry/borrow-
+    propagation lemmas in ArmFlagLemmas.v). 3 Admitted remain in this file
+    (And/Or/Xor — separate PR, blocked on the Rocq 9 Z.mod_mod
+    halves-distribute rework). No new axioms.
 *)

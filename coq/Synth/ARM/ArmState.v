@@ -219,6 +219,31 @@ Proof.
   intros. reflexivity.
 Qed.
 
+(** Reading a register through set_flags ignores the flag update.
+    Used by the i64 ADDS/ADC + SUBS/SBC discharges, where the high-half
+    instruction reads R1/R3 from the flags-updated state left by the
+    low-half instruction. *)
+Theorem get_reg_set_flags : forall s f r,
+  get_reg (set_flags s f) r = get_reg s r.
+Proof.
+  intros. unfold get_reg, set_flags. reflexivity.
+Qed.
+
+(** set_flags installs exactly the given flags. *)
+Theorem flags_set_flags : forall s f,
+  (set_flags s f).(flags) = f.
+Proof.
+  intros. unfold set_flags. reflexivity.
+Qed.
+
+(** set_reg leaves a subsequent set_flags' flags read untouched: composing
+    set_flags over set_reg still exposes the installed flags. *)
+Theorem flags_set_flags_set_reg : forall s r v f,
+  (set_flags (set_reg s r v) f).(flags) = f.
+Proof.
+  intros. unfold set_flags, set_reg. reflexivity.
+Qed.
+
 (** Loading memory after storing returns the stored value *)
 Theorem load_store_mem_eq : forall s addr v,
   load_mem (store_mem s addr v) addr = v.

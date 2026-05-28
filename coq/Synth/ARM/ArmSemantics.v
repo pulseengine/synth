@@ -376,6 +376,15 @@ Definition update_flags_arith (result : I32.int) (c v : bool) : condition_flags 
     c
     v.
 
+(** The C flag stored by update_flags_arith is exactly its `c` argument.
+    Used by the i64 ADDS/ADC + SUBS/SBC carry/borrow discharges to read the
+    flag set by the low-half instruction. *)
+Lemma flag_c_update_flags_arith : forall result c v,
+  (update_flags_arith result c v).(flag_c) = c.
+Proof.
+  intros. unfold update_flags_arith. reflexivity.
+Qed.
+
 (** ** Instruction Semantics *)
 
 (** Execute a single ARM instruction *)
