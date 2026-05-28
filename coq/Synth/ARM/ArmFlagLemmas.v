@@ -738,7 +738,7 @@ Proof.
     rewrite Hrewrite.
     assert (Hmod_lt : 0 <= (la + lb) mod 2^32 < 2^32) by (apply Z_mod_lt; lia).
     rewrite Z.div_add by lia.
-    rewrite Z.div_small by lia.
+    rewrite (Z.div_small _ _ Hmod_lt).
     rewrite Z.add_0_l. reflexivity.
 Qed.
 
@@ -801,7 +801,7 @@ Proof.
     rewrite Z.mod_mod by lia. reflexivity.
   - (* high half: (c_lo + c_hi*2^32) / 2^32 mod 2^32 = c_hi = (ha-hb-borrow) mod 2^32 *)
     rewrite Z.div_add by lia.
-    rewrite Z.div_small by lia.
+    rewrite (Z.div_small _ _ Hmod_lt).
     rewrite Z.add_0_l.
     (* LHS = hh mod 2^32; hh is itself a mod, so collapse the double mod. *)
     subst hh. rewrite Z.mod_mod by lia. reflexivity.
