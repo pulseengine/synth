@@ -78,6 +78,7 @@ Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
 Require Import Synth.ARM.ArmInstructions.
 Require Import Synth.ARM.ArmSemantics.
+Require Import Synth.ARM.ArmFlagLemmas.
 Require Import Synth.WASM.WasmValues.
 Require Import Synth.WASM.WasmInstructions.
 Require Import Synth.WASM.WasmSemantics.
@@ -141,14 +142,32 @@ Theorem i64_add_correct : forall astate lo1 hi1 lo2 hi2,
     get_reg astate' R1 = hi_of_i64 (I64.add (combine_i32 lo1 hi1)
                                             (combine_i32 lo2 hi2)).
 Proof.
-  (* ADMITTED: I64Add compiles to ADDS R0 R0 (Reg R2); ADC R1 R1 (Reg R3).
-     The ADDS sets the C flag from `compute_c_flag_add lo1 lo2`, and ADC
-     reads that C flag to compute `hi1 + hi2 + C`. Closing the result
-     correspondence requires a carry-propagation lemma over the existing
-     ArmSemantics.v ADDS/ADC pair (no new axiom needed — the property is
-     provable, but the helper is not yet present). Tracked as v0.9.0 PR 2
-     follow-up; no new spec axiom is introduced. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 HR0 HR1 HR2 HR3.
+  (* I64Add => [ADDS R0 R0 (Reg R2); ADC R1 R1 (Reg R3)]. ADDS writes
+     I32.add lo1 lo2 to R0 and sets flag_c = compute_c_flag_add lo1 lo2;
+     ADC then reads that flag and R1/R3 (untouched by ADDS, which only
+     wrote R0 + flags) to write I32.add (I32.add hi1 hi2) carry into R1. *)
+  unfold compile_wasm_to_arm.
+  cbn [exec_program exec_instr eval_operand2].
+  (* The ADC reads R1, R3 and flag_c from the post-ADDS state
+     set_flags (set_reg astate R0 _) (update_flags_arith _ c _). *)
+  rewrite flags_set_flags_set_reg.
+  rewrite flag_c_update_flags_arith.
+  pose proof (i64_add_via_adds_adc lo1 hi1 lo2 hi2) as [Hlo Hhi].
+  eexists. split; [reflexivity | split].
+  - (* R0 half: the ADC wrote R1, so R0 still holds the ADDS result. *)
+    rewrite get_reg_set_flags.
+    rewrite (get_set_reg_neq _ R1 R0) by discriminate.
+    rewrite get_reg_set_flags.
+    rewrite get_set_reg_eq.
+    rewrite HR0, HR2. exact Hlo.
+  - (* R1 half: the ADC result equals the hi half. *)
+    rewrite get_set_reg_eq.
+    rewrite !get_reg_set_flags.
+    rewrite (get_set_reg_neq astate R0 R1) by discriminate.
+    rewrite (get_set_reg_neq astate R0 R3) by discriminate.
+    rewrite HR0, HR1, HR2, HR3. exact Hhi.
+Qed.
 
 Theorem i64_sub_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
@@ -162,12 +181,30 @@ Theorem i64_sub_correct : forall astate lo1 hi1 lo2 hi2,
     get_reg astate' R1 = hi_of_i64 (I64.sub (combine_i32 lo1 hi1)
                                             (combine_i32 lo2 hi2)).
 Proof.
-  (* ADMITTED: I64Sub compiles to SUBS R0 R0 (Reg R2); SBC R1 R1 (Reg R3).
-     SUBS sets the C flag (borrow inverted) via `compute_c_flag_sub`, and
-     SBC reads it to compute `hi1 - hi2 - NOT(C)`. Same gap as i64_add:
-     needs a borrow-propagation lemma over the ArmSemantics.v SUBS/SBC
-     pair. No new spec axiom introduced; tracked as v0.9.0 PR 2 follow-up. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 HR0 HR1 HR2 HR3.
+  (* I64Sub => [SUBS R0 R0 (Reg R2); SBC R1 R1 (Reg R3)]. SUBS writes
+     I32.sub lo1 lo2 to R0 and sets flag_c = compute_c_flag_sub lo1 lo2
+     (C = no-borrow); SBC then reads that flag and R1/R3 to write
+     I32.sub (I32.sub hi1 hi2) NOT(C) into R1. *)
+  unfold compile_wasm_to_arm.
+  cbn [exec_program exec_instr eval_operand2].
+  rewrite flags_set_flags_set_reg.
+  rewrite flag_c_update_flags_arith.
+  pose proof (i64_sub_via_subs_sbc lo1 hi1 lo2 hi2) as [Hlo Hhi].
+  eexists. split; [reflexivity | split].
+  - (* R0 half: the SBC wrote R1, so R0 still holds the SUBS result. *)
+    rewrite get_reg_set_flags.
+    rewrite (get_set_reg_neq _ R1 R0) by discriminate.
+    rewrite get_reg_set_flags.
+    rewrite get_set_reg_eq.
+    rewrite HR0, HR2. exact Hlo.
+  - (* R1 half: the SBC result equals the hi half. *)
+    rewrite get_set_reg_eq.
+    rewrite !get_reg_set_flags.
+    rewrite (get_set_reg_neq astate R0 R1) by discriminate.
+    rewrite (get_set_reg_neq astate R0 R3) by discriminate.
+    rewrite HR0, HR1, HR2, HR3. exact Hhi.
+Qed.
 
 Theorem i64_mul_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
