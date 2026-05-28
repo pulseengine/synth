@@ -713,8 +713,15 @@ Proof.
   (* Decompose the low sum: la + lb = carry*2^32 + (la+lb) mod 2^32. *)
   assert (Hlow : (la + lb) mod 2^32 = la + lb - carry * 2^32). {
     subst carry. destruct (Z.leb_spec (2^32) (la + lb)).
-    - rewrite Z.mod_small by lia. lia.
-    - rewrite Z.mod_small by lia. lia.
+    - (* carry = 1: la + lb >= 2^32, so subtract one modulus to land in range. *)
+      assert (Heq : (la + lb) mod 2^32 = (la + lb - 1 * 2^32) mod 2^32). {
+        rewrite <- (Z_mod_plus_full (la + lb - 1 * 2^32) 1 (2^32)).
+        f_equal. lia.
+      }
+      rewrite Heq.
+      rewrite Z.mod_small by lia. lia.
+    - (* carry = 0: la + lb < 2^32, already in canonical range. *)
+      rewrite Z.mod_small by lia. lia.
   }
   (* The 64-bit sum, before mod, is exactly representable. *)
   set (raw := la + 2^32 * ha + (lb + 2^32 * hb)).
