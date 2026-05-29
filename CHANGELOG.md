@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-29
+
+**Theme: i64 add/sub T1 + Rocq 9 Z.mod_mod wrap closed + bitwise lift infrastructure.**
+
+v0.10.0 closes the two carry/borrow i64 admits and the long-standing
+`Z.mod_mod` blocker, and lands the infrastructure for the remaining
+bitwise T1 lifts. All proofs verified against the local Nix/Bazel Rocq
+toolchain (`bazel build //coq:verify_proofs` green) before each push —
+this session established that synth's Rocq proofs can be checked locally,
+ending the blind-CI-round-trip pattern.
+
+**Falsification statement.** v0.10.0 is wrong if (a) any newly-Qed lemma
+is actually `Admitted`/`Abort` (grep confirms the claimed Qeds compile),
+(b) `bazel test //coq:verify_proofs` goes red on a clean v0.10.0 checkout,
+(c) a new `Axiom` was introduced (grep confirms zero), or (d) the stated
+admit count (12) does not match the tree.
+
+### Added
+- **i64 add/sub T1 result-correspondence** (PR #160). `i64_add_correct`
+  and `i64_sub_correct` (Admitted in v0.9.0) are now Qed, via new
+  ADDS/ADC carry-propagation and SUBS/SBC borrow-propagation lemmas in
+  `coq/Synth/ARM/ArmFlagLemmas.v` (`i64_add_via_adds_adc`,
+  `i64_sub_via_subs_sbc`, `carry_split_add`, `borrow_split_sub`). The
+  discharge steps `exec_program` over the real `[ADDS; ADC]` / `[SUBS; SBC]`
+  pairs, reading the C flag set by the low-half instruction. No new axioms.
+- **Bitwise halves-distribute infrastructure** (PR #161). Six pure-Z
+  distribution lemmas (`{land,lor,lxor}_low32` via `Z.land_ones` + bit
+  extensionality; `{land,lor,lxor}_high32` via `Z.shiftr_{land,lor,lxor}`),
+  plus `combine_i32_raw`, `mod64_mod32`, `combine_lo32`, `combine_hi32`,
+  and `and_lo_combine` — all in `coq/Synth/Synth/CorrectnessI64.v`, all
+  Qed, no axioms.
+
+### Fixed
+- **`i64_to_i32_to_i64_wrap` closed** (PR #161). The long-standing Rocq 9
+  `Z.mod_mod` Admit in `coq/Synth/Common/Integers.v` is now Qed via a
+  canonical symbolic-atom modular proof (keeps moduli as atoms so `lia`
+  avoids 2^64-scale literal certificates; `rewrite !Z.mod_small` clears the
+  double `mod 2^64` introduced by `I64.repr` + `I64.unsigned`).
+
+### Deferred to v0.11.0
+- `i64_and_correct` / `i64_or_correct` / `i64_xor_correct` remain Admitted
+  (3 of the 12 total admits). The remaining work is the high-half combine
+  helper (`(Z.land X Y mod 2^64) / 2^32 mod 2^32`, via `ZDivEucl.mod_mul_r`),
+  the or/xor analogues of `and_lo_combine`, and the three theorem
+  exec-proofs (template: `i64_add_correct` minus flag handling). The
+  infrastructure to close them shipped in this release.
+
 ## [0.9.0] - 2026-05-27
 
 **Theme: i64 T1 result-correspondence lifts against the aligned model.**
