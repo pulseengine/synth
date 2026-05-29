@@ -2492,10 +2492,17 @@ impl ArmEncoder {
             }
 
             ArmOp::Bl { label: _ } => {
-                // BL is always 32-bit in Thumb-2
-                // Simplified: BL with offset 0
+                // BL is always 32-bit in Thumb-2, encoded here with offset 0
+                // (a relocation patches the target — see arm_backend.rs).
+                // Second halfword must be 0xF800, NOT 0xD000: the Thumb-2 BL
+                // offset uses I1 = NOT(J1 XOR S), I2 = NOT(J2 XOR S). For a true
+                // zero offset (S=0, imm=0) we need I1=I2=0, i.e. J1=J2=1, giving
+                //   hw2 = 11 J1(=1) 1 J2(=1) imm11(=0) = 0b1111_1000_0000_0000 = 0xF800.
+                // The old 0xD000 (J1=J2=0) decodes to I1=I2=1 → a bogus built-in
+                // addend of ~+0x600000, which produced the garbage `bl c0000c`
+                // target and "relocation truncated to fit" at link time (#167).
                 let hw1: u16 = 0xF000;
-                let hw2: u16 = 0xD000;
+                let hw2: u16 = 0xF800;
                 let mut bytes = hw1.to_le_bytes().to_vec();
                 bytes.extend_from_slice(&hw2.to_le_bytes());
                 Ok(bytes)
