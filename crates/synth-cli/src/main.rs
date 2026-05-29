@@ -1816,6 +1816,7 @@ fn compile_all_exports(
 
     // Compile each function via the selected backend
     let mut compiled_funcs = Vec::new();
+    let mut skipped_funcs: Vec<(String, String)> = Vec::new();
     for func in &all_exports {
         let name = func.export_name.clone().ok_or_else(|| {
             anyhow::anyhow!("function at index {} has no export name", func.index)
@@ -1826,11 +1827,26 @@ fn compile_all_exports(
             backend.name()
         );
 
-        let compiled = backend
-            .compile_function(&name, &func.ops, &config)
-            .map_err(|e| {
-                anyhow::anyhow!("Backend '{}' failed on '{}': {}", backend.name(), name, e)
-            })?;
+        // In the all-exports path, a single un-compilable function (e.g. an
+        // i64-heavy compiler_builtins helper that exhausts the register
+        // allocator, #168) must not abort the whole module. Emit a diagnostic,
+        // record it, and continue — the function is simply absent from the
+        // output object. Callers that need it get a link error naming the
+        // missing symbol, which is far more actionable than a whole-module
+        // failure on dead-weight pulled in by `--whole-archive`.
+        let compiled = match backend.compile_function(&name, &func.ops, &config) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "warning: skipping function '{}': backend '{}' failed: {}",
+                    name,
+                    backend.name(),
+                    e
+                );
+                skipped_funcs.push((name.clone(), e.to_string()));
+                continue;
+            }
+        };
         info!("  {} bytes of machine code", compiled.code.len());
 
         if !compiled.relocations.is_empty() {
@@ -1857,6 +1873,27 @@ fn compile_all_exports(
                 eprintln!("  Rebuild with: cargo build --features verify");
             }
         }
+    }
+
+    // Surface skipped functions (no silent omissions): a skipped function is
+    // absent from the output object, so report the count + names explicitly.
+    if !skipped_funcs.is_empty() {
+        eprintln!(
+            "warning: {} of {} functions were skipped (not in output): {}",
+            skipped_funcs.len(),
+            all_exports.len(),
+            skipped_funcs
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if compiled_funcs.is_empty() {
+        anyhow::bail!(
+            "no functions compiled successfully ({} skipped) — nothing to emit",
+            skipped_funcs.len()
+        );
     }
 
     // Check if any function has relocations (import calls)
