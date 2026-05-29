@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-05-29
+
+**Theme: true i64 T1 result-correspondence parity.**
+
+v0.11.0 closes the final three i64 bitwise admits (`i64_and_correct`,
+`i64_or_correct`, `i64_xor_correct`), completing i64 T1 parity with i32:
+**40 i64 T1 Qed, 0 i64 admits.** Tree-wide admits drop 12 → 9. All proofs
+authored and verified against the local Nix/Bazel Rocq checker before
+push (`bazel build //coq:verify_proofs` green); clean-room verified
+(5/5 claims: genuinely Qed, no statement weakening, zero new axioms,
+Qed-backed helpers, admit accounting matches).
+
+**Falsification statement.** v0.11.0 is wrong if (a) any of
+`i64_and/or/xor_correct` is not `Qed` (Admitted/Abort/admit), (b) any of
+the three theorem statements was weakened from its v0.10.0 `Admitted`
+form (each must still assert `exec_program … = Some astate'` plus BOTH
+`get_reg astate' R0 = lo_of_i64 (…)` and `get_reg astate' R1 = hi_of_i64 (…)`),
+(c) a new `Axiom` was introduced anywhere under `coq/` (grep: zero), or
+(d) `bazel test //coq:verify_proofs` goes red on a clean v0.11.0 checkout.
+
+### Added
+- **i64 bitwise T1 result-correspondence** (PR #164, closes #163).
+  `i64_and_correct` / `i64_or_correct` / `i64_xor_correct` discharged.
+  AND/ORR/EOR compile to two flag-free register ops
+  (`[_ R0 R0 R2; _ R1 R1 R3]`); the proof is the `i64_add_correct`
+  template minus flag-peeling — step `exec_program` over the pair, route
+  R0/R1 via `get_set_reg_{eq,neq}`, apply the combine lemmas.
+- **Bitwise combine + slice helpers** (PR #164, all Qed, no axioms):
+  `div32_mod64` (`(a mod 2^64)/2^32 = (a/2^32) mod 2^32`, bit
+  extensionality via `Z.div_pow2_bits` + `Z.mod_pow2_bits_{low,high}`),
+  `and_hi_combine`, and the `or_lo/or_hi/xor_lo/xor_hi_combine`
+  analogues. Complete the infrastructure begun in v0.10.0
+  (`{land,lor,lxor}_{low,high}32`, `combine_lo32/hi32`, `and_lo_combine`).
+
 ## [0.10.0] - 2026-05-29
 
 **Theme: i64 add/sub T1 + Rocq 9 Z.mod_mod wrap closed + bitwise lift infrastructure.**
