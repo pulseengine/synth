@@ -580,13 +580,17 @@ Theorem i64_and_correct : forall astate lo1 hi1 lo2 hi2,
     get_reg astate' R1 = hi_of_i64 (I64.and (combine_i32 lo1 hi1)
                                             (combine_i32 lo2 hi2)).
 Proof.
-  (* ADMITTED: needs `lo_of_i64_and` / `hi_of_i64_and` helper lemmas in
-     Common/Integers.v. The ARM execution yields R0 = I32.and lo1 lo2 and
-     R1 = I32.and hi1 hi2; correspondence with the dual-register post-
-     condition reduces to the halves-distribute-over-Z.land property,
-     blocked by the same Rocq 9 Z.mod_mod issue as
-     `i64_to_i32_to_i64_wrap`. No new spec axiom introduced. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 HR0 HR1 HR2 HR3.
+  unfold compile_wasm_to_arm.
+  cbn [exec_program exec_instr eval_operand2].
+  eexists. split; [reflexivity | split].
+  - rewrite (get_set_reg_neq _ R1 R0) by discriminate.
+    rewrite get_set_reg_eq. rewrite HR0, HR2. apply and_lo_combine.
+  - rewrite get_set_reg_eq.
+    rewrite (get_set_reg_neq astate R0 R1) by discriminate.
+    rewrite (get_set_reg_neq astate R0 R3) by discriminate.
+    rewrite HR1, HR3. apply and_hi_combine.
+Qed.
 
 Theorem i64_or_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
@@ -600,10 +604,17 @@ Theorem i64_or_correct : forall astate lo1 hi1 lo2 hi2,
     get_reg astate' R1 = hi_of_i64 (I64.or (combine_i32 lo1 hi1)
                                            (combine_i32 lo2 hi2)).
 Proof.
-  (* ADMITTED: same shape as i64_and_correct — needs `lo_of_i64_or` /
-     `hi_of_i64_or` decomposition lemmas. Tracked as v0.9.0 PR 2
-     follow-up; no new spec axiom introduced. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 HR0 HR1 HR2 HR3.
+  unfold compile_wasm_to_arm.
+  cbn [exec_program exec_instr eval_operand2].
+  eexists. split; [reflexivity | split].
+  - rewrite (get_set_reg_neq _ R1 R0) by discriminate.
+    rewrite get_set_reg_eq. rewrite HR0, HR2. apply or_lo_combine.
+  - rewrite get_set_reg_eq.
+    rewrite (get_set_reg_neq astate R0 R1) by discriminate.
+    rewrite (get_set_reg_neq astate R0 R3) by discriminate.
+    rewrite HR1, HR3. apply or_hi_combine.
+Qed.
 
 Theorem i64_xor_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
@@ -617,10 +628,17 @@ Theorem i64_xor_correct : forall astate lo1 hi1 lo2 hi2,
     get_reg astate' R1 = hi_of_i64 (I64.xor (combine_i32 lo1 hi1)
                                             (combine_i32 lo2 hi2)).
 Proof.
-  (* ADMITTED: same shape as i64_and_correct — needs `lo_of_i64_xor` /
-     `hi_of_i64_xor` decomposition lemmas. Tracked as v0.9.0 PR 2
-     follow-up; no new spec axiom introduced. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 HR0 HR1 HR2 HR3.
+  unfold compile_wasm_to_arm.
+  cbn [exec_program exec_instr eval_operand2].
+  eexists. split; [reflexivity | split].
+  - rewrite (get_set_reg_neq _ R1 R0) by discriminate.
+    rewrite get_set_reg_eq. rewrite HR0, HR2. apply xor_lo_combine.
+  - rewrite get_set_reg_eq.
+    rewrite (get_set_reg_neq astate R0 R1) by discriminate.
+    rewrite (get_set_reg_neq astate R0 R3) by discriminate.
+    rewrite HR1, HR3. apply xor_hi_combine.
+Qed.
 
 (** v0.9.0 PR 3 lift: Shl/ShrU/ShrS/Rotl/Rotr restated with I64-typed
     hypotheses (operand lo/hi in R0:R1, 32-bit shift/rotate count in R2)
