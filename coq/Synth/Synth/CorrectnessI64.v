@@ -76,6 +76,7 @@
 *)
 
 From Stdlib Require Import ZArith.
+From Stdlib Require Import Lia.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
@@ -364,6 +365,117 @@ Qed.
     Per the v0.9.0 PR 2 task brief, no new spec axiom is introduced. The
     decomposition lemma is purely arithmetic (no codegen claim), and is
     tracked as a follow-up alongside the Rocq 9 `Z.mod_mod` rework. *)
+
+(** ** v0.10.0 PR 2: bitwise halves-distribute helpers (pure Z, no axioms)
+
+    A bitwise op commutes with taking the low 32 bits (mod 2^32) and with
+    taking the high 32 bits (/ 2^32). Proven by bit extensionality for the
+    low half and by the shiftr-distributes lemmas for the high half. *)
+
+Lemma land_low32 : forall a b : Z,
+  Z.land a b mod 2 ^ 32 = Z.land (a mod 2 ^ 32) (b mod 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.land_ones by lia.
+  apply Z.bits_inj'; intros n Hn.
+  rewrite ?Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 32) n); reflexivity.
+Qed.
+
+Lemma lor_low32 : forall a b : Z,
+  Z.lor a b mod 2 ^ 32 = Z.lor (a mod 2 ^ 32) (b mod 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.land_ones by lia.
+  apply Z.bits_inj'; intros n Hn.
+  rewrite ?Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 32) n); reflexivity.
+Qed.
+
+Lemma lxor_low32 : forall a b : Z,
+  Z.lxor a b mod 2 ^ 32 = Z.lxor (a mod 2 ^ 32) (b mod 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.land_ones by lia.
+  apply Z.bits_inj'; intros n Hn.
+  rewrite ?Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 32) n); reflexivity.
+Qed.
+
+Lemma land_high32 : forall a b : Z,
+  Z.land a b / 2 ^ 32 = Z.land (a / 2 ^ 32) (b / 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.shiftr_div_pow2 by lia. apply Z.shiftr_land.
+Qed.
+
+Lemma lor_high32 : forall a b : Z,
+  Z.lor a b / 2 ^ 32 = Z.lor (a / 2 ^ 32) (b / 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.shiftr_div_pow2 by lia. apply Z.shiftr_lor.
+Qed.
+
+Lemma lxor_high32 : forall a b : Z,
+  Z.lxor a b / 2 ^ 32 = Z.lxor (a / 2 ^ 32) (b / 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.shiftr_div_pow2 by lia. apply Z.shiftr_lxor.
+Qed.
+
+(** combine_i32 as a raw Z: the sum fits in 64 bits, so the I64.repr mod
+    is the identity. *)
+Lemma combine_i32_raw : forall lo hi : I32.int,
+  combine_i32 lo hi = I32.unsigned lo + 2 ^ 32 * I32.unsigned hi.
+Proof.
+  intros lo hi. unfold combine_i32, I64.repr, I32.modulus, I64.modulus.
+  assert (Hl : 0 <= I32.unsigned lo < 2 ^ 32)
+    by (unfold I32.unsigned, I32.modulus; apply Z_mod_lt; lia).
+  assert (Hh : 0 <= I32.unsigned hi < 2 ^ 32)
+    by (unfold I32.unsigned, I32.modulus; apply Z_mod_lt; lia).
+  assert (H64 : 2 ^ 64 = 2 ^ 32 * 2 ^ 32) by reflexivity.
+  apply Z.mod_small. nia.
+Qed.
+
+(** (w mod 2^64) mod 2^32 = w mod 2^32 (2^32 divides 2^64). *)
+Lemma mod64_mod32 : forall w, (w mod 2 ^ 64) mod 2 ^ 32 = w mod 2 ^ 32.
+Proof.
+  intros w. rewrite <- !Z.land_ones by lia.
+  rewrite <- Z.land_assoc. f_equal.
+Qed.
+
+(** The low 32 bits of combine_i32 lo hi are I32.unsigned lo. *)
+Lemma combine_lo32 : forall lo hi : I32.int,
+  combine_i32 lo hi mod 2 ^ 32 = I32.unsigned lo.
+Proof.
+  intros lo hi. rewrite combine_i32_raw.
+  assert (Hl : 0 <= I32.unsigned lo < 2 ^ 32)
+    by (unfold I32.unsigned, I32.modulus; apply Z_mod_lt; lia).
+  rewrite (Z.mul_comm (2 ^ 32) (I32.unsigned hi)).
+  rewrite Z_mod_plus_full. rewrite Z.mod_small by lia. reflexivity.
+Qed.
+
+(** The high 32 bits of combine_i32 lo hi are I32.unsigned hi. *)
+Lemma combine_hi32 : forall lo hi : I32.int,
+  combine_i32 lo hi / 2 ^ 32 mod 2 ^ 32 = I32.unsigned hi.
+Proof.
+  intros lo hi. rewrite combine_i32_raw.
+  assert (Hl : 0 <= I32.unsigned lo < 2 ^ 32)
+    by (unfold I32.unsigned, I32.modulus; apply Z_mod_lt; lia).
+  assert (Hh : 0 <= I32.unsigned hi < 2 ^ 32)
+    by (unfold I32.unsigned, I32.modulus; apply Z_mod_lt; lia).
+  rewrite (Z.mul_comm (2 ^ 32) (I32.unsigned hi)).
+  rewrite Z.div_add by lia.
+  rewrite (Z.div_small (I32.unsigned lo) (2 ^ 32)) by lia.
+  rewrite Z.add_0_l. rewrite Z.mod_small by lia. reflexivity.
+Qed.
+
+(** The low half of I64.and on combined operands equals I32.and of the lows. *)
+Lemma and_lo_combine : forall lo1 hi1 lo2 hi2,
+  I32.and lo1 lo2 = lo_of_i64 (I64.and (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. rewrite lo_of_i64_repr.
+  unfold I64.and, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.and, I32.modulus.
+  rewrite Zmod_mod, mod64_mod32.
+  rewrite (land_low32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+  rewrite !combine_lo32.
+  unfold I32.repr, I32.unsigned, I32.modulus.
+  apply land_low32.
+Qed.
 
 Theorem i64_and_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
