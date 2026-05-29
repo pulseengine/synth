@@ -392,10 +392,15 @@ Proof.
   unfold i32_to_i64_unsigned, i64_to_i32.
   unfold I64.unsigned, I32.unsigned, I64.repr, I32.repr.
   unfold I32.modulus, I64.modulus.
-  (* Goal: (x mod 2^64 mod 2^32 mod 2^32) mod 2^64 = x mod 2^64 mod 2^32 *)
-  (* Let y = x mod 2^64 mod 2^32. Then goal is (y mod 2^32) mod 2^64 = y. *)
-  (* ADMITTED: Rocq 9 Z.mod_mod signature changed — rewrite matching fails.
-     Goal: (x mod 2^64 mod 2^32 mod 2^32) mod 2^64 = x mod 2^64 mod 2^32
-     The proof is mathematically trivial but Rocq 9's rewrite tactic
-     cannot disambiguate nested mod subterms. Tracked in VG-002. *)
-Admitted.
+  (* Goal: (x mod 2^64 mod 2^32 mod 2^32) mod 2^64 = x mod 2^64 mod 2^32.
+     Keep the moduli as small symbolic atoms so lia reasons over atoms
+     rather than choking on 2^64-scale literal certificates. *)
+  set (m32 := 2 ^ 32). set (m64 := 2 ^ 64).
+  assert (Hm0 : 0 < m32) by (subst m32; reflexivity).
+  assert (Hlt : m32 < m64) by (subst m32 m64; reflexivity).
+  set (y := x mod m64 mod m32).
+  assert (Hy : 0 <= y < m32) by (subst y; apply Z.mod_pos_bound; exact Hm0).
+  rewrite (Z.mod_small y m32 Hy).
+  rewrite !(Z.mod_small y m64) by lia.
+  reflexivity.
+Qed.
