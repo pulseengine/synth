@@ -1,6 +1,26 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated:** May 2026 (v0.10.0 PR 1: i64_add/i64_sub closed as T1 Qed via ADDS/ADC + SUBS/SBC carry/borrow-propagation lemmas — no new axioms)
+**Last Updated:** May 2026 (v0.10.0 PR 2: i64_to_i32_to_i64_wrap closed; bitwise halves-distribute infrastructure landed; i64 and/or/xor T1 deferred to v0.11.0)
+
+## v0.10.0 PR 2 outcome: Z.mod_mod wrap closed + bitwise lift infrastructure
+
+`i64_to_i32_to_i64_wrap` (Common/Integers.v) — the long-standing Rocq 9
+`Z.mod_mod` Admit — is now Qed (canonical symbolic-atom modular proof; no
+axioms). Landed the bitwise halves-distribute infrastructure for the i64
+and/or/xor T1 lifts: six pure-Z distribution lemmas (`{land,lor,lxor}_{low,high}32`),
+`combine_i32_raw`, `mod64_mod32`, `combine_lo32`/`combine_hi32`, and
+`and_lo_combine` — all Qed, no axioms.
+
+**Deferred to v0.11.0:** `i64_and_correct` / `i64_or_correct` /
+`i64_xor_correct` remain Admitted (3 admits). The remaining work is the
+high-half combine helper (`(Z.land X Y mod 2^64)/2^32 mod 2^32`, via
+`ZDivEucl.mod_mul_r`), the or/xor analogues, and the three theorem
+exec-proofs (template: `i64_add_correct` minus flag handling). The
+infrastructure to close them is in place.
+
+**Total admits: 12** — 4 i32 division (separate exec_program-model gap),
+2 Compilation.v, 1 CorrectnessSimple.v, 3 i64 and/or/xor (above),
+2 ArmRefinement.v.
 
 ## v0.10.0 PR 1 outcome: i64 add/sub carry/borrow propagation
 
