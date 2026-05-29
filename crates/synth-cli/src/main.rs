@@ -668,6 +668,10 @@ fn print_hardware_info(caps: &HardwareCapabilities) {
 /// Compiled function for ELF building (name + code bytes + relocations)
 struct ElfFunction {
     name: String,
+    /// WASM function index — used to define a `func_{index}` symbol so that
+    /// internal calls (`BL func_N`, emitted by the selector against the WASM
+    /// index) resolve to this function's address (#167).
+    wasm_index: u32,
     code: Vec<u8>,
     /// Relocations targeting external symbols (from import dispatch stubs)
     relocations: Vec<synth_core::backend::CodeRelocation>,
@@ -1812,6 +1816,7 @@ fn compile_all_exports(
 
     // Compile each function via the selected backend
     let mut compiled_funcs = Vec::new();
+    let mut skipped_funcs: Vec<(String, String)> = Vec::new();
     for func in &all_exports {
         let name = func.export_name.clone().ok_or_else(|| {
             anyhow::anyhow!("function at index {} has no export name", func.index)
@@ -1822,11 +1827,26 @@ fn compile_all_exports(
             backend.name()
         );
 
-        let compiled = backend
-            .compile_function(&name, &func.ops, &config)
-            .map_err(|e| {
-                anyhow::anyhow!("Backend '{}' failed on '{}': {}", backend.name(), name, e)
-            })?;
+        // In the all-exports path, a single un-compilable function (e.g. an
+        // i64-heavy compiler_builtins helper that exhausts the register
+        // allocator, #168) must not abort the whole module. Emit a diagnostic,
+        // record it, and continue — the function is simply absent from the
+        // output object. Callers that need it get a link error naming the
+        // missing symbol, which is far more actionable than a whole-module
+        // failure on dead-weight pulled in by `--whole-archive`.
+        let compiled = match backend.compile_function(&name, &func.ops, &config) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!(
+                    "warning: skipping function '{}': backend '{}' failed: {}",
+                    name,
+                    backend.name(),
+                    e
+                );
+                skipped_funcs.push((name.clone(), e.to_string()));
+                continue;
+            }
+        };
         info!("  {} bytes of machine code", compiled.code.len());
 
         if !compiled.relocations.is_empty() {
@@ -1838,6 +1858,7 @@ fn compile_all_exports(
 
         compiled_funcs.push(ElfFunction {
             name: name.clone(),
+            wasm_index: func.index,
             code: compiled.code,
             relocations: compiled.relocations,
         });
@@ -1852,6 +1873,27 @@ fn compile_all_exports(
                 eprintln!("  Rebuild with: cargo build --features verify");
             }
         }
+    }
+
+    // Surface skipped functions (no silent omissions): a skipped function is
+    // absent from the output object, so report the count + names explicitly.
+    if !skipped_funcs.is_empty() {
+        eprintln!(
+            "warning: {} of {} functions were skipped (not in output): {}",
+            skipped_funcs.len(),
+            all_exports.len(),
+            skipped_funcs
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    if compiled_funcs.is_empty() {
+        anyhow::bail!(
+            "no functions compiled successfully ({} skipped) — nothing to emit",
+            skipped_funcs.len()
+        );
     }
 
     // Check if any function has relocations (import calls)
@@ -2027,41 +2069,74 @@ fn build_relocatable_elf(funcs: &[ElfFunction], imports: &[ImportEntry]) -> Resu
 
     elf_builder.add_section(text_section);
 
-    // Add defined symbols for each compiled function
+    // Symbol-name -> symbol index map. Symbol indices are 1-based (index 0 is
+    // the reserved null symbol); each `add_symbol` appends one, so we track the
+    // running count to know the index of each symbol we define.
+    let mut sym_indices: HashMap<String, u32> = HashMap::new();
+    let mut sym_count: u32 = 0; // number of real symbols added so far
+
+    // Add defined symbols for each compiled function. We define TWO names per
+    // function: the export name (global, for the host linker) and a stable
+    // `func_{wasm_index}` name (the label the instruction selector emits for
+    // internal `call`s). Internal `BL func_N` relocations resolve against the
+    // latter; without it, internal calls were left as unpatched `bl #0` (#167).
     for (i, func) in funcs.iter().enumerate() {
-        let func_sym = Symbol::new(&func.name)
+        let export_sym = Symbol::new(&func.name)
             .with_value(func_offsets[i])
             .with_size(func.code.len() as u32)
             .with_binding(SymbolBinding::Global)
             .with_type(SymbolType::Func)
             .with_section(4); // .text is section 4 (null=0, shstrtab=1, strtab=2, symtab=3, .text=4)
+        elf_builder.add_symbol(export_sym);
+        sym_count += 1;
+        sym_indices.insert(func.name.clone(), sym_count);
 
-        elf_builder.add_symbol(func_sym);
+        // `func_{wasm_index}` alias (skip if the export name already is that).
+        let internal_label = format!("func_{}", func.wasm_index);
+        if internal_label != func.name {
+            let internal_sym = Symbol::new(&internal_label)
+                .with_value(func_offsets[i])
+                .with_size(func.code.len() as u32)
+                .with_binding(SymbolBinding::Global)
+                .with_type(SymbolType::Func)
+                .with_section(4);
+            elf_builder.add_symbol(internal_sym);
+            sym_count += 1;
+            sym_indices.insert(internal_label, sym_count);
+        }
     }
 
-    // Collect unique external symbol names from all relocations and add as undefined
-    let mut extern_sym_indices: HashMap<String, u32> = HashMap::new();
+    // Any relocation symbol not already defined (i.e. import dispatch stubs like
+    // `__meld_dispatch_import`, and any internal call whose callee was not among
+    // the compiled functions) becomes an undefined external symbol.
+    let mut external_count = 0usize;
     for func in funcs {
         for reloc in &func.relocations {
-            if !extern_sym_indices.contains_key(&reloc.symbol) {
+            if !sym_indices.contains_key(&reloc.symbol) {
                 let idx = elf_builder.add_undefined_symbol(&reloc.symbol);
-                extern_sym_indices.insert(reloc.symbol.clone(), idx);
+                sym_indices.insert(reloc.symbol.clone(), idx);
+                external_count += 1;
             }
         }
     }
 
-    // Add R_ARM_CALL relocations for each BL to an external symbol
+    // Emit an R_ARM_THM_CALL relocation for every BL (internal `func_N` resolves
+    // against the defined symbol; imports against the undefined external). Thumb
+    // BL on Cortex-M requires R_ARM_THM_CALL (10), not the ARM-mode R_ARM_CALL.
+    let mut reloc_count = 0usize;
     for (i, func) in funcs.iter().enumerate() {
         let func_base = func_offsets[i];
         for reloc in &func.relocations {
-            let sym_idx = extern_sym_indices[&reloc.symbol];
+            let sym_idx = sym_indices[&reloc.symbol];
             elf_builder.add_relocation(Relocation {
                 offset: func_base + reloc.offset,
                 symbol_index: sym_idx,
-                reloc_type: ArmRelocationType::Call, // R_ARM_CALL (28)
+                reloc_type: ArmRelocationType::ThmCall, // R_ARM_THM_CALL (10)
             });
+            reloc_count += 1;
         }
     }
+    let extern_sym_indices = (external_count, reloc_count); // for the info! below
 
     // Add a .meld_import_table section with import metadata
     // This is a custom section that the Kiln bridge can read to understand
@@ -2097,11 +2172,12 @@ fn build_relocatable_elf(funcs: &[ElfFunction], imports: &[ImportEntry]) -> Resu
         }
     }
 
+    let (external_count, reloc_count) = extern_sym_indices;
     info!(
         "Relocatable ELF: {} functions, {} external symbols, {} relocations",
         funcs.len(),
-        extern_sym_indices.len(),
-        funcs.iter().map(|f| f.relocations.len()).sum::<usize>()
+        external_count,
+        reloc_count
     );
 
     elf_builder

@@ -221,11 +221,13 @@ fn compile_wasm_to_arm(
     let mut relocations = Vec::new();
 
     for instr in &arm_instrs {
-        // Record relocation for BL instructions targeting external symbols.
-        // The BL is encoded with offset 0; the linker patches it.
-        if let ArmOp::Bl { label } = &instr.op
-            && label.starts_with("__meld_")
-        {
+        // Record a relocation for every BL: the encoder emits `bl #0` and
+        // relies on a relocation to patch the target. This covers BOTH import
+        // dispatch stubs (`__meld_*`, undefined externals) AND internal calls
+        // (`func_N`, defined in this object). Previously only `__meld_*` was
+        // recorded, so internal `BL func_N` calls were left as unpatched
+        // `bl #0` placeholders branching to a garbage address (#167).
+        if let ArmOp::Bl { label } = &instr.op {
             relocations.push(CodeRelocation {
                 offset: code.len() as u32,
                 symbol: label.clone(),

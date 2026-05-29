@@ -322,6 +322,10 @@ impl ProgramHeader {
 /// ARM relocation type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArmRelocationType {
+    /// R_ARM_THM_CALL (10) — Thumb BL/BLX instruction (Cortex-M). This is the
+    /// correct relocation for a Thumb-2 `bl` call site; `Call`/R_ARM_CALL below
+    /// is the ARM-mode form and is mis-resolved by `ld` for Thumb calls.
+    ThmCall = 10,
     /// R_ARM_CALL (28) — BL/BLX instruction
     Call = 28,
     /// R_ARM_JUMP24 (29) — B/BL<cond> instruction
