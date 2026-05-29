@@ -464,6 +464,19 @@ Proof.
   rewrite Z.add_0_l. rewrite Z.mod_small by lia. reflexivity.
 Qed.
 
+(** The low half of I64.and on combined operands equals I32.and of the lows. *)
+Lemma and_lo_combine : forall lo1 hi1 lo2 hi2,
+  I32.and lo1 lo2 = lo_of_i64 (I64.and (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. rewrite lo_of_i64_repr.
+  unfold I64.and, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.and, I32.modulus.
+  rewrite Zmod_mod, mod64_mod32.
+  rewrite (land_low32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+  rewrite !combine_lo32.
+  unfold I32.repr, I32.unsigned, I32.modulus.
+  apply land_low32.
+Qed.
+
 Theorem i64_and_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
   get_reg astate R1 = hi1 ->
