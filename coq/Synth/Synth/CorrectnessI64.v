@@ -477,6 +477,43 @@ Proof.
   apply land_low32.
 Qed.
 
+(** Bits [32,64) survive the mod 2^64: extracting the high 32-bit slice of
+    (a mod 2^64) equals the high slice of a. Proven via the mixed-radix
+    decomposition a mod (2^32 * 2^32) = a mod 2^32 + 2^32 * ((a/2^32) mod 2^32). *)
+Lemma div32_mod64 : forall a, (a mod 2 ^ 64) / 2 ^ 32 = (a / 2 ^ 32) mod 2 ^ 32.
+Proof.
+  intros a. apply Z.bits_inj'; intros n Hn.
+  pose proof (Z.div_pow2_bits (a mod 2 ^ 64) 32 n ltac:(lia) ltac:(lia)) as HD0.
+  rewrite HD0.
+  destruct (n <? 32) eqn:E.
+  - rewrite Z.ltb_lt in E.
+    pose proof (Z.mod_pow2_bits_low a 64 (n + 32) ltac:(lia)) as HL.
+    pose proof (Z.mod_pow2_bits_low (a / 2 ^ 32) 32 n ltac:(lia)) as HR.
+    pose proof (Z.div_pow2_bits a 32 n ltac:(lia) ltac:(lia)) as HD.
+    rewrite HL. transitivity (Z.testbit (a / 2 ^ 32) n).
+    + symmetry. exact HD.
+    + symmetry. exact HR.
+  - rewrite Z.ltb_ge in E.
+    pose proof (Z.mod_pow2_bits_high a 64 (n + 32) ltac:(lia)) as HL.
+    pose proof (Z.mod_pow2_bits_high (a / 2 ^ 32) 32 n ltac:(lia)) as HR.
+    rewrite HL. symmetry. exact HR.
+Qed.
+
+(** The high half of I64.and on combined operands equals I32.and of the highs. *)
+Lemma and_hi_combine : forall lo1 hi1 lo2 hi2,
+  I32.and hi1 hi2 = hi_of_i64 (I64.and (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. unfold hi_of_i64.
+  unfold I64.and, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.and, I32.modulus.
+  rewrite Zmod_mod, div32_mod64, Zmod_mod.
+  pose proof (land_high32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)) as HH.
+  rewrite HH.
+  rewrite (land_low32 (combine_i32 lo1 hi1 / 2 ^ 32) (combine_i32 lo2 hi2 / 2 ^ 32)).
+  rewrite !combine_hi32.
+  unfold I32.unsigned, I32.modulus.
+  apply land_low32.
+Qed.
+
 Theorem i64_and_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
   get_reg astate R1 = hi1 ->
