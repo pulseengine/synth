@@ -1,6 +1,23 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated:** May 2026 (v0.10.0 PR 2: i64_to_i32_to_i64_wrap closed; bitwise halves-distribute infrastructure landed; i64 and/or/xor T1 deferred to v0.11.0)
+**Last Updated:** May 2026 (v0.11.0: i64 and/or/xor T1 closed — TRUE i64 T1 PARITY, 0 i64 admits)
+
+## v0.11.0 outcome: true i64 T1 parity
+
+`i64_and_correct` / `i64_or_correct` / `i64_xor_correct` are now **Qed** —
+the final i64 bitwise T1 lifts. This completes i64 T1 result-correspondence
+parity with i32 (40 i64 T1 Qed, **0 i64 admits**).
+
+New helpers (all Qed, no axioms): `div32_mod64`
+(`(a mod 2^64)/2^32 = (a/2^32) mod 2^32`, bit-extensionality), `and_hi_combine`
++ the or/xor lo/hi combine analogues. The three theorem exec-proofs step
+`exec_program` over the flag-free pairs `[AND R0 R0 R2; AND R1 R1 R3]`
+(ORR/EOR identical) and apply the combine lemmas — the `i64_add_correct`
+template minus flag-peeling.
+
+**Total admits: 9** (was 12) — 4 i32 division (separate exec_program-model
+gap #73), 2 Compilation.v, 1 CorrectnessSimple.v, 2 ArmRefinement.v. No
+remaining i64 admits.
 
 ## v0.10.0 PR 2 outcome: Z.mod_mod wrap closed + bitwise lift infrastructure
 

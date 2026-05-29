@@ -477,6 +477,97 @@ Proof.
   apply land_low32.
 Qed.
 
+(** Bits [32,64) survive the mod 2^64: extracting the high 32-bit slice of
+    (a mod 2^64) equals the high slice of a. Proven via the mixed-radix
+    decomposition a mod (2^32 * 2^32) = a mod 2^32 + 2^32 * ((a/2^32) mod 2^32). *)
+Lemma div32_mod64 : forall a, (a mod 2 ^ 64) / 2 ^ 32 = (a / 2 ^ 32) mod 2 ^ 32.
+Proof.
+  intros a. apply Z.bits_inj'; intros n Hn.
+  pose proof (Z.div_pow2_bits (a mod 2 ^ 64) 32 n ltac:(lia) ltac:(lia)) as HD0.
+  rewrite HD0.
+  destruct (n <? 32) eqn:E.
+  - rewrite Z.ltb_lt in E.
+    pose proof (Z.mod_pow2_bits_low a 64 (n + 32) ltac:(lia)) as HL.
+    pose proof (Z.mod_pow2_bits_low (a / 2 ^ 32) 32 n ltac:(lia)) as HR.
+    pose proof (Z.div_pow2_bits a 32 n ltac:(lia) ltac:(lia)) as HD.
+    rewrite HL. transitivity (Z.testbit (a / 2 ^ 32) n).
+    + symmetry. exact HD.
+    + symmetry. exact HR.
+  - rewrite Z.ltb_ge in E.
+    pose proof (Z.mod_pow2_bits_high a 64 (n + 32) ltac:(lia)) as HL.
+    pose proof (Z.mod_pow2_bits_high (a / 2 ^ 32) 32 n ltac:(lia)) as HR.
+    rewrite HL. symmetry. exact HR.
+Qed.
+
+(** The high half of I64.and on combined operands equals I32.and of the highs. *)
+Lemma and_hi_combine : forall lo1 hi1 lo2 hi2,
+  I32.and hi1 hi2 = hi_of_i64 (I64.and (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. unfold hi_of_i64.
+  unfold I64.and, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.and, I32.modulus.
+  rewrite Zmod_mod, div32_mod64, Zmod_mod.
+  pose proof (land_high32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)) as HH.
+  rewrite HH.
+  rewrite (land_low32 (combine_i32 lo1 hi1 / 2 ^ 32) (combine_i32 lo2 hi2 / 2 ^ 32)).
+  rewrite !combine_hi32.
+  unfold I32.unsigned, I32.modulus.
+  apply land_low32.
+Qed.
+
+(** or/xor combine helpers — direct analogues of and_lo/and_hi_combine,
+    substituting lor/lxor (distribution lemmas {lor,lxor}_{low,high}32). *)
+Lemma or_lo_combine : forall lo1 hi1 lo2 hi2,
+  I32.or lo1 lo2 = lo_of_i64 (I64.or (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. rewrite lo_of_i64_repr.
+  unfold I64.or, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.or, I32.modulus.
+  rewrite Zmod_mod, mod64_mod32.
+  rewrite (lor_low32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+  rewrite !combine_lo32.
+  unfold I32.repr, I32.unsigned, I32.modulus.
+  apply lor_low32.
+Qed.
+
+Lemma or_hi_combine : forall lo1 hi1 lo2 hi2,
+  I32.or hi1 hi2 = hi_of_i64 (I64.or (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. unfold hi_of_i64.
+  unfold I64.or, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.or, I32.modulus.
+  rewrite Zmod_mod, div32_mod64, Zmod_mod.
+  pose proof (lor_high32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)) as HH.
+  rewrite HH.
+  rewrite (lor_low32 (combine_i32 lo1 hi1 / 2 ^ 32) (combine_i32 lo2 hi2 / 2 ^ 32)).
+  rewrite !combine_hi32.
+  unfold I32.unsigned, I32.modulus.
+  apply lor_low32.
+Qed.
+
+Lemma xor_lo_combine : forall lo1 hi1 lo2 hi2,
+  I32.xor lo1 lo2 = lo_of_i64 (I64.xor (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. rewrite lo_of_i64_repr.
+  unfold I64.xor, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.xor, I32.modulus.
+  rewrite Zmod_mod, mod64_mod32.
+  rewrite (lxor_low32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+  rewrite !combine_lo32.
+  unfold I32.repr, I32.unsigned, I32.modulus.
+  apply lxor_low32.
+Qed.
+
+Lemma xor_hi_combine : forall lo1 hi1 lo2 hi2,
+  I32.xor hi1 hi2 = hi_of_i64 (I64.xor (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. unfold hi_of_i64.
+  unfold I64.xor, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.xor, I32.modulus.
+  rewrite Zmod_mod, div32_mod64, Zmod_mod.
+  pose proof (lxor_high32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)) as HH.
+  rewrite HH.
+  rewrite (lxor_low32 (combine_i32 lo1 hi1 / 2 ^ 32) (combine_i32 lo2 hi2 / 2 ^ 32)).
+  rewrite !combine_hi32.
+  unfold I32.unsigned, I32.modulus.
+  apply lxor_low32.
+Qed.
+
 Theorem i64_and_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
   get_reg astate R1 = hi1 ->
@@ -489,13 +580,17 @@ Theorem i64_and_correct : forall astate lo1 hi1 lo2 hi2,
     get_reg astate' R1 = hi_of_i64 (I64.and (combine_i32 lo1 hi1)
                                             (combine_i32 lo2 hi2)).
 Proof.
-  (* ADMITTED: needs `lo_of_i64_and` / `hi_of_i64_and` helper lemmas in
-     Common/Integers.v. The ARM execution yields R0 = I32.and lo1 lo2 and
-     R1 = I32.and hi1 hi2; correspondence with the dual-register post-
-     condition reduces to the halves-distribute-over-Z.land property,
-     blocked by the same Rocq 9 Z.mod_mod issue as
-     `i64_to_i32_to_i64_wrap`. No new spec axiom introduced. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 HR0 HR1 HR2 HR3.
+  unfold compile_wasm_to_arm.
+  cbn [exec_program exec_instr eval_operand2].
+  eexists. split; [reflexivity | split].
+  - rewrite (get_set_reg_neq _ R1 R0) by discriminate.
+    rewrite get_set_reg_eq. rewrite HR0, HR2. apply and_lo_combine.
+  - rewrite get_set_reg_eq.
+    rewrite (get_set_reg_neq astate R0 R1) by discriminate.
+    rewrite (get_set_reg_neq astate R0 R3) by discriminate.
+    rewrite HR1, HR3. apply and_hi_combine.
+Qed.
 
 Theorem i64_or_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
@@ -509,10 +604,17 @@ Theorem i64_or_correct : forall astate lo1 hi1 lo2 hi2,
     get_reg astate' R1 = hi_of_i64 (I64.or (combine_i32 lo1 hi1)
                                            (combine_i32 lo2 hi2)).
 Proof.
-  (* ADMITTED: same shape as i64_and_correct — needs `lo_of_i64_or` /
-     `hi_of_i64_or` decomposition lemmas. Tracked as v0.9.0 PR 2
-     follow-up; no new spec axiom introduced. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 HR0 HR1 HR2 HR3.
+  unfold compile_wasm_to_arm.
+  cbn [exec_program exec_instr eval_operand2].
+  eexists. split; [reflexivity | split].
+  - rewrite (get_set_reg_neq _ R1 R0) by discriminate.
+    rewrite get_set_reg_eq. rewrite HR0, HR2. apply or_lo_combine.
+  - rewrite get_set_reg_eq.
+    rewrite (get_set_reg_neq astate R0 R1) by discriminate.
+    rewrite (get_set_reg_neq astate R0 R3) by discriminate.
+    rewrite HR1, HR3. apply or_hi_combine.
+Qed.
 
 Theorem i64_xor_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
@@ -526,10 +628,17 @@ Theorem i64_xor_correct : forall astate lo1 hi1 lo2 hi2,
     get_reg astate' R1 = hi_of_i64 (I64.xor (combine_i32 lo1 hi1)
                                             (combine_i32 lo2 hi2)).
 Proof.
-  (* ADMITTED: same shape as i64_and_correct — needs `lo_of_i64_xor` /
-     `hi_of_i64_xor` decomposition lemmas. Tracked as v0.9.0 PR 2
-     follow-up; no new spec axiom introduced. *)
-Admitted.
+  intros astate lo1 hi1 lo2 hi2 HR0 HR1 HR2 HR3.
+  unfold compile_wasm_to_arm.
+  cbn [exec_program exec_instr eval_operand2].
+  eexists. split; [reflexivity | split].
+  - rewrite (get_set_reg_neq _ R1 R0) by discriminate.
+    rewrite get_set_reg_eq. rewrite HR0, HR2. apply xor_lo_combine.
+  - rewrite get_set_reg_eq.
+    rewrite (get_set_reg_neq astate R0 R1) by discriminate.
+    rewrite (get_set_reg_neq astate R0 R3) by discriminate.
+    rewrite HR1, HR3. apply xor_hi_combine.
+Qed.
 
 (** v0.9.0 PR 3 lift: Shl/ShrU/ShrS/Rotl/Rotr restated with I64-typed
     hypotheses (operand lo/hi in R0:R1, 32-bit shift/rotate count in R2)
