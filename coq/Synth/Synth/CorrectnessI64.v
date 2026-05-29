@@ -76,6 +76,7 @@
 *)
 
 From Stdlib Require Import ZArith.
+From Stdlib Require Import Lia.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
@@ -364,6 +365,57 @@ Qed.
     Per the v0.9.0 PR 2 task brief, no new spec axiom is introduced. The
     decomposition lemma is purely arithmetic (no codegen claim), and is
     tracked as a follow-up alongside the Rocq 9 `Z.mod_mod` rework. *)
+
+(** ** v0.10.0 PR 2: bitwise halves-distribute helpers (pure Z, no axioms)
+
+    A bitwise op commutes with taking the low 32 bits (mod 2^32) and with
+    taking the high 32 bits (/ 2^32). Proven by bit extensionality for the
+    low half and by the shiftr-distributes lemmas for the high half. *)
+
+Lemma land_low32 : forall a b : Z,
+  Z.land a b mod 2 ^ 32 = Z.land (a mod 2 ^ 32) (b mod 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.land_ones by lia.
+  apply Z.bits_inj'; intros n Hn.
+  rewrite ?Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 32) n); reflexivity.
+Qed.
+
+Lemma lor_low32 : forall a b : Z,
+  Z.lor a b mod 2 ^ 32 = Z.lor (a mod 2 ^ 32) (b mod 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.land_ones by lia.
+  apply Z.bits_inj'; intros n Hn.
+  rewrite ?Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 32) n); reflexivity.
+Qed.
+
+Lemma lxor_low32 : forall a b : Z,
+  Z.lxor a b mod 2 ^ 32 = Z.lxor (a mod 2 ^ 32) (b mod 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.land_ones by lia.
+  apply Z.bits_inj'; intros n Hn.
+  rewrite ?Z.land_spec, ?Z.lor_spec, ?Z.lxor_spec, ?Z.land_spec.
+  destruct (Z.testbit a n), (Z.testbit b n), (Z.testbit (Z.ones 32) n); reflexivity.
+Qed.
+
+Lemma land_high32 : forall a b : Z,
+  Z.land a b / 2 ^ 32 = Z.land (a / 2 ^ 32) (b / 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.shiftr_div_pow2 by lia. apply Z.shiftr_land.
+Qed.
+
+Lemma lor_high32 : forall a b : Z,
+  Z.lor a b / 2 ^ 32 = Z.lor (a / 2 ^ 32) (b / 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.shiftr_div_pow2 by lia. apply Z.shiftr_lor.
+Qed.
+
+Lemma lxor_high32 : forall a b : Z,
+  Z.lxor a b / 2 ^ 32 = Z.lxor (a / 2 ^ 32) (b / 2 ^ 32).
+Proof.
+  intros a b. rewrite <- !Z.shiftr_div_pow2 by lia. apply Z.shiftr_lxor.
+Qed.
 
 Theorem i64_and_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
