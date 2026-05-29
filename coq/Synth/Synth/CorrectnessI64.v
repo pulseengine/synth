@@ -514,6 +514,60 @@ Proof.
   apply land_low32.
 Qed.
 
+(** or/xor combine helpers — direct analogues of and_lo/and_hi_combine,
+    substituting lor/lxor (distribution lemmas {lor,lxor}_{low,high}32). *)
+Lemma or_lo_combine : forall lo1 hi1 lo2 hi2,
+  I32.or lo1 lo2 = lo_of_i64 (I64.or (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. rewrite lo_of_i64_repr.
+  unfold I64.or, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.or, I32.modulus.
+  rewrite Zmod_mod, mod64_mod32.
+  rewrite (lor_low32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+  rewrite !combine_lo32.
+  unfold I32.repr, I32.unsigned, I32.modulus.
+  apply lor_low32.
+Qed.
+
+Lemma or_hi_combine : forall lo1 hi1 lo2 hi2,
+  I32.or hi1 hi2 = hi_of_i64 (I64.or (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. unfold hi_of_i64.
+  unfold I64.or, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.or, I32.modulus.
+  rewrite Zmod_mod, div32_mod64, Zmod_mod.
+  pose proof (lor_high32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)) as HH.
+  rewrite HH.
+  rewrite (lor_low32 (combine_i32 lo1 hi1 / 2 ^ 32) (combine_i32 lo2 hi2 / 2 ^ 32)).
+  rewrite !combine_hi32.
+  unfold I32.unsigned, I32.modulus.
+  apply lor_low32.
+Qed.
+
+Lemma xor_lo_combine : forall lo1 hi1 lo2 hi2,
+  I32.xor lo1 lo2 = lo_of_i64 (I64.xor (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. rewrite lo_of_i64_repr.
+  unfold I64.xor, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.xor, I32.modulus.
+  rewrite Zmod_mod, mod64_mod32.
+  rewrite (lxor_low32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+  rewrite !combine_lo32.
+  unfold I32.repr, I32.unsigned, I32.modulus.
+  apply lxor_low32.
+Qed.
+
+Lemma xor_hi_combine : forall lo1 hi1 lo2 hi2,
+  I32.xor hi1 hi2 = hi_of_i64 (I64.xor (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)).
+Proof.
+  intros lo1 hi1 lo2 hi2. unfold hi_of_i64.
+  unfold I64.xor, I64.unsigned, I64.repr, I64.modulus, I32.repr, I32.xor, I32.modulus.
+  rewrite Zmod_mod, div32_mod64, Zmod_mod.
+  pose proof (lxor_high32 (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)) as HH.
+  rewrite HH.
+  rewrite (lxor_low32 (combine_i32 lo1 hi1 / 2 ^ 32) (combine_i32 lo2 hi2 / 2 ^ 32)).
+  rewrite !combine_hi32.
+  unfold I32.unsigned, I32.modulus.
+  apply lxor_low32.
+Qed.
+
 Theorem i64_and_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
   get_reg astate R1 = hi1 ->
