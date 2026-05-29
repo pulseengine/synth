@@ -417,6 +417,53 @@ Proof.
   intros a b. rewrite <- !Z.shiftr_div_pow2 by lia. apply Z.shiftr_lxor.
 Qed.
 
+(** combine_i32 as a raw Z: the sum fits in 64 bits, so the I64.repr mod
+    is the identity. *)
+Lemma combine_i32_raw : forall lo hi : I32.int,
+  combine_i32 lo hi = I32.unsigned lo + 2 ^ 32 * I32.unsigned hi.
+Proof.
+  intros lo hi. unfold combine_i32, I64.repr, I32.modulus, I64.modulus.
+  assert (Hl : 0 <= I32.unsigned lo < 2 ^ 32)
+    by (unfold I32.unsigned, I32.modulus; apply Z_mod_lt; lia).
+  assert (Hh : 0 <= I32.unsigned hi < 2 ^ 32)
+    by (unfold I32.unsigned, I32.modulus; apply Z_mod_lt; lia).
+  assert (H64 : 2 ^ 64 = 2 ^ 32 * 2 ^ 32) by reflexivity.
+  apply Z.mod_small. nia.
+Qed.
+
+(** (w mod 2^64) mod 2^32 = w mod 2^32 (2^32 divides 2^64). *)
+Lemma mod64_mod32 : forall w, (w mod 2 ^ 64) mod 2 ^ 32 = w mod 2 ^ 32.
+Proof.
+  intros w. rewrite <- !Z.land_ones by lia.
+  rewrite <- Z.land_assoc. f_equal.
+Qed.
+
+(** The low 32 bits of combine_i32 lo hi are I32.unsigned lo. *)
+Lemma combine_lo32 : forall lo hi : I32.int,
+  combine_i32 lo hi mod 2 ^ 32 = I32.unsigned lo.
+Proof.
+  intros lo hi. rewrite combine_i32_raw.
+  assert (Hl : 0 <= I32.unsigned lo < 2 ^ 32)
+    by (unfold I32.unsigned, I32.modulus; apply Z_mod_lt; lia).
+  rewrite (Z.mul_comm (2 ^ 32) (I32.unsigned hi)).
+  rewrite Z_mod_plus_full. rewrite Z.mod_small by lia. reflexivity.
+Qed.
+
+(** The high 32 bits of combine_i32 lo hi are I32.unsigned hi. *)
+Lemma combine_hi32 : forall lo hi : I32.int,
+  combine_i32 lo hi / 2 ^ 32 mod 2 ^ 32 = I32.unsigned hi.
+Proof.
+  intros lo hi. rewrite combine_i32_raw.
+  assert (Hl : 0 <= I32.unsigned lo < 2 ^ 32)
+    by (unfold I32.unsigned, I32.modulus; apply Z_mod_lt; lia).
+  assert (Hh : 0 <= I32.unsigned hi < 2 ^ 32)
+    by (unfold I32.unsigned, I32.modulus; apply Z_mod_lt; lia).
+  rewrite (Z.mul_comm (2 ^ 32) (I32.unsigned hi)).
+  rewrite Z.div_add by lia.
+  rewrite (Z.div_small (I32.unsigned lo) (2 ^ 32)) by lia.
+  rewrite Z.add_0_l. rewrite Z.mod_small by lia. reflexivity.
+Qed.
+
 Theorem i64_and_correct : forall astate lo1 hi1 lo2 hi2,
   get_reg astate R0 = lo1 ->
   get_reg astate R1 = hi1 ->
