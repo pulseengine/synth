@@ -126,6 +126,12 @@ pub struct OptimizationStats {
 /// Optimizer bridge that integrates with synthesis pipeline
 pub struct OptimizerBridge {
     config: OptimizationConfig,
+    /// Number of imported functions (wasm function indices `< num_imports` are
+    /// imports). Used to distinguish import calls (handled in the optimized
+    /// path, dispatched via `func_N` → field-name rewrite, #173) from local
+    /// calls (declined so the direct selector can preserve caller-saved regs
+    /// across them, #188). Defaults to 0.
+    num_imports: u32,
 }
 
 impl OptimizerBridge {
@@ -133,12 +139,21 @@ impl OptimizerBridge {
     pub fn new() -> Self {
         Self {
             config: OptimizationConfig::default(),
+            num_imports: 0,
         }
     }
 
     /// Create with custom configuration
     pub fn with_config(config: OptimizationConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            num_imports: 0,
+        }
+    }
+
+    /// Set the number of imported functions (see [`OptimizerBridge::num_imports`]).
+    pub fn set_num_imports(&mut self, num_imports: u32) {
+        self.num_imports = num_imports;
     }
 
     /// Preprocess WASM ops to transform patterns before IR conversion
@@ -2191,6 +2206,30 @@ impl OptimizerBridge {
     pub fn ir_to_arm(&self, instructions: &[Instruction], num_params: usize) -> Result<Vec<ArmOp>> {
         use crate::rules::{ArmOp, Operand2, Reg};
         use std::collections::HashMap;
+
+        // #188: the optimized path's register allocator does NOT model the
+        // AAPCS caller-saved clobber of a `BL` (R0–R3, R12). A function
+        // containing a LOCAL call can therefore read a param (or temp) from a
+        // register the callee overwrote — the confirmed miscompile in issue
+        // #188. Decline such functions so the backend falls back to the direct
+        // `select_with_stack` selector, which spills/reloads caller-saved
+        // registers across calls. This is honest degradation: the function
+        // still compiles correctly, just without IR-level optimization.
+        //
+        // Import calls (`func_idx < num_imports`) are NOT declined: they keep
+        // going through the optimized path so the CLI's import-field-name
+        // relocation rewrite (`func_N` → wasm field name, #173) still applies.
+        // (Caller-saved preservation across import calls is a separate, pre-
+        // existing gap tracked outside #188.)
+        if instructions.iter().any(|inst| {
+            matches!(inst.opcode, Opcode::Call { func_idx, .. } if func_idx >= self.num_imports)
+        }) {
+            return Err(synth_core::Error::synthesis(
+                "optimized path declines functions with local calls (no caller-saved \
+                 clobber model — see #188); falling back to direct selector"
+                    .to_string(),
+            ));
+        }
 
         let mut arm_instrs = Vec::new();
         let mut vreg_to_arm: HashMap<u32, Reg> = HashMap::new();

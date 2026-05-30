@@ -177,7 +177,11 @@ fn compile_wasm_to_arm(
             OptimizationConfig::all()
         };
 
-        let bridge = OptimizerBridge::with_config(opt_config);
+        let mut bridge = OptimizerBridge::with_config(opt_config);
+        // #188: tell the bridge how many imports there are so it declines only
+        // LOCAL calls (and leaves import calls on the optimized path, keeping
+        // the #173 field-name relocation rewrite intact).
+        bridge.set_num_imports(config.num_imports);
         // `ir_to_arm` now returns `Result` — an `Err` means the optimized path
         // hit an unmapped vreg (issue-#93-class). Treat it identically to an
         // `optimize_full` failure: fall back to the direct selector rather
