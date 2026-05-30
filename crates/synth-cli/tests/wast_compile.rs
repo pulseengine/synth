@@ -533,3 +533,71 @@ fn compile_import_call_uses_field_name_173() {
 
     let _ = std::fs::remove_file(&output);
 }
+
+/// Regression test for #178: the optimized (default) path miscompiled
+/// linear-memory access — a pointer-param `i32.load` lowered to a load from a
+/// FIXED address (`0x20000100`), dropping the operand. The fix declines memory
+/// modules to `select_with_stack`, so the default and `--no-optimize` outputs
+/// must now be byte-identical (and both correct: `ldr [fp, r0]`). If the
+/// optimizer ever stops declining and re-introduces the bug, the two diverge.
+#[test]
+fn pointer_deref_optimized_matches_no_optimize_178() {
+    use object::{Object, ObjectSection};
+
+    let wat = workspace_root()
+        .join("tests")
+        .join("integration")
+        .join("ptr_deref.wat");
+    assert!(wat.exists(), "ptr_deref.wat not found: {}", wat.display());
+
+    let text_of = |extra: &[&str]| -> Vec<u8> {
+        let out = std::env::temp_dir().join(format!("synth_ptr_{}.o", extra.len()));
+        let mut args = vec![
+            "compile",
+            wat.to_str().unwrap(),
+            "--target",
+            "cortex-m4f",
+            "--all-exports",
+            "--relocatable",
+            "-o",
+            out.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        let result = Command::new(synth_binary())
+            .args(&args)
+            .output()
+            .expect("run synth");
+        assert!(
+            result.status.success(),
+            "compile failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let data = std::fs::read(&out).unwrap();
+        let elf = object::File::parse(&*data).expect("parse ELF");
+        let text = elf
+            .section_by_name(".text")
+            .and_then(|s| s.data().ok())
+            .expect(".text")
+            .to_vec();
+        let _ = std::fs::remove_file(&out);
+        text
+    };
+
+    let optimized = text_of(&[]);
+    let no_optimize = text_of(&["--no-optimize"]);
+
+    // The default (optimized) path must fall back to the correct select_with_stack
+    // lowering for memory access — so its .text equals the --no-optimize .text.
+    assert_eq!(
+        optimized, no_optimize,
+        "optimized pointer-deref output must match --no-optimize (memory path declined, #178)"
+    );
+
+    // And neither must contain the bug signature `movw ip, #0x100` (f240 1c00),
+    // the fixed-address load that ignored the pointer operand.
+    let bug_sig = [0x40, 0xf2, 0x00, 0x1c];
+    assert!(
+        !optimized.windows(4).any(|w| w == bug_sig),
+        "compiled .text must not contain the fixed-0x100-address load (#178)"
+    );
+}

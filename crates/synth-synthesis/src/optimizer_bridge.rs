@@ -381,6 +381,44 @@ impl OptimizerBridge {
     /// (VFP/FPU). This includes float→int / int→float conversion ops and float
     /// loads/stores, since they too produce or consume float-typed values the
     /// optimized path can neither map to a vreg nor lower to VFP.
+    /// Linear-memory load/store ops the optimized path miscompiles (#178).
+    ///
+    /// The optimized `wasm_to_ir` → `ir_to_arm` lowering of `MemLoad`/`MemStore`
+    /// drops the address operand: it emits the linear-memory base (0x20000100)
+    /// but the `ADD base, base, Raddr` comes out with garbage registers, so the
+    /// load/store hits a fixed address regardless of the operand — both for a
+    /// dynamic (pointer-param) address AND a constant one. Any function that
+    /// dereferences memory therefore reads/writes the wrong location.
+    ///
+    /// Until the optimized memory path is repaired (and re-enabled — tracked
+    /// separately), decline any module using linear memory and fall back to
+    /// `InstructionSelector::select_with_stack`, which lowers these correctly
+    /// (`ldr [fp, Raddr]`). Correct-but-unoptimized beats fast-but-wrong.
+    fn is_linear_memory_op(op: &WasmOp) -> bool {
+        matches!(
+            op,
+            WasmOp::I32Load { .. }
+                | WasmOp::I32Store { .. }
+                | WasmOp::I32Load8S { .. }
+                | WasmOp::I32Load8U { .. }
+                | WasmOp::I32Load16S { .. }
+                | WasmOp::I32Load16U { .. }
+                | WasmOp::I32Store8 { .. }
+                | WasmOp::I32Store16 { .. }
+                | WasmOp::I64Load { .. }
+                | WasmOp::I64Store { .. }
+                | WasmOp::I64Load8S { .. }
+                | WasmOp::I64Load8U { .. }
+                | WasmOp::I64Load16S { .. }
+                | WasmOp::I64Load16U { .. }
+                | WasmOp::I64Load32S { .. }
+                | WasmOp::I64Load32U { .. }
+                | WasmOp::I64Store8 { .. }
+                | WasmOp::I64Store16 { .. }
+                | WasmOp::I64Store32 { .. }
+        )
+    }
+
     fn is_unsupported_float_op(op: &WasmOp) -> bool {
         matches!(
             op,
@@ -2040,6 +2078,19 @@ impl OptimizerBridge {
             return Err(Error::UnsupportedInstruction(format!(
                 "optimized lowering path does not support float ops ({float_op:?}); \
                  the non-optimized instruction selector handles f32 — issue #120"
+            )));
+        }
+
+        // Issue #178: the optimized path miscompiles linear-memory load/store —
+        // the address operand is dropped, so the access hits a fixed address
+        // regardless of the (dynamic or constant) operand. Decline the module so
+        // the backend falls back to `select_with_stack`, which lowers memory
+        // access correctly (`ldr [fp, Raddr]`). Re-enable once the optimized
+        // memory path is repaired.
+        if let Some(mem_op) = wasm_ops.iter().find(|op| Self::is_linear_memory_op(op)) {
+            return Err(Error::UnsupportedInstruction(format!(
+                "optimized lowering path miscompiles linear-memory access ({mem_op:?}) — \
+                 the address operand is dropped; the non-optimized selector is correct — issue #178"
             )));
         }
 

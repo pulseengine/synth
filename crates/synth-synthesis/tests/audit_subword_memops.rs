@@ -11,9 +11,16 @@ use synth_synthesis::{OptimizerBridge, WasmOp};
 
 fn compile(wasm: &[WasmOp], num_params: usize) {
     let bridge = OptimizerBridge::new();
-    let (ir, _cfg, _stats) = bridge.optimize_full(wasm).expect("optimize_full");
-    // ir_to_arm is the panic site for unmapped-vreg consumers.
-    let _arm = bridge.ir_to_arm(&ir, num_params);
+    // #178: the optimized path now DECLINES linear-memory ops (typed Err →
+    // backend falls back to the correct select_with_stack). A decline is the
+    // expected, panic-free outcome for these memory-op modules. If a module
+    // does optimize, ir_to_arm must still not panic (the original audit intent).
+    match bridge.optimize_full(wasm) {
+        Ok((ir, _cfg, _stats)) => {
+            let _arm = bridge.ir_to_arm(&ir, num_params);
+        }
+        Err(_) => { /* declined to select_with_stack — panic-free, fine (#178) */ }
+    }
 }
 
 #[test]
