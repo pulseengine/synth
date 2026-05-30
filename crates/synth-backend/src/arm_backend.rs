@@ -168,13 +168,24 @@ fn compile_wasm_to_arm(
             config.func_arg_counts.clone(),
             config.type_arg_counts.clone(),
         );
+        // #197: in relocatable host-link mode, emit direct `func_N` BLs for
+        // imports (rewritten to the wasm field name by build_relocatable_elf)
+        // instead of `__meld_dispatch_import`.
+        selector.set_relocatable(config.relocatable);
         selector
             .select_with_stack(wasm_ops, num_params)
             .map_err(|e| format!("instruction selection failed: {}", e))
     };
 
-    // Instruction selection: optimized or direct
-    let arm_instrs = if config.no_optimize {
+    // Instruction selection: optimized or direct.
+    //
+    // #197: `--relocatable` (host-link ET_REL) forces the direct selector. The
+    // optimized path materializes an absolute linmem base (0x20000100) and does
+    // not preserve caller-saved registers across calls — both wrong for a
+    // host-linked object, where the linmem base arrives via `fp` at runtime and
+    // callees follow AAPCS. `select_with_stack` (now i64-spill capable after
+    // #171) handles fp-relative memory + caller-saved preservation correctly.
+    let arm_instrs = if config.no_optimize || config.relocatable {
         select_direct()?
     } else {
         let opt_config = if config.loom_compat {
@@ -326,6 +337,32 @@ mod tests {
         assert_eq!(func.relocations[0].symbol, "__meld_dispatch_import");
         // The BL is the second instruction (after MOV R0, #0), so offset should be > 0
         assert!(func.relocations[0].offset > 0);
+    }
+
+    /// Regression test for #197: in `relocatable` mode, an import call must
+    /// relocate against the direct `func_N` symbol (rewritten to the wasm field
+    /// name by `build_relocatable_elf`), NOT `__meld_dispatch_import`. This is
+    /// the ABI half of the #197 fix — without it, a host linker cannot resolve
+    /// the call to the real kernel symbol (e.g. `k_spin_lock`).
+    #[test]
+    fn test_compile_relocatable_import_uses_direct_func_symbol_197() {
+        let backend = ArmBackend::new();
+        let ops = vec![WasmOp::Call(0)]; // func 0 is an import
+        let config = CompileConfig {
+            num_imports: 1,
+            relocatable: true,
+            ..CompileConfig::default()
+        };
+
+        let func = backend
+            .compile_function("caller", &ops, &config)
+            .expect("relocatable import call compiles");
+
+        assert_eq!(func.relocations.len(), 1);
+        assert_eq!(
+            func.relocations[0].symbol, "func_0",
+            "#197: relocatable import must relocate against func_0 (→ field name), not Meld dispatch"
+        );
     }
 
     #[test]

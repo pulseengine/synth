@@ -551,6 +551,13 @@ fn compile_import_call_uses_field_name_173() {
 /// optimized output is now correct AND keeps optimizing (it is no longer
 /// declined to `select_with_stack`), so it legitimately differs from
 /// `--no-optimize` in instruction selection while computing the same address.
+///
+/// NOTE (#197): this exercises the optimized path, which is now used only for
+/// NON-relocatable (ET_EXEC) output. `--relocatable` deliberately routes to the
+/// direct fp-relative selector instead (see
+/// `relocatable_pointer_deref_uses_fp_base_197` below), because the optimized
+/// path materializes an absolute SRAM base (`0x20000100`) that is valid for a
+/// bare-metal binary at a known address but wrong for a host-linked object.
 #[test]
 fn pointer_deref_optimized_uses_address_operand_178_180() {
     use object::{Object, ObjectSection};
@@ -569,7 +576,7 @@ fn pointer_deref_optimized_uses_address_operand_178_180() {
             "--target",
             "cortex-m4f",
             "--all-exports",
-            "--relocatable",
+            // No --relocatable: the optimized path is the default for ET_EXEC.
             "-o",
             out.to_str().unwrap(),
         ])
@@ -605,6 +612,64 @@ fn pointer_deref_optimized_uses_address_operand_178_180() {
     assert!(
         has_add_w_ip,
         "optimized .text must contain `add.w ip, ip, rN` (base + address operand) — #180"
+    );
+}
+
+/// Regression test for #197: a `--relocatable` (host-link ET_REL) pointer-param
+/// `i32.load` must compute its address fp-relative — the host supplies the
+/// linear-memory base in `fp` (R11) at runtime — NOT via the optimized path's
+/// absolute `0x20000100` base. gale's `z_impl` read `sem->count` from
+/// `0x20000100 + clobbered-r0`; the absolute base is the root of that miscompile
+/// for relocatable output. After #197, `--relocatable` uses the direct selector,
+/// which addresses memory through `fp`.
+#[test]
+fn relocatable_pointer_deref_uses_fp_base_197() {
+    use object::{Object, ObjectSection};
+
+    let wat = workspace_root()
+        .join("tests")
+        .join("integration")
+        .join("ptr_deref.wat");
+    assert!(wat.exists(), "ptr_deref.wat not found: {}", wat.display());
+
+    let out = std::env::temp_dir().join("synth_ptr_rel_197.o");
+    let result = Command::new(synth_binary())
+        .args([
+            "compile",
+            wat.to_str().unwrap(),
+            "--target",
+            "cortex-m4f",
+            "--all-exports",
+            "--relocatable",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run synth");
+    assert!(
+        result.status.success(),
+        "relocatable compile failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let data = std::fs::read(&out).unwrap();
+    let elf = object::File::parse(&*data).expect("parse ELF");
+    let text = elf
+        .section_by_name(".text")
+        .and_then(|s| s.data().ok())
+        .expect(".text")
+        .to_vec();
+    let _ = std::fs::remove_file(&out);
+
+    // The optimized path's absolute base is `movt ip, #0x2000` (high half of
+    // 0x20000100): Thumb `MOVT R12,#0x2000` = F2C2 0C00 = bytes C2 F2 00 0C.
+    // It must be ABSENT — relocatable output addresses memory via fp, not an
+    // absolute SRAM constant.
+    let has_movt_ip_2000 = text
+        .windows(4)
+        .any(|w| w[0] == 0xc2 && w[1] == 0xf2 && w[2] == 0x00 && w[3] == 0x0c);
+    assert!(
+        !has_movt_ip_2000,
+        "#197: relocatable .text must NOT materialize the absolute 0x20000100 base (MOVT ip,#0x2000)"
     );
 }
 
