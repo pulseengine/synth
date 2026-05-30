@@ -147,44 +147,54 @@ fn optimized_i32_mul_4params_does_not_clobber_r3() {
     assert_no_clobber_before_epilogue(&arm, 4, "i32_mul_4params");
 }
 
-// #178: the optimized path miscompiled linear-memory access (the address
-// operand was dropped), so it now DECLINES modules using memory and falls
-// back to `select_with_stack` (which lowers `i32.load` correctly and has its
-// own AAPCS audit, issue #103). These two tests therefore assert the decline
-// rather than auditing the (removed) optimized memory codegen.
+// #178/#180: the optimized path's linear-memory miscompilation was root-caused
+// to the Thumb *encoder* (16-bit ADD used for the R12 base scratch, overflowing
+// its 3-bit register fields), not this lowering. The #179 decline is removed and
+// the optimized memory path is re-enabled. These tests re-assert the original
+// audit intent — optimized load/store must lower (no panic) and must not clobber
+// AAPCS param registers — now that the path is correct again.
 #[test]
-fn optimized_i32_load_declines_to_select_with_stack_178() {
-    let bridge = OptimizerBridge::new();
+fn optimized_i32_load_does_not_clobber_and_lowers_180() {
+    // 4 params live; load from the pointer in local 0. Must use the address
+    // operand (R0) and not clobber R1..R3 before the epilogue.
     let wasm = vec![
         WasmOp::LocalGet(0),
         WasmOp::I32Load {
             offset: 0,
             align: 0,
         },
+        WasmOp::LocalGet(2),
+        WasmOp::Drop,
+        WasmOp::LocalGet(3),
+        WasmOp::Drop,
     ];
-    let err = bridge
-        .optimize_full(&wasm)
-        .expect_err("optimized path must decline linear-memory access (#178)");
-    let msg = err.to_string();
+    let arm = compile_optimized(&wasm, 4);
+    assert_no_clobber_before_epilogue(&arm, 4, "i32_load_4params");
     assert!(
-        msg.contains("178") || msg.to_lowercase().contains("linear-memory"),
-        "decline error should reference the memory issue, got: {msg}"
+        arm.iter().any(|op| matches!(op, ArmOp::Ldr { .. })),
+        "optimized i32.load must emit an Ldr, got: {arm:#?}"
     );
 }
 
 #[test]
-fn optimized_i32_load8u_declines_to_select_with_stack_178() {
-    let bridge = OptimizerBridge::new();
+fn optimized_i32_load8u_does_not_clobber_and_lowers_180() {
     let wasm = vec![
         WasmOp::LocalGet(0),
         WasmOp::I32Load8U {
             offset: 0,
             align: 0,
         },
+        WasmOp::LocalGet(2),
+        WasmOp::Drop,
+        WasmOp::LocalGet(3),
+        WasmOp::Drop,
     ];
+    let arm = compile_optimized(&wasm, 4);
+    assert_no_clobber_before_epilogue(&arm, 4, "i32_load8u_4params");
     assert!(
-        bridge.optimize_full(&wasm).is_err(),
-        "optimized path must decline sub-word linear-memory access (#178)"
+        arm.iter()
+            .any(|op| matches!(op, ArmOp::Ldrb { .. } | ArmOp::Ldr { .. })),
+        "optimized i32.load8_u must emit a byte load, got: {arm:#?}"
     );
 }
 

@@ -1388,9 +1388,25 @@ impl ArmEncoder {
 
                 if let Operand2::Reg(rm) = op2 {
                     let rm_bits = reg_to_bits(rm) as u16;
-                    // ADDS Rd, Rn, Rm (16-bit): 0001 100 Rm Rn Rd
-                    let instr: u16 = 0x1800 | (rm_bits << 6) | (rn_bits << 3) | rd_bits;
-                    Ok(instr.to_le_bytes().to_vec())
+                    // 16-bit ADDS only has 3-bit register fields (R0-R7). For
+                    // high registers (e.g. R12, the MemLoad/MemStore base
+                    // scratch) the bits overflow into adjacent fields, silently
+                    // corrupting the operands — issue #178/#180: `add ip,ip,r0`
+                    // was emitted as `adds r4,r5,r1`. Guard on all three regs
+                    // being low and fall back to 32-bit ADD.W otherwise, exactly
+                    // as the Sub handler below does.
+                    if rd_bits < 8 && rn_bits < 8 && rm_bits < 8 {
+                        // ADDS Rd, Rn, Rm (16-bit): 0001 100 Rm Rn Rd
+                        let instr: u16 = 0x1800 | (rm_bits << 6) | (rn_bits << 3) | rd_bits;
+                        Ok(instr.to_le_bytes().to_vec())
+                    } else {
+                        // ADD.W Rd, Rn, Rm (32-bit) for high registers
+                        self.encode_thumb32_add_reg_raw(
+                            rd_bits as u32,
+                            rn_bits as u32,
+                            rm_bits as u32,
+                        )
+                    }
                 } else if let Operand2::Imm(imm) = op2 {
                     if *imm <= 7 && rd_bits < 8 && rn_bits < 8 {
                         // ADDS Rd, Rn, #imm3 (16-bit): 0001 110 imm3 Rn Rd
@@ -1552,9 +1568,21 @@ impl ArmEncoder {
 
                 if let Operand2::Reg(rm) = op2 {
                     let rm_bits = reg_to_bits(rm) as u16;
-                    // ADDS Rd, Rn, Rm (16-bit): 0001 100 Rm Rn Rd
-                    let instr: u16 = 0x1800 | (rm_bits << 6) | (rn_bits << 3) | rd_bits;
-                    Ok(instr.to_le_bytes().to_vec())
+                    // 16-bit ADDS is R0-R7 only; i64 pair allocation can place
+                    // operands in R8-R11, which would overflow the 3-bit fields
+                    // and corrupt the operands (#178/#180 class). Guard and fall
+                    // back to 32-bit ADDS.W for high registers.
+                    if rd_bits < 8 && rn_bits < 8 && rm_bits < 8 {
+                        // ADDS Rd, Rn, Rm (16-bit): 0001 100 Rm Rn Rd
+                        let instr: u16 = 0x1800 | (rm_bits << 6) | (rn_bits << 3) | rd_bits;
+                        Ok(instr.to_le_bytes().to_vec())
+                    } else {
+                        self.encode_thumb32_adds_reg_raw(
+                            rd_bits as u32,
+                            rn_bits as u32,
+                            rm_bits as u32,
+                        )
+                    }
                 } else {
                     // 32-bit Thumb-2 ADDS with immediate
                     self.encode_thumb32_adds(rd, rn, 0)
@@ -1593,9 +1621,20 @@ impl ArmEncoder {
 
                 if let Operand2::Reg(rm) = op2 {
                     let rm_bits = reg_to_bits(rm) as u16;
-                    // SUBS Rd, Rn, Rm (16-bit): 0001 101 Rm Rn Rd
-                    let instr: u16 = 0x1A00 | (rm_bits << 6) | (rn_bits << 3) | rd_bits;
-                    Ok(instr.to_le_bytes().to_vec())
+                    // 16-bit SUBS is R0-R7 only; high-register i64 pair operands
+                    // would overflow the 3-bit fields (#178/#180 class). Guard
+                    // and fall back to 32-bit SUBS.W for high registers.
+                    if rd_bits < 8 && rn_bits < 8 && rm_bits < 8 {
+                        // SUBS Rd, Rn, Rm (16-bit): 0001 101 Rm Rn Rd
+                        let instr: u16 = 0x1A00 | (rm_bits << 6) | (rn_bits << 3) | rd_bits;
+                        Ok(instr.to_le_bytes().to_vec())
+                    } else {
+                        self.encode_thumb32_subs_reg_raw(
+                            rd_bits as u32,
+                            rn_bits as u32,
+                            rm_bits as u32,
+                        )
+                    }
                 } else {
                     // 32-bit Thumb-2 SUBS with immediate
                     self.encode_thumb32_subs(rd, rn, 0)
@@ -1634,9 +1673,9 @@ impl ArmEncoder {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
                 let rm_bits = reg_to_bits(rm);
-                encoding_contracts::verify_reg_bits(rd_bits);
-                encoding_contracts::verify_reg_bits(rn_bits);
-                encoding_contracts::verify_reg_bits(rm_bits);
+                reg_bits_checked(rd_bits)?;
+                reg_bits_checked(rn_bits)?;
+                reg_bits_checked(rm_bits)?;
 
                 // Thumb-2 SDIV: FB90 F0F0 | Rn<<16 | Rd<<8 | Rm
                 // First halfword: 1111 1011 1001 Rn = 0xFB90 | Rn
@@ -1656,9 +1695,9 @@ impl ArmEncoder {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
                 let rm_bits = reg_to_bits(rm);
-                encoding_contracts::verify_reg_bits(rd_bits);
-                encoding_contracts::verify_reg_bits(rn_bits);
-                encoding_contracts::verify_reg_bits(rm_bits);
+                reg_bits_checked(rd_bits)?;
+                reg_bits_checked(rn_bits)?;
+                reg_bits_checked(rm_bits)?;
 
                 // Thumb-2 UDIV: FBB0 F0F0 | Rn<<16 | Rd<<8 | Rm
                 let hw1: u16 = (0xFBB0 | rn_bits) as u16;
@@ -5868,7 +5907,7 @@ impl ArmEncoder {
     /// ```
     fn encode_thumb32_movw(&self, rd: &Reg, imm: u32) -> Result<Vec<u8>> {
         let rd_bits = reg_to_bits(rd);
-        encoding_contracts::verify_reg_bits(rd_bits);
+        reg_bits_checked(rd_bits)?;
         let imm16 = imm & 0xFFFF;
 
         // MOVW Rd, #imm16
@@ -5903,8 +5942,8 @@ impl ArmEncoder {
     ) -> Result<Vec<u8>> {
         let rd_bits = reg_to_bits(rd);
         let rm_bits = reg_to_bits(rm);
-        encoding_contracts::verify_reg_bits(rd_bits);
-        encoding_contracts::verify_reg_bits(rm_bits);
+        reg_bits_checked(rd_bits)?;
+        reg_bits_checked(rm_bits)?;
         let imm5 = shift & 0x1F;
         let imm2 = imm5 & 0x3;
         let imm3 = (imm5 >> 2) & 0x7;
@@ -6216,7 +6255,7 @@ impl ArmEncoder {
     /// ensures result.len() == 4
     /// ```
     fn encode_thumb32_movw_raw(&self, rd: u32, imm16: u32) -> Result<Vec<u8>> {
-        encoding_contracts::verify_reg_bits(rd);
+        reg_bits_checked(rd)?;
         encoding_contracts::verify_imm16(imm16);
         // MOVW Rd, #imm16
         // 1111 0 i 10 0 1 0 0 imm4 | 0 imm3 Rd imm8
@@ -6243,7 +6282,7 @@ impl ArmEncoder {
     /// ensures result.len() == 4
     /// ```
     fn encode_thumb32_movt_raw(&self, rd: u32, imm16: u32) -> Result<Vec<u8>> {
-        encoding_contracts::verify_reg_bits(rd);
+        reg_bits_checked(rd)?;
         encoding_contracts::verify_imm16(imm16);
         // MOVT Rd, #imm16
         // 1111 0 i 10 1 1 0 0 imm4 | 0 imm3 Rd imm8
@@ -6331,6 +6370,29 @@ impl ArmEncoder {
         Ok(bytes)
     }
 
+    /// Encode Thumb-2 32-bit ADDS (register, flag-setting) - raw version.
+    /// Used as the high-register fallback for `ArmOp::Adds` (i64 low-word add)
+    /// so R8-R11 pair operands don't overflow the 16-bit field — #178/#180.
+    fn encode_thumb32_adds_reg_raw(&self, rd: u32, rn: u32, rm: u32) -> Result<Vec<u8>> {
+        // ADDS.W Rd, Rn, Rm (T3, S=1): EB10 Rn | 0 Rd 00 00 Rm
+        let hw1: u16 = (0xEB10 | rn) as u16;
+        let hw2: u16 = ((rd << 8) | rm) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
+    /// Encode Thumb-2 32-bit SUBS (register, flag-setting) - raw version.
+    /// High-register fallback for `ArmOp::Subs` (i64 low-word subtract) — #178/#180.
+    fn encode_thumb32_subs_reg_raw(&self, rd: u32, rn: u32, rm: u32) -> Result<Vec<u8>> {
+        // SUBS.W Rd, Rn, Rm (T3, S=1): EBB0 Rn | 0 Rd 00 00 Rm
+        let hw1: u16 = (0xEBB0 | rn) as u16;
+        let hw2: u16 = ((rd << 8) | rm) as u16;
+        let mut bytes = hw1.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&hw2.to_le_bytes());
+        Ok(bytes)
+    }
+
     /// Encode a sequence of ARM instructions
     pub fn encode_sequence(&self, ops: &[ArmOp]) -> Result<Vec<u8>> {
         let mut code = Vec::new();
@@ -6364,6 +6426,22 @@ fn reg_to_bits(reg: &Reg) -> u32 {
         Reg::LR => 14,
         Reg::PC => 15,
     }
+}
+
+/// Fallible form of the `verify_reg_bits` contract. PC (R15) is not a valid
+/// data operand for the Thumb-2 encodings that use this guard (SDIV/UDIV/MLS/…
+/// are UNPREDICTABLE with PC). Synth's own codegen never emits PC there, but
+/// the encoder must stay *total* over arbitrary `ArmOp` inputs — the fuzz
+/// harness (`encoder_no_panic`) requires Ok-or-Err, never a panic. Pre-fix, the
+/// `debug_assert` in `verify_reg_bits` aborted under `-Cdebug-assertions`.
+/// Returns a typed Err instead. See #185.
+fn reg_bits_checked(bits: u32) -> Result<()> {
+    if bits > 14 {
+        return Err(synth_core::Error::synthesis(format!(
+            "register bits {bits} (PC/R15) is not a valid operand for this Thumb-2 encoding"
+        )));
+    }
+    Ok(())
 }
 
 /// Try to encode a 32-bit value as an ARM rotated immediate (imm8 ROR 2*rot4).
@@ -6820,6 +6898,124 @@ mod tests {
 
         let encoder_thumb = ArmEncoder::new_thumb2();
         assert!(encoder_thumb.thumb_mode);
+    }
+
+    /// #178/#180 regression: the Thumb `Add`/`Adds`/`Subs` reg-forms used the
+    /// 16-bit encoding unconditionally. For high registers (R12 base scratch,
+    /// R8-R11 i64 pairs) the 3-bit register fields overflow and corrupt the
+    /// operands — `add ip,ip,r0` came out as `adds r4,r5,r1` (0x186C), silently
+    /// dropping the address operand and miscompiling every optimized memory
+    /// access. High registers must use the 32-bit `.W` forms.
+    #[test]
+    fn test_encode_thumb_add_high_reg_uses_add_w_178_180() {
+        let encoder = ArmEncoder::new_thumb2();
+
+        // add ip, ip, r0  — the exact MemLoad/MemStore base+addr op.
+        let code = encoder
+            .encode(&ArmOp::Add {
+                rd: Reg::R12,
+                rn: Reg::R12,
+                op2: Operand2::Reg(Reg::R0),
+            })
+            .unwrap();
+        // ADD.W ip, ip, r0 = EB0C 0C00 (little-endian halfwords).
+        assert_eq!(
+            code,
+            vec![0x0C, 0xEB, 0x00, 0x0C],
+            "high-reg Thumb ADD must be 32-bit ADD.W (EB0C 0C00), not corrupt 16-bit; got {code:02X?}"
+        );
+        // Must NOT be the buggy 16-bit 0x186C (`adds r4,r5,r1`).
+        assert_ne!(code, vec![0x6C, 0x18], "regressed to corrupt 16-bit ADDS");
+
+        // Low-register add stays 16-bit (no regression for the common case).
+        let lo = encoder
+            .encode(&ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R2,
+                op2: Operand2::Reg(Reg::R3),
+            })
+            .unwrap();
+        assert_eq!(
+            lo.len(),
+            2,
+            "low-reg ADD should remain 16-bit, got {lo:02X?}"
+        );
+    }
+
+    /// #178/#180 sibling: i64 low-word `Adds`/`Subs` can land in R8-R11 pairs;
+    /// those must fall back to 32-bit ADDS.W/SUBS.W (flag-setting preserved).
+    #[test]
+    fn test_encode_thumb_adds_subs_high_reg_use_32bit_178_180() {
+        let encoder = ArmEncoder::new_thumb2();
+
+        // adds r10, r10, r8  → ADDS.W = EB1A 0A08
+        let adds = encoder
+            .encode(&ArmOp::Adds {
+                rd: Reg::R10,
+                rn: Reg::R10,
+                op2: Operand2::Reg(Reg::R8),
+            })
+            .unwrap();
+        assert_eq!(
+            adds,
+            vec![0x1A, 0xEB, 0x08, 0x0A],
+            "high-reg ADDS must be 32-bit ADDS.W (EB1A 0A08); got {adds:02X?}"
+        );
+
+        // subs r10, r10, r8  → SUBS.W = EBBA 0A08
+        let subs = encoder
+            .encode(&ArmOp::Subs {
+                rd: Reg::R10,
+                rn: Reg::R10,
+                op2: Operand2::Reg(Reg::R8),
+            })
+            .unwrap();
+        assert_eq!(
+            subs,
+            vec![0xBA, 0xEB, 0x08, 0x0A],
+            "high-reg SUBS must be 32-bit SUBS.W (EBBA 0A08); got {subs:02X?}"
+        );
+    }
+
+    /// #185 regression: feeding PC (R15) as a data operand to a Thumb-2 op that
+    /// guards its registers must return Err, not panic under debug-assertions.
+    /// (Synth never emits PC here; the fuzz harness requires encode() be total.)
+    #[test]
+    fn test_encode_pc_operand_returns_err_not_panic_185() {
+        let encoder = ArmEncoder::new_thumb2();
+        for op in [
+            ArmOp::Sdiv {
+                rd: Reg::PC,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            },
+            ArmOp::Udiv {
+                rd: Reg::R0,
+                rn: Reg::PC,
+                rm: Reg::R1,
+            },
+            ArmOp::Sdiv {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                rm: Reg::PC,
+            },
+        ] {
+            let r = encoder.encode(&op);
+            assert!(
+                r.is_err(),
+                "encode({op:?}) must return Err for a PC operand, got {r:?}"
+            );
+        }
+        // Valid registers still encode fine (no false rejection).
+        assert!(
+            encoder
+                .encode(&ArmOp::Sdiv {
+                    rd: Reg::R0,
+                    rn: Reg::R1,
+                    rm: Reg::R2
+                })
+                .is_ok()
+        );
     }
 
     #[test]
