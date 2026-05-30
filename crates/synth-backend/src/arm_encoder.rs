@@ -1673,9 +1673,9 @@ impl ArmEncoder {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
                 let rm_bits = reg_to_bits(rm);
-                encoding_contracts::verify_reg_bits(rd_bits);
-                encoding_contracts::verify_reg_bits(rn_bits);
-                encoding_contracts::verify_reg_bits(rm_bits);
+                reg_bits_checked(rd_bits)?;
+                reg_bits_checked(rn_bits)?;
+                reg_bits_checked(rm_bits)?;
 
                 // Thumb-2 SDIV: FB90 F0F0 | Rn<<16 | Rd<<8 | Rm
                 // First halfword: 1111 1011 1001 Rn = 0xFB90 | Rn
@@ -1695,9 +1695,9 @@ impl ArmEncoder {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
                 let rm_bits = reg_to_bits(rm);
-                encoding_contracts::verify_reg_bits(rd_bits);
-                encoding_contracts::verify_reg_bits(rn_bits);
-                encoding_contracts::verify_reg_bits(rm_bits);
+                reg_bits_checked(rd_bits)?;
+                reg_bits_checked(rn_bits)?;
+                reg_bits_checked(rm_bits)?;
 
                 // Thumb-2 UDIV: FBB0 F0F0 | Rn<<16 | Rd<<8 | Rm
                 let hw1: u16 = (0xFBB0 | rn_bits) as u16;
@@ -5907,7 +5907,7 @@ impl ArmEncoder {
     /// ```
     fn encode_thumb32_movw(&self, rd: &Reg, imm: u32) -> Result<Vec<u8>> {
         let rd_bits = reg_to_bits(rd);
-        encoding_contracts::verify_reg_bits(rd_bits);
+        reg_bits_checked(rd_bits)?;
         let imm16 = imm & 0xFFFF;
 
         // MOVW Rd, #imm16
@@ -5942,8 +5942,8 @@ impl ArmEncoder {
     ) -> Result<Vec<u8>> {
         let rd_bits = reg_to_bits(rd);
         let rm_bits = reg_to_bits(rm);
-        encoding_contracts::verify_reg_bits(rd_bits);
-        encoding_contracts::verify_reg_bits(rm_bits);
+        reg_bits_checked(rd_bits)?;
+        reg_bits_checked(rm_bits)?;
         let imm5 = shift & 0x1F;
         let imm2 = imm5 & 0x3;
         let imm3 = (imm5 >> 2) & 0x7;
@@ -6255,7 +6255,7 @@ impl ArmEncoder {
     /// ensures result.len() == 4
     /// ```
     fn encode_thumb32_movw_raw(&self, rd: u32, imm16: u32) -> Result<Vec<u8>> {
-        encoding_contracts::verify_reg_bits(rd);
+        reg_bits_checked(rd)?;
         encoding_contracts::verify_imm16(imm16);
         // MOVW Rd, #imm16
         // 1111 0 i 10 0 1 0 0 imm4 | 0 imm3 Rd imm8
@@ -6282,7 +6282,7 @@ impl ArmEncoder {
     /// ensures result.len() == 4
     /// ```
     fn encode_thumb32_movt_raw(&self, rd: u32, imm16: u32) -> Result<Vec<u8>> {
-        encoding_contracts::verify_reg_bits(rd);
+        reg_bits_checked(rd)?;
         encoding_contracts::verify_imm16(imm16);
         // MOVT Rd, #imm16
         // 1111 0 i 10 1 1 0 0 imm4 | 0 imm3 Rd imm8
@@ -6426,6 +6426,22 @@ fn reg_to_bits(reg: &Reg) -> u32 {
         Reg::LR => 14,
         Reg::PC => 15,
     }
+}
+
+/// Fallible form of the `verify_reg_bits` contract. PC (R15) is not a valid
+/// data operand for the Thumb-2 encodings that use this guard (SDIV/UDIV/MLS/…
+/// are UNPREDICTABLE with PC). Synth's own codegen never emits PC there, but
+/// the encoder must stay *total* over arbitrary `ArmOp` inputs — the fuzz
+/// harness (`encoder_no_panic`) requires Ok-or-Err, never a panic. Pre-fix, the
+/// `debug_assert` in `verify_reg_bits` aborted under `-Cdebug-assertions`.
+/// Returns a typed Err instead. See #185.
+fn reg_bits_checked(bits: u32) -> Result<()> {
+    if bits > 14 {
+        return Err(synth_core::Error::synthesis(format!(
+            "register bits {bits} (PC/R15) is not a valid operand for this Thumb-2 encoding"
+        )));
+    }
+    Ok(())
 }
 
 /// Try to encode a 32-bit value as an ARM rotated immediate (imm8 ROR 2*rot4).
@@ -6958,6 +6974,47 @@ mod tests {
             subs,
             vec![0xBA, 0xEB, 0x08, 0x0A],
             "high-reg SUBS must be 32-bit SUBS.W (EBBA 0A08); got {subs:02X?}"
+        );
+    }
+
+    /// #185 regression: feeding PC (R15) as a data operand to a Thumb-2 op that
+    /// guards its registers must return Err, not panic under debug-assertions.
+    /// (Synth never emits PC here; the fuzz harness requires encode() be total.)
+    #[test]
+    fn test_encode_pc_operand_returns_err_not_panic_185() {
+        let encoder = ArmEncoder::new_thumb2();
+        for op in [
+            ArmOp::Sdiv {
+                rd: Reg::PC,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            },
+            ArmOp::Udiv {
+                rd: Reg::R0,
+                rn: Reg::PC,
+                rm: Reg::R1,
+            },
+            ArmOp::Sdiv {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                rm: Reg::PC,
+            },
+        ] {
+            let r = encoder.encode(&op);
+            assert!(
+                r.is_err(),
+                "encode({op:?}) must return Err for a PC operand, got {r:?}"
+            );
+        }
+        // Valid registers still encode fine (no false rejection).
+        assert!(
+            encoder
+                .encode(&ArmOp::Sdiv {
+                    rd: Reg::R0,
+                    rn: Reg::R1,
+                    rm: Reg::R2
+                })
+                .is_ok()
         );
     }
 

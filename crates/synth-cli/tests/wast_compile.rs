@@ -445,10 +445,10 @@ fn compile_internal_call_is_linkable_167() {
     let mut thm_call_relocs = 0usize;
     for section in elf.sections() {
         for (_off, reloc) in section.relocations() {
-            if let object::RelocationFlags::Elf { r_type } = reloc.flags() {
-                if r_type == R_ARM_THM_CALL {
-                    thm_call_relocs += 1;
-                }
+            if let object::RelocationFlags::Elf { r_type } = reloc.flags()
+                && r_type == R_ARM_THM_CALL
+            {
+                thm_call_relocs += 1;
             }
         }
     }
