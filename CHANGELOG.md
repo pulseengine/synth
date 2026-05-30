@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.9] - 2026-05-30
+
+**Call argument marshalling (#195).** `select_with_stack`'s `Call` lowering
+emitted `BL` + `push(R0)` but never moved the call's stack arguments into r0–r3,
+so a call with arguments ran the callee with garbage (gale: "lock addr in r5,
+not passed in r0" — the last blocker for `z_impl_k_sem_give`). Callee argument
+counts are now plumbed frontend→backend→selector (from the Type/Function
+sections); `Call`/`CallIndirect` pop the top-N operand-stack values as arguments
+*before* the #188 caller-saved preservation (so they're excluded from the spill
+set) and emit a cycle-safe parallel move into r0..r(N-1) as the last writes
+before the `BL`. Verified end-to-end with #188: `(call $use (i32.const 42))` now
+emits `mov r0, #42` before the `bl`, with the live param preserved across the
+call. Together with v0.11.8 (#188) this makes a value-live-across-a-call-with-args
+pattern — gale's `z_impl_k_sem_give` shape — compile correctly.
+
+Scoped out: i64/f64 arguments counted as one slot (gale uses i32/pointer args),
+`>4` arguments (5th+ stack-passed) not yet emitted, and import-call marshalling
+(the Meld dispatch ABI uses r0 for the import index — separate). The broader
+no-call param-register clobber class remains #193.
+
+**Falsification statement.** v0.11.9 is wrong if a call with i32 arguments
+(≤4) invokes the callee without those arguments in r0–r3, or if marshalling
+clobbers a caller-saved value the #188 preservation was meant to save.
+
+
 ## [0.11.8] - 2026-05-30
 
 **Caller-saved register preservation across calls (#188).** gale-confirmed

@@ -72,6 +72,16 @@ pub struct DecodedModule {
     pub imports: Vec<ImportEntry>,
     /// Number of imported functions (for distinguishing import calls from local calls)
     pub num_imported_funcs: u32,
+    /// AAPCS integer-argument count per function, indexed by the *full* WASM
+    /// function index (imported functions first, then locally-defined ones).
+    /// Used by the backend to marshal call arguments into R0–R3 (issue #195).
+    /// Counts every parameter as one slot (i64/f64 over-counted — see the
+    /// backend's `set_func_arg_counts` scope note).
+    pub func_arg_counts: Vec<u32>,
+    /// AAPCS integer-argument count per *function type*, indexed by type index.
+    /// Used by `call_indirect`, whose callee arg count comes from the static
+    /// type index (issue #195).
+    pub type_arg_counts: Vec<u32>,
 }
 
 /// Decode a WASM binary and extract functions, memory, and data segments
@@ -83,11 +93,31 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     let mut func_index = 0u32;
     let mut num_imported_funcs = 0u32;
     let mut export_names: HashMap<u32, String> = HashMap::new();
+    // #195: per-type AAPCS arg count (indexed by type index) and per-function
+    // arg count (indexed by full function index: imports first, then locals).
+    let mut type_arg_counts: Vec<u32> = Vec::new();
+    let mut func_arg_counts: Vec<u32> = Vec::new();
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
 
         match payload {
+            Payload::TypeSection(reader) => {
+                // Record the parameter count of each function type so calls can
+                // marshal the right number of arguments (issue #195).
+                for rec_group in reader {
+                    let rec_group = rec_group.context("Failed to parse type")?;
+                    for sub_ty in rec_group.types() {
+                        let count = match &sub_ty.composite_type.inner {
+                            wasmparser::CompositeInnerType::Func(func_ty) => {
+                                func_ty.params().len() as u32
+                            }
+                            _ => 0,
+                        };
+                        type_arg_counts.push(count);
+                    }
+                }
+            }
             Payload::ImportSection(reader) => {
                 for import in reader {
                     let import = import.context("Failed to parse import")?;
@@ -95,6 +125,10 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         wasmparser::TypeRef::Func(type_idx) => {
                             let idx = num_imported_funcs;
                             num_imported_funcs += 1;
+                            // Record the imported function's arg count at its
+                            // full function index (imports come first).
+                            func_arg_counts
+                                .push(type_arg_counts.get(type_idx as usize).copied().unwrap_or(0));
                             (ImportKind::Function(type_idx), idx)
                         }
                         wasmparser::TypeRef::Memory(_) => (ImportKind::Memory, 0),
@@ -108,6 +142,17 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         kind,
                         index: idx,
                     });
+                }
+            }
+            Payload::FunctionSection(reader) => {
+                // Each entry gives the type index of a locally-defined function,
+                // in order. Their full function indices follow the imports, so
+                // appending to `func_arg_counts` keeps it indexed by full index
+                // (issue #195).
+                for ty in reader {
+                    let type_idx = ty.context("Failed to parse function type index")?;
+                    func_arg_counts
+                        .push(type_arg_counts.get(type_idx as usize).copied().unwrap_or(0));
                 }
             }
             Payload::MemorySection(reader) => {
@@ -166,6 +211,8 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         data_segments,
         imports,
         num_imported_funcs,
+        func_arg_counts,
+        type_arg_counts,
     })
 }
 

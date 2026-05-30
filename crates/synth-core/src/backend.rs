@@ -96,6 +96,14 @@ pub struct CompileConfig {
     pub loom_compat: bool,
     /// Number of imported functions (calls to indices below this use Meld dispatch)
     pub num_imports: u32,
+    /// AAPCS integer-argument count per function, indexed by full WASM function
+    /// index (imports first, then locals). Lets `Call` marshal the right number
+    /// of operand-stack values into R0–R3 (issue #195). Empty = pass no args
+    /// (pre-#195 behaviour).
+    pub func_arg_counts: Vec<u32>,
+    /// AAPCS integer-argument count per function type, indexed by type index.
+    /// Used by `call_indirect` (issue #195).
+    pub type_arg_counts: Vec<u32>,
 }
 
 impl CompileConfig {
@@ -121,6 +129,8 @@ impl Default for CompileConfig {
             no_optimize: false,
             loom_compat: false,
             num_imports: 0,
+            func_arg_counts: Vec::new(),
+            type_arg_counts: Vec::new(),
         }
     }
 }
