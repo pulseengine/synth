@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-05-30
+
+**Patch: optimizer memory-address miscompilation.** Fixes a correctness bug
+where the optimized (default) path dereferenced the wrong memory location.
+
+**Falsification statement.** v0.11.3 is wrong if the optimized path still
+emits a fixed-address load/store for a pointer-param (or constant) memory
+access, or if optimized and `--no-optimize` output differ for a
+pointer-deref function.
+
+### Fixed
+- **Optimized path no longer miscompiles linear-memory addresses** (#178,
+  PR #179). The optimized `wasm_to_ir → ir_to_arm` lowering dropped the
+  `i32.load`/`i32.store` address operand (the `ADD base, base, Raddr` came out
+  with garbage registers), so the access hit a fixed address
+  (`linmem_base + 0x100`) regardless of the operand — for both a dynamic
+  pointer-param address and a constant one. `optimize_full` now declines
+  modules using linear-memory load/store and falls back to the correct
+  `select_with_stack` path (`ldr [fp, Raddr]`). Verified: optimized
+  pointer-deref output now byte-matches `--no-optimize`. Guarded by
+  `pointer_deref_optimized_matches_no_optimize_178`.
+
+  Trade-off: memory-using modules compile correctly but unoptimized until the
+  optimized memory path is repaired (#180). The host-ABI / `__linear_memory_base`
+  contract raised alongside this is tracked in #181.
+
 ## [0.11.2] - 2026-05-30
 
 **Patch: gale-wasm ARM linkability, round 2.** Completes the cross-language-LTO
