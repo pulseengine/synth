@@ -215,6 +215,71 @@ fn is_caller_saved(reg: Reg) -> bool {
     matches!(reg, Reg::R0 | Reg::R1 | Reg::R2 | Reg::R3 | Reg::R12)
 }
 
+/// AAPCS integer/pointer argument registers, in order: R0, R1, R2, R3.
+/// Arguments beyond the fourth are passed on the stack (not yet handled — see
+/// the scope note on `marshal_call_args`).
+const ARG_REGS: [Reg; 4] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3];
+
+/// Emit a cycle-safe parallel register move: for each `(src, dst)` pair, move
+/// `src` into `dst`, even when the moves form chains or cycles (e.g. moving
+/// `R1 -> R0` and `R0 -> R1` simultaneously). This is needed for AAPCS argument
+/// marshalling because an argument's source register may itself be another
+/// argument's destination.
+///
+/// Algorithm: repeatedly emit any move whose destination is not (still) needed
+/// as a source by a pending move. When only cycles remain, break one by routing
+/// a single source through a scratch register, then continue. Self-moves
+/// (`src == dst`) are skipped.
+///
+/// `scratch` must be a register not used as any source or destination here.
+fn emit_parallel_move(
+    instructions: &mut Vec<ArmInstruction>,
+    moves: &[(Reg, Reg)],
+    scratch: Reg,
+    idx: usize,
+) {
+    // Pending moves still to be performed (skip trivial self-moves).
+    let mut pending: Vec<(Reg, Reg)> = moves
+        .iter()
+        .copied()
+        .filter(|(src, dst)| src != dst)
+        .collect();
+
+    let emit_mov = |instructions: &mut Vec<ArmInstruction>, dst: Reg, src: Reg| {
+        instructions.push(ArmInstruction {
+            op: ArmOp::Mov {
+                rd: dst,
+                op2: Operand2::Reg(src),
+            },
+            source_line: Some(idx),
+        });
+    };
+
+    while !pending.is_empty() {
+        // Find a move whose destination is not the source of any other pending
+        // move — safe to emit now without clobbering a value still needed.
+        if let Some(pos) = pending
+            .iter()
+            .position(|&(_, dst)| !pending.iter().any(|&(src2, _)| src2 == dst))
+        {
+            let (src, dst) = pending.remove(pos);
+            emit_mov(instructions, dst, src);
+        } else {
+            // Only cycles remain: break one by parking its source in scratch.
+            // Rewrite every move that reads that source to read scratch instead.
+            let (cycle_src, cycle_dst) = pending[0];
+            emit_mov(instructions, scratch, cycle_src);
+            emit_mov(instructions, cycle_dst, scratch);
+            pending.remove(0);
+            for m in pending.iter_mut() {
+                if m.0 == cycle_src {
+                    m.0 = scratch;
+                }
+            }
+        }
+    }
+}
+
 /// Given the low register of an i64 register pair, return the high register.
 ///
 /// Convention: i64 values on 32-bit ARM use two consecutive registers.
@@ -674,6 +739,17 @@ pub struct InstructionSelector {
     bounds_check: BoundsCheckConfig,
     /// Number of imported functions (calls to func_idx < this go through Meld dispatch)
     num_imports: u32,
+    /// AAPCS argument count per function, indexed by the *full* WASM function
+    /// index (imports first, then locals). Plumbed from the frontend's type +
+    /// function sections (issue #195). `func_arg_counts[i]` = number of integer
+    /// arguments function `i` expects. Empty when no signature table was
+    /// provided (in which case `Call` falls back to passing zero args — the
+    /// pre-#195 behaviour).
+    func_arg_counts: Vec<u32>,
+    /// AAPCS argument count per *function type*, indexed by type index. Used by
+    /// `CallIndirect`, whose callee arg count comes from the static `type_index`
+    /// rather than a concrete function index (issue #195).
+    type_arg_counts: Vec<u32>,
     /// FPU capability of the target (None = soft-float only)
     fpu: Option<FPUPrecision>,
     /// Target name for error messages
@@ -699,6 +775,8 @@ impl InstructionSelector {
             regs: RegisterState::new(),
             bounds_check: BoundsCheckConfig::None,
             num_imports: 0,
+            func_arg_counts: Vec::new(),
+            type_arg_counts: Vec::new(),
             fpu: None,
             target_name: "cortex-m3".to_string(),
             next_vfp_reg: 0,
@@ -716,6 +794,8 @@ impl InstructionSelector {
             regs: RegisterState::new(),
             bounds_check,
             num_imports: 0,
+            func_arg_counts: Vec::new(),
+            type_arg_counts: Vec::new(),
             fpu: None,
             target_name: "cortex-m3".to_string(),
             next_vfp_reg: 0,
@@ -729,6 +809,18 @@ impl InstructionSelector {
     /// Set the number of imported functions for Meld dispatch
     pub fn set_num_imports(&mut self, num_imports: u32) {
         self.num_imports = num_imports;
+    }
+
+    /// Set the per-function AAPCS argument-count table (issue #195).
+    ///
+    /// `func_arg_counts[i]` is the number of integer arguments the function at
+    /// full WASM index `i` (imports first, then locals) expects. `type_arg_counts[t]`
+    /// is the argument count of function type `t` (used for `CallIndirect`).
+    /// These let `Call`/`CallIndirect` marshal the top-N operand-stack values
+    /// into R0–R3 per AAPCS before the `BL`.
+    pub fn set_func_arg_counts(&mut self, func_arg_counts: Vec<u32>, type_arg_counts: Vec<u32>) {
+        self.func_arg_counts = func_arg_counts;
+        self.type_arg_counts = type_arg_counts;
     }
 
     /// Set bounds checking configuration
@@ -3841,6 +3933,72 @@ impl InstructionSelector {
         }
     }
 
+    /// #195: Pop the top-`arg_count` operand-stack registers as call arguments.
+    ///
+    /// The WASM operand-stack top is the LAST argument, so the returned vector
+    /// is reversed to index `0..n` = argument `0..n` (arg `i` → `ARG_REGS[i]`).
+    /// At most `ARG_REGS.len()` (4) arguments are popped; see the scope note on
+    /// [`InstructionSelector::emit_arg_moves`].
+    ///
+    /// Popping the args here (before caller-saved preservation) is deliberate:
+    /// arguments are consumed by the call, not live across it, so they must be
+    /// excluded from the [`preserve_caller_saved`] spill set.
+    fn pop_call_args(stack: &mut Vec<Reg>, arg_count: u32) -> Result<Vec<Reg>> {
+        let n = (arg_count as usize).min(ARG_REGS.len());
+        let mut srcs: Vec<Reg> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let r = stack.pop().ok_or_else(|| {
+                synth_core::Error::synthesis(
+                    "stack underflow marshalling call arguments: malformed WASM or \
+                     callee arg count exceeds available operand-stack depth"
+                        .to_string(),
+                )
+            })?;
+            srcs.push(r);
+        }
+        srcs.reverse();
+        Ok(srcs)
+    }
+
+    /// #195: Emit the cycle-safe parallel move of call arguments into R0–R3.
+    ///
+    /// `arg_srcs[i]` is moved into `ARG_REGS[i]`. MUST be called AFTER
+    /// [`preserve_caller_saved`] (so live non-arg values already sit in the
+    /// spill area) and immediately before the `BL`/`CallIndirect`, so these are
+    /// the last register writes before the branch.
+    ///
+    /// Scope: only ≤4 integer (i32/pointer-width) arguments are handled. i64/f64
+    /// arguments — which AAPCS passes in register *pairs* / 8-byte stack slots —
+    /// and arguments beyond the fourth (which spill to the stack) are NOT
+    /// marshalled; this covers the gale runtime primitives (`k_spin_lock`,
+    /// `k_sem_give`, …), which take ≤4 pointer/i32 arguments. See issue #195.
+    fn emit_arg_moves(
+        &self,
+        instructions: &mut Vec<ArmInstruction>,
+        arg_srcs: &[Reg],
+        stack: &[Reg],
+        local_to_reg: &std::collections::HashMap<u32, Reg>,
+        layout: &LocalLayout,
+        idx: usize,
+    ) -> Result<usize> {
+        if arg_srcs.is_empty() {
+            return Ok(0);
+        }
+        let moves: Vec<(Reg, Reg)> = arg_srcs
+            .iter()
+            .enumerate()
+            .map(|(i, &src)| (src, ARG_REGS[i]))
+            .collect();
+        // Scratch for cycle-breaking: a callee-saved register holding no live
+        // value. The args are already popped from `stack`; `free_callee_saved`
+        // also avoids params/locals. It can never be an arg source (caller-saved
+        // / temp) or dest (R0–R3), so it is always safe.
+        let scratch = self.free_callee_saved(stack, local_to_reg, layout)?;
+        let before = instructions.len();
+        emit_parallel_move(instructions, &moves, scratch, idx);
+        Ok(instructions.len() - before)
+    }
+
     /// Select ARM instructions using a stack-based approach with AAPCS calling convention
     ///
     /// #188: Spill every live caller-saved register to the call-spill scratch
@@ -5261,17 +5419,37 @@ impl InstructionSelector {
                 }
 
                 Call(func_idx) => {
+                    let is_import = *func_idx < self.num_imports;
+
+                    // ── #195: AAPCS argument count for this callee ──
+                    // Look up how many integer args the callee expects so we can
+                    // move the top-N operand-stack values into R0–R3. Import
+                    // calls are excluded: the Meld dispatch ABI puts the import
+                    // index in R0 (see below), which would collide with arg0, so
+                    // arg marshalling for imports stays out of scope (matches the
+                    // #188 note on import-call register handling).
+                    let arg_count = if is_import {
+                        0
+                    } else {
+                        self.func_arg_counts
+                            .get(*func_idx as usize)
+                            .copied()
+                            .unwrap_or(0)
+                    };
+
+                    // #195: pop the call arguments off the operand stack FIRST so
+                    // they are excluded from caller-saved preservation (they are
+                    // consumed by the call, not live across it). The actual moves
+                    // into R0–R3 are emitted AFTER preservation (below), so they
+                    // are the last writes before the BL.
+                    let arg_srcs = Self::pop_call_args(&mut stack, arg_count)?;
+
                     // ── #188: caller-saved preservation across the call ──
                     // A BL clobbers R0–R3 and R12. Any live value (operand-stack
                     // temp or param) residing in one of those registers and needed
                     // after the call must be spilled before the BL and reloaded
-                    // after it. R4–R8 are callee-saved and survive untouched.
-                    //
-                    // NOTE (scoped out): general AAPCS argument marshalling (moving
-                    // the top-N operand-stack values into R0..R(N-1)) is NOT done
-                    // here — the selector has no access to the callee's signature
-                    // (arg count). The 0-arg reproducers compile correctly; calls
-                    // with register args are a separate, signature-plumbing fix.
+                    // after it. R4–R8 are callee-saved and survive untouched. The
+                    // call arguments were already popped, so they are not spilled.
                     let preserved = self.preserve_caller_saved(
                         &mut instructions,
                         &stack,
@@ -5280,7 +5458,23 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    if *func_idx < self.num_imports {
+                    // #195: move arguments into R0–R3 — the LAST thing before the
+                    // BL, after live values are safely in the spill area. Skipped
+                    // for imports (arg_srcs is empty there). Uses a cycle-safe
+                    // parallel move so chains/swaps among R0–R3 are handled.
+                    let n_arg_moves = self.emit_arg_moves(
+                        &mut instructions,
+                        &arg_srcs,
+                        &stack,
+                        &local_to_reg,
+                        &layout,
+                        idx,
+                    )?;
+                    for _ in 0..n_arg_moves {
+                        cf.add_instruction();
+                    }
+
+                    if is_import {
                         // Import call — dispatch through Meld runtime
                         instructions.push(ArmInstruction {
                             op: ArmOp::Mov {
@@ -5320,14 +5514,51 @@ impl InstructionSelector {
                 }
 
                 CallIndirect { type_index, .. } => {
-                    let table_idx_reg = stack.pop().ok_or_else(|| {
+                    // Top of stack is the table index; the call arguments sit
+                    // BELOW it on the operand stack.
+                    let mut table_idx_reg = stack.pop().ok_or_else(|| {
                         synth_core::Error::synthesis(
                             "stack underflow: malformed WASM or compiler bug".to_string(),
                         )
                     })?;
+
+                    // #195: callee arg count comes from the static function type.
+                    let arg_count = self
+                        .type_arg_counts
+                        .get(*type_index as usize)
+                        .copied()
+                        .unwrap_or(0);
+                    let arg_srcs = Self::pop_call_args(&mut stack, arg_count)?;
+
+                    // #195: the arg moves write R0–R3, but the `CallIndirect`
+                    // expansion reads `table_idx_reg` to compute the branch
+                    // target (and clobbers R12). When there are args to marshal,
+                    // relocate the table index into a free callee-saved register
+                    // so neither the R0–R3 arg writes nor the spill scratch can
+                    // clobber it. We keep that register ON the operand stack while
+                    // marshalling so every `free_callee_saved` call avoids it,
+                    // then pop it back off just before emitting the call.
+                    let mut table_pushed = false;
+                    if !arg_srcs.is_empty() {
+                        let safe = self.free_callee_saved(&stack, &local_to_reg, &layout)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Mov {
+                                rd: safe,
+                                op2: Operand2::Reg(table_idx_reg),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        table_idx_reg = safe;
+                        stack.push(safe);
+                        table_pushed = true;
+                    }
+
                     // #188: preserve caller-saved registers across the indirect
-                    // call (the table-index reg is already popped and consumed by
-                    // the call dispatch, so it is excluded from preservation).
+                    // call (the table-index reg and the args are already popped
+                    // and consumed, so they are excluded from preservation; the
+                    // relocated callee-saved table index, if any, is not spilled
+                    // because preservation only touches caller-saved regs).
                     let preserved = self.preserve_caller_saved(
                         &mut instructions,
                         &stack,
@@ -5335,6 +5566,27 @@ impl InstructionSelector {
                         &layout,
                         idx,
                     )?;
+
+                    // #195: marshal args into R0–R3 (after preservation, last
+                    // writes before the indirect branch). The relocated table
+                    // index on the stack keeps the scratch picker away from it.
+                    let n_arg_moves = self.emit_arg_moves(
+                        &mut instructions,
+                        &arg_srcs,
+                        &stack,
+                        &local_to_reg,
+                        &layout,
+                        idx,
+                    )?;
+                    for _ in 0..n_arg_moves {
+                        cf.add_instruction();
+                    }
+
+                    // Pop the relocated table index back off before the call op.
+                    if table_pushed {
+                        stack.pop();
+                    }
+
                     instructions.push(ArmInstruction {
                         op: ArmOp::CallIndirect {
                             rd: Reg::R0,
@@ -7292,6 +7544,183 @@ mod tests {
             Some(Reg::R0),
             "i32.load base must be param0 (R0), got {:?}",
             mem_load.offset_reg
+        );
+    }
+
+    /// #195 regression: a single i32 argument to a local call must be placed in
+    /// R0 (per AAPCS) before the BL. Reproducer: `(call $use (i32.const 42))`.
+    /// Pre-fix the constant was computed but never moved into R0 — the callee
+    /// saw garbage.
+    #[test]
+    fn test_195_single_arg_in_r0_before_bl() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        // func_3 (a local function, >= num_imports=0) takes 1 i32 arg.
+        selector.set_func_arg_counts(vec![0, 0, 0, 1], Vec::new());
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(42), // the argument
+            WasmOp::Call(3),      // call func_3(arg)
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        let bl_pos = arm
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Bl { .. }))
+            .expect("a BL must be emitted");
+
+        // Before the BL, R0 must end up holding the argument (42). The constant
+        // may be materialized into a temp and then moved to R0, or directly into
+        // R0 — either way R0 is written before the BL via a Mov/Movw/Mov-imm.
+        let writes_r0_before_bl = arm[..bl_pos].iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Mov { rd: Reg::R0, .. } | ArmOp::Movw { rd: Reg::R0, .. }
+            )
+        });
+        assert!(
+            writes_r0_before_bl,
+            "argument must be marshalled into R0 before the BL: {:#?}",
+            arm
+        );
+    }
+
+    /// #195 + #188 compose: gale's `z_impl_k_sem_give` shape — a value is live
+    /// across a call that ALSO takes an argument. Both must hold: (a) the arg is
+    /// passed in R0, and (b) the live value (param0) is preserved across the
+    /// call and used afterwards. Reproducer body:
+    ///   `(drop (call $use (i32.const 42))) (i32.load (local.get 0))`
+    #[test]
+    fn test_195_arg_passed_and_live_value_preserved() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        // func_0 takes 1 i32 arg.
+        selector.set_func_arg_counts(vec![1], Vec::new());
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(42), // arg to func_0
+            WasmOp::Call(0),      // call func_0(42)
+            WasmOp::Drop,         // discard the result
+            WasmOp::LocalGet(0),  // push param0 (R0)
+            WasmOp::I32Load {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        let bl_pos = arm
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Bl { .. }))
+            .expect("a BL must be emitted");
+
+        // (a) param0 (R0) spilled before the BL and reloaded after (#188).
+        assert!(
+            arm[..bl_pos]
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Str { rd: Reg::R0, .. })),
+            "param0 (R0) must be spilled before the BL: {:#?}",
+            arm
+        );
+        assert!(
+            arm[bl_pos..]
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Ldr { rd: Reg::R0, .. })),
+            "param0 (R0) must be reloaded after the BL: {:#?}",
+            arm
+        );
+
+        // (b) R0 is written with the argument before the BL (#195).
+        assert!(
+            arm[..bl_pos].iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Mov { rd: Reg::R0, .. } | ArmOp::Movw { rd: Reg::R0, .. }
+            )),
+            "argument must be marshalled into R0 before the BL: {:#?}",
+            arm
+        );
+
+        // The memory load's base must be the reloaded param0 (R0), i.e. derived
+        // from the ORIGINAL param0, not from the call's clobbered R0.
+        let mem_load = arm
+            .iter()
+            .rev()
+            .find_map(|i| match &i.op {
+                ArmOp::Ldr { addr, .. } if addr.offset_reg.is_some() => Some(addr.clone()),
+                _ => None,
+            })
+            .expect("a memory LDR with a register offset must be emitted");
+        assert_eq!(
+            mem_load.offset_reg,
+            Some(Reg::R0),
+            "i32.load base must be the preserved param0 (R0), got {:?}",
+            mem_load.offset_reg
+        );
+    }
+
+    /// #195: two i32 arguments go to R0 and R1 (in order) before the BL.
+    #[test]
+    fn test_195_two_args_in_r0_r1() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(vec![2], Vec::new());
+
+        let wasm_ops = vec![
+            WasmOp::I32Const(10), // arg0 -> R0
+            WasmOp::I32Const(20), // arg1 -> R1
+            WasmOp::Call(0),
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        let bl_pos = arm
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Bl { .. }))
+            .expect("a BL must be emitted");
+
+        // Both R0 and R1 must be written before the BL.
+        let r0_written = arm[..bl_pos].iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Mov { rd: Reg::R0, .. } | ArmOp::Movw { rd: Reg::R0, .. }
+            )
+        });
+        let r1_written = arm[..bl_pos].iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::Mov { rd: Reg::R1, .. } | ArmOp::Movw { rd: Reg::R1, .. }
+            )
+        });
+        assert!(r0_written, "arg0 must land in R0 before BL: {:#?}", arm);
+        assert!(r1_written, "arg1 must land in R1 before BL: {:#?}", arm);
+    }
+
+    /// #195: with no signature table (empty `func_arg_counts`) a call passes no
+    /// args — the pre-#195 / #188 behaviour. Confirms the 0-arg #188 path is
+    /// untouched: a 0-arg `Call` still emits exactly its BL with no extra arg
+    /// moves into R0–R3.
+    #[test]
+    fn test_195_zero_args_unchanged() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        // No arg-count table: marshalling falls back to zero args.
+        let wasm_ops = vec![WasmOp::Call(5)];
+        let arm = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        assert!(
+            arm.iter()
+                .any(|i| matches!(&i.op, ArmOp::Bl { label } if label == "func_5")),
+            "Call(5) should still emit BL func_5: {:#?}",
+            arm
+        );
+        // No argument move into R0 (there are no args and no live values).
+        let r0_moves = arm
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Mov { rd: Reg::R0, .. }))
+            .count();
+        assert_eq!(
+            r0_moves, 0,
+            "a 0-arg call must not marshal anything into R0: {:#?}",
+            arm
         );
     }
 

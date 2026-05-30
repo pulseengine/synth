@@ -1659,106 +1659,139 @@ fn compile_all_exports(
     let mut sbom_wasm_bytes: Option<Vec<u8>> = None;
 
     // Decode module(s) — for WAST files we merge exports across all modules
-    let (all_exports, all_memories, all_imports, max_num_imported_funcs) =
-        if path.extension().is_some_and(|ext| ext == "wast") {
-            info!("Parsing WAST (extracting all modules)...");
-            let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
-            let module_binaries = extract_all_modules_from_wast(&contents)?;
-            info!("Found {} modules in WAST file", module_binaries.len());
+    let (
+        all_exports,
+        all_memories,
+        all_imports,
+        max_num_imported_funcs,
+        func_arg_counts,
+        type_arg_counts,
+    ) = if path.extension().is_some_and(|ext| ext == "wast") {
+        info!("Parsing WAST (extracting all modules)...");
+        let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
+        let module_binaries = extract_all_modules_from_wast(&contents)?;
+        info!("Found {} modules in WAST file", module_binaries.len());
 
-            // Decode each module and collect exports.
-            // Use an IndexMap-style approach: last module with a given export name wins
-            // (matching WAST spec semantics where assertions test the most-recent module).
-            let mut export_map: std::collections::HashMap<String, FunctionOps> =
-                std::collections::HashMap::new();
-            let mut merged_memories: Vec<WasmMemory> = Vec::new();
-            let mut merged_imports: Vec<ImportEntry> = Vec::new();
-            let mut max_imports: u32 = 0;
+        // Decode each module and collect exports.
+        // Use an IndexMap-style approach: last module with a given export name wins
+        // (matching WAST spec semantics where assertions test the most-recent module).
+        let mut export_map: std::collections::HashMap<String, FunctionOps> =
+            std::collections::HashMap::new();
+        let mut merged_memories: Vec<WasmMemory> = Vec::new();
+        let mut merged_imports: Vec<ImportEntry> = Vec::new();
+        let mut max_imports: u32 = 0;
+        // #195: keep the arg-count tables aligned with the module whose
+        // imports get merged (the one that defines `max_imports`).
+        let mut merged_func_arg_counts: Vec<u32> = Vec::new();
+        let mut merged_type_arg_counts: Vec<u32> = Vec::new();
 
-            for (idx, wasm_bytes) in module_binaries.iter().enumerate() {
-                // Run Loom optimizer on each module if --loom is enabled
-                let wasm_bytes = maybe_run_loom(loom, wasm_bytes.clone())?;
-                // First decoded module is the SBOM default; refined below to
-                // the module whose imports get merged.
-                if sbom_wasm_bytes.is_none() {
-                    sbom_wasm_bytes = Some(wasm_bytes.clone());
+        for (idx, wasm_bytes) in module_binaries.iter().enumerate() {
+            // Run Loom optimizer on each module if --loom is enabled
+            let wasm_bytes = maybe_run_loom(loom, wasm_bytes.clone())?;
+            // First decoded module is the SBOM default; refined below to
+            // the module whose imports get merged.
+            if sbom_wasm_bytes.is_none() {
+                sbom_wasm_bytes = Some(wasm_bytes.clone());
+            }
+            match decode_wasm_module(&wasm_bytes) {
+                Ok(module) => {
+                    let export_count = module
+                        .functions
+                        .iter()
+                        .filter(|f| f.export_name.is_some())
+                        .count();
+                    info!(
+                        "  Module {}: {} functions ({} exports), {} memories",
+                        idx,
+                        module.functions.len(),
+                        export_count,
+                        module.memories.len()
+                    );
+
+                    for func in module.functions {
+                        if let Some(name) = func.export_name.clone() {
+                            export_map.insert(name, func);
+                        }
+                    }
+
+                    // Take the largest memory across all modules
+                    for mem in &module.memories {
+                        if merged_memories.is_empty()
+                            || mem.initial_pages
+                                > merged_memories
+                                    .first()
+                                    .map(|m| m.initial_pages)
+                                    .unwrap_or(0)
+                        {
+                            merged_memories = vec![mem.clone()];
+                        }
+                    }
+
+                    if module.num_imported_funcs > max_imports {
+                        max_imports = module.num_imported_funcs;
+                        merged_imports = module.imports.clone();
+                        merged_func_arg_counts = module.func_arg_counts.clone();
+                        merged_type_arg_counts = module.type_arg_counts.clone();
+                        // Keep the SBOM input aligned with the merged
+                        // imports (the module the dependency graph reflects).
+                        sbom_wasm_bytes = Some(wasm_bytes.clone());
+                    } else if merged_func_arg_counts.is_empty() {
+                        // No imports anywhere yet: still carry the arg-count
+                        // tables from a module so direct calls get marshalled.
+                        merged_func_arg_counts = module.func_arg_counts.clone();
+                        merged_type_arg_counts = module.type_arg_counts.clone();
+                    }
                 }
-                match decode_wasm_module(&wasm_bytes) {
-                    Ok(module) => {
-                        let export_count = module
-                            .functions
-                            .iter()
-                            .filter(|f| f.export_name.is_some())
-                            .count();
-                        info!(
-                            "  Module {}: {} functions ({} exports), {} memories",
-                            idx,
-                            module.functions.len(),
-                            export_count,
-                            module.memories.len()
-                        );
-
-                        for func in module.functions {
-                            if let Some(name) = func.export_name.clone() {
-                                export_map.insert(name, func);
-                            }
-                        }
-
-                        // Take the largest memory across all modules
-                        for mem in &module.memories {
-                            if merged_memories.is_empty()
-                                || mem.initial_pages
-                                    > merged_memories
-                                        .first()
-                                        .map(|m| m.initial_pages)
-                                        .unwrap_or(0)
-                            {
-                                merged_memories = vec![mem.clone()];
-                            }
-                        }
-
-                        if module.num_imported_funcs > max_imports {
-                            max_imports = module.num_imported_funcs;
-                            merged_imports = module.imports.clone();
-                            // Keep the SBOM input aligned with the merged
-                            // imports (the module the dependency graph reflects).
-                            sbom_wasm_bytes = Some(wasm_bytes.clone());
-                        }
-                    }
-                    Err(e) => {
-                        info!("  Module {}: decode failed ({}), skipping", idx, e);
-                    }
+                Err(e) => {
+                    info!("  Module {}: decode failed ({}), skipping", idx, e);
                 }
             }
+        }
 
-            let exports: Vec<_> = export_map.into_values().collect();
-            (exports, merged_memories, merged_imports, max_imports)
+        let exports: Vec<_> = export_map.into_values().collect();
+        (
+            exports,
+            merged_memories,
+            merged_imports,
+            max_imports,
+            merged_func_arg_counts,
+            merged_type_arg_counts,
+        )
+    } else {
+        let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
+            info!("Parsing WAT to WASM...");
+            wat::parse_bytes(&file_bytes)
+                .context("Failed to parse WAT file")?
+                .into_owned()
         } else {
-            let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
-                info!("Parsing WAT to WASM...");
-                wat::parse_bytes(&file_bytes)
-                    .context("Failed to parse WAT file")?
-                    .into_owned()
-            } else {
-                file_bytes
-            };
-
-            // Run Loom optimizer if --loom is enabled
-            let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;
-
-            let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
-            sbom_wasm_bytes = Some(wasm_bytes);
-
-            let exports: Vec<_> = module
-                .functions
-                .into_iter()
-                .filter(|f| f.export_name.is_some())
-                .collect();
-            let memories = module.memories;
-            let imports = module.imports;
-            let num_imports = module.num_imported_funcs;
-            (exports, memories, imports, num_imports)
+            file_bytes
         };
+
+        // Run Loom optimizer if --loom is enabled
+        let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;
+
+        let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
+        sbom_wasm_bytes = Some(wasm_bytes);
+
+        let func_arg_counts = module.func_arg_counts;
+        let type_arg_counts = module.type_arg_counts;
+        let memories = module.memories;
+        let imports = module.imports;
+        let num_imports = module.num_imported_funcs;
+        let exports: Vec<_> = module
+            .functions
+            .into_iter()
+            .filter(|f| f.export_name.is_some())
+            .collect();
+        (
+            exports,
+            memories,
+            imports,
+            num_imports,
+            func_arg_counts,
+            type_arg_counts,
+        )
+    };
 
     // Log memory information
     if !all_memories.is_empty() {
@@ -1810,6 +1843,8 @@ fn compile_all_exports(
         loom_compat,
         safety_bounds,
         num_imports: max_num_imported_funcs,
+        func_arg_counts,
+        type_arg_counts,
         target: target_spec.clone(),
         ..CompileConfig::default()
     };

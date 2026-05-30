@@ -162,6 +162,12 @@ fn compile_wasm_to_arm(
         if config.num_imports > 0 {
             selector.set_num_imports(config.num_imports);
         }
+        // #195: plumb the callee argument-count tables so the direct selector can
+        // marshal call arguments into R0–R3 per AAPCS.
+        selector.set_func_arg_counts(
+            config.func_arg_counts.clone(),
+            config.type_arg_counts.clone(),
+        );
         selector
             .select_with_stack(wasm_ops, num_params)
             .map_err(|e| format!("instruction selection failed: {}", e))
