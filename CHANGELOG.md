@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.7] - 2026-05-30
+
+**Standalone `--cortex-m` internal call resolution (#170).** A standalone
+(non-`--relocatable`) `--cortex-m` build of a module with an internal `call` was
+silently routed to the relocatable-object builder (every internal BL records a
+relocation since #167), producing an `ET_REL` object with an unresolved
+`R_ARM_THM_CALL` and a `bl #0` placeholder — which, with no linker, stayed
+garbage. Now internal-only modules build a standalone `ET_EXEC` and each internal
+`BL func_N` is patched in place to the callee entry after layout. The Thumb BL
+encoding (`target − (P+4)`, J1/J2 from the sign bit) is verified byte-for-byte
+against `arm-none-eabi-as`. The `$t`/`$a`/`$d` mapping-symbol half of #170 is
+deferred (needs an ElfBuilder symtab-ordering rework).
+
+**Falsification statement.** v0.11.7 is wrong if a standalone `--cortex-m`
+internal `BL func_N` resolves to anything other than the callee's entry address
+(e.g. callee+4, or an unpatched `f7ff fffe` placeholder).
+
 ## [0.11.6] - 2026-05-30
 
 **Patch: encoder is now total under fuzzing (#186).** The `encoder_no_panic`
