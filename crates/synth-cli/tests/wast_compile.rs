@@ -454,6 +454,24 @@ fn compile_internal_call_is_linkable_167() {
         thm_call_relocs
     );
 
+    // #174: the BL placeholder must carry a -4 addend (`ff f7 fe ff`, the bytes
+    // gas emits for a relocatable `bl`) so the relocation nets to S, not S+4.
+    // A 0xF800 placeholder (`00 f0 00 f8`) would land one instruction late.
+    let text = elf
+        .section_by_name(".text")
+        .and_then(|s| s.data().ok())
+        .expect(".text section");
+    let correct_placeholder = [0xFF, 0xF7, 0xFE, 0xFF];
+    let bad_placeholder = [0x00, 0xF0, 0x00, 0xF8];
+    assert!(
+        text.windows(4).any(|w| w == correct_placeholder),
+        "compiled .text must contain the -4 BL placeholder ff f7 fe ff (#174)"
+    );
+    assert!(
+        !text.windows(4).any(|w| w == bad_placeholder),
+        "compiled .text must not contain the S+4 BL placeholder 00 f0 00 f8 (#174)"
+    );
+
     let _ = std::fs::remove_file(&output);
 }
 

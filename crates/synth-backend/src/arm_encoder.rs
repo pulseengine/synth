@@ -2492,17 +2492,22 @@ impl ArmEncoder {
             }
 
             ArmOp::Bl { label: _ } => {
-                // BL is always 32-bit in Thumb-2, encoded here with offset 0
-                // (a relocation patches the target — see arm_backend.rs).
-                // Second halfword must be 0xF800, NOT 0xD000: the Thumb-2 BL
-                // offset uses I1 = NOT(J1 XOR S), I2 = NOT(J2 XOR S). For a true
-                // zero offset (S=0, imm=0) we need I1=I2=0, i.e. J1=J2=1, giving
-                //   hw2 = 11 J1(=1) 1 J2(=1) imm11(=0) = 0b1111_1000_0000_0000 = 0xF800.
-                // The old 0xD000 (J1=J2=0) decodes to I1=I2=1 → a bogus built-in
-                // addend of ~+0x600000, which produced the garbage `bl c0000c`
-                // target and "relocation truncated to fit" at link time (#167).
-                let hw1: u16 = 0xF000;
-                let hw2: u16 = 0xF800;
+                // BL is always 32-bit in Thumb-2, encoded here as a relocatable
+                // placeholder; an R_ARM_THM_CALL relocation patches the target
+                // (see arm_backend.rs). The placeholder must carry an embedded
+                // addend of -4 so the relocation nets to exactly the symbol S.
+                //
+                // Thumb BL computes `target = (P + 4) + signed_offset`. Under
+                // R_ARM_THM_CALL the linker resolves using the in-place addend;
+                // a 0xF800 placeholder (addend 0) lands at S+4 — every call one
+                // instruction past the callee entry (#174). The correct
+                // placeholder is what `gas` emits for `bl <extern>`:
+                //   f7ff fffe  ->  `bl <self>`  (S=1, J1=J2=1, imm = -4 addend),
+                // i.e. hw1=0xF7FF, hw2=0xFFFE. This nets to S, not S+4.
+                // (The earlier 0xD000 was worse still — a ~+0x600000 addend,
+                // the garbage `bl c0000c` and "truncated to fit" of #167.)
+                let hw1: u16 = 0xF7FF;
+                let hw2: u16 = 0xFFFE;
                 let mut bytes = hw1.to_le_bytes().to_vec();
                 bytes.extend_from_slice(&hw2.to_le_bytes());
                 Ok(bytes)
@@ -6911,14 +6916,17 @@ mod tests {
         assert_eq!(instr & 0x0F000000, 0x0B000000);
     }
 
-    /// Regression test for #167: the Thumb-2 BL placeholder must encode a
-    /// TRUE zero offset so a relocation can patch it cleanly. The second
-    /// halfword must be 0xF800 (J1=J2=1 ⟹ I1=I2=0), NOT 0xD000 (J1=J2=0 ⟹
-    /// I1=I2=1), which bakes in a bogus ~+0x600000 addend — the source of
-    /// the garbage `bl c0000c` target and the linker "relocation truncated
-    /// to fit". hw1=0xF000, hw2=0xF800 → little-endian bytes 00 F0 00 F8.
+    /// Regression test for #167 + #174: the Thumb-2 BL relocatable placeholder
+    /// must carry a -4 addend so an R_ARM_THM_CALL nets to exactly the symbol S.
+    /// The correct encoding is what `gas` emits for `bl <extern>`: f7ff fffe
+    /// (hw1=0xF7FF, hw2=0xFFFE), little-endian bytes FF F7 FE FF.
+    ///   - 0xD000 (J1=J2=0) → ~+0x600000 garbage addend: `bl c0000c` / truncated
+    ///     to fit (#167).
+    ///   - 0xF800 (addend 0) → lands at S+4, one instruction past the callee
+    ///     entry (#174).
+    ///   - 0xFFFE (addend -4) → lands at S. Correct.
     #[test]
-    fn test_encode_thumb_bl_zero_offset_167() {
+    fn test_encode_thumb_bl_placeholder_addend_167_174() {
         let encoder = ArmEncoder::new_thumb2();
         let op = ArmOp::Bl {
             label: "callee".to_string(),
@@ -6929,11 +6937,12 @@ mod tests {
 
         let hw1 = u16::from_le_bytes([code[0], code[1]]);
         let hw2 = u16::from_le_bytes([code[2], code[3]]);
-        assert_eq!(hw1, 0xF000, "BL first halfword");
+        assert_eq!(hw1, 0xF7FF, "BL first halfword (matches gas `bl <extern>`)");
         assert_eq!(
-            hw2, 0xF800,
-            "BL second halfword must be 0xF800 (true zero offset), not 0xD000 (#167)"
+            hw2, 0xFFFE,
+            "BL second halfword must be 0xFFFE (-4 addend → nets to S), not 0xF800 (→ S+4, #174) or 0xD000 (#167)"
         );
+        assert_ne!(hw2, 0xF800, "0xF800 (addend 0) lands at S+4 (#174)");
         assert_ne!(hw2, 0xD000, "0xD000 bakes in a ~+0x600000 addend (#167)");
     }
 
