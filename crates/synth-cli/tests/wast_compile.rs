@@ -387,3 +387,131 @@ fn all_wast_files_present() {
         files.len()
     );
 }
+
+/// Regression test for #167: a module with an INTERNAL call (no imports)
+/// must compile to a relocatable object whose internal call carries an
+/// `R_ARM_THM_CALL` relocation against the callee's `func_{index}` symbol —
+/// i.e. it is actually linkable. Before the fix, internal calls produced
+/// neither a relocation nor a `func_N` symbol (the object was non-linkable:
+/// the call was a `bl #0` placeholder branching to a garbage address).
+#[test]
+fn compile_internal_call_is_linkable_167() {
+    use object::{Object, ObjectSection, ObjectSymbol};
+
+    let wat = workspace_root()
+        .join("tests")
+        .join("integration")
+        .join("internal_call.wat");
+    assert!(wat.exists(), "internal_call.wat not found: {}", wat.display());
+
+    let output = std::env::temp_dir().join("synth_test_internal_call.o");
+    let result = Command::new(synth_binary())
+        .args([
+            "compile",
+            wat.to_str().unwrap(),
+            "--target",
+            "cortex-m4f",
+            "--all-exports",
+            "--relocatable",
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to run synth binary");
+    assert!(
+        result.status.success(),
+        "synth compile failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+
+    let data = std::fs::read(&output).unwrap();
+    let elf = object::File::parse(&*data).expect("parse ARM ELF object");
+
+    // A `func_0` symbol must be defined so internal `BL func_0` resolves.
+    let has_func_sym = elf.symbols().any(|s| s.name() == Ok("func_0"));
+    assert!(
+        has_func_sym,
+        "internal call target symbol `func_0` not defined in the object (#167)"
+    );
+
+    // The internal call must carry an R_ARM_THM_CALL (10) relocation — NOT
+    // R_ARM_CALL (28, ARM mode), and not be absent entirely.
+    const R_ARM_THM_CALL: u32 = 10;
+    let mut thm_call_relocs = 0usize;
+    for section in elf.sections() {
+        for (_off, reloc) in section.relocations() {
+            if let object::RelocationFlags::Elf { r_type } = reloc.flags() {
+                if r_type == R_ARM_THM_CALL {
+                    thm_call_relocs += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        thm_call_relocs >= 1,
+        "expected at least one R_ARM_THM_CALL relocation for the internal call (#167), found {}",
+        thm_call_relocs
+    );
+
+    let _ = std::fs::remove_file(&output);
+}
+
+/// Regression test for #173: a call to a wasm IMPORT must relocate against the
+/// import's field name (e.g. `host_fn`), so the object resolves against a real
+/// host that defines that symbol — NOT a generic `func_N` the host never
+/// defines. synth knows the name (it logs it); it must reach the symbol table.
+#[test]
+fn compile_import_call_uses_field_name_173() {
+    use object::{Object, ObjectSymbol};
+
+    let wat = workspace_root()
+        .join("tests")
+        .join("integration")
+        .join("import_field_name.wat");
+    assert!(wat.exists(), "import_field_name.wat not found: {}", wat.display());
+
+    let output = std::env::temp_dir().join("synth_test_import_field_name.o");
+    let result = Command::new(synth_binary())
+        .args([
+            "compile",
+            wat.to_str().unwrap(),
+            "--target",
+            "cortex-m4f",
+            "--all-exports",
+            "--relocatable",
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to run synth binary");
+    assert!(
+        result.status.success(),
+        "synth compile failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+
+    let data = std::fs::read(&output).unwrap();
+    let elf = object::File::parse(&*data).expect("parse ARM ELF object");
+
+    // The import's field name must be an UNDEFINED symbol the host resolves.
+    let has_field_name = elf
+        .symbols()
+        .any(|s| s.name() == Ok("host_fn") && s.is_undefined());
+    assert!(
+        has_field_name,
+        "import call must produce an undefined symbol named after the wasm field (`host_fn`) (#173)"
+    );
+
+    // And it must NOT name the import as a generic `func_0`.
+    let has_generic_import_label = elf
+        .symbols()
+        .any(|s| s.name() == Ok("func_0") && s.is_undefined());
+    assert!(
+        !has_generic_import_label,
+        "import call must not be left as a generic `func_0` symbol (#173)"
+    );
+
+    let _ = std::fs::remove_file(&output);
+}

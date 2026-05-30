@@ -2106,17 +2106,46 @@ fn build_relocatable_elf(funcs: &[ElfFunction], imports: &[ImportEntry]) -> Resu
         }
     }
 
-    // Any relocation symbol not already defined (i.e. import dispatch stubs like
-    // `__meld_dispatch_import`, and any internal call whose callee was not among
-    // the compiled functions) becomes an undefined external symbol.
+    // Map the BL label of a call to a wasm import (`func_{import_index}`) to
+    // the import's field name. The selector emits `BL func_N` for imported
+    // calls too (N is the wasm function index, which for imports is the import
+    // index); naming the undefined symbol `func_N` means a real host (e.g. the
+    // Zephyr kernel) cannot resolve it — it defines `k_spin_lock`, not `func_0`.
+    // synth knows the field names (it logs them + emits .meld_import_table), so
+    // use them for the undefined symbol (#173). Internal defined calls keep
+    // their `func_N`/export-name symbol (already in sym_indices).
+    let mut import_label_to_field: HashMap<String, String> = HashMap::new();
+    for imp in imports {
+        if matches!(imp.kind, synth_core::ImportKind::Function(_)) {
+            import_label_to_field.insert(format!("func_{}", imp.index), imp.name.clone());
+        }
+    }
+
+    // Any relocation symbol not already defined becomes an undefined external:
+    // import calls under their wasm field name, dispatch stubs (`__meld_*`) and
+    // skipped-internal callees under their original label.
     let mut external_count = 0usize;
     for func in funcs {
         for reloc in &func.relocations {
-            if !sym_indices.contains_key(&reloc.symbol) {
-                let idx = elf_builder.add_undefined_symbol(&reloc.symbol);
-                sym_indices.insert(reloc.symbol.clone(), idx);
-                external_count += 1;
+            if sym_indices.contains_key(&reloc.symbol) {
+                continue; // internal call to a compiled function — already defined
             }
+            let effective = import_label_to_field
+                .get(&reloc.symbol)
+                .cloned()
+                .unwrap_or_else(|| reloc.symbol.clone());
+            let idx = match sym_indices.get(&effective) {
+                Some(&i) => i,
+                None => {
+                    let i = elf_builder.add_undefined_symbol(&effective);
+                    sym_indices.insert(effective.clone(), i);
+                    external_count += 1;
+                    i
+                }
+            };
+            // Resolve the original label (func_N) to the effective symbol index
+            // so the relocation-emission loop below finds it.
+            sym_indices.insert(reloc.symbol.clone(), idx);
         }
     }
 

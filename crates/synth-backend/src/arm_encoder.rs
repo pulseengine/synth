@@ -6911,6 +6911,32 @@ mod tests {
         assert_eq!(instr & 0x0F000000, 0x0B000000);
     }
 
+    /// Regression test for #167: the Thumb-2 BL placeholder must encode a
+    /// TRUE zero offset so a relocation can patch it cleanly. The second
+    /// halfword must be 0xF800 (J1=J2=1 ⟹ I1=I2=0), NOT 0xD000 (J1=J2=0 ⟹
+    /// I1=I2=1), which bakes in a bogus ~+0x600000 addend — the source of
+    /// the garbage `bl c0000c` target and the linker "relocation truncated
+    /// to fit". hw1=0xF000, hw2=0xF800 → little-endian bytes 00 F0 00 F8.
+    #[test]
+    fn test_encode_thumb_bl_zero_offset_167() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::Bl {
+            label: "callee".to_string(),
+        };
+
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(code.len(), 4, "Thumb-2 BL is 32-bit");
+
+        let hw1 = u16::from_le_bytes([code[0], code[1]]);
+        let hw2 = u16::from_le_bytes([code[2], code[3]]);
+        assert_eq!(hw1, 0xF000, "BL first halfword");
+        assert_eq!(
+            hw2, 0xF800,
+            "BL second halfword must be 0xF800 (true zero offset), not 0xD000 (#167)"
+        );
+        assert_ne!(hw2, 0xD000, "0xD000 bakes in a ~+0x600000 addend (#167)");
+    }
+
     #[test]
     fn test_encode_sequence() {
         let encoder = ArmEncoder::new_arm32();
