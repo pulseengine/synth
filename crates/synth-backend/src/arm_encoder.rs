@@ -485,7 +485,10 @@ impl ArmEncoder {
                 // ARM adds PC+8 to the offset, so we need to adjust:
                 // target = PC + 8 + (offset * 4)
                 // For backward branch of N instructions: offset = -(N + 2)
-                let adjusted_offset = *offset - 2; // Account for PC+8
+                // wrapping_sub keeps the encoder total under fuzzing (#186): an
+                // extreme i32::MIN offset would otherwise overflow-panic; for any
+                // real branch offset this is identical to `- 2`.
+                let adjusted_offset = offset.wrapping_sub(2); // Account for PC+8
                 let offset_bits = (adjusted_offset as u32) & 0x00FFFFFF;
                 0xEA000000 | offset_bits
             }
@@ -506,7 +509,8 @@ impl ArmEncoder {
                     Condition::LE => 0xD,
                 };
                 // B<cond> encoding: cond(4) | 1010 | offset(24)
-                let adjusted_offset = *offset - 2; // Account for PC+8
+                // wrapping_sub: total under fuzzing (#186), identical for real offsets.
+                let adjusted_offset = offset.wrapping_sub(2); // Account for PC+8
                 let offset_bits = (adjusted_offset as u32) & 0x00FFFFFF;
                 (cond_bits << 28) | 0x0A000000 | offset_bits
             }

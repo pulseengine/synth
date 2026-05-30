@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-05-30
+
+**Patch: encoder is now total under fuzzing (#186).** The `encoder_no_panic`
+fuzz target (which runs with an empty corpus) intermittently found pre-existing
+panics, making the Fuzz Smoke gate flaky. The remaining root — after the
+PC/R15-operand fix in v0.11.4 (#185) — was arithmetic overflow in the ARM32
+branch encoders: `*offset - 2` overflow-panics at `i32::MIN` under
+`-Cdebug-assertions`. Now uses `wrapping_sub` (total; identical for any real
+branch offset). A 180s sweep then ran **8.8M executions with zero panics**.
+Also adds a committed `fuzz/seed_corpus/encoder_no_panic/` (61 inputs) so CI's
+60s run starts with coverage rather than exploring cold. The separate
+`i64_lowering` fuzz finding (real clobber vs harness false-positive) is tracked
+in #188.
+
+**Falsification statement.** v0.11.6 is wrong if `encoder_no_panic` panics on
+any input (the encoder must return Ok or Err, never abort).
+
 ## [0.11.5] - 2026-05-30
 
 **Patch: high-register Thumb CMN (#184).** Closes the last sibling of the #180
