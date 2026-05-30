@@ -1,7 +1,7 @@
 //! Helper script for publishing the synth workspace to crates.io.
 //!
 //! Modes:
-//!   ./publish verify   — `cargo publish --dry-run` every publishable crate
+//!   ./publish verify   — `cargo package` every publishable crate (#146)
 //!                        in dependency order, fail on first error.
 //!   ./publish publish  — `cargo publish` every publishable crate in
 //!                        dependency order; retries up to 10 times to
@@ -102,15 +102,23 @@ fn read_workspace_version() -> String {
 }
 
 fn verify(crates: &[Krate]) {
+    // #146: use `cargo package` rather than `cargo publish --dry-run`.
+    // `--dry-run` resolves every workspace dep against crates.io, so for a
+    // first publish of any new version the dependents always fail with the
+    // chicken-and-egg "dep not yet published" error (this sank the v0.7.0
+    // verify step, dropped in PR #144). `cargo package` resolves through the
+    // local path deps, builds the `.crate` end-to-end, and still catches the
+    // surface a pre-flight check should: missing README/license, bad
+    // include/exclude, broken metadata, and code that doesn't compile.
     let mut failed = Vec::new();
     for k in crates {
-        println!("--- cargo publish --dry-run -p {} ---", k.name);
+        println!("--- cargo package -p {} ---", k.name);
         let status = Command::new("cargo")
-            .args(["publish", "--dry-run", "-p", &k.name])
+            .args(["package", "-p", &k.name])
             .status()
             .expect("invoke cargo");
         if !status.success() {
-            println!("FAIL: {} dry-run failed: {status}", k.name);
+            println!("FAIL: {} package failed: {status}", k.name);
             failed.push(k.name.clone());
         }
     }
@@ -118,7 +126,7 @@ fn verify(crates: &[Krate]) {
         eprintln!("\nverify failed for: {}", failed.join(", "));
         std::process::exit(1);
     }
-    println!("\nAll {} crates passed cargo publish --dry-run.", crates.len());
+    println!("\nAll {} crates passed cargo package.", crates.len());
 }
 
 fn publish_all(mut crates: Vec<Krate>) {
@@ -136,7 +144,11 @@ fn publish_all(mut crates: Vec<Krate>) {
     }
     eprintln!(
         "\nstill failing after 10 attempts: {}",
-        crates.iter().map(|k| k.name.as_str()).collect::<Vec<_>>().join(", ")
+        crates
+            .iter()
+            .map(|k| k.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     std::process::exit(1);
 }
@@ -180,4 +192,3 @@ fn already_published(name: &str, version: &str) -> bool {
         _ => false,
     }
 }
-
