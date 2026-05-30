@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.11] - 2026-05-30
+
+**Relocatable host-link correctness — fp-relative memory + caller-saved
+preservation across imports (#197).** gale's `z_impl_k_sem_give` miscompiled on
+the optimized path: a pointer param live across an import call (`k_spin_lock`)
+was read from a fixed absolute base (`0x20000100 + clobbered-r0`) instead of
+`[fp, sem]`. Two root causes, both specific to the optimized path and both only
+wrong for relocatable output: (1) the optimized `Call` lowering does not
+preserve caller-saved registers across a `BL`, and (2) `MemLoad`/`MemStore`
+materialize an absolute SRAM base (`0x20000100`) — valid for a bare-metal
+`ET_EXEC` at a known address, but wrong for a host-linked `ET_REL` where the host
+supplies the linear-memory base in `fp` (R11) at runtime. Fix: `--relocatable`
+now routes to the direct selector (`select_with_stack`), which preserves
+caller-saved registers (#188), marshals AAPCS args (#195), spills i64 pairs under
+pressure (#171), and addresses memory fp-relative. Imports in relocatable mode
+emit a direct `BL func_N` (rewritten to the wasm field name, e.g. `k_spin_lock`,
+by `build_relocatable_elf`) instead of `__meld_dispatch_import`. The optimized
+path and its Meld-dispatch import ABI are unchanged for non-relocatable output.
+gale's shape now lowers to `str.w r0,[sp]; bl k_spin_lock; ldr.w r0,[sp]; ldr.w
+r0,[fp,r0]` with an `R_ARM_THM_CALL k_spin_lock` relocation. Follow-up tracked
+separately: an fp-aware optimized path so relocatable builds can be optimized too.
+
+_Falsification:_ this release is wrong if a `--relocatable` object with a pointer
+param live across an import call still reads that param from an absolute base or a
+call-clobbered register — i.e. if `arm-*-objdump -dr` on the `.text` shows a
+`MOVT ip,#0x2000` feeding the dereference, or the param's home register is neither
+spilled across the `BL` nor callee-saved.
+
 ## [0.11.10] - 2026-05-30
 
 **i64 register-pair spill (#171).** i64-heavy functions that kept more i64 values
