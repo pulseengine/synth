@@ -293,6 +293,7 @@ fn execute_store_load_param1_addr(addr: u32, value: u32) -> u32 {
 /// surviving `v0` (the first `Opcode::Load { dest: v0, addr: 1 }`
 /// for local 1), which maps to R1 — correct.
 #[test]
+#[ignore = "optimized memory codegen declined pending #178 repair; re-enable when the optimized path handles linear memory correctly"]
 fn issue_104_store_load_roundtrip_optimized() {
     // Pick a value far enough from 0 that a R0-fallback bug would point
     // at a sparse-memory address that doesn't contain `value` (so we'd
@@ -317,6 +318,7 @@ fn issue_104_store_load_roundtrip_optimized() {
 /// uninitialized sparse memory → 0, or some other address that doesn't
 /// hold `value`).
 #[test]
+#[ignore = "optimized memory codegen declined pending #178 repair; re-enable when the optimized path handles linear memory correctly"]
 fn issue_104_store_load_table_driven() {
     let cases: &[(u32, u32)] = &[
         // (addr, value) — value chosen distinct from addr.
@@ -342,6 +344,7 @@ fn issue_104_store_load_table_driven() {
 /// it would fire on either the natural or swapped layout if the bug
 /// caused the load to compute a different scratch.
 #[test]
+#[ignore = "optimized memory codegen declined pending #178 repair; re-enable when the optimized path handles linear memory correctly"]
 fn issue_104_load_and_store_use_consistent_base_register() {
     let arm = compile_optimized(&store_load_wasm_ops_param0_addr());
 
@@ -382,6 +385,7 @@ fn issue_104_load_and_store_use_consistent_base_register() {
 /// `Str` (i.e. the load uses a base computation involving the
 /// address param, not the value param).
 #[test]
+#[ignore = "optimized memory codegen declined pending #178 repair; re-enable when the optimized path handles linear memory correctly"]
 fn issue_104_load_addr_does_not_use_value_register() {
     let arm = compile_optimized(&store_load_wasm_ops_param1_addr());
 

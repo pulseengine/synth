@@ -62,13 +62,16 @@ fn i64_binary_on_partial_stack_does_not_panic() {
 
 fn compile_through_optimized(ops: &[WasmOp]) {
     let bridge = OptimizerBridge::new();
-    let (instrs, _cfg, _stats) = bridge
-        .optimize_full(ops)
-        .expect("optimize_full should succeed for valid wasm");
-    // The ir_to_arm step is where the pre-fix defensive panic fires when a
-    // back-reference lands on an unmapped vreg. We don't assert on the
-    // ARM output here — just that we reach this line without panicking.
-    let _arm = bridge.ir_to_arm(&instrs, /* num_params = */ 4);
+    // The point of this audit is "no panic". #178: the optimized path now
+    // declines linear-memory ops (typed Err → backend falls back to
+    // select_with_stack), a panic-free outcome. If it does optimize, the
+    // ir_to_arm step must still not panic on the back-reference.
+    match bridge.optimize_full(ops) {
+        Ok((instrs, _cfg, _stats)) => {
+            let _arm = bridge.ir_to_arm(&instrs, /* num_params = */ 4);
+        }
+        Err(_) => { /* declined (e.g. linear memory, #178) — panic-free, fine */ }
+    }
 }
 
 /// Round-6 fuzz-harness shape from PR #117: a Drop sits between the
