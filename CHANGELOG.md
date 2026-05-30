@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-05-30
+
+**Patch: root-cause + re-enable the optimized memory path (#180).** The
+optimizer memory miscompilation mitigated in v0.11.3 (by declining linear-memory
+ops to `select_with_stack`) is now fixed at its true source — the Thumb
+*encoder*, not the optimizer. `ArmOp::Add`/`Adds`/`Subs` register-forms
+unconditionally emitted the 16-bit encoding, whose 3-bit register fields
+overflow for high registers; since `MemLoad`/`MemStore` use R12 as the base
+scratch, `add ip, ip, r0` was emitted as the corrupt `adds r4, r5, r1`
+(`0x186C`), dropping the address operand. (i64 low-word `Adds`/`Subs` hit the
+same class via R8–R11 pairs.) High registers now use the 32-bit
+`ADD.W`/`ADDS.W`/`SUBS.W` forms. The v0.11.3 decline is removed; the optimized
+linear-memory path is re-enabled and the four `issue_104` memory CSE tests are
+un-ignored. Byte-verified against `--no-optimize` (clean-room confirmed).
+
+**Falsification statement.** v0.11.4 is wrong if any optimized Thumb output
+contains a 16-bit `add`/`adds`/`subs` register encoding with an operand ≥ R8
+(which truncates the operand), or if an optimized pointer-param
+`i32.load`/`i32.store` produces an effective address that does not depend on the
+pointer operand register.
+
 ## [0.11.3] - 2026-05-30
 
 **Patch: optimizer memory-address miscompilation.** Fixes a correctness bug
