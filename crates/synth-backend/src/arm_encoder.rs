@@ -7016,7 +7016,11 @@ mod tests {
                 op2: Operand2::Reg(Reg::R2),
             })
             .unwrap();
-        assert_eq!(lo.len(), 2, "low-reg CMN should remain 16-bit, got {lo:02X?}");
+        assert_eq!(
+            lo.len(),
+            2,
+            "low-reg CMN should remain 16-bit, got {lo:02X?}"
+        );
         assert_eq!(lo, vec![0xD1, 0x42], "low-reg CMN bytes wrong: {lo:02X?}");
     }
 
