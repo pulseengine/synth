@@ -328,6 +328,38 @@ mod tests {
         assert!(func.relocations.is_empty());
     }
 
+    /// Regression test for #167: a call to an INTERNAL function (index
+    /// >= num_imports) must record a relocation against `func_{index}`.
+    /// Before the fix, only `__meld_*` (import) BLs were relocated, so
+    /// internal `BL func_N` was emitted as an unpatched `bl #0` branching
+    /// to a garbage address — making the object non-linkable. This test
+    /// would have caught that regression.
+    #[test]
+    fn test_compile_internal_call_produces_relocation_167() {
+        let backend = ArmBackend::new();
+        // num_imports = 1, so Call(2) is an INTERNAL call → `BL func_2`.
+        let ops = vec![WasmOp::Call(2)];
+        let config = CompileConfig {
+            num_imports: 1,
+            no_optimize: true,
+            ..CompileConfig::default()
+        };
+
+        let func = backend
+            .compile_function("caller", &ops, &config)
+            .expect("internal call compiles");
+
+        assert_eq!(
+            func.relocations.len(),
+            1,
+            "an internal call must emit exactly one relocation (#167)"
+        );
+        assert_eq!(
+            func.relocations[0].symbol, "func_2",
+            "internal call must relocate against the callee's func_{{index}} symbol (#167)"
+        );
+    }
+
     // ─── Phase 1 safety-bounds plumbing for ARM ──────────────────────────
 
     #[test]

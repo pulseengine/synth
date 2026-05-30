@@ -51,3 +51,6 @@ tracing-subscriber.workspace = true
 serde_json.workspace = true
 wat.workspace = true
 wast.workspace = true
+
+[dev-dependencies]
+object.workspace = true
