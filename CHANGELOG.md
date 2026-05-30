@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.8] - 2026-05-30
+
+**Caller-saved register preservation across calls (#188).** gale-confirmed
+miscompile: a value (param or temp) live across a `call` was corrupted. The
+selector maps params to r0–r3 and allocates r0–r3/r12 (AAPCS caller-saved) as
+temps, but the `Call` lowering modeled nothing about the `BL` clobbering them —
+so `g`: `drop(call $clob); i32.load(local.get 0)` read param0 from r0 *after*
+`clob` overwrote it (blocking gale's `z_impl_k_sem_give`, whose `sem` pointer is
+live across `k_spin_lock`). Now the direct selector spills live caller-saved
+registers to a reserved frame scratch area before each `BL` and reloads them
+after; the optimized path declines functions containing a local call so the
+backend re-lowers them with the corrected direct selector (import calls stay on
+the optimized path to preserve the #173 field-name relocations). Verified: `g`
+now emits `str r0,[sp]; bl; ldr r0,[sp]; ldr r0,[fp,r0]` — the load derives from
+the original param0.
+
+Scoped out (tracked in #193): the broader no-call subset of the param-register
+clobber class (i64 results / constants / return values landing in r0–r3 before a
+live param read), and general argument marshalling for calls with register args.
+
+**Falsification statement.** v0.11.8 is wrong if a value live across a `call`
+(e.g. a pointer param dereferenced after a call) is read from a caller-saved
+register the call clobbered rather than from its preserved home.
+
 ## [0.11.7] - 2026-05-30
 
 **Standalone `--cortex-m` internal call resolution (#170).** A standalone
