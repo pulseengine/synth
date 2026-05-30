@@ -719,15 +719,31 @@ fn compile_standalone_internal_call_resolves_bl_170() {
         .map(|s| s.address() as u32 & !1)
         .expect("caller symbol");
 
-    // The .text section is loaded at its sh_addr; compute the byte offset of the
-    // BL within .text. `caller` begins with `local.get 0; call $callee`, so the
-    // BL is the first instruction at the caller's entry.
+    // The .text section is loaded at its sh_addr; locate the BL within the
+    // caller. The BL is no longer the caller's first instruction: since #188 a
+    // call-containing function gets a prologue + caller-saved-preservation
+    // scratch frame ahead of the `bl`. So scan the caller's bytes for the
+    // 32-bit Thumb BL (hw1 in 0xF000..=0xF7FF, hw2 & 0xF800 == 0xF800); the
+    // caller does only i32 arithmetic around the call, so no MOVW/STR.W 32-bit
+    // op in 0xF0xx range collides with it.
     let text_sec = elf.section_by_name(".text").expect(".text section");
     let text_addr = text_sec.address() as u32;
     let text = text_sec.data().expect(".text data");
 
-    let bl_addr = caller_addr;
-    let bl_off = (bl_addr - text_addr) as usize;
+    let caller_off = (caller_addr - text_addr) as usize;
+    let mut bl_off = None;
+    let mut o = caller_off;
+    while o + 4 <= text.len() {
+        let hw1 = u16::from_le_bytes([text[o], text[o + 1]]);
+        let hw2 = u16::from_le_bytes([text[o + 2], text[o + 3]]);
+        if (0xF000..=0xF7FF).contains(&hw1) && (hw2 & 0xF800) == 0xF800 {
+            bl_off = Some(o);
+            break;
+        }
+        o += 2;
+    }
+    let bl_off = bl_off.expect("no Thumb BL found in caller (#170)");
+    let bl_addr = text_addr + bl_off as u32;
     // Sanity: the patched BL must not be the relocatable self-branch placeholder
     // `f7ff fffe` (bytes ff f7 fe ff), which would mean it was never resolved.
     let placeholder = [0xFF, 0xF7, 0xFE, 0xFF];
