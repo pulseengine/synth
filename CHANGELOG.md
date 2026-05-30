@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-05-30
+
+**Patch: gale-wasm ARM linkability, round 2.** Completes the cross-language-LTO
+route (gale-ffi → wasm → synth → ARM `ET_REL` → linked against a real host).
+Backend bugfix + regression tests; no proof-suite changes.
+
+**Falsification statement.** v0.11.2 is wrong if an imported wasm call still
+produces a generic `func_N` undefined symbol instead of the import's field
+name, or if any of the four new regression tests pass against the pre-fix code.
+
+### Fixed
+- **Import-call relocations now use the wasm field name** (#173, PR #175).
+  The selector emits `BL func_{wasm_index}` for imported calls too (an import's
+  wasm index < num_imports), so `build_relocatable_elf` named the undefined
+  symbol `func_0`/`func_1`/… A real host (e.g. the Zephyr kernel) defines
+  `k_spin_lock`, not `func_0`, so the object could not resolve — the final
+  blocker for the cross-language-LTO route. `build_relocatable_elf` now maps
+  `func_{import_index}` relocation labels to the import's field name (from the
+  imports table it already receives). Internal defined calls keep their
+  `func_N`/export-name symbol; `__meld_*` dispatch stubs unchanged. Verified:
+  a module importing `env::host_fn` now emits `R_ARM_THM_CALL host_fn` and
+  `U host_fn` (was `U func_0`).
+
+### Added
+- **Regression tests for the #167/#168/#173 gale linkability fixes.** The
+  v0.3.0→v0.11.0 non-linkable-ELF regression slipped through because nothing
+  tested internal-call linkability. Now guarded:
+  - `test_encode_thumb_bl_zero_offset_167` — the Thumb BL placeholder must
+    encode `0xF800` (true zero offset), never `0xD000` (the ~`+0x600000`
+    garbage addend).
+  - `test_compile_internal_call_produces_relocation_167` — an internal call
+    records a relocation against `func_{index}`.
+  - `compile_internal_call_is_linkable_167` (integration) — a relocatable
+    object carries `R_ARM_THM_CALL` against a defined `func_0`, end-to-end.
+  - `compile_import_call_uses_field_name_173` (integration) — an import call
+    produces `U host_fn`, not `U func_0`.
+
+  Adds the `object` crate as a synth-cli dev-dependency for ELF inspection.
+
 ## [0.11.1] - 2026-05-30
 
 **Patch: gale-wasm ARM linkability.** Unblocks the cross-language-LTO route
