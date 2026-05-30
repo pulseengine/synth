@@ -1899,17 +1899,50 @@ fn compile_all_exports(
     // Check if any function has relocations (import calls)
     let has_relocations = compiled_funcs.iter().any(|f| !f.relocations.is_empty());
 
+    // Every defined function exposes two relocation labels the selector may
+    // emit for an internal `call`: its export name and `func_{wasm_index}`.
+    // A relocation whose symbol is one of these is an INTERNAL call to a
+    // function laid out in this same image (so it can be patched directly,
+    // no linker needed). Any other relocation symbol (an import field name,
+    // `func_{import_index}`, or a `__meld_*` dispatch stub) is EXTERNAL and
+    // requires the relocatable-object path so a host linker can resolve it.
+    let mut internal_labels: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for f in &compiled_funcs {
+        internal_labels.insert(f.name.as_str());
+    }
+    let func_index_labels: Vec<String> = compiled_funcs
+        .iter()
+        .map(|f| format!("func_{}", f.wasm_index))
+        .collect();
+    for label in &func_index_labels {
+        internal_labels.insert(label.as_str());
+    }
+    let has_external_relocations = compiled_funcs
+        .iter()
+        .flat_map(|f| &f.relocations)
+        .any(|r| !internal_labels.contains(r.symbol.as_str()));
+
     // Build multi-function ELF
-    // When there are relocations, produce a relocatable object (.o) instead of
-    // an executable. This lets the output be linked with the Kiln bridge crate
-    // (which provides __meld_dispatch_import and __meld_get_memory_base).
-    // The --relocatable flag forces ET_REL output even when the wasm has no
-    // imports, for linking into a host build system (e.g. Zephyr).
+    // When there are EXTERNAL relocations, produce a relocatable object (.o)
+    // instead of an executable. This lets the output be linked with the Kiln
+    // bridge crate (which provides __meld_dispatch_import and
+    // __meld_get_memory_base). The --relocatable flag forces ET_REL output
+    // even when the wasm has no imports, for linking into a host build system
+    // (e.g. Zephyr).
+    //
+    // A standalone `--cortex-m` executable, however, has NO linker: its
+    // INTERNAL `BL func_N` calls cannot be left as unresolved relocations.
+    // When every relocation is internal (no imports) and we are building a
+    // standalone Cortex-M executable, route to the cortex-m builder, which
+    // patches each internal BL displacement in place after layout (#170).
     let is_riscv = matches!(target_spec.family, synth_core::target::ArchFamily::RiscV);
+    // Tracks whether we emitted an ET_REL object (needs linking) vs a standalone
+    // executable, so the summary below reports the right type and link hint.
+    let produced_relocatable = is_riscv || has_external_relocations || relocatable;
     let elf_data = if is_riscv {
         info!("Building RISC-V multi-function relocatable object (EM_RISCV)");
         build_multi_func_riscv_elf(&compiled_funcs)?
-    } else if has_relocations || relocatable {
+    } else if has_external_relocations || relocatable {
         let total_relocs: usize = compiled_funcs.iter().map(|f| f.relocations.len()).sum();
         if has_relocations {
             info!(
@@ -1972,7 +2005,7 @@ fn compile_all_exports(
     );
     println!("  Total code size: {} bytes", total_code);
     println!("  ELF size: {} bytes", elf_data.len());
-    if has_relocations {
+    if produced_relocatable {
         println!(
             "  Relocations: {} (requires linking with Kiln bridge)",
             total_relocs
@@ -1981,6 +2014,13 @@ fn compile_all_exports(
         println!(
             "\n  Link with: arm-none-eabi-ld -o firmware.elf {} kiln_bridge.o",
             output.display()
+        );
+    } else if has_relocations {
+        // Standalone executable whose internal `BL func_N` calls were resolved
+        // directly (no linker). Report them as patched, not pending (#170).
+        println!(
+            "  Internal calls: {} resolved in place (standalone executable)",
+            total_relocs
         );
     }
     println!("\nFunction addresses:");
@@ -2214,6 +2254,44 @@ fn build_relocatable_elf(funcs: &[ElfFunction], imports: &[ImportEntry]) -> Resu
         .context("Relocatable ELF generation failed")
 }
 
+/// Encode a Thumb-2 `BL` instruction (4 bytes, two little-endian halfwords)
+/// that branches from the instruction at address `bl_addr` to `target_addr`.
+///
+/// Thumb BL computes `target = (P + 4) + signed_offset`, where P is the address
+/// of the BL. So `signed_offset = target_addr - (bl_addr + 4)`, in bytes; the
+/// encoded immediate is that value in halfword units. The J1/J2 bits are
+/// derived from the sign bit S as `I1 = NOT(J1 XOR S)` (rearranged:
+/// `J1 = NOT(I1 XOR S)`), and likewise for J2/I2.
+///
+/// This is the DIRECT encoding used by the standalone Cortex-M path, which has
+/// no linker to apply an R_ARM_THM_CALL relocation. Verified byte-for-byte
+/// against `arm-none-eabi-as` (both forward and backward, near and far) so we
+/// do not repeat the hand-decode error of #174.
+///
+/// `target_addr` must be the even function entry address; the Thumb state bit
+/// is implicit in BL and must NOT be encoded into the displacement. Returning
+/// the wrong even/odd target would land the call one instruction off (the
+/// symbol+4 class of bug in #174).
+fn encode_thumb_bl(bl_addr: u32, target_addr: u32) -> [u8; 4] {
+    let offset = (target_addr as i64) - (bl_addr as i64 + 4); // bytes
+    let off = (offset >> 1) as i32; // halfword units, sign-extended
+    let s_bit = ((off >> 24) & 1) as u32;
+    let i1 = ((off >> 23) & 1) as u32;
+    let i2 = ((off >> 22) & 1) as u32;
+    let imm10 = ((off >> 11) & 0x3FF) as u32;
+    let imm11 = (off & 0x7FF) as u32;
+    let j1 = (!(i1 ^ s_bit)) & 1;
+    let j2 = (!(i2 ^ s_bit)) & 1;
+    // hw1: 1111 0 S imm10            -> 0xF000 | (S<<10) | imm10
+    // hw2: 11 J1 1 J2 imm11          -> 0xD000 | (J1<<13) | (J2<<11) | imm11
+    let hw1: u16 = (0xF000 | (s_bit << 10) | imm10) as u16;
+    let hw2: u16 = (0xD000 | (j1 << 13) | (j2 << 11) | imm11) as u16;
+    let mut bytes = [0u8; 4];
+    bytes[0..2].copy_from_slice(&hw1.to_le_bytes());
+    bytes[2..4].copy_from_slice(&hw2.to_le_bytes());
+    bytes
+}
+
 /// Build a complete Cortex-M multi-function ELF with vector table
 fn build_multi_func_cortex_m_elf(
     funcs: &[ElfFunction],
@@ -2283,6 +2361,61 @@ fn build_multi_func_cortex_m_elf(
         }
         func_offsets.push(all_func_code.len() as u32);
         all_func_code.extend_from_slice(&func.code);
+    }
+
+    // Resolve internal `BL func_N` calls directly. A standalone Cortex-M
+    // executable has no linker, so the `bl #0` placeholder + R_ARM_THM_CALL
+    // relocation strategy used by the relocatable path cannot apply here:
+    // nothing patches the displacement. Instead, now that every function's
+    // address is known, encode the real Thumb BL displacement in place (#170).
+    //
+    // The caller routes here only when all relocations are internal (no
+    // imports); we map each relocation symbol (export name or `func_{index}`)
+    // to the callee's laid-out address and patch the 4 BL bytes.
+    {
+        use std::collections::HashMap;
+        let mut label_to_addr: HashMap<&str, u32> = HashMap::new();
+        for (i, func) in funcs.iter().enumerate() {
+            let addr = funcs_base + func_offsets[i];
+            label_to_addr.insert(func.name.as_str(), addr);
+        }
+        // `func_{wasm_index}` labels need owned storage to key the map.
+        let index_labels: Vec<(String, u32)> = funcs
+            .iter()
+            .enumerate()
+            .map(|(i, func)| {
+                (
+                    format!("func_{}", func.wasm_index),
+                    funcs_base + func_offsets[i],
+                )
+            })
+            .collect();
+        for (label, addr) in &index_labels {
+            label_to_addr.insert(label.as_str(), *addr);
+        }
+
+        for (i, func) in funcs.iter().enumerate() {
+            for reloc in &func.relocations {
+                let Some(&callee_addr) = label_to_addr.get(reloc.symbol.as_str()) else {
+                    // Should not happen: the dispatcher only routes here when
+                    // every relocation is internal. Be loud rather than emit a
+                    // silently-broken BL.
+                    anyhow::bail!(
+                        "internal call to unknown symbol '{}' in standalone Cortex-M ELF (#170)",
+                        reloc.symbol
+                    );
+                };
+                // Absolute address of the BL instruction's first halfword.
+                let bl_addr = funcs_base + func_offsets[i] + reloc.offset;
+                let bytes = encode_thumb_bl(bl_addr, callee_addr);
+                let pos = (func_offsets[i] + reloc.offset) as usize;
+                all_func_code[pos..pos + 4].copy_from_slice(&bytes);
+                info!(
+                    "  patched internal BL at 0x{:08x} -> '{}' 0x{:08x}",
+                    bl_addr, reloc.symbol, callee_addr
+                );
+            }
+        }
     }
 
     info!("Cortex-M multi-function layout:");
@@ -2459,6 +2592,18 @@ fn build_multi_func_cortex_m_elf(
             .with_section(4);
         elf_builder.add_symbol(func_sym);
     }
+
+    // TODO(#170, mapping-symbols): emit ARM `$t`/`$a`/`$d` mapping symbols so
+    // tools (objdump, gdb, debuggers) know each .text region is Thumb code vs
+    // data without relying on the Func-typed symbols above. This is the
+    // secondary half of #170 and is intentionally deferred: mapping symbols are
+    // STB_LOCAL and ELF requires all local symbols to precede globals in the
+    // symtab, with `.symtab`'s sh_info pointing at the first global. ElfBuilder
+    // currently appends symbols in call order and does not maintain
+    // local-before-global ordering or set sh_info, so adding locals here would
+    // produce a malformed symtab. Direct call resolution (the primary fix)
+    // works without these; objdump already disassembles correctly via the
+    // Func-typed function symbols.
 
     elf_builder.build().context("ELF generation failed")
 }
@@ -3162,6 +3307,22 @@ fn link_firmware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `encode_thumb_bl` must match `arm-none-eabi-as` byte-for-byte. These
+    /// vectors were taken directly from gas disassembly (#170), covering
+    /// backward/forward and near/far branches — the cases that exercise the
+    /// S/J1/J2 sign-bit logic that bit #174.
+    #[test]
+    fn test_encode_thumb_bl_matches_gas() {
+        // gas: P=0x6  S=0x4    -> f7ff fffd  (bytes ff f7 fd ff), near backward
+        assert_eq!(encode_thumb_bl(0x6, 0x4), [0xff, 0xf7, 0xfd, 0xff]);
+        // gas: P=0xa  S=0x12   -> f000 f802  (bytes 00 f0 02 f8), near forward
+        assert_eq!(encode_thumb_bl(0xa, 0x12), [0x00, 0xf0, 0x02, 0xf8]);
+        // gas: P=0x138a S=0x0  -> f7fe fe39  (bytes fe f7 39 fe), far backward
+        assert_eq!(encode_thumb_bl(0x138a, 0x0), [0xfe, 0xf7, 0x39, 0xfe]);
+        // gas: P=0x138e S=0x2b02 -> f001 fbb8 (bytes 01 f0 b8 fb), far forward
+        assert_eq!(encode_thumb_bl(0x138e, 0x2b02), [0x01, 0xf0, 0xb8, 0xfb]);
+    }
 
     #[test]
     fn test_cortex_m_binary_structure() {

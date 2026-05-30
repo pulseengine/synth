@@ -607,3 +607,145 @@ fn pointer_deref_optimized_uses_address_operand_178_180() {
         "optimized .text must contain `add.w ip, ip, rN` (base + address operand) — #180"
     );
 }
+
+/// Decode a Thumb-2 `BL` (two little-endian halfwords at `text[off..off+4]`)
+/// and return its branch target address, given the BL's own address `bl_addr`.
+/// Thumb BL: `target = (bl_addr + 4) + signed_offset`, the inverse of the
+/// encoder in main.rs. Used to assert the patched displacement (#170).
+fn decode_thumb_bl_target(text: &[u8], off: usize, bl_addr: u32) -> u32 {
+    let hw1 = u16::from_le_bytes([text[off], text[off + 1]]) as u32;
+    let hw2 = u16::from_le_bytes([text[off + 2], text[off + 3]]) as u32;
+    let s = (hw1 >> 10) & 1;
+    let imm10 = hw1 & 0x3FF;
+    let j1 = (hw2 >> 13) & 1;
+    let j2 = (hw2 >> 11) & 1;
+    let imm11 = hw2 & 0x7FF;
+    let i1 = 1 - (j1 ^ s);
+    let i2 = 1 - (j2 ^ s);
+    // Reassemble the 25-bit signed offset (in bytes): S:I1:I2:imm10:imm11:0.
+    let mut off_bytes: i32 =
+        ((s << 24) | (i1 << 23) | (i2 << 22) | (imm10 << 12) | (imm11 << 1)) as i32;
+    // Sign-extend from bit 24.
+    if s == 1 {
+        off_bytes |= !0i32 << 25;
+    }
+    ((bl_addr as i64) + 4 + (off_bytes as i64)) as u32
+}
+
+/// Regression test for #170: a STANDALONE `--cortex-m` executable has no
+/// linker, so its internal `BL func_N` calls must be patched in place rather
+/// than left as `bl #0` placeholders with a dangling R_ARM_THM_CALL relocation
+/// (which would otherwise stay a `bl <self>` branching to garbage). This module
+/// has only an internal call (no imports), so `--cortex-m` must yield an
+/// ET_EXEC whose patched BL targets the callee's ENTRY address — not entry+4
+/// (the symbol+4 off-by-one-instruction class of bug from #174).
+#[test]
+fn compile_standalone_internal_call_resolves_bl_170() {
+    use object::{Object, ObjectSection, ObjectSymbol};
+
+    let wat = workspace_root()
+        .join("tests")
+        .join("integration")
+        .join("internal_call.wat");
+    assert!(
+        wat.exists(),
+        "internal_call.wat not found: {}",
+        wat.display()
+    );
+
+    let output = std::env::temp_dir().join("synth_test_standalone_internal_call.elf");
+    let result = Command::new(synth_binary())
+        .args([
+            "compile",
+            wat.to_str().unwrap(),
+            "--target",
+            "cortex-m4f",
+            "--all-exports",
+            "--cortex-m",
+            "-o",
+            output.to_str().unwrap(),
+        ])
+        .output()
+        .expect("Failed to run synth binary");
+    assert!(
+        result.status.success(),
+        "synth compile failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr),
+    );
+
+    let data = std::fs::read(&output).unwrap();
+
+    // No linker is involved: this must be a standalone executable (ET_EXEC = 2),
+    // NOT a relocatable object (ET_REL = 1).
+    let e_type = u16::from_le_bytes([data[16], data[17]]);
+    assert_eq!(
+        e_type, 2,
+        "standalone --cortex-m internal-call module must be ET_EXEC (2), got {} (#170)",
+        e_type
+    );
+
+    let elf = object::File::parse(&*data).expect("parse ARM ELF executable");
+
+    // The standalone executable must NOT carry leftover relocations — they would
+    // be unresolvable with no linker. The call is patched directly instead.
+    const R_ARM_THM_CALL: u32 = 10;
+    let mut thm_call_relocs = 0usize;
+    for section in elf.sections() {
+        for (_off, reloc) in section.relocations() {
+            if let object::RelocationFlags::Elf { r_type } = reloc.flags()
+                && r_type == R_ARM_THM_CALL
+            {
+                thm_call_relocs += 1;
+            }
+        }
+    }
+    assert_eq!(
+        thm_call_relocs, 0,
+        "standalone executable must not retain R_ARM_THM_CALL relocations (#170)"
+    );
+
+    // Resolve callee/caller addresses from the symbol table. Cortex-M function
+    // symbols carry the Thumb state bit (value = addr | 1); strip it to get the
+    // even instruction address.
+    let callee_addr = elf
+        .symbols()
+        .find(|s| s.name() == Ok("callee"))
+        .map(|s| s.address() as u32 & !1)
+        .expect("callee symbol");
+    let caller_addr = elf
+        .symbols()
+        .find(|s| s.name() == Ok("caller"))
+        .map(|s| s.address() as u32 & !1)
+        .expect("caller symbol");
+
+    // The .text section is loaded at its sh_addr; compute the byte offset of the
+    // BL within .text. `caller` begins with `local.get 0; call $callee`, so the
+    // BL is the first instruction at the caller's entry.
+    let text_sec = elf.section_by_name(".text").expect(".text section");
+    let text_addr = text_sec.address() as u32;
+    let text = text_sec.data().expect(".text data");
+
+    let bl_addr = caller_addr;
+    let bl_off = (bl_addr - text_addr) as usize;
+    // Sanity: the patched BL must not be the relocatable self-branch placeholder
+    // `f7ff fffe` (bytes ff f7 fe ff), which would mean it was never resolved.
+    let placeholder = [0xFF, 0xF7, 0xFE, 0xFF];
+    assert_ne!(
+        &text[bl_off..bl_off + 4],
+        &placeholder,
+        "internal BL left as unresolved self-branch placeholder (#170)"
+    );
+
+    let target = decode_thumb_bl_target(text, bl_off, bl_addr);
+
+    // The decoded BL target must equal the callee's ENTRY address (symbol value
+    // has the Thumb bit stripped by `object`), NOT callee+4 (#174).
+    assert_eq!(
+        target, callee_addr,
+        "patched BL target 0x{:08x} must equal callee entry 0x{:08x}, not callee+4 (#170/#174)",
+        target, callee_addr
+    );
+
+    let _ = std::fs::remove_file(&output);
+}
