@@ -402,7 +402,11 @@ fn compile_internal_call_is_linkable_167() {
         .join("tests")
         .join("integration")
         .join("internal_call.wat");
-    assert!(wat.exists(), "internal_call.wat not found: {}", wat.display());
+    assert!(
+        wat.exists(),
+        "internal_call.wat not found: {}",
+        wat.display()
+    );
 
     let output = std::env::temp_dir().join("synth_test_internal_call.o");
     let result = Command::new(synth_binary())
@@ -487,7 +491,11 @@ fn compile_import_call_uses_field_name_173() {
         .join("tests")
         .join("integration")
         .join("import_field_name.wat");
-    assert!(wat.exists(), "import_field_name.wat not found: {}", wat.display());
+    assert!(
+        wat.exists(),
+        "import_field_name.wat not found: {}",
+        wat.display()
+    );
 
     let output = std::env::temp_dir().join("synth_test_import_field_name.o");
     let result = Command::new(synth_binary())
@@ -534,14 +542,17 @@ fn compile_import_call_uses_field_name_173() {
     let _ = std::fs::remove_file(&output);
 }
 
-/// Regression test for #178: the optimized (default) path miscompiled
-/// linear-memory access — a pointer-param `i32.load` lowered to a load from a
-/// FIXED address (`0x20000100`), dropping the operand. The fix declines memory
-/// modules to `select_with_stack`, so the default and `--no-optimize` outputs
-/// must now be byte-identical (and both correct: `ldr [fp, r0]`). If the
-/// optimizer ever stops declining and re-introduces the bug, the two diverge.
+/// Regression test for #178/#180: the optimized (default) path miscompiled a
+/// pointer-param `i32.load` — the `add ip, ip, r0` that forms `base + operand`
+/// was emitted as the corrupt 16-bit `adds r4, r5, r1` (bytes `6c 18`), because
+/// the Thumb encoder used the 16-bit ADD form for the high register R12,
+/// overflowing its 3-bit fields and dropping the address operand. Root-cause was
+/// the encoder (fixed: high regs → 32-bit ADD.W), NOT a fixed-address fold. The
+/// optimized output is now correct AND keeps optimizing (it is no longer
+/// declined to `select_with_stack`), so it legitimately differs from
+/// `--no-optimize` in instruction selection while computing the same address.
 #[test]
-fn pointer_deref_optimized_matches_no_optimize_178() {
+fn pointer_deref_optimized_uses_address_operand_178_180() {
     use object::{Object, ObjectSection};
 
     let wat = workspace_root()
@@ -550,9 +561,9 @@ fn pointer_deref_optimized_matches_no_optimize_178() {
         .join("ptr_deref.wat");
     assert!(wat.exists(), "ptr_deref.wat not found: {}", wat.display());
 
-    let text_of = |extra: &[&str]| -> Vec<u8> {
-        let out = std::env::temp_dir().join(format!("synth_ptr_{}.o", extra.len()));
-        let mut args = vec![
+    let out = std::env::temp_dir().join("synth_ptr_opt.o");
+    let result = Command::new(synth_binary())
+        .args([
             "compile",
             wat.to_str().unwrap(),
             "--target",
@@ -561,43 +572,38 @@ fn pointer_deref_optimized_matches_no_optimize_178() {
             "--relocatable",
             "-o",
             out.to_str().unwrap(),
-        ];
-        args.extend_from_slice(extra);
-        let result = Command::new(synth_binary())
-            .args(&args)
-            .output()
-            .expect("run synth");
-        assert!(
-            result.status.success(),
-            "compile failed: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        let data = std::fs::read(&out).unwrap();
-        let elf = object::File::parse(&*data).expect("parse ELF");
-        let text = elf
-            .section_by_name(".text")
-            .and_then(|s| s.data().ok())
-            .expect(".text")
-            .to_vec();
-        let _ = std::fs::remove_file(&out);
-        text
-    };
+        ])
+        .output()
+        .expect("run synth");
+    assert!(
+        result.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let data = std::fs::read(&out).unwrap();
+    let elf = object::File::parse(&*data).expect("parse ELF");
+    let text = elf
+        .section_by_name(".text")
+        .and_then(|s| s.data().ok())
+        .expect(".text")
+        .to_vec();
+    let _ = std::fs::remove_file(&out);
 
-    let optimized = text_of(&[]);
-    let no_optimize = text_of(&["--no-optimize"]);
-
-    // The default (optimized) path must fall back to the correct select_with_stack
-    // lowering for memory access — so its .text equals the --no-optimize .text.
-    assert_eq!(
-        optimized, no_optimize,
-        "optimized pointer-deref output must match --no-optimize (memory path declined, #178)"
+    // The bug signature: corrupt 16-bit `adds r4, r5, r1` = 0x186C = bytes 6C 18.
+    // Must be absent — the high-register base+addr ADD must not truncate.
+    let corrupt_adds = [0x6c, 0x18];
+    assert!(
+        !text.windows(2).any(|w| w == corrupt_adds),
+        "optimized .text contains the corrupt 16-bit ADDS (operand dropped) — #178/#180 regressed"
     );
 
-    // And neither must contain the bug signature `movw ip, #0x100` (f240 1c00),
-    // the fixed-address load that ignored the pointer operand.
-    let bug_sig = [0x40, 0xf2, 0x00, 0x1c];
+    // The fix signature: 32-bit `add.w ip, ip, rN` = EB0C 0Cmm = bytes 0C EB ?? 0C.
+    // The address operand is folded into the base via R12, so this must appear.
+    let has_add_w_ip = text
+        .windows(4)
+        .any(|w| w[0] == 0x0c && w[1] == 0xeb && w[3] == 0x0c);
     assert!(
-        !optimized.windows(4).any(|w| w == bug_sig),
-        "compiled .text must not contain the fixed-0x100-address load (#178)"
+        has_add_w_ip,
+        "optimized .text must contain `add.w ip, ip, rN` (base + address operand) — #180"
     );
 }
