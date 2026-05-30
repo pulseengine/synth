@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-05-30
+
+**Patch: high-register Thumb CMN (#184).** Closes the last sibling of the #180
+16-bit-truncation class. The 16-bit `CMN` (T1) reg-form encodes only R0–R7;
+high-register operands overflowed the 3-bit fields. CMN has no high-register
+16-bit form, so high registers now use 32-bit `CMN.W` (`EB10 Rn | 0F00 Rm`),
+byte-verified against `gas`. Latent (the optimized divide-guard uses the CMN
+*immediate* form; the reg-form is only emitted by the non-optimized selector
+with low registers) — closed as defense-in-depth.
+
+**Falsification statement.** v0.11.5 is wrong if `encode(Cmn { rn, op2: Reg(rm) })`
+emits a 16-bit instruction when `rn` or `rm` is ≥ R8 (truncating the operand).
+
 ## [0.11.4] - 2026-05-30
 
 **Patch: root-cause + re-enable the optimized memory path (#180).** The

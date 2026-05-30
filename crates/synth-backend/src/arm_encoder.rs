@@ -2024,9 +2024,22 @@ impl ArmEncoder {
                     }
                 } else if let Operand2::Reg(rm) = op2 {
                     let rm_bits = reg_to_bits(rm) as u16;
-                    // CMN Rn, Rm (16-bit): 0100 0010 11 Rm Rn
-                    let instr: u16 = 0x42C0 | (rm_bits << 3) | rn_bits;
-                    Ok(instr.to_le_bytes().to_vec())
+                    // 16-bit CMN (T1) only encodes R0-R7; high registers overflow
+                    // the 3-bit fields and corrupt the operands (#184, the #180
+                    // class). CMN has no high-register 16-bit form, so fall back
+                    // to 32-bit CMN.W (T2): EB10 Rn | 0F00 Rm (ADD.W with S=1 and
+                    // Rd discarded as PC/1111).
+                    if rn_bits < 8 && rm_bits < 8 {
+                        // CMN Rn, Rm (16-bit): 0100 0010 11 Rm Rn
+                        let instr: u16 = 0x42C0 | (rm_bits << 3) | rn_bits;
+                        Ok(instr.to_le_bytes().to_vec())
+                    } else {
+                        let hw1: u16 = 0xEB10 | rn_bits;
+                        let hw2: u16 = 0x0F00 | rm_bits;
+                        let mut bytes = hw1.to_le_bytes().to_vec();
+                        bytes.extend_from_slice(&hw2.to_le_bytes());
+                        Ok(bytes)
+                    }
                 } else {
                     Ok(vec![0xBF, 0x00])
                 }
@@ -6975,6 +6988,40 @@ mod tests {
             vec![0xBA, 0xEB, 0x08, 0x0A],
             "high-reg SUBS must be 32-bit SUBS.W (EBBA 0A08); got {subs:02X?}"
         );
+    }
+
+    /// #184 (sibling of #180): 16-bit CMN (T1) only encodes R0-R7. High registers
+    /// must use 32-bit CMN.W, not the corrupt truncated 16-bit form.
+    #[test]
+    fn test_encode_thumb_cmn_high_reg_uses_cmn_w_184() {
+        let encoder = ArmEncoder::new_thumb2();
+
+        // cmn r10, r8  → CMN.W = EB1A 0F08 (ADD.W S=1, Rd=PC discarded).
+        let cmn = encoder
+            .encode(&ArmOp::Cmn {
+                rn: Reg::R10,
+                op2: Operand2::Reg(Reg::R8),
+            })
+            .unwrap();
+        assert_eq!(
+            cmn,
+            vec![0x1A, 0xEB, 0x08, 0x0F],
+            "high-reg CMN must be 32-bit CMN.W (EB1A 0F08); got {cmn:02X?}"
+        );
+
+        // Low registers stay 16-bit: cmn r1, r2 = 0x42D1.
+        let lo = encoder
+            .encode(&ArmOp::Cmn {
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R2),
+            })
+            .unwrap();
+        assert_eq!(
+            lo.len(),
+            2,
+            "low-reg CMN should remain 16-bit, got {lo:02X?}"
+        );
+        assert_eq!(lo, vec![0xD1, 0x42], "low-reg CMN bytes wrong: {lo:02X?}");
     }
 
     /// #185 regression: feeding PC (R15) as a data operand to a Thumb-2 op that
