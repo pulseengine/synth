@@ -328,8 +328,8 @@ mod tests {
         assert!(func.relocations.is_empty());
     }
 
-    /// Regression test for #167: a call to an INTERNAL function (index
-    /// >= num_imports) must record a relocation against `func_{index}`.
+    /// Regression test for #167: a call to an INTERNAL function
+    /// (index `>= num_imports`) must record a relocation against `func_{index}`.
     /// Before the fix, only `__meld_*` (import) BLs were relocated, so
     /// internal `BL func_N` was emitted as an unpatched `bl #0` branching
     /// to a garbage address — making the object non-linkable. This test
