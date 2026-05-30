@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.10] - 2026-05-30
+
+**i64 register-pair spill (#171).** i64-heavy functions that kept more i64 values
+live than the five consecutive register pairs hold hit "no consecutive pair"
+exhaustion and were dropped by the #168 skip-and-continue net — and #188's
+caller-saved preservation added pressure that regressed `z_impl_k_sem_give` from
+compiling (v0.11.6) to skipped (v0.11.8). The selector now spills: the operand
+stack carries `Reg | Spilled` entries, `alloc_consecutive_pair` spills the
+deepest register-resident value to a reserved frame slot when no pair is free
+(reloading it on pop), the call-result park spills when no callee-saved register
+is free, and the arg-move cycle scratch is acquired lazily. i64-heavy functions
+and the i64+calls `z_impl` shape now compile instead of being skipped.
+
+**Falsification statement.** v0.11.10 is wrong if a function with six or more
+simultaneously-live i64 values fails to compile with a register-exhaustion error
+instead of spilling.
+
+
 ## [0.11.9] - 2026-05-30
 
 **Call argument marshalling (#195).** `select_with_stack`'s `Call` lowering
