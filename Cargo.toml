@@ -27,7 +27,7 @@ resolver = "2"
 # semver to publish, so the convention now catches up: workspace
 # version follows the release tag, bumped pre-tag in the release
 # checklist. See docs/release-process.md.
-version = "0.11.10"
+version = "0.11.11"
 edition = "2024"
 rust-version = "1.88"
 authors = ["PulseEngine Team"]

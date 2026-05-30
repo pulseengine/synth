@@ -974,6 +974,10 @@ pub struct InstructionSelector {
     bounds_check: BoundsCheckConfig,
     /// Number of imported functions (calls to func_idx < this go through Meld dispatch)
     num_imports: u32,
+    /// Relocatable host-link mode (#197). When set, an import call emits a
+    /// direct `BL func_N` (the relocatable-ELF builder rewrites `func_N` to the
+    /// wasm field name, e.g. `k_spin_lock`) instead of `__meld_dispatch_import`.
+    relocatable: bool,
     /// AAPCS argument count per function, indexed by the *full* WASM function
     /// index (imports first, then locals). Plumbed from the frontend's type +
     /// function sections (issue #195). `func_arg_counts[i]` = number of integer
@@ -1010,6 +1014,7 @@ impl InstructionSelector {
             regs: RegisterState::new(),
             bounds_check: BoundsCheckConfig::None,
             num_imports: 0,
+            relocatable: false,
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1029,6 +1034,7 @@ impl InstructionSelector {
             regs: RegisterState::new(),
             bounds_check,
             num_imports: 0,
+            relocatable: false,
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1044,6 +1050,13 @@ impl InstructionSelector {
     /// Set the number of imported functions for Meld dispatch
     pub fn set_num_imports(&mut self, num_imports: u32) {
         self.num_imports = num_imports;
+    }
+
+    /// Enable relocatable host-link mode (#197): import calls emit a direct
+    /// `BL func_N` (rewritten to the wasm field name by the relocatable-ELF
+    /// builder) instead of dispatching through `__meld_dispatch_import`.
+    pub fn set_relocatable(&mut self, relocatable: bool) {
+        self.relocatable = relocatable;
     }
 
     /// Set the per-function AAPCS argument-count table (issue #195).
@@ -5797,15 +5810,22 @@ impl InstructionSelector {
 
                 Call(func_idx) => {
                     let is_import = *func_idx < self.num_imports;
+                    // #197: a relocatable host-link import is a *direct* AAPCS
+                    // call (`BL func_N` → wasm field name), so it marshals args
+                    // into R0–R3 exactly like a local call. Only the legacy Meld
+                    // dispatch ABI (non-relocatable imports) puts the import
+                    // index in R0 and takes no AAPCS args.
+                    let meld_dispatch = is_import && !self.relocatable;
 
                     // ── #195: AAPCS argument count for this callee ──
                     // Look up how many integer args the callee expects so we can
-                    // move the top-N operand-stack values into R0–R3. Import
-                    // calls are excluded: the Meld dispatch ABI puts the import
-                    // index in R0 (see below), which would collide with arg0, so
-                    // arg marshalling for imports stays out of scope (matches the
-                    // #188 note on import-call register handling).
-                    let arg_count = if is_import {
+                    // move the top-N operand-stack values into R0–R3. Meld
+                    // dispatch imports are excluded: that ABI puts the import
+                    // index in R0 (see below), which would collide with arg0.
+                    // Direct imports (#197) and local calls marshal normally —
+                    // `func_arg_counts` is indexed by the full wasm function
+                    // index (imports first), so an import's entry is valid.
+                    let arg_count = if meld_dispatch {
                         0
                     } else {
                         self.func_arg_counts
@@ -5858,8 +5878,9 @@ impl InstructionSelector {
                         cf.add_instruction();
                     }
 
-                    if is_import {
-                        // Import call — dispatch through Meld runtime
+                    if meld_dispatch {
+                        // Legacy import call — dispatch through the Meld runtime
+                        // (import index in R0, then BL __meld_dispatch_import).
                         instructions.push(ArmInstruction {
                             op: ArmOp::Mov {
                                 rd: Reg::R0,
@@ -5875,7 +5896,10 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                     } else {
-                        // Local function call
+                        // Direct `BL func_N`: a local call, or (#197) a
+                        // relocatable import whose `func_N` symbol the ELF
+                        // builder rewrites to the wasm field name (e.g.
+                        // `k_spin_lock`) for the host linker to resolve.
                         instructions.push(ArmInstruction {
                             op: ArmOp::Bl {
                                 label: format!("func_{}", func_idx),
@@ -8370,6 +8394,85 @@ mod tests {
             .iter()
             .any(|i| matches!(i.op, ArmOp::Str { .. }) || matches!(i.op, ArmOp::Ldr { .. }));
         assert!(has_mem, "spill must emit STR/LDR frame traffic");
+    }
+
+    /// Regression test for #197: in relocatable host-link mode, a pointer param
+    /// live across an import call must be preserved, the import must be a DIRECT
+    /// `BL func_N` (rewritten to the field name by the ELF builder), and the
+    /// dereference must be fp-relative — NOT the optimized path's absolute
+    /// 0x20000100 linmem base.
+    ///
+    /// This is gale's `z_impl_k_sem_give` shape: a `sem` pointer param is passed
+    /// to an import (`k_spin_lock`) and then dereferenced afterward. Pre-#197
+    /// the register-heavy function went through the optimized path, which loaded
+    /// `sem->count` from `0x20000100 + clobbered-r0` instead of `[fp, sem]`.
+    /// Forcing `--relocatable` onto `select_with_stack` (now i64-spill capable
+    /// after #171) gives correct preservation + fp-relative memory + direct ABI.
+    #[test]
+    fn test_197_relocatable_import_preserves_pointer_param() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_num_imports(1); // func 0 is the import (e.g. k_spin_lock)
+        selector.set_relocatable(true); // host-link ET_REL
+        // The import takes one integer arg (the pointer) per AAPCS.
+        selector.set_func_arg_counts(vec![1], vec![]);
+
+        // local.get $sem ; call $import(0) ; local.get $sem ; i32.load ; drop ; end
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::Call(0),
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::Drop,
+            WasmOp::End,
+        ];
+        let instrs = selector
+            .select_with_stack(&ops, 1)
+            .expect("#197: relocatable import + deref must compile via select_with_stack");
+
+        let bl_labels: Vec<&str> = instrs
+            .iter()
+            .filter_map(|i| match &i.op {
+                ArmOp::Bl { label } => Some(label.as_str()),
+                _ => None,
+            })
+            .collect();
+
+        // (A) Direct import ABI: `BL func_0`, NOT `__meld_dispatch_import`.
+        assert!(
+            bl_labels.contains(&"func_0"),
+            "#197: relocatable import must emit direct `BL func_0`, got {bl_labels:?}"
+        );
+        assert!(
+            !bl_labels.contains(&"__meld_dispatch_import"),
+            "#197: relocatable import must NOT route through Meld dispatch, got {bl_labels:?}"
+        );
+
+        // (B) Defect-2 absent: no absolute 0x20000100 base materialized. The
+        // optimized path emits `Movt R12, #0x2000` (high half of 0x20000100);
+        // select_with_stack uses fp (R11) instead.
+        let has_abs_base = instrs
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movt { rd: Reg::R12, imm16 } if *imm16 == 0x2000));
+        assert!(
+            !has_abs_base,
+            "#197: must NOT materialize the absolute 0x20000100 linmem base (defect 2)"
+        );
+
+        // (C) The dereference is fp-relative (R11 = linmem base), via either a
+        // register-offset load `[R11, rN]` or an `ADD rT, R11, rN; LDR [rT]`.
+        let uses_fp_for_mem = instrs.iter().any(|i| match &i.op {
+            ArmOp::Ldr { addr, .. } => addr.base == Reg::R11,
+            ArmOp::Add { rn, .. } => *rn == Reg::R11,
+            _ => false,
+        });
+        assert!(
+            uses_fp_for_mem,
+            "#197: the i32.load must be fp-relative (R11 linmem base), not absolute"
+        );
     }
 
     #[test]

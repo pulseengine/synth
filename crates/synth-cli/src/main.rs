@@ -1846,6 +1846,10 @@ fn compile_all_exports(
         func_arg_counts,
         type_arg_counts,
         target: target_spec.clone(),
+        // #197: --relocatable forces the direct selector + direct func_N import
+        // ABI so host-linked objects get fp-relative memory access and
+        // caller-saved preservation (the optimized path is wrong for ET_REL).
+        relocatable,
         ..CompileConfig::default()
     };
 

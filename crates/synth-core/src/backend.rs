@@ -104,6 +104,15 @@ pub struct CompileConfig {
     /// AAPCS integer-argument count per function type, indexed by type index.
     /// Used by `call_indirect` (issue #195).
     pub type_arg_counts: Vec<u32>,
+    /// Produce relocatable (ET_REL) host-link output. When set, the backend
+    /// uses the direct instruction selector (`select_with_stack`) rather than
+    /// the optimized path: the optimizer materializes an *absolute* linear-
+    /// memory base (0x20000100) and does not preserve caller-saved registers
+    /// across calls, both wrong for a host-linked object where the linmem base
+    /// is supplied via `fp` at runtime and callees follow AAPCS. Imports are
+    /// also emitted as direct `func_N` BLs (resolved to the wasm field name)
+    /// instead of `__meld_dispatch_import`. (#197 — follow-up to #188/#171.)
+    pub relocatable: bool,
 }
 
 impl CompileConfig {
@@ -131,6 +140,7 @@ impl Default for CompileConfig {
             num_imports: 0,
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
+            relocatable: false,
         }
     }
 }
