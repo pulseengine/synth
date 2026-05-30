@@ -15,9 +15,19 @@ Backend bugfix + regression tests; no proof-suite changes.
 
 **Falsification statement.** v0.11.2 is wrong if an imported wasm call still
 produces a generic `func_N` undefined symbol instead of the import's field
-name, or if any of the four new regression tests pass against the pre-fix code.
+name, if a linked call lands at `symbol+4` instead of `symbol`, or if any of
+the new regression tests pass against the pre-fix code.
 
 ### Fixed
+- **Calls land on the callee entry, not `symbol+4`** (#174, PR #177). After
+  the #167 fix the Thumb BL placeholder was `0xF800` (addend 0), which under
+  `R_ARM_THM_CALL` nets to `S+4` — every call branched one instruction-pair
+  *past* the callee entry (links cleanly, runs wrong). The correct relocatable
+  placeholder is what `gas` emits for `bl <extern>`: `f7ff fffe`
+  (`hw1=0xF7FF, hw2=0xFFFE`), carrying a `-4` addend that nets to exactly `S`.
+  Verified: `mini.o` links and `caller`'s `bl` lands on `callee` (0x8000), not
+  0x8004. Guarded by `test_encode_thumb_bl_placeholder_addend_167_174` and an
+  end-to-end `.text` placeholder check.
 - **Import-call relocations now use the wasm field name** (#173, PR #175).
   The selector emits `BL func_{wasm_index}` for imported calls too (an import's
   wasm index < num_imports), so `build_relocatable_elf` named the undefined
