@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-05-30
+
+**Patch: gale-wasm ARM linkability.** Unblocks the cross-language-LTO route
+(gale-ffi → wasm → synth → ARM `ET_REL` → linked into a Zephyr build). No
+proof-suite changes; the v0.12 control-flow-model verification work is
+separate and unaffected.
+
+**Falsification statement.** v0.11.1 is wrong if a WASM module containing an
+internal function call still compiles to an ARM object that fails to link
+(no `R_ARM_THM_CALL` for the call, or a non-zero built-in BL addend), or if
+`--all-exports` still aborts the whole module on a single un-compilable
+function.
+
+### Fixed
+- **Internal calls are now linkable** (#167, PR #169). Every synth ARM object
+  containing a function call was non-linkable (a regression from v0.3.0).
+  Three chained defects:
+  1. `arm_backend.rs` recorded a relocation only for `BL __meld_*` (import
+     dispatch); internal `BL func_N` got none, so they were emitted as bare
+     `bl #0` with nothing to patch. Now records a relocation for every `BL`.
+  2. `build_relocatable_elf` defined only export-name symbols and used
+     `R_ARM_CALL` (ARM mode). Now defines a `func_{index}` symbol per function
+     and emits `R_ARM_THM_CALL` (Thumb).
+  3. The Thumb BL placeholder encoded second halfword `0xD000`, which
+     (`J1=J2=0, S=0` ⟹ `I1=I2=1`) bakes in a bogus ~`+0x600000` addend — the
+     source of the garbage `bl c0000c` target *and* the linker
+     "relocation truncated to fit". A true zero-offset Thumb BL is `0xF800`.
+
+     Verified on a minimal 2-internal-call module: the `.o` now carries
+     `R_ARM_THM_CALL → func_0`, links with `arm-none-eabi-ld` with zero
+     errors, and the call resolves to the callee.
+- **`--all-exports` no longer aborts on one un-compilable function** (#168,
+  PR #169). A function the backend cannot compile (e.g.
+  `compiler_builtins::float::div`, which exhausts the i64 register-pair
+  allocator) is now skipped with a diagnostic and an end-of-run report; a
+  caller that references it gets a clean `undefined symbol func_N` link error.
+  Erroring only if every function fails.
+
+### Known follow-ups (not blocking the gale `--relocatable` route)
+- Standalone `--cortex-m` (no linker) internal-call direct resolution + `$t`
+  mapping symbols (#170).
+- i64 consecutive-pair allocator spill / coalescing — the root of #168 (#171).
+
 ## [0.11.0] - 2026-05-29
 
 **Theme: true i64 T1 result-correspondence parity.**
