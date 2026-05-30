@@ -128,13 +128,81 @@ fn index_to_reg(index: u8) -> Reg {
     reg
 }
 
-/// Allocate a temporary register, skipping any that are live on the virtual stack.
+/// A virtual-stack entry (#171). A value normally lives in a physical register
+/// ([`StackVal::Reg`] — for an i64, this is the `lo`; the `hi` is the
+/// conventional [`i64_pair_hi`]). When register pressure exhausts the
+/// consecutive-pair budget, a deep entry is spilled to the frame and becomes
+/// [`StackVal::Spilled`], freeing its register(s). Spilled entries reserve NO
+/// physical register, so spilling relieves pressure; the value is reloaded into
+/// a fresh pair the moment it is popped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StackVal {
+    /// Value in register `r` (i64 lo; hi is `i64_pair_hi(r)`).
+    Reg(Reg),
+    /// Value spilled to the frame: lo at `[sp, lo_slot]`, hi at `[sp, lo_slot+4]`.
+    Spilled { lo_slot: i32 },
+}
+
+/// Number of i64 spill slots reserved in the frame (#171). Each is 8 bytes
+/// (lo+hi). Slots are reused (freed on reload), so this caps *simultaneous*
+/// spills, not total. 8 is generous for real i64-heavy functions; exceeding it
+/// surfaces as a clean `Err` (the #168 skip-and-continue net), never a panic.
+const I64_SPILL_SLOTS: usize = 8;
+
+/// Tracks which i64 spill slots are in use (#171). `base` is the byte offset
+/// from SP of slot 0; slot `i` occupies `[base + i*8, base + i*8 + 8)`.
+struct SpillState {
+    base: i32,
+    used: [bool; I64_SPILL_SLOTS],
+}
+
+impl SpillState {
+    fn new(base: i32) -> Self {
+        SpillState {
+            base,
+            used: [false; I64_SPILL_SLOTS],
+        }
+    }
+    /// Reserve a free slot, returning its byte offset from SP.
+    fn alloc(&mut self) -> Option<i32> {
+        let i = self.used.iter().position(|&u| !u)?;
+        self.used[i] = true;
+        Some(self.base + (i as i32) * 8)
+    }
+    /// Release the slot at byte offset `off` so it can be reused.
+    fn free(&mut self, off: i32) {
+        let i = ((off - self.base) / 8) as usize;
+        if i < I64_SPILL_SLOTS {
+            self.used[i] = false;
+        }
+    }
+}
+
+/// The physical registers currently reserved by the virtual stack (#171): every
+/// [`StackVal::Reg`]'s `r` and its conventional [`i64_pair_hi`]. Spilled entries
+/// reserve nothing. (Over-reserving the pair_hi for i32 entries is the
+/// pre-existing conservative behaviour — safe.)
+fn stack_live_regs(stack: &[StackVal]) -> Vec<Reg> {
+    let mut live: Vec<Reg> = Vec::with_capacity(stack.len() * 2);
+    for v in stack {
+        if let StackVal::Reg(r) = v {
+            live.push(*r);
+            if let Ok(hi) = i64_pair_hi(*r) {
+                live.push(hi);
+            }
+        }
+    }
+    live
+}
+
+/// Allocate a temporary register, skipping any reserved by the virtual stack.
 /// Returns Error if all allocatable registers are in use.
-fn alloc_temp_safe(next_temp: &mut u8, stack: &[Reg]) -> Result<Reg> {
+fn alloc_temp_safe(next_temp: &mut u8, stack: &[StackVal]) -> Result<Reg> {
+    let live = stack_live_regs(stack);
     for _ in 0..ALLOCATABLE_REGS.len() {
         let reg = index_to_reg(*next_temp);
         *next_temp = (*next_temp + 1) % ALLOCATABLE_REGS.len() as u8;
-        if !stack.contains(&reg) {
+        if !live.contains(&reg) {
             return Ok(reg);
         }
     }
@@ -143,6 +211,138 @@ fn alloc_temp_safe(next_temp: &mut u8, stack: &[Reg]) -> Result<Reg> {
          function too complex for current register allocator"
             .to_string(),
     ))
+}
+
+/// Spill the DEEPEST register-resident stack entry to a fresh frame slot (#171),
+/// freeing its register pair. Emits `STR lo,[sp,slot]; STR hi,[sp,slot+4]` and
+/// rewrites the entry to [`StackVal::Spilled`]. Returns `Ok(true)` on success,
+/// `Ok(false)` if nothing register-resident remains to spill, `Err` if the spill
+/// slot pool is exhausted. The deepest entry is chosen because it is the least
+/// likely to be consumed next (operand stack = LIFO).
+fn spill_deepest_reg(
+    stack: &mut [StackVal],
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    line: usize,
+) -> Result<bool> {
+    let Some(pos) = stack.iter().position(|v| matches!(v, StackVal::Reg(_))) else {
+        return Ok(false);
+    };
+    let StackVal::Reg(lo) = stack[pos] else {
+        return Ok(false);
+    };
+    let hi = i64_pair_hi(lo)?;
+    let slot = spill.alloc().ok_or_else(|| {
+        synth_core::Error::synthesis(
+            "register exhaustion: i64 spill-slot pool exhausted — function too \
+             complex for current register allocator"
+                .to_string(),
+        )
+    })?;
+    instructions.push(ArmInstruction {
+        op: ArmOp::Str {
+            rd: lo,
+            addr: MemAddr::imm(Reg::SP, slot),
+        },
+        source_line: Some(line),
+    });
+    instructions.push(ArmInstruction {
+        op: ArmOp::Str {
+            rd: hi,
+            addr: MemAddr::imm(Reg::SP, slot + 4),
+        },
+        source_line: Some(line),
+    });
+    stack[pos] = StackVal::Spilled { lo_slot: slot };
+    Ok(true)
+}
+
+/// Pop the top operand, returning its `lo` register (#171). If the entry was
+/// spilled, reload it: allocate a fresh consecutive pair and emit
+/// `LDR lo,[sp,slot]; LDR hi,[sp,slot+4]`, freeing the slot.
+fn pop_operand(
+    stack: &mut Vec<StackVal>,
+    next_temp: &mut u8,
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    line: usize,
+) -> Result<Reg> {
+    let v = match stack.pop() {
+        Some(v) => v,
+        None => {
+            return Err(synth_core::Error::synthesis(
+                "stack underflow: malformed WASM or compiler bug".to_string(),
+            ));
+        }
+    };
+    match v {
+        StackVal::Reg(r) => Ok(r),
+        StackVal::Spilled { lo_slot } => {
+            // Reload into a fresh consecutive pair. The pair search runs against
+            // the *remaining* stack (this entry already popped), so the pair it
+            // returns does not collide with other live values.
+            let (lo, hi) =
+                alloc_consecutive_pair(next_temp, stack, instructions, spill, &[], line)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::Ldr {
+                    rd: lo,
+                    addr: MemAddr::imm(Reg::SP, lo_slot),
+                },
+                source_line: Some(line),
+            });
+            instructions.push(ArmInstruction {
+                op: ArmOp::Ldr {
+                    rd: hi,
+                    addr: MemAddr::imm(Reg::SP, lo_slot + 4),
+                },
+                source_line: Some(line),
+            });
+            spill.free(lo_slot);
+            Ok(lo)
+        }
+    }
+}
+
+/// Peek the top operand WITHOUT consuming it, returning its `lo` register (#171).
+/// If the top was spilled, reload it into a fresh consecutive pair and rewrite
+/// the stack entry to [`StackVal::Reg`] (so the value is register-resident again
+/// and stays on the stack). Used by peek sites like `LocalTee`.
+fn peek_operand(
+    stack: &mut [StackVal],
+    next_temp: &mut u8,
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    line: usize,
+) -> Result<Reg> {
+    match stack.last().copied() {
+        None => Err(synth_core::Error::synthesis(
+            "stack underflow: malformed WASM or compiler bug".to_string(),
+        )),
+        Some(StackVal::Reg(r)) => Ok(r),
+        Some(StackVal::Spilled { lo_slot }) => {
+            let (lo, hi) =
+                alloc_consecutive_pair(next_temp, stack, instructions, spill, &[], line)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::Ldr {
+                    rd: lo,
+                    addr: MemAddr::imm(Reg::SP, lo_slot),
+                },
+                source_line: Some(line),
+            });
+            instructions.push(ArmInstruction {
+                op: ArmOp::Ldr {
+                    rd: hi,
+                    addr: MemAddr::imm(Reg::SP, lo_slot + 4),
+                },
+                source_line: Some(line),
+            });
+            spill.free(lo_slot);
+            if let Some(top) = stack.last_mut() {
+                *top = StackVal::Reg(lo);
+            }
+            Ok(lo)
+        }
+    }
 }
 
 /// Allocate a CONSECUTIVE pair `(rN, rN+1)` of registers from ALLOCATABLE_REGS,
@@ -166,43 +366,51 @@ fn alloc_temp_safe(next_temp: &mut u8, stack: &[Reg]) -> Result<Reg> {
 /// resulting pair is non-consecutive, breaking [`i64_pair_hi`]'s contract.
 fn alloc_consecutive_pair(
     next_temp: &mut u8,
-    stack: &[Reg],
+    stack: &mut [StackVal],
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
     extra_avoid: &[Reg],
+    line: usize,
 ) -> Result<(Reg, Reg)> {
-    // Build a "live" Vec: every stack entry, plus its conventional
-    // pair_hi (over-reserves for i32 stack entries but that's safe), plus
-    // any explicit extras the caller specifies. Using Vec rather than
-    // HashSet because Reg in this crate does not derive Hash.
-    let mut live: Vec<Reg> = Vec::with_capacity(stack.len() * 2 + extra_avoid.len());
-    for &reg in stack {
-        live.push(reg);
-        if let Ok(hi) = i64_pair_hi(reg) {
-            live.push(hi);
-        }
-    }
-    for &reg in extra_avoid {
-        live.push(reg);
-    }
+    // Try to find a free consecutive pair; if none is free, spill the deepest
+    // register-resident stack entry (#171) to free its pair and retry. Each
+    // iteration either succeeds or removes one register-resident entry, so the
+    // loop terminates: a spilled pair (lo, i64_pair_hi(lo)) is itself a free
+    // consecutive pair afterwards, and `extra_avoid` (<=4 regs) cannot block all
+    // five pairs.
+    loop {
+        let mut live = stack_live_regs(stack);
+        live.extend_from_slice(extra_avoid);
 
-    let n = ALLOCATABLE_REGS.len();
-    for _ in 0..n {
-        let lo_idx = (*next_temp as usize) % n;
-        let hi_idx = lo_idx + 1;
-        if hi_idx < n {
-            let lo_reg = ALLOCATABLE_REGS[lo_idx];
-            let hi_reg = ALLOCATABLE_REGS[hi_idx];
-            if !live.contains(&lo_reg) && !live.contains(&hi_reg) {
-                *next_temp = ((hi_idx + 1) % n) as u8;
-                return Ok((lo_reg, hi_reg));
+        let n = ALLOCATABLE_REGS.len();
+        let mut nt = *next_temp;
+        let mut found = None;
+        for _ in 0..n {
+            let lo_idx = (nt as usize) % n;
+            let hi_idx = lo_idx + 1;
+            if hi_idx < n {
+                let lo_reg = ALLOCATABLE_REGS[lo_idx];
+                let hi_reg = ALLOCATABLE_REGS[hi_idx];
+                if !live.contains(&lo_reg) && !live.contains(&hi_reg) {
+                    found = Some((lo_reg, hi_reg, ((hi_idx + 1) % n) as u8));
+                    break;
+                }
             }
+            nt = ((nt as usize + 1) % n) as u8;
         }
-        *next_temp = ((*next_temp as usize + 1) % n) as u8;
+        if let Some((lo_reg, hi_reg, new_nt)) = found {
+            *next_temp = new_nt;
+            return Ok((lo_reg, hi_reg));
+        }
+        // No free pair — spill the deepest entry and retry.
+        if !spill_deepest_reg(stack, instructions, spill, line)? {
+            return Err(synth_core::Error::synthesis(
+                "register exhaustion: no consecutive pair of free registers for i64 — \
+                 function too complex for current register allocator"
+                    .to_string(),
+            ));
+        }
     }
-    Err(synth_core::Error::synthesis(
-        "register exhaustion: no consecutive pair of free registers for i64 — \
-         function too complex for current register allocator"
-            .to_string(),
-    ))
 }
 
 /// AAPCS caller-saved registers that this allocator may hand out as operand
@@ -323,6 +531,12 @@ struct LocalLayout {
     /// AAPCS-clobbering branch-and-link. `None` when the function contains no
     /// calls (no scratch reserved). See the `Call` lowering for usage.
     spill_base: Option<i32>,
+    /// Byte offset (from SP) of the i64 register-pair spill area (#171): up to
+    /// `I64_SPILL_SLOTS` 8-byte slots. `alloc_consecutive_pair` spills a deep
+    /// i64 value here when the consecutive-pair budget is exhausted and reloads
+    /// it on pop, so i64-heavy functions compile instead of being dropped by
+    /// the #168 skip-and-continue net.
+    i64_spill_base: i32,
 }
 
 /// Compute the stack-frame layout for non-parameter locals in a function.
@@ -385,6 +599,26 @@ fn compute_local_layout(wasm_ops: &[WasmOp], num_params: u32) -> LocalLayout {
         None
     };
 
+    // #171: reserve the i64 register-pair spill area (8-byte aligned) ONLY when
+    // the function involves i64 — otherwise no i64 value is ever pushed, so
+    // `alloc_consecutive_pair` is never called and no spill can occur, and the
+    // frame stays as before (keeping i32-only functions and their tests
+    // unchanged). The op debug-name check is a robust sufficient condition that
+    // catches every i64 variant without enumerating them; it runs once per
+    // function. Slots are reused (freed on reload).
+    let has_i64 =
+        !i64_set.is_empty() || wasm_ops.iter().any(|op| format!("{op:?}").contains("I64"));
+    let i64_spill_base = if has_i64 {
+        if (offset % 8) != 0 {
+            offset += 4;
+        }
+        let base = offset;
+        offset += (I64_SPILL_SLOTS as i32) * 8;
+        base
+    } else {
+        offset // unused: no i64 op means no spill
+    };
+
     // Round frame to 8-byte multiple for AAPCS SP alignment.
     let frame_size = (offset + 7) & !7;
 
@@ -392,6 +626,7 @@ fn compute_local_layout(wasm_ops: &[WasmOp], num_params: u32) -> LocalLayout {
         locals,
         frame_size,
         spill_base,
+        i64_spill_base,
     }
 }
 
@@ -3943,17 +4178,18 @@ impl InstructionSelector {
     /// Popping the args here (before caller-saved preservation) is deliberate:
     /// arguments are consumed by the call, not live across it, so they must be
     /// excluded from the [`preserve_caller_saved`] spill set.
-    fn pop_call_args(stack: &mut Vec<Reg>, arg_count: u32) -> Result<Vec<Reg>> {
+    fn pop_call_args(
+        stack: &mut Vec<StackVal>,
+        next_temp: &mut u8,
+        instructions: &mut Vec<ArmInstruction>,
+        spill: &mut SpillState,
+        arg_count: u32,
+        idx: usize,
+    ) -> Result<Vec<Reg>> {
         let n = (arg_count as usize).min(ARG_REGS.len());
         let mut srcs: Vec<Reg> = Vec::with_capacity(n);
         for _ in 0..n {
-            let r = stack.pop().ok_or_else(|| {
-                synth_core::Error::synthesis(
-                    "stack underflow marshalling call arguments: malformed WASM or \
-                     callee arg count exceeds available operand-stack depth"
-                        .to_string(),
-                )
-            })?;
+            let r = pop_operand(stack, next_temp, instructions, spill, idx)?;
             srcs.push(r);
         }
         srcs.reverse();
@@ -3990,10 +4226,23 @@ impl InstructionSelector {
             .map(|(i, &src)| (src, ARG_REGS[i]))
             .collect();
         // Scratch for cycle-breaking: a callee-saved register holding no live
-        // value. The args are already popped from `stack`; `free_callee_saved`
-        // also avoids params/locals. It can never be an arg source (caller-saved
-        // / temp) or dest (R0–R3), so it is always safe.
-        let scratch = self.free_callee_saved(stack, local_to_reg, layout)?;
+        // value. `emit_parallel_move` uses it ONLY to break a true cycle, so it
+        // is needed only when some move source is also a destination. Acquiring
+        // it lazily avoids spurious exhaustion under i64 pressure (#171): a
+        // single acyclic arg move needs no scratch even when R4–R8 are full.
+        let dests: Vec<Reg> = moves.iter().map(|&(_, d)| d).collect();
+        // A scratch is needed only for a genuine cycle: a NON-self move whose
+        // source is also some move's destination. Self-moves (src == dst) and
+        // acyclic chains never use it.
+        let needs_scratch = moves
+            .iter()
+            .any(|&(src, dst)| src != dst && dests.contains(&src));
+        let scratch = if needs_scratch {
+            self.free_callee_saved(stack, local_to_reg, layout)?
+        } else {
+            // Unused for acyclic moves; pass a harmless caller-saved register.
+            Reg::R12
+        };
         let before = instructions.len();
         emit_parallel_move(instructions, &moves, scratch, idx);
         Ok(instructions.len() - before)
@@ -4077,24 +4326,60 @@ impl InstructionSelector {
         stack: &[Reg],
         local_to_reg: &std::collections::HashMap<u32, Reg>,
         layout: &LocalLayout,
+        spill: &mut SpillState,
         idx: usize,
-    ) -> Result<Reg> {
+    ) -> Result<StackVal> {
         // If R0 (the return value) is among the preserved registers, its slot
-        // holds the *old* value; reloading it would destroy the call result.
-        // Move the result to a free callee-saved register first.
+        // holds the *old* value; reloading it would destroy the call result, so
+        // the result must first move out of R0. Prefer a free callee-saved
+        // register; if none is free (an i64-heavy function fills R4–R8, #171),
+        // spill the result to the i64 frame area and return a `Spilled` value
+        // that is reloaded when popped — this is what lets `z_impl_k_sem_give`
+        // (i64 + several calls) compile rather than be skipped.
         let r0_preserved = preserved.iter().any(|&(r, _)| r == Reg::R0);
-        let result_reg = if r0_preserved {
-            let free = self.free_callee_saved(stack, local_to_reg, layout)?;
-            instructions.push(ArmInstruction {
-                op: ArmOp::Mov {
-                    rd: free,
-                    op2: Operand2::Reg(Reg::R0),
-                },
-                source_line: Some(idx),
-            });
-            free
+        let result = if r0_preserved {
+            match self.free_callee_saved(stack, local_to_reg, layout) {
+                Ok(free) => {
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Mov {
+                            rd: free,
+                            op2: Operand2::Reg(Reg::R0),
+                        },
+                        source_line: Some(idx),
+                    });
+                    StackVal::Reg(free)
+                }
+                Err(_) => {
+                    let slot = spill.alloc().ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "register exhaustion: i64 spill-slot pool exhausted while \
+                             parking a call result — function too complex"
+                                .to_string(),
+                        )
+                    })?;
+                    // The result is in R0 (i64 lo:hi = R0:R1). Spill both halves;
+                    // a garbage hi for an i32 result is harmless (the consumer
+                    // reads only what it needs).
+                    let hi = i64_pair_hi(Reg::R0)?;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Str {
+                            rd: Reg::R0,
+                            addr: MemAddr::imm(Reg::SP, slot),
+                        },
+                        source_line: Some(idx),
+                    });
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Str {
+                            rd: hi,
+                            addr: MemAddr::imm(Reg::SP, slot + 4),
+                        },
+                        source_line: Some(idx),
+                    });
+                    StackVal::Spilled { lo_slot: slot }
+                }
+            }
         } else {
-            Reg::R0
+            StackVal::Reg(Reg::R0)
         };
 
         for &(reg, off) in preserved {
@@ -4106,7 +4391,7 @@ impl InstructionSelector {
                 source_line: Some(idx),
             });
         }
-        Ok(result_reg)
+        Ok(result)
     }
 
     /// Find a callee-saved register (R4–R8) not currently holding a live value
@@ -4183,8 +4468,11 @@ impl InstructionSelector {
             });
         }
 
-        // Virtual stack holds register indices
-        let mut stack: Vec<Reg> = Vec::new();
+        // Virtual operand stack: each entry is a register-resident or spilled
+        // value (#171). i64 values track only the lo register/slot.
+        let mut stack: Vec<StackVal> = Vec::new();
+        // i64 register-pair spill slots (#171), reused across the function.
+        let mut spill = SpillState::new(layout.i64_spill_base);
         // Next available register for temporaries (start after params)
         let mut next_temp = num_params.min(4) as u8;
 
@@ -4224,7 +4512,14 @@ impl InstructionSelector {
                         // alloc_temp_safe can return non-consecutive registers
                         // when something in between is live, breaking the
                         // pair convention.
-                        let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[])?;
+                        let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[],
+                            idx,
+                        )?;
                         instructions.push(ArmInstruction {
                             op: ArmOp::I64Ldr {
                                 rdlo: dst_lo,
@@ -4258,7 +4553,7 @@ impl InstructionSelector {
                         });
                         dst
                     };
-                    stack.push(reg);
+                    stack.push(StackVal::Reg(reg));
                 }
 
                 I32Const(val) => {
@@ -4307,20 +4602,24 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                     }
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32Add => {
-                    let b = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let a = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let b = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     // Result goes in r0 for return value (or temp if not last op)
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
@@ -4335,20 +4634,24 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32Sub => {
-                    let b = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let a = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let b = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -4362,20 +4665,24 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32Mul => {
-                    let b = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let a = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let b = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -4389,20 +4696,24 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32And => {
-                    let b = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let a = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let b = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -4416,20 +4727,24 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32Or => {
-                    let b = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let a = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let b = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -4443,20 +4758,24 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32Xor => {
-                    let b = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let a = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let b = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -4470,21 +4789,25 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // Division operations with trap checks for divide-by-zero
                 I32DivU => {
-                    let divisor = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?; // b (divisor)
-                    let dividend = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?; // a (dividend)
+                    let divisor = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?; // b (divisor)
+                    let dividend = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?; // a (dividend)
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -4523,20 +4846,24 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32DivS => {
-                    let divisor = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let dividend = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let divisor = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let dividend = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -4629,20 +4956,24 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32RemU => {
-                    let divisor = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let dividend = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let divisor = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let dividend = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -4690,20 +5021,24 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32RemS => {
-                    let divisor = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let dividend = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let divisor = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let dividend = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -4749,7 +5084,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // Memory operations need stack-aware handling
@@ -4758,11 +5093,13 @@ impl InstructionSelector {
                     // single `LDR rd, [R11, #(C+O)]` when the effective offset
                     // fits in imm12. Drops the MOVW(+MOVT) const materialization.
                     let folded = self.try_fold_const_addr(wasm_ops, idx, *offset);
-                    let addr = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let addr = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     // Result goes in R0 if this is the last value-producing op (before End)
                     // Check if next op is End or if we're at the last position
                     let is_return_value = idx == wasm_ops.len() - 1
@@ -4793,7 +5130,7 @@ impl InstructionSelector {
                             });
                         }
                     }
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32Store { offset, .. } => {
@@ -4801,16 +5138,20 @@ impl InstructionSelector {
                     // to `STR val_reg, [R11, #(C+O)]` when effective offset fits.
                     let folded = self.try_fold_const_addr_store(wasm_ops, idx, *offset);
                     // WASM i32.store pops: value first, then address
-                    let value = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let addr = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let value = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let addr = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
 
                     if let Some(eff_offset) = folded {
                         Self::splice_out_addr_const_materialization(
@@ -4846,11 +5187,13 @@ impl InstructionSelector {
                 | I32Load16U { offset, .. } => {
                     // Issue #95: same const-address fold as I32Load.
                     let folded = self.try_fold_const_addr(wasm_ops, idx, *offset);
-                    let addr = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let addr = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let is_return_value = idx == wasm_ops.len() - 1
                         || (idx + 1 < wasm_ops.len() && matches!(wasm_ops[idx + 1], End));
                     let dst = if is_return_value {
@@ -4896,23 +5239,27 @@ impl InstructionSelector {
                             });
                         }
                     }
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // Sub-word stores (i32) — like I32Store but with STRB/STRH
                 I32Store8 { offset, .. } | I32Store16 { offset, .. } => {
                     // Issue #95: same const-address fold as I32Store.
                     let folded = self.try_fold_const_addr_store(wasm_ops, idx, *offset);
-                    let value = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let addr = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let value = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let addr = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
 
                     let access_size = match op {
                         I32Store8 { .. } => 1,
@@ -4972,12 +5319,21 @@ impl InstructionSelector {
                 | I64Load16U { offset, .. }
                 | I64Load32S { offset, .. }
                 | I64Load32U { offset, .. } => {
-                    let addr = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[addr])?;
+                    let addr = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[addr],
+                        idx,
+                    )?;
 
                     let ops: Vec<ArmOp> = match op {
                         I64Load8S { .. } => {
@@ -5075,7 +5431,7 @@ impl InstructionSelector {
                         });
                     }
                     // i64 on 32-bit ARM uses register pair; push low register
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 // i64 sub-word stores
@@ -5083,16 +5439,20 @@ impl InstructionSelector {
                 | I64Store16 { offset, .. }
                 | I64Store32 { offset, .. } => {
                     // Pop i64 value (lo register) and address
-                    let value_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let addr = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let value_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let addr = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
 
                     let ops: Vec<ArmOp> = match op {
                         I64Store8 { .. } => self.generate_subword_store_with_bounds_check(
@@ -5128,22 +5488,24 @@ impl InstructionSelector {
                         op: ArmOp::MemorySize { rd: dst },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 MemoryGrow(_mem_idx) => {
                     // Pop the requested number of pages from stack
-                    let pages = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let pages = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = alloc_temp_safe(&mut next_temp, &stack)?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::MemoryGrow { rd: dst, rn: pages },
                         source_line: Some(idx),
                     });
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // =========================================================
@@ -5171,11 +5533,13 @@ impl InstructionSelector {
 
                 If => {
                     // Pop condition from stack
-                    let cond_reg = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let cond_reg = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let else_label = self.alloc_label("else");
                     let end_label = self.alloc_label("if_end");
 
@@ -5302,11 +5666,13 @@ impl InstructionSelector {
 
                 BrIf(depth) => {
                     // Pop condition from stack
-                    let cond_reg = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let cond_reg = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
 
                     // CMP cond_reg, #0
                     instructions.push(ArmInstruction {
@@ -5335,11 +5701,13 @@ impl InstructionSelector {
 
                 BrTable { targets, default } => {
                     // Pop index from stack
-                    let index_reg = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let index_reg = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
 
                     // Emit cascading CMP + BEQ for each target
                     for (i, target) in targets.iter().enumerate() {
@@ -5381,18 +5749,27 @@ impl InstructionSelector {
                 }
 
                 Return => {
-                    // Move top-of-stack to R0 for return value (AAPCS)
-                    if let Some(val) = stack.last()
-                        && *val != Reg::R0
-                    {
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Mov {
-                                rd: Reg::R0,
-                                op2: Operand2::Reg(*val),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
+                    // Move top-of-stack to R0 for return value (AAPCS). Pop is
+                    // reload-aware (#171): a spilled return value is reloaded
+                    // from its frame slot first.
+                    if !stack.is_empty() {
+                        let val = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            idx,
+                        )?;
+                        if val != Reg::R0 {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Mov {
+                                    rd: Reg::R0,
+                                    op2: Operand2::Reg(val),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                     }
                     // Deallocate the local frame before popping callee-saved
                     // registers; otherwise the pop would read from the locals
@@ -5442,7 +5819,14 @@ impl InstructionSelector {
                     // consumed by the call, not live across it). The actual moves
                     // into R0–R3 are emitted AFTER preservation (below), so they
                     // are the last writes before the BL.
-                    let arg_srcs = Self::pop_call_args(&mut stack, arg_count)?;
+                    let arg_srcs = Self::pop_call_args(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        arg_count,
+                        idx,
+                    )?;
 
                     // ── #188: caller-saved preservation across the call ──
                     // A BL clobbers R0–R3 and R12. Any live value (operand-stack
@@ -5452,7 +5836,7 @@ impl InstructionSelector {
                     // call arguments were already popped, so they are not spilled.
                     let preserved = self.preserve_caller_saved(
                         &mut instructions,
-                        &stack,
+                        &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,
                         idx,
@@ -5465,7 +5849,7 @@ impl InstructionSelector {
                     let n_arg_moves = self.emit_arg_moves(
                         &mut instructions,
                         &arg_srcs,
-                        &stack,
+                        &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,
                         idx,
@@ -5504,23 +5888,27 @@ impl InstructionSelector {
                     let result_reg = self.restore_caller_saved(
                         &mut instructions,
                         &preserved,
-                        &stack,
+                        &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,
+                        &mut spill,
                         idx,
                     )?;
-                    // Push the call's return value as a live operand.
+                    // Push the call's return value as a live operand (spilled to
+                    // the frame if no register was free to hold it — #171).
                     stack.push(result_reg);
                 }
 
                 CallIndirect { type_index, .. } => {
                     // Top of stack is the table index; the call arguments sit
                     // BELOW it on the operand stack.
-                    let mut table_idx_reg = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let mut table_idx_reg = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
 
                     // #195: callee arg count comes from the static function type.
                     let arg_count = self
@@ -5528,7 +5916,14 @@ impl InstructionSelector {
                         .get(*type_index as usize)
                         .copied()
                         .unwrap_or(0);
-                    let arg_srcs = Self::pop_call_args(&mut stack, arg_count)?;
+                    let arg_srcs = Self::pop_call_args(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        arg_count,
+                        idx,
+                    )?;
 
                     // #195: the arg moves write R0–R3, but the `CallIndirect`
                     // expansion reads `table_idx_reg` to compute the branch
@@ -5540,7 +5935,11 @@ impl InstructionSelector {
                     // then pop it back off just before emitting the call.
                     let mut table_pushed = false;
                     if !arg_srcs.is_empty() {
-                        let safe = self.free_callee_saved(&stack, &local_to_reg, &layout)?;
+                        let safe = self.free_callee_saved(
+                            &stack_live_regs(&stack),
+                            &local_to_reg,
+                            &layout,
+                        )?;
                         instructions.push(ArmInstruction {
                             op: ArmOp::Mov {
                                 rd: safe,
@@ -5550,7 +5949,7 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                         table_idx_reg = safe;
-                        stack.push(safe);
+                        stack.push(StackVal::Reg(safe));
                         table_pushed = true;
                     }
 
@@ -5561,7 +5960,7 @@ impl InstructionSelector {
                     // because preservation only touches caller-saved regs).
                     let preserved = self.preserve_caller_saved(
                         &mut instructions,
-                        &stack,
+                        &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,
                         idx,
@@ -5573,7 +5972,7 @@ impl InstructionSelector {
                     let n_arg_moves = self.emit_arg_moves(
                         &mut instructions,
                         &arg_srcs,
-                        &stack,
+                        &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,
                         idx,
@@ -5599,9 +5998,10 @@ impl InstructionSelector {
                     let result_reg = self.restore_caller_saved(
                         &mut instructions,
                         &preserved,
-                        &stack,
+                        &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,
+                        &mut spill,
                         idx,
                     )?;
                     stack.push(result_reg);
@@ -5630,21 +6030,27 @@ impl InstructionSelector {
 
                 Select => {
                     // Select: pop condition, val2, val1; push val1 if cond != 0, else val2
-                    let cond_reg = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let val2 = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let val1 = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let cond_reg = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let val2 = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let val1 = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = alloc_temp_safe(&mut next_temp, &stack)?;
 
                     // CMP cond, #0
@@ -5677,15 +6083,17 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 LocalSet(local_idx) => {
-                    let val = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let val = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     if *local_idx < num_params.min(4) {
                         let target = index_to_reg(*local_idx as u8);
                         if val != target {
@@ -5737,12 +6145,15 @@ impl InstructionSelector {
                 }
 
                 LocalTee(local_idx) => {
-                    // Like local.set but keeps value on stack
-                    let val = stack.last().copied().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    // Like local.set but keeps value on stack. Peek is
+                    // reload-aware (#171): a spilled TOS is reloaded in place.
+                    let val = peek_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     if *local_idx < num_params.min(4) {
                         let target = index_to_reg(*local_idx as u8);
                         if val != target {
@@ -5802,16 +6213,18 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 GlobalSet(global_idx) => {
                     // Pop value from stack and store to globals table (R9 = globals base).
-                    let val = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let val = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::Str {
                             rd: val,
@@ -5837,7 +6250,14 @@ impl InstructionSelector {
                     // non-consecutive registers if something in between is
                     // live on the wasm stack, which then breaks the
                     // i64_pair_hi convention used by every i64 op downstream.
-                    let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[],
+                        idx,
+                    )?;
 
                     instructions.push(ArmInstruction {
                         op: ArmOp::I64Const {
@@ -5849,21 +6269,25 @@ impl InstructionSelector {
                     });
                     cf.add_instruction();
                     // Push only the lo register; hi is derived via i64_pair_hi
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 I64Add => {
                     // Pop two i64 register pairs: b (top), a (second)
-                    let b_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in I64Add: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let a_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in I64Add: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let b_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
 
@@ -5875,8 +6299,14 @@ impl InstructionSelector {
                     // Avoid clobbering the just-popped operand pairs before
                     // the ADC reads them — passing them in extra_avoid
                     // ensures dst doesn't overlap any of a_lo/a_hi/b_lo/b_hi.
-                    let (dst_lo, dst_hi) =
-                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[a_lo, a_hi, b_lo, b_hi],
+                        idx,
+                    )?;
 
                     // ADDS dst_lo, a_lo, b_lo  (sets carry flag)
                     instructions.push(ArmInstruction {
@@ -5900,28 +6330,38 @@ impl InstructionSelector {
                     });
                     cf.add_instruction();
 
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 I64Sub => {
                     // Pop two i64 register pairs: b (top), a (second)
-                    let b_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in I64Sub: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let a_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in I64Sub: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let b_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
 
                     // See I64Add for why extra_avoid carries a_*/b_* —
                     // dst must not overlap any operand half before SBC reads it.
-                    let (dst_lo, dst_hi) =
-                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[a_lo, a_hi, b_lo, b_hi],
+                        idx,
+                    )?;
 
                     // SUBS dst_lo, a_lo, b_lo  (sets borrow flag)
                     instructions.push(ArmInstruction {
@@ -5945,7 +6385,7 @@ impl InstructionSelector {
                     });
                     cf.add_instruction();
 
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 // ============================================================
@@ -5959,23 +6399,33 @@ impl InstructionSelector {
                 // arbitrary register pairs from earlier ops.
                 // ============================================================
                 I64Or | I64And | I64Xor => {
-                    let b_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in i64 bitwise op".to_string(),
-                        )
-                    })?;
-                    let a_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in i64 bitwise op".to_string(),
-                        )
-                    })?;
+                    let b_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
                     // dst must not overlap any popped operand's half — the
                     // hi instruction reads a_hi and b_hi after the lo
                     // instruction writes dst_lo.
-                    let (dst_lo, dst_hi) =
-                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[a_lo, a_hi, b_lo, b_hi],
+                        idx,
+                    )?;
                     let (lo_op, hi_op) = match op {
                         I64Or => (
                             ArmOp::Orr {
@@ -6025,7 +6475,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 // ============================================================
@@ -6036,13 +6486,24 @@ impl InstructionSelector {
                 // high = arithmetic-shift-right by 31 (sign-extension).
                 // ============================================================
                 I64ExtendI32U => {
-                    let val = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis("stack underflow in I64ExtendI32U".to_string())
-                    })?;
+                    let val = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     // val must stay alive until the Mov reads it; dst_hi
                     // must not be val (we'd write the zero high before
                     // moving val to dst_lo).
-                    let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[val])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[val],
+                        idx,
+                    )?;
                     if val != dst_lo {
                         instructions.push(ArmInstruction {
                             op: ArmOp::Mov {
@@ -6061,14 +6522,25 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 I64ExtendI32S => {
-                    let val = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis("stack underflow in I64ExtendI32S".to_string())
-                    })?;
-                    let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[val])?;
+                    let val = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[val],
+                        idx,
+                    )?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::I64ExtendI32S {
                             rdlo: dst_lo,
@@ -6078,7 +6550,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 // ============================================================
@@ -6090,19 +6562,33 @@ impl InstructionSelector {
                 // assuming R0:R1 / R2:R3.
                 // ============================================================
                 I64Shl | I64ShrU | I64ShrS => {
-                    let b_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis("stack underflow in i64 shift".to_string())
-                    })?;
-                    let a_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis("stack underflow in i64 shift".to_string())
-                    })?;
+                    let b_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
                     // dst must not overlap any popped operand's half — the
                     // shift pseudo-op reads all four (rn_lo/rn_hi/rm_lo/rm_hi)
                     // before writing the destination.
-                    let (dst_lo, dst_hi) =
-                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[a_lo, a_hi, b_lo, b_hi],
+                        idx,
+                    )?;
                     let shift_op = match op {
                         I64Shl => ArmOp::I64Shl {
                             rd_lo: dst_lo,
@@ -6135,24 +6621,32 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 I64Load { offset, .. } => {
                     // Pop address from stack
-                    let addr = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in I64Load: malformed WASM or compiler bug"
-                                .to_string(),
-                        )
-                    })?;
+                    let addr = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
 
                     // Allocate result register pair. MUST be consecutive
                     // in ALLOCATABLE_REGS — i64_pair_hi assumes consecutive
                     // and is called by every i64 op downstream to recover
                     // the high register. Avoid clobbering addr before the
                     // load uses it.
-                    let (dst_lo, dst_hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[addr])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[addr],
+                        idx,
+                    )?;
 
                     // Generate bounds-checked i64 load into the allocated pair
                     let load_ops =
@@ -6163,23 +6657,25 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                     }
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 I64Store { offset, .. } => {
                     // WASM i64.store pops: value first, then address
-                    let value_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in I64Store: malformed WASM or compiler bug"
-                                .to_string(),
-                        )
-                    })?;
-                    let addr = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in I64Store: malformed WASM or compiler bug"
-                                .to_string(),
-                        )
-                    })?;
+                    let value_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let addr = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let value_hi = i64_pair_hi(value_lo)?;
 
                     // Generate bounds-checked i64 store from the value pair
@@ -6196,11 +6692,13 @@ impl InstructionSelector {
 
                 I64Eqz => {
                     // Pop one i64 register pair
-                    let src_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in I64Eqz: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let src_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let src_hi = i64_pair_hi(src_lo)?;
 
                     // Result is a single i32 (0 or 1)
@@ -6217,7 +6715,7 @@ impl InstructionSelector {
                     cf.add_instruction();
 
                     // I64Eqz produces an i32 result (single register)
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // =========================================================
@@ -6226,16 +6724,20 @@ impl InstructionSelector {
                 // =========================================================
                 I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS
                 | I32GeU => {
-                    let b = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let a = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let b = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -6269,17 +6771,19 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // i32.eqz (unary: pop 1, push 1)
                 // CMP rn, #0; SetCond rd, EQ
                 I32Eqz => {
-                    let a = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let a = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -6301,23 +6805,27 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // =========================================================
                 // i32 shifts and rotates (binary: pop 2, push 1)
                 // =========================================================
                 I32Shl | I32ShrS | I32ShrU | I32Rotr => {
-                    let shift_amt = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let value = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let shift_amt = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let value = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -6351,22 +6859,26 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32Rotl => {
                     // Rotate left by N = Rotate right by (32 - N)
                     // RSB tmp, shift_amt, #32; ROR dst, value, tmp
-                    let shift_amt = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
-                    let value = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let shift_amt = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let value = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -6391,18 +6903,20 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // =========================================================
                 // i32 unary bit operations (pop 1, push 1)
                 // =========================================================
                 I32Clz => {
-                    let src = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let src = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -6413,16 +6927,18 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32Ctz => {
                     // Count trailing zeros: RBIT + CLZ
-                    let src = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let src = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -6438,17 +6954,19 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32Popcnt => {
                     // Population count — no native ARM instruction
                     // Popcnt pseudo-op expanded by encoder
-                    let src = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let src = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -6459,18 +6977,20 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // =========================================================
                 // i32 sign extension (pop 1, push 1)
                 // =========================================================
                 I32Extend8S => {
-                    let src = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let src = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -6481,15 +7001,17 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 I32Extend16S => {
-                    let src = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow: malformed WASM or compiler bug".to_string(),
-                        )
-                    })?;
+                    let src = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -6500,7 +7022,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // ============================================================
@@ -6519,16 +7041,20 @@ impl InstructionSelector {
                 // ============================================================
                 I64Eq | I64Ne | I64LtS | I64LtU | I64LeS | I64LeU | I64GtS | I64GtU | I64GeS
                 | I64GeU => {
-                    let b_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in i64 comparison".to_string(),
-                        )
-                    })?;
-                    let a_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in i64 comparison".to_string(),
-                        )
-                    })?;
+                    let b_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
                     // Result is a single i32. alloc_temp_safe avoids any reg
@@ -6568,7 +7094,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // ============================================================
@@ -6579,20 +7105,34 @@ impl InstructionSelector {
                 // and a fresh consecutive pair for the destination.
                 // ============================================================
                 I64Mul => {
-                    let b_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis("stack underflow in I64Mul".to_string())
-                    })?;
-                    let a_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis("stack underflow in I64Mul".to_string())
-                    })?;
+                    let b_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
                     // I64Mul encodes to UMULL + MLA cross products: rd_lo/rd_hi
                     // are written, and ALL four operand halves are read. dst
                     // must not overlap any operand half before the encoded
                     // sequence reads it.
-                    let (dst_lo, dst_hi) =
-                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[a_lo, a_hi, b_lo, b_hi],
+                        idx,
+                    )?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::I64Mul {
                             rd_lo: dst_lo,
@@ -6605,7 +7145,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 // ============================================================
@@ -6617,16 +7157,30 @@ impl InstructionSelector {
                 // stack-tracked pairs keeps AAPCS params intact.
                 // ============================================================
                 I64DivS | I64DivU | I64RemS | I64RemU => {
-                    let b_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis("stack underflow in i64 div/rem".to_string())
-                    })?;
-                    let a_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis("stack underflow in i64 div/rem".to_string())
-                    })?;
+                    let b_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
-                    let (dst_lo, dst_hi) =
-                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[a_lo, a_hi, b_lo, b_hi],
+                        idx,
+                    )?;
                     let arm_op = match op {
                         I64DivS => ArmOp::I64DivS {
                             rdlo: dst_lo,
@@ -6667,7 +7221,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 // ============================================================
@@ -6682,16 +7236,30 @@ impl InstructionSelector {
                 // contract (which assumed shift in R2).
                 // ============================================================
                 I64Rotl | I64Rotr => {
-                    let b_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis("stack underflow in i64 rotate".to_string())
-                    })?;
-                    let a_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis("stack underflow in i64 rotate".to_string())
-                    })?;
+                    let b_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
+                    let a_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let b_hi = i64_pair_hi(b_lo)?;
                     let a_hi = i64_pair_hi(a_lo)?;
-                    let (dst_lo, dst_hi) =
-                        alloc_consecutive_pair(&mut next_temp, &stack, &[a_lo, a_hi, b_lo, b_hi])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[a_lo, a_hi, b_lo, b_hi],
+                        idx,
+                    )?;
                     let arm_op = match op {
                         I64Rotl => ArmOp::I64Rotl {
                             rdlo: dst_lo,
@@ -6714,7 +7282,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 // ============================================================
@@ -6724,11 +7292,13 @@ impl InstructionSelector {
                 // hardcoding R0 (operand lo + result) and R1 (operand hi).
                 // ============================================================
                 I64Clz | I64Ctz | I64Popcnt => {
-                    let src_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in i64 unary bit op".to_string(),
-                        )
-                    })?;
+                    let src_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let src_hi = i64_pair_hi(src_lo)?;
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
@@ -6758,7 +7328,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // ============================================================
@@ -6769,17 +7339,25 @@ impl InstructionSelector {
                 // hardcoding R0:R1 for both operand and result.
                 // ============================================================
                 I64Extend8S | I64Extend16S | I64Extend32S => {
-                    let src_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis(
-                            "stack underflow in i64 sign-extend".to_string(),
-                        )
-                    })?;
+                    let src_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let _src_hi = i64_pair_hi(src_lo)?;
                     // dst must not overlap src_lo before the encoded sequence
                     // reads it (the encoder issues a SXTB/SXTH/MOV + ASR #31
                     // pattern that reads src_lo first then writes rdlo/rdhi).
-                    let (dst_lo, dst_hi) =
-                        alloc_consecutive_pair(&mut next_temp, &stack, &[src_lo])?;
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[src_lo],
+                        idx,
+                    )?;
                     let arm_op = match op {
                         I64Extend8S => ArmOp::I64Extend8S {
                             rdlo: dst_lo,
@@ -6803,7 +7381,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst_lo);
+                    stack.push(StackVal::Reg(dst_lo));
                 }
 
                 // ============================================================
@@ -6813,9 +7391,13 @@ impl InstructionSelector {
                 // operand low and result.
                 // ============================================================
                 I32WrapI64 => {
-                    let src_lo = stack.pop().ok_or_else(|| {
-                        synth_core::Error::synthesis("stack underflow in I32WrapI64".to_string())
-                    })?;
+                    let src_lo = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        idx,
+                    )?;
                     let _src_hi = i64_pair_hi(src_lo)?;
                     // Always allocate a fresh temporary. Pre-fix, this picked
                     // `Reg::R0` when `idx == wasm_ops.len() - 1`, on the theory
@@ -6836,7 +7418,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(dst);
+                    stack.push(StackVal::Reg(dst));
                 }
 
                 // For other operations, fall back to default behavior.
@@ -6860,7 +7442,7 @@ impl InstructionSelector {
                     for _ in 0..pushes {
                         // Push a placeholder — select_default used its own register
                         let placeholder = self.regs.alloc_reg();
-                        stack.push(placeholder);
+                        stack.push(StackVal::Reg(placeholder));
                     }
                 }
             }
@@ -6882,7 +7464,21 @@ impl InstructionSelector {
         // `source_line: None` keeps the move out of the
         // "writes-param-reg-before-LocalGet" invariant the fuzz harness
         // checks; it's the function-boundary Mov, not a body-level write.
-        if let Some(&result_reg) = stack.last()
+        // Reload-aware (#171): a spilled final result is reloaded before the
+        // AAPCS return-value move. Past the op loop, so use wasm_ops.len() as
+        // the synthetic source line for any reload.
+        let result_reg = if stack.is_empty() {
+            None
+        } else {
+            Some(peek_operand(
+                &mut stack,
+                &mut next_temp,
+                &mut instructions,
+                &mut spill,
+                wasm_ops.len(),
+            )?)
+        };
+        if let Some(result_reg) = result_reg
             && result_reg != Reg::R0
         {
             instructions.push(ArmInstruction {
@@ -7725,23 +8321,16 @@ mod tests {
     }
 
     /// #171: i64-heavy functions that keep more i64 values live than fit in the
-    /// 5 consecutive register pairs hit register exhaustion. This must surface
-    /// as a clean typed `Err` (NOT a panic), so the backend's function-level
-    /// skip-and-continue net (#168) can drop just that function rather than
-    /// crash the whole compile. A moderate i64 expression (well within the
-    /// register budget) must still compile.
-    ///
-    /// Scope note: a full spill-to-stack fallback for `alloc_consecutive_pair`
-    /// (so deeply-i64-live functions compile rather than being skipped) requires
-    /// changing the operand-stack representation from `Vec<Reg>` to a spillable
-    /// slot type across ~170 push/pop sites — out of scope for this change. The
-    /// clean-error + skip-net behaviour below is the mitigation.
+    /// 5 consecutive register pairs now COMPILE — `alloc_consecutive_pair` spills
+    /// a deep i64 value to the frame (`StackVal::Spilled`) to free a pair, and
+    /// the spilled value is reloaded on pop. Previously this hit register
+    /// exhaustion and was dropped by the #168 skip-and-continue net (regressing
+    /// gale's `z_impl_k_sem_give` once #188 added call-spill pressure).
     #[test]
-    fn test_171_i64_exhaustion_is_clean_error_not_panic() {
+    fn test_171_i64_exhaustion_spills_and_compiles() {
         let db = RuleDatabase::new();
 
-        // Moderate i64 expression: compiles fine (operands consumed before the
-        // result pair is allocated, so live pressure stays low).
+        // Moderate i64 expression: compiles fine, no spill needed.
         let mut sel_ok = InstructionSelector::new(db.rules().to_vec());
         let ok_ops = vec![
             WasmOp::LocalGet(0),
@@ -7756,22 +8345,31 @@ mod tests {
         );
 
         // Pathological: keep 6 i64 values live simultaneously (12 regs needed,
-        // only 10 allocatable) → exhaustion. Must be Err, must not panic.
+        // only 10 allocatable). Pre-#171 this errored; now it COMPILES via spill.
         let mut sel_bad = InstructionSelector::new(db.rules().to_vec());
         let mut bad_ops = Vec::new();
         // Six independent i64 constants — each allocates a FRESH register pair,
-        // so all six are live simultaneously before any consumer.
+        // so all six are live simultaneously before any consumer (the 6th
+        // forces a spill).
         for _ in 0..6 {
             bad_ops.push(WasmOp::I64Const(1));
         }
-        // Now fold them: five adds consume the six live values.
+        // Now fold them: five adds consume the six live values (reloading the
+        // spilled one when it is popped).
         for _ in 0..5 {
             bad_ops.push(WasmOp::I64Add);
         }
-        // The key property under test: this returns a Result (clean error or
-        // success) and does NOT panic. Either outcome is acceptable; the #168
-        // backend skip-net drops the function on Err.
-        let _res = sel_bad.select_with_stack(&bad_ops, 0);
+        let res = sel_bad.select_with_stack(&bad_ops, 0);
+        assert!(
+            res.is_ok(),
+            "6-live-i64 function must now compile via spill (#171), got {res:?}"
+        );
+        // The spill path must have emitted at least one STR/LDR to the frame.
+        let arm = res.unwrap();
+        let has_mem = arm
+            .iter()
+            .any(|i| matches!(i.op, ArmOp::Str { .. }) || matches!(i.op, ArmOp::Ldr { .. }));
+        assert!(has_mem, "spill must emit STR/LDR frame traffic");
     }
 
     #[test]
@@ -12063,7 +12661,10 @@ mod tests {
         let (off, is_i64) = layout.locals[&0];
         assert_eq!(off, 0);
         assert!(is_i64);
-        assert_eq!(layout.frame_size, 8);
+        // 8 bytes for the i64 local + the #171 i64 spill area (reserved because
+        // the function has i64 ops).
+        assert_eq!(layout.frame_size, 8 + (I64_SPILL_SLOTS as i32) * 8);
+        assert_eq!(layout.i64_spill_base, 8);
     }
 
     #[test]
@@ -12083,8 +12684,10 @@ mod tests {
         assert!(!is_i64_0);
         assert_eq!(off1, 8, "i64 must be 8-byte aligned");
         assert!(is_i64_1);
-        // i32 (4) + pad (4) + i64 (8) = 16 bytes
-        assert_eq!(layout.frame_size, 16);
+        // i32 (4) + pad (4) + i64 (8) = 16 bytes for locals, + the #171 i64
+        // spill area (reserved because the function has i64 ops).
+        assert_eq!(layout.frame_size, 16 + (I64_SPILL_SLOTS as i32) * 8);
+        assert_eq!(layout.i64_spill_base, 16);
     }
 
     #[test]
@@ -12146,8 +12749,18 @@ mod tests {
         // From an empty stack, the pair returned must be consecutive entries
         // in ALLOCATABLE_REGS.
         let mut next_temp: u8 = 0;
-        let stack: Vec<Reg> = Vec::new();
-        let (lo, hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[]).unwrap();
+        let mut stack: Vec<StackVal> = Vec::new();
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        let (lo, hi) = alloc_consecutive_pair(
+            &mut next_temp,
+            &mut stack,
+            &mut instructions,
+            &mut spill,
+            &[],
+            0,
+        )
+        .unwrap();
         // Verify hi == i64_pair_hi(lo) — the contract.
         let expected_hi = i64_pair_hi(lo).unwrap();
         assert_eq!(hi, expected_hi);
@@ -12158,11 +12771,29 @@ mod tests {
         // Reserve the first pair via extra_avoid and confirm a different pair
         // is allocated.
         let mut next_temp: u8 = 0;
-        let stack: Vec<Reg> = Vec::new();
-        let (lo1, hi1) = alloc_consecutive_pair(&mut next_temp, &stack, &[]).unwrap();
+        let mut stack: Vec<StackVal> = Vec::new();
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        let (lo1, hi1) = alloc_consecutive_pair(
+            &mut next_temp,
+            &mut stack,
+            &mut instructions,
+            &mut spill,
+            &[],
+            0,
+        )
+        .unwrap();
         // Now ask again, telling it to avoid lo1 and hi1.
         let mut next_temp2: u8 = 0;
-        let (lo2, hi2) = alloc_consecutive_pair(&mut next_temp2, &stack, &[lo1, hi1]).unwrap();
+        let (lo2, hi2) = alloc_consecutive_pair(
+            &mut next_temp2,
+            &mut stack,
+            &mut instructions,
+            &mut spill,
+            &[lo1, hi1],
+            0,
+        )
+        .unwrap();
         assert!(lo2 != lo1, "should not reuse lo1");
         assert!(hi2 != hi1, "should not reuse hi1");
         // The new pair must still be consecutive.
@@ -12174,8 +12805,18 @@ mod tests {
         // If the stack has an i64 lo (e.g. R0), then R1 (its implicit hi)
         // must NOT be returned as a fresh lo by alloc_consecutive_pair.
         let mut next_temp: u8 = 0;
-        let stack = vec![Reg::R0]; // implicitly reserves R1 as well
-        let (lo, hi) = alloc_consecutive_pair(&mut next_temp, &stack, &[]).unwrap();
+        let mut stack = vec![StackVal::Reg(Reg::R0)]; // implicitly reserves R1
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        let (lo, hi) = alloc_consecutive_pair(
+            &mut next_temp,
+            &mut stack,
+            &mut instructions,
+            &mut spill,
+            &[],
+            0,
+        )
+        .unwrap();
         assert_ne!(lo, Reg::R0, "must skip the live lo");
         assert_ne!(lo, Reg::R1, "must skip implicit hi of R0");
         assert_ne!(hi, Reg::R1, "implicit hi must not be allocated");
