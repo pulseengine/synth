@@ -82,20 +82,19 @@ jobs:
       - name: Build publish helper
         run: rustc --edition 2024 scripts/publish.rs -o publish
 
-      # Pre-flight fail-fast (#146): `./publish verify` now runs `cargo package`
-      # per crate, NOT `cargo publish --dry-run`. `--dry-run` resolved deps
-      # through the public crates.io index, so dependent workspace crates always
-      # failed until their synth-* deps were already on the registry at the new
-      # version (the chicken-and-egg that sank the v0.7.0 step, dropped in #144).
-      # `cargo package` resolves through path deps and builds each `.crate`
-      # end-to-end, catching broken metadata / missing files / compile errors
-      # before any upload. (`publish = false` crates like synth-abi are not in
-      # CRATES_TO_PUBLISH, so the synth-wit-version quirk in #146 is not hit.)
-      - name: Verify packaging (cargo package, no chicken-and-egg)
-        run: ./publish verify
-
-      # `./publish publish` has a 10-attempt retry loop with a 40s sleep that
-      # rides out registry index propagation between dependent crates.
+      # NOTE: there is intentionally NO pre-flight `./publish verify` step.
+      # Both `cargo publish --dry-run` AND `cargo package` resolve the path-dep
+      # *version requirements* (`synth-core = "^0.11.x"`) against the crates.io
+      # index when preparing the upload, so a dependent crate fails with
+      # "failed to select a version for synth-core = ^0.11.x" on the FIRST
+      # publish of any new version (the deps aren't on the registry yet). This
+      # is the same chicken-and-egg that sank the v0.7.0 verify step (dropped in
+      # #144). #146 proposed `cargo package` to avoid it, but it does NOT — it
+      # only passes when the version is already published. Re-tracked in #146.
+      # Compile errors are already caught by the CI test/build (path deps, no
+      # chicken-and-egg); `./publish publish` below validates each crate's
+      # metadata as cargo's own pre-upload check, with a 10-attempt retry loop
+      # (40s sleep) that rides out registry index propagation between deps.
       - name: Publish workspace to crates.io
         run: ./publish publish
         env:
