@@ -142,6 +142,10 @@ fn issue_93_no_optimize_path_handles_repro() {
         .map(|i| i.op)
         .collect();
     assert!(arm.iter().any(|o| matches!(o, ArmOp::I64ShrU { .. })));
+    // This repro is call-free, so params stay register-backed (frame-backing is
+    // reserved for call-containing functions, #204). The no-optimize path's i64
+    // shift count must therefore not alias an AAPCS param register the emitter
+    // clobbers as scratch.
     assert!(
         !shift_clobbers_param_reg(&arm),
         "no-optimize path also clobbers AAPCS params (unexpected): {:#?}",

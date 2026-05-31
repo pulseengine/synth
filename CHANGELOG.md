@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.13] - 2026-05-31
+
+**i64 width-conversion decode + i32/i64-aware spilling + param frame-backing —
+fixes the binary-semaphore give (#204).** gale's loom-inlined
+`z_impl_k_sem_give` ran on real Cortex-M4 hardware (NUCLEO-G474RE) without
+faulting (after #202) but `sem->count` stayed 0 on a no-waiter give — a hardware
+watchpoint on `&sem->count` showed the give's store **never fired it**. Three
+compounding root causes, all now fixed:
+
+1. **The decoder silently dropped `i64.extend_i32_u`, `i64.extend_i32_s` and
+   `i32.wrap_i64`** — `convert_operator` had no arm for them, so they vanished
+   from the op stream. gale's `(new_count << 32)` pack is
+   `local.get N; i64.extend_i32_u; i64.const 32; i64.shl`; with the extend gone,
+   an i32 value was left as a 64-bit operand with a garbage high half. Now
+   mapped to `WasmOp::I64ExtendI32U/S` and `I32WrapI64`.
+2. **`select_with_stack` spilled every register-resident stack value as an
+   8-byte i64 pair (latent #171).** `StackVal::Reg` carried no width, so
+   `spill_deepest_reg`/`stack_live_regs` called `i64_pair_hi` on i32 temps —
+   failing for an i32 in R12 (no consecutive hi), exhausting the allocator on
+   gale's pack ("no high register available for R12"). `StackVal` now tracks
+   i32-vs-i64 width and spills 4 vs 8 bytes accordingly.
+3. **A param used as a store address and live across a call was clobbered
+   (#193 class).** `local.get 0` (the semaphore pointer) lives in R0; the
+   intervening `k_spin_lock(1024)` reclaims R0 for its AAPCS argument before the
+   store reads it. Call-containing functions now **frame-back every in-register
+   param** (spill at entry, reload through a stack slot), so the store's address
+   index survives the call. The give now lowers to
+   `str.w r_val, [r11, r_semptr]` (Thumb-2), writing `new_count` to the real
+   `&sem->count`. Call-free functions keep params register-backed (no behaviour
+   change; call-free temp clobbers remain the separate, non-blocking #193 fuzz
+   class).
+
+End-to-end verified by unicorn emulation of gale's gist on the **cortex-m4
+(Thumb-2)** build — the no-waiter give now sets `sem->count = 1` — plus decoder
+and selector regression tests.
+
+_Falsification:_ this release is wrong if, for a Cortex-M (Thumb-2) target, a
+WASM `iN.store*` whose address operand is a parameter held live across a call
+emits a base-only `[r11, #off]` store (dropping the register index) instead of
+the indexed `[r11, r_addr, #off]` — i.e. if the store can no longer reach a
+runtime-computed linear-memory address after an intervening call.
+
 ## [0.11.12] - 2026-05-31
 
 **Byte-accurate local branch resolution — fixes mid-instruction branch targets

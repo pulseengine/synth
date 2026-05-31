@@ -137,10 +137,28 @@ fn index_to_reg(index: u8) -> Reg {
 /// a fresh pair the moment it is popped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum StackVal {
-    /// Value in register `r` (i64 lo; hi is `i64_pair_hi(r)`).
-    Reg(Reg),
-    /// Value spilled to the frame: lo at `[sp, lo_slot]`, hi at `[sp, lo_slot+4]`.
-    Spilled { lo_slot: i32 },
+    /// Value in register `reg`. When `is_i64`, this is the lo half of an i64
+    /// pair (hi = `i64_pair_hi(reg)`); when false, a single i32 in `reg`. The
+    /// width lets the spill/reload path store 4 bytes for an i32 (and never call
+    /// `i64_pair_hi` on a single-reg i32 — which fails for R12, the last
+    /// allocatable reg) vs 8 bytes for an i64 pair (#204/#171).
+    Reg { reg: Reg, is_i64: bool },
+    /// Spilled to the frame: i32 at `[sp, lo_slot]`; i64 lo at `[sp, lo_slot]`,
+    /// hi at `[sp, lo_slot+4]`.
+    Spilled { lo_slot: i32, is_i64: bool },
+}
+
+impl StackVal {
+    /// A single 32-bit value in `reg`.
+    #[inline]
+    fn i32(reg: Reg) -> Self {
+        StackVal::Reg { reg, is_i64: false }
+    }
+    /// A 64-bit value whose lo lives in `reg` (hi = `i64_pair_hi(reg)`).
+    #[inline]
+    fn i64(reg: Reg) -> Self {
+        StackVal::Reg { reg, is_i64: true }
+    }
 }
 
 /// Number of i64 spill slots reserved in the frame (#171). Each is 8 bytes
@@ -185,9 +203,16 @@ impl SpillState {
 fn stack_live_regs(stack: &[StackVal]) -> Vec<Reg> {
     let mut live: Vec<Reg> = Vec::with_capacity(stack.len() * 2);
     for v in stack {
-        if let StackVal::Reg(r) = v {
-            live.push(*r);
-            if let Ok(hi) = i64_pair_hi(*r) {
+        if let StackVal::Reg { reg, is_i64 } = v {
+            live.push(*reg);
+            // Only an i64 value occupies the consecutive hi register. (Compute
+            // hi lazily so i64_pair_hi is never called for an i32 entry.)
+            let hi = if *is_i64 {
+                i64_pair_hi(*reg).ok()
+            } else {
+                None
+            };
+            if let Some(hi) = hi {
                 live.push(hi);
             }
         }
@@ -225,13 +250,12 @@ fn spill_deepest_reg(
     spill: &mut SpillState,
     line: usize,
 ) -> Result<bool> {
-    let Some(pos) = stack.iter().position(|v| matches!(v, StackVal::Reg(_))) else {
+    let Some(pos) = stack.iter().position(|v| matches!(v, StackVal::Reg { .. })) else {
         return Ok(false);
     };
-    let StackVal::Reg(lo) = stack[pos] else {
+    let StackVal::Reg { reg: lo, is_i64 } = stack[pos] else {
         return Ok(false);
     };
-    let hi = i64_pair_hi(lo)?;
     let slot = spill.alloc().ok_or_else(|| {
         synth_core::Error::synthesis(
             "register exhaustion: i64 spill-slot pool exhausted — function too \
@@ -239,6 +263,7 @@ fn spill_deepest_reg(
                 .to_string(),
         )
     })?;
+    // i32: store the single register (4 bytes). i64: store lo + hi (8 bytes).
     instructions.push(ArmInstruction {
         op: ArmOp::Str {
             rd: lo,
@@ -246,14 +271,20 @@ fn spill_deepest_reg(
         },
         source_line: Some(line),
     });
-    instructions.push(ArmInstruction {
-        op: ArmOp::Str {
-            rd: hi,
-            addr: MemAddr::imm(Reg::SP, slot + 4),
-        },
-        source_line: Some(line),
-    });
-    stack[pos] = StackVal::Spilled { lo_slot: slot };
+    if is_i64 {
+        let hi = i64_pair_hi(lo)?;
+        instructions.push(ArmInstruction {
+            op: ArmOp::Str {
+                rd: hi,
+                addr: MemAddr::imm(Reg::SP, slot + 4),
+            },
+            source_line: Some(line),
+        });
+    }
+    stack[pos] = StackVal::Spilled {
+        lo_slot: slot,
+        is_i64,
+    };
     Ok(true)
 }
 
@@ -276,27 +307,39 @@ fn pop_operand(
         }
     };
     match v {
-        StackVal::Reg(r) => Ok(r),
-        StackVal::Spilled { lo_slot } => {
-            // Reload into a fresh consecutive pair. The pair search runs against
-            // the *remaining* stack (this entry already popped), so the pair it
-            // returns does not collide with other live values.
-            let (lo, hi) =
-                alloc_consecutive_pair(next_temp, stack, instructions, spill, &[], line)?;
-            instructions.push(ArmInstruction {
-                op: ArmOp::Ldr {
-                    rd: lo,
-                    addr: MemAddr::imm(Reg::SP, lo_slot),
-                },
-                source_line: Some(line),
-            });
-            instructions.push(ArmInstruction {
-                op: ArmOp::Ldr {
-                    rd: hi,
-                    addr: MemAddr::imm(Reg::SP, lo_slot + 4),
-                },
-                source_line: Some(line),
-            });
+        StackVal::Reg { reg, .. } => Ok(reg),
+        StackVal::Spilled { lo_slot, is_i64 } => {
+            // Reload against the *remaining* stack (this entry already popped).
+            // i32: one temp + one LDR. i64: a consecutive pair + LDR lo/hi.
+            let lo = if is_i64 {
+                let (lo, hi) =
+                    alloc_consecutive_pair(next_temp, stack, instructions, spill, &[], line)?;
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Ldr {
+                        rd: lo,
+                        addr: MemAddr::imm(Reg::SP, lo_slot),
+                    },
+                    source_line: Some(line),
+                });
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Ldr {
+                        rd: hi,
+                        addr: MemAddr::imm(Reg::SP, lo_slot + 4),
+                    },
+                    source_line: Some(line),
+                });
+                lo
+            } else {
+                let lo = alloc_temp_safe(next_temp, stack)?;
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Ldr {
+                        rd: lo,
+                        addr: MemAddr::imm(Reg::SP, lo_slot),
+                    },
+                    source_line: Some(line),
+                });
+                lo
+            };
             spill.free(lo_slot);
             Ok(lo)
         }
@@ -318,27 +361,40 @@ fn peek_operand(
         None => Err(synth_core::Error::synthesis(
             "stack underflow: malformed WASM or compiler bug".to_string(),
         )),
-        Some(StackVal::Reg(r)) => Ok(r),
-        Some(StackVal::Spilled { lo_slot }) => {
-            let (lo, hi) =
-                alloc_consecutive_pair(next_temp, stack, instructions, spill, &[], line)?;
-            instructions.push(ArmInstruction {
-                op: ArmOp::Ldr {
-                    rd: lo,
-                    addr: MemAddr::imm(Reg::SP, lo_slot),
-                },
-                source_line: Some(line),
-            });
-            instructions.push(ArmInstruction {
-                op: ArmOp::Ldr {
-                    rd: hi,
-                    addr: MemAddr::imm(Reg::SP, lo_slot + 4),
-                },
-                source_line: Some(line),
-            });
+        Some(StackVal::Reg { reg, .. }) => Ok(reg),
+        Some(StackVal::Spilled { lo_slot, is_i64 }) => {
+            let lo = if is_i64 {
+                let (lo, hi) =
+                    alloc_consecutive_pair(next_temp, stack, instructions, spill, &[], line)?;
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Ldr {
+                        rd: lo,
+                        addr: MemAddr::imm(Reg::SP, lo_slot),
+                    },
+                    source_line: Some(line),
+                });
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Ldr {
+                        rd: hi,
+                        addr: MemAddr::imm(Reg::SP, lo_slot + 4),
+                    },
+                    source_line: Some(line),
+                });
+                lo
+            } else {
+                let lo = alloc_temp_safe(next_temp, stack)?;
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Ldr {
+                        rd: lo,
+                        addr: MemAddr::imm(Reg::SP, lo_slot),
+                    },
+                    source_line: Some(line),
+                });
+                lo
+            };
             spill.free(lo_slot);
             if let Some(top) = stack.last_mut() {
-                *top = StackVal::Reg(lo);
+                *top = StackVal::Reg { reg: lo, is_i64 };
             }
             Ok(lo)
         }
@@ -537,6 +593,11 @@ struct LocalLayout {
     /// it on pop, so i64-heavy functions compile instead of being dropped by
     /// the #168 skip-and-continue net.
     i64_spill_base: i32,
+    /// #204/#193: frame slot (offset, is_i64) per in-register param the fn
+    /// reads. Spilled at entry; local.get/set route through it so the param is
+    /// never clobbered in its home reg between reads. Appended last so existing
+    /// local/spill offsets are unchanged.
+    param_slots: std::collections::HashMap<u32, (i32, bool)>,
 }
 
 /// Compute the stack-frame layout for non-parameter locals in a function.
@@ -619,6 +680,39 @@ fn compute_local_layout(wasm_ops: &[WasmOp], num_params: u32) -> LocalLayout {
         offset // unused: no i64 op means no spill
     };
 
+    // #204: append a spill slot for every in-register param a function with a
+    // CALL reads (frame-backed → never clobbered in its home reg). Appended
+    // last → existing local/spill offsets unchanged.
+    let param_count = num_params.min(4);
+    let mut param_slots: HashMap<u32, (i32, bool)> = HashMap::new();
+    // Frame-backing is needed precisely when a param must survive across a call:
+    // AAPCS arg-marshalling reclaims r0..r3 for the call's arguments, so a param
+    // still live afterwards (gale's `sem` = the store address in r0) would be
+    // clobbered unless it lives in the frame. Call-FREE functions keep params
+    // register-backed — no behaviour change, and isolated-lowering tests (and
+    // the common case) are untouched. Call-free temp-allocation clobbers are the
+    // distinct, non-blocking #193 fuzz class (allocator reservation, deferred).
+    if has_call {
+        let mut used_params: BTreeSet<u32> = BTreeSet::new();
+        for op in wasm_ops {
+            let pidx = match op {
+                WasmOp::LocalGet(idx) | WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) => *idx,
+                _ => continue,
+            };
+            if pidx < param_count {
+                used_params.insert(pidx);
+            }
+        }
+        for &p in &used_params {
+            let is_i64 = i64_set.contains(&p);
+            if is_i64 && (offset % 8) != 0 {
+                offset += 4;
+            }
+            param_slots.insert(p, (offset, is_i64));
+            offset += if is_i64 { 8 } else { 4 };
+        }
+    }
+
     // Round frame to 8-byte multiple for AAPCS SP alignment.
     let frame_size = (offset + 7) & !7;
 
@@ -627,6 +721,7 @@ fn compute_local_layout(wasm_ops: &[WasmOp], num_params: u32) -> LocalLayout {
         frame_size,
         spill_base,
         i64_spill_base,
+        param_slots,
     }
 }
 
@@ -4360,7 +4455,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    StackVal::Reg(free)
+                    StackVal::i32(free)
                 }
                 Err(_) => {
                     let slot = spill.alloc().ok_or_else(|| {
@@ -4388,11 +4483,14 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    StackVal::Spilled { lo_slot: slot }
+                    StackVal::Spilled {
+                        lo_slot: slot,
+                        is_i64: true,
+                    }
                 }
             }
         } else {
-            StackVal::Reg(Reg::R0)
+            StackVal::i32(Reg::R0)
         };
 
         for &(reg, off) in preserved {
@@ -4502,10 +4600,35 @@ impl InstructionSelector {
         let mut local_to_reg: std::collections::HashMap<u32, Reg> =
             std::collections::HashMap::new();
         // First 4 params are in r0-r3
+        // #204/#193: a param the function reads is spilled to a frame slot at
+        // entry and accessed only through it, so it can never be clobbered in
+        // its home register between reads. Params with no slot (unused) stay
+        // register-backed via local_to_reg.
         for i in 0..num_params.min(4) {
-            local_to_reg.insert(i, index_to_reg(i as u8));
+            if let Some(&(off, is_i64)) = layout.param_slots.get(&i) {
+                let reg = index_to_reg(i as u8);
+                let op = if is_i64 {
+                    ArmOp::I64Str {
+                        rdlo: reg,
+                        rdhi: i64_pair_hi(reg)?,
+                        addr: MemAddr::imm(Reg::SP, off),
+                    }
+                } else {
+                    ArmOp::Str {
+                        rd: reg,
+                        addr: MemAddr::imm(Reg::SP, off),
+                    }
+                };
+                instructions.push(ArmInstruction {
+                    op,
+                    source_line: None,
+                });
+            } else {
+                local_to_reg.insert(i, index_to_reg(i as u8));
+            }
         }
 
+        let i64_locals = infer_i64_locals(wasm_ops);
         for (idx, op) in wasm_ops.iter().enumerate() {
             match op {
                 LocalGet(local_idx) => {
@@ -4513,60 +4636,95 @@ impl InstructionSelector {
                     //  1. Param in register — use the cached mapping.
                     //  2. Spilled i64 local — load both halves via I64Ldr.
                     //  3. Spilled i32 local — single Ldr.
-                    let reg = if let Some(&r) = local_to_reg.get(local_idx) {
-                        r
-                    } else if let Some(&(off, true)) = layout.locals.get(local_idx) {
-                        // i64 local — load both 32-bit halves into a consecutive
-                        // register pair via the I64Ldr pseudo-op. Convention
-                        // matches I64Const: push only dst_lo on the stack;
-                        // dst_hi is recovered later via i64_pair_hi(lo).
-                        // The pair MUST be consecutive in ALLOCATABLE_REGS
-                        // — i64_pair_hi assumes that. Two separate calls to
-                        // alloc_temp_safe can return non-consecutive registers
-                        // when something in between is live, breaking the
-                        // pair convention.
-                        let (dst_lo, dst_hi) = alloc_consecutive_pair(
-                            &mut next_temp,
-                            &mut stack,
-                            &mut instructions,
-                            &mut spill,
-                            &[],
-                            idx,
-                        )?;
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::I64Ldr {
-                                rdlo: dst_lo,
-                                rdhi: dst_hi,
-                                addr: MemAddr::imm(Reg::SP, off),
-                            },
-                            source_line: Some(idx),
-                        });
-                        dst_lo
-                    } else if let Some(&(off, false)) = layout.locals.get(local_idx) {
-                        // i32 local: single 4-byte load from the locals frame.
-                        let dst = alloc_temp_safe(&mut next_temp, &stack)?;
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Ldr {
-                                rd: dst,
-                                addr: MemAddr::imm(Reg::SP, off),
-                            },
-                            source_line: Some(idx),
-                        });
-                        dst
-                    } else {
-                        // Local not in layout (shouldn't happen for valid wasm,
-                        // but fall back to legacy behaviour for compatibility).
-                        let dst = alloc_temp_safe(&mut next_temp, &stack)?;
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Ldr {
-                                rd: dst,
-                                addr: MemAddr::imm(Reg::SP, (*local_idx as i32 - 4) * 4),
-                            },
-                            source_line: Some(idx),
-                        });
-                        dst
-                    };
-                    stack.push(StackVal::Reg(reg));
+                    let (reg, val_is_i64) =
+                        if let Some(&(off, is_i64)) = layout.param_slots.get(local_idx) {
+                            // #204/#193: frame-backed param — reload from its slot.
+                            if is_i64 {
+                                let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                                    &mut next_temp,
+                                    &mut stack,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &[],
+                                    idx,
+                                )?;
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::I64Ldr {
+                                        rdlo: dst_lo,
+                                        rdhi: dst_hi,
+                                        addr: MemAddr::imm(Reg::SP, off),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                (dst_lo, true)
+                            } else {
+                                let dst = alloc_temp_safe(&mut next_temp, &stack)?;
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Ldr {
+                                        rd: dst,
+                                        addr: MemAddr::imm(Reg::SP, off),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                (dst, false)
+                            }
+                        } else if let Some(&r) = local_to_reg.get(local_idx) {
+                            (r, i64_locals.contains(local_idx))
+                        } else if let Some(&(off, true)) = layout.locals.get(local_idx) {
+                            // i64 local — load both 32-bit halves into a consecutive
+                            // register pair via the I64Ldr pseudo-op. Convention
+                            // matches I64Const: push only dst_lo on the stack;
+                            // dst_hi is recovered later via i64_pair_hi(lo).
+                            // The pair MUST be consecutive in ALLOCATABLE_REGS
+                            // — i64_pair_hi assumes that. Two separate calls to
+                            // alloc_temp_safe can return non-consecutive registers
+                            // when something in between is live, breaking the
+                            // pair convention.
+                            let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &[],
+                                idx,
+                            )?;
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::I64Ldr {
+                                    rdlo: dst_lo,
+                                    rdhi: dst_hi,
+                                    addr: MemAddr::imm(Reg::SP, off),
+                                },
+                                source_line: Some(idx),
+                            });
+                            (dst_lo, true)
+                        } else if let Some(&(off, false)) = layout.locals.get(local_idx) {
+                            // i32 local: single 4-byte load from the locals frame.
+                            let dst = alloc_temp_safe(&mut next_temp, &stack)?;
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Ldr {
+                                    rd: dst,
+                                    addr: MemAddr::imm(Reg::SP, off),
+                                },
+                                source_line: Some(idx),
+                            });
+                            (dst, false)
+                        } else {
+                            // Local not in layout (shouldn't happen for valid wasm,
+                            // but fall back to legacy behaviour for compatibility).
+                            let dst = alloc_temp_safe(&mut next_temp, &stack)?;
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Ldr {
+                                    rd: dst,
+                                    addr: MemAddr::imm(Reg::SP, (*local_idx as i32 - 4) * 4),
+                                },
+                                source_line: Some(idx),
+                            });
+                            (dst, false)
+                        };
+                    stack.push(StackVal::Reg {
+                        reg,
+                        is_i64: val_is_i64,
+                    });
                 }
 
                 I32Const(val) => {
@@ -4615,7 +4773,7 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                     }
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32Add => {
@@ -4647,7 +4805,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32Sub => {
@@ -4678,7 +4836,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32Mul => {
@@ -4709,7 +4867,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32And => {
@@ -4740,7 +4898,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32Or => {
@@ -4771,7 +4929,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32Xor => {
@@ -4802,7 +4960,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // Division operations with trap checks for divide-by-zero
@@ -4859,7 +5017,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32DivS => {
@@ -4969,7 +5127,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32RemU => {
@@ -5034,7 +5192,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32RemS => {
@@ -5097,7 +5255,7 @@ impl InstructionSelector {
                         },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // Memory operations need stack-aware handling
@@ -5143,7 +5301,7 @@ impl InstructionSelector {
                             });
                         }
                     }
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32Store { offset, .. } => {
@@ -5252,7 +5410,7 @@ impl InstructionSelector {
                             });
                         }
                     }
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // Sub-word stores (i32) — like I32Store but with STRB/STRH
@@ -5444,7 +5602,7 @@ impl InstructionSelector {
                         });
                     }
                     // i64 on 32-bit ARM uses register pair; push low register
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 // i64 sub-word stores
@@ -5501,7 +5659,7 @@ impl InstructionSelector {
                         op: ArmOp::MemorySize { rd: dst },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 MemoryGrow(_mem_idx) => {
@@ -5518,7 +5676,7 @@ impl InstructionSelector {
                         op: ArmOp::MemoryGrow { rd: dst, rn: pages },
                         source_line: Some(idx),
                     });
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // =========================================================
@@ -5973,7 +6131,7 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                         table_idx_reg = safe;
-                        stack.push(StackVal::Reg(safe));
+                        stack.push(StackVal::i32(safe));
                         table_pushed = true;
                     }
 
@@ -6107,7 +6265,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 LocalSet(local_idx) => {
@@ -6118,7 +6276,26 @@ impl InstructionSelector {
                         &mut spill,
                         idx,
                     )?;
-                    if *local_idx < num_params.min(4) {
+                    if let Some(&(off, is_i64)) = layout.param_slots.get(local_idx) {
+                        // #204/#193: frame-backed param — store to its slot.
+                        let op = if is_i64 {
+                            ArmOp::I64Str {
+                                rdlo: val,
+                                rdhi: i64_pair_hi(val)?,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            }
+                        } else {
+                            ArmOp::Str {
+                                rd: val,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            }
+                        };
+                        instructions.push(ArmInstruction {
+                            op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else if *local_idx < num_params.min(4) {
                         let target = index_to_reg(*local_idx as u8);
                         if val != target {
                             instructions.push(ArmInstruction {
@@ -6178,7 +6355,27 @@ impl InstructionSelector {
                         &mut spill,
                         idx,
                     )?;
-                    if *local_idx < num_params.min(4) {
+                    if let Some(&(off, is_i64)) = layout.param_slots.get(local_idx) {
+                        // #204/#193: frame-backed param — store to its slot; value
+                        // stays on the operand stack (peek kept it).
+                        let op = if is_i64 {
+                            ArmOp::I64Str {
+                                rdlo: val,
+                                rdhi: i64_pair_hi(val)?,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            }
+                        } else {
+                            ArmOp::Str {
+                                rd: val,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            }
+                        };
+                        instructions.push(ArmInstruction {
+                            op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else if *local_idx < num_params.min(4) {
                         let target = index_to_reg(*local_idx as u8);
                         if val != target {
                             instructions.push(ArmInstruction {
@@ -6237,7 +6434,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 GlobalSet(global_idx) => {
@@ -6293,7 +6490,7 @@ impl InstructionSelector {
                     });
                     cf.add_instruction();
                     // Push only the lo register; hi is derived via i64_pair_hi
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 I64Add => {
@@ -6354,7 +6551,7 @@ impl InstructionSelector {
                     });
                     cf.add_instruction();
 
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 I64Sub => {
@@ -6409,7 +6606,7 @@ impl InstructionSelector {
                     });
                     cf.add_instruction();
 
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 // ============================================================
@@ -6499,7 +6696,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 // ============================================================
@@ -6546,7 +6743,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 I64ExtendI32S => {
@@ -6574,7 +6771,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 // ============================================================
@@ -6645,7 +6842,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 I64Load { offset, .. } => {
@@ -6681,7 +6878,7 @@ impl InstructionSelector {
                             source_line: Some(idx),
                         });
                     }
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 I64Store { offset, .. } => {
@@ -6739,7 +6936,7 @@ impl InstructionSelector {
                     cf.add_instruction();
 
                     // I64Eqz produces an i32 result (single register)
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // =========================================================
@@ -6795,7 +6992,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // i32.eqz (unary: pop 1, push 1)
@@ -6829,7 +7026,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // =========================================================
@@ -6883,7 +7080,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32Rotl => {
@@ -6927,7 +7124,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // =========================================================
@@ -6951,7 +7148,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32Ctz => {
@@ -6978,7 +7175,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32Popcnt => {
@@ -7001,7 +7198,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // =========================================================
@@ -7025,7 +7222,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 I32Extend16S => {
@@ -7046,7 +7243,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // ============================================================
@@ -7118,7 +7315,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // ============================================================
@@ -7169,7 +7366,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 // ============================================================
@@ -7245,7 +7442,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 // ============================================================
@@ -7306,7 +7503,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 // ============================================================
@@ -7324,24 +7521,31 @@ impl InstructionSelector {
                         idx,
                     )?;
                     let src_hi = i64_pair_hi(src_lo)?;
-                    let dst = if idx == wasm_ops.len() - 1 {
-                        Reg::R0
-                    } else {
-                        alloc_temp_safe(&mut next_temp, &stack)?
-                    };
+                    // The count is i64-typed (lo = count 0..64, hi = 0). Produce
+                    // a proper pair so the hi half is reserved and zeroed
+                    // (#204/#171: pushing i32 left hi unreserved/garbage for a
+                    // downstream i64 consumer).
+                    let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &[src_lo, src_hi],
+                        idx,
+                    )?;
                     let arm_op = match op {
                         I64Clz => ArmOp::I64Clz {
-                            rd: dst,
+                            rd: dst_lo,
                             rnlo: src_lo,
                             rnhi: src_hi,
                         },
                         I64Ctz => ArmOp::I64Ctz {
-                            rd: dst,
+                            rd: dst_lo,
                             rnlo: src_lo,
                             rnhi: src_hi,
                         },
                         I64Popcnt => ArmOp::I64Popcnt {
-                            rd: dst,
+                            rd: dst_lo,
                             rnlo: src_lo,
                             rnhi: src_hi,
                         },
@@ -7351,8 +7555,15 @@ impl InstructionSelector {
                         op: arm_op,
                         source_line: Some(idx),
                     });
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Movw {
+                            rd: dst_hi,
+                            imm16: 0,
+                        },
+                        source_line: Some(idx),
+                    });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 // ============================================================
@@ -7405,7 +7616,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst_lo));
+                    stack.push(StackVal::i64(dst_lo));
                 }
 
                 // ============================================================
@@ -7442,7 +7653,7 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
-                    stack.push(StackVal::Reg(dst));
+                    stack.push(StackVal::i32(dst));
                 }
 
                 // For other operations, fall back to default behavior.
@@ -7466,7 +7677,7 @@ impl InstructionSelector {
                     for _ in 0..pushes {
                         // Push a placeholder — select_default used its own register
                         let placeholder = self.regs.alloc_reg();
-                        stack.push(StackVal::Reg(placeholder));
+                        stack.push(StackVal::i32(placeholder));
                     }
                 }
             }
@@ -8131,26 +8342,32 @@ mod tests {
             .position(|i| matches!(&i.op, ArmOp::Bl { .. }))
             .expect("a BL must be emitted for the call");
 
-        // R0 (param0) spilled before the BL, reloaded after it.
+        // #204: in a function with a call, param0 is frame-backed — spilled to
+        // a stack slot at entry, then reloaded from that slot wherever used. The
+        // slot survives the call AND any temp allocation, so this preserves
+        // param0 strictly more than the old around-the-call spill/reload.
         assert!(
             arm[..bl_pos]
                 .iter()
                 .any(|i| matches!(&i.op, ArmOp::Str { rd: Reg::R0, .. })),
-            "param0 (R0) must be spilled before the BL: {:#?}",
+            "param0 (R0) must be spilled to its frame slot before the call: {:#?}",
             arm
         );
-        assert!(
-            arm[bl_pos..]
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::Ldr { rd: Reg::R0, .. })),
-            "param0 (R0) must be reloaded after the BL: {:#?}",
-            arm
-        );
+        assert_param0_load_derives_from_slot(&arm);
+    }
 
-        // The load's address register must be R0 (the reloaded param0), i.e.
-        // the load derives from param0, not from the call's return value. Take
-        // the LAST Ldr (the actual memory load; the param reload is an earlier
-        // Ldr R0).
+    /// Shared assertion for the #188/#195/#204 frame-backed-param tests: the
+    /// memory LDR's base register must have been reloaded from the SAME frame
+    /// slot param0 was spilled to at entry — i.e. the load derives from the
+    /// preserved param0, never from a call's clobbered R0 or a stray temp.
+    fn assert_param0_load_derives_from_slot(arm: &[ArmInstruction]) {
+        let spill = arm
+            .iter()
+            .find_map(|i| match &i.op {
+                ArmOp::Str { rd: Reg::R0, addr } => Some(addr.clone()),
+                _ => None,
+            })
+            .expect("param0 (R0) must be spilled to a frame slot at entry");
         let mem_load = arm
             .iter()
             .rev()
@@ -8159,11 +8376,80 @@ mod tests {
                 _ => None,
             })
             .expect("a memory LDR with a register offset must be emitted");
-        assert_eq!(
-            mem_load.offset_reg,
-            Some(Reg::R0),
-            "i32.load base must be param0 (R0), got {:?}",
-            mem_load.offset_reg
+        let base = mem_load
+            .offset_reg
+            .expect("memory LDR must have a register base");
+        assert!(
+            arm.iter().any(|i| matches!(&i.op,
+                ArmOp::Ldr { rd, addr }
+                    if *rd == base
+                        && addr.base == spill.base
+                        && addr.offset == spill.offset
+                        && addr.offset_reg == spill.offset_reg)),
+            "i32.load base {base:?} must be reloaded from param0's frame slot {spill:?}: {arm:#?}"
+        );
+    }
+
+    /// #204 regression (gale `z_impl_k_sem_give`): a param used as a store
+    /// ADDRESS that is live across a call must reach the `i64.store32` as the
+    /// memory index, never dropped. gale's shape: `local.get 0` (sem_ptr) is
+    /// the store address; an intervening call (`k_spin_lock`) reclaims R0 for
+    /// its argument. With param frame-backing the store must be
+    /// `STR rval, [R11, <reloaded sem_ptr>, #off]` — an indexed store whose
+    /// index is reloaded from param0's frame slot. A base-only `[R11, #off]`
+    /// (the bug) would write linear-memory offset 0, not `&sem->count`.
+    #[test]
+    fn test_204_sem_store_keeps_param_address_index() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(vec![1], Vec::new()); // func_0 takes 1 arg
+        let wasm_ops = vec![
+            // k_spin_lock(1024) — clobbers R0 with the arg, mirroring gale.
+            WasmOp::I32Const(1024),
+            WasmOp::Call(0),
+            WasmOp::Drop,
+            // store low word of a packed i64 to [sem_ptr]: (new_count << 32) >> 32
+            WasmOp::LocalGet(0), // sem_ptr (param0) = store address
+            WasmOp::LocalGet(1), // packed i64 value
+            WasmOp::I64Const(32),
+            WasmOp::I64ShrU,
+            WasmOp::I64Store32 {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 2).unwrap();
+
+        // param0 spilled to its frame slot at entry.
+        let spill = arm
+            .iter()
+            .find_map(|i| match &i.op {
+                ArmOp::Str { rd: Reg::R0, addr } => Some(addr.clone()),
+                _ => None,
+            })
+            .expect("param0 (R0) must be spilled to a frame slot at entry");
+
+        // the memory store (base R11) must carry a register index...
+        let mem_store = arm
+            .iter()
+            .find_map(|i| match &i.op {
+                ArmOp::Str { addr, .. } if addr.base == Reg::R11 => Some(addr.clone()),
+                _ => None,
+            })
+            .expect("an i64.store32 to [R11, ...] must be emitted");
+        let idx = mem_store
+            .offset_reg
+            .expect("store address index must NOT be dropped (got base-only [R11]) — #204");
+
+        // ...and that index must be the sem_ptr reloaded from param0's slot.
+        assert!(
+            arm.iter().any(|i| matches!(&i.op,
+                ArmOp::Ldr { rd, addr }
+                    if *rd == idx
+                        && addr.base == spill.base
+                        && addr.offset == spill.offset
+                        && addr.offset_reg == spill.offset_reg)),
+            "store index {idx:?} must be reloaded from param0's frame slot {spill:?}: {arm:#?}"
         );
     }
 
@@ -8234,19 +8520,12 @@ mod tests {
             .position(|i| matches!(&i.op, ArmOp::Bl { .. }))
             .expect("a BL must be emitted");
 
-        // (a) param0 (R0) spilled before the BL and reloaded after (#188).
+        // (a) param0 (R0) spilled to its frame slot at entry, before the call.
         assert!(
             arm[..bl_pos]
                 .iter()
                 .any(|i| matches!(&i.op, ArmOp::Str { rd: Reg::R0, .. })),
-            "param0 (R0) must be spilled before the BL: {:#?}",
-            arm
-        );
-        assert!(
-            arm[bl_pos..]
-                .iter()
-                .any(|i| matches!(&i.op, ArmOp::Ldr { rd: Reg::R0, .. })),
-            "param0 (R0) must be reloaded after the BL: {:#?}",
+            "param0 (R0) must be spilled to its frame slot before the call: {:#?}",
             arm
         );
 
@@ -8260,22 +8539,9 @@ mod tests {
             arm
         );
 
-        // The memory load's base must be the reloaded param0 (R0), i.e. derived
-        // from the ORIGINAL param0, not from the call's clobbered R0.
-        let mem_load = arm
-            .iter()
-            .rev()
-            .find_map(|i| match &i.op {
-                ArmOp::Ldr { addr, .. } if addr.offset_reg.is_some() => Some(addr.clone()),
-                _ => None,
-            })
-            .expect("a memory LDR with a register offset must be emitted");
-        assert_eq!(
-            mem_load.offset_reg,
-            Some(Reg::R0),
-            "i32.load base must be the preserved param0 (R0), got {:?}",
-            mem_load.offset_reg
-        );
+        // (c) The memory load derives from the preserved param0 (reloaded from
+        // its frame slot), not from the call's clobbered R0 (#204).
+        assert_param0_load_derives_from_slot(&arm);
     }
 
     /// #195: two i32 arguments go to R0 and R1 (in order) before the BL.
@@ -12908,7 +13174,7 @@ mod tests {
         // If the stack has an i64 lo (e.g. R0), then R1 (its implicit hi)
         // must NOT be returned as a fresh lo by alloc_consecutive_pair.
         let mut next_temp: u8 = 0;
-        let mut stack = vec![StackVal::Reg(Reg::R0)]; // implicitly reserves R1
+        let mut stack = vec![StackVal::i64(Reg::R0)]; // i64 lo=R0 reserves hi=R1
         let mut instructions: Vec<ArmInstruction> = Vec::new();
         let mut spill = SpillState::new(0);
         let (lo, hi) = alloc_consecutive_pair(
