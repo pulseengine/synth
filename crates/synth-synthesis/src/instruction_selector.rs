@@ -6235,7 +6235,16 @@ impl InstructionSelector {
                     )?;
                     let dst = alloc_temp_safe(&mut next_temp, &stack)?;
 
-                    // CMP cond, #0
+                    // CMP cond, #0 — sets the flags FIRST, before anything writes
+                    // `dst`. The previous lowering put a `MOV dst, val1` between
+                    // the CMP and the conditional move; that MOV is a 16-bit Thumb
+                    // `MOVS` for low registers and SETS the flags, clobbering the
+                    // comparison whenever the allocator picked a low `dst` — which
+                    // mis-computed gale's br_table index so the binary-semaphore
+                    // WAKE path never ran. Both `SelectMove`s below are `IT;MOV`
+                    // (the flag-preserving 0x46xx MOV), so neither disturbs the
+                    // flags and exactly one fires — correct under any aliasing of
+                    // dst with cond/val1/val2 (cond is already consumed by CMP).
                     instructions.push(ArmInstruction {
                         op: ArmOp::Cmp {
                             rn: cond_reg,
@@ -6245,17 +6254,18 @@ impl InstructionSelector {
                     });
                     cf.add_instruction();
 
-                    // MOV dst, val1 (default: pick val1)
+                    // cond != 0 → dst = val1
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Mov {
+                        op: ArmOp::SelectMove {
                             rd: dst,
-                            op2: Operand2::Reg(val1),
+                            rm: val1,
+                            cond: Condition::NE,
                         },
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
 
-                    // If cond == 0, overwrite with val2 using IT EQ + MOV
+                    // cond == 0 → dst = val2
                     instructions.push(ArmInstruction {
                         op: ArmOp::SelectMove {
                             rd: dst,

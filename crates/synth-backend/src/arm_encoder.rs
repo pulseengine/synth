@@ -2633,16 +2633,31 @@ impl ArmEncoder {
                 let mask = if (cond_bits & 1) == 0 { 0xC } else { 0x4 };
                 let ite_instr: u16 = 0xBF00 | (cond_bits << 4) | mask;
 
-                // MOV Rd, #1 (Then branch - condition true)
-                let mov_one: u16 = 0x2001 | (rd_bits << 8);
-
-                // MOV Rd, #0 (Else branch - condition false)
-                let mov_zero: u16 = 0x2000 | (rd_bits << 8);
-
-                // Emit: ITE, MOV #1 (Then), MOV #0 (Else)
+                // Materialize 0/1 into Rd. The 16-bit MOVS (T1) encodes Rd in a
+                // 3-bit field (bits[10:8]) — only R0–R7. For a high register
+                // (R8–R12) `rd_bits << 8` overflows into bit 11 and silently
+                // turns MOVS into CMP (00100 → 00101), corrupting the result
+                // (this mis-materialized gale's `has_waiter`, so its `local.set`
+                // stored a stale register → the binary-sem WAKE dispatch read
+                // garbage). Use the 32-bit MOV.W (T2) for high registers, which
+                // has a 4-bit Rd field. MOV.W with S=0 doesn't set flags, which
+                // is fine inside the ITE (the materialized value is the result;
+                // the flags are not consumed afterwards).
                 let mut bytes = ite_instr.to_le_bytes().to_vec();
-                bytes.extend_from_slice(&mov_one.to_le_bytes());
-                bytes.extend_from_slice(&mov_zero.to_le_bytes());
+                let push_mov = |bytes: &mut Vec<u8>, imm: u16| {
+                    if rd_bits <= 7 {
+                        let m: u16 = 0x2000 | (rd_bits << 8) | imm; // 16-bit MOVS Rd,#imm
+                        bytes.extend_from_slice(&m.to_le_bytes());
+                    } else {
+                        // 32-bit MOV.W Rd, #imm (T2): F04F | (Rd<<8) | imm8
+                        let hw1: u16 = 0xF04F;
+                        let hw2: u16 = (rd_bits << 8) | imm;
+                        bytes.extend_from_slice(&hw1.to_le_bytes());
+                        bytes.extend_from_slice(&hw2.to_le_bytes());
+                    }
+                };
+                push_mov(&mut bytes, 1); // Then branch (condition true)  → 1
+                push_mov(&mut bytes, 0); // Else branch (condition false) → 0
                 Ok(bytes)
             }
 
@@ -6915,6 +6930,41 @@ mod tests {
 
         let encoder_thumb = ArmEncoder::new_thumb2();
         assert!(encoder_thumb.thumb_mode);
+    }
+
+    /// #204 WAKE-path regression: `SetCond` materialized 0/1 with the 16-bit
+    /// `MOVS Rd,#imm` (T1), whose Rd field is 3 bits (R0–R7). For a high Rd
+    /// (R8–R12) `rd_bits << 8` overflows bit 11, flipping the opcode MOVS→CMP
+    /// (`0x2c00`), so the boolean was never written — gale's `has_waiter` kept a
+    /// stale value and the binary-sem WAKE dispatch read garbage. High Rd must
+    /// use the 32-bit `MOV.W` (T2). Verify the bytes, not the IR.
+    #[test]
+    fn test_encode_setcond_high_reg_uses_mov_w_204() {
+        use synth_synthesis::{ArmOp, Condition, Reg};
+        let enc = ArmEncoder::new_thumb2();
+        // R12 (high): must be ITE + MOV.W #1 + MOV.W #0, never a 16-bit MOVS/CMP.
+        let hi = enc
+            .encode(&ArmOp::SetCond {
+                rd: Reg::R12,
+                cond: Condition::NE,
+            })
+            .unwrap();
+        assert_eq!(hi.len(), 10, "ITE(2) + MOV.W(4) + MOV.W(4): {hi:02x?}");
+        // both value halfwords are MOV.W (0xF04F) — NOT the corrupt CMP (0x2c..).
+        assert_eq!(&hi[2..4], &[0x4F, 0xF0], "then = MOV.W: {hi:02x?}");
+        assert_eq!(&hi[6..8], &[0x4F, 0xF0], "else = MOV.W: {hi:02x?}");
+        assert_eq!(hi[4] & 0x0F, 0x01, "then imm = #1");
+        assert_eq!(hi[8] & 0x0F, 0x00, "else imm = #0");
+        // Low Rd keeps the compact 16-bit MOVS form.
+        let lo = enc
+            .encode(&ArmOp::SetCond {
+                rd: Reg::R0,
+                cond: Condition::NE,
+            })
+            .unwrap();
+        assert_eq!(lo.len(), 6, "ITE(2) + MOVS(2) + MOVS(2): {lo:02x?}");
+        assert_eq!(lo[2..4], [0x01, 0x20], "then = MOVS R0,#1");
+        assert_eq!(lo[4..6], [0x00, 0x20], "else = MOVS R0,#0");
     }
 
     /// #178/#180 regression: the Thumb `Add`/`Adds`/`Subs` reg-forms used the

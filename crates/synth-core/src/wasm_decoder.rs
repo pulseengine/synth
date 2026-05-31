@@ -433,6 +433,19 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         Loop { .. } => Some(WasmOp::Loop),
         Br { relative_depth } => Some(WasmOp::Br(*relative_depth)),
         BrIf { relative_depth } => Some(WasmOp::BrIf(*relative_depth)),
+        // br_table: indexed multi-way branch. Previously UNMAPPED → silently
+        // dropped, so the selector never emitted the index dispatch and control
+        // fell straight into the first table arm — every br_table behaved as if
+        // it always took target 0 (gale's binary-sem WAKE path never fired). The
+        // jump-table relative depths + default depth are preserved in order.
+        BrTable { targets } => {
+            let default = targets.default();
+            let tgts: Vec<u32> = targets.targets().filter_map(Result::ok).collect();
+            Some(WasmOp::BrTable {
+                targets: tgts,
+                default,
+            })
+        }
         Return => Some(WasmOp::Return),
         Call { function_index } => Some(WasmOp::Call(*function_index)),
         CallIndirect {
@@ -695,6 +708,36 @@ mod tests {
             ops.contains(&WasmOp::I32WrapI64),
             "i32.wrap_i64 must decode (not be dropped): {ops:?}"
         );
+    }
+
+    /// #204 WAKE-path regression: `br_table` must DECODE (it was unmapped in
+    /// `convert_operator` → silently dropped, so the selector emitted no index
+    /// dispatch and every `br_table` fell through to target 0 — gale's binary
+    /// semaphore never took its WAKE branch). Targets + default are preserved.
+    #[test]
+    fn test_decode_br_table() {
+        let wat = r#"
+            (module
+                (func (export "bt") (param i32) (result i32)
+                    (block (block (block
+                        local.get 0
+                        br_table 2 0 1 2)
+                      i32.const 30 return)
+                      i32.const 20 return)
+                    i32.const 10))
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let functions = decode_wasm_functions(&wasm).expect("decode");
+        let bt = functions[0]
+            .ops
+            .iter()
+            .find_map(|o| match o {
+                WasmOp::BrTable { targets, default } => Some((targets.clone(), *default)),
+                _ => None,
+            })
+            .expect("br_table must decode (not be dropped)");
+        assert_eq!(bt.0, vec![2, 0, 1], "br_table targets preserved in order");
+        assert_eq!(bt.1, 2, "br_table default preserved");
     }
 
     #[test]
