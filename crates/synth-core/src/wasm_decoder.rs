@@ -333,6 +333,14 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         I64Extend8S => Some(WasmOp::I64Extend8S),
         I64Extend16S => Some(WasmOp::I64Extend16S),
         I64Extend32S => Some(WasmOp::I64Extend32S),
+        // i32<->i64 width conversions. Previously UNMAPPED → silently dropped,
+        // which left an i32 value as a 64-bit operand with a garbage high half
+        // (harmless when a following `i64.shl 32` discards it, but a latent
+        // miscompile for extend-then-arithmetic, and it breaks width-correct
+        // register allocation). (#204)
+        I64ExtendI32U => Some(WasmOp::I64ExtendI32U),
+        I64ExtendI32S => Some(WasmOp::I64ExtendI32S),
+        I32WrapI64 => Some(WasmOp::I32WrapI64),
 
         // i64 Comparison
         I64Eqz => Some(WasmOp::I64Eqz),
@@ -648,6 +656,44 @@ mod tests {
                 WasmOp::I32Add,
                 WasmOp::End
             ]
+        );
+    }
+
+    /// #204 regression: `i64.extend_i32_u`, `i64.extend_i32_s` and
+    /// `i32.wrap_i64` must DECODE (they were previously unmapped → silently
+    /// dropped by `convert_operator`, leaving an i32 value as a 64-bit operand
+    /// with a garbage high half — the root cause of gale's miscompiled
+    /// `(new_count << 32)` pack). The decoder must surface all three.
+    #[test]
+    fn test_decode_i64_i32_width_conversions() {
+        let wat = r#"
+            (module
+                (func (export "conv") (param i32 i64) (result i32)
+                    local.get 0
+                    i64.extend_i32_u
+                    local.get 0
+                    i64.extend_i32_s
+                    i64.add
+                    local.get 1
+                    i64.add
+                    i32.wrap_i64
+                )
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let functions = decode_wasm_functions(&wasm).expect("decode");
+        let ops = &functions[0].ops;
+        assert!(
+            ops.contains(&WasmOp::I64ExtendI32U),
+            "i64.extend_i32_u must decode (not be dropped): {ops:?}"
+        );
+        assert!(
+            ops.contains(&WasmOp::I64ExtendI32S),
+            "i64.extend_i32_s must decode (not be dropped): {ops:?}"
+        );
+        assert!(
+            ops.contains(&WasmOp::I32WrapI64),
+            "i32.wrap_i64 must decode (not be dropped): {ops:?}"
         );
     }
 

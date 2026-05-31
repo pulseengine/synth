@@ -90,37 +90,34 @@ fn direct_selector_lowers_and_preserves_across_call() {
         .any(|i| matches!(&i.op, ArmOp::Bl { label } if label == "func_5"));
     assert!(has_bl_func_5, "Call(5) must lower to `BL func_5`");
 
-    // R0 (param0, caller-saved) must be spilled before the BL and reloaded after.
+    // #204: param0 is frame-backed — spilled to a stack slot at entry (before
+    // the BL), then `local.get 0` reloads it from that SAME slot after the call.
+    // The slot, not R0, is what survives the call; the reload target is a temp.
     let bl_pos = arm
         .iter()
         .position(|i| matches!(&i.op, ArmOp::Bl { .. }))
         .expect("a BL must be emitted");
-    let str_r0_before = arm[..bl_pos].iter().any(|i| {
-        matches!(
-            &i.op,
+    let spill_slot = arm[..bl_pos]
+        .iter()
+        .find_map(|i| match &i.op {
             ArmOp::Str {
                 rd: synth_synthesis::Reg::R0,
-                ..
-            }
-        )
-    });
-    let ldr_r0_after = arm[bl_pos..].iter().any(|i| {
-        matches!(
-            &i.op,
-            ArmOp::Ldr {
-                rd: synth_synthesis::Reg::R0,
-                ..
-            }
-        )
+                addr,
+            } => Some(addr.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!("param0 (R0) must be spilled to a frame slot before the BL — got: {arm:#?}")
+        });
+    let reloaded_from_slot = arm[bl_pos..].iter().any(|i| {
+        matches!(&i.op,
+            ArmOp::Ldr { addr, .. }
+                if addr.base == spill_slot.base
+                    && addr.offset == spill_slot.offset
+                    && addr.offset_reg == spill_slot.offset_reg)
     });
     assert!(
-        str_r0_before,
-        "param0 (R0) must be spilled (STR R0, [SP,#..]) before the BL — got: {:#?}",
-        arm
-    );
-    assert!(
-        ldr_r0_after,
-        "param0 (R0) must be reloaded (LDR R0, [SP,#..]) after the BL — got: {:#?}",
-        arm
+        reloaded_from_slot,
+        "param0 must be reloaded from its frame slot {spill_slot:?} after the BL — got: {arm:#?}"
     );
 }
