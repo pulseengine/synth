@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.14] - 2026-05-31
+
+**Three control-flow miscompiles in the direct selector — fixes the binary
+semaphore's WAKE path (#204 follow-up).** After v0.11.13 fixed the no-waiter
+*increment* path on hardware (gale confirmed `sem->count` now oscillates
+0→1→0), the *waiter* (WAKE) path still couldn't be exercised on silicon — the
+debugger perturbs the give/take race (a true heisenbug). A wasmtime-oracle vs
+unicorn differential harness (`scripts/repro/wake_path_differential.py`) drove
+`z_impl_k_sem_give` with a non-empty wait_q and pinned three independent bugs,
+all in the `--relocatable` direct-selector path, that combined to make the give
+always increment and never wake:
+
+1. **The decoder silently dropped `br_table`.** `convert_operator` had no arm
+   for it, so the multi-way dispatch vanished and control fell straight into
+   table arm 0 — `has_waiter` never selected the WAKE branch. Now decoded with
+   its target list + default preserved.
+2. **`select` clobbered its own condition flags.** The lowering emitted
+   `CMP cond,#0; MOV dst,val1; cond-move` — the middle `MOV` is a 16-bit Thumb
+   `MOVS` (flag-setting) for low registers, destroying the `CMP` result before
+   the conditional move read it (so the select returned the wrong arm under
+   register pressure). Reordered to `CMP` immediately followed by two
+   flag-preserving `IT;MOV` conditional moves; correct under any register
+   aliasing.
+3. **`SetCond` corrupted a high-register result.** It materialized 0/1 with the
+   16-bit `MOVS Rd,#imm` (T1), whose Rd field is 3 bits (R0–R7); for a high Rd
+   (R8–R12) the register bits overflowed the opcode, turning `MOVS` into `CMP`,
+   so the comparison result was never written. `has_waiter` (allocated to R12)
+   stayed stale. High Rd now uses the 32-bit `MOV.W` (T2).
+
+End-to-end: synth's `z_impl_k_sem_give` now matches the WASM semantics on **both**
+paths (no-waiter → `count=1`, no wake; waiter → `count=0`, `z_ready_thread`
+called with the unpended thread) under unicorn emulation of gale's gist on the
+cortex-m4 (Thumb-2) build. Regression tests: `test_decode_br_table` (synth-core),
+`test_encode_setcond_high_reg_uses_mov_w_204` (synth-backend, verify-bytes).
+
+_Falsification:_ this release is wrong if, for a Cortex-M (Thumb-2) target, a
+`br_table` fails to dispatch on its index, or a `select`/comparison whose result
+lands in R8–R12 reads back a value other than the materialized 0/1.
+
 ## [0.11.13] - 2026-05-31
 
 **i64 width-conversion decode + i32/i64-aware spilling + param frame-backing —
