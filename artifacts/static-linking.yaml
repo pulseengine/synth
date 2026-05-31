@@ -28,7 +28,7 @@ artifacts:
       (3) the Zephyr SDK's arm-zephyr-eabi-gcc. The toolchain shall be
       detectable at synth build time or configurable via --linker flag.
       This addresses issue #27 (ARM cross-compilation toolchain).
-    status: draft
+    status: implemented
     tags: [static-linking, toolchain, arm, cross-compilation, issue-27]
     links:
       - type: derives-from
@@ -64,7 +64,7 @@ artifacts:
       EXTERN declarations for __meld_dispatch_import and
       __meld_get_memory_base shall be emitted when Meld integration
       is enabled.
-    status: draft
+    status: implemented
     tags: [static-linking, linker-script, meld-sections, memory-layout]
     links:
       - type: derives-from
@@ -116,7 +116,7 @@ artifacts:
       missing symbol and suggesting that kiln-builtins.a is required.
       Weak symbols (__meld_get_memory_base_default) provide fallback
       for bare-metal operation without kiln-builtins.
-    status: draft
+    status: implemented
     tags: [static-linking, symbols, resolution, kiln-builtins]
     links:
       - type: derives-from
@@ -155,7 +155,7 @@ artifacts:
       that Zephyr C code or other firmware components can call them via
       extern declarations. Non-exported WASM functions shall be local
       symbols (STB_LOCAL) to avoid namespace pollution.
-    status: draft
+    status: implemented
     tags: [static-linking, symbols, exports, visibility]
     links:
       - type: derives-from
@@ -192,7 +192,7 @@ artifacts:
       shall be 4 bytes (Thumb-2 instruction alignment). The linker shall
       merge .text from module.o and kiln-builtins.a into a single .text
       output section.
-    status: draft
+    status: implemented
     tags: [static-linking, memory-layout, flash, text-section]
     links:
       - type: derives-from
@@ -231,7 +231,7 @@ artifacts:
       kiln-builtins). For multi-memory modules, each memory gets a
       separate section (.wasm_linear_memory_0, .wasm_linear_memory_1, etc.)
       with individual MPU region allocation.
-    status: draft
+    status: implemented
     tags: [static-linking, memory-layout, ram, linear-memory, mpu]
     links:
       - type: derives-from
@@ -270,7 +270,7 @@ artifacts:
       Both sections have ALLOC flag but not WRITE or EXEC. Placing import
       metadata in FLASH saves RAM on constrained targets and ensures the
       import table cannot be corrupted by software bugs.
-    status: draft
+    status: implemented
     tags: [static-linking, memory-layout, flash, import-table, read-only]
     links:
       - type: derives-from
@@ -307,7 +307,7 @@ artifacts:
       import metadata. The method is composable with existing
       with_meld_integration() and board-specific constructors
       (new_stm32, new_nrf52840, new_generic).
-    status: planned
+    status: implemented
     tags: [static-linking, linker-script, synth-backend]
     links:
       - type: derives-from
@@ -336,7 +336,7 @@ artifacts:
       flag, SYNTH_LINKER environment variable, or PATH detection of
       arm-none-eabi-ld. Linker errors are captured and reported with
       context (which symbol is unresolved, which object needs it).
-    status: planned
+    status: implemented
     tags: [static-linking, cli, linker-invocation, synth-cli]
     links:
       - type: derives-from
@@ -366,7 +366,7 @@ artifacts:
       BL instruction's offset field to point to the resolved symbol address.
       The BL encoding shall leave the offset field as zero (or a placeholder)
       in the relocatable object, to be filled by the linker.
-    status: planned
+    status: implemented
     tags: [static-linking, relocations, elf, arm-thumb]
     links:
       - type: refines
@@ -383,3 +383,59 @@ artifacts:
         readelf -r module.o shows R_ARM_THM_CALL entries for each import
         call; symbol indices reference correct UND symbols; after linking,
         objdump -d shows BL instructions with correct target addresses.
+
+  # ---------------------------------------------------------------------------
+  # Integration verification (SYS.4) — added after the gale cross-LTO arc
+  # shipped (synth v0.11.1–v0.11.11). sys-integration-verification can target
+  # a system-req directly, so these close the SL-00x lifecycle coverage.
+  # ---------------------------------------------------------------------------
+
+  - id: SL-IV-001
+    type: sys-integration-verification
+    title: Relocatable host-link integration verification (v0.11.11)
+    description: >
+      Verifies that synth-compiled relocatable objects (--relocatable) link
+      against a host kernel and dereference linear memory correctly, closing
+      the static-linking system requirements. Evidence from the gale
+      cross-language-LTO bring-up (synth v0.11.1–v0.11.11):
+      (1) synth emits ET_REL objects with R_ARM_THM_CALL relocations against
+          the wasm import field names (e.g. k_spin_lock) and func_N internal
+          symbols — gale's z_impl_k_sem_give object links with 5 real kernel
+          relocations resolved;
+      (2) the generated linker script carries .meld_import_table, .text in
+          FLASH, and .wasm_linear_memory in RAM;
+      (3) a pointer param live across an import call is preserved and
+          dereferenced fp-relative ([fp, sem]), not from an absolute base.
+    status: implemented
+    tags: [static-linking, integration-test, gale, relocatable, v0.11.11]
+    links:
+      - type: verifies
+        target: SL-001
+      - type: verifies
+        target: SL-002
+      - type: verifies
+        target: SL-003
+      - type: verifies
+        target: SL-004
+      - type: verifies
+        target: SL-005
+      - type: verifies
+        target: SL-006
+      - type: verifies
+        target: SL-007
+    fields:
+      method: automated-test
+      preconditions:
+        - synth v0.11.11 (relocatable direct selector, #197)
+        - arm-zephyr-eabi toolchain (Zephyr SDK)
+      steps:
+        - "synth compile merged.both.loom.wasm --target cortex-m4f --all-exports --relocatable -o out.o"
+        - "arm-zephyr-eabi-objdump -dr out.o  # BL k_spin_lock + R_ARM_THM_CALL; ldr [fp, rN]"
+        - "link out.o against the Zephyr kernel; readelf -r confirms the kernel relocations resolve"
+      pass-criteria: >
+        Object links with no unresolved symbols beyond the declared kernel
+        imports; z_impl dereferences sem via [fp, sem] with the param spilled
+        across the call. Regression-tested by
+        test_compile_internal_call_produces_relocation_167,
+        test_compile_relocatable_import_uses_direct_func_symbol_197, and
+        relocatable_pointer_deref_uses_fp_base_197.
