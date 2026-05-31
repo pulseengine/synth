@@ -80,6 +80,17 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  pin-sweep:
+    name: Version Pin Sweep
+    runs-on: [self-hosted, linux, x64, light]
+    steps:
+      - uses: actions/checkout@v4
+      # Issue #145: fail at PR time if [workspace.package].version drifts from
+      # any intra-workspace path-dep `version =` pin or MODULE.bazel — the
+      # v0.7.0-class desync that breaks release.yml + publish at tag-push time.
+      - name: Check intra-workspace version pins
+        run: python3 scripts/check_version_pins.py
+
   verify:
     name: Z3 Verification
     # Stays on ubuntu-latest: needs `sudo apt-get install -y libz3-dev`
