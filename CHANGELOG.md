@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.12] - 2026-05-31
+
+**Byte-accurate local branch resolution — fixes mid-instruction branch targets
+(#202).** gale's `z_impl` faulted on real Cortex-M4 hardware (NUCLEO-G474RE): a
+`bne.n` conditional branch landed in the *middle* of the following 32-bit
+Thumb-2 instruction, so taking the branch executed from mid-instruction →
+UsageFault (stacked fault PC == the bad target). Root cause: `select_with_stack`
+emits `if`/`else`/`block`/`loop` branches as label placeholders (`Bcc`/`B`/`Bhs`/
+`Blo` + `Label`) but nothing ever resolved them — the encoder emitted `bne.n #0`
+placeholders. The only resolver (`control_flow::resolve_branches`) was dead *and*
+counted instruction indices rather than bytes. Before #197 this path only ran for
+`--no-optimize`/declined functions, so the bug stayed latent; routing relocatable
+code through `select_with_stack` surfaced branches that skip a 32-bit instruction
+(an `ldr.w` spill-reload, a `movw`/`movt` constant, …). New `resolve_label_branches`
+pass in the backend encodes each instruction to learn its real byte length (16-
+vs 32-bit and multi-instruction expansions are exact), maps each `Label` to its
+byte position, and rewrites every local label branch to the displacement the
+encoder consumes — `(target − branch − 4) / 2` halfwords — with a bounded
+fixed-point for the case where an offset grows a branch 16→32-bit. External
+labels (`Trap_Handler`, resolved by relocation) and the optimized path's inline
+`BCondOffset` are left untouched. An `if` over a 32-bit `movw`/`movt` now emits
+`beq 0x12` (else boundary) instead of `beq 0x0a` (mid-`movw`).
+
+_Falsification:_ this release is wrong if any conditional or unconditional Thumb
+branch in synth `.text` targets an address that is not an instruction boundary —
+i.e. if hand-decoding the halfword stream shows a `B<cond>`/`B.N` whose
+`(addr + 4 + 2·imm)` lands on the second halfword of a 32-bit instruction.
+
 ## [0.11.11] - 2026-05-30
 
 **Relocatable host-link correctness — fp-relative memory + caller-saved
