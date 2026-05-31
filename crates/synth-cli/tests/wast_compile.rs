@@ -673,6 +673,100 @@ fn relocatable_pointer_deref_uses_fp_base_197() {
     );
 }
 
+/// Regression test for #202: a conditional branch that skips a 32-bit Thumb-2
+/// instruction must target an instruction boundary, not the middle of it.
+///
+/// `select_with_stack` emits `if`/`else` branches as label placeholders; before
+/// the byte-accurate resolution pass they encoded as `beq #0` and, when a 32-bit
+/// `movw`/`movt` sat in the skipped block, landed mid-instruction → UsageFault
+/// on the NUCLEO-G474RE (gale's on-target failure). This decodes every Thumb
+/// 16-bit `B<cond>`/`B.N` in `.text` and asserts its target is a valid
+/// instruction boundary.
+#[test]
+fn relocatable_conditional_branch_targets_instruction_boundary_202() {
+    use object::{Object, ObjectSection};
+
+    let wat = workspace_root()
+        .join("tests")
+        .join("integration")
+        .join("branch_over_32bit.wat");
+    assert!(wat.exists(), "fixture not found: {}", wat.display());
+
+    let out = std::env::temp_dir().join("synth_br32_202.o");
+    let result = Command::new(synth_binary())
+        .args([
+            "compile",
+            wat.to_str().unwrap(),
+            "--target",
+            "cortex-m4f",
+            "--all-exports",
+            "--relocatable",
+            "-o",
+            out.to_str().unwrap(),
+        ])
+        .output()
+        .expect("run synth");
+    assert!(
+        result.status.success(),
+        "compile failed: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let data = std::fs::read(&out).unwrap();
+    let elf = object::File::parse(&*data).expect("parse ELF");
+    let text = elf
+        .section_by_name(".text")
+        .and_then(|s| s.data().ok())
+        .expect(".text")
+        .to_vec();
+    let _ = std::fs::remove_file(&out);
+
+    // First pass: walk the halfword stream and record every instruction-start
+    // byte offset, distinguishing 16- from 32-bit Thumb-2 (top 5 bits of the
+    // first halfword are 0b11101/0b11110/0b11111 for 32-bit).
+    let hw: Vec<u16> = text
+        .chunks_exact(2)
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    let mut boundaries: std::collections::HashSet<i32> = std::collections::HashSet::new();
+    let mut branches: Vec<(i32, i32)> = Vec::new(); // (byte_addr, halfword imm)
+    let (mut i, mut addr) = (0usize, 0i32);
+    while i < hw.len() {
+        boundaries.insert(addr);
+        let h = hw[i];
+        let is32 = matches!(h >> 11, 0b11101..=0b11111);
+        if !is32 && (h & 0xF000) == 0xD000 && (h & 0x0F00) != 0x0F00 {
+            // 16-bit B<cond> (excludes 0xDF = SVC / 0xDE = UDF via the !=0xF00 guard)
+            let imm8 = (h & 0xFF) as i8 as i32; // sign-extend
+            branches.push((addr, imm8));
+        } else if !is32 && (h & 0xF800) == 0xE000 {
+            // 16-bit unconditional B.N
+            let imm11 = (((h & 0x7FF) as i32) << 21) >> 21; // sign-extend 11-bit
+            branches.push((addr, imm11));
+        }
+        if is32 && i + 1 < hw.len() {
+            i += 2;
+            addr += 4;
+        } else {
+            i += 1;
+            addr += 2;
+        }
+    }
+    boundaries.insert(addr);
+
+    assert!(
+        !branches.is_empty(),
+        "#202: fixture should emit at least one conditional/unconditional branch"
+    );
+    for (baddr, imm) in branches {
+        let target = baddr + 4 + 2 * imm;
+        assert!(
+            boundaries.contains(&target),
+            "#202: branch at 0x{baddr:x} targets 0x{target:x}, which is NOT an instruction \
+             boundary (lands mid-instruction → UsageFault)"
+        );
+    }
+}
+
 /// Decode a Thumb-2 `BL` (two little-endian halfwords at `text[off..off+4]`)
 /// and return its branch target address, given the BL's own address `bl_addr`.
 /// Thumb BL: `target = (bl_addr + 4) + signed_offset`, the inverse of the

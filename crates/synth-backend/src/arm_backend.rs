@@ -238,6 +238,18 @@ fn compile_wasm_to_arm(
         ArmEncoder::new_arm32()
     };
 
+    // #202: resolve local label branches (Bcc/B/Bhs/Blo) to byte-accurate
+    // offsets before encoding. `select_with_stack` emits them as label
+    // placeholders and never resolves them — without this they encode as
+    // `bne.n #0` and land mid-instruction whenever a 32-bit Thumb-2 instruction
+    // sits between the branch and its target (UsageFault on real hardware).
+    // Only meaningful for Thumb-2 (the offset units are halfword/PC+4).
+    let arm_instrs = if use_thumb2 {
+        resolve_label_branches(arm_instrs, &encoder)?
+    } else {
+        arm_instrs
+    };
+
     let mut code = Vec::new();
     let mut relocations = Vec::new();
 
@@ -262,6 +274,103 @@ fn compile_wasm_to_arm(
     }
 
     Ok((code, relocations))
+}
+
+/// Resolve local label branches to byte-accurate offsets (#202).
+///
+/// `select_with_stack` emits conditional/unconditional branches as label
+/// placeholders (`Bcc`/`B`/`Bhs`/`Blo` + `Label`) and never resolves them; the
+/// encoder then emits a `0xD000`/`0xE000` placeholder with offset 0. Before #197
+/// this path only ran for `--no-optimize`/declined functions, so the latent bug
+/// stayed hidden — routing relocatable code through it surfaced branches that
+/// land mid-instruction (a Cortex-M UsageFault) whenever a 32-bit Thumb-2
+/// instruction sits between the branch and its target.
+///
+/// This pass encodes each instruction to learn its real byte length (so 16- vs
+/// 32-bit forms and multi-instruction expansions are exact), maps each `Label`
+/// to its byte position, and rewrites every label branch to the displacement
+/// the encoder consumes: `(target - branch - 4) / 2` halfwords. A bounded
+/// fixed-point handles an offset growing a branch from 16- to 32-bit (which
+/// shifts later positions). `BCondOffset`/`BOffset` already produced inline by
+/// the optimized path carry no label and are left untouched.
+fn resolve_label_branches(
+    arm_instrs: Vec<ArmInstruction>,
+    encoder: &ArmEncoder,
+) -> Result<Vec<ArmInstruction>, String> {
+    use std::collections::HashMap;
+    use synth_synthesis::Condition;
+
+    enum BKind {
+        Cond(Condition),
+        Uncond,
+    }
+    // Record each label branch ONCE — indices are stable across iterations.
+    let mut branches: Vec<(usize, BKind, String)> = Vec::new();
+    for (i, instr) in arm_instrs.iter().enumerate() {
+        match &instr.op {
+            ArmOp::Bcc { cond, label } => branches.push((i, BKind::Cond(*cond), label.clone())),
+            ArmOp::Bhs { label } => branches.push((i, BKind::Cond(Condition::HS), label.clone())),
+            ArmOp::Blo { label } => branches.push((i, BKind::Cond(Condition::LO), label.clone())),
+            ArmOp::B { label } => branches.push((i, BKind::Uncond, label.clone())),
+            _ => {}
+        }
+    }
+    if branches.is_empty() {
+        return Ok(arm_instrs);
+    }
+
+    let mut resolved = arm_instrs;
+    // Sizes only grow (16→32-bit), so this converges quickly; cap for safety.
+    for _ in 0..16 {
+        // 1. Byte position of each instruction (Label encodes to 0 bytes).
+        let mut positions = Vec::with_capacity(resolved.len());
+        let mut pos: i64 = 0;
+        for instr in &resolved {
+            positions.push(pos);
+            pos += encoder
+                .encode(&instr.op)
+                .map_err(|e| format!("branch-resolve size probe failed: {}", e))?
+                .len() as i64;
+        }
+        // 2. Label name -> byte position (owned keys so the borrow ends here).
+        let mut labels: HashMap<String, i64> = HashMap::new();
+        for (i, instr) in resolved.iter().enumerate() {
+            if let ArmOp::Label { name } = &instr.op {
+                labels.insert(name.clone(), positions[i]);
+            }
+        }
+        // 3. Rewrite each branch to its byte-accurate offset.
+        let mut changed = false;
+        for (idx, kind, label) in &branches {
+            // A label not defined locally is an EXTERNAL target (e.g.
+            // `Trap_Handler` resolved by a relocation / the vector table). Leave
+            // such branches as their placeholder for the existing relocation
+            // path — only local control-flow labels are byte-resolved here.
+            let Some(&target) = labels.get(label) else {
+                continue;
+            };
+            // Encoder consumes the field as (target - branch - 4) / 2 halfwords.
+            // Positions are always even, so this division is exact.
+            let halfword_offset = ((target - positions[*idx] - 4) / 2) as i32;
+            let new_op = match kind {
+                BKind::Cond(c) => ArmOp::BCondOffset {
+                    cond: *c,
+                    offset: halfword_offset,
+                },
+                BKind::Uncond => ArmOp::BOffset {
+                    offset: halfword_offset,
+                },
+            };
+            if resolved[*idx].op != new_op {
+                resolved[*idx].op = new_op;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    Ok(resolved)
 }
 
 #[cfg(test)]
