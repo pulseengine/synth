@@ -51,7 +51,87 @@ impl ArmEncoder {
     }
 
     /// Encode an ARM instruction in ARM32 mode (32-bit instructions)
+    /// #206: encode an ARM32 (A32) load/store whose address uses a register
+    /// offset (`[rn, rm{, #off}]`). Returns `None` for ops with no register
+    /// offset (the caller falls through to the immediate-form arms). Computes
+    /// `ip = base + rm` then re-encodes the op against `[ip, #off]`, which works
+    /// uniformly for word/byte/halfword/signed forms. IP (R12) is the scratch
+    /// register the selector already treats as clobberable across memory ops.
+    fn encode_arm_reg_offset_mem(&self, op: &ArmOp) -> Result<Option<Vec<u8>>> {
+        use synth_synthesis::Reg;
+        let addr = match op {
+            ArmOp::Ldr { addr, .. }
+            | ArmOp::Str { addr, .. }
+            | ArmOp::Ldrb { addr, .. }
+            | ArmOp::Strb { addr, .. }
+            | ArmOp::Ldrh { addr, .. }
+            | ArmOp::Strh { addr, .. }
+            | ArmOp::Ldrsb { addr, .. }
+            | ArmOp::Ldrsh { addr, .. } => addr,
+            _ => return Ok(None),
+        };
+        let Some(rm) = addr.offset_reg else {
+            return Ok(None);
+        };
+        let ip = Reg::R12;
+        // ADD ip, base, rm  (cond=AL, opcode=ADD, S=0, register operand2)
+        let add: u32 = 0xE0800000
+            | (reg_to_bits(&addr.base) << 16)
+            | (reg_to_bits(&ip) << 12)
+            | reg_to_bits(&rm);
+        let mut bytes = add.to_le_bytes().to_vec();
+        // Re-encode the op against [ip, #off] (immediate form → no offset_reg,
+        // so this recursion hits the immediate arms, not this helper again).
+        let imm_addr = MemAddr::imm(ip, addr.offset);
+        let imm_op = match op {
+            ArmOp::Ldr { rd, .. } => ArmOp::Ldr {
+                rd: *rd,
+                addr: imm_addr,
+            },
+            ArmOp::Str { rd, .. } => ArmOp::Str {
+                rd: *rd,
+                addr: imm_addr,
+            },
+            ArmOp::Ldrb { rd, .. } => ArmOp::Ldrb {
+                rd: *rd,
+                addr: imm_addr,
+            },
+            ArmOp::Strb { rd, .. } => ArmOp::Strb {
+                rd: *rd,
+                addr: imm_addr,
+            },
+            ArmOp::Ldrh { rd, .. } => ArmOp::Ldrh {
+                rd: *rd,
+                addr: imm_addr,
+            },
+            ArmOp::Strh { rd, .. } => ArmOp::Strh {
+                rd: *rd,
+                addr: imm_addr,
+            },
+            ArmOp::Ldrsb { rd, .. } => ArmOp::Ldrsb {
+                rd: *rd,
+                addr: imm_addr,
+            },
+            ArmOp::Ldrsh { rd, .. } => ArmOp::Ldrsh {
+                rd: *rd,
+                addr: imm_addr,
+            },
+            _ => unreachable!(),
+        };
+        bytes.extend(self.encode_arm(&imm_op)?);
+        Ok(Some(bytes))
+    }
+
     fn encode_arm(&self, op: &ArmOp) -> Result<Vec<u8>> {
+        // #206: ARM32 register-offset loads/stores. `encode_mem_addr` only
+        // returns the 12-bit immediate, so the immediate-form arms below
+        // silently DROP `addr.offset_reg` — a runtime address index vanished,
+        // turning `ldr rd,[rn,rm,#off]` into `ldr rd,[rn,#off]` (the access went
+        // to the wrong address). Compute the effective base into IP and re-encode
+        // against `[ip, #off]`, which is uniform for word/byte/halfword/signed.
+        if let Some(bytes) = self.encode_arm_reg_offset_mem(op)? {
+            return Ok(bytes);
+        }
         let instr: u32 = match op {
             // Data processing instructions
             ArmOp::Add { rd, rn, op2 } => {
@@ -6965,6 +7045,38 @@ mod tests {
         assert_eq!(lo.len(), 6, "ITE(2) + MOVS(2) + MOVS(2): {lo:02x?}");
         assert_eq!(lo[2..4], [0x01, 0x20], "then = MOVS R0,#1");
         assert_eq!(lo[4..6], [0x00, 0x20], "else = MOVS R0,#0");
+    }
+
+    /// #206 regression: the ARM32 (A32) `Ldr`/`Str` encoders fed `addr` through
+    /// `encode_mem_addr`, which returns only the 12-bit immediate — so a register
+    /// offset (`[rn, rm, #off]`) was silently dropped to `[rn, #off]`, sending
+    /// the access to the wrong runtime address (silent miscompile on the default
+    /// `--target arm`). A register offset must materialize `ip = rn + rm` and
+    /// load from `[ip, #off]`. Verify the bytes.
+    #[test]
+    fn test_encode_arm32_indexed_load_keeps_index_206() {
+        use synth_synthesis::{ArmOp, MemAddr, Reg};
+        let enc = ArmEncoder::new_arm32();
+        // ldr r0, [r11, r1, #8]  must NOT collapse to a single immediate ldr.
+        let bytes = enc
+            .encode(&ArmOp::Ldr {
+                rd: Reg::R0,
+                addr: MemAddr::reg_imm(Reg::R11, Reg::R1, 8),
+            })
+            .unwrap();
+        assert_eq!(
+            bytes.len(),
+            8,
+            "expected ADD ip + LDR (2 words): {bytes:02x?}"
+        );
+        let add = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let ldr = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        // ADD ip, r11, r1  = 0xE08BC001
+        assert_eq!(add, 0xE08B_C001, "ADD ip,r11,r1: {add:#010x}");
+        // LDR r0, [ip, #8] = 0xE59C0008
+        assert_eq!(ldr, 0xE59C_0008, "LDR r0,[ip,#8]: {ldr:#010x}");
+        // A bare immediate ldr (the bug) would be 0xE59B0008 (base=r11) — reject.
+        assert_ne!(ldr, 0xE59B_0008, "index must not be dropped");
     }
 
     /// #178/#180 regression: the Thumb `Add`/`Adds`/`Subs` reg-forms used the

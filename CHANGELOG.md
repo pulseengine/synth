@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.15] - 2026-06-01
+
+**ARM32 (A32) encoder dropped the register index on indexed loads/stores
+(#206).** On the default `--target arm`, `Ldr`/`Str`/`Ldrb`/`Strb`/`Ldrh`/`Strh`/
+`Ldrsb`/`Ldrsh` fed their address through `encode_mem_addr`, which returns only
+the 12-bit immediate — so a register offset (`[rn, rm, #off]`, e.g. a WASM
+`iN.load`/`store` with a runtime address) silently collapsed to `[rn, #off]`,
+sending the access to the wrong address. A register offset now materializes
+`ip = rn + rm` (clobbering the scratch IP/R12) and loads from `[ip, #off]`,
+uniform across word/byte/halfword/signed forms. This only affected the default
+ARM/A32 target; Cortex-M (Thumb-2) was already correct (its encoder handles the
+register-offset addressing mode), which is why gale's `--target cortex-m4` build
+was unaffected. Found while diagnosing #204.
+
+Regression test: `test_encode_arm32_indexed_load_keeps_index_206` (verify-bytes —
+`ldr r0,[r11,r1,#8]` must encode as `ADD ip,r11,r1` + `LDR r0,[ip,#8]`, never a
+bare `LDR r0,[r11,#8]`).
+
+_Falsification:_ this release is wrong if any ARM32 `Ldr*`/`Str*` whose `MemAddr`
+carries an `offset_reg` encodes to a single instruction (the register index would
+again be dropped).
+
 ## [0.11.14] - 2026-05-31
 
 **Three control-flow miscompiles in the direct selector — fixes the binary
