@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.17] - 2026-06-02
+
+**Constant-divisor strength reduction + dead trap-guard elision (#209 Opt 1).**
+When the divisor of `i32.div_u/div_s/rem_u/rem_s` is a known constant (the
+immediately-preceding op is `i32.const C` — sound because `i32.const` is a
+(0,1) stack op, so it *is* the value the division pops as its divisor),
+`select_with_stack` now lowers it without the dead runtime traps:
+
+- A nonzero constant divisor makes the div-by-zero `CMP/BNE/UDF` guard dead —
+  it is elided. For `div_s`, a non-`-1` constant also makes the INT_MIN/-1
+  overflow guard (`MOVW/MOVT` INT_MIN + `CMP` + `CMN #1` + `BNE` + `UDF #1`)
+  dead — also elided. gale's `control_step` (binning `/500 /5 /80 /1000`) loses
+  3 instructions per unsigned divide and ~9 per signed divide.
+- `div_u` by a power of two `2^k` lowers to `LSR rd, rn, #k` — no `UDIV`, no
+  guard (`0x8000_0000` counts as `2^31` since the divisor is unsigned).
+- Division by 1 becomes an identity `MOV`; `rem` by 1 becomes `MOV #0`.
+
+A constant *zero* divisor keeps the guard (it must still trap at runtime). The
+signed `div_s` by `-1` keeps the overflow guard (INT_MIN/-1 traps). Only the
+unsigned path strength-reduces beyond guard elision; signed power-of-two (which
+needs a rounding-bias sequence) and the non-power-of-two reciprocal-multiply
+(needs a new `UMULL` op) are deferred to a follow-up.
+
+Validated against the wasmtime differential oracle: 260/260 across all 10
+lowered forms × 26 edge-case inputs (INT_MIN, `0x8000_0000`, `0xFFFF_FFFF`,
+power-of-two boundaries, signed negatives) on the actual `--relocatable`
+`select_with_stack` path. Regression fixtures:
+`scripts/repro/div_const.wat` + `scripts/repro/div_const_differential.py`, and
+seven `test_209_*` selector unit tests asserting the lowered instruction
+sequences (and that zero/`-1` divisors keep their guards).
+
+Falsification: this release is wrong if any `i32.div_*`/`i32.rem_*` by a
+constant produces a result differing from the WebAssembly spec semantics
+(wasmtime) — including the trap behaviour for a constant-zero divisor.
+
 ## [0.11.16] - 2026-06-02
 
 **Param-register reservation — fixes the call-free param clobber (#193), gale's
