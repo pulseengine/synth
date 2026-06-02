@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.16] - 2026-06-02
+
+**Param-register reservation — fixes the call-free param clobber (#193), gale's
+dropped-operand bug (#210).** In `select_with_stack`, a register-backed param
+lives in r0–r3 but is not on the operand stack, so the temp/pair/reload
+allocators (`alloc_temp_safe`, `alloc_consecutive_pair`, and the spilled-operand
+reloads in `pop_operand`/`peek_operand`) — which avoided only the operand-stack-
+live registers — could hand a still-live param's register out for a constant,
+i64 result, or reload under pressure, clobbering it before a later read. gale's
+**call-free** `control_step_decide`: `coolant_c` is param 2 → r2, and the
+constant `80` was materialized into r2 → `subs r3,r2,r2` (= 80−80 = 0), forcing
+`enrich` to 0. (Call-*containing* functions were already safe — #204 frame-backs
+their params; this is the call-free gap.)
+
+Every temp/pair/reload allocation now reserves the param registers that are
+still live at that point (tracked by each param's last read, like the #204
+frame-backing's liveness). The `i64_lowering_doesnt_clobber_params` fuzz, which
+exercised this class, is now green (1M+ executions, 0 clobbers).
+
+Regression test: `test_193_const_does_not_clobber_live_param` (a constant after
+enough pressure to exhaust the temp bank must not land on a live param's r0).
+
+_Falsification:_ this release is wrong if any instruction in a call-free
+function writes a parameter's home register (r0–r3) before that parameter's last
+`local.get`.
+
 ## [0.11.15] - 2026-06-01
 
 **ARM32 (A32) encoder dropped the register index on indexed loads/stores
