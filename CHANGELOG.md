@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.20] - 2026-06-02
+
+**Cost-gate the reciprocal-multiply — fixes the Opt 1b register-pressure
+regression (#209).** v0.11.19's `UMULL` reciprocal-multiply needs more live
+scratch than `UDIV` (the magic constant + UMULL's two output registers), and
+gale's `control_step_decide` — four constant `div_u` (`/500 /5 /80 /1000`) on the
+9-register R0–R8 pool (after the #212 R12 reserve) with a deep operand stack —
+exhausted the allocator, which **hard-failed** (`register exhaustion … function
+too complex`) instead of spilling. It had compiled correctly on v0.11.18, so Opt
+1b regressed it from "compiles + correct" to "won't compile."
+
+Two changes:
+- **Cost-gate:** if the reciprocal-multiply's scratch registers can't be
+  allocated, fall back to the guard-elided `UDIV` (which needs no new temps and
+  is always correct). The function always compiles; only the tightest divides
+  lose the multiply.
+- **Two-temp `a == false` path:** the common (no add-indicator) case now reuses
+  `dst` as UMULL's throwaway low word, so it needs only the magic + high-word
+  registers. This dropped `control_step`'s peak pressure enough that **all four
+  divides keep `UMULL`** — it compiles *and* keeps the full Opt 1b win.
+
+Validated: `control_step_decide` now compiles and matches wasmtime **13/13**
+across a vector spread, including gale's reference `(3000,50,40,0) →
+0x00210A55`. Committed as a permanent fixture
+(`scripts/repro/control_step.wasm` + `control_step_differential.py`, which loads
+the `.rodata` table into linear memory). The `div_const` oracle still passes
+338/338 (the two-temp path is exercised by `/500`, `/641`, …). Unit test
+`test_209_multi_const_div_does_not_exhaust` asserts four constant `div_u` under
+pressure compile (UMULL or UDIV fallback), never hard-fail.
+
+Falsification: this release is wrong if any function with constant `div_u`
+fails to compile under register pressure, or if a cost-gated `UDIV` fallback
+produces a result differing from the WebAssembly spec (wasmtime).
+
 ## [0.11.19] - 2026-06-02
 
 **Reciprocal-multiply for constant unsigned division (#209 Opt 1b).** A

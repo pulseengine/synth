@@ -5180,98 +5180,140 @@ impl InstructionSelector {
                         let mut reserved: Vec<Reg> = live_params.clone();
                         reserved.push(dividend);
                         reserved.push(dst);
-                        let rmag = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
-                        reserved.push(rmag);
-                        let rlo = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
-                        reserved.push(rlo);
-                        let rhi = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
 
-                        // Materialize the magic constant m into rmag.
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Movw {
-                                rd: rmag,
-                                imm16: (m & 0xFFFF) as u16,
-                            },
-                            source_line: Some(idx),
-                        });
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Movt {
-                                rd: rmag,
-                                imm16: ((m >> 16) & 0xFFFF) as u16,
-                            },
-                            source_line: Some(idx),
-                        });
-                        // UMULL rlo, rhi, dividend, rmag → rhi = umulhi(m, dividend)
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Umull {
-                                rdlo: rlo,
-                                rdhi: rhi,
-                                rn: dividend,
-                                rm: rmag,
-                            },
-                            source_line: Some(idx),
-                        });
-                        if a {
-                            // q = (((n - hi) >> 1) + hi) >> (s - 1); reuse rlo as t.
+                        // Cost-gate (#209 regression): the reciprocal-multiply
+                        // needs scratch (the magic constant + UMULL's two output
+                        // registers). Under heavy pressure — control_step's 4
+                        // const `div_u` on the 9-reg R0–R8 pool (after the #212
+                        // R12 reserve) with a deep operand stack — the allocation
+                        // can fail; fall back to the guard-elided UDIV, which
+                        // needs no new temps and is always correct. The a==false
+                        // path reuses `dst` as the throwaway low word (2 temps);
+                        // a==true keeps `dividend` live past the UMULL, so it
+                        // needs a distinct rlo (3 temps).
+                        let recip: Option<(Reg, Reg, Reg)> =
+                            match alloc_temp_safe(&mut next_temp, &stack, &reserved).ok() {
+                                Some(rmag) if a => {
+                                    reserved.push(rmag);
+                                    match alloc_temp_safe(&mut next_temp, &stack, &reserved).ok() {
+                                        Some(rlo) => {
+                                            reserved.push(rlo);
+                                            alloc_temp_safe(&mut next_temp, &stack, &reserved)
+                                                .ok()
+                                                .map(|rhi| (rmag, rlo, rhi))
+                                        }
+                                        None => None,
+                                    }
+                                }
+                                Some(rmag) => {
+                                    // a==false: `dst` doubles as UMULL's RdLo.
+                                    reserved.push(rmag);
+                                    alloc_temp_safe(&mut next_temp, &stack, &reserved)
+                                        .ok()
+                                        .map(|rhi| (rmag, dst, rhi))
+                                }
+                                None => None,
+                            };
+
+                        if let Some((rmag, rlo, rhi)) = recip {
+                            // Materialize the magic constant m into rmag.
                             instructions.push(ArmInstruction {
-                                op: ArmOp::Sub {
-                                    rd: rlo,
+                                op: ArmOp::Movw {
+                                    rd: rmag,
+                                    imm16: (m & 0xFFFF) as u16,
+                                },
+                                source_line: Some(idx),
+                            });
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Movt {
+                                    rd: rmag,
+                                    imm16: ((m >> 16) & 0xFFFF) as u16,
+                                },
+                                source_line: Some(idx),
+                            });
+                            // UMULL rlo, rhi, dividend, rmag → rhi = umulhi(m, n)
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Umull {
+                                    rdlo: rlo,
+                                    rdhi: rhi,
                                     rn: dividend,
-                                    op2: Operand2::Reg(rhi),
+                                    rm: rmag,
                                 },
                                 source_line: Some(idx),
                             });
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::Lsr {
-                                    rd: rlo,
-                                    rn: rlo,
-                                    shift: 1,
-                                },
-                                source_line: Some(idx),
-                            });
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::Add {
-                                    rd: rlo,
-                                    rn: rlo,
-                                    op2: Operand2::Reg(rhi),
-                                },
-                                source_line: Some(idx),
-                            });
-                            // s >= 1 whenever a is set; s == 1 → final shift is 0.
-                            if s == 1 {
+                            if a {
+                                // q = (((n - hi) >> 1) + hi) >> (s-1); rlo as t.
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Sub {
+                                        rd: rlo,
+                                        rn: dividend,
+                                        op2: Operand2::Reg(rhi),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Lsr {
+                                        rd: rlo,
+                                        rn: rlo,
+                                        shift: 1,
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Add {
+                                        rd: rlo,
+                                        rn: rlo,
+                                        op2: Operand2::Reg(rhi),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                // s >= 1 when a is set; s == 1 → final shift is 0.
+                                if s == 1 {
+                                    instructions.push(ArmInstruction {
+                                        op: ArmOp::Mov {
+                                            rd: dst,
+                                            op2: Operand2::Reg(rlo),
+                                        },
+                                        source_line: Some(idx),
+                                    });
+                                } else {
+                                    instructions.push(ArmInstruction {
+                                        op: ArmOp::Lsr {
+                                            rd: dst,
+                                            rn: rlo,
+                                            shift: s - 1,
+                                        },
+                                        source_line: Some(idx),
+                                    });
+                                }
+                            } else if s == 0 {
+                                // q = hi (no shift). LSR #0 is invalid, so MOV.
                                 instructions.push(ArmInstruction {
                                     op: ArmOp::Mov {
                                         rd: dst,
-                                        op2: Operand2::Reg(rlo),
+                                        op2: Operand2::Reg(rhi),
                                     },
                                     source_line: Some(idx),
                                 });
                             } else {
+                                // q = hi >> s
                                 instructions.push(ArmInstruction {
                                     op: ArmOp::Lsr {
                                         rd: dst,
-                                        rn: rlo,
-                                        shift: s - 1,
+                                        rn: rhi,
+                                        shift: s,
                                     },
                                     source_line: Some(idx),
                                 });
                             }
-                        } else if s == 0 {
-                            // q = hi (no shift). LSR #0 is invalid, so MOV.
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::Mov {
-                                    rd: dst,
-                                    op2: Operand2::Reg(rhi),
-                                },
-                                source_line: Some(idx),
-                            });
                         } else {
-                            // q = hi >> s
+                            // Register-pressure fallback: guard-elided UDIV (the
+                            // divisor is a known nonzero constant, so no trap).
                             instructions.push(ArmInstruction {
-                                op: ArmOp::Lsr {
+                                op: ArmOp::Udiv {
                                     rd: dst,
-                                    rn: rhi,
-                                    shift: s,
+                                    rn: dividend,
+                                    rm: divisor,
                                 },
                                 source_line: Some(idx),
                             });
@@ -13345,6 +13387,47 @@ mod tests {
         assert!(
             instrs.iter().any(|i| matches!(&i.op, ArmOp::Umull { .. })),
             "non-pow2 const divisor divides via UMULL high-word"
+        );
+    }
+
+    /// #209 regression: multiple constant `div_u` under register pressure must
+    /// COMPILE — the reciprocal-multiply is cost-gated (falls back to UDIV when
+    /// scratch can't be allocated) so it never hard-fails like v0.11.19 did on
+    /// gale's `control_step` (4× const `div_u` exhausted the R0–R8 pool). Mirrors
+    /// that shape: 4 params each divided by a constant, all results kept live.
+    #[test]
+    fn test_209_multi_const_div_does_not_exhaust() {
+        let mut selector = fresh_selector();
+        let result = selector.select_with_stack(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Const(500),
+                WasmOp::I32DivU,
+                WasmOp::LocalGet(1),
+                WasmOp::I32Const(5),
+                WasmOp::I32DivU,
+                WasmOp::LocalGet(2),
+                WasmOp::I32Const(80),
+                WasmOp::I32DivU,
+                WasmOp::LocalGet(3),
+                WasmOp::I32Const(1000),
+                WasmOp::I32DivU,
+                WasmOp::I32Add,
+                WasmOp::I32Add,
+                WasmOp::I32Add,
+            ],
+            4,
+        );
+        let instrs = result.expect("4× const div_u must compile, not exhaust (#209)");
+        // Each divide lowered to either a reciprocal-multiply (UMULL) or the
+        // cost-gated UDIV fallback — never dropped.
+        let divides = instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Umull { .. } | ArmOp::Udiv { .. }))
+            .count();
+        assert!(
+            divides >= 4,
+            "all 4 const divides must lower (UMULL or UDIV fallback), got {divides}"
         );
     }
 

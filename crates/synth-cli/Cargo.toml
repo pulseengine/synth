@@ -27,18 +27,18 @@ verify = ["synth-verify"]
 # Path deps carry `version` so `cargo publish` rewrites them to the
 # crates.io coordinate. Bumping the workspace version requires
 # updating these in lockstep — see docs/release-process.md.
-synth-core = { path = "../synth-core", version = "0.11.19" }
-synth-frontend = { path = "../synth-frontend", version = "0.11.19" }
-synth-synthesis = { path = "../synth-synthesis", version = "0.11.19" }
-synth-backend = { path = "../synth-backend", version = "0.11.19" }
+synth-core = { path = "../synth-core", version = "0.11.20" }
+synth-frontend = { path = "../synth-frontend", version = "0.11.20" }
+synth-synthesis = { path = "../synth-synthesis", version = "0.11.20" }
+synth-backend = { path = "../synth-backend", version = "0.11.20" }
 
 # Optional external backends
-synth-backend-awsm = { path = "../synth-backend-awsm", version = "0.11.19", optional = true }
-synth-backend-wasker = { path = "../synth-backend-wasker", version = "0.11.19", optional = true }
-synth-backend-riscv = { path = "../synth-backend-riscv", version = "0.11.19", optional = true }
+synth-backend-awsm = { path = "../synth-backend-awsm", version = "0.11.20", optional = true }
+synth-backend-wasker = { path = "../synth-backend-wasker", version = "0.11.20", optional = true }
+synth-backend-riscv = { path = "../synth-backend-riscv", version = "0.11.20", optional = true }
 
 # Optional verification (requires z3)
-synth-verify = { path = "../synth-verify", version = "0.11.19", optional = true, features = ["z3-solver", "arm"] }
+synth-verify = { path = "../synth-verify", version = "0.11.20", optional = true, features = ["z3-solver", "arm"] }
 
 # Optional PulseEngine WASM optimizer
 # Uncomment when loom crate is available:
