@@ -90,10 +90,15 @@ impl BranchableInstruction for ArmInstruction {
     }
 }
 
-/// Allocatable registers: R0-R8, R12.
+/// Allocatable registers: R0-R8.
 /// R9 (globals base), R10 (memory size), R11 (memory base) are reserved by the
-/// runtime convention and must never be allocated as temporaries.
-const ALLOCATABLE_REGS: [Reg; 10] = [
+/// runtime convention. R12 (IP) is reserved as the encoder's scratch register:
+/// `encode_arm_reg_offset_mem` lowers an indexed `[R11 + addr + #off]` access to
+/// `ADD ip, addr, #off; LDR/STR rd, [R11, ip]`, and several constant/VFP helpers
+/// also clobber IP — so a live operand must never reside there (#212: a const-0
+/// negation base allocated to R12 was overwritten by the next load's `ADD ip`,
+/// turning `0 - sum` into `(addr + off) - sum`).
+const ALLOCATABLE_REGS: [Reg; 9] = [
     Reg::R0,
     Reg::R1,
     Reg::R2,
@@ -103,7 +108,6 @@ const ALLOCATABLE_REGS: [Reg; 10] = [
     Reg::R6,
     Reg::R7,
     Reg::R8,
-    Reg::R12,
 ];
 
 /// Convert register index to Reg enum.
@@ -8211,10 +8215,13 @@ mod tests {
         let mut selector = InstructionSelector::new(db.rules().to_vec());
 
         let wasm_ops = vec![WasmOp::I32Add, WasmOp::I32Sub, WasmOp::I32Mul];
-        let _ = selector.select(&wasm_ops).unwrap();
+        let instrs = selector.select(&wasm_ops).unwrap();
 
-        let stats = selector.get_stats();
-        assert!(stats.total_registers_used > 0);
+        // `total_registers_used` is the round-robin allocator's `next_reg`, which
+        // wraps modulo the allocatable pool size — so assert on the selection
+        // output (the meaningful signal) rather than the wrapping counter.
+        assert!(!instrs.is_empty());
+        let _ = selector.get_stats().total_registers_used;
     }
 
     #[test]
@@ -8291,15 +8298,73 @@ mod tests {
     fn test_index_to_reg_conversion() {
         assert_eq!(index_to_reg(0), Reg::R0);
         assert_eq!(index_to_reg(1), Reg::R1);
-        assert_eq!(index_to_reg(8), Reg::R8);
-        assert_eq!(index_to_reg(9), Reg::R12); // R9/R10/R11 skipped, R12 is at index 9
-        assert_eq!(index_to_reg(10), Reg::R0); // Wraps around after 10 allocatable registers
-        // Verify reserved registers are never allocated
+        assert_eq!(index_to_reg(8), Reg::R8); // last allocatable (R0-R8)
+        assert_eq!(index_to_reg(9), Reg::R0); // wraps after 9 allocatable registers
+        // Verify reserved registers are never allocated (#212: R12 now reserved
+        // as the encoder's IP scratch alongside R9/R10/R11).
         for i in 0..100u8 {
             let reg = index_to_reg(i);
             assert_ne!(reg, Reg::R9, "R9 (globals base) must never be allocated");
             assert_ne!(reg, Reg::R10, "R10 (mem size) must never be allocated");
             assert_ne!(reg, Reg::R11, "R11 (mem base) must never be allocated");
+            assert_ne!(reg, Reg::R12, "R12 (IP scratch) must never be allocated");
+        }
+    }
+
+    /// #212: the encoder uses R12/IP as scratch for indexed `[R11 + addr + #off]`
+    /// memory addressing (`ADD ip, addr, #off; LDR rd, [R11, ip]`). If the
+    /// operand allocator places a live value in R12, that live value is clobbered
+    /// by the address calc. With R12 reserved, `select_with_stack` must never emit
+    /// R12 as a destination on the default (no bounds-check) path — reproduces the
+    /// `i32.const 0; … i32.load …; i32.sub` (negation-after-load) shape that
+    /// miscompiled gale's inlined `flight_algo`.
+    #[test]
+    fn test_212_selector_never_allocates_r12() {
+        // Pressure: several live constants, then an address + load + negation,
+        // mirroring the divided-field reader in the inlined controller body.
+        let wasm_ops = vec![
+            WasmOp::I32Const(11),
+            WasmOp::I32Const(22),
+            WasmOp::I32Const(33),
+            WasmOp::I32Const(44),
+            WasmOp::I32Const(55),
+            WasmOp::I32Const(0), // negation base (the one that landed in R12)
+            WasmOp::LocalGet(0), // address
+            WasmOp::I32Load {
+                offset: 4,
+                align: 2,
+            },
+            WasmOp::I32Const(6),
+            WasmOp::I32ShrS,
+            WasmOp::I32Sub, // 0 - (loaded >> 6)
+        ];
+        let mut selector = fresh_selector();
+        let instrs = selector.select_with_stack(&wasm_ops, 1).unwrap();
+
+        fn dest(op: &ArmOp) -> Option<Reg> {
+            match *op {
+                ArmOp::Mov { rd, .. }
+                | ArmOp::Movw { rd, .. }
+                | ArmOp::Movt { rd, .. }
+                | ArmOp::Mvn { rd, .. }
+                | ArmOp::Add { rd, .. }
+                | ArmOp::Sub { rd, .. }
+                | ArmOp::And { rd, .. }
+                | ArmOp::Asr { rd, .. }
+                | ArmOp::Lsl { rd, .. }
+                | ArmOp::Lsr { rd, .. }
+                | ArmOp::Ldr { rd, .. } => Some(rd),
+                _ => None,
+            }
+        }
+        // No operand-producing instruction targets R12 (it is encoder scratch only).
+        for ins in &instrs {
+            assert_ne!(
+                dest(&ins.op),
+                Some(Reg::R12),
+                "selector allocated R12 as an operand dest (#212): {:?}",
+                ins.op
+            );
         }
     }
 

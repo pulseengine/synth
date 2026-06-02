@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.18] - 2026-06-02
+
+**Reserve R12/IP as encoder scratch — fixes the inlined-callee-after-opaque-call
+miscompile (#212).** The encoder uses R12 (IP) as its scratch register: it lowers
+an indexed linear-memory access `[R11 + addr + #off]` to
+`ADD ip, addr, #off; LDR/STR rd, [R11, ip]`, and several constant/VFP helpers also
+clobber IP. But R12 was *also* in `ALLOCATABLE_REGS`, so under register pressure
+the operand allocator could place a live value in R12 — which the next memory
+access's `ADD ip, …` then overwrote.
+
+gale's loom-inlined `flight_algo` hit this: it calls the opaque `filter_step`
+(which stores the divided fields `st[0]`/`st[4]` via `i32.div_s /1000`), then runs
+the inlined `controller_step` body that reads them back as `0 - (mdeg>>6 +
+rate>>7)`. The constant `0` (the negation base) was allocated to R12; the very
+next `i32.load` emitted `ADD ip, addr, #4`, turning `0 - sum` into
+`(addr + 4) - sum` — a huge value that saturated aileron/elevator to 127. The
+non-divided fields (yaw, updates) read correctly because their negation base
+landed in a normal temp, not R12. The flat (un-inlined) version was correct
+because it never reached the pressure that hands out R12.
+
+Fix: R12 is now reserved alongside R9/R10/R11 (`ALLOCATABLE_REGS` is R0–R8;
+`RESERVED_REGS` includes R12) — a live operand can never reside in the encoder's
+scratch. This matches the standard ABI treatment of IP as a reserved scratch.
+i64 register pairs are unaffected (R12's pair-hi was always reserved, so R12 was
+never a valid i64 lo).
+
+Validated against the wasmtime differential oracle: synth's ARM now matches
+ground truth `0x07FDF307` (was `0x07FD7F7F`) on gale's exact vector. Regression
+fixtures: `scripts/repro/flight_seam.{wasm,wat}` +
+`scripts/repro/flight_seam_differential.py` (runs the full `flight_algo`,
+including the internal `bl filter_step`, under unicorn), plus
+`test_212_selector_never_allocates_r12` and the updated allocator-invariant unit
+tests. The #209 constant-division oracle still passes 260/260 (the two changes
+compose).
+
+Falsification: this release is wrong if any compiled function reads a stale
+register for a memory value across an indexed load/store — i.e. if the
+`flight_seam` differential (or any inlined-reader-after-opaque-call) diverges
+from wasmtime.
+
 ## [0.11.17] - 2026-06-02
 
 **Constant-divisor strength reduction + dead trap-guard elision (#209 Opt 1).**
