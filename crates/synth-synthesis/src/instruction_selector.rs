@@ -200,6 +200,46 @@ impl SpillState {
 /// [`StackVal::Reg`]'s `r` and its conventional [`i64_pair_hi`]. Spilled entries
 /// reserve nothing. (Over-reserving the pair_hi for i32 entries is the
 /// pre-existing conservative behaviour — safe.)
+/// Detect `…; i32.const C; i32.{div,rem}_{u,s}` — a statically-known divisor.
+///
+/// Sound because `i32.const` is a (0,1) stack op (pushes one value, pops none):
+/// when it is the op immediately preceding the division, the value it pushes is
+/// exactly the divisor the division pops off the top of the stack. Any op that
+/// consumed the const before the division (e.g. `i32.const; i32.add; i32.div_u`)
+/// would sit at `idx-1` instead, so the `I32Const` match fails and we bail.
+///
+/// The constant lets the division handlers (#209 Opt 1):
+///   * elide the div-by-zero trap guard when `C != 0` (the trap is dead code);
+///   * elide the signed INT_MIN/-1 overflow guard when `C != -1`;
+///   * strength-reduce a power-of-two unsigned divisor to a shift, and a
+///     divisor of 1 to an identity move.
+fn const_divisor(wasm_ops: &[WasmOp], idx: usize) -> Option<i32> {
+    if idx == 0 {
+        return None;
+    }
+    match wasm_ops[idx - 1] {
+        WasmOp::I32Const(c) => Some(c),
+        _ => None,
+    }
+}
+
+/// If `c` (read as an unsigned 32-bit divisor) is a power of two `2^k` with
+/// `k >= 1`, return `k` so `i32.div_u` can lower to `LSR rd, rn, #k`.
+///
+/// `k == 0` (divisor 1) is excluded on purpose: Thumb-2 `LSR #0` does not encode
+/// a zero-shift — the immediate-shift form reads `imm5 == 0` as `LSR #32`, which
+/// would yield 0 instead of the identity. Divisor-by-1 is handled separately as
+/// a `MOV`. `0x8000_0000` (i32 `-2147483648`) is a valid `2^31` here because the
+/// divisor is interpreted unsigned.
+fn pow2_shift_u(c: i32) -> Option<u32> {
+    let u = c as u32;
+    if u > 1 && u.is_power_of_two() {
+        Some(u.trailing_zeros())
+    } else {
+        None
+    }
+}
+
 fn stack_live_regs(stack: &[StackVal]) -> Vec<Reg> {
     let mut live: Vec<Reg> = Vec::with_capacity(stack.len() * 2);
     for v in stack {
@@ -5029,6 +5069,10 @@ impl InstructionSelector {
 
                 // Division operations with trap checks for divide-by-zero
                 I32DivU => {
+                    // #209 Opt 1: a statically-known nonzero divisor lets us
+                    // strength-reduce the UDIV and drop the dead div-by-zero
+                    // trap guard. Snapshot before popping (pop_operand mutates).
+                    let cdiv = const_divisor(wasm_ops, idx);
                     let divisor = pop_operand(
                         &mut stack,
                         &mut next_temp,
@@ -5051,42 +5095,71 @@ impl InstructionSelector {
                         alloc_temp_safe(&mut next_temp, &stack, &live_params)?
                     };
 
-                    // Trap check: if divisor == 0, trigger UDF (UsageFault -> Trap_Handler)
-                    // CMP divisor, #0
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp {
-                            rn: divisor,
-                            op2: Operand2::Imm(0),
-                        },
-                        source_line: Some(idx),
-                    });
-                    // BNE.N +0 (skip UDF if divisor != 0)
-                    // offset=0 means skip to PC+4, which skips the 2-byte UDF
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset {
-                            cond: Condition::NE,
-                            offset: 0,
-                        },
-                        source_line: Some(idx),
-                    });
-                    // UDF #0 (triggers trap on divide by zero)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Udf { imm: 0 },
-                        source_line: Some(idx),
-                    });
-                    // UDIV dst, dividend, divisor
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Udiv {
-                            rd: dst,
-                            rn: dividend,
-                            rm: divisor,
-                        },
-                        source_line: Some(idx),
-                    });
+                    if cdiv == Some(1) {
+                        // x / 1 == x (no trap possible). Identity move.
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Mov {
+                                rd: dst,
+                                op2: Operand2::Reg(dividend),
+                            },
+                            source_line: Some(idx),
+                        });
+                    } else if let Some(k) = cdiv.and_then(pow2_shift_u) {
+                        // x / 2^k == x >> k (unsigned). No guard, no UDIV.
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Lsr {
+                                rd: dst,
+                                rn: dividend,
+                                shift: k,
+                            },
+                            source_line: Some(idx),
+                        });
+                    } else {
+                        // A nonzero constant divisor can never trap; only emit
+                        // the div-by-zero guard when the divisor is unknown or 0.
+                        let needs_guard = cdiv.is_none_or(|c| c == 0);
+                        if needs_guard {
+                            // CMP divisor, #0
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Cmp {
+                                    rn: divisor,
+                                    op2: Operand2::Imm(0),
+                                },
+                                source_line: Some(idx),
+                            });
+                            // BNE.N +0 (skip UDF if divisor != 0): offset=0 means
+                            // skip to PC+4, which skips the 2-byte UDF.
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::BCondOffset {
+                                    cond: Condition::NE,
+                                    offset: 0,
+                                },
+                                source_line: Some(idx),
+                            });
+                            // UDF #0 (triggers trap on divide by zero)
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Udf { imm: 0 },
+                                source_line: Some(idx),
+                            });
+                        }
+                        // UDIV dst, dividend, divisor
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Udiv {
+                                rd: dst,
+                                rn: dividend,
+                                rm: divisor,
+                            },
+                            source_line: Some(idx),
+                        });
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
                 I32DivS => {
+                    // #209 Opt 1: a known divisor lets us drop the dead trap
+                    // guards — div-by-zero when C != 0, and the INT_MIN/-1
+                    // overflow guard when C != -1 (overflow only at divisor -1).
+                    let cdiv = const_divisor(wasm_ops, idx);
                     let divisor = pop_operand(
                         &mut stack,
                         &mut next_temp,
@@ -5109,96 +5182,118 @@ impl InstructionSelector {
                         alloc_temp_safe(&mut next_temp, &stack, &live_params)?
                     };
 
-                    // Trap check 1: divide by zero
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp {
-                            rn: divisor,
-                            op2: Operand2::Imm(0),
-                        },
-                        source_line: Some(idx),
-                    });
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset {
-                            cond: Condition::NE,
-                            offset: 0,
-                        },
-                        source_line: Some(idx),
-                    });
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Udf { imm: 0 },
-                        source_line: Some(idx),
-                    });
+                    if cdiv == Some(1) {
+                        // x / 1 == x (INT_MIN/1 = INT_MIN, no overflow). Identity.
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Mov {
+                                rd: dst,
+                                op2: Operand2::Reg(dividend),
+                            },
+                            source_line: Some(idx),
+                        });
+                        stack.push(StackVal::i32(dst));
+                    } else {
+                        // Trap check 1: divide by zero (dead for a nonzero const).
+                        let needs_dz_guard = cdiv.is_none_or(|c| c == 0);
+                        if needs_dz_guard {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Cmp {
+                                    rn: divisor,
+                                    op2: Operand2::Imm(0),
+                                },
+                                source_line: Some(idx),
+                            });
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::BCondOffset {
+                                    cond: Condition::NE,
+                                    offset: 0,
+                                },
+                                source_line: Some(idx),
+                            });
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Udf { imm: 0 },
+                                source_line: Some(idx),
+                            });
+                        }
 
-                    // Trap check 2: signed overflow (INT_MIN / -1)
-                    // We need a temp register for INT_MIN (0x80000000)
-                    let tmp = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                        // Trap check 2: signed overflow (INT_MIN / -1). Dead
+                        // unless the divisor could be -1.
+                        let needs_ovf_guard = cdiv.is_none_or(|c| c == -1);
+                        if needs_ovf_guard {
+                            // We need a temp register for INT_MIN (0x80000000)
+                            let tmp = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
 
-                    // Load INT_MIN into tmp: MOVW tmp, #0; MOVT tmp, #0x8000
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Movw { rd: tmp, imm16: 0 },
-                        source_line: Some(idx),
-                    });
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Movt {
-                            rd: tmp,
-                            imm16: 0x8000,
-                        },
-                        source_line: Some(idx),
-                    });
-                    // CMP dividend, tmp (check if dividend == INT_MIN)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp {
-                            rn: dividend,
-                            op2: Operand2::Reg(tmp),
-                        },
-                        source_line: Some(idx),
-                    });
-                    // BNE.N +3 (skip overflow check if dividend != INT_MIN)
-                    // Skip 8 bytes: CMN.W(4) + BNE(2) + UDF(2)
-                    // Branch target = PC + (imm8 << 1) = B+4 + 6 = B+10 (SDIV)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset {
-                            cond: Condition::NE,
-                            offset: 3,
-                        },
-                        source_line: Some(idx),
-                    });
-                    // CMN divisor, #1 (check if divisor == -1: -1 + 1 = 0 sets Z flag)
-                    // CMN.W is 4 bytes
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Cmn {
-                            rn: divisor,
-                            op2: Operand2::Imm(1),
-                        },
-                        source_line: Some(idx),
-                    });
-                    // BNE.N +0 (skip UDF if divisor != -1)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset {
-                            cond: Condition::NE,
-                            offset: 0,
-                        },
-                        source_line: Some(idx),
-                    });
-                    // UDF #1 (triggers trap on overflow)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Udf { imm: 1 },
-                        source_line: Some(idx),
-                    });
+                            // Load INT_MIN into tmp: MOVW tmp, #0; MOVT tmp, #0x8000
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Movw { rd: tmp, imm16: 0 },
+                                source_line: Some(idx),
+                            });
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Movt {
+                                    rd: tmp,
+                                    imm16: 0x8000,
+                                },
+                                source_line: Some(idx),
+                            });
+                            // CMP dividend, tmp (check if dividend == INT_MIN)
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Cmp {
+                                    rn: dividend,
+                                    op2: Operand2::Reg(tmp),
+                                },
+                                source_line: Some(idx),
+                            });
+                            // BNE.N +3 (skip overflow check if dividend != INT_MIN)
+                            // Skip 8 bytes: CMN.W(4) + BNE(2) + UDF(2)
+                            // Branch target = PC + (imm8 << 1) = B+4 + 6 = B+10 (SDIV)
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::BCondOffset {
+                                    cond: Condition::NE,
+                                    offset: 3,
+                                },
+                                source_line: Some(idx),
+                            });
+                            // CMN divisor, #1 (divisor == -1: -1 + 1 = 0 sets Z)
+                            // CMN.W is 4 bytes
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Cmn {
+                                    rn: divisor,
+                                    op2: Operand2::Imm(1),
+                                },
+                                source_line: Some(idx),
+                            });
+                            // BNE.N +0 (skip UDF if divisor != -1)
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::BCondOffset {
+                                    cond: Condition::NE,
+                                    offset: 0,
+                                },
+                                source_line: Some(idx),
+                            });
+                            // UDF #1 (triggers trap on overflow)
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Udf { imm: 1 },
+                                source_line: Some(idx),
+                            });
+                        }
 
-                    // SDIV dst, dividend, divisor (safe to divide now)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Sdiv {
-                            rd: dst,
-                            rn: dividend,
-                            rm: divisor,
-                        },
-                        source_line: Some(idx),
-                    });
-                    stack.push(StackVal::i32(dst));
+                        // SDIV dst, dividend, divisor (safe to divide now)
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Sdiv {
+                                rd: dst,
+                                rn: dividend,
+                                rm: divisor,
+                            },
+                            source_line: Some(idx),
+                        });
+                        stack.push(StackVal::i32(dst));
+                    }
                 }
 
                 I32RemU => {
+                    // #209 Opt 1: drop the dead div-by-zero guard for a nonzero
+                    // constant divisor; fold `x % 1` to 0.
+                    let cdiv = const_divisor(wasm_ops, idx);
                     let divisor = pop_operand(
                         &mut stack,
                         &mut next_temp,
@@ -5221,51 +5316,70 @@ impl InstructionSelector {
                         alloc_temp_safe(&mut next_temp, &stack, &live_params)?
                     };
 
-                    // Trap check: divide by zero
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp {
-                            rn: divisor,
-                            op2: Operand2::Imm(0),
-                        },
-                        source_line: Some(idx),
-                    });
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset {
-                            cond: Condition::NE,
-                            offset: 0,
-                        },
-                        source_line: Some(idx),
-                    });
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Udf { imm: 0 },
-                        source_line: Some(idx),
-                    });
+                    if cdiv == Some(1) {
+                        // x % 1 == 0
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Mov {
+                                rd: dst,
+                                op2: Operand2::Imm(0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        stack.push(StackVal::i32(dst));
+                    } else {
+                        // Trap check: divide by zero (dead for a nonzero const).
+                        let needs_guard = cdiv.is_none_or(|c| c == 0);
+                        if needs_guard {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Cmp {
+                                    rn: divisor,
+                                    op2: Operand2::Imm(0),
+                                },
+                                source_line: Some(idx),
+                            });
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::BCondOffset {
+                                    cond: Condition::NE,
+                                    offset: 0,
+                                },
+                                source_line: Some(idx),
+                            });
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Udf { imm: 0 },
+                                source_line: Some(idx),
+                            });
+                        }
 
-                    // Remainder: dst = dividend - (dividend / divisor) * divisor
-                    // quotient = UDIV tmp, dividend, divisor
-                    let tmp = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Udiv {
-                            rd: tmp,
-                            rn: dividend,
-                            rm: divisor,
-                        },
-                        source_line: Some(idx),
-                    });
-                    // MLS dst, tmp, divisor, dividend  (dst = dividend - tmp * divisor)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Mls {
-                            rd: dst,
-                            rn: tmp,
-                            rm: divisor,
-                            ra: dividend,
-                        },
-                        source_line: Some(idx),
-                    });
-                    stack.push(StackVal::i32(dst));
+                        // Remainder: dst = dividend - (dividend / divisor) * divisor
+                        // quotient = UDIV tmp, dividend, divisor
+                        let tmp = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Udiv {
+                                rd: tmp,
+                                rn: dividend,
+                                rm: divisor,
+                            },
+                            source_line: Some(idx),
+                        });
+                        // MLS dst, tmp, divisor, dividend (dst = dividend - tmp*divisor)
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Mls {
+                                rd: dst,
+                                rn: tmp,
+                                rm: divisor,
+                                ra: dividend,
+                            },
+                            source_line: Some(idx),
+                        });
+                        stack.push(StackVal::i32(dst));
+                    }
                 }
 
                 I32RemS => {
+                    // #209 Opt 1: drop the dead div-by-zero guard for a nonzero
+                    // constant divisor; fold `x % 1` to 0. (`x % -1 == 0` is left
+                    // to SDIV+MLS, which already yields 0 for all dividends.)
+                    let cdiv = const_divisor(wasm_ops, idx);
                     let divisor = pop_operand(
                         &mut stack,
                         &mut next_temp,
@@ -5288,46 +5402,62 @@ impl InstructionSelector {
                         alloc_temp_safe(&mut next_temp, &stack, &live_params)?
                     };
 
-                    // Trap check: divide by zero (rem_s doesn't trap on INT_MIN % -1)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp {
-                            rn: divisor,
-                            op2: Operand2::Imm(0),
-                        },
-                        source_line: Some(idx),
-                    });
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::BCondOffset {
-                            cond: Condition::NE,
-                            offset: 0,
-                        },
-                        source_line: Some(idx),
-                    });
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Udf { imm: 0 },
-                        source_line: Some(idx),
-                    });
+                    if cdiv == Some(1) {
+                        // x % 1 == 0
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Mov {
+                                rd: dst,
+                                op2: Operand2::Imm(0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        stack.push(StackVal::i32(dst));
+                    } else {
+                        // Trap check: divide by zero (rem_s doesn't trap on
+                        // INT_MIN % -1). Dead for a nonzero constant divisor.
+                        let needs_guard = cdiv.is_none_or(|c| c == 0);
+                        if needs_guard {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Cmp {
+                                    rn: divisor,
+                                    op2: Operand2::Imm(0),
+                                },
+                                source_line: Some(idx),
+                            });
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::BCondOffset {
+                                    cond: Condition::NE,
+                                    offset: 0,
+                                },
+                                source_line: Some(idx),
+                            });
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Udf { imm: 0 },
+                                source_line: Some(idx),
+                            });
+                        }
 
-                    // Signed remainder: dst = dividend - (dividend / divisor) * divisor
-                    let tmp = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Sdiv {
-                            rd: tmp,
-                            rn: dividend,
-                            rm: divisor,
-                        },
-                        source_line: Some(idx),
-                    });
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Mls {
-                            rd: dst,
-                            rn: tmp,
-                            rm: divisor,
-                            ra: dividend,
-                        },
-                        source_line: Some(idx),
-                    });
-                    stack.push(StackVal::i32(dst));
+                        // Signed remainder: dst = dividend - (dividend/divisor)*divisor
+                        let tmp = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Sdiv {
+                                rd: tmp,
+                                rn: dividend,
+                                rm: divisor,
+                            },
+                            source_line: Some(idx),
+                        });
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Mls {
+                                rd: dst,
+                                rn: tmp,
+                                rm: divisor,
+                                ra: dividend,
+                            },
+                            source_line: Some(idx),
+                        });
+                        stack.push(StackVal::i32(dst));
+                    }
                 }
 
                 // Memory operations need stack-aware handling
@@ -12953,6 +13083,187 @@ mod tests {
         assert!(
             has_overflow_trap,
             "I32DivS must have UDF #1 for overflow trap"
+        );
+    }
+
+    // =========================================================================
+    // #209 Opt 1: constant-divisor guard elision + strength reduction.
+    // The div-by-zero / overflow traps are dead when the divisor is a known
+    // nonzero constant; power-of-two and by-1 divisors lower without UDIV.
+    // =========================================================================
+
+    /// A nonzero constant divisor makes the div-by-zero trap dead: no CMP/UDF,
+    /// but still a real UDIV (non-power-of-two, so no shift fold).
+    #[test]
+    fn test_209_const_divisor_elides_dz_guard() {
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[
+                    WasmOp::I32Const(1000),
+                    WasmOp::I32Const(500),
+                    WasmOp::I32DivU,
+                ],
+                0,
+            )
+            .unwrap();
+        assert!(
+            !instrs.iter().any(|i| matches!(&i.op, ArmOp::Udf { .. })),
+            "nonzero const divisor must drop the div-by-zero UDF guard"
+        );
+        assert!(
+            !instrs.iter().any(|i| matches!(&i.op, ArmOp::Cmp { .. })),
+            "nonzero const divisor must drop the CMP #0 guard"
+        );
+        assert!(
+            instrs.iter().any(|i| matches!(&i.op, ArmOp::Udiv { .. })),
+            "non-pow2 divisor still divides via UDIV"
+        );
+    }
+
+    /// A power-of-two unsigned divisor lowers to LSR — no UDIV, no guard.
+    #[test]
+    fn test_209_pow2_divu_uses_lsr() {
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[WasmOp::I32Const(1000), WasmOp::I32Const(8), WasmOp::I32DivU],
+                0,
+            )
+            .unwrap();
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Lsr { shift: 3, .. })),
+            "x / 8 must lower to LSR #3"
+        );
+        assert!(
+            !instrs.iter().any(|i| matches!(&i.op, ArmOp::Udiv { .. })),
+            "pow2 divisor must not emit UDIV"
+        );
+        assert!(
+            !instrs.iter().any(|i| matches!(&i.op, ArmOp::Udf { .. })),
+            "pow2 divisor must not emit a trap guard"
+        );
+    }
+
+    /// `0x8000_0000` is 2^31 when the divisor is read unsigned: LSR #31.
+    #[test]
+    fn test_209_pow2_divu_high_bit_divisor() {
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[
+                    WasmOp::I32Const(7),
+                    WasmOp::I32Const(i32::MIN),
+                    WasmOp::I32DivU,
+                ],
+                0,
+            )
+            .unwrap();
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Lsr { shift: 31, .. })),
+            "x / 2^31 must lower to LSR #31"
+        );
+    }
+
+    /// Division by 1 is the identity — a MOV, no shift, no UDIV.
+    #[test]
+    fn test_209_divu_by_one_is_identity() {
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[WasmOp::I32Const(1000), WasmOp::I32Const(1), WasmOp::I32DivU],
+                0,
+            )
+            .unwrap();
+        assert!(
+            instrs.iter().any(|i| matches!(&i.op, ArmOp::Mov { .. })),
+            "x / 1 must be a MOV identity"
+        );
+        assert!(
+            !instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Udiv { .. } | ArmOp::Lsr { .. })),
+            "x / 1 must not emit UDIV or LSR"
+        );
+    }
+
+    /// Remainder by 1 is always 0 — MOV #0, no UDIV/MLS.
+    #[test]
+    fn test_209_remu_by_one_is_zero() {
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[WasmOp::I32Const(1000), WasmOp::I32Const(1), WasmOp::I32RemU],
+                0,
+            )
+            .unwrap();
+        assert!(
+            instrs.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Mov {
+                    op2: Operand2::Imm(0),
+                    ..
+                }
+            )),
+            "x % 1 must be MOV #0"
+        );
+        assert!(
+            !instrs.iter().any(|i| matches!(&i.op, ArmOp::Udiv { .. })),
+            "x % 1 must not emit UDIV"
+        );
+    }
+
+    /// A nonzero, non-`-1` constant divisor makes BOTH signed guards dead: no
+    /// div-by-zero UDF, no INT_MIN/-1 overflow check — just SDIV.
+    #[test]
+    fn test_209_divs_const_drops_both_guards() {
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[WasmOp::I32Const(1000), WasmOp::I32Const(5), WasmOp::I32DivS],
+                0,
+            )
+            .unwrap();
+        assert!(
+            !instrs.iter().any(|i| matches!(&i.op, ArmOp::Udf { .. })),
+            "const divisor != 0,-1 must drop both div-by-zero and overflow UDFs"
+        );
+        assert!(
+            !instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Movt { imm16: 0x8000, .. })),
+            "no INT_MIN materialization when overflow is statically impossible"
+        );
+        assert!(
+            !instrs.iter().any(|i| matches!(&i.op, ArmOp::Cmn { .. })),
+            "no CMN #1 (-1 check) when divisor is a known non-(-1) constant"
+        );
+        assert!(
+            instrs.iter().any(|i| matches!(&i.op, ArmOp::Sdiv { .. })),
+            "still divides via SDIV"
+        );
+    }
+
+    /// Guard elision must NOT fire for a constant-zero divisor: the div-by-zero
+    /// trap stays live (the program must trap at runtime).
+    #[test]
+    fn test_209_zero_const_divisor_keeps_guard() {
+        let mut selector = fresh_selector();
+        let instrs = selector
+            .select_with_stack(
+                &[WasmOp::I32Const(42), WasmOp::I32Const(0), WasmOp::I32DivU],
+                0,
+            )
+            .unwrap();
+        assert!(
+            instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Udf { imm: 0 })),
+            "const-zero divisor must keep the div-by-zero trap"
         );
     }
 
