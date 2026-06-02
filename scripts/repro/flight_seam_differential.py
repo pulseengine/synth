@@ -40,8 +40,11 @@ from unicorn.arm_const import (
     UC_ARM_REG_SP,
 )
 
-WASM = "scripts/repro/flight_seam.wasm"
+# argv: [elf] [wasm]. Defaults to the inlined (#212) repro. The flat (#215)
+# fully-dissolved variant has no internal call; the harness auto-detects whether
+# `flight_algo` contains a `bl` and only hooks filter_step when it does.
 ELF = sys.argv[1] if len(sys.argv) > 1 else "/tmp/fs.elf"
+WASM = sys.argv[2] if len(sys.argv) > 2 else "scripts/repro/flight_seam.wasm"
 SYNTH = "./target/debug/synth"
 
 ST_OFF, S_OFF = 0x1000, 0x2000
@@ -82,8 +85,10 @@ def main():
     code, base = text.data(), text["sh_addr"]
     fa, fs = syms["func_0"], syms["func_1"]
     md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
-    bl_addr = next(i.address for i in md.disasm(bytes(code[fa:syms["func_1"]]), fa)
-                   if i.mnemonic == "bl")
+    # Inlined (#212) variant has an internal `bl filter_step`; the flat (#215)
+    # fully-dissolved variant has none. Hook the BL only when present.
+    bl_addr = next((i.address for i in md.disasm(bytes(code[fa:syms["func_1"]]), fa)
+                    if i.mnemonic == "bl"), None)
 
     CODE, LIN, STK = 0x10000, 0x40000, 0x90000
     mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
@@ -100,11 +105,12 @@ def main():
     RET = 0x9F00 | 1
     mu.reg_write(UC_ARM_REG_LR, RET)
 
-    def hook(mu, a, sz, u):
-        if a == CODE + (bl_addr - base):   # redirect the unresolved BL -> filter_step
-            mu.reg_write(UC_ARM_REG_LR, (a + 4) | 1)
-            mu.reg_write(UC_ARM_REG_PC, (CODE + (fs - base)) | 1)
-    mu.hook_add(UC_HOOK_CODE, hook)
+    if bl_addr is not None:
+        def hook(mu, a, sz, u):
+            if a == CODE + (bl_addr - base):   # redirect unresolved BL -> filter_step
+                mu.reg_write(UC_ARM_REG_LR, (a + 4) | 1)
+                mu.reg_write(UC_ARM_REG_PC, (CODE + (fs - base)) | 1)
+        mu.hook_add(UC_HOOK_CODE, hook)
     try:
         mu.emu_start((CODE + fa - base) | 1, RET & ~1, count=2000)
         got = mu.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF

@@ -136,6 +136,11 @@ fn interpret_single(state: &mut ArmState, instr: &ArmInstruction) {
             let b = state.get(rm);
             state.set(*rd, a.wrapping_mul(b));
         }
+        ArmOp::Umull { rdlo, rdhi, rn, rm } => {
+            let prod = state.get(rn) as u64 * state.get(rm) as u64;
+            state.set(*rdlo, prod as u32);
+            state.set(*rdhi, (prod >> 32) as u32);
+        }
         ArmOp::Sdiv { rd, rn, rm } => {
             let a = state.get(rn) as i32;
             let b = state.get(rm) as i32;
@@ -170,6 +175,15 @@ fn interpret_single(state: &mut ArmState, instr: &ArmInstruction) {
             let a = state.get(rn);
             let b = state.resolve_operand2(op2);
             state.set(*rd, a ^ b);
+        }
+        ArmOp::Lsl { rd, rn, shift } => {
+            state.set(*rd, state.get(rn).wrapping_shl(*shift));
+        }
+        ArmOp::Lsr { rd, rn, shift } => {
+            state.set(*rd, state.get(rn).wrapping_shr(*shift));
+        }
+        ArmOp::Asr { rd, rn, shift } => {
+            state.set(*rd, (state.get(rn) as i32).wrapping_shr(*shift) as u32);
         }
         ArmOp::LslReg { rd, rn, rm } => {
             let val = state.get(rn);

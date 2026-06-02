@@ -221,6 +221,15 @@ impl ArmSemantics {
                 state.set_reg(rd, result);
             }
 
+            ArmOp::Umull { rdlo, rdhi, rn, rm } => {
+                // {rdhi:rdlo} = zext64(rn) * zext64(rm); rdhi = high 32 bits.
+                let rn64 = state.get_reg(rn).zero_ext(32);
+                let rm64 = state.get_reg(rm).zero_ext(32);
+                let prod = rn64.bvmul(&rm64);
+                state.set_reg(rdlo, prod.extract(31, 0));
+                state.set_reg(rdhi, prod.extract(63, 32));
+            }
+
             ArmOp::Sdiv { rd, rn, rm } => {
                 let rn_val = state.get_reg(rn).clone();
                 let rm_val = state.get_reg(rm).clone();

@@ -7,6 +7,9 @@
   ;;   signed -> both guards elided when divisor != 0,-1.
   (func (export "divu_pow2")   (param i32) (result i32) local.get 0 i32.const 8          i32.div_u)
   (func (export "divu_500")    (param i32) (result i32) local.get 0 i32.const 500        i32.div_u)
+  (func (export "divu_7")      (param i32) (result i32) local.get 0 i32.const 7          i32.div_u) ;; a=true,s=3
+  (func (export "divu_641")    (param i32) (result i32) local.get 0 i32.const 641        i32.div_u) ;; a=false,s=0
+  (func (export "divu_smax")   (param i32) (result i32) local.get 0 i32.const 0x7FFFFFFF i32.div_u) ;; a=true,s=31
   (func (export "divu_one")    (param i32) (result i32) local.get 0 i32.const 1          i32.div_u)
   (func (export "divu_2e31")   (param i32) (result i32) local.get 0 i32.const 0x80000000 i32.div_u)
   (func (export "remu_500")    (param i32) (result i32) local.get 0 i32.const 500        i32.rem_u)

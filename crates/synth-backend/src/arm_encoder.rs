@@ -202,6 +202,16 @@ impl ArmEncoder {
                 0xE0000090 | (rd_bits << 16) | (rn_bits << 8) | rm_bits
             }
 
+            ArmOp::Umull { rdlo, rdhi, rn, rm } => {
+                let rdlo_bits = reg_to_bits(rdlo);
+                let rdhi_bits = reg_to_bits(rdhi);
+                let rn_bits = reg_to_bits(rn);
+                let rm_bits = reg_to_bits(rm);
+
+                // UMULL encoding: cond(4) | 0000 1000 | RdHi(4) | RdLo(4) | Rm(4) | 1001 | Rn(4)
+                0xE0800090 | (rdhi_bits << 16) | (rdlo_bits << 12) | (rm_bits << 8) | rn_bits
+            }
+
             ArmOp::Sdiv { rd, rn, rm } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
@@ -1786,6 +1796,26 @@ impl ArmEncoder {
                 // Thumb-2 UDIV: FBB0 F0F0 | Rn<<16 | Rd<<8 | Rm
                 let hw1: u16 = (0xFBB0 | rn_bits) as u16;
                 let hw2: u16 = (0xF0F0 | (rd_bits << 8) | rm_bits) as u16;
+
+                let mut bytes = hw1.to_le_bytes().to_vec();
+                bytes.extend_from_slice(&hw2.to_le_bytes());
+                encoding_contracts::verify_thumb32(&bytes);
+                Ok(bytes)
+            }
+
+            ArmOp::Umull { rdlo, rdhi, rn, rm } => {
+                let rdlo_bits = reg_to_bits(rdlo);
+                let rdhi_bits = reg_to_bits(rdhi);
+                let rn_bits = reg_to_bits(rn);
+                let rm_bits = reg_to_bits(rm);
+                reg_bits_checked(rdlo_bits)?;
+                reg_bits_checked(rdhi_bits)?;
+                reg_bits_checked(rn_bits)?;
+                reg_bits_checked(rm_bits)?;
+
+                // Thumb-2 UMULL: 1111 1011 1010 Rn | RdLo RdHi 0000 Rm
+                let hw1: u16 = (0xFBA0 | rn_bits) as u16;
+                let hw2: u16 = ((rdlo_bits << 12) | (rdhi_bits << 8) | rm_bits) as u16;
 
                 let mut bytes = hw1.to_le_bytes().to_vec();
                 bytes.extend_from_slice(&hw2.to_le_bytes());
@@ -7045,6 +7075,34 @@ mod tests {
         assert_eq!(lo.len(), 6, "ITE(2) + MOVS(2) + MOVS(2): {lo:02x?}");
         assert_eq!(lo[2..4], [0x01, 0x20], "then = MOVS R0,#1");
         assert_eq!(lo[4..6], [0x00, 0x20], "else = MOVS R0,#0");
+    }
+
+    /// #209 Opt 1b: UMULL RdLo, RdHi, Rn, Rm encodes correctly on both ISAs.
+    /// Thumb-2 T1: 1111 1011 1010 Rn | RdLo RdHi 0000 Rm.
+    /// A32:        cond 0000 1000 RdHi RdLo Rm 1001 Rn.
+    #[test]
+    fn test_encode_umull_209b() {
+        use synth_synthesis::{ArmOp, Reg};
+        let op = ArmOp::Umull {
+            rdlo: Reg::R4,
+            rdhi: Reg::R5,
+            rn: Reg::R0,
+            rm: Reg::R3,
+        };
+        // Thumb-2: hw1 = 0xFBA0 | 0 = 0xFBA0; hw2 = (4<<12)|(5<<8)|3 = 0x4503.
+        let t = ArmEncoder::new_thumb2().encode(&op).unwrap();
+        assert_eq!(
+            t,
+            vec![0xA0, 0xFB, 0x03, 0x45],
+            "umull r4,r5,r0,r3 (T2): {t:02x?}"
+        );
+        // A32: 0xE0800090 | (5<<16) | (4<<12) | (3<<8) | 0 = 0xE0854390.
+        let a = ArmEncoder::new_arm32().encode(&op).unwrap();
+        assert_eq!(
+            a,
+            0xE085_4390u32.to_le_bytes().to_vec(),
+            "umull (A32): {a:02x?}"
+        );
     }
 
     /// #206 regression: the ARM32 (A32) `Ldr`/`Str` encoders fed `addr` through

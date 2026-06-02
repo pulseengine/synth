@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.19] - 2026-06-02
+
+**Reciprocal-multiply for constant unsigned division (#209 Opt 1b).** A
+non-power-of-two constant divisor in `i32.div_u` no longer emits `UDIV` (≈12
+cycles on Cortex-M4) — it lowers to the Granlund–Montgomery magic-number
+sequence: `UMULL` (the new ARM op) to take the high word of `dividend × magic`,
+then an `a`-selected shift (≈3–5 cycles). This is the dominant `control_step`
+win gale's silicon stats pointed to (#210): the binning divides `/500 /5 /80
+/1000` now multiply instead of divide.
+
+For `x / 500`:
+```
+movw r3,#0x4dd3; movt r3,#0x1062    ; magic = 0x10624DD3
+umull r4,r5,r0,r3                   ; r5 = umulhi(magic, x)
+lsrs r2,r5,#5                       ; q = r5 >> 5
+```
+versus the previous `movw r1,#500; udiv r2,r0,r1`.
+
+New `ArmOp::Umull { rdlo, rdhi, rn, rm }` with Thumb-2 (`0xFBA0`) and A32
+(`0xE0800090`) encodings, an SMT-bitvector semantics model in synth-verify, and
+the test ARM interpreter taught `UMULL` + the immediate `LSL/LSR/ASR` forms. The
+magic numbers are computed by `magicu()` (Hacker's Delight §10-9), covering both
+the `a` (add-indicator) and `s == 0` cases.
+
+Power-of-two divisors still use `LSR`, `/1` a `MOV`, signed division and `rem_u`
+keep their Opt 1a guard-elided forms (signed reciprocal-multiply and the `rem`
+variant are deferred). Validated against the wasmtime differential oracle:
+**338/338** across 13 lowered forms × 26 edge-case inputs — now including `/7`
+(`a = true`), `/641` (`s = 0`), and `/0x7FFFFFFF` (`a = true, s = 31`) to
+exercise every codegen branch. `magicu` is separately checked against brute-force
+`n / d` for a spread of divisors × dividends; the `UMULL` encoding is byte-checked
+on both ISAs; encoder fuzz stayed total (262k execs, no panic).
+
+Falsification: this release is wrong if any `i32.div_u` by a constant produces a
+result differing from the WebAssembly spec (wasmtime) — in particular if a magic
+number or the `a`/`s` selection is off for any dividend.
+
+Also adds the fully-dissolved (flat, no internal call) `flight_algo` from #215 as
+a second differential fixture (`scripts/repro/flight_seam_flat.{wasm,wat}`); the
+harness auto-detects the internal `bl` so it guards both the inlined (#212) and
+flat (#215) lowering shapes. #215 was the same R12/IP scratch-clobber as #212 —
+Opt 1a's guard elision (v0.11.17) shifted register allocation in the larger
+function onto R12, exposing the latent bug; the #212 reserve (v0.11.18) already
+fixes it (verified on the v0.11.18 tag: `0x07FDF307`).
+
 ## [0.11.18] - 2026-06-02
 
 **Reserve R12/IP as encoder scratch — fixes the inlined-callee-after-opaque-call
