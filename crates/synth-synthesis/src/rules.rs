@@ -103,6 +103,16 @@ pub enum ArmOp {
         rn: Reg,
         rm: Reg,
     },
+    /// Unsigned long multiply: `{rdhi:rdlo} = rn * rm` (64-bit product of two
+    /// 32-bit operands). `rdhi` holds the high 32 bits (`umulhi`), used by the
+    /// constant-divisor reciprocal-multiply (#209 Opt 1b). `rdlo`/`rdhi` must be
+    /// distinct registers.
+    Umull {
+        rdlo: Reg,
+        rdhi: Reg,
+        rn: Reg,
+        rm: Reg,
+    },
     Sdiv {
         rd: Reg,
         rn: Reg,

@@ -244,6 +244,56 @@ fn pow2_shift_u(c: i32) -> Option<u32> {
     }
 }
 
+/// The unsigned reciprocal-multiply magic numbers for division by an invariant
+/// `d` (Granlund & Montgomery, "Division by Invariant Integers using
+/// Multiplication"; Hacker's Delight §10-9 `magicu`). Returns `(m, s, a)` such
+/// that for every `u32` n, `n / d` equals — writing `hi = umulhi(m, n) =
+/// ((m as u64 * n as u64) >> 32) as u32`:
+///   * `a == false`: `hi >> s`
+///   * `a == true` : `(((n - hi) >> 1) + hi) >> (s - 1)`
+///
+/// Only meaningful for a non-power-of-two `d >= 3` (powers of two — including 1
+/// and 2 — lower to a plain shift, and are handled before this is called).
+fn magicu(d: u32) -> (u32, u32, bool) {
+    debug_assert!(d >= 3 && !d.is_power_of_two());
+    let mut a = false;
+    // nc = largest value with nc % d == d-1 (= 2^32 - 1 - rem(2^32, d)).
+    let nc = u32::MAX - (0u32.wrapping_sub(d)) % d;
+    let mut p: u32 = 31;
+    let mut q1 = 0x8000_0000u32 / nc;
+    let mut r1 = 0x8000_0000u32 - q1.wrapping_mul(nc);
+    let mut q2 = 0x7FFF_FFFFu32 / d;
+    let mut r2 = 0x7FFF_FFFFu32 - q2.wrapping_mul(d);
+    loop {
+        p += 1;
+        if r1 >= nc - r1 {
+            q1 = q1.wrapping_mul(2).wrapping_add(1);
+            r1 = r1.wrapping_mul(2).wrapping_sub(nc);
+        } else {
+            q1 = q1.wrapping_mul(2);
+            r1 = r1.wrapping_mul(2);
+        }
+        if r2 + 1 >= d - r2 {
+            if q2 >= 0x7FFF_FFFF {
+                a = true;
+            }
+            q2 = q2.wrapping_mul(2).wrapping_add(1);
+            r2 = r2.wrapping_mul(2).wrapping_add(1).wrapping_sub(d);
+        } else {
+            if q2 >= 0x8000_0000 {
+                a = true;
+            }
+            q2 = q2.wrapping_mul(2);
+            r2 = r2.wrapping_mul(2).wrapping_add(1);
+        }
+        let delta = d - 1 - r2;
+        if !(p < 64 && (q1 < delta || (q1 == delta && r1 == 0))) {
+            break;
+        }
+    }
+    (q2.wrapping_add(1), p - 32, a)
+}
+
 fn stack_live_regs(stack: &[StackVal]) -> Vec<Reg> {
     let mut live: Vec<Reg> = Vec::with_capacity(stack.len() * 2);
     for v in stack {
@@ -5118,6 +5168,114 @@ impl InstructionSelector {
                             },
                             source_line: Some(idx),
                         });
+                    } else if let Some(d) = cdiv
+                        .map(|c| c as u32)
+                        .filter(|&u| u >= 3 && !u.is_power_of_two())
+                    {
+                        // #209 Opt 1b: non-power-of-two constant divisor →
+                        // reciprocal-multiply (Granlund–Montgomery magic number).
+                        // No UDIV, no trap guard. Computes the high word of
+                        // `dividend * m` via UMULL, then an `a`-selected shift.
+                        let (m, s, a) = magicu(d);
+                        let mut reserved: Vec<Reg> = live_params.clone();
+                        reserved.push(dividend);
+                        reserved.push(dst);
+                        let rmag = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
+                        reserved.push(rmag);
+                        let rlo = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
+                        reserved.push(rlo);
+                        let rhi = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
+
+                        // Materialize the magic constant m into rmag.
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Movw {
+                                rd: rmag,
+                                imm16: (m & 0xFFFF) as u16,
+                            },
+                            source_line: Some(idx),
+                        });
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Movt {
+                                rd: rmag,
+                                imm16: ((m >> 16) & 0xFFFF) as u16,
+                            },
+                            source_line: Some(idx),
+                        });
+                        // UMULL rlo, rhi, dividend, rmag → rhi = umulhi(m, dividend)
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Umull {
+                                rdlo: rlo,
+                                rdhi: rhi,
+                                rn: dividend,
+                                rm: rmag,
+                            },
+                            source_line: Some(idx),
+                        });
+                        if a {
+                            // q = (((n - hi) >> 1) + hi) >> (s - 1); reuse rlo as t.
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Sub {
+                                    rd: rlo,
+                                    rn: dividend,
+                                    op2: Operand2::Reg(rhi),
+                                },
+                                source_line: Some(idx),
+                            });
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Lsr {
+                                    rd: rlo,
+                                    rn: rlo,
+                                    shift: 1,
+                                },
+                                source_line: Some(idx),
+                            });
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Add {
+                                    rd: rlo,
+                                    rn: rlo,
+                                    op2: Operand2::Reg(rhi),
+                                },
+                                source_line: Some(idx),
+                            });
+                            // s >= 1 whenever a is set; s == 1 → final shift is 0.
+                            if s == 1 {
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Mov {
+                                        rd: dst,
+                                        op2: Operand2::Reg(rlo),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                            } else {
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Lsr {
+                                        rd: dst,
+                                        rn: rlo,
+                                        shift: s - 1,
+                                    },
+                                    source_line: Some(idx),
+                                });
+                            }
+                        } else if s == 0 {
+                            // q = hi (no shift). LSR #0 is invalid, so MOV.
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Mov {
+                                    rd: dst,
+                                    op2: Operand2::Reg(rhi),
+                                },
+                                source_line: Some(idx),
+                            });
+                        } else {
+                            // q = hi >> s
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Lsr {
+                                    rd: dst,
+                                    rn: rhi,
+                                    shift: s,
+                                },
+                                source_line: Some(idx),
+                            });
+                        }
                     } else {
                         // A nonzero constant divisor can never trap; only emit
                         // the div-by-zero guard when the divisor is unknown or 0.
@@ -13157,10 +13315,10 @@ mod tests {
     // nonzero constant; power-of-two and by-1 divisors lower without UDIV.
     // =========================================================================
 
-    /// A nonzero constant divisor makes the div-by-zero trap dead: no CMP/UDF,
-    /// but still a real UDIV (non-power-of-two, so no shift fold).
+    /// A non-power-of-two constant divisor lowers to a reciprocal-multiply
+    /// (#209 Opt 1b): no trap guard, no UDIV — a UMULL plus a shift.
     #[test]
-    fn test_209_const_divisor_elides_dz_guard() {
+    fn test_209_const_divisor_uses_reciprocal_multiply() {
         let mut selector = fresh_selector();
         let instrs = selector
             .select_with_stack(
@@ -13181,8 +13339,12 @@ mod tests {
             "nonzero const divisor must drop the CMP #0 guard"
         );
         assert!(
-            instrs.iter().any(|i| matches!(&i.op, ArmOp::Udiv { .. })),
-            "non-pow2 divisor still divides via UDIV"
+            !instrs.iter().any(|i| matches!(&i.op, ArmOp::Udiv { .. })),
+            "non-pow2 const divisor must NOT use UDIV (reciprocal-multiply)"
+        );
+        assert!(
+            instrs.iter().any(|i| matches!(&i.op, ArmOp::Umull { .. })),
+            "non-pow2 const divisor divides via UMULL high-word"
         );
     }
 
@@ -13311,6 +13473,77 @@ mod tests {
             instrs.iter().any(|i| matches!(&i.op, ArmOp::Sdiv { .. })),
             "still divides via SDIV"
         );
+    }
+
+    /// The magic-number formula must reproduce `n / d` for every `n` (#209
+    /// Opt 1b). Models the exact ARM sequence: `hi = umulhi(m, n)` then the
+    /// `a`-selected shift/add. Checks gale's divisors + a spread, against an
+    /// exhaustive set of edge-case dividends.
+    #[test]
+    fn test_209b_magicu_matches_division() {
+        fn umulhi(m: u32, n: u32) -> u32 {
+            ((m as u64 * n as u64) >> 32) as u32
+        }
+        fn recip(d: u32, n: u32) -> u32 {
+            let (m, s, a) = magicu(d);
+            let hi = umulhi(m, n);
+            if a {
+                (((n - hi) >> 1) + hi) >> (s - 1)
+            } else if s == 0 {
+                hi
+            } else {
+                hi >> s
+            }
+        }
+        let divisors = [
+            3,
+            5,
+            6,
+            7,
+            10,
+            80,
+            100,
+            500,
+            1000,
+            1000000,
+            0x7FFF_FFFF,
+            0xFFFF_FFFF,
+            0xFFFF_FFFE,
+        ];
+        let mut inputs: Vec<u32> = vec![
+            0,
+            1,
+            2,
+            3,
+            499,
+            500,
+            501,
+            999,
+            1000,
+            1001,
+            79,
+            80,
+            81,
+            0x7FFF_FFFF,
+            0x8000_0000,
+            0x8000_0001,
+            0xFFFF_FFFF,
+            0xFFFF_FFFE,
+            0x1234_5678,
+            0xABCD_EF01,
+            0xDEAD_BEEF,
+            1_000_000,
+            2_000_003,
+        ];
+        // a deterministic spread across the range
+        for k in 0..64u32 {
+            inputs.push(k.wrapping_mul(0x0419_1A2B).wrapping_add(0x1357));
+        }
+        for &d in &divisors {
+            for &n in &inputs {
+                assert_eq!(recip(d, n), n / d, "magicu wrong for n=0x{n:08X} / d={d}");
+            }
+        }
     }
 
     /// Guard elision must NOT fire for a constant-zero divisor: the div-by-zero

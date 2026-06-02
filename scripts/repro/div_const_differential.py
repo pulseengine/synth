@@ -35,16 +35,12 @@ SYNTH = "./target/debug/synth"
 
 # (wasm export, ELF symbol) — the relocatable build renames most exports func_N.
 PAIRS = [
-    ("divu_pow2", "func_0"),
-    ("divu_500", "func_1"),
-    ("divu_one", "func_2"),
-    ("divu_2e31", "func_3"),
-    ("remu_500", "remu_500"),
-    ("remu_one", "remu_one"),
-    ("divs_5", "func_6"),
-    ("divs_neg7", "func_7"),
-    ("rems_5", "rems_5"),
-    ("divs_one", "func_9"),
+    # wasm export names in div_const.wat definition order. The `--relocatable`
+    # ELF renames most exports to func_N, so we map positionally: the i-th wasm
+    # function corresponds to the i-th `.text` symbol sorted by address.
+    "divu_pow2", "divu_500", "divu_7", "divu_641", "divu_smax", "divu_one",
+    "divu_2e31", "remu_500", "remu_one", "divs_5", "divs_neg7", "rems_5",
+    "divs_one",
 ]
 
 INPUTS = [
@@ -65,11 +61,14 @@ def main():
     module = wasmtime.Module(engine, open(WAT).read())
     store = wasmtime.Store(engine)
     inst = wasmtime.Instance(store, module, [])
-    wt = {w: inst.exports(store)[w] for w, _ in PAIRS}
+    wt = {w: inst.exports(store)[w] for w in PAIRS}
 
     dis = subprocess.run([SYNTH, "disasm", ELF], capture_output=True, text=True).stdout
-    addr = {m.group(2): int(m.group(1), 16)
-            for m in re.finditer(r'^([0-9a-f]{8}) <(\w+)>:', dis, re.M)}
+    syms = sorted(int(m.group(1), 16)
+                  for m in re.finditer(r'^([0-9a-f]{8}) <(\w+)>:', dis, re.M))
+    # positional map: i-th wasm function -> i-th .text symbol by address
+    assert len(syms) == len(PAIRS), f"{len(syms)} ELF syms vs {len(PAIRS)} wasm funcs"
+    addr = dict(zip(PAIRS, syms))
     text = ELFFile(open(ELF, "rb")).get_section_by_name(".text")
     code, base = text.data(), text["sh_addr"]
 
@@ -89,8 +88,8 @@ def main():
         return ("OK", mu.reg_read(UC_ARM_REG_R0))
 
     fails = total = 0
-    for w, sym in PAIRS:
-        a = addr[sym]
+    for w in PAIRS:
+        a = addr[w]
         for x in INPUTS:
             total += 1
             gt = wt[w](store, as_i32(x)) & 0xFFFFFFFF
