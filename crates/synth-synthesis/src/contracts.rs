@@ -43,7 +43,7 @@ verus! {
 
 /// Spec: a register number is safe to allocate as a temporary.
 pub open spec fn spec_is_allocatable(reg_num: u8) -> bool {
-    reg_num <= 12
+    reg_num <= 8      // R0-R8 (R12/IP is the encoder scratch — see RESERVED_REGS)
     && reg_num != 9   // R9  = globals base
     && reg_num != 10  // R10 = memory size
     && reg_num != 11  // R11 = memory base
@@ -97,14 +97,16 @@ pub open spec fn spec_valid_trap_guard(sequence_len: usize) -> bool {
 /// - R9:  globals base pointer
 /// - R10: linear memory size (for bounds checks)
 /// - R11: linear memory base pointer
+/// - R12: IP — the encoder's scratch for indexed memory addressing and
+///   constant/VFP materialization (#212); a live operand here gets clobbered.
 pub mod regalloc {
     use super::Reg;
 
     /// Reserved registers that must NEVER be allocated as temporaries.
-    pub const RESERVED_REGS: [Reg; 3] = [Reg::R9, Reg::R10, Reg::R11];
+    pub const RESERVED_REGS: [Reg; 4] = [Reg::R9, Reg::R10, Reg::R11, Reg::R12];
 
     /// Maximum register index for general-purpose temporaries.
-    pub const MAX_GP_REG: u8 = 12;
+    pub const MAX_GP_REG: u8 = 8;
 
     /// Check that a register is safe to allocate as a temporary.
     #[inline]
@@ -237,7 +239,6 @@ mod tests {
         assert!(regalloc::is_allocatable(&Reg::R1));
         assert!(regalloc::is_allocatable(&Reg::R4));
         assert!(regalloc::is_allocatable(&Reg::R8));
-        assert!(regalloc::is_allocatable(&Reg::R12));
     }
 
     #[test]
@@ -245,6 +246,8 @@ mod tests {
         assert!(!regalloc::is_allocatable(&Reg::R9));
         assert!(!regalloc::is_allocatable(&Reg::R10));
         assert!(!regalloc::is_allocatable(&Reg::R11));
+        // #212: R12/IP is the encoder scratch — never an operand temp.
+        assert!(!regalloc::is_allocatable(&Reg::R12));
     }
 
     #[test]
