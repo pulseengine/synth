@@ -44,6 +44,14 @@ Falsification: this release is wrong if any `i32.div_u` by a constant produces a
 result differing from the WebAssembly spec (wasmtime) — in particular if a magic
 number or the `a`/`s` selection is off for any dividend.
 
+Also adds the fully-dissolved (flat, no internal call) `flight_algo` from #215 as
+a second differential fixture (`scripts/repro/flight_seam_flat.{wasm,wat}`); the
+harness auto-detects the internal `bl` so it guards both the inlined (#212) and
+flat (#215) lowering shapes. #215 was the same R12/IP scratch-clobber as #212 —
+Opt 1a's guard elision (v0.11.17) shifted register allocation in the larger
+function onto R12, exposing the latent bug; the #212 reserve (v0.11.18) already
+fixes it (verified on the v0.11.18 tag: `0x07FDF307`).
+
 ## [0.11.18] - 2026-06-02
 
 **Reserve R12/IP as encoder scratch — fixes the inlined-callee-after-opaque-call
