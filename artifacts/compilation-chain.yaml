@@ -267,7 +267,7 @@ artifacts:
       produce firmware.elf as output. This reduces the manual steps from
       three commands to one. Stage 1 (meld fuse) and stage 5 (deployment)
       remain external.
-    status: planned
+    status: proposed
     tags: [compilation-chain, cli, orchestration, pipeline]
     links:
       - type: derives-from
@@ -299,7 +299,7 @@ artifacts:
       (relocation entries for BL instructions targeting import symbols).
       The ELF shall be linkable by any ARM ELF-compatible linker without
       requiring synth-specific tooling.
-    status: planned
+    status: proposed
     tags: [compilation-chain, elf, relocatable, meld-sections]
     links:
       - type: derives-from

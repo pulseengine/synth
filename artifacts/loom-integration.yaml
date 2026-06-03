@@ -203,7 +203,7 @@ artifacts:
       Verify that the --loom flag produces the expected error when the
       loom feature is not enabled, and that --loom-compat correctly
       modifies the optimization pipeline.
-    status: planned
+    status: proposed
     tags: [loom, verification, cli]
     links:
       - type: verifies
@@ -226,7 +226,7 @@ artifacts:
     description: >
       Verify that loom-optimized WASM modules produce functionally
       equivalent ARM output compared to unoptimized compilation.
-    status: planned
+    status: proposed
     tags: [loom, verification, equivalence]
     links:
       - type: verifies

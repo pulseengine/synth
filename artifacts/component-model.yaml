@@ -176,7 +176,7 @@ artifacts:
       RTOS (e.g., gale tasks on gale targets, Zephyr threads on Zephyr
       targets). Synth generates the call stubs; kiln provides the runtime
       implementation.
-    status: planned
+    status: proposed
     tags: [component-model, rfc46, async, kiln-dependency]
     links:
       - type: derives-from
@@ -217,7 +217,7 @@ artifacts:
       for spec-compliant behavior. This extension anticipates the Component
       Model spec's planned 'recursive' effect on function types
       (Concurrency.md TODO).
-    status: planned
+    status: proposed
     tags: [component-model, reentrance, fusion, meld-interop, extension]
     links:
       - type: derives-from
@@ -361,7 +361,7 @@ artifacts:
       stub, (3) canonical ABI lift of return values. The stub generation
       shall be driven by the WIT interface type signatures extracted during
       frontend parsing.
-    status: planned
+    status: proposed
     tags: [component-model, codegen, import-dispatch, synth-synthesis]
     links:
       - type: derives-from
@@ -386,7 +386,7 @@ artifacts:
       signatures before beginning synthesis. Signature mismatches
       (parameter count, parameter types, return types) shall produce
       a compile-time error with the expected vs actual signature.
-    status: planned
+    status: proposed
     tags: [component-model, validation, abi-stability, synth-cli]
     links:
       - type: derives-from
@@ -438,7 +438,7 @@ artifacts:
       exercise type size computation, field alignment, string encoding,
       and discriminant layout across both implementations. Required by
       kiln:SR-24 (shared wit-bindgen fixtures).
-    status: planned
+    status: proposed
     tags: [canonical-abi, cross-toolchain, integration]
     links:
       - type: verifies
@@ -458,7 +458,7 @@ artifacts:
       that successfully executes with kiln-builtins host intrinsics on a
       Cortex-M4 target (Renode emulation). Validates the full BA RFC #46
       pipeline: component -> meld fuse -> synth compile -> kiln execute.
-    status: planned
+    status: proposed
     tags: [rfc46, end-to-end, integration, cross-toolchain]
     links:
       - type: verifies

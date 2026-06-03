@@ -128,7 +128,7 @@ artifacts:
       arithmetic produces correct results (no overflow, no truncation).
       The Zephyr application (main.c) simulates motor current and injects
       a jam event at ~70% position.
-    status: planned
+    status: proposed
     tags: [anti-pinch, renode, simulation, verification]
     links:
       - type: verifies

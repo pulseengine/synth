@@ -25,7 +25,7 @@ artifacts:
       (implementation-defined behavior on Cortex-M). The instruction_selector.rs
       path correctly emits the trap guard, creating an inconsistency between
       two synthesis paths for the same operation.
-    status: open
+    status: proposed
     tags: [critical, wasm-spec, division, trap, rules-rs]
     links:
       - type: verifies
@@ -54,7 +54,7 @@ artifacts:
       value of 256 is silently encoded as 0, producing RSB Rd, Rn, #0 instead
       of RSB Rd, Rn, #256. The caller receives no error and the generated code
       computes wrong results for any RSB with immediate > 255.
-    status: open
+    status: proposed
     tags: [critical, arm-encoding, truncation, immediate]
     links:
       - type: verifies
@@ -83,7 +83,7 @@ artifacts:
       of 260 is silently encoded as 4 (260 & 0xFF = 4), causing the load to
       access memory at a completely wrong address. This produces silent data
       corruption with no compile-time or runtime error.
-    status: open
+    status: proposed
     tags: [critical, arm-encoding, truncation, offset]
     links:
       - type: verifies
@@ -112,7 +112,7 @@ artifacts:
       WebAssembly linear memory size for bounds checks. Writing to R10 corrupts
       the bounds check comparison value, causing bounds checks to use a wrong
       memory size for all subsequent memory accesses.
-    status: open
+    status: proposed
     tags: [critical, register-allocation, memory-safety]
     links:
       - type: verifies
@@ -141,7 +141,7 @@ artifacts:
       Overwriting R11 with a temporary value causes all subsequent memory
       operations to read/write at a completely wrong memory location,
       potentially corrupting arbitrary system memory.
-    status: open
+    status: proposed
     tags: [critical, register-allocation, memory-safety]
     links:
       - type: verifies
@@ -172,7 +172,7 @@ artifacts:
       (address < memory_size) but reads 3 bytes past the linear memory end.
       The _access_size parameter is declared in the function signature but
       never used in the computation.
-    status: open
+    status: proposed
     tags: [high, memory-safety, bounds-checking]
     links:
       - type: verifies
@@ -202,7 +202,7 @@ artifacts:
       starting at the 5th temporary), those registers are clobbered without
       being saved. If the function is called from another compiled function
       or from the runtime, the caller's values in those registers are lost.
-    status: open
+    status: proposed
     tags: [high, calling-convention, register-preservation]
     links:
       - type: verifies
@@ -231,7 +231,7 @@ artifacts:
       8-byte aligned. STRD/LDRD instructions require 8-byte alignment and
       will fault. Cortex-M hardware exception entry also assumes 8-byte
       aligned SP.
-    status: open
+    status: proposed
     tags: [high, calling-convention, stack-alignment, aapcs]
     links:
       - type: verifies
@@ -259,7 +259,7 @@ artifacts:
       division appears in the middle of a function (followed by more
       operations), POP {PC} causes the function to return immediately after
       the division, skipping all subsequent instructions.
-    status: open
+    status: proposed
     tags: [high, arm-encoding, control-flow, i64-division]
     links:
       - type: verifies
@@ -288,7 +288,7 @@ artifacts:
       compiled function. After i32.popcnt executes, R11 contains garbage,
       and all subsequent LDR/STR [R11, ...] memory accesses use the wrong
       base address, reading from or writing to arbitrary memory.
-    status: open
+    status: proposed
     tags: [high, arm-encoding, register-clobber, memory-safety]
     links:
       - type: verifies
@@ -318,7 +318,7 @@ artifacts:
       either a wrong register comparison or an invalid instruction encoding.
       Since I64Eqz delegates to I64SetCondZ, all i64.eqz operations are
       affected when the result register is a high register.
-    status: open
+    status: proposed
     tags: [high, arm-encoding, register-encoding, i64]
     links:
       - type: verifies

@@ -319,7 +319,7 @@ artifacts:
       shall be captured and re-emitted with synth context (which symbol
       is unresolved, which object needs it). Non-zero exit codes from
       the linker shall propagate as synth errors.
-    status: planned
+    status: proposed
     tags: [cross-compilation, cli, subprocess, linker]
     links:
       - type: derives-from
@@ -349,7 +349,7 @@ artifacts:
       the weak default. The weak symbol shall be emitted in a separate
       .text.synth.defaults section that can be gc-collected when not
       needed.
-    status: planned
+    status: proposed
     tags: [cross-compilation, weak-symbol, memory-base, bare-metal]
     links:
       - type: derives-from
@@ -376,7 +376,7 @@ artifacts:
       When using ld.lld, the mapping adds --target=thumbv7em-none-eabihf
       for Cortex-M4F targets. The mapping is configured via the
       TargetSpec and HardwareCapabilities structs.
-    status: planned
+    status: proposed
     tags: [cross-compilation, target-triple, linker-flags]
     links:
       - type: derives-from
