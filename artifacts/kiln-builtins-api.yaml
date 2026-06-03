@@ -242,7 +242,7 @@ artifacts:
       from ret buffer. The stub shall be emitted inline at each call site
       for single-use imports and as a shared trampoline for imports called
       more than once in the same function.
-    status: planned
+    status: proposed
     tags: [kiln-builtins, codegen, import-stub, synth-synthesis]
     links:
       - type: derives-from
@@ -274,7 +274,7 @@ artifacts:
       R2+R3). This mode is selected via a synth CLI flag
       (--import-dispatch=direct) and is the recommended default for
       embedded targets.
-    status: planned
+    status: proposed
     tags: [kiln-builtins, codegen, per-import, direct-dispatch]
     links:
       - type: derives-from
@@ -306,7 +306,7 @@ artifacts:
       in the WASM module. The signature_hash shall be computed from the
       WASM function type signature (param types, result types) using
       FNV-1a hashing.
-    status: planned
+    status: proposed
     tags: [kiln-builtins, elf-section, synth-backend, emission]
     links:
       - type: derives-from
@@ -337,7 +337,7 @@ artifacts:
       path (__meld_dispatch_import). The type definition shall be shared
       between synth (for codegen) and kiln-builtins (for runtime) via a
       common header or WIT definition.
-    status: planned
+    status: proposed
     tags: [kiln-builtins, value-type, c-abi, rfc46]
     links:
       - type: derives-from
@@ -367,7 +367,7 @@ artifacts:
       (5) branch to user code. For bare-metal targets without
       kiln-builtins, a weak symbol default returning 0x20000000 shall
       be provided in the synth-generated startup code.
-    status: planned
+    status: proposed
     tags: [kiln-builtins, startup, memory-base, reset-handler]
     links:
       - type: derives-from

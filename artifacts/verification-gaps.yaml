@@ -17,7 +17,7 @@ artifacts:
       generate_load/store_with_bounds_check, division trap guard sequences,
       encode_thumb32_movw/movt, and SDIV/UDIV encoders. Full Verus macro
       integration pending rules_verus + verus_strip Bazel integration.
-    status: in-progress
+    status: approved
     tags: [verification-gap, verus]
     links:
       - type: derives-from
@@ -37,7 +37,7 @@ artifacts:
       admits are in VFP floating-point semantics (f32/f64 operations).
       Only i32 operations have T1 result-correspondence proofs. i64, f32,
       f64, and SIMD instruction selection has NO mechanized proofs.
-    status: in-progress
+    status: approved
     tags: [verification-gap, rocq, float]
     links:
       - type: derives-from
@@ -67,7 +67,7 @@ artifacts:
       verification track. Synth has no Lean proofs. This track would
       provide independent verification of instruction selection correctness
       using Lean's simp/omega/decide tactics.
-    status: planned
+    status: proposed
     tags: [verification-gap, lean]
     links:
       - type: derives-from
@@ -114,7 +114,7 @@ artifacts:
       (instruction_selector.rs, ~6000 lines) have not been translated.
       The existing Rocq proofs verify a separate Rocq model of
       compile_wasm_to_arm, not the actual Rust implementation.
-    status: planned
+    status: proposed
     tags: [verification-gap, rocq, coq-of-rust]
     links:
       - type: derives-from
@@ -139,7 +139,7 @@ artifacts:
       synth-synthesis/src/contracts.rs defines formal invariants for
       regalloc, encoding, memory, and division subsystems. Remaining
       functions (select_with_stack, encode_thumb, build_elf) still need specs.
-    status: in-progress
+    status: approved
     tags: [verification-gap, verus, specs]
     links:
       - type: derives-from
@@ -160,7 +160,7 @@ artifacts:
       temporaries, allocated registers don't conflict with live values,
       spilled values are correctly reloaded. These invariants are
       tested empirically but not formally proven.
-    status: planned
+    status: proposed
     tags: [verification-gap, verus, register-allocator]
     links:
       - type: derives-from
@@ -192,7 +192,7 @@ artifacts:
       No formal verification ensures these operations are within bounds.
       Kani harnesses partially address this via kani::assume() constraints
       but don't cover all code paths.
-    status: planned
+    status: proposed
     tags: [verification-gap, kani, overflow]
     links:
       - type: derives-from

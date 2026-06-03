@@ -29,7 +29,7 @@ artifacts:
       host function with the correct argument, (4) the host function
       executes and produces observable output (UART print). This is the
       simplest possible end-to-end test of the import dispatch mechanism.
-    status: planned
+    status: proposed
     tags: [e2e, poc, import-dispatch, renode]
     links:
       - type: verifies
@@ -117,7 +117,7 @@ artifacts:
       This validates the WASI Preview 2 dispatch compatibility (CM-004)
       and the generic import dispatch mechanism (KB-001) for a real-world
       use case.
-    status: planned
+    status: proposed
     tags: [e2e, wasi, stdout, renode]
     links:
       - type: verifies
@@ -159,7 +159,7 @@ artifacts:
       is within the linear memory region, (3) the string bytes are written
       correctly at the allocated address, (4) the import receives the
       correct (ptr, len) pair.
-    status: planned
+    status: proposed
     tags: [e2e, wasi, cabi-realloc, canonical-abi]
     links:
       - type: verifies
@@ -201,7 +201,7 @@ artifacts:
       the integration test that validates the full PulseEngine compilation
       story: component authoring -> meld composition -> synth AOT ->
       kiln runtime -> embedded execution.
-    status: planned
+    status: proposed
     tags: [e2e, component-model, round-trip, rfc46, integration]
     links:
       - type: verifies
@@ -250,7 +250,7 @@ artifacts:
       counterpart of CM-VER-002 (cross-toolchain ABI compatibility).
       Exercises both the lower path (guest -> host) and lift path
       (host -> guest return values).
-    status: planned
+    status: proposed
     tags: [e2e, component-model, abi-compatibility, canonical-abi]
     links:
       - type: verifies
@@ -291,7 +291,7 @@ artifacts:
       All tests use Renode via rules_renode for hermetic ARM emulation.
       The test suite shall be gated on kiln-builtins.a being available
       (via Bazel external dependency or pre-built artifact).
-    status: planned
+    status: proposed
     tags: [e2e, ci, bazel, regression, renode]
     links:
       - type: verifies
@@ -376,7 +376,7 @@ artifacts:
       in startup sequence, (2) MOV R11, R0 follows the BL, (3) weak symbol
       fallback emits correct default (0x20000000), (4) FPU initialization
       precedes memory base call when VFP is enabled.
-    status: planned
+    status: proposed
     tags: [e2e, unit-test, startup, memory-base, synth-backend]
     links:
       - type: verifies

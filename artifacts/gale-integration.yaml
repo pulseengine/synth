@@ -211,7 +211,7 @@ artifacts:
       the stubs target __meld_dispatch_import with the appropriate import
       index. For Phase 2 (per-import direct dispatch), the stubs target
       __meld_import_N with arguments directly in R0-R3.
-    status: planned
+    status: proposed
     tags: [gale, codegen, import-stub, wit]
     links:
       - type: derives-from
@@ -240,7 +240,7 @@ artifacts:
       CONFIG_GALE_KERNEL_MUTEX=y in addition to CONFIG_PRINTK=y and
       CONFIG_CONSOLE=y. This simplifies the Zephyr project setup for
       applications using both synth and gale.
-    status: planned
+    status: proposed
     tags: [gale, zephyr, kconfig, cli]
     links:
       - type: derives-from
@@ -272,7 +272,7 @@ artifacts:
       results via printk. This validates that libgale_ffi.a and synth
       assembly link without symbol conflicts and execute correctly
       together.
-    status: planned
+    status: proposed
     tags: [gale, integration-test, zephyr, co-deployment]
     links:
       - type: verifies
@@ -306,7 +306,7 @@ artifacts:
       operations use gale-verified index arithmetic, (2) MPU fault
       occurs if one component accesses the other's memory, (3) correct
       values are transferred end-to-end.
-    status: planned
+    status: proposed
     tags: [gale, integration-test, isolation, multi-component]
     links:
       - type: verifies
