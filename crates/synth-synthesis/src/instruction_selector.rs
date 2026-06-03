@@ -5216,6 +5216,15 @@ impl InstructionSelector {
                             };
 
                         if let Some((rmag, rlo, rhi)) = recip {
+                            // #209 cleanup: the reciprocal-multiply reads the magic
+                            // constant, never the divisor — so the divisor's eager
+                            // materialization (the `i32.const` at idx-1, the only op
+                            // tagged there) is dead on this path. Drop it. The
+                            // cost-gate UDIV fallback below still materializes its
+                            // own divisor, so behavior is unchanged.
+                            if idx >= 1 {
+                                instructions.retain(|i| i.source_line != Some(idx - 1));
+                            }
                             // Materialize the magic constant m into rmag.
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Movw {
@@ -13387,6 +13396,16 @@ mod tests {
         assert!(
             instrs.iter().any(|i| matches!(&i.op, ArmOp::Umull { .. })),
             "non-pow2 const divisor divides via UMULL high-word"
+        );
+        // #209 cleanup: the reciprocal-multiply reads the magic, never the
+        // divisor — so the divisor's eager materialization (MOVW #500) is dead and
+        // must NOT be emitted. (Magic for /500 is 0x10624DD3 → MOVW #0x4dd3, so
+        // 500 = 0x1f4 only ever appeared as the dead divisor const.)
+        assert!(
+            !instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 500, .. })),
+            "dead divisor const MOVW #500 must not be emitted on the UMULL path"
         );
     }
 

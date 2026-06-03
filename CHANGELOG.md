@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.24] - 2026-06-03
+
+**Cleanup: drop the dead divisor constant on the reciprocal-multiply path (#221).**
+
+Audit-cycle cleanup of the Opt 1b reciprocal-multiply codegen (introduced in
+v0.11.19). When a non-power-of-two constant `div_u` is lowered via the
+Granlund-Montgomery UMULL high-word multiply, the divisor itself is never read —
+the multiply consumes the precomputed magic constant, not the divisor. The
+divisor's eager `i32.const` materialization was therefore dead on this path but
+still emitted. This drops it (the cost-gate UDIV fallback still materializes its
+own divisor, so behavior is unchanged).
+
+- **Behavior frozen, oracle-confirmed:** all three differential fixtures stay
+  bit-identical — `div_const` 338/338, `control_step` 13/13 (`0x00210a55`),
+  `flight_seam` `0x07FDF307`.
+- **Measured delta:** −20 bytes `.text` on `div_const.wat` (5 reciprocal-multiply
+  const-div sites × one dead 4-byte `MOVW` each), and −1 executed instruction per
+  const-div call site at runtime.
+- Regression test asserts the dead `MOVW #500` is no longer emitted on the UMULL
+  path (`test_209_const_divisor_uses_reciprocal_multiply`).
+
 ## [0.11.23] - 2026-06-03
 
 **RISC-V backend: implement `Select`, non-parameter locals, and i32 sign-extend (#223).**
