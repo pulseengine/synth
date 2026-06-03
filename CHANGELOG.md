@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.27] - 2026-06-03
+
+**RV32 fix: signed-division overflow guard no longer clobbers the dividend (#232).**
+
+A v0.11.26 regression (introduced by the #231 lowest-free allocator). The
+`i32.div_s` `INT_MIN / -1` overflow guard pops its dividend/divisor off the
+vstack and then allocates scratch registers for the `INT_MIN` and `-1`
+comparison constants. Because the popped operands are no longer on the vstack,
+`live_regs` did not protect them, and the lowest-free allocator reused the
+dividend's register for the `INT_MIN` constant — clobbering it before the guard's
+`bne` read it. `filter_axis_decide(1000,100,500)` returned 0 instead of 1088 on
+qemu_riscv32 (round-robin in v0.11.25 had marched to a different register and
+masked the latent bug).
+
+**Fix:** new `alloc_temp_avoiding(&[Reg])` — the guard materializes its constants
+into a register that avoids the (popped-but-live) dividend and divisor. Applied
+to both the i32 guard and the i64 `INT64_MIN / -1` guard (the i64 path is not yet
+reachable — i64 params/locals are unimplemented — but carries the same latent
+defect). Same liveness-across-a-branch-region class as #226.
+
+- **Regression proof:** new `scripts/repro/signed_div_const.{wat,wasm}` +
+  `signed_div_const_riscv_differential.py` — 5/5 vectors (incl. the 1088 repro,
+  the `INT_MIN` overflow edge, and negatives) match wasmtime. Unit test
+  `signed_div_guard_does_not_clobber_operands_232`.
+- All five prior fixtures stay bit-identical (ARM `div_const`/`control_step`/
+  `flight_seam`; RV32 `control_step`/`controller_step`). The rest of the #231
+  caller-saved win is preserved (leaf functions still spill 0 callee-saved regs).
+
 ## [0.11.26] - 2026-06-03
 
 **Cleanup: RV32 allocator prefers caller-saved registers (lowest-free, not round-robin).**
