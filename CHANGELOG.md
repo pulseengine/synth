@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.23] - 2026-06-03
+
+**RISC-V backend: implement `Select`, non-parameter locals, and i32 sign-extend (#223).**
+The RV32 selector rejected ops the ARM backend handles, blocking every realistic
+function (the straight-line `filter_axis` slipped through; `control_step` /
+`controller_step` / `flat_flight` did not). Added:
+- **`select`** (ternary) — lowers to a short branch + two moves (RV32 has no
+  conditional-move), for both i32 and i64 operands. Pervasive: every saturating
+  clamp / min/max lowers to it.
+- **Non-parameter locals** (`local.get/set/tee` for `idx >= num_params`) — now
+  frame-backed: each i32 local gets a 4-byte stack slot (`sw`/`lw`). The slots
+  sit at the bottom of the frame; the #220 callee-saved spills go above, in one
+  unified prologue -- so locals + saved registers share a single `addi sp,-N`.
+- **`i32.extend8_s` / `i32.extend16_s`** — `slli`+`srai` (RV32 has no sign-extend).
+
+With these + #220, gale's dissolved `control_step` compiles to RV32 and runs
+correctly: a unicorn RV32 differential matches wasmtime -- and the ARM backend --
+on `(3000,50,40,0) = 0x00210a55` across vectors, reading its `.rodata` table via
+`s11` and preserving the caller's callee-saved registers. Fixtures:
+`scripts/repro/control_step_riscv_differential.py`; unit tests
+`select_lowers_to_branch_223`, `sign_extend_uses_slli_srai_223`,
+`non_param_local_uses_frame_223`; 163 riscv tests green.
+
+Note: i32 locals only (i64 locals would need two slots) -- not yet hit by the
+dissolved modules; leaf functions per #220.
+
+Falsification: wrong if any RV32 function with `select`/non-param-locals/sign-
+extend returns a value differing from wasmtime, or if the unified frame
+misaligns a local or saved-register slot.
+
 ## [0.11.22] - 2026-06-03
 
 **RISC-V backend: preserve callee-saved registers per the RV psABI (#220).**
