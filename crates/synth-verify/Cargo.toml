@@ -17,12 +17,12 @@ arm = ["synth-synthesis"]
 
 [dependencies]
 # Core dependencies (always required)
-synth-core = { path = "../synth-core", version = "0.11.25" }
-synth-cfg = { path = "../synth-cfg", version = "0.11.25" }
-synth-opt = { path = "../synth-opt", version = "0.11.25" }
+synth-core = { path = "../synth-core", version = "0.11.26" }
+synth-cfg = { path = "../synth-cfg", version = "0.11.26" }
+synth-opt = { path = "../synth-opt", version = "0.11.26" }
 
 # ARM synthesis (optional, behind 'arm' feature)
-synth-synthesis = { path = "../synth-synthesis", version = "0.11.25", optional = true }
+synth-synthesis = { path = "../synth-synthesis", version = "0.11.26", optional = true }
 
 # SMT solver for formal verification
 z3 = { version = "0.19", features = ["static-link-z3"], optional = true }

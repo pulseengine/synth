@@ -363,9 +363,10 @@ struct Selector {
     ctrl: Vec<ControlFrame>,
     /// Argument registers for the current function's params (a0..a7).
     arg_regs: Vec<Reg>,
-    /// Available temporary registers, recycled in round-robin order.
+    /// Available temporary registers; `alloc_temp` hands out the lowest-indexed
+    /// free one, so the caller-saved `t`-registers (listed first) are preferred
+    /// over the callee-saved `s`-registers.
     temps: Vec<Reg>,
-    next_temp: usize,
     /// #226: set when `alloc_temp` could not find a register that isn't already
     /// holding a live `vstack` value (every temp is pinned). Surfaced as an
     /// `Unsupported` error after lowering so `--all-exports` skips the function
@@ -412,7 +413,6 @@ impl Selector {
             ctrl: Vec::new(),
             arg_regs: Reg::arg_regs(num_params as usize),
             temps,
-            next_temp: 0,
             alloc_exhausted: false,
             next_label: 0,
             emitted_return: false,
@@ -468,25 +468,29 @@ impl Selector {
         live
     }
 
-    /// Allocate a scratch register, recycling the `temps` pool round-robin but
-    /// **skipping any register that still holds a live `vstack` value** (#226).
+    /// Allocate a scratch register: the **lowest-indexed `temps` entry that
+    /// isn't already pinned by a live `vstack` value** (#226 liveness).
     ///
-    /// The previous allocator was blind to the vstack: after handing out all 13
-    /// temps it wrapped around and re-issued a register that an earlier, still
-    /// unconsumed value was pinning — clobbering it. `controller_step` exposed
-    /// this with an `updates<<24` value that stays live across three `select`
-    /// clamps; the long live range got reused as a comparison scratch, losing
-    /// the updates byte. Honoring the live set fixes the whole class.
+    /// The pool lists caller-saved t-registers (`t0..t6`) before callee-saved
+    /// s-registers (`s1..s6`), so "lowest free" keeps a function in the
+    /// caller-saved registers whenever ≤7 values are simultaneously live —
+    /// avoiding the #220 callee-saved save/restore prologue entirely.
+    ///
+    /// This replaces the original round-robin march (a `next_temp` counter that
+    /// only ever advanced). Round-robin was "fine for straight-line code" but,
+    /// even after #226 made it skip live registers, it kept walking *forward*
+    /// into the s-registers instead of reusing a just-freed low register — so
+    /// short-lived expressions needlessly touched callee-saved regs and paid the
+    /// prologue tax. With the vstack liveness already tracked, lowest-free is
+    /// both simpler and strictly tighter; results are identical (register
+    /// renaming), code is equal-or-smaller.
     ///
     /// If every temp is pinned (a genuinely deeper-than-pool expression), record
-    /// `alloc_exhausted` and fall back to round-robin — the caller turns the flag
-    /// into a skip so the function is dropped, never silently miscompiled.
+    /// `alloc_exhausted` — the caller turns the flag into a skip so the function
+    /// is dropped, never silently miscompiled.
     fn alloc_temp(&mut self) -> Reg {
         let live = self.live_regs();
-        let n = self.temps.len();
-        for _ in 0..n {
-            let r = self.temps[self.next_temp % n];
-            self.next_temp += 1;
+        for &r in &self.temps {
             if !live.contains(&r) {
                 return r;
             }
@@ -494,9 +498,7 @@ impl Selector {
         // Every temp is live: cannot allocate without spilling. Flag the
         // function for skip-and-continue rather than emit a clobber.
         self.alloc_exhausted = true;
-        let r = self.temps[self.next_temp % n];
-        self.next_temp += 1;
-        r
+        self.temps[0]
     }
 
     fn push_i32(&mut self, r: Reg) {
@@ -5312,23 +5314,29 @@ mod tests {
     /// stays unchanged; it is wrapped in a balanced prologue/epilogue.
     #[test]
     fn callee_saved_registers_preserved_220() {
-        // filter_axis: ((p0+p1)*980 + p2*20)/1000 — uses enough temps to spill
-        // into the callee-saved s-registers.
+        // Keep 8 values simultaneously live (the 7 caller-saved t-registers can
+        // hold only 7), forcing the lowest-free allocator into the callee-saved
+        // s-registers — then reduce them. This is what now exercises the #220
+        // spill/restore path (a shorter expression stays in t-registers).
         let sel = select(
             &[
-                WasmOp::LocalGet(0),
-                WasmOp::LocalGet(1),
+                WasmOp::I32Const(1),
+                WasmOp::I32Const(2),
+                WasmOp::I32Const(3),
+                WasmOp::I32Const(4),
+                WasmOp::I32Const(5),
+                WasmOp::I32Const(6),
+                WasmOp::I32Const(7),
+                WasmOp::I32Const(8), // 8th live value → spills into s1
                 WasmOp::I32Add,
-                WasmOp::I32Const(980),
-                WasmOp::I32Mul,
-                WasmOp::LocalGet(2),
-                WasmOp::I32Const(20),
-                WasmOp::I32Mul,
                 WasmOp::I32Add,
-                WasmOp::I32Const(1000),
-                WasmOp::I32DivS,
+                WasmOp::I32Add,
+                WasmOp::I32Add,
+                WasmOp::I32Add,
+                WasmOp::I32Add,
+                WasmOp::I32Add,
             ],
-            3,
+            0,
         )
         .unwrap();
         let out = &sel.ops;
@@ -5543,9 +5551,11 @@ mod tests {
     fn alloc_temp_flags_exhaustion_when_all_pinned_226() {
         let mut sel = Selector::new_with_options(0, SelectorOptions::wasm_compliant());
         let n = sel.temps.len();
-        let all: Vec<Reg> = (0..n).map(|_| sel.alloc_temp()).collect();
-        for r in &all {
-            sel.push_i32(*r);
+        // Pin each register as it is allocated, so the next alloc must pick a
+        // different one (lowest-free returns the same reg until it is pinned).
+        for _ in 0..n {
+            let r = sel.alloc_temp();
+            sel.push_i32(r);
         }
         assert!(
             !sel.alloc_exhausted,

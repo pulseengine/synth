@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.26] - 2026-06-03
+
+**Cleanup: RV32 allocator prefers caller-saved registers (lowest-free, not round-robin).**
+
+Audit-cycle cleanup of the RISC-V temp allocator. `alloc_temp` recycled the pool
+`[t0..t6, s1..s6]` with a monotonic `next_temp` round-robin counter — "fine for
+straight-line code" but, even after #226 made it skip live registers, it kept
+marching *forward* into the callee-saved s-registers instead of reusing a
+just-freed low register. So short-lived expressions needlessly used s-registers
+and paid the #220 save/restore prologue tax.
+
+Now that the vstack liveness is tracked (#226), `alloc_temp` simply returns the
+**lowest-indexed free temp**. The pool lists caller-saved t-registers first, so a
+function stays in them whenever ≤7 values are simultaneously live — the
+callee-saved s-registers become a genuine overflow reserve rather than something
+the round-robin consumed by accident.
+
+- **Behavior frozen, oracle-confirmed bit-identical:** all five differential
+  fixtures — ARM `div_const` 338/338, `control_step` 13/13 (`0x00210a55`),
+  `flight_seam` `0x07FDF307`; RV32 `control_step` (`0x00210a55`),
+  `controller_step` (`0x05ff0000`).
+- **Measured delta:** `controller_step` RV32 `.text` 440 → 368 bytes (−72 B,
+  −18 instructions); callee-saved spills 6 → 0; frame 48 → 16 bytes. Results
+  unchanged (register renaming).
+- The broader local register allocation / constant-CSE work (the Opt-3 perf lever
+  gale flagged in #209) remains separate; this is just the round-robin → lowest-free
+  cleanup.
+
 ## [0.11.25] - 2026-06-03
 
 **RISC-V: fix register allocator clobbering a live value across `select` (#226).**
