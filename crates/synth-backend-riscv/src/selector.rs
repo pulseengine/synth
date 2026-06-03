@@ -489,14 +489,24 @@ impl Selector {
     /// `alloc_exhausted` — the caller turns the flag into a skip so the function
     /// is dropped, never silently miscompiled.
     fn alloc_temp(&mut self) -> Reg {
+        self.alloc_temp_avoiding(&[])
+    }
+
+    /// Like [`alloc_temp`], but also avoids the registers in `avoid` — operands
+    /// that have been *popped off the vstack* into local variables but are still
+    /// live (so `live_regs` no longer covers them). The signed-division guard is
+    /// the motivating case (#232): it pops the dividend/divisor, then needs
+    /// scratch registers for its `INT_MIN`/`-1` comparison constants that must
+    /// not land on the still-live dividend before the `div` reads it.
+    fn alloc_temp_avoiding(&mut self, avoid: &[Reg]) -> Reg {
         let live = self.live_regs();
         for &r in &self.temps {
-            if !live.contains(&r) {
+            if !live.contains(&r) && !avoid.contains(&r) {
                 return r;
             }
         }
-        // Every temp is live: cannot allocate without spilling. Flag the
-        // function for skip-and-continue rather than emit a clobber.
+        // Nothing free: cannot allocate without spilling. Flag the function for
+        // skip-and-continue rather than emit a clobber.
         self.alloc_exhausted = true;
         self.temps[0]
     }
@@ -1072,7 +1082,13 @@ impl Selector {
         // Trap 2: INT_MIN / -1
         if self.options.signed_div_overflow_trap {
             let ok_overflow = self.fresh_label("Lsdiv_ok");
-            let tmin = self.alloc_temp();
+            // #232: rs1 (dividend) and rs2 (divisor) were popped off the vstack,
+            // so `live_regs` no longer protects them — but both are read by the
+            // guard branches below and rs1/rs2 by the `div` itself. The guard's
+            // INT_MIN / -1 constants must NOT be materialized into either, or we
+            // clobber the dividend before the `bne rs1, tmin` reads it (the
+            // lowest-free allocator otherwise reuses rs1's register here).
+            let tmin = self.alloc_temp_avoiding(&[rs1, rs2]);
             // INT_MIN = 0x80000000. emit_load_imm decomposes into lui+addi.
             emit_load_imm(&mut self.out, tmin, i32::MIN);
             // bne rs1, tmin, .Lsdiv_ok → dividend != INT_MIN, no overflow
@@ -1082,7 +1098,7 @@ impl Selector {
                 rs2: tmin,
                 label: ok_overflow.clone(),
             });
-            let neg1 = self.alloc_temp();
+            let neg1 = self.alloc_temp_avoiding(&[rs1, rs2]);
             self.out.push(RiscVOp::Addi {
                 rd: neg1,
                 rs1: Reg::ZERO,
@@ -3266,7 +3282,10 @@ impl Selector {
             let sdiv_ok = self.fresh_label("Li64sdiv_ok");
             // dividend != INT64_MIN ? skip. Test the hi half against
             // 0x8000_0000 and the lo half against 0.
-            let tmin_hi = self.alloc_temp();
+            // #232: same discipline as the i32 guard — the operand halves
+            // (nl/nh/dl/dh) are off the vstack, so the guard constants must
+            // avoid them or the lowest-free allocator clobbers a live operand.
+            let tmin_hi = self.alloc_temp_avoiding(&[nl, nh, dl, dh]);
             emit_load_imm(&mut self.out, tmin_hi, i32::MIN);
             self.out.push(RiscVOp::Branch {
                 cond: Branch::Ne,
@@ -3281,7 +3300,7 @@ impl Selector {
                 label: sdiv_ok.clone(),
             });
             // divisor != -1 ? skip. -1 has both halves all-ones.
-            let neg1 = self.alloc_temp();
+            let neg1 = self.alloc_temp_avoiding(&[nl, nh, dl, dh]);
             self.out.push(RiscVOp::Addi {
                 rd: neg1,
                 rs1: Reg::ZERO,
@@ -5542,6 +5561,53 @@ mod tests {
             "only 3 of {} temps pinned — must not flag exhaustion",
             sel.temps.len()
         );
+    }
+
+    /// #232: the signed-division `INT_MIN / -1` overflow guard materializes its
+    /// comparison constants into scratch registers — which must NOT be the
+    /// dividend or divisor (both popped off the vstack but still live until the
+    /// `div`). Regression for the v0.11.26 lowest-free clobber.
+    #[test]
+    fn signed_div_guard_does_not_clobber_operands_232() {
+        // (p0 + p1) / 1000 — a signed div by a constant leaf.
+        let sel = select(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::I32Add,
+                WasmOp::I32Const(1000),
+                WasmOp::I32DivS,
+            ],
+            2,
+        )
+        .unwrap();
+        let ops = &sel.ops;
+        let (dividend, divisor) = ops
+            .iter()
+            .find_map(|o| match o {
+                RiscVOp::Div { rs1, rs2, .. } => Some((*rs1, *rs2)),
+                _ => None,
+            })
+            .expect("a Div is emitted");
+        // INT_MIN (lui …0x80000…) and -1 (addi rd, zero, -1) are the guard
+        // constants; neither may land on the live dividend/divisor.
+        for op in ops {
+            let guard_dst = match op {
+                RiscVOp::Lui { rd, imm20 } if *imm20 == 0x8_0000 => Some(*rd),
+                RiscVOp::Addi {
+                    rd,
+                    rs1: Reg::ZERO,
+                    imm: -1,
+                } => Some(*rd),
+                _ => None,
+            };
+            if let Some(d) = guard_dst {
+                assert!(
+                    d != dividend && d != divisor,
+                    "guard constant clobbers live operand {d:?} (dividend={dividend:?}, divisor={divisor:?}) — #232"
+                );
+            }
+        }
     }
 
     /// #226: when *every* temp pins a live value, `alloc_temp` flags
