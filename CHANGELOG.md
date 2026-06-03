@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.22] - 2026-06-03
+
+**Drop the dead divisor constant on the reciprocal-multiply path (#209 cleanup).**
+The constant-divisor reciprocal-multiply (Opt 1b) reads the magic constant via
+`UMULL`, never the divisor itself -- but the divisor was still eagerly
+materialized (`MOVW #d`) because the `#209` cost-gate UDIV fallback *might* need
+it in a register. On the common (UMULL) path that `MOVW` is dead. It is now
+dropped via the same `drop_prev_const_materialization` technique already used for
+const-address folding (#95): when the reciprocal-multiply is taken, the divisor
+const (`i32.const` at `idx-1`, the only op tagged there) is removed; the UDIV
+fallback branch is unaffected.
+
+Measured on gale's `control_step` (4 non-pow2 const `div_u`): `.text` 410 -> 394
+bytes (-16 B, four dead `MOVW` removed, ~-4 cycles). `divu_500` drops `movw
+#500`. Behavior frozen: control_step `0x00210a55` (13/13), inlined + flat
+`flight_algo` `0x07FDF307`, and the div_const signed/unsigned matrix (338/338)
+all stay bit-identical. Regression: `test_209_const_divisor_uses_reciprocal_multiply`
+now asserts the dead `MOVW #500` is absent.
+
+Architectural note: the principled end-state is lazy/value-numbered constant
+materialization (LLVM/gcc-style -- never emit a const until a consumer needs it
+in a register, fold into the instruction otherwise). This is one consistent step
+toward that, reusing the existing drop-eager-const mechanism rather than adding a
+new shortcut.
+
+Falsification: wrong if any const `div_u`/`rem_u` result changes, or if a
+reciprocal-multiply still emits its divisor constant.
+
 ## [0.11.21] - 2026-06-03
 
 **Expose RV32 target profiles so `-b riscv` is reachable from `compile` (#218).**
