@@ -11,9 +11,9 @@ categories.workspace = true
 description = "WASM-to-ARM instruction selection and peephole optimizer"
 
 [dependencies]
-synth-core = { path = "../synth-core", version = "0.11.20" }
-synth-cfg = { path = "../synth-cfg", version = "0.11.20" }
-synth-opt = { path = "../synth-opt", version = "0.11.20" }
+synth-core = { path = "../synth-core", version = "0.11.21" }
+synth-cfg = { path = "../synth-cfg", version = "0.11.21" }
+synth-opt = { path = "../synth-opt", version = "0.11.21" }
 serde.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true

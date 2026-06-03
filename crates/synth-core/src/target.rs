@@ -463,16 +463,23 @@ impl TargetSpec {
     }
 
     /// RISC-V RV32IMAC with 16 PMP entries
-    pub fn riscv32imac() -> Self {
+    /// A bare-metal RV32 profile with the given ISA `extensions` string (e.g.
+    /// `"imac"`, `"imc"`, `"im"`, `"i"`, `"gc"`). All RV32 variants share the
+    /// PMP memory-protection model and have no hardware FPU in the base profile.
+    pub fn riscv32(extensions: &str) -> Self {
         Self {
             family: ArchFamily::RiscV,
-            triple: "riscv32imac-unknown-none-elf".to_string(),
+            triple: format!("riscv32{extensions}-unknown-none-elf"),
             isa: IsaVariant::RiscV32 {
-                extensions: "imac".to_string(),
+                extensions: extensions.to_string(),
             },
             mem_protection: MemProtection::Pmp { entries: 16 },
             fpu: None,
         }
+    }
+
+    pub fn riscv32imac() -> Self {
+        Self::riscv32("imac")
     }
 
     /// Cortex-M55 with Helium MVE, single-precision FPU, TrustZone
@@ -497,8 +504,23 @@ impl TargetSpec {
             "thumbv8.1m.main-none-eabi" | "cortex-m55" => Ok(Self::cortex_m55()),
             "armv7r-none-eabihf" | "cortex-r5" => Ok(Self::cortex_r5()),
             "aarch64-none-elf" | "cortex-a53" => Ok(Self::cortex_a53()),
-            "riscv32imac-unknown-none-elf" | "riscv32imac" => Ok(Self::riscv32imac()),
-            _ => Err(format!("unknown target triple: {}", triple)),
+            // RV32 — accept the short ISA names that `riscv-runtime` and the
+            // toolchains use (`rv32imac`, …) as well as the long LLVM triples.
+            // The ESP32-C3 is RV32IMC (#218).
+            "riscv32imac-unknown-none-elf" | "riscv32imac" | "rv32imac" => {
+                Ok(Self::riscv32("imac"))
+            }
+            "riscv32imc" | "rv32imc" | "esp32c3" => Ok(Self::riscv32("imc")),
+            "riscv32im" | "rv32im" => Ok(Self::riscv32("im")),
+            "riscv32i" | "rv32i" => Ok(Self::riscv32("i")),
+            "riscv32gc" | "rv32gc" => Ok(Self::riscv32("gc")),
+            // Generic RV32 default → the broadly-supported imac profile.
+            "riscv32" | "rv32" => Ok(Self::riscv32("imac")),
+            _ => Err(format!(
+                "unknown target triple: {triple}. Supported: \
+                 cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp; \
+                 rv32imac, rv32imc, rv32im, rv32i, rv32gc, esp32c3"
+            )),
         }
     }
 
@@ -516,6 +538,41 @@ impl TargetSpec {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #218: the short RV32 ISA names (and the ESP32-C3 board alias) that
+    /// `riscv-runtime` / the toolchains use must resolve to RISC-V target specs,
+    /// not "unknown target triple", so `synth compile -b riscv -t rv32imac` is
+    /// reachable.
+    #[test]
+    fn test_rv32_short_target_names_218() {
+        for (name, ext) in [
+            ("rv32imac", "imac"),
+            ("rv32imc", "imc"),
+            ("rv32im", "im"),
+            ("rv32i", "i"),
+            ("rv32gc", "gc"),
+            ("esp32c3", "imc"),  // ESP32-C3 is RV32IMC
+            ("riscv32", "imac"), // generic default
+            ("riscv32imac", "imac"),
+        ] {
+            let spec = TargetSpec::from_triple(name)
+                .unwrap_or_else(|e| panic!("RV32 target '{name}' must resolve: {e}"));
+            assert_eq!(spec.family, ArchFamily::RiscV, "{name}");
+            assert_eq!(
+                spec.isa,
+                IsaVariant::RiscV32 {
+                    extensions: ext.to_string()
+                },
+                "{name}"
+            );
+        }
+        // An unknown triple still errors, and now lists the RV32 options.
+        let err = TargetSpec::from_triple("rv99zzz").unwrap_err();
+        assert!(
+            err.contains("rv32imac"),
+            "error should list RV32 targets: {err}"
+        );
+    }
 
     #[test]
     fn test_target_spec_from_triple() {

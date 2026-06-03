@@ -139,7 +139,9 @@ enum Commands {
         #[arg(long)]
         cortex_m: bool,
 
-        /// Target profile (cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp)
+        /// Target profile. ARM: cortex-m3, cortex-m4, cortex-m4f, cortex-m7,
+        /// cortex-m7dp. RISC-V (-b riscv): rv32imac, rv32imc, rv32im, rv32i,
+        /// rv32gc, esp32c3 (RV32IMC). `-b riscv` defaults to rv32imac.
         /// Implies --cortex-m for Cortex-M targets
         #[arg(short, long, value_name = "TARGET")]
         target: Option<String>,
@@ -332,7 +334,7 @@ fn main() -> Result<()> {
             sign_output,
         } => {
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
-            let target_spec = resolve_target_spec(target.as_deref(), cortex_m)?;
+            let target_spec = resolve_target_spec(target.as_deref(), cortex_m, &backend)?;
             let is_cortex_m =
                 cortex_m || target_spec.family == synth_core::target::ArchFamily::ArmCortexM;
 
@@ -678,13 +680,13 @@ struct ElfFunction {
 }
 
 /// Resolve --target / --cortex-m into a TargetSpec
-fn resolve_target_spec(target: Option<&str>, cortex_m: bool) -> Result<TargetSpec> {
+fn resolve_target_spec(target: Option<&str>, cortex_m: bool, backend: &str) -> Result<TargetSpec> {
     match target {
-        Some(name) => TargetSpec::from_triple(name).map_err(|e| {
-            anyhow::anyhow!(
-                "{e}. Supported: cortex-m3, cortex-m4, cortex-m4f, cortex-m7, cortex-m7dp"
-            )
-        }),
+        // from_triple already lists the supported ARM + RV32 names in its error.
+        Some(name) => TargetSpec::from_triple(name).map_err(|e| anyhow::anyhow!("{e}")),
+        // No --target given: pick a backend-appropriate default so `-b riscv`
+        // doesn't inherit the ARM profile and bail (#218).
+        None if backend == "riscv" => Ok(TargetSpec::riscv32("imac")),
         None if cortex_m => Ok(TargetSpec::cortex_m3()),
         None => {
             // Default: Arm32 ISA (non-Cortex-M, no vector table)
@@ -3596,29 +3598,43 @@ mod tests {
     fn test_resolve_target_spec_default_no_cortex_m() {
         // When neither --target nor --cortex-m is given, the default is an
         // Arm32-ISA cortex_m4 spec (used by the non-Cortex-M flow).
-        let spec = resolve_target_spec(None, false).unwrap();
+        let spec = resolve_target_spec(None, false, "arm").unwrap();
         assert_eq!(spec.isa, synth_core::target::IsaVariant::Arm32);
     }
 
     #[test]
     fn test_resolve_target_spec_cortex_m_flag() {
         // --cortex-m without --target maps to cortex-m3.
-        let spec = resolve_target_spec(None, true).unwrap();
+        let spec = resolve_target_spec(None, true, "arm").unwrap();
         assert_eq!(spec.triple, "thumbv7m-none-eabi");
     }
 
     #[test]
     fn test_resolve_target_spec_explicit_target_wins_over_cortex_m() {
         // --target overrides --cortex-m.
-        let spec = resolve_target_spec(Some("cortex-m7"), true).unwrap();
+        let spec = resolve_target_spec(Some("cortex-m7"), true, "arm").unwrap();
         assert_eq!(spec.triple, "thumbv7em-none-eabihf");
     }
 
     #[test]
     fn test_resolve_target_spec_unknown_triple_errors() {
-        let err = resolve_target_spec(Some("totally-bogus-triple"), false).unwrap_err();
+        let err = resolve_target_spec(Some("totally-bogus-triple"), false, "arm").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("totally-bogus-triple"));
         assert!(msg.contains("Supported"));
+    }
+
+    /// #218: `-b riscv` with no `--target` must default to an RV32 profile, not
+    /// inherit the ARM default (which makes the RISC-V backend bail).
+    #[test]
+    fn test_resolve_target_spec_riscv_default_218() {
+        let spec = resolve_target_spec(None, false, "riscv").unwrap();
+        assert_eq!(spec.family, synth_core::target::ArchFamily::RiscV);
+        assert_eq!(
+            spec.isa,
+            synth_core::target::IsaVariant::RiscV32 {
+                extensions: "imac".to_string()
+            }
+        );
     }
 }
