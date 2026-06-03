@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.25] - 2026-06-03
+
+**RISC-V: fix register allocator clobbering a live value across `select` (#226).**
+
+The RV32 temp allocator recycled its 13-register pool round-robin with no
+awareness of the operand stack. A value left live on the `vstack` (e.g. an
+`updates << 24` byte computed early and packed in at the end) had its register
+re-handed-out as scratch once the round-robin wrapped past the pool length —
+silently clobbering it. `controller_step_decide`, which keeps `updates << 24`
+live across three `select`-based clamps, lost the updates byte on qemu_riscv32
+(got `0x000000ff`, wasmtime `0x05ff0000` in the bundled repro).
+
+**Fix:** `alloc_temp` now skips any register currently pinned by a live `vstack`
+entry (`live_regs`), so an in-flight value is never reused as scratch. If every
+temp is pinned, it flags `alloc_exhausted` and the function is skipped (honest
+skip-and-continue under `--all-exports`) rather than miscompiled — the same
+discipline as the ARM regalloc-exhaustion path. This is the RISC-V analogue of
+the ARM #193 live-value reservation.
+
+- Differential proof (`controller_step_riscv_differential.py`): 5/5 vectors —
+  including gale's `(6400,0,-12800,0,3200,0,5)` — now match wasmtime, with
+  callee-saved registers preserved (#220 still holds). Before the fix, all 5
+  mismatched.
+- Regression tests: `alloc_temp_skips_live_vstack_regs_226`,
+  `alloc_temp_flags_exhaustion_when_all_pinned_226`.
+
 ## [0.11.24] - 2026-06-03
 
 **Cleanup: drop the dead divisor constant on the reciprocal-multiply path (#221).**

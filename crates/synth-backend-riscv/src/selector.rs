@@ -177,6 +177,13 @@ pub fn select_with_options(
     let mut ctx = Selector::new_with_options(num_params, options);
     ctx.compute_local_layout(wasm_ops, num_params); // #223
     ctx.lower_seq(wasm_ops)?;
+    // #226: if any allocation ran out of registers that weren't pinning a live
+    // vstack value, the function needs spilling we don't yet do — skip it rather
+    // than emit a clobbering allocation. (Returning an error lets --all-exports
+    // drop just this function and continue, like the ARM regalloc-exhaustion path.)
+    if ctx.alloc_exhausted {
+        return Err(SelectorError::Unsupported(WasmOp::Select));
+    }
     ctx.emit_return_epilogue();
     let local_frame_bytes = ctx.local_frame_bytes;
     // #220: the temp pool includes callee-saved s-registers (s1..s6), but the
@@ -359,6 +366,12 @@ struct Selector {
     /// Available temporary registers, recycled in round-robin order.
     temps: Vec<Reg>,
     next_temp: usize,
+    /// #226: set when `alloc_temp` could not find a register that isn't already
+    /// holding a live `vstack` value (every temp is pinned). Surfaced as an
+    /// `Unsupported` error after lowering so `--all-exports` skips the function
+    /// rather than emitting a clobbering allocation (honest skip, not a silent
+    /// miscompile — the same discipline as the ARM regalloc-exhaustion path).
+    alloc_exhausted: bool,
     /// Counter for generating unique labels (L0, L1, ...).
     next_label: u32,
     /// Tracks whether we already emitted the function-final return.
@@ -400,6 +413,7 @@ impl Selector {
             arg_regs: Reg::arg_regs(num_params as usize),
             temps,
             next_temp: 0,
+            alloc_exhausted: false,
             next_label: 0,
             emitted_return: false,
             options,
@@ -436,8 +450,51 @@ impl Selector {
         format!("{}{}", prefix, n)
     }
 
+    /// Registers currently pinned by a live `vstack` value. Every vstack entry
+    /// is a temp register (locals/params are always copied into a fresh temp by
+    /// `lower_local_get`), so this set is exactly the values that must survive
+    /// until they are popped — `alloc_temp` must never hand any of them out.
+    fn live_regs(&self) -> Vec<Reg> {
+        let mut live = Vec::with_capacity(self.vstack.len() * 2);
+        for v in &self.vstack {
+            match v {
+                VstackVal::I32(r) => live.push(*r),
+                VstackVal::I64 { lo, hi } => {
+                    live.push(*lo);
+                    live.push(*hi);
+                }
+            }
+        }
+        live
+    }
+
+    /// Allocate a scratch register, recycling the `temps` pool round-robin but
+    /// **skipping any register that still holds a live `vstack` value** (#226).
+    ///
+    /// The previous allocator was blind to the vstack: after handing out all 13
+    /// temps it wrapped around and re-issued a register that an earlier, still
+    /// unconsumed value was pinning — clobbering it. `controller_step` exposed
+    /// this with an `updates<<24` value that stays live across three `select`
+    /// clamps; the long live range got reused as a comparison scratch, losing
+    /// the updates byte. Honoring the live set fixes the whole class.
+    ///
+    /// If every temp is pinned (a genuinely deeper-than-pool expression), record
+    /// `alloc_exhausted` and fall back to round-robin — the caller turns the flag
+    /// into a skip so the function is dropped, never silently miscompiled.
     fn alloc_temp(&mut self) -> Reg {
-        let r = self.temps[self.next_temp % self.temps.len()];
+        let live = self.live_regs();
+        let n = self.temps.len();
+        for _ in 0..n {
+            let r = self.temps[self.next_temp % n];
+            self.next_temp += 1;
+            if !live.contains(&r) {
+                return r;
+            }
+        }
+        // Every temp is live: cannot allocate without spilling. Flag the
+        // function for skip-and-continue rather than emit a clobber.
+        self.alloc_exhausted = true;
+        let r = self.temps[self.next_temp % n];
         self.next_temp += 1;
         r
     }
@@ -5449,6 +5506,55 @@ mod tests {
         assert!(
             matches!(sel.ops.first(), Some(RiscVOp::Addi { rd: Reg::SP, imm, .. }) if *imm < 0),
             "a frame is opened for the local"
+        );
+    }
+
+    /// #226: `alloc_temp` must never hand out a register that still pins a live
+    /// `vstack` value, even after the round-robin pool wraps past its length.
+    /// This is the invariant whose violation lost the `updates<<24` byte in
+    /// `controller_step` on RV32.
+    #[test]
+    fn alloc_temp_skips_live_vstack_regs_226() {
+        let mut sel = Selector::new_with_options(0, SelectorOptions::wasm_compliant());
+        // Pin three registers by leaving them on the vstack.
+        let pinned = [sel.alloc_temp(), sel.alloc_temp(), sel.alloc_temp()];
+        for r in pinned {
+            sel.push_i32(r);
+        }
+        // Spin the allocator well past the pool size; it must dodge all three.
+        for _ in 0..(sel.temps.len() * 3) {
+            let r = sel.alloc_temp();
+            assert!(
+                !pinned.contains(&r),
+                "alloc_temp returned live vstack register {r:?}"
+            );
+        }
+        assert!(
+            !sel.alloc_exhausted,
+            "only 3 of {} temps pinned — must not flag exhaustion",
+            sel.temps.len()
+        );
+    }
+
+    /// #226: when *every* temp pins a live value, `alloc_temp` flags
+    /// `alloc_exhausted` so the caller skips the function (honest
+    /// skip-and-continue) rather than emitting a clobbering allocation.
+    #[test]
+    fn alloc_temp_flags_exhaustion_when_all_pinned_226() {
+        let mut sel = Selector::new_with_options(0, SelectorOptions::wasm_compliant());
+        let n = sel.temps.len();
+        let all: Vec<Reg> = (0..n).map(|_| sel.alloc_temp()).collect();
+        for r in &all {
+            sel.push_i32(*r);
+        }
+        assert!(
+            !sel.alloc_exhausted,
+            "no exhaustion before the pool is full"
+        );
+        let _ = sel.alloc_temp(); // nothing free → must flag
+        assert!(
+            sel.alloc_exhausted,
+            "all temps pinned → exhaustion flagged for skip-and-continue"
         );
     }
 
