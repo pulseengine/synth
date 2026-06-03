@@ -177,7 +177,141 @@ pub fn select_with_options(
     let mut ctx = Selector::new_with_options(num_params, options);
     ctx.lower_seq(wasm_ops)?;
     ctx.emit_return_epilogue();
+    // #220: the temp pool includes callee-saved s-registers (s1..s6), but the
+    // RV psABI requires a function to preserve s0..s11. Wrap the body in a
+    // prologue/epilogue that spills+restores exactly the callee-saved registers
+    // it writes — otherwise calling the function corrupts the caller's s-regs
+    // (including s11 = __linear_memory_base). These functions are leaves, so no
+    // `ra`/caller-saved preservation is needed (non-leaf is a follow-up).
+    preserve_callee_saved(&mut ctx.out);
     Ok(RiscVSelection { ops: ctx.out })
+}
+
+/// The destination register an op writes, if any (for the callee-saved scan).
+fn op_dest(op: &RiscVOp) -> Option<Reg> {
+    use RiscVOp::*;
+    match *op {
+        Lui { rd, .. }
+        | Auipc { rd, .. }
+        | Jal { rd, .. }
+        | Jalr { rd, .. }
+        | Addi { rd, .. }
+        | Slti { rd, .. }
+        | Sltiu { rd, .. }
+        | Xori { rd, .. }
+        | Ori { rd, .. }
+        | Andi { rd, .. }
+        | Slli { rd, .. }
+        | Srli { rd, .. }
+        | Srai { rd, .. }
+        | Add { rd, .. }
+        | Sub { rd, .. }
+        | Sll { rd, .. }
+        | Slt { rd, .. }
+        | Sltu { rd, .. }
+        | Xor { rd, .. }
+        | Srl { rd, .. }
+        | Sra { rd, .. }
+        | Or { rd, .. }
+        | And { rd, .. }
+        | Lb { rd, .. }
+        | Lh { rd, .. }
+        | Lw { rd, .. }
+        | Lbu { rd, .. }
+        | Lhu { rd, .. }
+        | Csrrw { rd, .. }
+        | Csrrs { rd, .. }
+        | Csrrc { rd, .. }
+        | Csrrwi { rd, .. }
+        | Csrrsi { rd, .. }
+        | Csrrci { rd, .. }
+        | Mul { rd, .. }
+        | Mulh { rd, .. }
+        | Mulhsu { rd, .. }
+        | Mulhu { rd, .. }
+        | Div { rd, .. }
+        | Divu { rd, .. }
+        | Rem { rd, .. }
+        | Remu { rd, .. } => Some(rd),
+        _ => None,
+    }
+}
+
+/// True for callee-saved registers the allocator may hand out as temps:
+/// `s1` (x9) and `s2..s10` (x18..x26). Excludes the runtime-reserved `s0`
+/// (x8, frame pointer) and `s11` (x27, `__linear_memory_base`) — which the
+/// body never targets and must never be treated as a spillable temp.
+fn is_callee_saved_temp(r: Reg) -> bool {
+    let n = r as u8;
+    n == 9 || (18..=26).contains(&n)
+}
+
+/// #220: spill+restore the callee-saved registers `out` writes, per the RV
+/// psABI. No-op when the body uses only caller-saved (`t`/`a`) registers.
+fn preserve_callee_saved(out: &mut Vec<RiscVOp>) {
+    let mut saved: Vec<Reg> = Vec::new();
+    for op in out.iter() {
+        if let Some(rd) = op_dest(op)
+            && is_callee_saved_temp(rd)
+            && !saved.contains(&rd)
+        {
+            saved.push(rd);
+        }
+    }
+    if saved.is_empty() {
+        return;
+    }
+    saved.sort_by_key(|r| *r as u8); // deterministic slot order
+    // 16-byte-aligned frame (RV psABI) holding one word per saved register.
+    let frame = ((saved.len() as i32) * 4 + 15) & !15;
+
+    let mut prologue = vec![RiscVOp::Addi {
+        rd: Reg::SP,
+        rs1: Reg::SP,
+        imm: -frame,
+    }];
+    for (k, &r) in saved.iter().enumerate() {
+        prologue.push(RiscVOp::Sw {
+            rs1: Reg::SP,
+            rs2: r,
+            imm: (k as i32) * 4,
+        });
+    }
+
+    let mut epilogue: Vec<RiscVOp> = saved
+        .iter()
+        .enumerate()
+        .map(|(k, &r)| RiscVOp::Lw {
+            rd: r,
+            rs1: Reg::SP,
+            imm: (k as i32) * 4,
+        })
+        .collect();
+    epilogue.push(RiscVOp::Addi {
+        rd: Reg::SP,
+        rs1: Reg::SP,
+        imm: frame,
+    });
+
+    // Restore before every `ret` (jalr x0, 0(ra)); prepend the prologue once.
+    let is_ret = |op: &RiscVOp| {
+        matches!(
+            op,
+            RiscVOp::Jalr {
+                rd: Reg::ZERO,
+                rs1: Reg::RA,
+                imm: 0,
+            }
+        )
+    };
+    let mut new_out = prologue;
+    for op in out.drain(..) {
+        if is_ret(&op) {
+            new_out.extend(epilogue.iter().cloned());
+        }
+        new_out.push(op);
+    }
+    *out = new_out;
 }
 
 /// Internal control-flow frame. Every wasm `block`/`loop`/`if` pushes one.
@@ -4944,6 +5078,124 @@ mod tests {
         assert!(
             count(&out, |op| matches!(op, RiscVOp::Addi { imm: -1, .. })) >= 1,
             "long-division core decrements the loop counter"
+        );
+    }
+
+    /// #220: a function that uses callee-saved s-registers as temps must
+    /// spill/restore them (RV psABI) — otherwise it corrupts the caller. The body
+    /// stays unchanged; it is wrapped in a balanced prologue/epilogue.
+    #[test]
+    fn callee_saved_registers_preserved_220() {
+        // filter_axis: ((p0+p1)*980 + p2*20)/1000 — uses enough temps to spill
+        // into the callee-saved s-registers.
+        let sel = select(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::I32Add,
+                WasmOp::I32Const(980),
+                WasmOp::I32Mul,
+                WasmOp::LocalGet(2),
+                WasmOp::I32Const(20),
+                WasmOp::I32Mul,
+                WasmOp::I32Add,
+                WasmOp::I32Const(1000),
+                WasmOp::I32DivS,
+            ],
+            3,
+        )
+        .unwrap();
+        let out = &sel.ops;
+
+        // The body writes callee-saved s-registers...
+        let writes_s = out
+            .iter()
+            .any(|op| op_dest(op).is_some_and(is_callee_saved_temp));
+        assert!(writes_s, "test premise: body uses callee-saved s-registers");
+
+        // ...so the prologue must SW each of them to the stack frame, and the
+        // first instruction must open the frame (addi sp, sp, -N).
+        assert!(
+            matches!(out.first(), Some(RiscVOp::Addi { rd: Reg::SP, imm, .. }) if *imm < 0),
+            "prologue must open a stack frame: {:?}",
+            out.first()
+        );
+        // Every callee-saved reg written is also spilled (SW) and restored (LW).
+        for op in out.iter() {
+            if let Some(rd) = op_dest(op)
+                && is_callee_saved_temp(rd)
+            {
+                {
+                    assert!(
+                        out.iter()
+                            .any(|o| matches!(o, RiscVOp::Sw { rs2, .. } if *rs2 == rd)),
+                        "callee-saved {rd:?} written but never spilled (#220)"
+                    );
+                    assert!(
+                        out.iter()
+                            .any(|o| matches!(o, RiscVOp::Lw { rd: r, .. } if *r == rd)),
+                        "callee-saved {rd:?} written but never restored (#220)"
+                    );
+                }
+            }
+        }
+        // SP adjustments balance (frame opened == frame closed).
+        let sp_delta: i32 = out
+            .iter()
+            .filter_map(|op| match op {
+                RiscVOp::Addi {
+                    rd: Reg::SP, imm, ..
+                } => Some(*imm),
+                _ => None,
+            })
+            .sum();
+        // One open (-N) + one close (+N) per return path; with N return paths the
+        // sum is 0 only if open is counted once per path too. The epilogue closes
+        // on every `ret`, and the single prologue opens once — so net is
+        // `-N + (returns * N)`. Assert each close matches the open magnitude.
+        let opens: Vec<i32> = out
+            .iter()
+            .filter_map(|op| match op {
+                RiscVOp::Addi {
+                    rd: Reg::SP, imm, ..
+                } if *imm < 0 => Some(-*imm),
+                _ => None,
+            })
+            .collect();
+        let closes: Vec<i32> = out
+            .iter()
+            .filter_map(|op| match op {
+                RiscVOp::Addi {
+                    rd: Reg::SP, imm, ..
+                } if *imm > 0 => Some(*imm),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(opens.len(), 1, "exactly one prologue frame open");
+        assert!(
+            closes.iter().all(|&c| c == opens[0]),
+            "every epilogue closes the same frame size as the prologue: {sp_delta}"
+        );
+    }
+
+    /// #220: a function using only caller-saved (t/a) registers needs no frame,
+    /// so the preservation pass must be a no-op (don't penalise simple functions).
+    #[test]
+    fn no_frame_when_only_caller_saved_220() {
+        let sel = select(
+            &[WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add],
+            2,
+        )
+        .unwrap();
+        assert!(
+            !sel.ops.iter().any(|op| matches!(op, RiscVOp::Sw { .. })),
+            "no callee-saved spill for a t-register-only function"
+        );
+        assert!(
+            !sel.ops
+                .iter()
+                .any(|op| matches!(op, RiscVOp::Addi { rd: Reg::SP, imm, .. } if *imm != 0)),
+            "no stack-frame adjustment when no callee-saved register is used"
         );
     }
 

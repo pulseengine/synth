@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.22] - 2026-06-03
+
+**RISC-V backend: preserve callee-saved registers per the RV psABI (#220).**
+The RV32 register allocator hands out callee-saved s-registers (`s1`..`s6`) as
+temporaries once the caller-saved `t`-registers are exhausted, but the backend
+emitted no prologue/epilogue — so a function that used them **corrupted the
+caller's s-registers** (including `s11` = `__linear_memory_base`), hanging
+qemu_riscv32 timing loops. gale's first on-target RISC-V finding, now reachable
+via #218.
+
+A post-build pass (`preserve_callee_saved`) scans the function body for the
+callee-saved registers it writes and wraps it in a balanced prologue
+(`addi sp,sp,-N; sw s_i,..`) + epilogue (`lw s_i,..; addi sp,sp,N`) before every
+`ret` -- spilling+restoring exactly those registers (the ARM backend's
+`push {r4-r8,lr}` equivalent). It is a no-op for functions that use only
+caller-saved (`t`/`a`) registers, so simple functions pay nothing. `s0` (fp) and
+`s11` (linmem base) are excluded -- the allocator never targets them.
+
+Validated on `filter_axis_decide` via a unicorn RV32 differential: the result
+matches wasmtime on signed/unsigned vectors AND the caller's sentinel-seeded
+s-registers are restored. Fixtures: `scripts/repro/filter_axis.{wasm,wat}` +
+`filter_axis_riscv_differential.py`. Unit tests
+`callee_saved_registers_preserved_220` + `no_frame_when_only_caller_saved_220`;
+160 riscv backend tests green.
+
+Note: leaf functions only for now (these wasm functions make no calls); non-leaf
+`ra`/caller-saved preservation across calls is a follow-up.
+
+Falsification: wrong if any RV32 function writes a callee-saved register without
+spilling it, or if the wrapped body changes its returned value.
+
 ## [0.11.21] - 2026-06-03
 
 **Expose RV32 target profiles so `-b riscv` is reachable from `compile` (#218).**
