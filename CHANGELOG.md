@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.21] - 2026-06-03
+
+**Expose RV32 target profiles so `-b riscv` is reachable from `compile` (#218).**
+The RISC-V backend existed and worked, but there was no way to target it: `-t`
+only accepted Cortex-M triples, so `-b riscv` always inherited the default
+`ArmCortexM` profile and bailed (`RISC-V backend cannot compile for ArmCortexM`),
+and the short ISA names the toolchains use (`rv32imac`, …) were "unknown target
+triple". This was purely a CLI/target-profile wiring gap.
+
+- `TargetSpec::from_triple` now accepts the short RV32 names — `rv32imac`,
+  `rv32imc`, `rv32im`, `rv32i`, `rv32gc`, the generic `riscv32`/`rv32`, and the
+  `esp32c3` board alias (RV32IMC) — alongside the existing long LLVM triples,
+  via a new parameterized `TargetSpec::riscv32(extensions)`.
+- `synth compile -b riscv` with no `--target` now defaults to `rv32imac` instead
+  of inheriting the ARM profile, so the backend is reachable out of the box.
+- The "unknown target triple" error now lists the RV32 options, and `-t`'s help
+  text documents them.
+
+`synth compile fn.wasm -b riscv -t rv32imac --relocatable` (and `-t rv32imc`,
+`-t esp32c3`, or bare `-b riscv`) now emit a RISC-V (`EM_RISCV`, ELFCLASS32)
+relocatable object. This unblocks the wasm→loom→`synth -b riscv`→RV32 path for
+ESP32-C3 / qemu_riscv32. Tests: `test_rv32_short_target_names_218` (parsing) +
+`test_resolve_target_spec_riscv_default_218` (the `-b riscv` default).
+
+Not in scope (follow-ups): `target-info` still only knows the ARM board profiles
+(it uses board `HardwareCapabilities`, not target triples); RISC-V codegen
+quality/correctness is validated separately on-target.
+
+Falsification: this release is wrong if `synth compile -b riscv -t rv32imac`
+fails to produce a valid RISC-V object, or if an RV32 target name resolves to a
+non-RISC-V spec.
+
 ## [0.11.20] - 2026-06-02
 
 **Cost-gate the reciprocal-multiply — fixes the Opt 1b register-pressure
