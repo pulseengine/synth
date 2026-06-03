@@ -175,15 +175,17 @@ pub fn select_with_options(
     options: SelectorOptions,
 ) -> Result<RiscVSelection, SelectorError> {
     let mut ctx = Selector::new_with_options(num_params, options);
+    ctx.compute_local_layout(wasm_ops, num_params); // #223
     ctx.lower_seq(wasm_ops)?;
     ctx.emit_return_epilogue();
+    let local_frame_bytes = ctx.local_frame_bytes;
     // #220: the temp pool includes callee-saved s-registers (s1..s6), but the
     // RV psABI requires a function to preserve s0..s11. Wrap the body in a
     // prologue/epilogue that spills+restores exactly the callee-saved registers
     // it writes — otherwise calling the function corrupts the caller's s-regs
     // (including s11 = __linear_memory_base). These functions are leaves, so no
     // `ra`/caller-saved preservation is needed (non-leaf is a follow-up).
-    preserve_callee_saved(&mut ctx.out);
+    preserve_callee_saved(&mut ctx.out, local_frame_bytes);
     Ok(RiscVSelection { ops: ctx.out })
 }
 
@@ -246,9 +248,11 @@ fn is_callee_saved_temp(r: Reg) -> bool {
     n == 9 || (18..=26).contains(&n)
 }
 
-/// #220: spill+restore the callee-saved registers `out` writes, per the RV
-/// psABI. No-op when the body uses only caller-saved (`t`/`a`) registers.
-fn preserve_callee_saved(out: &mut Vec<RiscVOp>) {
+/// #220 + #223: open a stack frame for the non-parameter locals (`local_bytes`,
+/// laid out at the bottom `0..local_bytes`) and spill+restore the callee-saved
+/// registers `out` writes (above the locals, per the RV psABI). No-op only when
+/// the body uses no callee-saved register AND has no frame-backed locals.
+fn preserve_callee_saved(out: &mut Vec<RiscVOp>, local_bytes: i32) {
     let mut saved: Vec<Reg> = Vec::new();
     for op in out.iter() {
         if let Some(rd) = op_dest(op)
@@ -258,12 +262,14 @@ fn preserve_callee_saved(out: &mut Vec<RiscVOp>) {
             saved.push(rd);
         }
     }
-    if saved.is_empty() {
+    if saved.is_empty() && local_bytes == 0 {
         return;
     }
     saved.sort_by_key(|r| *r as u8); // deterministic slot order
-    // 16-byte-aligned frame (RV psABI) holding one word per saved register.
-    let frame = ((saved.len() as i32) * 4 + 15) & !15;
+    // 16-byte-aligned frame (RV psABI): [ locals 0..local_bytes | saved regs ].
+    let frame = (local_bytes + (saved.len() as i32) * 4 + 15) & !15;
+    // Saved registers sit just above the locals region.
+    let sreg_off = |k: usize| local_bytes + (k as i32) * 4;
 
     let mut prologue = vec![RiscVOp::Addi {
         rd: Reg::SP,
@@ -274,7 +280,7 @@ fn preserve_callee_saved(out: &mut Vec<RiscVOp>) {
         prologue.push(RiscVOp::Sw {
             rs1: Reg::SP,
             rs2: r,
-            imm: (k as i32) * 4,
+            imm: sreg_off(k),
         });
     }
 
@@ -284,7 +290,7 @@ fn preserve_callee_saved(out: &mut Vec<RiscVOp>) {
         .map(|(k, &r)| RiscVOp::Lw {
             rd: r,
             rs1: Reg::SP,
-            imm: (k as i32) * 4,
+            imm: sreg_off(k),
         })
         .collect();
     epilogue.push(RiscVOp::Addi {
@@ -359,6 +365,12 @@ struct Selector {
     emitted_return: bool,
     /// Phase-1 safety options (bounds-check policy, signed-div overflow trap).
     options: SelectorOptions,
+    /// #223: non-parameter local `idx` → byte offset within the stack frame
+    /// (the locals region, laid out first at `0..local_frame_bytes`). The #220
+    /// callee-saved spills go after it; the unified prologue opens both.
+    local_offsets: std::collections::HashMap<u32, i32>,
+    /// Bytes reserved for non-parameter locals (4 per i32 local, 16-aligned).
+    local_frame_bytes: i32,
 }
 
 impl Selector {
@@ -391,7 +403,31 @@ impl Selector {
             next_label: 0,
             emitted_return: false,
             options,
+            local_offsets: std::collections::HashMap::new(),
+            local_frame_bytes: 0,
         }
+    }
+
+    /// #223: lay out the non-parameter locals referenced by `wasm_ops` into the
+    /// stack frame, one 4-byte i32 slot each, at offsets `0,4,8,…`. The slots
+    /// sit at the bottom of the frame; the #220 callee-saved spills go above.
+    fn compute_local_layout(&mut self, wasm_ops: &[WasmOp], num_params: u32) {
+        use std::collections::BTreeSet;
+        let mut used: BTreeSet<u32> = BTreeSet::new();
+        for op in wasm_ops {
+            match op {
+                WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i)
+                    if *i >= num_params =>
+                {
+                    used.insert(*i);
+                }
+                _ => {}
+            }
+        }
+        for (slot, idx) in used.into_iter().enumerate() {
+            self.local_offsets.insert(idx, (slot as i32) * 4);
+        }
+        self.local_frame_bytes = self.local_offsets.len() as i32 * 4;
     }
 
     fn fresh_label(&mut self, prefix: &str) -> String {
@@ -490,6 +526,9 @@ impl Selector {
             LocalSet(idx) => self.lower_local_set(*idx, op)?,
             LocalTee(idx) => self.lower_local_tee(*idx, op)?,
 
+            // ─── Select (ternary) — #223 ────────────────────────────────
+            Select => self.lower_select(op)?,
+
             // ─── Constants ──────────────────────────────────────────────
             I32Const(v) => {
                 let dst = self.alloc_temp();
@@ -530,6 +569,10 @@ impl Selector {
             I32Shl => self.bin(op, |rd, rs1, rs2| RiscVOp::Sll { rd, rs1, rs2 })?,
             I32ShrS => self.bin(op, |rd, rs1, rs2| RiscVOp::Sra { rd, rs1, rs2 })?,
             I32ShrU => self.bin(op, |rd, rs1, rs2| RiscVOp::Srl { rd, rs1, rs2 })?,
+
+            // ─── Sign extension — #223 (slli/srai) ─────────────────────
+            I32Extend8S => self.lower_sign_extend(op, 24)?,
+            I32Extend16S => self.lower_sign_extend(op, 16)?,
 
             // ─── Comparisons (return 0 or 1 in a register) ─────────────
             I32Eqz => self.lower_eqz(op)?,
@@ -700,6 +743,86 @@ impl Selector {
         Ok(())
     }
 
+    /// #223: `select` — wasm pops `cond` (top), then `b`, then `a`; the result
+    /// is `cond != 0 ? a : b`. RV32 has no conditional-move, so this lowers to a
+    /// short branch (the same shape the ARM backend builds with IT/SelectMove):
+    /// ```text
+    ///   bne cond, zero, .Lsel_a   ; cond != 0 → take a
+    ///   mv  dst, b                ; cond == 0 → b
+    ///   j   .Lsel_end
+    /// .Lsel_a:
+    ///   mv  dst, a
+    /// .Lsel_end:
+    /// ```
+    /// Handles both i32 and i64 operands (the i64 case selects both halves under
+    /// one branch). `dst` may alias `a`/`b` — safe, because the two arms are
+    /// mutually exclusive.
+    fn lower_select(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
+        let cond = self.pop_i32(op)?;
+        let b = self.pop_any(op)?;
+        let a = self.pop_any(op)?;
+        let take_a = self.fresh_label("Lsel_a");
+        let end = self.fresh_label("Lsel_end");
+        let mv = |dst: Reg, src: Reg| RiscVOp::Addi {
+            rd: dst,
+            rs1: src,
+            imm: 0,
+        };
+        match (a, b) {
+            (VstackVal::I32(ra), VstackVal::I32(rb)) => {
+                let dst = self.alloc_temp();
+                self.out.push(RiscVOp::Branch {
+                    cond: Branch::Ne,
+                    rs1: cond,
+                    rs2: Reg::ZERO,
+                    label: take_a.clone(),
+                });
+                self.out.push(mv(dst, rb)); // cond == 0 → b
+                self.out.push(RiscVOp::Jal {
+                    rd: Reg::ZERO,
+                    label: end.clone(),
+                });
+                self.out.push(RiscVOp::Label { name: take_a });
+                self.out.push(mv(dst, ra)); // cond != 0 → a
+                self.out.push(RiscVOp::Label { name: end });
+                self.push_i32(dst);
+            }
+            (VstackVal::I64 { lo: alo, hi: ahi }, VstackVal::I64 { lo: blo, hi: bhi }) => {
+                let dlo = self.alloc_temp();
+                let dhi = self.alloc_temp();
+                self.out.push(RiscVOp::Branch {
+                    cond: Branch::Ne,
+                    rs1: cond,
+                    rs2: Reg::ZERO,
+                    label: take_a.clone(),
+                });
+                self.out.push(mv(dlo, blo)); // cond == 0 → b
+                self.out.push(mv(dhi, bhi));
+                self.out.push(RiscVOp::Jal {
+                    rd: Reg::ZERO,
+                    label: end.clone(),
+                });
+                self.out.push(RiscVOp::Label { name: take_a });
+                self.out.push(mv(dlo, alo)); // cond != 0 → a
+                self.out.push(mv(dhi, ahi));
+                self.out.push(RiscVOp::Label { name: end });
+                self.push_i64(dlo, dhi);
+            }
+            (x, y) => {
+                return Err(SelectorError::StackTypeMismatch {
+                    op: op.clone(),
+                    expected: "matching i32/i64 select operands",
+                    found: if x.type_name() != y.type_name() {
+                        "mismatched"
+                    } else {
+                        x.type_name()
+                    },
+                });
+            }
+        }
+        Ok(())
+    }
+
     // ────────── Locals ──────────
 
     fn lower_local_get(&mut self, idx: u32, op: &WasmOp) -> Result<(), SelectorError> {
@@ -712,14 +835,26 @@ impl Selector {
                 imm: 0,
             });
         } else {
-            // Locals beyond params are stack-allocated. For the skeleton
-            // we don't materialize the frame — emit a clear error instead.
-            return Err(SelectorError::Unsupported(op.clone()));
+            // #223: non-param local — load from its frame slot (lw dst, off(sp)).
+            let off = self.local_slot(idx, op)?;
+            self.out.push(RiscVOp::Lw {
+                rd: dst,
+                rs1: Reg::SP,
+                imm: off,
+            });
         }
         // Phase 1: locals are always treated as i32. i64 locals would need
-        // two arg-register slots and live outside the scope of this PR.
+        // two slots and live outside the scope of this PR.
         self.push_i32(dst);
         Ok(())
+    }
+
+    /// #223: byte offset of a non-parameter local within the stack frame.
+    fn local_slot(&self, idx: u32, op: &WasmOp) -> Result<i32, SelectorError> {
+        self.local_offsets
+            .get(&idx)
+            .copied()
+            .ok_or_else(|| SelectorError::Unsupported(op.clone()))
     }
 
     fn lower_local_set(&mut self, idx: u32, op: &WasmOp) -> Result<(), SelectorError> {
@@ -733,7 +868,14 @@ impl Selector {
             });
             Ok(())
         } else {
-            Err(SelectorError::Unsupported(op.clone()))
+            // #223: non-param local — store to its frame slot (sw src, off(sp)).
+            let off = self.local_slot(idx, op)?;
+            self.out.push(RiscVOp::Sw {
+                rs1: Reg::SP,
+                rs2: src,
+                imm: off,
+            });
+            Ok(())
         }
     }
 
@@ -763,8 +905,35 @@ impl Selector {
             });
             Ok(())
         } else {
-            Err(SelectorError::Unsupported(op.clone()))
+            // #223: tee = store to the frame slot, value stays on the vstack.
+            let off = self.local_slot(idx, op)?;
+            self.out.push(RiscVOp::Sw {
+                rs1: Reg::SP,
+                rs2: src,
+                imm: off,
+            });
+            Ok(())
         }
+    }
+
+    /// #223: `i32.extend8_s` / `i32.extend16_s` — sign-extend the low byte or
+    /// halfword of an i32. RV32 has no sign-extend op, so shift the bits up to
+    /// the top and arithmetic-shift back (`shift` = 24 for 8-bit, 16 for 16-bit).
+    fn lower_sign_extend(&mut self, op: &WasmOp, shift: u8) -> Result<(), SelectorError> {
+        let src = self.pop_i32(op)?;
+        let dst = self.alloc_temp();
+        self.out.push(RiscVOp::Slli {
+            rd: dst,
+            rs1: src,
+            shamt: shift,
+        });
+        self.out.push(RiscVOp::Srai {
+            rd: dst,
+            rs1: dst,
+            shamt: shift,
+        });
+        self.push_i32(dst);
+        Ok(())
     }
 
     // ────────── Binary helpers ──────────
@@ -5196,6 +5365,90 @@ mod tests {
                 .iter()
                 .any(|op| matches!(op, RiscVOp::Addi { rd: Reg::SP, imm, .. } if *imm != 0)),
             "no stack-frame adjustment when no callee-saved register is used"
+        );
+    }
+
+    /// #223: `select` lowers to a branch + two moves (RV32 has no cmov).
+    #[test]
+    fn select_lowers_to_branch_223() {
+        let sel = select(
+            &[
+                WasmOp::I32Const(10),
+                WasmOp::I32Const(20),
+                WasmOp::I32Const(1),
+                WasmOp::Select,
+            ],
+            0,
+        )
+        .unwrap();
+        assert!(
+            sel.ops.iter().any(|op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Ne,
+                    rs2: Reg::ZERO,
+                    ..
+                }
+            )),
+            "select branches on `cond != 0`"
+        );
+        // Two arms, each a `mv` (Addi rd, rs, 0).
+        assert!(
+            count(&sel.ops, |op| matches!(op, RiscVOp::Addi { imm: 0, .. })) >= 2,
+            "select moves both candidate values"
+        );
+    }
+
+    /// #223: `i32.extend16_s` / `extend8_s` lower to `slli`+`srai`.
+    #[test]
+    fn sign_extend_uses_slli_srai_223() {
+        for (op, sh) in [(WasmOp::I32Extend16S, 16u8), (WasmOp::I32Extend8S, 24u8)] {
+            let sel = select(&[WasmOp::LocalGet(0), op], 1).unwrap();
+            assert!(
+                sel.ops
+                    .iter()
+                    .any(|o| matches!(o, RiscVOp::Slli { shamt, .. } if *shamt == sh)),
+                "sign-extend uses slli #{sh}"
+            );
+            assert!(
+                sel.ops
+                    .iter()
+                    .any(|o| matches!(o, RiscVOp::Srai { shamt, .. } if *shamt == sh)),
+                "sign-extend uses srai #{sh}"
+            );
+        }
+    }
+
+    /// #223: a non-parameter local (idx >= num_params) is frame-backed — set
+    /// stores to the stack (`sw`), get loads from it (`lw`), and the unified
+    /// prologue opens a frame to hold it.
+    #[test]
+    fn non_param_local_uses_frame_223() {
+        // num_params = 0, so local 0 is a non-param local.
+        let sel = select(
+            &[
+                WasmOp::I32Const(42),
+                WasmOp::LocalSet(0),
+                WasmOp::LocalGet(0),
+            ],
+            0,
+        )
+        .unwrap();
+        assert!(
+            sel.ops
+                .iter()
+                .any(|op| matches!(op, RiscVOp::Sw { rs1: Reg::SP, .. })),
+            "local.set on a non-param local stores to the frame"
+        );
+        assert!(
+            sel.ops
+                .iter()
+                .any(|op| matches!(op, RiscVOp::Lw { rs1: Reg::SP, .. })),
+            "local.get on a non-param local loads from the frame"
+        );
+        assert!(
+            matches!(sel.ops.first(), Some(RiscVOp::Addi { rd: Reg::SP, imm, .. }) if *imm < 0),
+            "a frame is opened for the local"
         );
     }
 
