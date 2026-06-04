@@ -1919,10 +1919,7 @@ fn compile_all_exports(
         // #237: native-pointer ABI — wasm statics (initialized + zero-init/BSS)
         // become __synth_wasm_data-relative across the whole linear memory.
         native_pointer_abi,
-        linear_memory_bytes: all_memories
-            .first()
-            .map(|m| m.initial_bytes())
-            .unwrap_or(0),
+        linear_memory_bytes: all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0),
         ..CompileConfig::default()
     };
 
@@ -2072,10 +2069,7 @@ fn compile_all_exports(
             &compiled_funcs,
             &all_imports,
             &all_data_segments,
-            all_memories
-                .first()
-                .map(|m| m.initial_bytes())
-                .unwrap_or(0),
+            all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0),
         )?
     } else if cortex_m {
         build_multi_func_cortex_m_elf(&compiled_funcs, &all_memories, target_spec)?
