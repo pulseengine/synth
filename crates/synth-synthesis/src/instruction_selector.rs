@@ -227,6 +227,23 @@ fn const_divisor(wasm_ops: &[WasmOp], idx: usize) -> Option<i32> {
     }
 }
 
+/// If the operand pushed immediately before a bitwise binop is a constant the
+/// Thumb-2 data-processing immediate encoder handles correctly, return it so the
+/// op can fold the constant into an immediate operand and skip materializing it
+/// into a register (the redundant-materialization waste measured on `flat_flight`,
+/// #209/#248). Bounded to `0..=0xFF`: the encoder's `AND`-immediate path is not
+/// yet ThumbExpandImm-complete and only encodes a single zero-extended byte
+/// correctly (#249).
+fn foldable_bitwise_imm(wasm_ops: &[WasmOp], idx: usize) -> Option<i32> {
+    if idx == 0 {
+        return None;
+    }
+    match wasm_ops[idx - 1] {
+        WasmOp::I32Const(c) if (0..=0xFF).contains(&c) => Some(c),
+        _ => None,
+    }
+}
+
 /// If `c` (read as an unsigned 32-bit divisor) is a power of two `2^k` with
 /// `k >= 1`, return `k` so `i32.div_u` can lower to `LSR rd, rn, #k`.
 ///
@@ -5131,22 +5148,55 @@ impl InstructionSelector {
                 }
 
                 I32And => {
-                    let b = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
-                    let a = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
+                    // Immediate folding: when the second operand is a small const
+                    // (`i32.const C`, 0..=0xFF) whose `movw` is cleanly at the tail
+                    // (not spilled), fold it as `and rd, a, #C` and drop the
+                    // materialization — eliminating the redundant const load
+                    // (#209/#248). Bounded to 0..=0xFF by the encoder (#249).
+                    let fold_imm = foldable_bitwise_imm(wasm_ops, idx).filter(|_| {
+                        matches!(
+                            instructions.last().map(|i| (&i.op, i.source_line)),
+                            Some((ArmOp::Movw { .. }, Some(sl))) if sl == idx - 1
+                        )
+                    });
+                    let (a, op2) = if let Some(c) = fold_imm {
+                        let _b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        (a, Operand2::Imm(c))
+                    } else {
+                        let b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        (a, Operand2::Reg(b))
+                    };
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -5156,7 +5206,7 @@ impl InstructionSelector {
                         op: ArmOp::And {
                             rd: dst,
                             rn: a,
-                            op2: Operand2::Reg(b),
+                            op2,
                         },
                         source_line: Some(idx),
                     });
@@ -14329,6 +14379,72 @@ mod tests {
         assert!(
             !sub_sp,
             "no frame allocation expected for params-only function"
+        );
+    }
+
+    /// VCR-RA-001 immediate folding: `i32.const C (0..=0xFF); i32.and` folds the
+    /// constant into the `AND` immediate and drops the `movw`. Measured delta on
+    /// the clamp pattern: 8 → 6 instructions (both `movw #126` eliminated). The
+    /// first delta-emitting codegen transform on the allocator track.
+    #[test]
+    fn i32_and_folds_small_const_into_immediate() {
+        let mut selector = fresh_selector();
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(0x7e),
+            WasmOp::I32And,
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(0x7e),
+            WasmOp::I32And,
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&ops, 1).unwrap();
+        let movw_126 = instrs
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Movw { imm16: 126, .. }))
+            .count();
+        let and_imm_126 = instrs
+            .iter()
+            .filter(|i| {
+                matches!(
+                    &i.op,
+                    ArmOp::And {
+                        op2: Operand2::Imm(126),
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(movw_126, 0, "the const materialization must be folded away");
+        assert_eq!(and_imm_126, 2, "both ANDs use the folded immediate");
+    }
+
+    /// A constant beyond the encoder's `AND`-immediate range (> 0xFF) must NOT be
+    /// folded — it stays a register operand, so the encoder never emits a
+    /// silently-wrong modified immediate (#249 bound).
+    #[test]
+    fn i32_and_does_not_fold_out_of_range_const() {
+        let mut selector = fresh_selector();
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(0x140), // 320 > 0xFF
+            WasmOp::I32And,
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&ops, 1).unwrap();
+        let and_imm = instrs.iter().any(|i| {
+            matches!(
+                &i.op,
+                ArmOp::And {
+                    op2: Operand2::Imm(_),
+                    ..
+                }
+            )
+        });
+        assert!(
+            !and_imm,
+            "0x140 must stay a register operand, not an immediate"
         );
     }
 

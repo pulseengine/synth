@@ -8984,6 +8984,36 @@ mod tests {
         assert_eq!(code.len(), 4, "MVE VABS.F32 should be 4 bytes");
     }
 
+    /// VCR-RA-001 / immediate-folding precondition: pins the Thumb-2 `AND`
+    /// immediate encoding for the byte range and documents its bound.
+    ///
+    /// The `And { Operand2::Imm }` encoder packs the low 12 bits straight into
+    /// the `i:imm3:imm8` field WITHOUT applying ThumbExpandImm (the modified-
+    /// immediate expansion). For `imm <= 0xFF` (e.g. gale's int8 clamps
+    /// `#0x7e` / `#0x7f`) that is correct — `i:imm3 = 0000` means "imm8
+    /// zero-extended". So `and r2, r0, #0x7e` encodes to the canonical
+    /// `00 f0 7e 02`. For `imm >= 0x100` the field would need a true
+    /// ThumbExpandImm pattern (rotation / replication), which is NOT
+    /// implemented here — so **immediate folding must gate on `imm <= 0xFF`**
+    /// until the encoder is hardened to ThumbExpandImm/Ok-or-Err (the
+    /// "encoder must be Ok-or-Err, never silently wrong" principle, #180/#185).
+    /// This bound covers the measured `flat_flight` waste (#209).
+    #[test]
+    fn and_immediate_encodes_correctly_in_byte_range_documents_fold_bound() {
+        let encoder = ArmEncoder::new_thumb2();
+        let op = ArmOp::And {
+            rd: Reg::R2,
+            rn: Reg::R0,
+            op2: Operand2::Imm(0x7e),
+        };
+        let code = encoder.encode(&op).unwrap();
+        assert_eq!(
+            code,
+            vec![0x00, 0xf0, 0x7e, 0x02],
+            "and r2, r0, #0x7e must encode to the canonical AND.W T1 (imm8=0x7e)"
+        );
+    }
+
     /// VCR-RA-001: ORR/EOR with a small immediate must encode the real
     /// instruction (not a silent `0xBF00` NOP). Pins the byte range and the
     /// Ok-or-Err bound that makes future Or/Eor immediate folding safe.
