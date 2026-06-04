@@ -1194,6 +1194,20 @@ pub struct InstructionSelector {
     /// (initialized `(data)` + zero-init/BSS). A const address below this is a
     /// static (symbol-relative under the flag).
     linear_memory_bytes: u32,
+    /// #237: the lowest wasm address that is a *static-data* address rather than
+    /// a scalar/offset. When a module carries a stack-pointer global, its
+    /// initializer (e.g. `65536`) is simultaneously the stack top and the base
+    /// of the static-data region: addresses `>= wasm_data_base` are pointers
+    /// (relocated to `__synth_wasm_data + C`), values `< wasm_data_base` are
+    /// frame sizes / field offsets (`i32.const 16`) and stay plain immediates.
+    /// Defaults to `0` (relocate everything inside linear memory) for modules
+    /// with no stack-pointer global.
+    wasm_data_base: u32,
+    /// #237: the stack-pointer global `(index, init_value)`, if identified. Under
+    /// the native-pointer ABI a leaf, balanced function register-promotes it:
+    /// `global.get` materializes `__synth_wasm_data + init` (the real stack top),
+    /// `global.set` is dead (no wasm reader; host imports don't touch wasm SP).
+    sp_global: Option<(u32, i32)>,
     /// AAPCS argument count per function, indexed by the *full* WASM function
     /// index (imports first, then locals). Plumbed from the frontend's type +
     /// function sections (issue #195). `func_arg_counts[i]` = number of integer
@@ -1233,6 +1247,8 @@ impl InstructionSelector {
             relocatable: false,
             native_pointer_abi: false,
             linear_memory_bytes: 0,
+            wasm_data_base: 0,
+            sp_global: None,
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1255,6 +1271,8 @@ impl InstructionSelector {
             relocatable: false,
             native_pointer_abi: false,
             linear_memory_bytes: 0,
+            wasm_data_base: 0,
+            sp_global: None,
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1299,7 +1317,21 @@ impl InstructionSelector {
         if !self.native_pointer_abi {
             return None;
         }
-        (addr < self.linear_memory_bytes).then_some(addr as i32)
+        // A const is a static-data *address* only within
+        // `[wasm_data_base, linear_memory_bytes)`. The lower bound excludes
+        // frame sizes / field offsets (`i32.const 16`) that live below the
+        // stack-pointer init; the upper bound excludes runtime host pointers.
+        (self.wasm_data_base <= addr && addr < self.linear_memory_bytes).then_some(addr as i32)
+    }
+
+    /// #237: register the stack-pointer global discovered by the backend. Its
+    /// initializer doubles as the static-data base (`wasm_data_base`), so const
+    /// addresses at/above it relocate while frame-size scalars below it don't.
+    pub fn set_native_pointer_stack(&mut self, sp_index: u32, sp_init: i32) {
+        self.sp_global = Some((sp_index, sp_init));
+        if sp_init >= 0 {
+            self.wasm_data_base = sp_init as u32;
+        }
     }
 
     /// #237: emit a `__synth_wasm_data + addend` address into `rd` (MOVW+MOVT,
@@ -4935,6 +4967,23 @@ impl InstructionSelector {
                 I32Const(val) => {
                     let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
                     let uval = *val as u32;
+                    // #237: under the native-pointer ABI, when a stack-pointer
+                    // global establishes a real static-data base, a const at/above
+                    // it is a wasm pointer (e.g. a `&static_spinlock` argument),
+                    // not a scalar — emit it as `__synth_wasm_data + uval` so it
+                    // resolves at link time independent of any runtime base. This
+                    // is gated on `sp_global`: without one the base is 0 and every
+                    // const (including stored *values*) would look like an address,
+                    // which is unsound — those modules use the positional
+                    // load/store promotion only.
+                    if self.sp_global.is_some()
+                        && let Some(addend) = self.static_data_addend(uval)
+                    {
+                        Self::emit_wasm_data_addr(&mut instructions, dst, addend, idx);
+                        cf.add_instruction();
+                        stack.push(StackVal::i32(dst));
+                        continue;
+                    }
                     let inverted = !uval;
                     if uval <= 0xFFFF {
                         // 0..65535: MOVW handles the full 16-bit range
@@ -6955,6 +7004,20 @@ impl InstructionSelector {
                 }
 
                 GlobalGet(global_idx) => {
+                    // #237: under the native-pointer ABI, reading the stack-pointer
+                    // global yields the real stack top — `__synth_wasm_data + init`
+                    // — register-promoted, so the dissolved object needs no runtime
+                    // R9 globals table. Frame arithmetic on this real pointer keeps
+                    // the base; SP-relative loads become true memory accesses.
+                    if let Some((sp_idx, sp_init)) = self.sp_global
+                        && *global_idx == sp_idx
+                    {
+                        let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                        Self::emit_wasm_data_addr(&mut instructions, dst, sp_init, idx);
+                        cf.add_instruction();
+                        stack.push(StackVal::i32(dst));
+                        continue;
+                    }
                     // Load global value from globals table (R9 = globals base).
                     // Each i32 global occupies 4 bytes at offset index * 4.
                     let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
@@ -6979,6 +7042,17 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
+                    // #237: a write to the register-promoted stack-pointer global is
+                    // dead in a leaf, balanced function — the only readers are this
+                    // function's own `global.get`s (which re-materialize the init
+                    // address) and host imports (which never touch wasm SP). Pop the
+                    // operand (preserving stack discipline) and drop the store.
+                    if let Some((sp_idx, _)) = self.sp_global
+                        && *global_idx == sp_idx
+                    {
+                        let _ = val;
+                        continue;
+                    }
                     instructions.push(ArmInstruction {
                         op: ArmOp::Str {
                             rd: val,
@@ -14588,6 +14662,62 @@ mod tests {
         assert!(
             !oor.iter().any(is_data_sym),
             "an address outside any data segment stays base-relative. got: {oor:#?}"
+        );
+    }
+
+    /// #237: register-promote the stack-pointer global so a dissolved leaf object
+    /// is self-contained (no R9 globals table). Mirrors gmutex's prologue:
+    /// `global.get $sp; i32.const 16; i32.sub; global.set $sp` plus a
+    /// `i32.const 65536` static-pointer call argument. Asserts:
+    ///  - `global.get $sp` materializes `__synth_wasm_data + init` (MovwSym/MovtSym)
+    ///  - the static-pointer const (>= data_base) is relocated likewise
+    ///  - the frame-size const `16` (< data_base) stays a plain `Movw` immediate
+    ///  - the promoted global never touches the R9 globals table
+    #[test]
+    fn test_237_stack_pointer_global_is_register_promoted() {
+        let db = RuleDatabase::new();
+        // (memory 2) = 131072 bytes; (global $sp (mut i32) 65536).
+        let ops = vec![
+            WasmOp::GlobalGet(0),    // read SP → real stack top
+            WasmOp::I32Const(16),    // frame size (scalar, must stay immediate)
+            WasmOp::I32Sub,          // SP - 16
+            WasmOp::GlobalSet(0),    // write SP (dead in leaf-balanced)
+            WasmOp::I32Const(65536), // &static_spinlock (pointer, must relocate)
+            WasmOp::End,
+        ];
+        let mut sel = InstructionSelector::new(db.rules().to_vec());
+        sel.set_relocatable(true);
+        sel.set_native_pointer_abi(true, 131072);
+        sel.set_native_pointer_stack(0, 65536);
+        let out = sel.select_with_stack(&ops, 1).unwrap();
+
+        let data_syms = out
+            .iter()
+            .filter(|i| {
+                matches!(&i.op, ArmOp::MovwSym { symbol, .. } | ArmOp::MovtSym { symbol, .. }
+                    if symbol == "__synth_wasm_data")
+            })
+            .count();
+        // Two materializations × (MovwSym + MovtSym): the SP read and the
+        // static-pointer const.
+        assert!(
+            data_syms >= 4,
+            "expected SP-read + static-ptr both __synth_wasm_data-relative (>=4 sym ops); got {data_syms}: {out:#?}"
+        );
+        // The frame-size 16 must remain a plain immediate, never relocated.
+        assert!(
+            out.iter()
+                .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 16, .. })),
+            "frame size 16 must stay a plain Movw immediate: {out:#?}"
+        );
+        // The promoted SP global must not read/write the R9 globals table.
+        let touches_r9 = out.iter().any(|i| match &i.op {
+            ArmOp::Ldr { addr, .. } | ArmOp::Str { addr, .. } => addr.base == Reg::R9,
+            _ => false,
+        });
+        assert!(
+            !touches_r9,
+            "register-promoted SP global must not touch the R9 globals table: {out:#?}"
         );
     }
 }

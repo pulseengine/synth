@@ -174,6 +174,14 @@ fn compile_wasm_to_arm(
         selector.set_relocatable(config.relocatable);
         // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
         selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
+        // Stack-pointer promotion is meaningful only under the native-pointer ABI;
+        // gating here keeps every non-native compile (all frozen fixtures) on the
+        // legacy R9 globals-table path, bit-identical.
+        if config.native_pointer_abi
+            && let Some((sp_idx, sp_init)) = config.stack_pointer_global
+        {
+            selector.set_native_pointer_stack(sp_idx, sp_init);
+        }
         selector
             .select_with_stack(wasm_ops, num_params)
             .map_err(|e| format!("instruction selection failed: {}", e))
