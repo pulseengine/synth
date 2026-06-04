@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.30] - 2026-06-04
+
+**Self-contained native-pointer ABI: register-promote the stack-pointer global so a dissolved leaf seam runs with no host runtime (#237).**
+
+v0.11.29 made wasm *statics* base-independent under `--native-pointer-abi`, but a
+real loom-dissolved seam (gale's `mutex_m.loom.wasm`) also reads its **stack
+pointer** from a wasm global — `(global $__stack_pointer (mut i32) 65536)` — and
+synth lowered `global.get`/`global.set` as `[R9, idx*4]`, a load from a globals
+table that a runtime is expected to populate. A drop-in object has no such
+runtime, so `R9` is garbage and the stack mis-addresses.
+
+**Fix (opt-in `--native-pointer-abi`):**
+- The decoder now captures each global's `i32.const` initializer + mutability
+  (previously discarded).
+- The CLI identifies the stack-pointer global (mutable `i32` whose init is a
+  plausible stack top) and threads it through `CompileConfig`.
+- The selector register-promotes it: `global.get $sp` materializes
+  `__synth_wasm_data + init` (MOVW/MOVT) — the real stack top — and frame
+  arithmetic carries that base, so SP-relative loads become true memory
+  accesses. `global.set $sp` is dead in a leaf, balanced function and is
+  dropped. The SP init doubles as the static-data base that separates pointer
+  consts (`>= base`, e.g. a `&static_spinlock` call arg → relocated) from
+  frame-size scalars (`< base`, e.g. `i32.const 16` → plain immediate).
+
+**Falsification:** this release is wrong if, for a leaf host-pointer seam compiled
+with `--native-pointer-abi`, the emitted object retains any `R9`-relative globals
+access, or a frame-size constant is emitted as a `__synth_wasm_data` relocation.
+Verified on `mutex_m.loom.wasm`: 12 `__synth_wasm_data` MOVW/MOVT relocations
+(SP read + every spinlock pointer arg), **0 R9 references**, all imports +
+internal callees proper `THM_CALL` relocs. Frozen `control_step` fixture stays
+bit-identical (13/13, ORACLE PASS) — every new path is gated behind the flag.
+
 ## [0.11.29] - 2026-06-04
 
 **`--native-pointer-abi`: wasm statics as base-independent `.data`, so host-pointer drop-ins work on silicon (#237).**
