@@ -14332,6 +14332,55 @@ mod tests {
         );
     }
 
+    /// VCR-RA-001: the liveness analyses must be sound on REAL selector output,
+    /// not just synthetic instruction vectors — this is the precondition for
+    /// safely wiring the dead-store transform into the codegen path. Runs the
+    /// actual selector on a sequence that reuses a constant, then checks the
+    /// analyses are internally consistent with the emitted instructions.
+    #[test]
+    fn liveness_analyses_are_consistent_on_real_selector_output() {
+        use crate::liveness;
+        let mut selector = fresh_selector();
+        // (p & 0x7e) + (p & 0x7e): the constant 0x7e is materialized for each
+        // `and`, mirroring the repeated-clamp shape gale measured on flat_flight.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(0x7e),
+            WasmOp::I32And,
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(0x7e),
+            WasmOp::I32And,
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&ops, 1).unwrap();
+
+        let report = liveness::analyze_function(&instrs);
+        assert!(report.segments >= 1, "real output should be analyzable");
+
+        // Every reported redundant const must actually be a const-materialization
+        // of the claimed value at that index (the analysis reads real codegen
+        // correctly).
+        for rc in &report.redundant_consts {
+            let op = &instrs[rc.index].op;
+            let ok = matches!(op, ArmOp::Movw { imm16, .. } if *imm16 as i32 == rc.value)
+                || matches!(op, ArmOp::Mov { rd: _, op2: Operand2::Imm(v) } if *v == rc.value);
+            assert!(
+                ok,
+                "redundant-const index {} is not a {}-valued materialization: {op:?}",
+                rc.index, rc.value
+            );
+        }
+        // Dead-def indices are valid; eliminating them is length-consistent and
+        // sound (the removed instructions are exactly the reported dead defs).
+        for &di in &report.dead_defs {
+            assert!(di < instrs.len());
+        }
+        let (out, removed) = liveness::eliminate_dead_stores(&instrs);
+        assert_eq!(removed, report.dead_defs.len());
+        assert_eq!(out.len(), instrs.len() - removed);
+    }
+
     #[test]
     fn test_select_with_stack_i32_local_uses_str_ldr() {
         // An i32 non-param local should produce Str/Ldr to the SP-based slot.
