@@ -296,6 +296,68 @@ pub fn redundant_const_defs(instrs: &[ArmInstruction]) -> Option<Vec<RedundantCo
     Some(out)
 }
 
+/// Aggregate analysis of a whole (possibly branchy) function.
+///
+/// The per-block detectors ([`local_dead_defs`], [`redundant_const_defs`]) only
+/// reason over a single straight-line block and decline (`None`) on any branch.
+/// Real functions (e.g. `flat_flight`, with its `br_table` clamps) are a
+/// sequence of such blocks separated by control flow. This splits the stream
+/// into **maximal straight-line, fully-modeled segments** — a non-straight-line
+/// op (branch/call) or an op with no precise [`reg_effect`] ends the current
+/// segment — runs both detectors per segment, and reports global indices.
+///
+/// This is **sound by construction**: a constant resident at the end of one
+/// segment is *not* assumed resident in the next (state is reset at every
+/// boundary), so cross-block redundancy is under-reported rather than
+/// over-reported, and an instruction that can't be modeled never lands inside a
+/// segment. It never returns `None` — it analyzes whatever is analyzable and
+/// counts the rest as skipped.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FunctionAnalysis {
+    /// Global indices of dead stores (overwritten before use within a segment).
+    pub dead_defs: Vec<usize>,
+    /// Redundant constant materializations (value already resident), global idx.
+    pub redundant_consts: Vec<RedundantConst>,
+    /// Number of maximal straight-line analyzable segments found.
+    pub segments: usize,
+    /// Instructions that ended a segment (branch/call/unmodeled) — not analyzed.
+    pub skipped: usize,
+}
+
+pub fn analyze_function(instrs: &[ArmInstruction]) -> FunctionAnalysis {
+    let mut report = FunctionAnalysis::default();
+    let mut seg_start = 0usize;
+
+    // Flush [seg_start, end) as one segment, offsetting indices to global.
+    let flush = |report: &mut FunctionAnalysis, start: usize, end: usize| {
+        if end <= start {
+            return;
+        }
+        let seg = &instrs[start..end];
+        report.segments += 1;
+        if let Some(d) = local_dead_defs(seg) {
+            report.dead_defs.extend(d.into_iter().map(|i| i + start));
+        }
+        if let Some(rc) = redundant_const_defs(seg) {
+            report.redundant_consts.extend(rc.into_iter().map(|mut c| {
+                c.index += start;
+                c
+            }));
+        }
+    };
+
+    for (i, instr) in instrs.iter().enumerate() {
+        let analyzable = is_straight_line(&instr.op) && reg_effect(&instr.op).is_some();
+        if !analyzable {
+            flush(&mut report, seg_start, i);
+            report.skipped += 1;
+            seg_start = i + 1;
+        }
+    }
+    flush(&mut report, seg_start, instrs.len());
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -497,6 +559,69 @@ mod tests {
             }),
         ];
         assert_eq!(redundant_const_defs(&seq), Some(vec![]));
+    }
+
+    #[test]
+    fn analyze_function_segments_across_a_branch() {
+        // Segment 1: movw r0,#0x7e ; movw r1,#0x7e (r1 redundant)
+        // <branch boundary>
+        // Segment 2: movw r2,#0x7e ; movw r3,#0x7e (r3 redundant — fresh state)
+        // The per-block detector would decline on the whole stream (branch);
+        // analyze_function finds the redundancy in BOTH segments.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::BOffset { offset: 8 }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 0x7e,
+            }),
+        ];
+        // whole-stream per-block detector declines:
+        assert_eq!(redundant_const_defs(&seq), None);
+        // function-wide analysis finds both:
+        let a = analyze_function(&seq);
+        assert_eq!(a.segments, 2);
+        assert_eq!(a.skipped, 1, "the branch is the skipped boundary");
+        let idxs: Vec<usize> = a.redundant_consts.iter().map(|c| c.index).collect();
+        assert_eq!(
+            idxs,
+            vec![1, 4],
+            "global indices of the two redundant loads"
+        );
+    }
+
+    #[test]
+    fn analyze_function_resets_state_at_boundary() {
+        // movw r0,#5 ; <branch> ; movw r1,#5
+        // r0's #5 must NOT be considered resident after the branch → not redundant.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 5,
+            }),
+            ins(ArmOp::BOffset { offset: 4 }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 5,
+            }),
+        ];
+        let a = analyze_function(&seq);
+        assert!(
+            a.redundant_consts.is_empty(),
+            "no cross-boundary redundancy may be claimed"
+        );
+        assert_eq!(a.segments, 2);
     }
 
     #[test]
