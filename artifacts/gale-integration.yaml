@@ -328,3 +328,191 @@ artifacts:
         Messages transfer correctly via gale-verified msgq; MPU fault
         triggered on cross-component access; gale MQ index arithmetic
         proven correct via Verus proofs.
+
+  # ---------------------------------------------------------------------------
+  # Native-pointer ABI: host-pointer "dissolution" for loom-inlined seams
+  # (synth #181 design / #237 implementation). Lets a loom-dissolved WASM seam
+  # compile to a native-linkable object that drops into a gale/Zephyr C build
+  # with no synth runtime: host pointers stay base=0 (native *ptr deref) while
+  # wasm linear memory is relocated against __synth_wasm_data.
+  # ---------------------------------------------------------------------------
+
+  - id: GI-NPA-001
+    type: system-req
+    title: Native-pointer ABI for host-pointer drop-in seams
+    description: >
+      Under the opt-in `--native-pointer-abi`, synth shall compile a
+      loom-dissolved WASM seam (e.g. gale's mutex_m.loom.wasm
+      z_impl_k_mutex_unlock) into a native-linkable ELF object that runs
+      with NO synth runtime. A host `*ptr` argument shall deref natively
+      (linear-memory base = 0, set by the caller trampoline), while every
+      wasm-resident static (a `(data)` byte or a zero-init variable such as
+      a `static k_spinlock`) shall be addressed base-independently via a
+      single `__synth_wasm_data` section symbol (R_ARM_MOVW_ABS_NC +
+      R_ARM_MOVT_ABS). The object shall carry no dependency on a
+      runtime-populated globals table (no R9-relative globals access).
+    status: implemented
+    tags: [gale, native-pointer-abi, host-integration, loom, dissolution]
+    links:
+      - type: refines
+        target: GI-001
+      - type: derives-from
+        target: BR-003
+      - type: traces-to
+        target: gale:SYSREQ-MUT-001
+    fields:
+      req-type: interface
+      priority: must
+      verification-criteria: >
+        gale's mutex_m.loom.wasm compiled with --native-pointer-abi
+        --relocatable --all-exports yields an object with __synth_wasm_data
+        MOVW/MOVT relocations, zero R9 references, and all imports/internal
+        callees as THM_CALL relocations; default (no-flag) output unchanged.
+
+  - id: GI-NPA-002
+    type: sw-req
+    title: Register-promote the stack-pointer global (self-contained SP)
+    description: >
+      A loom-dissolved seam reads its stack pointer from a wasm global
+      `(global $__stack_pointer (mut i32) (i32.const N))`. Under
+      `--native-pointer-abi` synth shall register-promote this global rather
+      than lower it as a runtime globals-table access: `global.get $sp`
+      materializes `__synth_wasm_data + N` (MOVW/MOVT, the real stack top),
+      `global.set $sp` is eliminated as dead in a leaf, balanced function,
+      and the global's initializer N doubles as the static-data base that
+      separates pointer constants (`>= N`, relocated) from frame-size /
+      offset scalars (`< N`, plain immediate). The decoder shall capture
+      each global's initializer + mutability to enable this. This promotion
+      is gated on the presence of a stack-pointer global (without one the
+      base is 0 and the value/address split is undecidable, so the
+      transform is unsound and shall not fire).
+    status: implemented
+    tags: [gale, native-pointer-abi, stack-pointer, register-promotion]
+    links:
+      - type: derives-from
+        target: GI-NPA-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Unit tests test_237_stack_pointer_global_is_register_promoted and
+        test_decode_captures_global_initializer pass; gmutex object shows
+        the SP read as __synth_wasm_data-relative with no R9 access.
+
+  - id: GI-NPA-003
+    type: sw-req
+    title: Non-leaf stack-pointer persistence across internal calls (planned)
+    description: >
+      Extend GI-NPA-002 beyond the leaf, balanced case: a non-leaf function
+      that makes an internal WASM call across a persisted stack-pointer
+      change must keep the promoted SP value in a callee-saved register that
+      survives the call (the wasm global outliving a single `global.get`).
+      This is the analogue of the RISC-V leaf-only -> non-leaf arc and is
+      the next increment to be implemented alongside gale once a non-leaf
+      host-pointer seam is exercised. Until then, synth covers leaf seams
+      (gale's exported mutex/sem seams, whose only calls are host imports).
+    status: proposed
+    tags: [gale, native-pointer-abi, non-leaf, follow-up, planned]
+    links:
+      - type: derives-from
+        target: GI-NPA-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        A non-leaf host-pointer seam compiled with --native-pointer-abi
+        preserves the promoted SP across internal wasm calls and matches the
+        wasmtime reference under the differential oracle.
+
+  - id: GI-NPA-VER-001
+    type: sys-verification
+    title: "Object-level oracle: gmutex self-containment (clean-room confirmed)"
+    description: >
+      Independent (clean-room) verification that the native-pointer ABI
+      produces a self-contained object for gale's mutex_m.loom.wasm. A fresh
+      build compiled gmutex with --native-pointer-abi --relocatable
+      --all-exports and adjudicated: (C1) the SP read is materialized via
+      R_ARM_MOVW_ABS_NC + R_ARM_MOVT_ABS vs __synth_wasm_data; (C2) zero R9
+      references in the disassembly; (C3) __synth_wasm_data defined in .bss;
+      (C5) no __synth_wasm_data relocations without the flag (opt-in);
+      (C7) 12 __synth_wasm_data relocations total. All confirmed by an
+      isolated oracle subagent; control_step frozen fixture bit-identical.
+    status: implemented
+    tags: [gale, native-pointer-abi, oracle, clean-room, differential]
+    links:
+      - type: verifies
+        target: GI-NPA-001
+    fields:
+      method: analysis
+      preconditions:
+        - "synth binary built (cargo build -p synth-cli)"
+        - "arm-none-eabi-objdump available"
+        - "gale mutex_m.loom.wasm at /tmp/gmutex.wasm"
+      steps:
+        - "Compile gmutex with --native-pointer-abi --relocatable --all-exports"
+        - "objdump -r: confirm __synth_wasm_data MOVW/MOVT relocs (count 12)"
+        - "objdump -d: confirm zero r9 references"
+        - "objdump -t: confirm __synth_wasm_data in .bss"
+        - "Compile without the flag: confirm zero __synth_wasm_data relocs"
+      pass-criteria: >
+        C1, C2, C3, C5, C7 all CONFIRMED by an independent oracle;
+        control_step frozen fixture stays bit-identical (13/13,
+        control_step_differential.py ORACLE PASS).
+
+  - id: GI-NPA-VER-002
+    type: sw-verification
+    title: "Unit tests: global capture + stack-pointer register-promotion"
+    description: >
+      Unit-level verification of the SP register-promotion mechanism:
+      test_decode_captures_global_initializer (decoder captures the global
+      initializer + mutability), test_237_stack_pointer_global_is_register_promoted
+      (global.get $sp relocates to __synth_wasm_data, the static-pointer const
+      relocates, the frame-size const 16 stays a plain immediate, and the
+      promoted global never touches R9), and
+      test_237_static_store_is_symbol_relative_under_native_pointer_abi (the
+      gating that keeps the value/address split sound when no SP global is
+      present).
+    status: implemented
+    tags: [gale, native-pointer-abi, unit-test, soundness]
+    links:
+      - type: verifies
+        target: GI-NPA-002
+    fields:
+      method: test
+      preconditions:
+        - "cargo test workspace"
+      steps:
+        - "cargo test -p synth-core test_decode_captures_global_initializer"
+        - "cargo test -p synth-synthesis test_237_stack_pointer_global_is_register_promoted"
+        - "cargo test -p synth-synthesis test_237_static_store_is_symbol_relative_under_native_pointer_abi"
+      pass-criteria: >
+        All three tests report 'test result: ok'.
+
+  - id: GI-NPA-VER-003
+    type: sys-verification
+    title: "On-target differential: dissolved gmutex vs native reference (planned)"
+    description: >
+      End-to-end verification that the native-pointer-ABI object, linked
+      with gale's host trampoline (push {r11,lr}; mov.w r11,#0; bl; pop)
+      and the kiln bridge, executes correctly on the target / emulator and
+      matches the native reference behavior (native ref 124) for
+      z_impl_k_mutex_unlock. This is the gale-side validation step that
+      closes synth #237 together with GI-NPA-003 (non-leaf support).
+    status: proposed
+    tags: [gale, native-pointer-abi, on-target, differential, planned]
+    links:
+      - type: verifies
+        target: GI-NPA-001
+    fields:
+      method: simulation
+      preconditions:
+        - "gmutex object compiled with --native-pointer-abi"
+        - "gale host trampoline + kiln bridge"
+        - "qemu/Renode Cortex-M4 or hardware"
+      steps:
+        - "Link gmutex.o + kiln_bridge.o + gale trampoline"
+        - "Execute z_impl_k_mutex_unlock under emulation"
+        - "Compare result/side-effects against the native reference (124)"
+      pass-criteria: >
+        Linked dissolved seam runs with no runtime and matches the native
+        reference behavior; no MPU fault from mis-addressed statics or stack.
