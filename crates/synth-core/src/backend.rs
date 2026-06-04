@@ -150,12 +150,24 @@ impl Default for CompileConfig {
 /// Records that a BL instruction at `offset` bytes into the function's code
 /// targets an external symbol (e.g., `__meld_dispatch_import`). The linker
 /// resolves these when combining the Synth object with the Kiln bridge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelocKind {
+    /// R_ARM_THM_CALL — a Thumb BL call site (the default; #167).
+    ThmCall,
+    /// R_ARM_MOVW_ABS_NC — the MOVW half of a symbol-relative address (#237).
+    MovwAbs,
+    /// R_ARM_MOVT_ABS — the MOVT half of a symbol-relative address (#237).
+    MovtAbs,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeRelocation {
-    /// Byte offset within the function's machine code where the BL resides
+    /// Byte offset within the function's machine code where the reloc applies
     pub offset: u32,
-    /// Target symbol name (e.g., "__meld_dispatch_import")
+    /// Target symbol name (e.g., "__meld_dispatch_import", "__synth_wasm_data")
     pub symbol: String,
+    /// Which ARM relocation type to emit for this site.
+    pub kind: RelocKind,
 }
 
 /// A single compiled function

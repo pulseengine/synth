@@ -2290,10 +2290,17 @@ fn build_relocatable_elf(funcs: &[ElfFunction], imports: &[ImportEntry]) -> Resu
         let func_base = func_offsets[i];
         for reloc in &func.relocations {
             let sym_idx = sym_indices[&reloc.symbol];
+            // #237: map the relocation kind. BL calls → R_ARM_THM_CALL; the
+            // symbol-relative static-data MOVW/MOVT → R_ARM_MOVW_ABS_NC/MOVT_ABS.
+            let reloc_type = match reloc.kind {
+                synth_core::backend::RelocKind::ThmCall => ArmRelocationType::ThmCall,
+                synth_core::backend::RelocKind::MovwAbs => ArmRelocationType::MovwAbsNc,
+                synth_core::backend::RelocKind::MovtAbs => ArmRelocationType::MovtAbs,
+            };
             elf_builder.add_relocation(Relocation {
                 offset: func_base + reloc.offset,
                 symbol_index: sym_idx,
-                reloc_type: ArmRelocationType::ThmCall, // R_ARM_THM_CALL (10)
+                reloc_type,
             });
             reloc_count += 1;
         }

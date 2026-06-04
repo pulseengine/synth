@@ -264,6 +264,24 @@ fn compile_wasm_to_arm(
             relocations.push(CodeRelocation {
                 offset: code.len() as u32,
                 symbol: label.clone(),
+                kind: synth_core::backend::RelocKind::ThmCall,
+            });
+        }
+        // #237: symbol-relative MOVW/MOVT (the `--native-pointer-abi` static-data
+        // addressing). The encoder writes the addend in place; record the matching
+        // R_ARM_MOVW_ABS_NC / R_ARM_MOVT_ABS so the linker adds the symbol address.
+        if let ArmOp::MovwSym { symbol, .. } = &instr.op {
+            relocations.push(CodeRelocation {
+                offset: code.len() as u32,
+                symbol: symbol.clone(),
+                kind: synth_core::backend::RelocKind::MovwAbs,
+            });
+        }
+        if let ArmOp::MovtSym { symbol, .. } = &instr.op {
+            relocations.push(CodeRelocation {
+                offset: code.len() as u32,
+                symbol: symbol.clone(),
+                kind: synth_core::backend::RelocKind::MovtAbs,
             });
         }
 

@@ -415,6 +415,19 @@ impl ArmEncoder {
                 0xE3400000 | (imm4 << 16) | (rd_bits << 12) | imm12
             }
 
+            // #237: symbol-relative MOVW/MOVT (ARM mode) — addend in place, the
+            // backend records the MOVW_ABS/MOVT_ABS relocation against `symbol`.
+            ArmOp::MovwSym { rd, addend, .. } => {
+                let rd_bits = reg_to_bits(rd);
+                let v = (*addend as u32) & 0xffff;
+                0xE3000000 | (((v >> 12) & 0xF) << 16) | (rd_bits << 12) | (v & 0xFFF)
+            }
+            ArmOp::MovtSym { rd, addend, .. } => {
+                let rd_bits = reg_to_bits(rd);
+                let v = ((*addend as u32) >> 16) & 0xffff;
+                0xE3400000 | (((v >> 12) & 0xF) << 16) | (rd_bits << 12) | (v & 0xFFF)
+            }
+
             // Compare
             ArmOp::Cmp { rn, op2 } => {
                 let rn_bits = reg_to_bits(rn);
@@ -2711,6 +2724,17 @@ impl ArmEncoder {
             // MOVT - Move Top (Thumb-2 32-bit)
             ArmOp::Movt { rd, imm16 } => {
                 self.encode_thumb32_movt_raw(reg_to_bits(rd), *imm16 as u32)
+            }
+
+            // #237: symbol-relative MOVW/MOVT. Encode the addend's low/high 16
+            // bits in place; the backend records an R_ARM_MOVW_ABS_NC /
+            // R_ARM_MOVT_ABS relocation against `symbol`, so the linker adds the
+            // symbol's final address to the in-place addend (REL semantics).
+            ArmOp::MovwSym { rd, addend, .. } => {
+                self.encode_thumb32_movw_raw(reg_to_bits(rd), (*addend as u32) & 0xffff)
+            }
+            ArmOp::MovtSym { rd, addend, .. } => {
+                self.encode_thumb32_movt_raw(reg_to_bits(rd), ((*addend as u32) >> 16) & 0xffff)
             }
 
             // SetCond: Materialize condition flag into register (0 or 1)
