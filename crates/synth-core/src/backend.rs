@@ -113,6 +113,19 @@ pub struct CompileConfig {
     /// also emitted as direct `func_N` BLs (resolved to the wasm field name)
     /// instead of `__meld_dispatch_import`. (#197 — follow-up to #188/#171.)
     pub relocatable: bool,
+
+    /// #237: emit wasm function-static data as a base-independent `.data`
+    /// section (`__synth_wasm_data`) addressed via MOVW/MOVT symbol relocations,
+    /// so a host-pointer drop-in (linmem base = 0 for native `*ptr` derefs)
+    /// doesn't mis-resolve the statics. Off by default — only the leaves'
+    /// base-relative `[R11+const]` path is used unless explicitly requested.
+    pub native_pointer_abi: bool,
+
+    /// #237: `(offset, length)` ranges of the module's active data segments.
+    /// Under `native_pointer_abi`, a const memory address that lands in one of
+    /// these is a wasm static → symbol-relative; any other (runtime) address is
+    /// a host pointer → `[R11=0 + addr]`.
+    pub data_segments: Vec<(u32, u32)>,
 }
 
 impl CompileConfig {
@@ -141,6 +154,8 @@ impl Default for CompileConfig {
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             relocatable: false,
+            native_pointer_abi: false,
+            data_segments: Vec::new(),
         }
     }
 }
