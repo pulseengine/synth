@@ -5214,22 +5214,53 @@ impl InstructionSelector {
                 }
 
                 I32Or => {
-                    let b = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
-                    let a = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
+                    // Immediate folding (same shape as I32And, #250): const
+                    // operand 0..=0xFF whose `movw` is at the tail → `orr rd,a,#C`,
+                    // drop the materialization. Encoder ORR-imm hardened in #251.
+                    let fold_imm = foldable_bitwise_imm(wasm_ops, idx).filter(|_| {
+                        matches!(
+                            instructions.last().map(|i| (&i.op, i.source_line)),
+                            Some((ArmOp::Movw { .. }, Some(sl))) if sl == idx - 1
+                        )
+                    });
+                    let (a, op2) = if let Some(c) = fold_imm {
+                        let _b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        (a, Operand2::Imm(c))
+                    } else {
+                        let b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        (a, Operand2::Reg(b))
+                    };
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -5239,7 +5270,7 @@ impl InstructionSelector {
                         op: ArmOp::Orr {
                             rd: dst,
                             rn: a,
-                            op2: Operand2::Reg(b),
+                            op2,
                         },
                         source_line: Some(idx),
                     });
@@ -5247,22 +5278,53 @@ impl InstructionSelector {
                 }
 
                 I32Xor => {
-                    let b = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
-                    let a = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
+                    // Immediate folding (same shape as I32And, #250): const
+                    // operand 0..=0xFF whose `movw` is at the tail → `eor rd,a,#C`,
+                    // drop the materialization. Encoder EOR-imm hardened in #251.
+                    let fold_imm = foldable_bitwise_imm(wasm_ops, idx).filter(|_| {
+                        matches!(
+                            instructions.last().map(|i| (&i.op, i.source_line)),
+                            Some((ArmOp::Movw { .. }, Some(sl))) if sl == idx - 1
+                        )
+                    });
+                    let (a, op2) = if let Some(c) = fold_imm {
+                        let _b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        (a, Operand2::Imm(c))
+                    } else {
+                        let b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        (a, Operand2::Reg(b))
+                    };
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -5272,7 +5334,7 @@ impl InstructionSelector {
                         op: ArmOp::Eor {
                             rd: dst,
                             rn: a,
-                            op2: Operand2::Reg(b),
+                            op2,
                         },
                         source_line: Some(idx),
                     });
@@ -14380,6 +14442,41 @@ mod tests {
             !sub_sp,
             "no frame allocation expected for params-only function"
         );
+    }
+
+    /// VCR-RA-001: `i32.or`/`i32.xor` fold a small const operand into the
+    /// `ORR`/`EOR` immediate (same shape as `i32.and`, #250; encoder hardened in
+    /// #251). Drops the `movw`; no register operand.
+    #[test]
+    fn i32_or_xor_fold_small_const_into_immediate() {
+        for op in [WasmOp::I32Or, WasmOp::I32Xor] {
+            let mut selector = fresh_selector();
+            let ops = vec![
+                WasmOp::LocalGet(0),
+                WasmOp::I32Const(0x7e),
+                op.clone(),
+                WasmOp::End,
+            ];
+            let instrs = selector.select_with_stack(&ops, 1).unwrap();
+            let movw_126 = instrs
+                .iter()
+                .filter(|i| matches!(&i.op, ArmOp::Movw { imm16: 126, .. }))
+                .count();
+            let folded = instrs.iter().any(|i| {
+                matches!(
+                    &i.op,
+                    ArmOp::Orr {
+                        op2: Operand2::Imm(126),
+                        ..
+                    } | ArmOp::Eor {
+                        op2: Operand2::Imm(126),
+                        ..
+                    }
+                )
+            });
+            assert_eq!(movw_126, 0, "{op:?}: const must be folded away");
+            assert!(folded, "{op:?}: must use the folded immediate");
+        }
     }
 
     /// VCR-RA-001 immediate folding: `i32.const C (0..=0xFF); i32.and` folds the
