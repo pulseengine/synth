@@ -244,6 +244,21 @@ fn foldable_bitwise_imm(wasm_ops: &[WasmOp], idx: usize) -> Option<i32> {
     }
 }
 
+/// Like [`foldable_bitwise_imm`] but for `i32.add` / `i32.sub`, whose encoder
+/// path uses ADDW/SUBW (T4) — a plain 12-bit immediate — so the safe range is
+/// the full `0..=0xFFF` (4095), not just a byte (#253). Non-negative only:
+/// folding a negative constant would require flipping add<->sub, which this
+/// keeps simple by declining.
+fn foldable_addsub_imm(wasm_ops: &[WasmOp], idx: usize) -> Option<i32> {
+    if idx == 0 {
+        return None;
+    }
+    match wasm_ops[idx - 1] {
+        WasmOp::I32Const(c) if (0..=0xFFF).contains(&c) => Some(c),
+        _ => None,
+    }
+}
+
 /// If `c` (read as an unsigned 32-bit divisor) is a power of two `2^k` with
 /// `k >= 1`, return `k` so `i32.div_u` can lower to `LSR rd, rn, #k`.
 ///
@@ -5048,22 +5063,53 @@ impl InstructionSelector {
                 }
 
                 I32Add => {
-                    let b = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
-                    let a = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
+                    // Immediate folding (#250 pattern): const operand 0..=0xFFF
+                    // (the ADDW range, #253) whose `movw` is at the tail →
+                    // `add rd, a, #C`, drop the materialization.
+                    let fold_imm = foldable_addsub_imm(wasm_ops, idx).filter(|_| {
+                        matches!(
+                            instructions.last().map(|i| (&i.op, i.source_line)),
+                            Some((ArmOp::Movw { .. }, Some(sl))) if sl == idx - 1
+                        )
+                    });
+                    let (a, op2) = if let Some(c) = fold_imm {
+                        let _b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        (a, Operand2::Imm(c))
+                    } else {
+                        let b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        (a, Operand2::Reg(b))
+                    };
                     // Result goes in r0 for return value (or temp if not last op)
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
@@ -5074,7 +5120,7 @@ impl InstructionSelector {
                         op: ArmOp::Add {
                             rd: dst,
                             rn: a,
-                            op2: Operand2::Reg(b),
+                            op2,
                         },
                         source_line: Some(idx),
                     });
@@ -5082,22 +5128,53 @@ impl InstructionSelector {
                 }
 
                 I32Sub => {
-                    let b = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
-                    let a = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
+                    // Immediate folding: `i32.sub` is `a - b`; when b is a const
+                    // 0..=0xFFF (SUBW range, #253) with its `movw` at the tail,
+                    // fold to `sub rd, a, #C` and drop the materialization.
+                    let fold_imm = foldable_addsub_imm(wasm_ops, idx).filter(|_| {
+                        matches!(
+                            instructions.last().map(|i| (&i.op, i.source_line)),
+                            Some((ArmOp::Movw { .. }, Some(sl))) if sl == idx - 1
+                        )
+                    });
+                    let (a, op2) = if let Some(c) = fold_imm {
+                        let _b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        (a, Operand2::Imm(c))
+                    } else {
+                        let b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        (a, Operand2::Reg(b))
+                    };
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -5107,7 +5184,7 @@ impl InstructionSelector {
                         op: ArmOp::Sub {
                             rd: dst,
                             rn: a,
-                            op2: Operand2::Reg(b),
+                            op2,
                         },
                         source_line: Some(idx),
                     });
@@ -14444,6 +14521,41 @@ mod tests {
         );
     }
 
+    /// VCR-RA-001: `i32.add`/`i32.sub` fold a const operand (0..=0xFFF, the
+    /// ADDW/SUBW range #253) into the immediate, dropping the `movw`. Verifies
+    /// both a byte value and a >0xFF value that exercises the ADDW path.
+    #[test]
+    fn i32_add_sub_fold_const_into_immediate() {
+        for (op, big) in [(WasmOp::I32Add, 0x200i32), (WasmOp::I32Sub, 0x200)] {
+            let mut selector = fresh_selector();
+            let ops = vec![
+                WasmOp::LocalGet(0),
+                WasmOp::I32Const(big),
+                op.clone(),
+                WasmOp::End,
+            ];
+            let instrs = selector.select_with_stack(&ops, 1).unwrap();
+            let movw = instrs
+                .iter()
+                .filter(|i| matches!(&i.op, ArmOp::Movw { imm16: 0x200, .. }))
+                .count();
+            let folded = instrs.iter().any(|i| {
+                matches!(
+                    &i.op,
+                    ArmOp::Add {
+                        op2: Operand2::Imm(0x200),
+                        ..
+                    } | ArmOp::Sub {
+                        op2: Operand2::Imm(0x200),
+                        ..
+                    }
+                )
+            });
+            assert_eq!(movw, 0, "{op:?}: const 0x200 must be folded away");
+            assert!(folded, "{op:?}: must use the folded immediate");
+        }
+    }
+
     /// VCR-RA-001: `i32.or`/`i32.xor` fold a small const operand into the
     /// `ORR`/`EOR` immediate (same shape as `i32.and`, #250; encoder hardened in
     /// #251). Drops the `movw`; no register operand.
@@ -14966,11 +15078,23 @@ mod tests {
             data_syms >= 4,
             "expected SP-read + static-ptr both __synth_wasm_data-relative (>=4 sym ops); got {data_syms}: {out:#?}"
         );
-        // The frame-size 16 must remain a plain immediate, never relocated.
+        // The frame-size 16 must remain a plain scalar immediate, never
+        // relocated as `__synth_wasm_data`. Since #253/Add-Sub folding it is
+        // folded into the frame `sub`'s immediate (or, pre-folding, a `Movw`).
         assert!(
-            out.iter()
-                .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 16, .. })),
-            "frame size 16 must stay a plain Movw immediate: {out:#?}"
+            out.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Movw { imm16: 16, .. }
+                    | ArmOp::Sub {
+                        op2: Operand2::Imm(16),
+                        ..
+                    }
+                    | ArmOp::Add {
+                        op2: Operand2::Imm(16),
+                        ..
+                    }
+            )),
+            "frame size 16 must stay a plain scalar immediate (folded or movw): {out:#?}"
         );
         // The promoted SP global must not read/write the R9 globals table.
         let touches_r9 = out.iter().any(|i| match &i.op {
