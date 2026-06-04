@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.28] - 2026-06-04
+
+**`--all-exports --relocatable` now emits reachable internal callees, not just the exports (#235).**
+
+A loom-dissolved export can retain a non-inlinable internal callee — e.g. a
+`core::panicking::panic_fmt` reached from an overflow-checked arithmetic path
+that loom correctly declines to inline. Previously `--all-exports --relocatable`
+compiled *only* the exported functions, leaving such a callee as an undefined
+symbol (`func_N`, `U`) in the ET_REL object, so the host link failed. The only
+way to compile a non-export (`--func-index N`) produced an ET_EXEC image with
+startup stubs that `ld` rejects — there was no path to a linkable object set.
+
+**Fix:** `--all-exports` now also compiles every internal (non-imported) function
+**reachable** from the exports via `call`, transitively (new
+`reachable_from_exports`). Each non-exported callee is emitted under its
+`func_{index}` symbol — exactly the name an internal `call` relocation already
+references — so it resolves within the same object. Imports stay external (the
+linker resolves them).
+
+- **Behavior frozen:** a module whose exports call no internal function (every
+  current leaf fixture) yields exactly the exports, so output is bit-identical —
+  verified across all six differential fixtures (ARM `div_const`/`control_step`/
+  `flight_seam`; RV32 `control_step`/`controller_step`/`signed_div_const`).
+- **Proof:** for an export calling a non-exported helper, the helper's symbol
+  goes from `UND` → `FUNC GLOBAL DEFAULT` in the ET_REL object (`reachable_helper.wat`
+  repro; `arm-none-eabi-readelf -s`). Unit tests `reachable_from_exports_*_235`.
+
 ## [0.11.27] - 2026-06-03
 
 **RV32 fix: signed-division overflow guard no longer clobbers the dividend (#232).**
