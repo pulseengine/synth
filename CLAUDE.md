@@ -94,6 +94,33 @@ correspondence), T2 (existence-only), T3 (admitted). The remaining admits are
 division/trap-guard and i64 boundary lemmas tracked in `coq/STATUS.md`.
 All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have T1 proofs.
 
+## North Star (roadmap)
+
+**Replace synth's patch-accreting code generator with foundationally-verified,
+allocator-robust infrastructure — correctness from construction, not an
+ever-growing pile of locally-correct patches.** The recurring greedy fixes
+(reciprocal-mult cost-gate, register-exhaustion hard-fail, the "selector missed
+an op" class #223/#226/#232) are symptoms of two single-pass hand-written
+components: the instruction selector and the register allocator. Filed as the
+phased, parallelizable **VCR-\*** rivet program (epic #242,
+`artifacts/verified-codegen-roadmap.yaml`), built incrementally — behavior
+frozen and oracle-gated every step:
+
+- **Track A (core):** `VCR-RA-001` SSA allocator with spilling (step 1 landed,
+  PR #243: def/use + liveness in `crates/synth-synthesis/src/liveness.rs`) →
+  `VCR-SEL-001` Rocq-discharged verified selector DSL.
+- **Track B (semantics):** `VCR-ISA-001` Sail-generated Rocq ISA model;
+  `VCR-WASM-001` WasmCert-Coq source semantics.
+- **Track C (validation, now):** `VCR-ORACLE-001` coverage-guided,
+  theorem-linked differential oracle.
+- **Gate `VCR-VER-001`:** a previously load-bearing greedy-fix becomes
+  revertable, full differential bit-identical, cycles equal-or-better.
+
+Silicon target (gale #209, G474RE): `flat_flight` 315 cyc vs 99 native (3.18×),
+61 % redundant const materializations, 17 spills — const-CSE + liveness-based
+spilling, pays on ARM and RISC-V at once. See the README "Roadmap — North Star"
+section for the full table.
+
 ## Conventions
 
 - Rust edition 2024, MSRV 1.88

@@ -241,6 +241,27 @@ See [coq/STATUS.md](coq/STATUS.md) for the per-file coverage matrix.
 
 The `synth-verify` crate encodes WASM and ARM semantics as Z3 formulas and checks per-rule equivalence. The `--verify` CLI flag invokes this after compilation; `synth verify` provides standalone validation. 53 Z3 verification tests pass in CI.
 
+## Roadmap — North Star
+
+**Replace synth's patch-accreting code generator with foundationally-verified, allocator-robust infrastructure — so correctness comes from construction, not from an ever-growing pile of locally-correct patches.**
+
+The recurring greedy fixes (the reciprocal-multiply cost-gate, the register-exhaustion hard-fail, the "selector missed an op" class behind #223/#226/#232) are all symptoms of one root cause: two single-pass, hand-written components — the **instruction selector** and the **register allocator**. The fix is filed as a phased, parallelizable rivet program (**VCR-\***, [epic #242](https://github.com/pulseengine/synth/issues/242), `artifacts/verified-codegen-roadmap.yaml`), built incrementally alongside the per-issue cadence — never a big-bang rewrite, **behavior frozen and oracle-gated at every step**.
+
+The one-sentence version: moving synth's correctness from *"we patched every bug we found"* to *"the structure makes the bug unrepresentable."*
+
+| Track | Item | What it does | Status |
+|-------|------|--------------|--------|
+| **A — codegen core** | `VCR-RA-001` | SSA register allocator with spilling — kills the exhaustion hard-fail that *forces* the cost-gates | step 1 landed ([#243](https://github.com/pulseengine/synth/pull/243): def/use + liveness primitive) |
+| | `VCR-SEL-001` | Rocq-discharged verified selector DSL — *"ISLE with a proof-assistant backend"*; a missing lowering rule becomes an enumerable coverage gap, not a silent miscompile | proposed |
+| **B — authoritative semantics** | `VCR-ISA-001` | Re-base ARM/RISC-V semantics on Sail-generated Rocq (the official ISA spec) | proposed |
+| | `VCR-WASM-001` | Anchor WASM source semantics on WasmCert-Coq | proposed |
+| **C — validation (now)** | `VCR-ORACLE-001` | Coverage-guided, theorem-linked differential oracle | proposed |
+| **Gate** | `VCR-VER-001` | Success = a previously load-bearing greedy-fix becomes *revertable*, with the full differential bit-identical and cycles equal-or-better | proposed |
+
+**Silicon target for Track A** (gale, #209, on NUCLEO-G474RE): the fully-composed `flat_flight` is 588 B / 180 instrs, **315 cyc vs 99 native (3.18×)** — with **61 % redundant constant materializations** (the int8 saturation clamps `#0x7e`/`#0x7f` re-materialized 6× each) and **17 stack spills**. Both levers — const-CSE/rematerialization-avoidance and liveness-based spill allocation — sit squarely on the allocator track and pay off on ARM *and* RISC-V at once.
+
+**What it buys us:** synth stops being a real-ish compiler held together by oracle-gated patches and becomes a genuinely best-in-class *verified* compiler — and the verified selector DSL is the part that is potentially novel/publishable, not just catching up to Cranelift.
+
 ## Crate Map
 
 | Crate | Purpose |
