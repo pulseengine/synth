@@ -3,6 +3,7 @@
 pub mod contracts;
 pub mod control_flow;
 pub mod instruction_selector;
+pub mod liveness;
 pub mod optimizer_bridge;
 pub mod pattern_matcher;
 pub mod peephole;
