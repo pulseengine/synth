@@ -27,7 +27,7 @@ pub use rules::{
     RuleDatabase, ShiftType, SynthesisRule, VfpReg, WasmOp,
 };
 pub use wasm_decoder::{
-    DecodedModule, FunctionOps, WasmMemory, decode_wasm_functions, decode_wasm_module,
+    DecodedModule, FunctionOps, WasmGlobal, WasmMemory, decode_wasm_functions, decode_wasm_module,
 };
 
 // Stub for PoC

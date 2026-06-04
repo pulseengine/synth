@@ -18,7 +18,9 @@ use synth_core::SafetyManifest;
 use synth_core::backend::{Backend, BackendRegistry, CompileConfig, SafetyBounds};
 use synth_core::target::TargetSpec;
 use synth_core::wasm_decoder::ImportEntry;
-use synth_synthesis::{FunctionOps, WasmMemory, WasmOp, decode_wasm_functions, decode_wasm_module};
+use synth_synthesis::{
+    FunctionOps, WasmGlobal, WasmMemory, WasmOp, decode_wasm_functions, decode_wasm_module,
+};
 use tracing::{Level, info};
 use wast::parser::{self, ParseBuffer};
 use wast::{Wast, WastDirective};
@@ -1648,6 +1650,24 @@ fn extract_module_from_wast(contents: &str) -> Result<Vec<u8>> {
 /// resolves. Used so `--all-exports --relocatable` emits a self-contained object
 /// containing every internal callee a dissolved export needs (e.g. a panic
 /// helper loom left un-inlined), instead of leaving it as an undefined symbol.
+/// #237: identify the wasm stack-pointer global for the native-pointer ABI.
+///
+/// The stack-pointer global is the mutable `i32` global whose initializer is a
+/// plausible stack top: a positive constant no larger than the linear-memory
+/// extent (the SP starts at the boundary between the descending stack and the
+/// static-data region). When several qualify, the highest initializer wins —
+/// the stack pointer sits at the top of the wasm address space. Returns
+/// `(index, init_value)`, or `None` if the module has no such global (in which
+/// case the legacy R9 globals-table path is used).
+fn identify_stack_pointer_global(globals: &[WasmGlobal], linmem_bytes: u32) -> Option<(u32, i32)> {
+    globals
+        .iter()
+        .filter(|g| g.mutable)
+        .filter_map(|g| g.init_i32.map(|v| (g.index, v)))
+        .filter(|&(_, v)| v > 0 && (v as u32) <= linmem_bytes)
+        .max_by_key(|&(_, v)| v)
+}
+
 fn reachable_from_exports(
     funcs: &[FunctionOps],
     num_imports: u32,
@@ -1719,6 +1739,7 @@ fn compile_all_exports(
         func_arg_counts,
         type_arg_counts,
         all_data_segments, // #237: active data segments, for --native-pointer-abi
+        stack_pointer_global_opt, // #237: (index, init) of the SP global, if any
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
@@ -1810,6 +1831,7 @@ fn compile_all_exports(
             merged_func_arg_counts,
             merged_type_arg_counts,
             Vec::new(), // #237: data segments not threaded for WAST (single-module .wasm path covers it)
+            None,       // #237: SP-global promotion is single-module .wasm only
         )
     } else {
         let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
@@ -1833,6 +1855,10 @@ fn compile_all_exports(
         let imports = module.imports;
         let num_imports = module.num_imported_funcs;
         let data_segs = module.data_segments; // #237: capture before `functions` is moved
+        // #237: identify the stack-pointer global for native-pointer promotion.
+        // linmem extent gates the "plausible stack top" heuristic.
+        let linmem_bytes = memories.first().map(|m| m.initial_bytes()).unwrap_or(0);
+        let sp_global = identify_stack_pointer_global(&module.globals, linmem_bytes);
         // #235: compile not just the exports but every internal (non-imported)
         // function reachable from them via `call`. A loom-dissolved export can
         // retain a non-inlinable callee (e.g. a panic helper from an overflow
@@ -1856,6 +1882,7 @@ fn compile_all_exports(
             func_arg_counts,
             type_arg_counts,
             data_segs,
+            sp_global,
         )
     };
 
@@ -1920,6 +1947,9 @@ fn compile_all_exports(
         // become __synth_wasm_data-relative across the whole linear memory.
         native_pointer_abi,
         linear_memory_bytes: all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0),
+        // #237: register-promote the stack-pointer global (only consulted under
+        // native_pointer_abi) so the dissolved object needs no R9 globals table.
+        stack_pointer_global: stack_pointer_global_opt,
         ..CompileConfig::default()
     };
 

@@ -47,6 +47,21 @@ pub struct WasmMemory {
     pub shared: bool,
 }
 
+/// A WASM global's declaration — its initial value and mutability (#237).
+/// Needed so the native-pointer ABI can recognize a global whose initializer is
+/// a linear-memory address (e.g. `$__stack_pointer = 65536`) and make it
+/// `__synth_wasm_data`-relative, rather than reading it from an R9 globals table
+/// the self-contained drop-in object can't rely on.
+#[derive(Debug, Clone)]
+pub struct WasmGlobal {
+    /// Global index (defined globals; imported globals are not counted here).
+    pub index: u32,
+    /// The `i32.const` initializer value (other init exprs decode to `None`).
+    pub init_i32: Option<i32>,
+    /// Whether the global is mutable.
+    pub mutable: bool,
+}
+
 impl WasmMemory {
     /// Get initial size in bytes
     pub fn initial_bytes(&self) -> u32 {
@@ -82,6 +97,11 @@ pub struct DecodedModule {
     /// Used by `call_indirect`, whose callee arg count comes from the static
     /// type index (issue #195).
     pub type_arg_counts: Vec<u32>,
+    /// Defined globals with their initializers (#237). Empty if the module has
+    /// no global section. Used by the native-pointer ABI to make a global whose
+    /// initializer is a linear-memory address (e.g. `$__stack_pointer`)
+    /// self-contained rather than table-relative.
+    pub globals: Vec<WasmGlobal>,
 }
 
 /// Decode a WASM binary and extract functions, memory, and data segments
@@ -89,6 +109,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     let mut functions = Vec::new();
     let mut memories = Vec::new();
     let mut data_segments = Vec::new();
+    let mut globals: Vec<WasmGlobal> = Vec::new();
     let mut imports = Vec::new();
     let mut func_index = 0u32;
     let mut num_imported_funcs = 0u32;
@@ -166,6 +187,26 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     });
                 }
             }
+            Payload::GlobalSection(reader) => {
+                // #237: capture each defined global's i32 initializer + mutability.
+                // The init is a const expr; we only decode a leading `i32.const`
+                // (the shape `$__stack_pointer`/data-layout globals use). Anything
+                // else (global.get, f32/f64, etc.) records `init_i32: None` and is
+                // left to the table-relative path.
+                for (idx, global) in reader.into_iter().enumerate() {
+                    let global = global.context("Failed to parse global")?;
+                    let mut init_i32 = None;
+                    let mut ops = global.init_expr.get_operators_reader();
+                    if let Ok(wasmparser::Operator::I32Const { value }) = ops.read() {
+                        init_i32 = Some(value);
+                    }
+                    globals.push(WasmGlobal {
+                        index: idx as u32,
+                        init_i32,
+                        mutable: global.ty.mutable,
+                    });
+                }
+            }
             Payload::DataSection(reader) => {
                 for data in reader {
                     let data = data.context("Failed to parse data segment")?;
@@ -213,6 +254,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         num_imported_funcs,
         func_arg_counts,
         type_arg_counts,
+        globals,
     })
 }
 
@@ -1231,5 +1273,30 @@ mod tests {
         let ops = &functions[0].ops;
         assert!(ops.contains(&WasmOp::I32x4Add));
         assert!(ops.contains(&WasmOp::I32x4Mul));
+    }
+
+    /// #237: the decoder captures a global's `i32.const` initializer + mutability,
+    /// so the native-pointer ABI can recognize the stack-pointer global.
+    #[test]
+    fn test_decode_captures_global_initializer() {
+        let wat = r#"
+            (module
+                (memory 2)
+                (global $__stack_pointer (mut i32) (i32.const 65536))
+                (global $immutable_const i32 (i32.const 7))
+                (func (export "f") (result i32) global.get 0)
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let module = decode_wasm_module(&wasm).expect("Failed to decode");
+
+        assert_eq!(module.globals.len(), 2, "both globals captured");
+        let sp = &module.globals[0];
+        assert_eq!(sp.index, 0);
+        assert_eq!(sp.init_i32, Some(65536), "stack-pointer init captured");
+        assert!(sp.mutable, "stack pointer is mutable");
+        let c = &module.globals[1];
+        assert_eq!(c.init_i32, Some(7));
+        assert!(!c.mutable, "second global is immutable");
     }
 }

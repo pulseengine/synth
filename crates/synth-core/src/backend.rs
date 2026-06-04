@@ -127,6 +127,13 @@ pub struct CompileConfig {
     /// static → symbol-relative; any address beyond it is a runtime host pointer
     /// → `[R11=0 + addr]`.
     pub linear_memory_bytes: u32,
+
+    /// #237: the wasm stack-pointer global as `(index, init_value)`, if the
+    /// module has one. Under `native_pointer_abi` the backend register-promotes
+    /// it: `global.get` materializes `__synth_wasm_data + init` (the real stack
+    /// top) and the init value doubles as the static-data base that separates
+    /// pointer consts (`>= init`) from frame-size scalars (`< init`).
+    pub stack_pointer_global: Option<(u32, i32)>,
 }
 
 impl CompileConfig {
@@ -157,6 +164,7 @@ impl Default for CompileConfig {
             relocatable: false,
             native_pointer_abi: false,
             linear_memory_bytes: 0,
+            stack_pointer_global: None,
         }
     }
 }
