@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Synth is a WebAssembly-to-ARM Cortex-M compiler with mechanized correctness proofs in Rocq (formerly Coq). It produces bare-metal ELF binaries for embedded targets.
+Synth is a WebAssembly-to-ARM Cortex-M and RISC-V (RV32IMAC) compiler with mechanized correctness proofs in Rocq (formerly Coq). It produces bare-metal ELF binaries for embedded targets.
 
 Part of [PulseEngine](https://github.com/pulseengine): synth (compiler) + [loom](https://github.com/pulseengine/loom) (WASM optimizer) + [meld](https://github.com/pulseengine/meld) (platform).
 
@@ -28,6 +28,7 @@ bazel test //tests/...             # Renode ARM Cortex-M4 emulation tests
 | `synth-core` | Shared types, error handling, `Backend` trait, WASM decoder |
 | `synth-frontend` | WASM Component Model parser and validator |
 | `synth-backend` | ARM Thumb-2 encoder, ELF builder, vector table, linker scripts, MPU |
+| `synth-backend-riscv` | RISC-V RV32IMAC backend (selector, encoder, relocatable ELF) — qemu_riscv32 / ESP32-C3 |
 | `synth-backend-awsm` | aWsm backend integration (WASM→native via aWsm) |
 | `synth-backend-wasker` | Wasker backend integration (WASM→Rust transpiler) |
 | `synth-synthesis` | WASM→ARM instruction selection, peephole optimizer, pattern matcher |
@@ -87,9 +88,10 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 233 Qed / 10 Admitted.
-Proofs are tiered: T1 (35 result-correspondence), T2 (142 existence-only), T3 (10 admitted).
-7 new admits from aligning Compilation.v with actual compiler (trap guards, MOVW+MOVT constants).
+See `coq/STATUS.md` for the complete coverage matrix. Current: 291 Qed / 9 Admitted
+(+2 `admit.` tactics) across `coq/Synth/`. Proofs are tiered: T1 (result-
+correspondence), T2 (existence-only), T3 (admitted). The remaining admits are
+division/trap-guard and i64 boundary lemmas tracked in `coq/STATUS.md`.
 All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have T1 proofs.
 
 ## Conventions

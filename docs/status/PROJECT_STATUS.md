@@ -34,7 +34,7 @@ Synth is a WebAssembly-to-ARM Cortex-M compiler with mechanized correctness proo
 
 ### Rocq (Coq) Proofs
 
-233 Qed / 10 Admitted across all `.v` files in `coq/Synth/`.
+291 Qed / 9 Admitted across all `.v` files in `coq/Synth/`.
 
 | Tier | Meaning | Count |
 |------|---------|-------|
