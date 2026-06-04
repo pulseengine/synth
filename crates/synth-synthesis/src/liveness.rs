@@ -221,6 +221,81 @@ pub fn local_dead_defs(instrs: &[ArmInstruction]) -> Option<Vec<usize>> {
     Some(dead)
 }
 
+/// A constant materialization whose value is **already available** in a live
+/// register at that point — a redundant re-derivation (const-CSE opportunity).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RedundantConst {
+    /// Index of the redundant materialization in the instruction stream.
+    pub index: usize,
+    /// The constant value being (re-)materialized.
+    pub value: i32,
+    /// A register that already holds `value` at this point.
+    pub available_in: Reg,
+}
+
+/// If `op` is a single-instruction constant materialization, the `(rd, value)`
+/// it produces. Only the 16-bit `Movw` / immediate `Mov` forms are recognized —
+/// these are the ones the hot paths re-materialize (saturation clamps `#0x7e` /
+/// `#0x7f`, shift amounts, `#0`). A `Movt` builds the high half of a 32-bit
+/// constant; it is deliberately *not* recognized here and instead invalidates
+/// the tracked value (handled by the caller via `reg_effect`), so a
+/// `Movw;Movt` pair is never mistaken for a pure 16-bit constant.
+fn const_materialization(op: &ArmOp) -> Option<(Reg, i32)> {
+    match op {
+        ArmOp::Movw { rd, imm16 } => Some((*rd, *imm16 as i32)),
+        ArmOp::Mov {
+            rd,
+            op2: Operand2::Imm(v),
+        } => Some((*rd, *v)),
+        _ => None,
+    }
+}
+
+/// Redundant constant materializations within a straight-line block: each
+/// instruction that re-derives a constant **already resident** in a register
+/// (not clobbered since). This is the analysis behind const-CSE /
+/// rematerialization-avoidance — the dominant hot-path waste gale measured on
+/// `flat_flight` (the int8 clamps `#0x7e` / `#0x7f` materialized 6× each,
+/// 61% of all constant loads redundant, #209). It is the *forward* dual of
+/// [`local_dead_defs`]: that finds a write with no later read; this finds a
+/// write whose value was already computed.
+///
+/// Pure detection — it reports the opportunity; the eventual fix (keep the
+/// constant resident across its uses) is the register allocator's job
+/// (VCR-RA-001). Returns `None` if the region is not a single straight-line
+/// block of fully-modeled instructions, so a result is never a wrong answer.
+pub fn redundant_const_defs(instrs: &[ArmInstruction]) -> Option<Vec<RedundantConst>> {
+    let mut held: Vec<(Reg, i32)> = Vec::new(); // registers with a known constant
+    let mut out = Vec::new();
+
+    for (i, instr) in instrs.iter().enumerate() {
+        if !is_straight_line(&instr.op) {
+            return None;
+        }
+        let eff = reg_effect(&instr.op)?;
+
+        if let Some((rd, v)) = const_materialization(&instr.op) {
+            // Already available in some register? → redundant re-derivation.
+            if let Some(&(r, _)) = held.iter().find(|&&(_, val)| val == v) {
+                out.push(RedundantConst {
+                    index: i,
+                    value: v,
+                    available_in: r,
+                });
+            }
+            // `rd` now holds `v` (drop any prior fact about rd first).
+            held.retain(|&(r, _)| r != rd);
+            held.push((rd, v));
+        } else {
+            // Any register this instruction writes loses its known constant.
+            for d in &eff.defs {
+                held.retain(|&(r, _)| r != *d);
+            }
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -328,6 +403,116 @@ mod tests {
             }),
         ];
         assert_eq!(local_dead_defs(&seq), Some(vec![]));
+    }
+
+    #[test]
+    fn redundant_const_flags_rematerialization_while_resident() {
+        // movw r0,#0x7e ; add r2,r1,r0 ; movw r3,#0x7e
+        // The second 0x7e is redundant — r0 still holds it.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 0x7e,
+            }),
+        ];
+        let r = redundant_const_defs(&seq).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].index, 2);
+        assert_eq!(r[0].value, 0x7e);
+        assert_eq!(r[0].available_in, Reg::R0);
+    }
+
+    #[test]
+    fn redundant_const_respects_clobber() {
+        // movw r0,#0x7e ; movw r0,#0x10 ; movw r1,#0x7e
+        // r0 was overwritten, so 0x7e is NOT resident → the last is not redundant.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0x10,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 0x7e,
+            }),
+        ];
+        assert_eq!(redundant_const_defs(&seq), Some(vec![]));
+    }
+
+    #[test]
+    fn redundant_const_counts_flat_flight_clamp_pattern() {
+        // The measured flat_flight waste: one int8 clamp bound (#0x7e) loaded
+        // into a fresh register 6 times with the first still live throughout.
+        // 5 of the 6 are redundant.
+        let mut seq = Vec::new();
+        for k in 0..6u32 {
+            seq.push(ins(ArmOp::Movw {
+                rd: [Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R4, Reg::R5][k as usize],
+                imm16: 0x7e,
+            }));
+            // a consumer that keeps the earlier value live (reads R0)
+            seq.push(ins(ArmOp::Add {
+                rd: Reg::R6,
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R0),
+            }));
+        }
+        let r = redundant_const_defs(&seq).unwrap();
+        assert_eq!(r.len(), 5, "5 of 6 clamp materializations are redundant");
+        assert!(
+            r.iter()
+                .all(|c| c.value == 0x7e && c.available_in == Reg::R0)
+        );
+    }
+
+    #[test]
+    fn redundant_const_movt_pair_is_not_a_pure_const() {
+        // movw r0,#7 ; movt r0,#1  (r0 = 0x10007) ; movw r1,#7
+        // After Movt, r0 no longer holds the pure 16-bit 7 → last is NOT redundant.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::Movt {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 7,
+            }),
+        ];
+        assert_eq!(redundant_const_defs(&seq), Some(vec![]));
+    }
+
+    #[test]
+    fn redundant_const_declines_on_branch() {
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::BOffset { offset: 4 }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 0x7e,
+            }),
+        ];
+        assert_eq!(redundant_const_defs(&seq), None);
     }
 
     #[test]
