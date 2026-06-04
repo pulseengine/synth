@@ -14365,7 +14365,11 @@ mod tests {
             let op = &instrs[rc.index].op;
             let ok = matches!(op, ArmOp::Movw { imm16, .. } if *imm16 as i32 == rc.value)
                 || matches!(op, ArmOp::Mov { rd: _, op2: Operand2::Imm(v) } if *v == rc.value);
-            assert!(ok, "redundant-const index {} is not a {}-valued materialization: {op:?}", rc.index, rc.value);
+            assert!(
+                ok,
+                "redundant-const index {} is not a {}-valued materialization: {op:?}",
+                rc.index, rc.value
+            );
         }
         // Dead-def indices are valid; eliminating them is length-consistent and
         // sound (the removed instructions are exactly the reported dead defs).
