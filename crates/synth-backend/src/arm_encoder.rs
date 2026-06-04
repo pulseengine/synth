@@ -1920,6 +1920,24 @@ impl ArmEncoder {
                     let mut bytes = hw1.to_le_bytes().to_vec();
                     bytes.extend_from_slice(&hw2.to_le_bytes());
                     Ok(bytes)
+                } else if let Operand2::Imm(imm) = op2 {
+                    // ORR.W immediate T1: 11110 i 0 0010 S Rn | 0 imm3 Rd imm8.
+                    // Only the zero-extended byte form (imm <= 0xFF) is encoded;
+                    // larger modified immediates need ThumbExpandImm — return an
+                    // error rather than silently emit a NOP (Ok-or-Err, #180/#185).
+                    let imm_val = *imm as u32;
+                    if imm_val > 0xFF {
+                        return Err(synth_core::Error::synthesis(
+                            "ORR immediate > 0xFF requires ThumbExpandImm (not yet implemented)",
+                        ));
+                    }
+                    let rd_bits = reg_to_bits(rd);
+                    let rn_bits = reg_to_bits(rn);
+                    let hw1: u16 = (0xF040 | rn_bits) as u16;
+                    let hw2: u16 = ((rd_bits << 8) | (imm_val & 0xFF)) as u16;
+                    let mut bytes = hw1.to_le_bytes().to_vec();
+                    bytes.extend_from_slice(&hw2.to_le_bytes());
+                    Ok(bytes)
                 } else {
                     let instr: u16 = 0xBF00;
                     Ok(instr.to_le_bytes().to_vec())
@@ -1937,6 +1955,23 @@ impl ArmEncoder {
                     let hw1: u16 = (0xEA80 | rn_bits) as u16;
                     let hw2: u16 = ((rd_bits << 8) | rm_bits) as u16;
 
+                    let mut bytes = hw1.to_le_bytes().to_vec();
+                    bytes.extend_from_slice(&hw2.to_le_bytes());
+                    Ok(bytes)
+                } else if let Operand2::Imm(imm) = op2 {
+                    // EOR.W immediate T1: 11110 i 0 0100 S Rn | 0 imm3 Rd imm8.
+                    // Byte form only (imm <= 0xFF); larger needs ThumbExpandImm —
+                    // error, not a silent NOP (Ok-or-Err, #180/#185).
+                    let imm_val = *imm as u32;
+                    if imm_val > 0xFF {
+                        return Err(synth_core::Error::synthesis(
+                            "EOR immediate > 0xFF requires ThumbExpandImm (not yet implemented)",
+                        ));
+                    }
+                    let rd_bits = reg_to_bits(rd);
+                    let rn_bits = reg_to_bits(rn);
+                    let hw1: u16 = (0xF080 | rn_bits) as u16;
+                    let hw2: u16 = ((rd_bits << 8) | (imm_val & 0xFF)) as u16;
                     let mut bytes = hw1.to_le_bytes().to_vec();
                     bytes.extend_from_slice(&hw2.to_le_bytes());
                     Ok(bytes)
@@ -8976,6 +9011,47 @@ mod tests {
             code,
             vec![0x00, 0xf0, 0x7e, 0x02],
             "and r2, r0, #0x7e must encode to the canonical AND.W T1 (imm8=0x7e)"
+        );
+    }
+
+    /// VCR-RA-001: ORR/EOR with a small immediate must encode the real
+    /// instruction (not a silent `0xBF00` NOP). Pins the byte range and the
+    /// Ok-or-Err bound that makes future Or/Eor immediate folding safe.
+    #[test]
+    fn orr_eor_immediate_encode_in_byte_range_else_error() {
+        let encoder = ArmEncoder::new_thumb2();
+        // orr r2, r0, #0x7e  →  ORR.W T1, imm8=0x7e
+        assert_eq!(
+            encoder
+                .encode(&ArmOp::Orr {
+                    rd: Reg::R2,
+                    rn: Reg::R0,
+                    op2: Operand2::Imm(0x7e),
+                })
+                .unwrap(),
+            vec![0x40, 0xf0, 0x7e, 0x02],
+        );
+        // eor r2, r0, #0x7e  →  EOR.W T1, imm8=0x7e
+        assert_eq!(
+            encoder
+                .encode(&ArmOp::Eor {
+                    rd: Reg::R2,
+                    rn: Reg::R0,
+                    op2: Operand2::Imm(0x7e),
+                })
+                .unwrap(),
+            vec![0x80, 0xf0, 0x7e, 0x02],
+        );
+        // Out-of-range immediates error rather than silently mis-encode / NOP.
+        assert!(
+            encoder
+                .encode(&ArmOp::Orr {
+                    rd: Reg::R2,
+                    rn: Reg::R0,
+                    op2: Operand2::Imm(0x140),
+                })
+                .is_err(),
+            "ORR #0x140 must error, not emit a NOP"
         );
     }
 
