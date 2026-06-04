@@ -1916,12 +1916,13 @@ fn compile_all_exports(
         // ABI so host-linked objects get fp-relative memory access and
         // caller-saved preservation (the optimized path is wrong for ET_REL).
         relocatable,
-        // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
+        // #237: native-pointer ABI — wasm statics (initialized + zero-init/BSS)
+        // become __synth_wasm_data-relative across the whole linear memory.
         native_pointer_abi,
-        data_segments: all_data_segments
-            .iter()
-            .map(|(off, d)| (*off, d.len() as u32))
-            .collect(),
+        linear_memory_bytes: all_memories
+            .first()
+            .map(|m| m.initial_bytes())
+            .unwrap_or(0),
         ..CompileConfig::default()
     };
 
@@ -2067,7 +2068,15 @@ fn compile_all_exports(
         } else {
             info!("Producing relocatable object (ET_REL): forced by --relocatable");
         }
-        build_relocatable_elf(&compiled_funcs, &all_imports, &all_data_segments)?
+        build_relocatable_elf(
+            &compiled_funcs,
+            &all_imports,
+            &all_data_segments,
+            all_memories
+                .first()
+                .map(|m| m.initial_bytes())
+                .unwrap_or(0),
+        )?
     } else if cortex_m {
         build_multi_func_cortex_m_elf(&compiled_funcs, &all_memories, target_spec)?
     } else {
@@ -2200,6 +2209,7 @@ fn build_relocatable_elf(
     funcs: &[ElfFunction],
     imports: &[ImportEntry],
     data_segments: &[(u32, Vec<u8>)],
+    linear_memory_bytes: u32,
 ) -> Result<Vec<u8>> {
     use std::collections::HashMap;
 
@@ -2229,33 +2239,43 @@ fn build_relocatable_elf(
     elf_builder.add_section(text_section);
 
     // #237: if any function addresses a wasm static via `__synth_wasm_data`
-    // (the --native-pointer-abi path), emit the active data segments as a
-    // writable `.data` section so the linker places them in RAM, and define
-    // `__synth_wasm_data` at its base. A wasm address A maps to .data byte A
-    // (segments placed at their wasm offsets), so the MOVW/MOVT addend = A.
-    // `.data` must be added here (right after `.text`) so its section index is
-    // 5, before the optional `.meld_import_table`.
+    // (the --native-pointer-abi path), emit the whole wasm linear memory as one
+    // RAM-resident region and define `__synth_wasm_data` at its base — so a wasm
+    // address A maps to (the placed region) + A. The region spans BOTH the
+    // initialized `(data)` segments AND the zero-init region (a `static
+    // k_spinlock` is zero-init → BSS, with no `(data)` segment, #237 follow-up).
+    // If there is any initialized data we emit `.data` (PROGBITS, data placed,
+    // rest zero); with none, a `.bss` (NOBITS — no flash cost) sized to the
+    // linear-memory minimum. Added here (right after `.text`) so its section
+    // index is 5, before the optional `.meld_import_table`.
     let needs_wasm_data = funcs
         .iter()
         .flat_map(|f| &f.relocations)
         .any(|r| r.symbol == "__synth_wasm_data");
-    let emit_wasm_data = needs_wasm_data && !data_segments.is_empty();
+    let emit_wasm_data = needs_wasm_data && linear_memory_bytes > 0;
     if emit_wasm_data {
-        let total = data_segments
-            .iter()
-            .map(|(off, d)| *off as usize + d.len())
-            .max()
-            .unwrap_or(0);
-        let mut blob = vec![0u8; total];
-        for (off, d) in data_segments {
-            blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
-        }
-        let data_section = Section::new(".data", ElfSectionType::ProgBits)
-            .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
-            .with_addr(0)
-            .with_align(4)
-            .with_data(blob);
-        elf_builder.add_section(data_section);
+        let size = linear_memory_bytes as usize;
+        let section = if data_segments.is_empty() {
+            // Pure zero-init (BSS) — NOBITS, no bytes in the object.
+            Section::new(".bss", ElfSectionType::NoBits)
+                .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+                .with_addr(0)
+                .with_align(4)
+                .with_size(linear_memory_bytes)
+        } else {
+            // Initialized data present — PROGBITS covering the whole memory,
+            // segments placed at their offsets, the rest zero.
+            let mut blob = vec![0u8; size];
+            for (off, d) in data_segments {
+                blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
+            }
+            Section::new(".data", ElfSectionType::ProgBits)
+                .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+                .with_addr(0)
+                .with_align(4)
+                .with_data(blob)
+        };
+        elf_builder.add_section(section);
     }
 
     // Symbol-name -> symbol index map. Symbol indices are 1-based (index 0 is

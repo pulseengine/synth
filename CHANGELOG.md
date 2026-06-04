@@ -24,14 +24,17 @@ raw wasm offset as an absolute address and MPU-faulted on the nucleo_g474re
 before producing output.
 
 **Fix (opt-in `--native-pointer-abi`):** under the flag, a const memory address
-that lands in a data segment is a static and is addressed **base-independently**
-— the active data segments are emitted as a writable `.data` section with a
-`__synth_wasm_data` section-base symbol, and the access materializes
-`__synth_wasm_data + (addr − base)` via `R_ARM_MOVW_ABS_NC` / `R_ARM_MOVT_ABS`
-relocations (new `ArmOp::MovwSym`/`MovtSym`; `CodeRelocation` gains a
-`RelocKind`). Runtime (host-pointer) addresses keep the `[R11=0 + addr]` native
-deref. The two coexist in one function (the mutex: host `k_mutex*` **and** its
-`static lock`).
+**anywhere in the wasm linear memory** is a static and is addressed
+**base-independently** — the whole linear-memory minimum is emitted as one
+RAM-resident region (a writable `.data` when there is initialized data, else a
+`.bss`/NOBITS — no flash cost), with a `__synth_wasm_data` section-base symbol,
+and the access materializes `__synth_wasm_data + addr` via `R_ARM_MOVW_ABS_NC` /
+`R_ARM_MOVT_ABS` relocations (new `ArmOp::MovwSym`/`MovtSym`; `CodeRelocation`
+gains a `RelocKind`). This covers **both** initialized `(data)` statics **and
+zero-init/BSS** ones — a `static k_spinlock lock;` is zero-init (no `(data)`
+segment), the common kernel case. Runtime (host-pointer) addresses — beyond the
+linear memory — keep the `[R11=0 + addr]` native deref. The two coexist in one
+function (the mutex: host `k_mutex*` **and** its `static lock`).
 
 - **Opt-in → frozen by default.** Without the flag the base-relative
   `[R11+const]` path is unchanged, so the value-in/value-out leaves

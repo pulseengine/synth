@@ -173,7 +173,7 @@ fn compile_wasm_to_arm(
         // instead of `__meld_dispatch_import`.
         selector.set_relocatable(config.relocatable);
         // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
-        selector.set_native_pointer_abi(config.native_pointer_abi, config.data_segments.clone());
+        selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
         selector
             .select_with_stack(wasm_ops, num_params)
             .map_err(|e| format!("instruction selection failed: {}", e))

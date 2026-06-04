@@ -1190,9 +1190,10 @@ pub struct InstructionSelector {
     /// relative (MOVW/MOVT), so a `base=0` host-pointer trampoline doesn't
     /// mis-address them.
     native_pointer_abi: bool,
-    /// #237: `(offset, length)` of each active data segment — a const address in
-    /// one of these ranges is a static (symbol-relative under the flag).
-    data_segments: Vec<(u32, u32)>,
+    /// #237: wasm linear-memory minimum size in bytes — the static-data extent
+    /// (initialized `(data)` + zero-init/BSS). A const address below this is a
+    /// static (symbol-relative under the flag).
+    linear_memory_bytes: u32,
     /// AAPCS argument count per function, indexed by the *full* WASM function
     /// index (imports first, then locals). Plumbed from the frontend's type +
     /// function sections (issue #195). `func_arg_counts[i]` = number of integer
@@ -1231,7 +1232,7 @@ impl InstructionSelector {
             num_imports: 0,
             relocatable: false,
             native_pointer_abi: false,
-            data_segments: Vec::new(),
+            linear_memory_bytes: 0,
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1253,7 +1254,7 @@ impl InstructionSelector {
             num_imports: 0,
             relocatable: false,
             native_pointer_abi: false,
-            data_segments: Vec::new(),
+            linear_memory_bytes: 0,
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1280,23 +1281,25 @@ impl InstructionSelector {
 
     /// #237: enable the native-pointer ABI and supply the active data-segment
     /// `(offset, length)` ranges used to classify const addresses as statics.
-    pub fn set_native_pointer_abi(&mut self, enabled: bool, data_segments: Vec<(u32, u32)>) {
+    /// `linear_memory_bytes` is the wasm linear-memory minimum size — the full
+    /// static-data extent, covering both `(data)` segments and the zero-init
+    /// (BSS) region (#237 BSS follow-up).
+    pub fn set_native_pointer_abi(&mut self, enabled: bool, linear_memory_bytes: u32) {
         self.native_pointer_abi = enabled;
-        self.data_segments = data_segments;
+        self.linear_memory_bytes = linear_memory_bytes;
     }
 
-    /// #237: under the native-pointer ABI, if the const effective address `addr`
-    /// lands in a data segment it's a wasm static → returns its `__synth_wasm_data`
-    /// addend (base-independent). Any other (runtime) address is a host pointer
-    /// and keeps the base-relative `[R11+addr]` path (returns `None`).
+    /// #237: under the native-pointer ABI, a const effective address `addr`
+    /// within the wasm linear memory `[0, linear_memory_bytes)` is a wasm static
+    /// (whether an initialized `(data)` byte or a zero-init/BSS variable like a
+    /// `static k_spinlock`) → returns its `__synth_wasm_data` addend
+    /// (base-independent). Any address beyond the linear memory is a runtime host
+    /// pointer and keeps the base-relative `[R11+addr]` path (returns `None`).
     fn static_data_addend(&self, addr: u32) -> Option<i32> {
         if !self.native_pointer_abi {
             return None;
         }
-        self.data_segments
-            .iter()
-            .any(|&(off, len)| addr >= off && addr < off.saturating_add(len))
-            .then_some(addr as i32)
+        (addr < self.linear_memory_bytes).then_some(addr as i32)
     }
 
     /// #237: emit a `__synth_wasm_data + addend` address into `rd` (MOVW+MOVT,
@@ -14561,7 +14564,7 @@ mod tests {
         // Flag ON + address in range → symbol-relative.
         let mut sel = InstructionSelector::new(db.rules().to_vec());
         sel.set_relocatable(true);
-        sel.set_native_pointer_abi(true, vec![(256, 4)]);
+        sel.set_native_pointer_abi(true, 65536);
         let on = sel.select_with_stack(&ops, 0).unwrap();
         assert!(
             on.iter().filter(|i| is_data_sym(i)).count() >= 2,
@@ -14580,7 +14583,7 @@ mod tests {
         // Flag ON but address OUT of range (runtime/host pointer) → base-relative.
         let mut sel_oor = InstructionSelector::new(db.rules().to_vec());
         sel_oor.set_relocatable(true);
-        sel_oor.set_native_pointer_abi(true, vec![(4096, 8)]); // 256 not in [4096,4104)
+        sel_oor.set_native_pointer_abi(true, 64); // 256 >= 64 → out of linear memory → host pointer
         let oor = sel_oor.select_with_stack(&ops, 0).unwrap();
         assert!(
             !oor.iter().any(is_data_sym),

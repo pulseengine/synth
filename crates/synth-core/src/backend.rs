@@ -121,11 +121,12 @@ pub struct CompileConfig {
     /// base-relative `[R11+const]` path is used unless explicitly requested.
     pub native_pointer_abi: bool,
 
-    /// #237: `(offset, length)` ranges of the module's active data segments.
-    /// Under `native_pointer_abi`, a const memory address that lands in one of
-    /// these is a wasm static → symbol-relative; any other (runtime) address is
-    /// a host pointer → `[R11=0 + addr]`.
-    pub data_segments: Vec<(u32, u32)>,
+    /// #237: wasm linear-memory minimum size in bytes — the full static-data
+    /// extent (initialized `(data)` segments plus the zero-init/BSS region).
+    /// Under `native_pointer_abi`, a const memory address below this is a wasm
+    /// static → symbol-relative; any address beyond it is a runtime host pointer
+    /// → `[R11=0 + addr]`.
+    pub linear_memory_bytes: u32,
 }
 
 impl CompileConfig {
@@ -155,7 +156,7 @@ impl Default for CompileConfig {
             type_arg_counts: Vec::new(),
             relocatable: false,
             native_pointer_abi: false,
-            data_segments: Vec::new(),
+            linear_memory_bytes: 0,
         }
     }
 }
