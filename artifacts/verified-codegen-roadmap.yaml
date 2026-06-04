@@ -1,0 +1,242 @@
+# Verified Codegen Roadmap (ASPICE SWE.1 / SWE.2 — forward-looking program)
+#
+# System: Synth -- WebAssembly-to-ARM/RISC-V AOT compiler
+#
+# WHY THIS EXISTS
+# The oracle-gated cleanup audit keeps reaching the same conclusion: the
+# recurring greedy-fixes (reciprocal-mult cost-gates, the i64/temp
+# register-exhaustion HARD-FAIL, and the "selector missed an op" bug class
+# #223/#226/#232) are SYMPTOMS of two single-pass, hand-written components —
+# the instruction selector and the register allocator. Each fix is locally
+# correct and oracle-gated, but they accrete because the substrate forces them.
+# A compiler-landscape research pass (Cranelift ISLE/Crocus, regalloc2/aegraph,
+# CompCert/CakeML, Sail, WasmCert-Coq, equality saturation) identified the
+# best-in-class structural cure. This file PLANS that cure as typed, phased,
+# parallelizable requirements so the infrastructure can be built incrementally
+# alongside the per-issue gale cadence WITHOUT a big-bang rewrite.
+#
+# All items are `proposed` — this is the backlog, not shipped work. Each carries
+# a falsifiable kill-criterion (PulseEngine methodology). Behavior is frozen:
+# every phase must keep the differential fixtures (control_step 0x00210A55,
+# flat+inlined flight_algo 0x07FDF307, divseam 338/338) bit-identical and is
+# gated by the existing oracle before merge.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+
+  # ---------------------------------------------------------------------------
+  # Program north-star
+  # ---------------------------------------------------------------------------
+
+  - id: VCR-001
+    type: system-req
+    title: Foundationally-verified, allocator-robust codegen core
+    description: >
+      Synth's code generator shall evolve from a hand-written single-pass
+      selector + single-pass allocator into principled, foundationally-verified
+      infrastructure, so correctness comes from construction rather than from an
+      accreting set of locally-correct patches. The end state: (a) instruction
+      selection is expressed as verified rewrite rules discharged against
+      synth's Rocq integer/control-flow core, not open-coded match arms;
+      (b) register allocation spills under pressure instead of hard-failing,
+      eliminating the exhaustion that forces cost-gated fallbacks; (c) the
+      target and source semantics the proofs rest on are the authoritative ISA
+      (Sail) and Wasm (WasmCert) models; (d) the differential oracle is
+      coverage-complete and theorem-linked. Migration is incremental and
+      oracle-gated: every step keeps the frozen fixtures bit-identical.
+    status: proposed
+    tags: [codegen, verification, roadmap, north-star, real-compiler]
+    links:
+      - type: derives-from
+        target: BR-001
+      - type: derives-from
+        target: BR-002
+    fields:
+      req-type: non-functional
+      priority: should
+      verification-criteria: >
+        Over the program's lifetime: zero NEW cost-gate/fallback shortcuts
+        added to the selector; the register-exhaustion hard-fail path is
+        removed; the "selector missed an op" gale bug rate trends to zero; all
+        frozen fixtures stay bit-identical at every step.
+      rationale: >
+        Antidote to the patch-accretion the cleanup audit repeatedly surfaces.
+        Sources: Cranelift ISLE + Crocus (ASPLOS'24 SMT rule verification),
+        regalloc2/aegraph, CompCert/CakeML (foundational lowering), Sail RISC-V
+        (official Rocq export), WasmCert-Coq (FM'21).
+
+  # ---------------------------------------------------------------------------
+  # Track A — codegen core (sequential within: allocator first, then selector)
+  # ---------------------------------------------------------------------------
+
+  - id: VCR-RA-001
+    type: sw-req
+    title: SSA-based register allocator with spilling (remove the hard-fail)
+    description: >
+      Replace the single-pass allocator (fixed R0-R8 pool, hard-fail on
+      exhaustion at instruction_selector.rs:330/356/577/4667) with an
+      SSA/liveness-based allocator that spills under pressure (regalloc2-class:
+      live ranges, spill/reload, coalescing). This is the FIRST track item
+      because the exhaustion hard-fail is what forces the reciprocal-mult
+      cost-gate (v0.11.20) and the 2-temp UMULL path; removing it lets those
+      shortcuts be reverted toward the clean form. Must keep the reserved-reg
+      architecture (R9 globals / R11 mem-base / R12 IP-scratch) and the
+      bounds-mode R10 invariant.
+    status: proposed
+    tags: [codegen, register-allocation, ssa, regalloc2, track-a]
+    links:
+      - type: derives-from
+        target: VCR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        control_step + flight_algo + a high-pressure i64 module compile with no
+        hard-fail; all frozen fixtures bit-identical; cycles equal-or-better;
+        the reciprocal-mult cost-gate becomes revert-able with no regression.
+
+  - id: VCR-SEL-001
+    type: sw-req
+    title: Rocq-discharged verified instruction-selection DSL
+    description: >
+      Express lowering as a rule DSL (`lower(op) = [target seq]`) whose
+      well-formed rules emit Rocq proof obligations auto-closed by the existing
+      synth_binop_proof / synth_comparison_proof / synth_unop_proof tactic
+      family — "ISLE with a proof-assistant backend": foundational discharge,
+      not Crocus-style per-rule SMT, and unlike CompCert it is a reusable rule
+      DSL rather than monolithic hand-proofs. Replaces the open-coded selector
+      match arms incrementally (one op-class at a time, behind the oracle). This
+      structurally kills the "selector missed an op" bug class (#223/#226/#232):
+      a missing rule is a coverage gap the DSL can enumerate, not a silent
+      miscompile. Depends on VCR-RA-001 landing first (a verified rule that
+      can't be allocated is not yet correct end-to-end).
+    status: proposed
+    tags: [codegen, selector, isle, verified-dsl, rocq, track-a, novel]
+    links:
+      - type: derives-from
+        target: VCR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        A pilot op-class (e.g. i32 arithmetic) is fully expressed as DSL rules
+        with >=70% auto-discharged by existing tactics (kill-criterion: below
+        70% it collapses into "CompCert with extra syntax" — abandon); the
+        generated lowering matches the current selector bit-for-bit on all
+        fixtures.
+
+  # ---------------------------------------------------------------------------
+  # Track B — authoritative semantics (independent; parallel with Track A)
+  # ---------------------------------------------------------------------------
+
+  - id: VCR-ISA-001
+    type: sw-req
+    title: Re-base ARM/RISC-V semantics on Sail-generated Rocq
+    description: >
+      Replace the hand-written ARM (ArmSemantics.v) and RISC-V execution models
+      with definitions imported from the official Sail ISA models (the RISC-V
+      Sail model exports to Rocq today; ARM-ARM is machine-readable ASL),
+      restricted to the RV32IMAC / Thumb-2 slice synth targets, and re-prove the
+      integer core against them. Collapses a major TCB component: "verified
+      against the authoritative spec" becomes a defensible claim. Independent of
+      Track A — can proceed in parallel.
+    status: proposed
+    tags: [semantics, sail, isa, trust, rocq, track-b]
+    links:
+      - type: derives-from
+        target: VCR-001
+    fields:
+      req-type: non-functional
+      priority: could
+      verification-criteria: >
+        The i32 Tier-1 theorems re-discharge against the Sail-generated Rocq
+        target model for the supported instruction subset; if the Sail state
+        monad makes the proofs intractable to port, fall back to using Sail
+        emulators as a differential oracle (kill-criterion / partial credit).
+
+  - id: VCR-WASM-001
+    type: sw-req
+    title: Anchor source semantics on WasmCert-Coq
+    description: >
+      Map synth's hand-written WasmSemantics.v stack machine onto WasmCert-Coq
+      (the mechanized Wasm spec, FM'21) as the authoritative source semantics,
+      and prove the frontend decode/validate refines it — giving the
+      verified-source -> verified-lowering -> verified-target triangle (with
+      Sail at the bottom via VCR-ISA-001). The Component Model layer stays an
+      open problem (no mechanized semantics yet) and is explicitly out of scope
+      for this item. Independent of Track A.
+    status: proposed
+    tags: [semantics, wasmcert, source, rocq, track-b]
+    links:
+      - type: derives-from
+        target: VCR-001
+    fields:
+      req-type: non-functional
+      priority: could
+      verification-criteria: >
+        synth's core-Wasm reduction relates to WasmCert-Coq's for the
+        integer/control-flow fragment; kill-criterion: if the semantic gap is
+        too large to relate without a major proof, scope to that fragment only.
+
+  # ---------------------------------------------------------------------------
+  # Track C — validation methodology (can start now; feeds Tracks A and B)
+  # ---------------------------------------------------------------------------
+
+  - id: VCR-ORACLE-001
+    type: sw-req
+    title: Coverage-guided, theorem-linked differential oracle
+    description: >
+      Evolve the frozen-fixture differential into a coverage-complete,
+      proof-aware suite: (1) coverage-guided fixture generation over wasm inputs
+      (libFuzzer/AFL-style) instead of hand-picked vectors; (2) MC/DC-style
+      coverage on the selector/lowering rules; (3) prioritize fixtures on ops
+      NOT covered by a Tier-1 theorem, and re-frame the suite as the empirical
+      witness that the hand-written ARM/RISC-V model matches silicon (validating
+      the proof's assumptions). Can start immediately and feeds every other
+      track.
+    status: proposed
+    tags: [oracle, differential, coverage, mcdc, validation, track-c]
+    links:
+      - type: derives-from
+        target: VCR-001
+    fields:
+      req-type: non-functional
+      priority: should
+      verification-criteria: >
+        Rule-coverage is measured and reported; unproven-op fixtures are
+        prioritized; the suite flags any op exercised on silicon but absent from
+        the model; frozen fixtures remain a subset and stay bit-identical.
+
+  # ---------------------------------------------------------------------------
+  # Program-level verification gate
+  # ---------------------------------------------------------------------------
+
+  - id: VCR-VER-001
+    type: sys-verification
+    title: "Program gate: patch-accretion reverses, fixtures frozen"
+    description: >
+      The standing oracle-gated cleanup audit is the program's progress meter.
+      As Track A lands, previously load-bearing greedy-fixes (the reciprocal-mult
+      cost-gate, the 2-temp UMULL path) shall become revert-able toward the clean
+      form with the full differential staying bit-identical and cycles
+      equal-or-better — the exact condition the audit checks each cycle. Success
+      is measured by those reversions becoming possible, not by new patches.
+    status: proposed
+    tags: [verification, audit, regression, frozen-fixtures]
+    links:
+      - type: verifies
+        target: VCR-001
+    fields:
+      method: analysis
+      preconditions:
+        - "Track A (VCR-RA-001) landed"
+        - "Frozen-fixture differentials green at baseline"
+      steps:
+        - "Re-run the cleanup audit: is the reciprocal-mult cost-gate now revert-able?"
+        - "Revert toward the clean form; confirm all fixtures bit-identical"
+        - "Measure cycles equal-or-better; measure no new exhaustion hard-fail"
+      pass-criteria: >
+        At least one previously load-bearing greedy-fix is removed with the full
+        differential bit-identical and cycles equal-or-better; no new cost-gate
+        introduced.
