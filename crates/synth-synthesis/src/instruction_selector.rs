@@ -14381,6 +14381,53 @@ mod tests {
         assert_eq!(out.len(), instrs.len() - removed);
     }
 
+    /// VCR-RA-001 evidence: which transform actually targets the real waste?
+    ///
+    /// Measured on real selector output, `(p & 0x7e) + (p & 0x7e)` lowers to:
+    ///   movw r1,#126 ; and r2,r0,r1 ; movw r3,#126 ; and r4,r0,r3 ; add ...
+    /// i.e. the selector RE-MATERIALIZES `0x7e` into a fresh register while the
+    /// first copy is still live. So the dominant waste is **redundant
+    /// materialization** (const-CSE territory), NOT dead stores — dead-store
+    /// elimination is a no-op here. (And `0x7e` is a valid Thumb-2 `AND`
+    /// immediate, so the materialization is itself avoidable via immediate
+    /// folding — an even larger latent win.)
+    ///
+    /// This test documents the current suboptimal codegen and pins the
+    /// transform priority. It is EXPECTED TO FLIP when const-CSE / immediate
+    /// folding lands (redundant count → 0) — at which point update it to assert
+    /// the improved shape; the flip is the signal the optimization works.
+    #[test]
+    fn vcr_redundant_const_is_the_real_waste_not_dead_stores() {
+        use crate::liveness;
+        let mut selector = fresh_selector();
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(0x7e),
+            WasmOp::I32And,
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(0x7e),
+            WasmOp::I32And,
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let instrs = selector.select_with_stack(&ops, 1).unwrap();
+        let report = liveness::analyze_function(&instrs);
+
+        // Dead-store elimination finds nothing here — DCE is not the lever.
+        assert_eq!(
+            report.dead_defs.len(),
+            0,
+            "no dead stores in this pattern: {instrs:#?}"
+        );
+        // const-CSE finds the real waste: the second `0x7e` is redundant.
+        assert_eq!(
+            report.redundant_consts.len(),
+            1,
+            "expected one redundant 0x7e materialization: {instrs:#?}"
+        );
+        assert_eq!(report.redundant_consts[0].value, 0x7e);
+    }
+
     #[test]
     fn test_select_with_stack_i32_local_uses_str_ldr() {
         // An i32 non-param local should produce Str/Ldr to the SP-based slot.
