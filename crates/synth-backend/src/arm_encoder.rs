@@ -6028,14 +6028,28 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
         let rn_bits = reg_to_bits(rn);
 
-        // ADD.W Rd, Rn, #imm12
-        // First halfword: 1111 0 i 0 1000 S Rn
-        // Second halfword: 0 imm3 Rd imm8
+        // The `i:imm3:imm8` field is split the same way for both forms.
         let i_bit = (imm >> 11) & 1;
         let imm3 = (imm >> 8) & 0x7;
         let imm8 = imm & 0xFF;
 
-        let hw1: u16 = (0xF100 | (i_bit << 10) | rn_bits) as u16;
+        let hw1_base = if imm <= 0xFF {
+            // ADD.W (T3): the field is a ThumbExpandImm modified immediate. For
+            // imm <= 0xFF (i:imm3 = 0000) it is the zero-extended byte, which is
+            // correct — keep this form so existing encodings stay bit-identical.
+            0xF100
+        } else if imm <= 0xFFF {
+            // ADDW (T4): a PLAIN 12-bit immediate (0..4095) — no ThumbExpandImm.
+            // This is what makes `add sp, sp, #frame` correct for frame sizes
+            // >= 256, which ADD.W (T3) would silently mis-encode (e.g. #256 -> #0).
+            0xF200
+        } else {
+            return Err(synth_core::Error::synthesis(
+                "ADD immediate > 0xFFF (4095) requires a multi-instruction sequence (not supported)",
+            ));
+        };
+
+        let hw1: u16 = (hw1_base | (i_bit << 10) | rn_bits) as u16;
         let hw2: u16 = ((imm3 << 12) | (rd_bits << 8) | imm8) as u16;
 
         let mut bytes = hw1.to_le_bytes().to_vec();
@@ -6052,7 +6066,21 @@ impl ArmEncoder {
         let imm3 = (imm >> 8) & 0x7;
         let imm8 = imm & 0xFF;
 
-        let hw1: u16 = (0xF1A0 | (i_bit << 10) | rn_bits) as u16;
+        let hw1_base = if imm <= 0xFF {
+            // SUB.W (T3) modified immediate — correct for the zero-extended byte
+            // (imm <= 0xFF). Kept bit-identical for existing encodings.
+            0xF1A0
+        } else if imm <= 0xFFF {
+            // SUBW (T4): plain 12-bit immediate (0..4095). Makes
+            // `sub sp, sp, #frame` correct for frame sizes >= 256.
+            0xF2A0
+        } else {
+            return Err(synth_core::Error::synthesis(
+                "SUB immediate > 0xFFF (4095) requires a multi-instruction sequence (not supported)",
+            ));
+        };
+
+        let hw1: u16 = (hw1_base | (i_bit << 10) | rn_bits) as u16;
         let hw2: u16 = ((imm3 << 12) | (rd_bits << 8) | imm8) as u16;
 
         let mut bytes = hw1.to_le_bytes().to_vec();
@@ -9011,6 +9039,51 @@ mod tests {
             code,
             vec![0x00, 0xf0, 0x7e, 0x02],
             "and r2, r0, #0x7e must encode to the canonical AND.W T1 (imm8=0x7e)"
+        );
+    }
+
+    /// Latent miscompile fix: ADD/SUB with a >0xFF immediate (e.g.
+    /// `add sp, sp, #frame` for a >=256-byte frame) used ADD.W (T3), whose
+    /// `i:imm3:imm8` is a ThumbExpandImm modified immediate — so `#256` silently
+    /// encoded as `#0` (stack corruption). Use ADDW/SUBW (T4), a PLAIN 12-bit
+    /// immediate, for 0x100..=0xFFF; keep T3 for <=0xFF (bit-identical); error
+    /// beyond 4095.
+    #[test]
+    fn add_sub_large_immediate_use_addw_subw_not_misencoded() {
+        let encoder = ArmEncoder::new_thumb2();
+        // add sp, sp, #256  →  ADDW (T4) SP, SP, #256  =  0d f2 00 1d
+        assert_eq!(
+            encoder
+                .encode(&ArmOp::Add {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    op2: Operand2::Imm(256),
+                })
+                .unwrap(),
+            vec![0x0d, 0xf2, 0x00, 0x1d],
+            "add sp,sp,#256 must be ADDW (plain imm12), not a mis-encoded ADD.W"
+        );
+        // sub sp, sp, #256  →  SUBW (T4) SP, SP, #256  =  ad f2 00 1d
+        assert_eq!(
+            encoder
+                .encode(&ArmOp::Sub {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    op2: Operand2::Imm(256),
+                })
+                .unwrap(),
+            vec![0xad, 0xf2, 0x00, 0x1d],
+        );
+        // > 4095 has no single-instruction encoding → error, not silent wrong.
+        assert!(
+            encoder
+                .encode(&ArmOp::Add {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    op2: Operand2::Imm(5000),
+                })
+                .is_err(),
+            "add #5000 must error (no single ADDW), not mis-encode"
         );
     }
 
