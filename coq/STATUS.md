@@ -1,6 +1,6 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated:** May 2026 (v0.11.0: i64 and/or/xor T1 closed — TRUE i64 T1 PARITY, 0 i64 admits)
+**Last Updated: 2026-06-04 (v0.11.x; recount: 291 Qed / 9 Admitted, +2 admit.)
 
 ## v0.11.0 outcome: true i64 T1 parity
 
@@ -112,7 +112,7 @@ umbrella #147).
 | **T3: Admitted** | Not yet proven | 13 |
 | **Infrastructure** | Properties of integers, states, flag lemmas | 65 |
 
-**Total: 244 Qed / 8 Admitted across all files**
+**Total: 291 Qed / 9 Admitted (+2 admit.) across all files** (recount 2026-06-04)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,

@@ -95,7 +95,7 @@ Some ops compile to `[]` (empty program) in the model, which is honest but trivi
 | Memory | 0 | 8 | 0 | LDR/STR + VLDR/VSTR |
 | Control/other | 6 | 29 | 0 | Simple ops, nop, drop, locals, globals |
 | ArmRefinement | 0 | 0 | 2 | Sail integration placeholders |
-| **Total** | **39** | **143** | **2** | **237 Qed / 2 Admitted** |
+| **Total** | **39** | **143** | **2** | **291 Qed / 9 Admitted** |
 
 Tier definitions:
 - **T1: Result Correspondence** -- ARM output register = WASM result value (strongest)
@@ -116,7 +116,7 @@ See [coq/STATUS.md](/coq/STATUS.md) for the full breakdown.
 | WASM semantics encoding | Y | 30+ operations modeled |
 | ARM semantics encoding | Y | 20+ instructions modeled |
 | Counterexample generation | Y | Reports failing inputs |
-| Rocq proof suite | P | 237 Qed, 2 Admitted; 39 result-correspondence proofs |
+| Rocq proof suite | P | 291 Qed, 9 Admitted; 39 result-correspondence proofs |
 | Sail ARM semantics | R | Evaluated, not implemented |
 
 ---
@@ -128,7 +128,7 @@ See [coq/STATUS.md](/coq/STATUS.md) for the full breakdown.
 | ARM Cortex-M4 (Thumb-2) | Y | Primary target, code generation works |
 | ARM Cortex-M (generic) | Y | Vector table, startup, AAPCS ABI |
 | ARM Cortex-M4F (FPU) | Y | VFP single-precision (f32) support |
-| RISC-V | N | Not implemented |
+| RISC-V | Y | RV32IMAC backend (selector+encoder+ELF); qemu_riscv32 / ESP32-C3 validated (v0.11.21+) |
 
 ---
 
