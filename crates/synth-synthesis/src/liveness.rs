@@ -358,6 +358,42 @@ pub fn analyze_function(instrs: &[ArmInstruction]) -> FunctionAnalysis {
     report
 }
 
+/// Remove provably-dead stores from an instruction stream, returning the
+/// rewritten stream and the count removed.
+///
+/// "Dead" here is exactly [`analyze_function`]'s `dead_defs`: a register write
+/// that is *overwritten before any use within its straight-line segment*. Such
+/// a write is dead regardless of cross-block liveness (the in-segment redefine
+/// proves it), so deleting it preserves observable behavior. This is the
+/// generic, function-wide form of the hand-rolled #221 peephole
+/// (`drop_prev_const_materialization`), and the first **transform** on the
+/// allocator track — the migration of the merged analyses into a codegen pass.
+///
+/// **Branch-offset safety:** this is intended to run on the `select_with_stack`
+/// output *before* `resolve_label_branches` (arm_backend), where branches are
+/// still symbolic labels — removing a non-branch instruction cannot perturb a
+/// label-relative target, which is resolved to bytes afterward. The dead
+/// instructions are always interior to a straight-line segment and are never
+/// branch targets, so the rewrite is offset-neutral by construction.
+///
+/// Pure function: callers opt in. Not wired into codegen by this change — the
+/// wiring is a separate, fully oracle-gated step (every differential fixture
+/// must stay result-identical + a measured size/cycle delta + fuzz).
+pub fn eliminate_dead_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    let dead: std::collections::BTreeSet<usize> =
+        analyze_function(instrs).dead_defs.into_iter().collect();
+    if dead.is_empty() {
+        return (instrs.to_vec(), 0);
+    }
+    let kept: Vec<ArmInstruction> = instrs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !dead.contains(i))
+        .map(|(_, ins)| ins.clone())
+        .collect();
+    (kept, dead.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,6 +595,77 @@ mod tests {
             }),
         ];
         assert_eq!(redundant_const_defs(&seq), Some(vec![]));
+    }
+
+    #[test]
+    fn eliminate_dead_stores_removes_overwritten_def() {
+        // movw r0,#7 ; movw r0,#9 ; add r1,r0,#0
+        // The first movw is a dead store → removed; result keeps 2 instructions.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 9,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+        ];
+        let (out, removed) = eliminate_dead_stores(&seq);
+        assert_eq!(removed, 1);
+        assert_eq!(out.len(), 2);
+        // The surviving movw is the live one (#9), then the add.
+        assert!(matches!(out[0].op, ArmOp::Movw { imm16: 9, .. }));
+        assert!(matches!(out[1].op, ArmOp::Add { .. }));
+    }
+
+    #[test]
+    fn eliminate_dead_stores_is_noop_when_nothing_dead() {
+        // A clean sequence (each def used) is returned byte-for-byte unchanged.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+        ];
+        let (out, removed) = eliminate_dead_stores(&seq);
+        assert_eq!(removed, 0);
+        assert_eq!(out.len(), seq.len());
+        assert_eq!(out, seq, "no dead stores → identical stream");
+    }
+
+    #[test]
+    fn eliminate_dead_stores_never_crosses_a_branch() {
+        // movw r0,#7 ; <branch> ; movw r0,#9
+        // The first movw is the END of segment 1 (no in-segment overwrite), so it
+        // is NOT dead (its value could be live past the branch) → nothing removed.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::BOffset { offset: 4 }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 9,
+            }),
+        ];
+        let (out, removed) = eliminate_dead_stores(&seq);
+        assert_eq!(
+            removed, 0,
+            "a def at a segment boundary is never dead-removed"
+        );
+        assert_eq!(out.len(), 3);
     }
 
     #[test]
