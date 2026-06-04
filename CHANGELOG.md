@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.29] - 2026-06-04
+
+**`--native-pointer-abi`: wasm statics as base-independent `.data`, so host-pointer drop-ins work on silicon (#237).**
+
+A loom-dissolved host-pointer primitive (e.g. `z_impl_k_mutex_unlock`) mixes two
+memory-access classes that need different base treatment, but synth lowered both
+as `[linmem_base + addr]`:
+- a **host `*ptr` arg** (a real kernel pointer) needs `base = 0` for a native
+  deref (`[0 + ptr] == [ptr]`), set by the caller's trampoline; and
+- a **function-static** (a wasm-resident `static`, e.g. a `k_spinlock`) at a
+  compile-time-const address needs `base = &(placed wasm data)`.
+
+`base` can't be both, so with the `base=0` trampoline the static resolved to the
+raw wasm offset as an absolute address and MPU-faulted on the nucleo_g474re
+before producing output.
+
+**Fix (opt-in `--native-pointer-abi`):** under the flag, a const memory address
+**anywhere in the wasm linear memory** is a static and is addressed
+**base-independently** — the whole linear-memory minimum is emitted as one
+RAM-resident region (a writable `.data` when there is initialized data, else a
+`.bss`/NOBITS — no flash cost), with a `__synth_wasm_data` section-base symbol,
+and the access materializes `__synth_wasm_data + addr` via `R_ARM_MOVW_ABS_NC` /
+`R_ARM_MOVT_ABS` relocations (new `ArmOp::MovwSym`/`MovtSym`; `CodeRelocation`
+gains a `RelocKind`). This covers **both** initialized `(data)` statics **and
+zero-init/BSS** ones — a `static k_spinlock lock;` is zero-init (no `(data)`
+segment), the common kernel case. Runtime (host-pointer) addresses — beyond the
+linear memory — keep the `[R11=0 + addr]` native deref. The two coexist in one
+function (the mutex: host `k_mutex*` **and** its `static lock`).
+
+- **Opt-in → frozen by default.** Without the flag the base-relative
+  `[R11+const]` path is unchanged, so the value-in/value-out leaves
+  (`control_step`/`flat_flight`) — whose silicon numbers depend on it — stay
+  **bit-identical** (all six differential fixtures verified).
+- **Object-level proof** (`native_pointer_static.wat`; `arm-none-eabi-readelf`):
+  with the flag, `.data` is present (`WA`), `__synth_wasm_data` is a defined
+  OBJECT symbol, and the static store carries MOVW_ABS/MOVT_ABS relocations
+  against it; the host-pointer load stays base-relative. Without the flag,
+  neither appears. Unit test
+  `test_237_static_store_is_symbol_relative_under_native_pointer_abi`.
+
 ## [0.11.28] - 2026-06-04
 
 **`--all-exports --relocatable` now emits reachable internal callees, not just the exports (#235).**

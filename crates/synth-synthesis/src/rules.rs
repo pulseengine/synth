@@ -235,6 +235,23 @@ pub enum ArmOp {
         imm16: u16,
     },
 
+    // #237: symbol-relative MOVW/MOVT — materialize the address of `symbol +
+    // addend` (low/high 16 bits respectively). Encoded like Movw/Movt with the
+    // addend's 16 bits in place; the backend records an R_ARM_MOVW_ABS_NC /
+    // R_ARM_MOVT_ABS relocation so the linker adds the symbol's final address.
+    // Used by `--native-pointer-abi` to address wasm statics (`__synth_wasm_data`)
+    // base-independently, so a host-pointer trampoline's `base=0` doesn't apply.
+    MovwSym {
+        rd: Reg,
+        symbol: String,
+        addend: i32,
+    },
+    MovtSym {
+        rd: Reg,
+        symbol: String,
+        addend: i32,
+    },
+
     // Compare
     Cmp {
         rn: Reg,

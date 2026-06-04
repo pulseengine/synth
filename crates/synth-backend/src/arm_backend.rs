@@ -172,6 +172,8 @@ fn compile_wasm_to_arm(
         // imports (rewritten to the wasm field name by build_relocatable_elf)
         // instead of `__meld_dispatch_import`.
         selector.set_relocatable(config.relocatable);
+        // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
+        selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
         selector
             .select_with_stack(wasm_ops, num_params)
             .map_err(|e| format!("instruction selection failed: {}", e))
@@ -264,6 +266,24 @@ fn compile_wasm_to_arm(
             relocations.push(CodeRelocation {
                 offset: code.len() as u32,
                 symbol: label.clone(),
+                kind: synth_core::backend::RelocKind::ThmCall,
+            });
+        }
+        // #237: symbol-relative MOVW/MOVT (the `--native-pointer-abi` static-data
+        // addressing). The encoder writes the addend in place; record the matching
+        // R_ARM_MOVW_ABS_NC / R_ARM_MOVT_ABS so the linker adds the symbol address.
+        if let ArmOp::MovwSym { symbol, .. } = &instr.op {
+            relocations.push(CodeRelocation {
+                offset: code.len() as u32,
+                symbol: symbol.clone(),
+                kind: synth_core::backend::RelocKind::MovwAbs,
+            });
+        }
+        if let ArmOp::MovtSym { symbol, .. } = &instr.op {
+            relocations.push(CodeRelocation {
+                offset: code.len() as u32,
+                symbol: symbol.clone(),
+                kind: synth_core::backend::RelocKind::MovtAbs,
             });
         }
 

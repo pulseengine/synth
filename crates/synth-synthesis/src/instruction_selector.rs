@@ -1186,6 +1186,14 @@ pub struct InstructionSelector {
     /// direct `BL func_N` (the relocatable-ELF builder rewrites `func_N` to the
     /// wasm field name, e.g. `k_spin_lock`) instead of `__meld_dispatch_import`.
     relocatable: bool,
+    /// #237: native-pointer ABI — wasm statics become `__synth_wasm_data`-
+    /// relative (MOVW/MOVT), so a `base=0` host-pointer trampoline doesn't
+    /// mis-address them.
+    native_pointer_abi: bool,
+    /// #237: wasm linear-memory minimum size in bytes — the static-data extent
+    /// (initialized `(data)` + zero-init/BSS). A const address below this is a
+    /// static (symbol-relative under the flag).
+    linear_memory_bytes: u32,
     /// AAPCS argument count per function, indexed by the *full* WASM function
     /// index (imports first, then locals). Plumbed from the frontend's type +
     /// function sections (issue #195). `func_arg_counts[i]` = number of integer
@@ -1223,6 +1231,8 @@ impl InstructionSelector {
             bounds_check: BoundsCheckConfig::None,
             num_imports: 0,
             relocatable: false,
+            native_pointer_abi: false,
+            linear_memory_bytes: 0,
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1243,6 +1253,8 @@ impl InstructionSelector {
             bounds_check,
             num_imports: 0,
             relocatable: false,
+            native_pointer_abi: false,
+            linear_memory_bytes: 0,
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1265,6 +1277,53 @@ impl InstructionSelector {
     /// builder) instead of dispatching through `__meld_dispatch_import`.
     pub fn set_relocatable(&mut self, relocatable: bool) {
         self.relocatable = relocatable;
+    }
+
+    /// #237: enable the native-pointer ABI and supply the active data-segment
+    /// `(offset, length)` ranges used to classify const addresses as statics.
+    /// `linear_memory_bytes` is the wasm linear-memory minimum size — the full
+    /// static-data extent, covering both `(data)` segments and the zero-init
+    /// (BSS) region (#237 BSS follow-up).
+    pub fn set_native_pointer_abi(&mut self, enabled: bool, linear_memory_bytes: u32) {
+        self.native_pointer_abi = enabled;
+        self.linear_memory_bytes = linear_memory_bytes;
+    }
+
+    /// #237: under the native-pointer ABI, a const effective address `addr`
+    /// within the wasm linear memory `[0, linear_memory_bytes)` is a wasm static
+    /// (whether an initialized `(data)` byte or a zero-init/BSS variable like a
+    /// `static k_spinlock`) → returns its `__synth_wasm_data` addend
+    /// (base-independent). Any address beyond the linear memory is a runtime host
+    /// pointer and keeps the base-relative `[R11+addr]` path (returns `None`).
+    fn static_data_addend(&self, addr: u32) -> Option<i32> {
+        if !self.native_pointer_abi {
+            return None;
+        }
+        (addr < self.linear_memory_bytes).then_some(addr as i32)
+    }
+
+    /// #237: emit a `__synth_wasm_data + addend` address into `rd` (MOVW+MOVT,
+    /// symbol-relocated) — the base-independent static-data address.
+    fn emit_wasm_data_addr(out: &mut Vec<ArmInstruction>, rd: Reg, addend: i32, line: usize) {
+        for hi in [false, true] {
+            let op = if hi {
+                ArmOp::MovtSym {
+                    rd,
+                    symbol: "__synth_wasm_data".to_string(),
+                    addend,
+                }
+            } else {
+                ArmOp::MovwSym {
+                    rd,
+                    symbol: "__synth_wasm_data".to_string(),
+                    addend,
+                }
+            };
+            out.push(ArmInstruction {
+                op,
+                source_line: Some(line),
+            });
+        }
     }
 
     /// Set the per-function AAPCS argument-count table (issue #195).
@@ -5699,13 +5758,26 @@ impl InstructionSelector {
 
                     if let Some(eff_offset) = folded {
                         Self::drop_prev_const_materialization(&mut instructions, idx - 1);
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Ldr {
-                                rd: dst,
-                                addr: MemAddr::imm(Reg::R11, eff_offset as i32),
-                            },
-                            source_line: Some(idx),
-                        });
+                        if let Some(addend) = self.static_data_addend(eff_offset) {
+                            // #237: static → base-independent address in `dst`,
+                            // then load `[dst]` (the load overwrites the address).
+                            Self::emit_wasm_data_addr(&mut instructions, dst, addend, idx);
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Ldr {
+                                    rd: dst,
+                                    addr: MemAddr::imm(dst, 0),
+                                },
+                                source_line: Some(idx),
+                            });
+                        } else {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Ldr {
+                                    rd: dst,
+                                    addr: MemAddr::imm(Reg::R11, eff_offset as i32),
+                                },
+                                source_line: Some(idx),
+                            });
+                        }
                     } else {
                         // Generate load with optional bounds checking
                         let load_ops =
@@ -5748,13 +5820,27 @@ impl InstructionSelector {
                             idx - 2,
                             idx - 1,
                         );
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Str {
-                                rd: value,
-                                addr: MemAddr::imm(Reg::R11, eff_offset as i32),
-                            },
-                            source_line: Some(idx),
-                        });
+                        if let Some(addend) = self.static_data_addend(eff_offset) {
+                            // #237: static store — materialize the base-independent
+                            // address into a scratch reg, then `STR value, [addr]`.
+                            let a = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                            Self::emit_wasm_data_addr(&mut instructions, a, addend, idx);
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Str {
+                                    rd: value,
+                                    addr: MemAddr::imm(a, 0),
+                                },
+                                source_line: Some(idx),
+                            });
+                        } else {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Str {
+                                    rd: value,
+                                    addr: MemAddr::imm(Reg::R11, eff_offset as i32),
+                                },
+                                source_line: Some(idx),
+                            });
+                        }
                     } else {
                         // Generate store with optional bounds checking
                         let store_ops =
@@ -14450,6 +14536,58 @@ mod tests {
         assert!(
             has_movw,
             "complex-value stores must NOT fold; address Movw should remain. got: {instrs:#?}"
+        );
+    }
+
+    /// #237: under `--native-pointer-abi`, a store to a const address in a data
+    /// segment becomes `__synth_wasm_data`-relative (MovwSym/MovtSym), so a
+    /// `base=0` host-pointer trampoline doesn't mis-resolve it. Without the flag
+    /// (and for an out-of-range/runtime address) it stays base-relative.
+    #[test]
+    fn test_237_static_store_is_symbol_relative_under_native_pointer_abi() {
+        let db = RuleDatabase::new();
+        // store i32 7 to wasm static at const address 256 (in data segment [256,4)).
+        let ops = vec![
+            WasmOp::I32Const(256),
+            WasmOp::I32Const(7),
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let is_data_sym = |i: &ArmInstruction| {
+            matches!(&i.op, ArmOp::MovwSym { symbol, .. } | ArmOp::MovtSym { symbol, .. }
+                if symbol == "__synth_wasm_data")
+        };
+
+        // Flag ON + address in range → symbol-relative.
+        let mut sel = InstructionSelector::new(db.rules().to_vec());
+        sel.set_relocatable(true);
+        sel.set_native_pointer_abi(true, 65536);
+        let on = sel.select_with_stack(&ops, 0).unwrap();
+        assert!(
+            on.iter().filter(|i| is_data_sym(i)).count() >= 2,
+            "static store must emit MovwSym+MovtSym __synth_wasm_data. got: {on:#?}"
+        );
+
+        // Flag OFF → base-relative, no symbol relocation (frozen behavior).
+        let mut sel_off = InstructionSelector::new(db.rules().to_vec());
+        sel_off.set_relocatable(true);
+        let off = sel_off.select_with_stack(&ops, 0).unwrap();
+        assert!(
+            !off.iter().any(is_data_sym),
+            "without the flag the static store stays base-relative. got: {off:#?}"
+        );
+
+        // Flag ON but address OUT of range (runtime/host pointer) → base-relative.
+        let mut sel_oor = InstructionSelector::new(db.rules().to_vec());
+        sel_oor.set_relocatable(true);
+        sel_oor.set_native_pointer_abi(true, 64); // 256 >= 64 → out of linear memory → host pointer
+        let oor = sel_oor.select_with_stack(&ops, 0).unwrap();
+        assert!(
+            !oor.iter().any(is_data_sym),
+            "an address outside any data segment stays base-relative. got: {oor:#?}"
         );
     }
 }
