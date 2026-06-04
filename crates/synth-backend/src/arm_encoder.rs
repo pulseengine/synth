@@ -6093,9 +6093,16 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
         let rn_bits = reg_to_bits(rn);
 
-        let i_bit = (imm >> 11) & 1;
-        let imm3 = (imm >> 8) & 0x7;
-        let imm8 = imm & 0xFF;
+        // ADDS.W (flag-setting) has only the modified-immediate form — error on
+        // an un-encodable value rather than silently add the wrong constant.
+        let field = try_thumb_expand_imm(imm).ok_or_else(|| {
+            synth_core::Error::synthesis(
+                "ADDS immediate is not a valid ThumbExpandImm — materialize into a register",
+            )
+        })?;
+        let i_bit = (field >> 11) & 1;
+        let imm3 = (field >> 8) & 0x7;
+        let imm8 = field & 0xFF;
 
         // ADDS.W Rd, Rn, #imm (with S=1)
         // First halfword: 1111 0 i 0 1000 1 Rn = F110 | i<<10 | Rn
@@ -6112,9 +6119,16 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
         let rn_bits = reg_to_bits(rn);
 
-        let i_bit = (imm >> 11) & 1;
-        let imm3 = (imm >> 8) & 0x7;
-        let imm8 = imm & 0xFF;
+        // SUBS.W (flag-setting) has only the modified-immediate form — error on
+        // an un-encodable value rather than silently subtract the wrong constant.
+        let field = try_thumb_expand_imm(imm).ok_or_else(|| {
+            synth_core::Error::synthesis(
+                "SUBS immediate is not a valid ThumbExpandImm — materialize into a register",
+            )
+        })?;
+        let i_bit = (field >> 11) & 1;
+        let imm3 = (field >> 8) & 0x7;
+        let imm8 = field & 0xFF;
 
         // SUBS.W Rd, Rn, #imm (with S=1)
         // First halfword: 1111 0 i 0 1101 1 Rn = F1B0 | i<<10 | Rn
@@ -6217,9 +6231,17 @@ impl ArmEncoder {
     fn encode_thumb32_cmp_imm(&self, rn: &Reg, imm: u32) -> Result<Vec<u8>> {
         let rn_bits = reg_to_bits(rn);
 
-        let i_bit = (imm >> 11) & 1;
-        let imm3 = (imm >> 8) & 0x7;
-        let imm8 = imm & 0xFF;
+        // CMP.W has only the modified-immediate form (no plain-imm12 like ADDW),
+        // so an un-encodable immediate MUST be materialized into a register by
+        // the selector. Error rather than silently compare the wrong constant.
+        let field = try_thumb_expand_imm(imm).ok_or_else(|| {
+            synth_core::Error::synthesis(
+                "CMP immediate is not a valid ThumbExpandImm — materialize into a register",
+            )
+        })?;
+        let i_bit = (field >> 11) & 1;
+        let imm3 = (field >> 8) & 0x7;
+        let imm8 = field & 0xFF;
 
         // CMP.W Rn, #imm
         let hw1: u16 = (0xF1B0 | (i_bit << 10) | rn_bits) as u16;
@@ -6636,6 +6658,43 @@ impl ArmEncoder {
 }
 
 /// Convert register to bit encoding (0-15)
+/// Reverse of the ARMv7-M `ThumbExpandImm`: given a 32-bit immediate, return the
+/// 12-bit `i:imm3:imm8` field if it is a representable modified immediate, else
+/// `None` (the caller must materialize the value into a register). This is the
+/// shared correct path for the data-processing immediate encoders — without it
+/// they pack raw bits and silently mis-encode any value `> 0xFF` that isn't a
+/// modified immediate (the silent-miscompile class behind #251/#253/#255).
+fn try_thumb_expand_imm(value: u32) -> Option<u32> {
+    // i:imm3 = 0000 → 8-bit value, zero-extended (00000000 00000000 00000000 XY).
+    if value <= 0xFF {
+        return Some(value);
+    }
+    let b0 = value & 0xFF; // byte 0
+    let b1 = (value >> 8) & 0xFF; // byte 1
+    // 0x00XY00XY (i:imm3 = 0001) — XY in bytes 0 and 2
+    if value == (b0 << 16) | b0 {
+        return Some(0x100 | b0);
+    }
+    // 0xXY00XY00 (i:imm3 = 0010) — XY in bytes 1 and 3
+    if value == (b1 << 24) | (b1 << 8) {
+        return Some(0x200 | b1);
+    }
+    // 0xXYXYXYXY (i:imm3 = 0011) — XY in all four bytes
+    if value == (b0 << 24) | (b0 << 16) | (b0 << 8) | b0 {
+        return Some(0x300 | b0);
+    }
+    // An 8-bit value with bit 7 set, rotated right by 8..=31. `rotate_left(rot)`
+    // undoes the encoded right rotation; if the result is `1bbbbbbb` (0x80..=0xFF)
+    // the value is representable. imm12[11:7] = rot, imm12[6:0] = low 7 bits.
+    for rot in 8..=31u32 {
+        let unrot = value.rotate_left(rot);
+        if (0x80..=0xFF).contains(&unrot) {
+            return Some((rot << 7) | (unrot & 0x7F));
+        }
+    }
+    None
+}
+
 fn reg_to_bits(reg: &Reg) -> u32 {
     match reg {
         Reg::R0 => 0,
@@ -9039,6 +9098,60 @@ mod tests {
             code,
             vec![0x00, 0xf0, 0x7e, 0x02],
             "and r2, r0, #0x7e must encode to the canonical AND.W T1 (imm8=0x7e)"
+        );
+    }
+
+    /// #255: the shared ThumbExpandImm reverse-encoder underpinning the
+    /// data-processing immediate fix. Encodable modified immediates round-trip to
+    /// the expected `i:imm3:imm8` field; a genuinely non-modified value is `None`
+    /// (caller must materialize into a register). Note `1000 = 0xFA ror 30` *is*
+    /// representable (field 0xF7A) — the old encoder mis-encoded it (raw 0x3E8);
+    /// this encodes it correctly.
+    #[test]
+    fn try_thumb_expand_imm_encodes_modified_immediates() {
+        assert_eq!(try_thumb_expand_imm(0x7e), Some(0x07e)); // zero-extended byte
+        assert_eq!(try_thumb_expand_imm(0xff), Some(0x0ff));
+        assert_eq!(try_thumb_expand_imm(0x0001_0001), Some(0x101)); // 0x00XY00XY
+        assert_eq!(try_thumb_expand_imm(0xff00_ff00), Some(0x2ff)); // 0xXY00XY00
+        assert_eq!(try_thumb_expand_imm(0xffff_ffff), Some(0x3ff)); // 0xXYXYXYXY
+        assert_eq!(try_thumb_expand_imm(0x100), Some(0xf80)); // 0x80 ror 31
+        assert_eq!(try_thumb_expand_imm(0x8000_0000), Some(0x400)); // 0x80 ror 8
+        assert_eq!(try_thumb_expand_imm(1000), Some(0xf7a)); // 0xFA ror 30
+        // Genuinely unrepresentable (bits too far apart for an 8-bit window).
+        assert_eq!(try_thumb_expand_imm(0x101), None);
+        assert_eq!(try_thumb_expand_imm(0x12345), None);
+    }
+
+    /// #255: CMP/ADDS/SUBS encode any valid modified immediate correctly, and
+    /// ERROR (not silently mis-encode) on a genuinely unrepresentable one,
+    /// forcing the selector to materialize into a register — closing the
+    /// silent-miscompile class of #251/#253.
+    #[test]
+    fn cmp_adds_subs_immediate_error_on_non_modified_imm() {
+        let encoder = ArmEncoder::new_thumb2();
+        // cmp r0, #0xff → valid → Ok; cmp r0, #1000 → valid (0xFA ror 30) → Ok.
+        assert!(encoder.encode_thumb32_cmp_imm(&Reg::R0, 0xff).is_ok());
+        assert!(encoder.encode_thumb32_cmp_imm(&Reg::R0, 1000).is_ok());
+        // cmp r0, #0x101 → NOT a modified immediate → Err (materialize-reg).
+        assert!(
+            encoder.encode_thumb32_cmp_imm(&Reg::R0, 0x101).is_err(),
+            "cmp #0x101 must error, not compare the wrong constant"
+        );
+        assert!(
+            encoder
+                .encode_thumb32_adds(&Reg::R0, &Reg::R0, 0x101)
+                .is_err()
+        );
+        assert!(
+            encoder
+                .encode_thumb32_subs(&Reg::R0, &Reg::R0, 0x101)
+                .is_err()
+        );
+        // ...but a valid modified immediate still encodes.
+        assert!(
+            encoder
+                .encode_thumb32_adds(&Reg::R0, &Reg::R0, 0x80)
+                .is_ok()
         );
     }
 
