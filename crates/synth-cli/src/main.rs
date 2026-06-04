@@ -1631,7 +1631,45 @@ fn extract_module_from_wast(contents: &str) -> Result<Vec<u8>> {
         .ok_or_else(|| anyhow::anyhow!("no modules found in WAST file"))
 }
 
-/// Compile all exported functions into a multi-function ELF
+/// #235: the set of function indices reachable from any exported function via
+/// `call` (transitively), including the exports themselves. Imports (index <
+/// `num_imports`) are not followed — they stay external symbols the host linker
+/// resolves. Used so `--all-exports --relocatable` emits a self-contained object
+/// containing every internal callee a dissolved export needs (e.g. a panic
+/// helper loom left un-inlined), instead of leaving it as an undefined symbol.
+fn reachable_from_exports(
+    funcs: &[FunctionOps],
+    num_imports: u32,
+) -> std::collections::BTreeSet<u32> {
+    let pos_by_index: std::collections::HashMap<u32, usize> = funcs
+        .iter()
+        .enumerate()
+        .map(|(i, f)| (f.index, i))
+        .collect();
+    let mut reachable: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    let mut work: Vec<u32> = Vec::new();
+    for f in funcs {
+        if f.export_name.is_some() && reachable.insert(f.index) {
+            work.push(f.index);
+        }
+    }
+    while let Some(idx) = work.pop() {
+        if let Some(&p) = pos_by_index.get(&idx) {
+            for op in &funcs[p].ops {
+                if let WasmOp::Call(target) = op
+                    && *target >= num_imports
+                    && reachable.insert(*target)
+                {
+                    work.push(*target);
+                }
+            }
+        }
+    }
+    reachable
+}
+
+/// Compile all exported functions (plus their reachable internal callees, #235)
+/// into a multi-function ELF.
 #[allow(clippy::too_many_arguments)]
 fn compile_all_exports(
     input: Option<PathBuf>,
@@ -1780,10 +1818,20 @@ fn compile_all_exports(
         let memories = module.memories;
         let imports = module.imports;
         let num_imports = module.num_imported_funcs;
+        // #235: compile not just the exports but every internal (non-imported)
+        // function reachable from them via `call`. A loom-dissolved export can
+        // retain a non-inlinable callee (e.g. a panic helper from an overflow
+        // check); without that callee's body in the object the export references
+        // an unresolved symbol and the host link fails. Imports (index <
+        // num_imports) stay external — the linker resolves them. A module whose
+        // exports call no internal function (every leaf fixture) yields exactly
+        // the exports, so existing output stays bit-identical.
+        let reachable = reachable_from_exports(&module.functions, num_imports);
+        // Preserve definition order; keep exports + reachable internal callees.
         let exports: Vec<_> = module
             .functions
             .into_iter()
-            .filter(|f| f.export_name.is_some())
+            .filter(|f| reachable.contains(&f.index))
             .collect();
         (
             exports,
@@ -1859,9 +1907,13 @@ fn compile_all_exports(
     let mut compiled_funcs = Vec::new();
     let mut skipped_funcs: Vec<(String, String)> = Vec::new();
     for func in &all_exports {
-        let name = func.export_name.clone().ok_or_else(|| {
-            anyhow::anyhow!("function at index {} has no export name", func.index)
-        })?;
+        // Exported functions keep their export name; reachable internal callees
+        // (#235) have none, so they take the `func_{index}` symbol — exactly the
+        // name an internal `call` relocation references, so it resolves in-object.
+        let name = func
+            .export_name
+            .clone()
+            .unwrap_or_else(|| format!("func_{}", func.index));
         info!(
             "Compiling function '{}' via backend '{}'...",
             name,
@@ -3348,6 +3400,56 @@ fn link_firmware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fop(index: u32, export: Option<&str>, ops: Vec<WasmOp>) -> FunctionOps {
+        FunctionOps {
+            index,
+            export_name: export.map(String::from),
+            ops,
+        }
+    }
+
+    /// #235: a dissolved export's non-exported callee must be pulled into the
+    /// reachable set (so it lands in the relocatable object), while imports and
+    /// unreachable functions stay out.
+    #[test]
+    fn reachable_from_exports_pulls_in_internal_callees_235() {
+        // index 0 = import (external); 1 = helper (internal, non-exported);
+        // 2 = exported caller -> calls 1; 3 = dead non-exported (unreferenced).
+        let funcs = vec![
+            fop(1, None, vec![WasmOp::I32Const(1)]),
+            fop(2, Some("caller"), vec![WasmOp::Call(1), WasmOp::Call(0)]),
+            fop(3, None, vec![WasmOp::I32Const(9)]),
+        ];
+        let r = reachable_from_exports(&funcs, 1); // num_imports = 1
+        assert!(r.contains(&2), "the export itself is reachable");
+        assert!(
+            r.contains(&1),
+            "the non-exported callee is pulled in (#235)"
+        );
+        assert!(!r.contains(&0), "imports stay external, never compiled");
+        assert!(
+            !r.contains(&3),
+            "unreferenced internal functions are not emitted"
+        );
+    }
+
+    /// A module whose exports call no internal function yields exactly the
+    /// exports — so existing leaf-fixture output stays bit-identical.
+    #[test]
+    fn reachable_from_exports_leaf_is_exports_only_235() {
+        let funcs = vec![
+            fop(0, Some("a"), vec![WasmOp::I32Const(1)]),
+            fop(1, Some("b"), vec![WasmOp::LocalGet(0)]),
+            fop(2, None, vec![WasmOp::I32Const(7)]), // dead helper
+        ];
+        let r = reachable_from_exports(&funcs, 0);
+        assert_eq!(
+            r.into_iter().collect::<Vec<_>>(),
+            vec![0, 1],
+            "exports only"
+        );
+    }
 
     /// `encode_thumb_bl` must match `arm-none-eabi-as` byte-for-byte. These
     /// vectors were taken directly from gas disassembly (#170), covering
