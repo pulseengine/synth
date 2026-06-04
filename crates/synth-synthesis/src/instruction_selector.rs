@@ -14535,4 +14535,56 @@ mod tests {
             "complex-value stores must NOT fold; address Movw should remain. got: {instrs:#?}"
         );
     }
+
+    /// #237: under `--native-pointer-abi`, a store to a const address in a data
+    /// segment becomes `__synth_wasm_data`-relative (MovwSym/MovtSym), so a
+    /// `base=0` host-pointer trampoline doesn't mis-resolve it. Without the flag
+    /// (and for an out-of-range/runtime address) it stays base-relative.
+    #[test]
+    fn test_237_static_store_is_symbol_relative_under_native_pointer_abi() {
+        let db = RuleDatabase::new();
+        // store i32 7 to wasm static at const address 256 (in data segment [256,4)).
+        let ops = vec![
+            WasmOp::I32Const(256),
+            WasmOp::I32Const(7),
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let is_data_sym = |i: &ArmInstruction| {
+            matches!(&i.op, ArmOp::MovwSym { symbol, .. } | ArmOp::MovtSym { symbol, .. }
+                if symbol == "__synth_wasm_data")
+        };
+
+        // Flag ON + address in range → symbol-relative.
+        let mut sel = InstructionSelector::new(db.rules().to_vec());
+        sel.set_relocatable(true);
+        sel.set_native_pointer_abi(true, vec![(256, 4)]);
+        let on = sel.select_with_stack(&ops, 0).unwrap();
+        assert!(
+            on.iter().filter(|i| is_data_sym(i)).count() >= 2,
+            "static store must emit MovwSym+MovtSym __synth_wasm_data. got: {on:#?}"
+        );
+
+        // Flag OFF → base-relative, no symbol relocation (frozen behavior).
+        let mut sel_off = InstructionSelector::new(db.rules().to_vec());
+        sel_off.set_relocatable(true);
+        let off = sel_off.select_with_stack(&ops, 0).unwrap();
+        assert!(
+            !off.iter().any(is_data_sym),
+            "without the flag the static store stays base-relative. got: {off:#?}"
+        );
+
+        // Flag ON but address OUT of range (runtime/host pointer) → base-relative.
+        let mut sel_oor = InstructionSelector::new(db.rules().to_vec());
+        sel_oor.set_relocatable(true);
+        sel_oor.set_native_pointer_abi(true, vec![(4096, 8)]); // 256 not in [4096,4104)
+        let oor = sel_oor.select_with_stack(&ops, 0).unwrap();
+        assert!(
+            !oor.iter().any(is_data_sym),
+            "an address outside any data segment stays base-relative. got: {oor:#?}"
+        );
+    }
 }

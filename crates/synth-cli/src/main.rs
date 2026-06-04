@@ -196,6 +196,13 @@ enum Commands {
         #[arg(long)]
         relocatable: bool,
 
+        /// #237: native-pointer ABI for host-pointer drop-ins. Emits wasm function
+        /// statics as a base-independent `.data` section (`__synth_wasm_data`,
+        /// MOVW/MOVT-relocated), so a `linmem base = 0` native-pointer trampoline
+        /// addresses host pointers and statics correctly in one function.
+        #[arg(long)]
+        native_pointer_abi: bool,
+
         /// Emit a CycloneDX 1.5 SBOM for the compiled ELF. With a path, writes
         /// there; as a bare flag (`--sbom`) writes `<output>.cdx.json` next to
         /// the ELF. The SBOM documents the synth compiler, the input WASM, the
@@ -330,6 +337,7 @@ fn main() -> Result<()> {
             link,
             builtins,
             relocatable,
+            native_pointer_abi,
             sbom,
             sign_output,
         } => {
@@ -368,6 +376,7 @@ fn main() -> Result<()> {
                 verify,
                 &target_spec,
                 relocatable,
+                native_pointer_abi,
                 sbom_path,
                 sign_output,
             )?;
@@ -916,6 +925,7 @@ fn compile_command(
     verify: bool,
     target_spec: &TargetSpec,
     relocatable: bool,
+    native_pointer_abi: bool,
     sbom_path: Option<PathBuf>,
     sign_output: bool,
 ) -> Result<()> {
@@ -961,6 +971,7 @@ fn compile_command(
             verify,
             target_spec,
             relocatable,
+            native_pointer_abi,
             sbom_path,
             sign_output,
         );
@@ -1683,6 +1694,7 @@ fn compile_all_exports(
     verify: bool,
     target_spec: &TargetSpec,
     relocatable: bool,
+    native_pointer_abi: bool,
     sbom_path: Option<PathBuf>,
     sign_output: bool,
 ) -> Result<()> {
@@ -1706,6 +1718,7 @@ fn compile_all_exports(
         max_num_imported_funcs,
         func_arg_counts,
         type_arg_counts,
+        all_data_segments, // #237: active data segments, for --native-pointer-abi
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
@@ -1796,6 +1809,7 @@ fn compile_all_exports(
             max_imports,
             merged_func_arg_counts,
             merged_type_arg_counts,
+            Vec::new(), // #237: data segments not threaded for WAST (single-module .wasm path covers it)
         )
     } else {
         let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
@@ -1818,6 +1832,7 @@ fn compile_all_exports(
         let memories = module.memories;
         let imports = module.imports;
         let num_imports = module.num_imported_funcs;
+        let data_segs = module.data_segments; // #237: capture before `functions` is moved
         // #235: compile not just the exports but every internal (non-imported)
         // function reachable from them via `call`. A loom-dissolved export can
         // retain a non-inlinable callee (e.g. a panic helper from an overflow
@@ -1840,6 +1855,7 @@ fn compile_all_exports(
             num_imports,
             func_arg_counts,
             type_arg_counts,
+            data_segs,
         )
     };
 
@@ -1900,6 +1916,12 @@ fn compile_all_exports(
         // ABI so host-linked objects get fp-relative memory access and
         // caller-saved preservation (the optimized path is wrong for ET_REL).
         relocatable,
+        // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
+        native_pointer_abi,
+        data_segments: all_data_segments
+            .iter()
+            .map(|(off, d)| (*off, d.len() as u32))
+            .collect(),
         ..CompileConfig::default()
     };
 
@@ -2045,7 +2067,7 @@ fn compile_all_exports(
         } else {
             info!("Producing relocatable object (ET_REL): forced by --relocatable");
         }
-        build_relocatable_elf(&compiled_funcs, &all_imports)?
+        build_relocatable_elf(&compiled_funcs, &all_imports, &all_data_segments)?
     } else if cortex_m {
         build_multi_func_cortex_m_elf(&compiled_funcs, &all_memories, target_spec)?
     } else {
@@ -2174,7 +2196,11 @@ fn build_multi_func_simple_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
 /// Produced when the WASM module has imports — the resulting .o needs to be linked
 /// with the Kiln bridge (which provides `__meld_dispatch_import` etc.) to create
 /// a final firmware binary.
-fn build_relocatable_elf(funcs: &[ElfFunction], imports: &[ImportEntry]) -> Result<Vec<u8>> {
+fn build_relocatable_elf(
+    funcs: &[ElfFunction],
+    imports: &[ImportEntry],
+    data_segments: &[(u32, Vec<u8>)],
+) -> Result<Vec<u8>> {
     use std::collections::HashMap;
 
     let mut elf_builder = ElfBuilder::new_arm32()
@@ -2201,6 +2227,36 @@ fn build_relocatable_elf(funcs: &[ElfFunction], imports: &[ImportEntry]) -> Resu
         .with_data(all_code);
 
     elf_builder.add_section(text_section);
+
+    // #237: if any function addresses a wasm static via `__synth_wasm_data`
+    // (the --native-pointer-abi path), emit the active data segments as a
+    // writable `.data` section so the linker places them in RAM, and define
+    // `__synth_wasm_data` at its base. A wasm address A maps to .data byte A
+    // (segments placed at their wasm offsets), so the MOVW/MOVT addend = A.
+    // `.data` must be added here (right after `.text`) so its section index is
+    // 5, before the optional `.meld_import_table`.
+    let needs_wasm_data = funcs
+        .iter()
+        .flat_map(|f| &f.relocations)
+        .any(|r| r.symbol == "__synth_wasm_data");
+    let emit_wasm_data = needs_wasm_data && !data_segments.is_empty();
+    if emit_wasm_data {
+        let total = data_segments
+            .iter()
+            .map(|(off, d)| *off as usize + d.len())
+            .max()
+            .unwrap_or(0);
+        let mut blob = vec![0u8; total];
+        for (off, d) in data_segments {
+            blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
+        }
+        let data_section = Section::new(".data", ElfSectionType::ProgBits)
+            .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+            .with_addr(0)
+            .with_align(4)
+            .with_data(blob);
+        elf_builder.add_section(data_section);
+    }
 
     // Symbol-name -> symbol index map. Symbol indices are 1-based (index 0 is
     // the reserved null symbol); each `add_symbol` appends one, so we track the
@@ -2247,6 +2303,20 @@ fn build_relocatable_elf(funcs: &[ElfFunction], imports: &[ImportEntry]) -> Resu
     // synth knows the field names (it logs them + emits .meld_import_table), so
     // use them for the undefined symbol (#173). Internal defined calls keep
     // their `func_N`/export-name symbol (already in sym_indices).
+    // #237: define `__synth_wasm_data` at the base of the `.data` section
+    // (section index 5 — added immediately after `.text`=4). The MOVW/MOVT_ABS
+    // relocations from the static-data accesses resolve against it.
+    if emit_wasm_data {
+        let data_sym = Symbol::new("__synth_wasm_data")
+            .with_value(0)
+            .with_binding(SymbolBinding::Global)
+            .with_type(SymbolType::Object)
+            .with_section(5);
+        elf_builder.add_symbol(data_sym);
+        sym_count += 1;
+        sym_indices.insert("__synth_wasm_data".to_string(), sym_count);
+    }
+
     let mut import_label_to_field: HashMap<String, String> = HashMap::new();
     for imp in imports {
         if matches!(imp.kind, synth_core::ImportKind::Function(_)) {
