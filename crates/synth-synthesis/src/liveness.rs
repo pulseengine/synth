@@ -394,6 +394,30 @@ pub fn eliminate_dead_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
     (kept, dead.len())
 }
 
+/// Conservative "does `op` possibly read `reg`": precise via [`reg_effect`] when
+/// modeled; a pure branch/label reads no GP register; a call (`Bl`/`Blx`/…) may
+/// read the AAPCS argument registers `R0..=R3`; anything else unmodeled (`Bx`,
+/// the i64-pair / FP families) is conservatively assumed to read `reg`.
+fn op_may_use(op: &ArmOp, reg: Reg) -> bool {
+    if let Some(e) = reg_effect(op) {
+        return e.uses.contains(&reg);
+    }
+    use ArmOp::*;
+    match op {
+        Label { .. }
+        | B { .. }
+        | BOffset { .. }
+        | BCondOffset { .. }
+        | Bhs { .. }
+        | Blo { .. }
+        | Bcc { .. } => false,
+        Bl { .. } | Blx { .. } | Call { .. } | CallIndirect { .. } => {
+            matches!(reg, Reg::R0 | Reg::R1 | Reg::R2 | Reg::R3)
+        }
+        _ => true,
+    }
+}
+
 /// Fuse `mul` + `add` into `mla` (#257): for an `Add rD, x, Reg(y)` where one
 /// operand is the destination of an earlier `Mul rM, rn, rm`, the result is
 /// `mla rD, rn, rm, other`, and the now-redundant `Mul` is removed. Returns the
@@ -453,12 +477,13 @@ pub fn fuse_mul_add(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
             if !between_ok {
                 continue;
             }
-            // rmul must not be read anywhere after j (dead once fused). An
-            // unmodeled op after j conservatively counts as a possible read.
-            let dead_after = ((j + 1)..n).all(|k| {
-                removed[k] || reg_effect(&instrs[k].op).is_some_and(|e| !e.uses.contains(&rmul))
-            });
-            if !dead_after {
+            // The mul result must be read *only* by this add anywhere in the
+            // function — then removing the mul and folding into the mla is sound
+            // regardless of control flow. `op_may_use` is call/branch-aware
+            // (calls may read R0-R3; pure branches read nothing).
+            let used_elsewhere =
+                (0..n).any(|k| k != j && !removed[k] && op_may_use(&instrs[k].op, rmul));
+            if used_elsewhere {
                 continue;
             }
             rewritten[j] = Some(ArmOp::Mla {
