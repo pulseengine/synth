@@ -7763,22 +7763,78 @@ impl InstructionSelector {
                 // =========================================================
                 I32Eq | I32Ne | I32LtS | I32LtU | I32GtS | I32GtU | I32LeS | I32LeU | I32GeS
                 | I32GeU => {
-                    let b = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
-                    let a = pop_operand(
-                        &mut stack,
-                        &mut next_temp,
-                        &mut instructions,
-                        &mut spill,
-                        &live_params,
-                        idx,
-                    )?;
+                    // #258: fold a compare *bound* into a `cmp`/`cmn` immediate
+                    // instead of materializing it into a register. A const
+                    // `0..=0xFF` → `cmp a, #C`; a const `-0xFF..=-1` →
+                    // `cmn a, #-C` (`cmp a, #neg` ≡ `cmn a, #|neg|`, same flags →
+                    // same condition). Bounded to a byte (both imm encoders are
+                    // correct there); the guard keeps it to a cleanly-tail
+                    // materialization (not spilled), covering the `movw` and the
+                    // `movw;mvn` (negative) forms.
+                    let fold = if idx > 0
+                        && instructions
+                            .last()
+                            .is_some_and(|i| i.source_line == Some(idx - 1))
+                    {
+                        match wasm_ops[idx - 1] {
+                            WasmOp::I32Const(c) if (0..=0xFF).contains(&c) => Some((false, c)),
+                            WasmOp::I32Const(c) if (-0xFF..=-1).contains(&c) => Some((true, -c)),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    let cmp_op = if let Some((is_neg, mag)) = fold {
+                        let _b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        Self::drop_prev_const_materialization(&mut instructions, idx - 1);
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        if is_neg {
+                            ArmOp::Cmn {
+                                rn: a,
+                                op2: Operand2::Imm(mag),
+                            }
+                        } else {
+                            ArmOp::Cmp {
+                                rn: a,
+                                op2: Operand2::Imm(mag),
+                            }
+                        }
+                    } else {
+                        let b = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        let a = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        ArmOp::Cmp {
+                            rn: a,
+                            op2: Operand2::Reg(b),
+                        }
+                    };
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
@@ -7797,12 +7853,8 @@ impl InstructionSelector {
                         I32GeU => Condition::HS,
                         _ => unreachable!(),
                     };
-                    // CMP a, b
                     instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp {
-                            rn: a,
-                            op2: Operand2::Reg(b),
-                        },
+                        op: cmp_op,
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
@@ -14518,6 +14570,64 @@ mod tests {
         assert!(
             !sub_sp,
             "no frame allocation expected for params-only function"
+        );
+    }
+
+    /// #258: a compare against a constant bound folds into `cmp`/`cmn`
+    /// immediate, dropping the materialization — a positive bound → `cmp #C`, a
+    /// negative bound → `cmn #|C|` (the int8-clamp shape on flat_flight).
+    #[test]
+    fn i32_compare_folds_const_bound_into_cmp_cmn() {
+        // (p < 0x7e) → cmp p, #0x7e ; no movw 0x7e.
+        let mut sel = fresh_selector();
+        let pos = sel
+            .select_with_stack(
+                &[
+                    WasmOp::LocalGet(0),
+                    WasmOp::I32Const(0x7e),
+                    WasmOp::I32LtS,
+                    WasmOp::End,
+                ],
+                1,
+            )
+            .unwrap();
+        assert!(
+            !pos.iter()
+                .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 0x7e, .. })),
+            "positive bound must fold, no movw: {pos:#?}"
+        );
+        assert!(
+            pos.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Cmp {
+                    op2: Operand2::Imm(0x7e),
+                    ..
+                }
+            )),
+            "positive bound → cmp #0x7e"
+        );
+        // (p < -0x7f) → cmn p, #0x7f.
+        let mut sel = fresh_selector();
+        let neg = sel
+            .select_with_stack(
+                &[
+                    WasmOp::LocalGet(0),
+                    WasmOp::I32Const(-0x7f),
+                    WasmOp::I32LtS,
+                    WasmOp::End,
+                ],
+                1,
+            )
+            .unwrap();
+        assert!(
+            neg.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Cmn {
+                    op2: Operand2::Imm(0x7f),
+                    ..
+                }
+            )),
+            "negative bound → cmn #0x7f: {neg:#?}"
         );
     }
 
