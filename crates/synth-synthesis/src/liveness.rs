@@ -1060,6 +1060,60 @@ pub fn verify_allocation(
     Ok(())
 }
 
+// ============================================================================
+// Allocator driver (VCR-RA-001 — the entry point the codegen wiring calls)
+//
+// Assembles the layer into one call: interference graph → k-colouring (reserved
+// registers precoloured) → self-check, plus the rematerialization-avoidance
+// opportunity count (the #209 const-CSE headroom). This is the function the
+// virtual-register selector output will hand a function to; today it runs on the
+// existing physical-register stream as a *shadow* allocation — it computes the
+// decision without yet mutating codegen, so it can be measured on the real
+// gale benches before anything is wired.
+// ============================================================================
+
+/// What the allocator decided for a function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AllocationOutcome {
+    /// A valid physical-register assignment (colour = allocatable-pool index).
+    Allocated {
+        coloring: BTreeMap<Reg, usize>,
+        /// Redundant constant materializations the allocator would avoid by
+        /// keeping one copy resident — the #209 const-CSE / rematerialization
+        /// headroom, measured on this function.
+        remat_opportunities: usize,
+    },
+    /// `k`-colouring failed under the pool budget; these values must spill.
+    NeedsSpill(BTreeSet<Reg>),
+    /// The function contains a construct the analysis cannot model precisely
+    /// (calls, numeric-offset/computed branches, i64-pair / FP ops). The
+    /// allocator declines and codegen keeps the existing single-pass path.
+    Declined,
+}
+
+/// Run the register-allocator pipeline on a function: interference graph →
+/// `k`-colouring with `precolored` reserved registers pinned → result. `k` is
+/// the allocatable-pool size (e.g. 9 for synth's R0–R8). Pure: it computes a
+/// decision and does not mutate the instruction stream — the call the codegen
+/// wiring (VCR-RA-001) makes, runnable today as a shadow pass.
+pub fn allocate_function(
+    instrs: &[ArmInstruction],
+    k: usize,
+    precolored: &BTreeMap<Reg, usize>,
+) -> AllocationOutcome {
+    let Some(graph) = interference_graph(instrs) else {
+        return AllocationOutcome::Declined;
+    };
+    let remat_opportunities = analyze_function(instrs).redundant_consts.len();
+    match color_graph_precolored(&graph, k, precolored) {
+        ColorResult::Colored(coloring) => AllocationOutcome::Allocated {
+            coloring,
+            remat_opportunities,
+        },
+        ColorResult::Spilled(s) => AllocationOutcome::NeedsSpill(s),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2056,6 +2110,89 @@ mod tests {
             verify_allocation(&g, &partial),
             Err(AllocationConflict::Unassigned(Reg::R1))
         );
+    }
+
+    // ---- Allocator driver (allocate_function) ------------------------------
+
+    #[test]
+    fn allocate_function_produces_a_valid_allocation_and_counts_remat() {
+        // movw r0,#7 ; mov r1,r0 ; movw r2,#7  — r2's #7 is redundant (resident
+        // in r0). The driver allocates a valid colouring and reports 1 remat
+        // opportunity (the #209 const-CSE headroom).
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R1,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 7,
+            }),
+        ];
+        match allocate_function(&seq, 9, &BTreeMap::new()) {
+            AllocationOutcome::Allocated {
+                coloring,
+                remat_opportunities,
+            } => {
+                let g = interference_graph(&seq).unwrap();
+                assert_eq!(verify_allocation(&g, &coloring), Ok(()));
+                assert_eq!(remat_opportunities, 1, "the resident #7 is CSE-able");
+            }
+            other => panic!("expected Allocated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn allocate_function_declines_on_unmodeled_construct() {
+        let seq = vec![ins(ArmOp::Bl { label: "f".into() })];
+        assert_eq!(
+            allocate_function(&seq, 9, &BTreeMap::new()),
+            AllocationOutcome::Declined
+        );
+    }
+
+    #[test]
+    fn allocate_function_spills_when_pool_too_small() {
+        // A K4 clique of registers needs 4 colours; with k=3 the driver reports
+        // a spill rather than hard-failing (the whole point of VCR-RA-001).
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 2,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 3,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 4,
+            }),
+            // one instruction reading all four → all four simultaneously live
+            ins(ArmOp::Add {
+                rd: Reg::R4,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R4,
+                rn: Reg::R2,
+                op2: Operand2::Reg(Reg::R3),
+            }),
+        ];
+        // k=2 cannot colour 3+ simultaneously-live values → spill, not crash.
+        assert!(matches!(
+            allocate_function(&seq, 2, &BTreeMap::new()),
+            AllocationOutcome::NeedsSpill(_)
+        ));
     }
 
     #[test]
