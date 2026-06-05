@@ -88,10 +88,15 @@ artifacts:
   #    free colour; no colour => actual spill). THE allocation decision the
   #    single-pass allocator can't make (it hard-fails instead). Verified on real
   #    selector output: colourable within the R0-R8 pool (k=9). Still unwired.
+  #  - Precolouring: color_graph_precolored(graph, k, pins) pins nodes to fixed
+  #    colours (never simplified/spilled, only constrain neighbours) — the
+  #    mechanism for synth's reserved regs (R9/R10/R11/R12) + ABI arg pins.
+  #    color_graph() now delegates with empty pins. Still unwired.
   #    Remaining for VCR-RA-001: spill-code insertion (rewrite spilled values to
-  #    stack slots + reload) -> precolouring reserved regs (R9/R11/R12/R10) ->
-  #    ABI-exit-liveness union -> virtual-reg selector output -> oracle-gated
-  #    wiring (the consequential step that finally removes the hard-fail).
+  #    stack slots + reload) -> ABI-exit-liveness union -> virtual-reg selector
+  #    output -> oracle-gated wiring (the consequential step that finally removes
+  #    the hard-fail; it CHANGES emitted bytes so needs the full differential
+  #    gate, unlike the unwired-by-construction analysis pieces above).
   - id: VCR-RA-001
     type: sw-req
     title: SSA-based register allocator with spilling (remove the hard-fail)
