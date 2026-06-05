@@ -981,6 +981,61 @@ pub fn color_graph_precolored(
     }
 }
 
+// ============================================================================
+// Allocation verifier (VCR-RA-001 wiring step 1 — the self-check oracle)
+//
+// `color_graph` PRODUCES an assignment; `verify_allocation` CHECKS one. The two
+// are independent code paths, so running the checker on the producer's output
+// (or on any externally-supplied assignment — the current physical-register
+// layout, or a future allocator's result) is genuine defense-in-depth. Per the
+// wiring plan (`docs/design/vcr-ra-allocator-wiring.md`) the wired allocator
+// runs this on its own output and refuses to emit on a conflict, so a bad
+// allocation can never be silently lowered. Building the oracle FIRST means
+// every later wiring sub-step lands already gated. Pure check, no codegen.
+// ============================================================================
+
+/// Why an assignment is not a valid colouring of an interference graph.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AllocationConflict {
+    /// Two interfering registers were assigned the same colour — they would
+    /// clobber each other if both lived in that physical register.
+    SameColor { a: Reg, b: Reg, color: usize },
+    /// A graph node has no colour in the assignment.
+    Unassigned(Reg),
+}
+
+/// Verify that `assignment` is a valid colouring of `g`: every node is assigned,
+/// and no two interfering nodes share a colour. `Ok(())` means the assignment is
+/// safe to lower; `Err` pinpoints the first violation (deterministic in register
+/// order). The checker an allocator runs on its own output before emitting.
+pub fn verify_allocation(
+    g: &InterferenceGraph,
+    assignment: &BTreeMap<Reg, usize>,
+) -> Result<(), AllocationConflict> {
+    // Every node must have a colour.
+    for n in g.nodes() {
+        if !assignment.contains_key(&n) {
+            return Err(AllocationConflict::Unassigned(n));
+        }
+    }
+    // No interfering pair may share a colour.
+    for n in g.nodes() {
+        let cn = assignment[&n];
+        for m in g.neighbors(n) {
+            if let Some(&cm) = assignment.get(&m)
+                && cn == cm
+            {
+                return Err(AllocationConflict::SameColor {
+                    a: n,
+                    b: m,
+                    color: cn,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1828,5 +1883,61 @@ mod tests {
             color_graph(&g, 4),
             color_graph_precolored(&g, 4, &BTreeMap::new())
         );
+    }
+
+    // ---- Allocation verifier (verify_allocation) ---------------------------
+
+    #[test]
+    fn verify_allocation_accepts_color_graph_output() {
+        // The producer and the checker must agree: any colouring color_graph
+        // returns verifies clean. (Independent code paths → real cross-check.)
+        for regs in [
+            vec![Reg::R0, Reg::R1, Reg::R2],
+            vec![Reg::R0, Reg::R1, Reg::R2, Reg::R3],
+        ] {
+            let g = clique(&regs);
+            let k = regs.len();
+            match color_graph(&g, k) {
+                ColorResult::Colored(c) => {
+                    assert_eq!(verify_allocation(&g, &c), Ok(()));
+                }
+                ColorResult::Spilled(s) => panic!("clique is k-colourable, got {s:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn verify_allocation_rejects_interfering_same_colour() {
+        // R0—R1 interfere but are both assigned colour 0 → SameColor.
+        let mut g = InterferenceGraph::default();
+        g.add_edge(Reg::R0, Reg::R1);
+        let bad = BTreeMap::from([(Reg::R0, 0usize), (Reg::R1, 0usize)]);
+        match verify_allocation(&g, &bad) {
+            Err(AllocationConflict::SameColor { color, .. }) => assert_eq!(color, 0),
+            other => panic!("expected SameColor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn verify_allocation_rejects_unassigned_node() {
+        // R1 is in the graph but missing from the assignment → Unassigned.
+        let mut g = InterferenceGraph::default();
+        g.add_edge(Reg::R0, Reg::R1);
+        let partial = BTreeMap::from([(Reg::R0, 0usize)]);
+        assert_eq!(
+            verify_allocation(&g, &partial),
+            Err(AllocationConflict::Unassigned(Reg::R1))
+        );
+    }
+
+    #[test]
+    fn verify_allocation_accepts_a_nonadjacent_shared_colour() {
+        // R0 and R2 do NOT interfere (a path R0—R1—R2), so they may share a
+        // colour: {R0:0, R1:1, R2:0} is valid.
+        let mut g = InterferenceGraph::default();
+        g.add_edge(Reg::R0, Reg::R1);
+        g.add_edge(Reg::R1, Reg::R2);
+        let ok = BTreeMap::from([(Reg::R0, 0usize), (Reg::R1, 1usize), (Reg::R2, 0usize)]);
+        assert_eq!(verify_allocation(&g, &ok), Ok(()));
     }
 }
