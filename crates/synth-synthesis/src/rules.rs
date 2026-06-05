@@ -129,6 +129,12 @@ pub enum ArmOp {
         rm: Reg,
         ra: Reg,
     }, // Multiply and subtract (for modulo)
+    Mla {
+        rd: Reg,
+        rn: Reg,
+        rm: Reg,
+        ra: Reg,
+    }, // Multiply-accumulate: rd = ra + rn*rm (#257 mul+add fusion)
     And {
         rd: Reg,
         rn: Reg,

@@ -243,6 +243,17 @@ impl ArmEncoder {
                 0xE0600090 | (rd_bits << 16) | (ra_bits << 12) | (rm_bits << 8) | rn_bits
             }
 
+            ArmOp::Mla { rd, rn, rm, ra } => {
+                let rd_bits = reg_to_bits(rd);
+                let rn_bits = reg_to_bits(rn);
+                let rm_bits = reg_to_bits(rm);
+                let ra_bits = reg_to_bits(ra);
+
+                // MLA encoding: cond(4) | 0000001 S | Rd(4) | Ra(4) | Rm(4) | 1001 | Rn(4)
+                // Rd = Ra + (Rn * Rm). Base 0xE0200090 (S=0).
+                0xE0200090 | (rd_bits << 16) | (ra_bits << 12) | (rm_bits << 8) | rn_bits
+            }
+
             ArmOp::And { rd, rn, op2 } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
@@ -1863,6 +1874,22 @@ impl ArmEncoder {
                 // 11111011 0000 Rn | Ra Rd 0001 Rm
                 let hw1: u16 = (0xFB00 | rn_bits) as u16;
                 let hw2: u16 = ((ra_bits << 12) | (rd_bits << 8) | 0x10 | rm_bits) as u16;
+
+                let mut bytes = hw1.to_le_bytes().to_vec();
+                bytes.extend_from_slice(&hw2.to_le_bytes());
+                Ok(bytes)
+            }
+
+            ArmOp::Mla { rd, rn, rm, ra } => {
+                let rd_bits = reg_to_bits(rd);
+                let rn_bits = reg_to_bits(rn);
+                let rm_bits = reg_to_bits(rm);
+                let ra_bits = reg_to_bits(ra);
+
+                // Thumb-2 MLA: FB00 Rn | Ra Rd 0000 Rm — same as MLS without the
+                // bit-4 (0x10) op flag. rd = ra + rn*rm.
+                let hw1: u16 = (0xFB00 | rn_bits) as u16;
+                let hw2: u16 = ((ra_bits << 12) | (rd_bits << 8) | rm_bits) as u16;
 
                 let mut bytes = hw1.to_le_bytes().to_vec();
                 bytes.extend_from_slice(&hw2.to_le_bytes());
@@ -9176,6 +9203,23 @@ mod tests {
                 .encode_thumb32_adds(&Reg::R0, &Reg::R0, 0x80)
                 .is_ok()
         );
+    }
+
+    /// #257: MLA (multiply-accumulate) encodes as MLS without the bit-4 op flag.
+    /// `mla r2, r3, r4, r8` (rd=r2, rn=r3, rm=r4, ra=r8) → Thumb-2 `03 fb 04 82`.
+    #[test]
+    fn mla_thumb2_encodes_correctly() {
+        let encoder = ArmEncoder::new_thumb2();
+        let code = encoder
+            .encode(&ArmOp::Mla {
+                rd: Reg::R2,
+                rn: Reg::R3,
+                rm: Reg::R4,
+                ra: Reg::R8,
+            })
+            .unwrap();
+        // hw1 = 0xFB03, hw2 = (8<<12)|(2<<8)|4 = 0x8204
+        assert_eq!(code, vec![0x03, 0xfb, 0x04, 0x82]);
     }
 
     /// #259: LDR/STR (and sub-word) immediate-offset encoders truncated

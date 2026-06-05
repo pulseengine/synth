@@ -94,8 +94,8 @@ pub fn reg_effect(op: &ArmOp) -> Option<RegEffect> {
         // {rdhi:rdlo} = rn * rm
         Umull { rdlo, rdhi, rn, rm } => def_use(vec![*rdlo, *rdhi], vec![*rn, *rm]),
 
-        // rd = rn*rm - ra
-        Mls { rd, rn, rm, ra } => def_use(vec![*rd], vec![*rn, *rm, *ra]),
+        // rd = ra -/+ rn*rm
+        Mls { rd, rn, rm, ra } | Mla { rd, rn, rm, ra } => def_use(vec![*rd], vec![*rn, *rm, *ra]),
 
         // rd = rn <shift> #imm
         Lsl { rd, rn, .. } | Lsr { rd, rn, .. } | Asr { rd, rn, .. } | Ror { rd, rn, .. } => {
@@ -394,6 +394,104 @@ pub fn eliminate_dead_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
     (kept, dead.len())
 }
 
+/// Fuse `mul` + `add` into `mla` (#257): for an `Add rD, x, Reg(y)` where one
+/// operand is the destination of an earlier `Mul rM, rn, rm`, the result is
+/// `mla rD, rn, rm, other`, and the now-redundant `Mul` is removed. Returns the
+/// rewritten stream and the number of fusions.
+///
+/// Soundness conditions (all checked via [`reg_effect`]; any unmodeled
+/// instruction conservatively blocks a fusion across it):
+///  - the mul result `rM` is **not read** anywhere after the add (its value is
+///    consumed only by the add → the mul is dead once fused),
+///  - between the mul and the add, `rM` and the mul inputs `rn`/`rm` are
+///    **neither redefined nor** (for `rM`) **read** — so the `mla` reading
+///    `rn`/`rm` at the add's position sees the same values,
+///  - `rM` and the other add operand are distinct, and the mul inputs are not
+///    `rM` itself.
+///
+/// Pure function: callers opt in. Not wired into codegen by this change.
+pub fn fuse_mul_add(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    let n = instrs.len();
+    let mut removed = vec![false; n];
+    let mut rewritten: Vec<Option<ArmOp>> = vec![None; n];
+
+    for j in 0..n {
+        let (rd, x, y) = match &instrs[j].op {
+            ArmOp::Add {
+                rd,
+                rn,
+                op2: Operand2::Reg(rm),
+            } => (*rd, *rn, *rm),
+            _ => continue,
+        };
+        for (rmul, rother) in [(x, y), (y, x)] {
+            if rmul == rother {
+                continue;
+            }
+            // Most recent live `Mul rmul, mn, mm` before j.
+            let Some(i) = (0..j).rev().find(|&k| {
+                !removed[k] && matches!(&instrs[k].op, ArmOp::Mul { rd, .. } if *rd == rmul)
+            }) else {
+                continue;
+            };
+            let ArmOp::Mul { rn: mn, rm: mm, .. } = instrs[i].op else {
+                continue;
+            };
+            if mn == rmul || mm == rmul {
+                continue;
+            }
+            // Between i and j: no redef of rmul/mn/mm, no read of rmul.
+            let between_ok = ((i + 1)..j).all(|k| {
+                removed[k]
+                    || reg_effect(&instrs[k].op).is_some_and(|e| {
+                        !e.defs.contains(&rmul)
+                            && !e.defs.contains(&mn)
+                            && !e.defs.contains(&mm)
+                            && !e.uses.contains(&rmul)
+                    })
+            });
+            if !between_ok {
+                continue;
+            }
+            // rmul must not be read anywhere after j (dead once fused). An
+            // unmodeled op after j conservatively counts as a possible read.
+            let dead_after = ((j + 1)..n).all(|k| {
+                removed[k] || reg_effect(&instrs[k].op).is_some_and(|e| !e.uses.contains(&rmul))
+            });
+            if !dead_after {
+                continue;
+            }
+            rewritten[j] = Some(ArmOp::Mla {
+                rd,
+                rn: mn,
+                rm: mm,
+                ra: rother,
+            });
+            removed[i] = true;
+            break;
+        }
+    }
+
+    let mut fused = 0;
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        if removed[k] {
+            continue;
+        }
+        match &rewritten[k] {
+            Some(op) => {
+                fused += 1;
+                out.push(ArmInstruction {
+                    op: op.clone(),
+                    source_line: instrs[k].source_line,
+                });
+            }
+            None => out.push(instrs[k].clone()),
+        }
+    }
+    (out, fused)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,6 +503,112 @@ mod tests {
             op,
             source_line: None,
         }
+    }
+
+    #[test]
+    fn fuse_mul_add_reproduces_gale_filter_pattern() {
+        // gale #257 flat_flight filter: gyro*980 + accel*20
+        //   movw r4,#980 ; mul r5,r3,r4 ; movw r7,#20 ; mul r8,r6,r7 ; add r2,r5,r8
+        // → the first mul (r5=r3*r4) fuses into the add: mla r2,r3,r4,r8 (mul r5 gone).
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 980,
+            }),
+            ins(ArmOp::Mul {
+                rd: Reg::R5,
+                rn: Reg::R3,
+                rm: Reg::R4,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 20,
+            }),
+            ins(ArmOp::Mul {
+                rd: Reg::R8,
+                rn: Reg::R6,
+                rm: Reg::R7,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R8),
+            }),
+        ];
+        let (out, fused) = fuse_mul_add(&seq);
+        assert_eq!(fused, 1);
+        assert_eq!(out.len(), 4, "one mul removed (5 → 4 instrs)");
+        // The add became mla r2, r3, r4, r8; mul r5 is gone; mul r8 stays.
+        assert!(out.iter().any(|i| matches!(
+            &i.op,
+            ArmOp::Mla {
+                rd: Reg::R2,
+                rn: Reg::R3,
+                rm: Reg::R4,
+                ra: Reg::R8
+            }
+        )));
+        assert!(
+            !out.iter()
+                .any(|i| matches!(&i.op, ArmOp::Mul { rd: Reg::R5, .. })),
+            "the fused mul is removed"
+        );
+        assert!(
+            out.iter()
+                .any(|i| matches!(&i.op, ArmOp::Mul { rd: Reg::R8, .. })),
+            "the non-fused mul stays"
+        );
+    }
+
+    #[test]
+    fn fuse_mul_add_declines_when_mul_result_used_again() {
+        // mul r5,r3,r4 ; add r2,r5,r8 ; str r5,[r0]  — r5 read after the add → no fuse.
+        let seq = vec![
+            ins(ArmOp::Mul {
+                rd: Reg::R5,
+                rn: Reg::R3,
+                rm: Reg::R4,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R8),
+            }),
+            ins(ArmOp::Str {
+                rd: Reg::R5,
+                addr: crate::rules::MemAddr::imm(Reg::R0, 0),
+            }),
+        ];
+        let (out, fused) = fuse_mul_add(&seq);
+        assert_eq!(fused, 0, "mul result is live after the add → not fusable");
+        assert_eq!(out.len(), 3);
+    }
+
+    #[test]
+    fn fuse_mul_add_declines_when_mul_input_clobbered_between() {
+        // mul r5,r3,r4 ; movw r4,#1 (clobbers mul input r4) ; add r2,r5,r8
+        // → mla would read the WRONG r4 → must NOT fuse.
+        let seq = vec![
+            ins(ArmOp::Mul {
+                rd: Reg::R5,
+                rn: Reg::R3,
+                rm: Reg::R4,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 1,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R8),
+            }),
+        ];
+        let (_out, fused) = fuse_mul_add(&seq);
+        assert_eq!(
+            fused, 0,
+            "mul input r4 clobbered before the add → not fusable"
+        );
     }
 
     #[test]
