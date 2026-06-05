@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.11.30] - 2026-06-04
+## [0.11.30] - 2026-06-05
 
 **Self-contained native-pointer ABI: register-promote the stack-pointer global so a dissolved leaf seam runs with no host runtime (#237).**
 
@@ -38,6 +38,46 @@ Verified on `mutex_m.loom.wasm`: 12 `__synth_wasm_data` MOVW/MOVT relocations
 (SP read + every spinlock pointer arg), **0 R9 references**, all imports +
 internal callees proper `THM_CALL` relocs. Frozen `control_step` fixture stays
 bit-identical (13/13, ORACLE PASS) — every new path is gated behind the flag.
+
+---
+
+**Verified-codegen infrastructure (VCR-*) — constant-immediate folding + a class of latent encoder miscompiles fixed (epic #242).**
+
+The verified-codegen roadmap (`artifacts/verified-codegen-roadmap.yaml`) began
+landing incrementally. This release adds the constant-immediate-folding family
+and — found via the roadmap's *verify-before-transform* discipline — fixes a
+class of latent silent miscompiles in the Thumb-2 data-processing immediate
+encoders.
+
+- **Constant-immediate folding:** `i32.and`/`or`/`xor` fold a constant operand
+  `0..=0xFF`, and `i32.add`/`sub` a constant `0..=0xFFF`, directly into the
+  instruction immediate, dropping the `movw` materialization (#250/#252/#254).
+  Fires on real code (`control_step`'s frame `sub #16`), differentials
+  result-identical.
+- **Analysis foundation:** register def/use + liveness + dead-store /
+  redundant-const detection (`crates/synth-synthesis/src/liveness.rs`, #243/#245)
+  — pure analysis, the basis for the upcoming spill-capable allocator.
+
+**Encoder correctness (latent silent-miscompile class, Ok-or-Err):**
+- `ORR`/`EOR` immediate emitted a silent `0xBF00` NOP instead of the operation
+  (#251).
+- `ADD`/`SUB` immediate `>= 0x100` (incl. `add sp, #frame`) silently
+  mis-encoded — `#256` became `#0`, **corrupting the stack of any function with a
+  ≥256-byte frame**. Now uses ADDW/SUBW (T4) for `0x100..=0xFFF`, errors beyond
+  (#253).
+- `CMP`/`ADDS`/`SUBS` immediate packed raw bits without ThumbExpandImm — a
+  comparison/arithmetic against the wrong constant. Now share a correct
+  `try_thumb_expand_imm` reverse-encoder and error on un-encodable values,
+  forcing register materialization (#255).
+
+**Falsification:** this release is wrong if any Thumb-2 data-processing immediate
+encoder (`AND`/`ORR`/`EOR`/`ADD`/`SUB`/`CMP`/`ADDS`/`SUBS`) emits bytes that
+decode to a value other than the requested immediate, or emits a NOP/silently
+wrong instruction instead of erroring on an un-encodable immediate. Verified:
+`try_thumb_expand_imm` round-trips the modified-immediate patterns; `add sp,#256`
+→ `0d f2 00 1d` (ADDW), not `#0`; the three frozen differentials
+(`control_step` 0x00210A55, inlined+flat `flight_algo` 0x07FDF307, `div_const`
+338/338) stay result-identical across every change.
 
 ## [0.11.29] - 2026-06-04
 
