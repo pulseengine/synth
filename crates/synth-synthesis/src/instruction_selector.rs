@@ -14861,6 +14861,13 @@ mod tests {
                             assert_ne!(colour[&n], colour[&m], "colouring is valid");
                         }
                     }
+                    // Close the loop: the independent verifier accepts the
+                    // producer's colouring of real codegen (defense-in-depth).
+                    assert_eq!(
+                        liveness::verify_allocation(&g, &colour),
+                        Ok(()),
+                        "verify_allocation must accept color_graph's own output"
+                    );
                 }
                 liveness::ColorResult::Spilled(s) => {
                     panic!("real output should fit the 9-register pool, spilled {s:?}")
