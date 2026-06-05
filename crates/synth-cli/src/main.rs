@@ -1671,6 +1671,7 @@ fn identify_stack_pointer_global(globals: &[WasmGlobal], linmem_bytes: u32) -> O
 fn reachable_from_exports(
     funcs: &[FunctionOps],
     num_imports: u32,
+    elem_func_indices: &[u32],
 ) -> std::collections::BTreeSet<u32> {
     let pos_by_index: std::collections::HashMap<u32, usize> = funcs
         .iter()
@@ -1679,6 +1680,10 @@ fn reachable_from_exports(
         .collect();
     let mut reachable: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
     let mut work: Vec<u32> = Vec::new();
+    // #275: the first `call_indirect` reached makes every table function a
+    // possible target. Add them all once (sound over-approximation — any table
+    // entry could be the dynamic callee), then keep following their direct calls.
+    let mut table_included = false;
     for f in funcs {
         if f.export_name.is_some() && reachable.insert(f.index) {
             work.push(f.index);
@@ -1687,11 +1692,19 @@ fn reachable_from_exports(
     while let Some(idx) = work.pop() {
         if let Some(&p) = pos_by_index.get(&idx) {
             for op in &funcs[p].ops {
-                if let WasmOp::Call(target) = op
-                    && *target >= num_imports
-                    && reachable.insert(*target)
-                {
-                    work.push(*target);
+                match op {
+                    WasmOp::Call(target) if *target >= num_imports && reachable.insert(*target) => {
+                        work.push(*target);
+                    }
+                    WasmOp::CallIndirect { .. } if !table_included => {
+                        table_included = true;
+                        for &t in elem_func_indices {
+                            if t >= num_imports && reachable.insert(t) {
+                                work.push(t);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1855,6 +1868,7 @@ fn compile_all_exports(
         let imports = module.imports;
         let num_imports = module.num_imported_funcs;
         let data_segs = module.data_segments; // #237: capture before `functions` is moved
+        let elem_func_indices = module.elem_func_indices; // #275: call_indirect targets
         // #237: identify the stack-pointer global for native-pointer promotion.
         // linmem extent gates the "plausible stack top" heuristic.
         let linmem_bytes = memories.first().map(|m| m.initial_bytes()).unwrap_or(0);
@@ -1867,7 +1881,7 @@ fn compile_all_exports(
         // num_imports) stay external — the linker resolves them. A module whose
         // exports call no internal function (every leaf fixture) yields exactly
         // the exports, so existing output stays bit-identical.
-        let reachable = reachable_from_exports(&module.functions, num_imports);
+        let reachable = reachable_from_exports(&module.functions, num_imports, &elem_func_indices);
         // Preserve definition order; keep exports + reachable internal callees.
         let exports: Vec<_> = module
             .functions
@@ -3542,7 +3556,7 @@ mod tests {
             fop(2, Some("caller"), vec![WasmOp::Call(1), WasmOp::Call(0)]),
             fop(3, None, vec![WasmOp::I32Const(9)]),
         ];
-        let r = reachable_from_exports(&funcs, 1); // num_imports = 1
+        let r = reachable_from_exports(&funcs, 1, &[]); // num_imports = 1
         assert!(r.contains(&2), "the export itself is reachable");
         assert!(
             r.contains(&1),
@@ -3555,6 +3569,61 @@ mod tests {
         );
     }
 
+    /// #275: a function reached only through `call_indirect` (a table entry,
+    /// not a direct `call`) must be pulled into the reachable set — otherwise
+    /// the binary is not self-contained and faults on hardware. Table entries
+    /// that are NOT possible targets here (only those in the element segment)
+    /// are included; an unreferenced internal stays out.
+    #[test]
+    fn reachable_from_exports_follows_call_indirect_into_table_275() {
+        // 0 = exported caller, does a call_indirect; 1 = table target (in elem,
+        // reached only indirectly); 2 = direct callee of the table target;
+        // 3 = dead internal (not in the table, never called).
+        let funcs = vec![
+            fop(
+                0,
+                Some("run"),
+                vec![
+                    WasmOp::I32Const(0),
+                    WasmOp::CallIndirect {
+                        type_index: 0,
+                        table_index: 0,
+                    },
+                ],
+            ),
+            fop(1, None, vec![WasmOp::Call(2)]),
+            fop(2, None, vec![WasmOp::I32Const(42)]),
+            fop(3, None, vec![WasmOp::I32Const(9)]),
+        ];
+        // elem segment puts function 1 in the table.
+        let r = reachable_from_exports(&funcs, 0, &[1]);
+        assert!(r.contains(&0), "the export itself");
+        assert!(
+            r.contains(&1),
+            "the call_indirect target (table entry) is pulled in (#275)"
+        );
+        assert!(
+            r.contains(&2),
+            "and its transitive direct callee follows too"
+        );
+        assert!(!r.contains(&3), "a non-table, uncalled internal stays out");
+    }
+
+    /// Without a `call_indirect`, table entries are NOT force-included — a module
+    /// that never dispatches indirectly keeps the tight direct-call closure.
+    #[test]
+    fn reachable_from_exports_ignores_table_when_no_call_indirect_275() {
+        let funcs = vec![
+            fop(0, Some("run"), vec![WasmOp::I32Const(1)]),
+            fop(1, None, vec![WasmOp::I32Const(42)]), // in table, but never indirectly called
+        ];
+        let r = reachable_from_exports(&funcs, 0, &[1]);
+        assert!(
+            !r.contains(&1),
+            "no call_indirect → table entry not pulled in"
+        );
+    }
+
     /// A module whose exports call no internal function yields exactly the
     /// exports — so existing leaf-fixture output stays bit-identical.
     #[test]
@@ -3564,7 +3633,7 @@ mod tests {
             fop(1, Some("b"), vec![WasmOp::LocalGet(0)]),
             fop(2, None, vec![WasmOp::I32Const(7)]), // dead helper
         ];
-        let r = reachable_from_exports(&funcs, 0);
+        let r = reachable_from_exports(&funcs, 0, &[]);
         assert_eq!(
             r.into_iter().collect::<Vec<_>>(),
             vec![0, 1],
