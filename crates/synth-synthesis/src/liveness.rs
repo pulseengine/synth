@@ -1222,6 +1222,348 @@ pub fn function_peak_pressure(instrs: &[ArmInstruction]) -> usize {
     peak
 }
 
+fn op2_rename(op2: &Operand2, from: Reg, to: Reg) -> Operand2 {
+    let sub = |r: Reg| if r == from { to } else { r };
+    match op2 {
+        Operand2::Reg(r) => Operand2::Reg(sub(*r)),
+        Operand2::RegShift { rm, shift, amount } => Operand2::RegShift {
+            rm: sub(*rm),
+            shift: *shift,
+            amount: *amount,
+        },
+        Operand2::Imm(v) => Operand2::Imm(*v),
+    }
+}
+
+fn addr_rename(a: &MemAddr, from: Reg, to: Reg) -> MemAddr {
+    let sub = |r: Reg| if r == from { to } else { r };
+    MemAddr {
+        base: sub(a.base),
+        offset: a.offset,
+        offset_reg: a.offset_reg.map(sub),
+    }
+}
+
+/// Rewrite every *use* of `from` to `to` in `op`, leaving definitions untouched.
+/// Returns `None` for ops where a use of `from` cannot be rewritten without
+/// ambiguity (e.g. a read-modify-write of `from` itself, like `Movt`/`SelectMove`
+/// where `from == rd`) — the caller then declines the fold, staying sound.
+fn rename_use(op: &ArmOp, from: Reg, to: Reg) -> Option<ArmOp> {
+    use ArmOp::*;
+    let sub = |r: Reg| if r == from { to } else { r };
+    Some(match op {
+        Add { rd, rn, op2 } => Add {
+            rd: *rd,
+            rn: sub(*rn),
+            op2: op2_rename(op2, from, to),
+        },
+        Sub { rd, rn, op2 } => Sub {
+            rd: *rd,
+            rn: sub(*rn),
+            op2: op2_rename(op2, from, to),
+        },
+        Adds { rd, rn, op2 } => Adds {
+            rd: *rd,
+            rn: sub(*rn),
+            op2: op2_rename(op2, from, to),
+        },
+        Subs { rd, rn, op2 } => Subs {
+            rd: *rd,
+            rn: sub(*rn),
+            op2: op2_rename(op2, from, to),
+        },
+        Adc { rd, rn, op2 } => Adc {
+            rd: *rd,
+            rn: sub(*rn),
+            op2: op2_rename(op2, from, to),
+        },
+        Sbc { rd, rn, op2 } => Sbc {
+            rd: *rd,
+            rn: sub(*rn),
+            op2: op2_rename(op2, from, to),
+        },
+        And { rd, rn, op2 } => And {
+            rd: *rd,
+            rn: sub(*rn),
+            op2: op2_rename(op2, from, to),
+        },
+        Orr { rd, rn, op2 } => Orr {
+            rd: *rd,
+            rn: sub(*rn),
+            op2: op2_rename(op2, from, to),
+        },
+        Eor { rd, rn, op2 } => Eor {
+            rd: *rd,
+            rn: sub(*rn),
+            op2: op2_rename(op2, from, to),
+        },
+        Rsb { rd, rn, imm } => Rsb {
+            rd: *rd,
+            rn: sub(*rn),
+            imm: *imm,
+        },
+        Mov { rd, op2 } => Mov {
+            rd: *rd,
+            op2: op2_rename(op2, from, to),
+        },
+        Mvn { rd, op2 } => Mvn {
+            rd: *rd,
+            op2: op2_rename(op2, from, to),
+        },
+        Mul { rd, rn, rm } => Mul {
+            rd: *rd,
+            rn: sub(*rn),
+            rm: sub(*rm),
+        },
+        Sdiv { rd, rn, rm } => Sdiv {
+            rd: *rd,
+            rn: sub(*rn),
+            rm: sub(*rm),
+        },
+        Udiv { rd, rn, rm } => Udiv {
+            rd: *rd,
+            rn: sub(*rn),
+            rm: sub(*rm),
+        },
+        LslReg { rd, rn, rm } => LslReg {
+            rd: *rd,
+            rn: sub(*rn),
+            rm: sub(*rm),
+        },
+        LsrReg { rd, rn, rm } => LsrReg {
+            rd: *rd,
+            rn: sub(*rn),
+            rm: sub(*rm),
+        },
+        AsrReg { rd, rn, rm } => AsrReg {
+            rd: *rd,
+            rn: sub(*rn),
+            rm: sub(*rm),
+        },
+        RorReg { rd, rn, rm } => RorReg {
+            rd: *rd,
+            rn: sub(*rn),
+            rm: sub(*rm),
+        },
+        Umull { rdlo, rdhi, rn, rm } => Umull {
+            rdlo: *rdlo,
+            rdhi: *rdhi,
+            rn: sub(*rn),
+            rm: sub(*rm),
+        },
+        Mls { rd, rn, rm, ra } => Mls {
+            rd: *rd,
+            rn: sub(*rn),
+            rm: sub(*rm),
+            ra: sub(*ra),
+        },
+        Mla { rd, rn, rm, ra } => Mla {
+            rd: *rd,
+            rn: sub(*rn),
+            rm: sub(*rm),
+            ra: sub(*ra),
+        },
+        Lsl { rd, rn, shift } => Lsl {
+            rd: *rd,
+            rn: sub(*rn),
+            shift: *shift,
+        },
+        Lsr { rd, rn, shift } => Lsr {
+            rd: *rd,
+            rn: sub(*rn),
+            shift: *shift,
+        },
+        Asr { rd, rn, shift } => Asr {
+            rd: *rd,
+            rn: sub(*rn),
+            shift: *shift,
+        },
+        Ror { rd, rn, shift } => Ror {
+            rd: *rd,
+            rn: sub(*rn),
+            shift: *shift,
+        },
+        Clz { rd, rm } => Clz {
+            rd: *rd,
+            rm: sub(*rm),
+        },
+        Rbit { rd, rm } => Rbit {
+            rd: *rd,
+            rm: sub(*rm),
+        },
+        Popcnt { rd, rm } => Popcnt {
+            rd: *rd,
+            rm: sub(*rm),
+        },
+        Sxtb { rd, rm } => Sxtb {
+            rd: *rd,
+            rm: sub(*rm),
+        },
+        Sxth { rd, rm } => Sxth {
+            rd: *rd,
+            rm: sub(*rm),
+        },
+        Cmp { rn, op2 } => Cmp {
+            rn: sub(*rn),
+            op2: op2_rename(op2, from, to),
+        },
+        Cmn { rn, op2 } => Cmn {
+            rn: sub(*rn),
+            op2: op2_rename(op2, from, to),
+        },
+        Ldr { rd, addr } => Ldr {
+            rd: *rd,
+            addr: addr_rename(addr, from, to),
+        },
+        Ldrb { rd, addr } => Ldrb {
+            rd: *rd,
+            addr: addr_rename(addr, from, to),
+        },
+        Ldrsb { rd, addr } => Ldrsb {
+            rd: *rd,
+            addr: addr_rename(addr, from, to),
+        },
+        Ldrh { rd, addr } => Ldrh {
+            rd: *rd,
+            addr: addr_rename(addr, from, to),
+        },
+        Ldrsh { rd, addr } => Ldrsh {
+            rd: *rd,
+            addr: addr_rename(addr, from, to),
+        },
+        Str { rd, addr } => Str {
+            rd: sub(*rd),
+            addr: addr_rename(addr, from, to),
+        },
+        Strb { rd, addr } => Strb {
+            rd: sub(*rd),
+            addr: addr_rename(addr, from, to),
+        },
+        Strh { rd, addr } => Strh {
+            rd: sub(*rd),
+            addr: addr_rename(addr, from, to),
+        },
+        // Read-modify-write of the renamed reg, register lists, or unmodeled ops:
+        // cannot rewrite a use of `from` here without ambiguity → decline.
+        _ => return None,
+    })
+}
+
+/// Find the in-segment reads of `rd` that can be safely retargeted to `ra` after
+/// dropping a redundant `movw rd, #v` at `def_i` (where `ra` already holds `v`).
+/// Safe only if `ra` still holds `v` at every such read AND `rd`'s value is
+/// provably local — i.e. `rd` is redefined within `[def_i, seg_end)` so the
+/// dropped value never escapes the segment. Returns `None` (decline) otherwise.
+fn safe_cse_uses(
+    instrs: &[ArmInstruction],
+    def_i: usize,
+    rd: Reg,
+    ra: Reg,
+    seg_end: usize,
+) -> Option<Vec<usize>> {
+    let mut uses = Vec::new();
+    let mut ra_holds_v = true;
+    for (offset, ins) in instrs[(def_i + 1)..seg_end].iter().enumerate() {
+        let j = def_i + 1 + offset;
+        let eff = reg_effect(&ins.op)?;
+        if eff.uses.contains(&rd) {
+            if !ra_holds_v {
+                return None; // ra no longer holds v but rd is read → unsafe
+            }
+            rename_use(&ins.op, rd, ra)?; // the use must be rewritable to ra
+            uses.push(j);
+        }
+        if eff.defs.contains(&ra) {
+            ra_holds_v = false;
+        }
+        if eff.defs.contains(&rd) {
+            return Some(uses); // rd redefined → its v dies here → local → safe
+        }
+    }
+    None // rd not redefined in the segment → may be live-out → decline
+}
+
+/// Const-CSE / rematerialization-avoidance driven by the value-range analysis:
+/// where a `movw rd, #v` re-materializes a constant already resident in `ra`,
+/// and `ra` provably still holds `v` through every later read of `rd` (until
+/// `rd` is redefined within the segment), drop the `movw` and retarget those
+/// reads to `ra`. This is the allocator's rematerialization-avoidance applied as
+/// a targeted transform — every rewrite is *proven* by liveness, and it only
+/// ever REMOVES a materialization (register pressure never rises), so it cannot
+/// trigger the #277-class on-target regression. Returns the rewritten stream and
+/// the count removed. Pure; callers opt in (flag-gated, differential-verified).
+pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    let n = instrs.len();
+    let mut removed = vec![false; n];
+    let mut rewrites: Vec<(usize, Reg, Reg)> = Vec::new(); // (use_index, from, to)
+
+    // Process each maximal straight-line, fully-modeled segment independently.
+    let mut seg_start = 0;
+    let mut process_segment = |start: usize, end: usize| {
+        let mut held: Vec<(Reg, i32)> = Vec::new(); // reg → resident constant
+        for i in start..end {
+            if let Some((rd, v)) = const_materialization(&instrs[i].op) {
+                if let Some(&(ra, _)) = held.iter().find(|&&(_, val)| val == v)
+                    && ra != rd
+                    && let Some(use_indices) = safe_cse_uses(instrs, i, rd, ra, end)
+                {
+                    removed[i] = true;
+                    for j in use_indices {
+                        rewrites.push((j, rd, ra));
+                    }
+                    continue; // movw dropped; rd not added to `held`
+                }
+                held.retain(|&(r, _)| r != rd);
+                held.push((rd, v));
+            } else if let Some(eff) = reg_effect(&instrs[i].op) {
+                for d in &eff.defs {
+                    held.retain(|&(r, _)| r != *d);
+                }
+            }
+        }
+    };
+    for (i, ins) in instrs.iter().enumerate() {
+        if !is_straight_line(&ins.op) || reg_effect(&ins.op).is_none() {
+            if i > seg_start {
+                process_segment(seg_start, i);
+            }
+            seg_start = i + 1;
+        }
+    }
+    if instrs.len() > seg_start {
+        process_segment(seg_start, instrs.len());
+    }
+
+    if rewrites.is_empty() && !removed.iter().any(|&r| r) {
+        return (instrs.to_vec(), 0);
+    }
+    // Apply: per-index rename map (an index may need multiple renames if several
+    // folded consts share a consumer — apply each in turn).
+    let mut renames_at: BTreeMap<usize, Vec<(Reg, Reg)>> = BTreeMap::new();
+    for (j, from, to) in rewrites {
+        renames_at.entry(j).or_default().push((from, to));
+    }
+    let mut out = Vec::with_capacity(n);
+    let mut count = 0;
+    for (i, ins) in instrs.iter().enumerate() {
+        if removed[i] {
+            count += 1;
+            continue;
+        }
+        let mut op = ins.op.clone();
+        if let Some(rs) = renames_at.get(&i) {
+            for &(from, to) in rs {
+                op = rename_use(&op, from, to).unwrap_or(op);
+            }
+        }
+        out.push(ArmInstruction {
+            op,
+            source_line: ins.source_line,
+        });
+    }
+    (out, count)
+}
+
 /// Run the register-allocator pipeline on a function: interference graph →
 /// `k`-colouring with `precolored` reserved registers pinned → result. `k` is
 /// the allocatable-pool size (e.g. 9 for synth's R0–R8). Pure: it computes a
@@ -2308,6 +2650,119 @@ mod tests {
         ];
         assert_eq!(straight_line_peak_pressure(&seq), Some(3));
         assert_eq!(function_peak_pressure(&seq), 3);
+    }
+
+    #[test]
+    fn const_cse_folds_a_redundant_clamp_bound_into_the_resident_register() {
+        // movw r0,#0x7e ; cmp r5,r0 ; movw r1,#0x7e ; cmp r6,r1 ; movw r1,#99
+        // r1's #0x7e is redundant (r0 holds it); r1 is redefined (movw #99) so its
+        // value is local → fold: drop `movw r1,#0x7e`, rewrite `cmp r6,r1`→`cmp r6,r0`.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 99,
+            }),
+        ];
+        let (out, removed) = apply_const_cse(&seq);
+        assert_eq!(removed, 1, "the redundant movw r1,#0x7e is dropped");
+        assert_eq!(out.len(), 4);
+        // The cmp on r6 now reads the resident r0.
+        assert!(out.iter().any(|i| matches!(
+            &i.op,
+            ArmOp::Cmp {
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R0)
+            }
+        )));
+        // The original movw r1,#0x7e is gone; the later movw r1,#99 stays.
+        assert!(!out.iter().any(|i| matches!(
+            &i.op,
+            ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 0x7e
+            }
+        )));
+        assert!(out.iter().any(|i| matches!(
+            &i.op,
+            ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 99
+            }
+        )));
+    }
+
+    #[test]
+    fn const_cse_declines_when_resident_register_is_clobbered_before_use() {
+        // movw r0,#7 ; movw r1,#7 ; movw r0,#3 (clobbers r0) ; add r2,r4,r1 ; movw r1,#9
+        // r1's #7 is "resident in r0" at def, but r0 is overwritten before r1's
+        // use → folding would read the wrong r0 → must NOT fold.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 7,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 3,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R4,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 9,
+            }),
+        ];
+        let (_out, removed) = apply_const_cse(&seq);
+        assert_eq!(removed, 0, "resident reg clobbered before use → no fold");
+    }
+
+    #[test]
+    fn const_cse_declines_when_value_may_be_live_out_of_segment() {
+        // movw r0,#7 ; movw r1,#7 ; add r2,r4,r1   (r1 never redefined → its #7
+        // may be live past the segment) → conservatively do not fold.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 7,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R4,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let (_out, removed) = apply_const_cse(&seq);
+        assert_eq!(
+            removed, 0,
+            "rd not redefined in segment → may be live-out → no fold"
+        );
     }
 
     #[test]
