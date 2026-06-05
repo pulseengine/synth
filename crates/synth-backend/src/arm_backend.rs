@@ -255,7 +255,9 @@ fn compile_wasm_to_arm(
     // how much const-CSE / rematerialization headroom exists (#209). Enable with
     // `SYNTH_SHADOW_ALLOC=1`; off by default and side-effect-free either way.
     if std::env::var("SYNTH_SHADOW_ALLOC").is_ok() {
-        use synth_synthesis::liveness::{AllocationOutcome, allocate_function};
+        use synth_synthesis::liveness::{
+            AllocationOutcome, allocate_function, function_peak_pressure,
+        };
         // R9 globals / R10 mem-size / R11 mem-base / R12 IP-scratch are reserved;
         // pin them above the 0..9 allocatable pool so the colourer keeps R0–R8.
         let precolored = std::collections::BTreeMap::from([
@@ -264,18 +266,24 @@ fn compile_wasm_to_arm(
             (synth_synthesis::rules::Reg::R11, 11),
             (synth_synthesis::rules::Reg::R12, 12),
         ]);
+        // True VALUE pressure (one node per value, not per reused physical reg):
+        // a NeedsSpill with peak ≤ 9 is a SPURIOUS physical-register spill — the
+        // function fits once virtually allocated.
+        let peak = function_peak_pressure(&arm_instrs);
         match allocate_function(&arm_instrs, 9, &precolored) {
             AllocationOutcome::Allocated {
                 remat_opportunities,
                 coloring,
             } => eprintln!(
-                "[shadow-alloc] OK: {} vregs coloured within R0-R8 pool, {} const-CSE/remat opportunities",
+                "[shadow-alloc] OK: {} pregs coloured within R0-R8 pool, peak value-pressure {}, {} const-CSE/remat opportunities",
                 coloring.len(),
+                peak,
                 remat_opportunities
             ),
-            AllocationOutcome::NeedsSpill(s) => {
-                eprintln!("[shadow-alloc] would spill {} value(s): {:?}", s.len(), s)
-            }
+            AllocationOutcome::NeedsSpill(s) => eprintln!(
+                "[shadow-alloc] physical-graph would spill {:?}, but peak value-pressure is {} (≤9 ⇒ spurious; fits once virtually allocated)",
+                s, peak
+            ),
             AllocationOutcome::Declined => {
                 eprintln!(
                     "[shadow-alloc] declined (unmodeled construct — calls/i64/fp/offset-branch)"

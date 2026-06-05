@@ -1091,6 +1091,81 @@ pub enum AllocationOutcome {
     Declined,
 }
 
+/// Peak **virtual-register pressure** of a straight-line segment: the maximum
+/// number of distinct *values* live on any instruction edge — where a value is a
+/// single def-to-last-use range, NOT a reused physical-register name. This is
+/// the true register requirement the spurious physical-register interference
+/// hides: the greedy selector reuses one physical register for many values, so
+/// counting physical registers (the shadow pass's "would spill R1") overstates
+/// the need. If this is ≤ the pool size, the segment fits with no spill once
+/// virtually allocated. Returns `None` if the segment is not straight-line /
+/// fully modeled. A register used before any def is an input, live from the
+/// segment start.
+pub fn straight_line_peak_pressure(instrs: &[ArmInstruction]) -> Option<usize> {
+    let n = instrs.len();
+    let mut current: BTreeMap<Reg, usize> = BTreeMap::new(); // reg → live value id
+    let mut def_at: Vec<usize> = Vec::new(); // value id → def edge (0 for inputs)
+    let mut last_use: Vec<usize> = Vec::new(); // value id → last-use index
+    for (i, ins) in instrs.iter().enumerate() {
+        if !is_straight_line(&ins.op) {
+            return None;
+        }
+        let eff = reg_effect(&ins.op)?;
+        for u in &eff.uses {
+            let vid = *current.entry(*u).or_insert_with(|| {
+                def_at.push(0); // input: live from the segment start
+                last_use.push(0);
+                def_at.len() - 1
+            });
+            last_use[vid] = i;
+        }
+        for d in &eff.defs {
+            def_at.push(i);
+            last_use.push(i); // dead-on-arrival until a later use extends it
+            current.insert(*d, def_at.len() - 1);
+        }
+    }
+    // A value used after its def occupies a register on edges [def, last_use).
+    let mut delta = vec![0i32; n + 1];
+    for vid in 0..def_at.len() {
+        let (d, l) = (def_at[vid], last_use[vid]);
+        if l > d {
+            delta[d] += 1;
+            delta[l] -= 1;
+        }
+    }
+    let (mut cur, mut peak) = (0i32, 0i32);
+    for d in delta.iter().take(n) {
+        cur += *d;
+        peak = peak.max(cur);
+    }
+    Some(peak as usize)
+}
+
+/// Peak virtual-register pressure across a whole (possibly branchy) function:
+/// the max [`straight_line_peak_pressure`] over its straight-line segments (a
+/// lower bound on the true register need). If ≤ the pool size, no segment forces
+/// a spill once virtually allocated — so a physical-register "spill" is spurious.
+pub fn function_peak_pressure(instrs: &[ArmInstruction]) -> usize {
+    let mut peak = 0;
+    let mut seg_start = 0;
+    let mut flush = |start: usize, end: usize, peak: &mut usize| {
+        if end > start
+            && let Some(p) = straight_line_peak_pressure(&instrs[start..end])
+        {
+            *peak = (*peak).max(p);
+        }
+    };
+    for (i, ins) in instrs.iter().enumerate() {
+        if !is_straight_line(&ins.op) || reg_effect(&ins.op).is_none() {
+            flush(seg_start, i, &mut peak);
+            seg_start = i + 1;
+        }
+    }
+    flush(seg_start, instrs.len(), &mut peak);
+    peak
+}
+
 /// Run the register-allocator pipeline on a function: interference graph →
 /// `k`-colouring with `precolored` reserved registers pinned → result. `k` is
 /// the allocatable-pool size (e.g. 9 for synth's R0–R8). Pure: it computes a
@@ -2144,6 +2219,66 @@ mod tests {
             }
             other => panic!("expected Allocated, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn peak_pressure_counts_simultaneously_live_values_not_physical_regs() {
+        // movw r0,#1 ; movw r1,#2 ; movw r2,#3 ; add r3,r0,r1 ; add r4,r2,r3
+        // At the third movw, v0/v1/v2 are all live → peak 3. (The point: this is
+        // value pressure; physical-register reuse would not change it.)
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 2,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 3,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R3,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R4,
+                rn: Reg::R2,
+                op2: Operand2::Reg(Reg::R3),
+            }),
+        ];
+        assert_eq!(straight_line_peak_pressure(&seq), Some(3));
+        assert_eq!(function_peak_pressure(&seq), 3);
+    }
+
+    #[test]
+    fn peak_pressure_unaffected_by_physical_register_reuse() {
+        // The same value churned through ONE physical register has pressure 1 —
+        // exactly the case the physical-register interference graph overstates.
+        // movw r0,#1 ; mov r1,r0 ; movw r0,#2 ; mov r2,r0  → never >1 live at once
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R1,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 2,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+        ];
+        // r0 holds two different values sequentially; peak simultaneous = 1.
+        assert_eq!(straight_line_peak_pressure(&seq), Some(1));
     }
 
     #[test]
