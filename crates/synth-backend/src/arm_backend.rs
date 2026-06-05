@@ -277,7 +277,9 @@ fn compile_wasm_to_arm(
                 eprintln!("[shadow-alloc] would spill {} value(s): {:?}", s.len(), s)
             }
             AllocationOutcome::Declined => {
-                eprintln!("[shadow-alloc] declined (unmodeled construct — calls/i64/fp/offset-branch)")
+                eprintln!(
+                    "[shadow-alloc] declined (unmodeled construct — calls/i64/fp/offset-branch)"
+                )
             }
         }
     }
