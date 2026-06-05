@@ -14836,6 +14836,17 @@ mod tests {
                 instrs.len(),
                 "blocks cover the whole stream"
             );
+
+            // The interference graph over the same real output must be
+            // structurally sound: undirected (symmetric) and self-loop-free.
+            let g = liveness::interference_graph(&instrs)
+                .expect("cfg_liveness succeeded, so interference_graph must too");
+            for n in g.nodes() {
+                assert!(!g.interferes(n, n), "no register interferes with itself");
+                for m in g.neighbors(n) {
+                    assert!(g.interferes(m, n), "interference is symmetric");
+                }
+            }
         }
     }
 
