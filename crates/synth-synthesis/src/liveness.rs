@@ -1149,7 +1149,7 @@ pub fn straight_line_peak_pressure(instrs: &[ArmInstruction]) -> Option<usize> {
 pub fn function_peak_pressure(instrs: &[ArmInstruction]) -> usize {
     let mut peak = 0;
     let mut seg_start = 0;
-    let mut flush = |start: usize, end: usize, peak: &mut usize| {
+    let flush = |start: usize, end: usize, peak: &mut usize| {
         if end > start
             && let Some(p) = straight_line_peak_pressure(&instrs[start..end])
         {
