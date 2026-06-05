@@ -6258,6 +6258,7 @@ impl ArmEncoder {
         let base_bits = reg_to_bits(base);
 
         // LDR.W Rd, [Rn, #imm12]
+        check_ldst_imm12(offset)?;
         let hw1: u16 = (0xF8D0 | base_bits) as u16;
         let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
 
@@ -6272,6 +6273,7 @@ impl ArmEncoder {
         let base_bits = reg_to_bits(base);
 
         // STR.W Rd, [Rn, #imm12]
+        check_ldst_imm12(offset)?;
         let hw1: u16 = (0xF8C0 | base_bits) as u16;
         let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
 
@@ -6321,6 +6323,7 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
         let base_bits = reg_to_bits(base);
         // LDRB.W Rd, [Rn, #imm12]: 1111 1000 1001 Rn | Rt imm12
+        check_ldst_imm12(offset)?;
         let hw1: u16 = (0xF890 | base_bits) as u16;
         let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
         let mut bytes = hw1.to_le_bytes().to_vec();
@@ -6346,6 +6349,7 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
         let base_bits = reg_to_bits(base);
         // LDRSB.W Rd, [Rn, #imm12]: 1111 1001 1001 Rn | Rt imm12
+        check_ldst_imm12(offset)?;
         let hw1: u16 = (0xF990 | base_bits) as u16;
         let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
         let mut bytes = hw1.to_le_bytes().to_vec();
@@ -6371,6 +6375,7 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
         let base_bits = reg_to_bits(base);
         // LDRH.W Rd, [Rn, #imm12]: 1111 1000 1011 Rn | Rt imm12
+        check_ldst_imm12(offset)?;
         let hw1: u16 = (0xF8B0 | base_bits) as u16;
         let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
         let mut bytes = hw1.to_le_bytes().to_vec();
@@ -6396,6 +6401,7 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
         let base_bits = reg_to_bits(base);
         // LDRSH.W Rd, [Rn, #imm12]: 1111 1001 1011 Rn | Rt imm12
+        check_ldst_imm12(offset)?;
         let hw1: u16 = (0xF9B0 | base_bits) as u16;
         let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
         let mut bytes = hw1.to_le_bytes().to_vec();
@@ -6421,6 +6427,7 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
         let base_bits = reg_to_bits(base);
         // STRB.W Rd, [Rn, #imm12]: 1111 1000 1000 Rn | Rt imm12
+        check_ldst_imm12(offset)?;
         let hw1: u16 = (0xF880 | base_bits) as u16;
         let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
         let mut bytes = hw1.to_le_bytes().to_vec();
@@ -6446,6 +6453,7 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
         let base_bits = reg_to_bits(base);
         // STRH.W Rd, [Rn, #imm12]: 1111 1000 1010 Rn | Rt imm12
+        check_ldst_imm12(offset)?;
         let hw1: u16 = (0xF8A0 | base_bits) as u16;
         let hw2: u16 = ((rd_bits << 12) | (offset & 0xFFF)) as u16;
         let mut bytes = hw1.to_le_bytes().to_vec();
@@ -6693,6 +6701,21 @@ fn try_thumb_expand_imm(value: u32) -> Option<u32> {
         }
     }
     None
+}
+
+/// Guard a Thumb-2 `LDR/STR Rd, [Rn, #imm12]` offset. The imm12 form supports
+/// `0..=4095`; a larger offset must be materialized into a register by the
+/// selector (register-offset addressing). Returning `Err` rather than silently
+/// masking `offset & 0xFFF` closes the wrong-address miscompile class (#259,
+/// the load/store sibling of #253/#255).
+fn check_ldst_imm12(offset: u32) -> Result<()> {
+    if offset > 0xFFF {
+        Err(synth_core::Error::synthesis(
+            "load/store immediate offset > 0xFFF (4095) — materialize the offset into a register",
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn reg_to_bits(reg: &Reg) -> u32 {
@@ -9152,6 +9175,43 @@ mod tests {
             encoder
                 .encode_thumb32_adds(&Reg::R0, &Reg::R0, 0x80)
                 .is_ok()
+        );
+    }
+
+    /// #259: LDR/STR (and sub-word) immediate-offset encoders truncated
+    /// `offset & 0xFFF`, silently targeting the wrong address for offset >= 4096.
+    /// They now error (the selector must use register-offset addressing) — the
+    /// load/store sibling of the #253/#255 class. Offsets <= 4095 still encode.
+    #[test]
+    fn ldst_imm12_offset_errors_when_out_of_range() {
+        let encoder = ArmEncoder::new_thumb2();
+        // offset 0xFFF (4095): valid → Ok; ldr r0, [r1, #4095].
+        assert!(
+            encoder
+                .encode_thumb32_ldr(&Reg::R0, &Reg::R1, 0xFFF)
+                .is_ok()
+        );
+        // offset 0x1000 (4096): out of imm12 range → Err (not & 0xFFF → #0).
+        assert!(
+            encoder
+                .encode_thumb32_ldr(&Reg::R0, &Reg::R1, 0x1000)
+                .is_err(),
+            "ldr offset 4096 must error, not wrap to 0"
+        );
+        assert!(
+            encoder
+                .encode_thumb32_str(&Reg::R0, &Reg::R1, 0x1000)
+                .is_err()
+        );
+        assert!(
+            encoder
+                .encode_thumb32_ldrb_imm(&Reg::R0, &Reg::R1, 5000)
+                .is_err()
+        );
+        assert!(
+            encoder
+                .encode_thumb32_strh_imm(&Reg::R0, &Reg::R1, 5000)
+                .is_err()
         );
     }
 
