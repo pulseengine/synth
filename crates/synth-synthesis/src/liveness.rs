@@ -1091,6 +1091,62 @@ pub enum AllocationOutcome {
     Declined,
 }
 
+/// One virtual register: a single def-to-last-use value range that the greedy
+/// selector packed into physical register `reg`. `def`/`last_use` are indices
+/// into the straight-line segment (a `def == 0` with no instruction-0 def marks
+/// a segment input). This is the explicit form of the value the allocator
+/// colours — the renaming a re-allocation pass assigns physical registers to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueRange {
+    pub vreg: usize,
+    pub reg: Reg,
+    pub def: usize,
+    pub last_use: usize,
+}
+
+/// Split each physical register's def-use chains in a straight-line segment into
+/// distinct **virtual registers** (value ranges). Returns `None` if the segment
+/// is not straight-line / fully modeled. Sound for straight-line code (the
+/// reaching definition of every use is unambiguous — the most recent def);
+/// cross-block web merging is a separate step. The number of ranges a physical
+/// register splits into is exactly the overloading that inflates the physical
+/// interference graph (e.g. `R1` → a dozen ranges, one spurious spill); colouring
+/// *these* ranges instead is what removes the spurious spill. This is the
+/// renaming the eventual virtual-register output / re-allocation consumes.
+pub fn straight_line_value_ranges(instrs: &[ArmInstruction]) -> Option<Vec<ValueRange>> {
+    let mut current: BTreeMap<Reg, usize> = BTreeMap::new(); // reg → open vreg index
+    let mut ranges: Vec<ValueRange> = Vec::new();
+    for (i, ins) in instrs.iter().enumerate() {
+        if !is_straight_line(&ins.op) {
+            return None;
+        }
+        let eff = reg_effect(&ins.op)?;
+        for u in &eff.uses {
+            let idx = *current.entry(*u).or_insert_with(|| {
+                ranges.push(ValueRange {
+                    vreg: ranges.len(),
+                    reg: *u,
+                    def: 0, // input: live from the segment start
+                    last_use: i,
+                });
+                ranges.len() - 1
+            });
+            ranges[idx].last_use = i;
+        }
+        for d in &eff.defs {
+            let vreg = ranges.len();
+            ranges.push(ValueRange {
+                vreg,
+                reg: *d,
+                def: i,
+                last_use: i, // dead-on-arrival until a later use extends it
+            });
+            current.insert(*d, vreg);
+        }
+    }
+    Some(ranges)
+}
+
 /// Peak **virtual-register pressure** of a straight-line segment: the maximum
 /// number of distinct *values* live on any instruction edge — where a value is a
 /// single def-to-last-use range, NOT a reused physical-register name. This is
@@ -2252,6 +2308,43 @@ mod tests {
         ];
         assert_eq!(straight_line_peak_pressure(&seq), Some(3));
         assert_eq!(function_peak_pressure(&seq), 3);
+    }
+
+    #[test]
+    fn value_ranges_split_a_reused_physical_register_into_distinct_vregs() {
+        // movw r1,#1 ; mov r0,r1 ; movw r1,#2 ; mov r2,r1
+        // R1 holds two unrelated values → two distinct virtual registers. This
+        // is the split that turns the overloaded physical-reg node (one spurious
+        // spill) into separately-colourable values.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 1,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 2,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        let r1_ranges: Vec<_> = ranges.iter().filter(|r| r.reg == Reg::R1).collect();
+        assert_eq!(
+            r1_ranges.len(),
+            2,
+            "R1 splits into two virtual registers (one per value)"
+        );
+        // First R1 range: def 0, last-used at 1 (the mov r0,r1).
+        assert_eq!((r1_ranges[0].def, r1_ranges[0].last_use), (0, 1));
+        // Second R1 range: def 2, last-used at 3 (the mov r2,r1).
+        assert_eq!((r1_ranges[1].def, r1_ranges[1].last_use), (2, 3));
     }
 
     #[test]
