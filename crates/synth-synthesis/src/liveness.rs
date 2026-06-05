@@ -19,6 +19,7 @@
 
 use crate::instruction_selector::ArmInstruction;
 use crate::rules::{ArmOp, MemAddr, Operand2, Reg};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The register read/write effect of a single instruction.
 ///
@@ -517,11 +518,246 @@ pub fn fuse_mul_add(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
     (out, fused)
 }
 
+// ============================================================================
+// CFG-aware liveness (VCR-RA-001 substrate)
+//
+// The per-segment detectors above reset all state at every control-flow
+// boundary — sound, but they cannot reason *across* blocks. A spill-capable
+// register allocator needs the real thing: for each basic block, the set of
+// registers live on entry (`live_in`) and exit (`live_out`), computed by the
+// classic backward dataflow fixpoint
+//
+//     live_in[B]  = use[B] ∪ (live_out[B] − def[B])
+//     live_out[B] = ⋃ { live_in[S] : S ∈ succ(B) }
+//
+// The interference graph an allocator colours is read directly off these sets
+// (two registers interfere iff both are live at some common point). This is
+// pure analysis — nothing here is wired into codegen, so it cannot change a
+// single emitted byte; the fixtures stay bit-identical by construction.
+// ============================================================================
+
+/// A basic block of the label-form CFG: the maximal instruction run
+/// `[start, end)` with a single entry (its first instruction) and the block
+/// indices it can transfer control to (`succ`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BasicBlock {
+    /// Global index of the first instruction (inclusive).
+    pub start: usize,
+    /// Global index one past the last instruction (exclusive).
+    pub end: usize,
+    /// Successor block indices.
+    pub succ: Vec<usize>,
+}
+
+/// A function's CFG plus per-block liveness.
+///
+/// **Scope / soundness.** Built only for functions whose every branch is in the
+/// resolvable *label form* (`B`/`Bhs`/`Blo`/`Bcc` targeting a `Label`) and whose
+/// every other instruction has a precise [`reg_effect`]. Any numeric-offset
+/// branch (`BOffset`/`BCondOffset`), computed/return branch (`Bx`/`Blx`), call
+/// (`Bl`/`Call`/`CallIndirect`), `BrTable`, or unmodeled-effect op makes
+/// [`cfg_liveness`] return `None` — it never produces a partial or guessed CFG.
+/// This is the leaf-function, label-form stage that `select_with_stack` emits
+/// before `resolve_label_branches`.
+///
+/// **Exit liveness caveat (read before driving allocation).** A block with no
+/// successors gets `live_out = ∅`. The ABI return-value registers (`R0`, and
+/// `R1` for an `i64` result) are therefore *not* counted live at the function
+/// exit — that liveness is an external fact the caller must union in before this
+/// graph drives spilling, or a return value could be wrongly treated as dead.
+/// As pure analysis this is correct w.r.t. the stream's own reads; the ABI
+/// augmentation is a deliberately separate, later step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CfgLiveness {
+    pub blocks: Vec<BasicBlock>,
+    /// `live_in[b]` — registers live entering block `b`.
+    pub live_in: Vec<BTreeSet<Reg>>,
+    /// `live_out[b]` — registers live leaving block `b`.
+    pub live_out: Vec<BTreeSet<Reg>>,
+}
+
+/// How a block's final instruction transfers control.
+enum Term<'a> {
+    /// Unconditional branch to a label — single successor, no fallthrough.
+    Uncond(&'a str),
+    /// Conditional branch to a label — target plus fallthrough.
+    Cond(&'a str),
+    /// Straight-line / label-only — falls through to the next block (if any).
+    Fall,
+    /// Cannot be modeled (numeric-offset branch, computed/return branch, call,
+    /// `BrTable`) — the whole analysis declines.
+    Unsupported,
+}
+
+fn classify(op: &ArmOp) -> Term<'_> {
+    use ArmOp::*;
+    match op {
+        B { label } => Term::Uncond(label),
+        Bhs { label } | Blo { label } | Bcc { label, .. } => Term::Cond(label),
+        BOffset { .. }
+        | BCondOffset { .. }
+        | Bx { .. }
+        | Blx { .. }
+        | Bl { .. }
+        | BrTable { .. }
+        | Call { .. }
+        | CallIndirect { .. } => Term::Unsupported,
+        _ => Term::Fall,
+    }
+}
+
+/// `use`/`def` of one block: registers read before any write in the block
+/// (`use`), and registers written anywhere in it (`def`). Branch and `Label`
+/// instructions contribute an empty GP-register effect (a conditional branch
+/// reads the flags, not a general register).
+fn block_use_def(instrs: &[ArmInstruction], b: &BasicBlock) -> (BTreeSet<Reg>, BTreeSet<Reg>) {
+    let mut used = BTreeSet::new();
+    let mut defined = BTreeSet::new();
+    for ins in &instrs[b.start..b.end] {
+        let eff = reg_effect(&ins.op).unwrap_or_default();
+        for u in &eff.uses {
+            if !defined.contains(u) {
+                used.insert(*u);
+            }
+        }
+        for d in &eff.defs {
+            defined.insert(*d);
+        }
+    }
+    (used, defined)
+}
+
+/// Build the label-form CFG of `instrs` and solve per-block liveness, or `None`
+/// if the stream contains a construct outside the modeled scope (see
+/// [`CfgLiveness`]). Sound by construction: a non-`None` result is a complete,
+/// trustworthy CFG + fixpoint, never a partial guess.
+pub fn cfg_liveness(instrs: &[ArmInstruction]) -> Option<CfgLiveness> {
+    let n = instrs.len();
+    if n == 0 {
+        return Some(CfgLiveness {
+            blocks: vec![],
+            live_in: vec![],
+            live_out: vec![],
+        });
+    }
+
+    // 1. Validate every instruction is within the modeled scope.
+    for ins in instrs {
+        match classify(&ins.op) {
+            Term::Unsupported => return None,
+            Term::Uncond(_) | Term::Cond(_) => {}
+            Term::Fall => {
+                if !matches!(ins.op, ArmOp::Label { .. }) && reg_effect(&ins.op).is_none() {
+                    return None;
+                }
+            }
+        }
+    }
+
+    // 2. Leaders: instruction 0, every `Label`, and every instruction that
+    //    follows a branch. (Branch targets are `Label`s, already leaders.)
+    let mut is_leader = vec![false; n];
+    is_leader[0] = true;
+    for i in 0..n {
+        if matches!(instrs[i].op, ArmOp::Label { .. }) {
+            is_leader[i] = true;
+        }
+        if matches!(classify(&instrs[i].op), Term::Uncond(_) | Term::Cond(_)) && i + 1 < n {
+            is_leader[i + 1] = true;
+        }
+    }
+    let leaders: Vec<usize> = (0..n).filter(|&i| is_leader[i]).collect();
+
+    // 3. Blocks span `[leader, next_leader)`.
+    let mut blocks: Vec<BasicBlock> = leaders
+        .iter()
+        .enumerate()
+        .map(|(bi, &start)| BasicBlock {
+            start,
+            end: leaders.get(bi + 1).copied().unwrap_or(n),
+            succ: vec![],
+        })
+        .collect();
+
+    let block_of_start: BTreeMap<usize, usize> = blocks
+        .iter()
+        .enumerate()
+        .map(|(bi, b)| (b.start, bi))
+        .collect();
+    let mut block_of_label: BTreeMap<&str, usize> = BTreeMap::new();
+    for (bi, b) in blocks.iter().enumerate() {
+        if let ArmOp::Label { name } = &instrs[b.start].op {
+            block_of_label.insert(name.as_str(), bi);
+        }
+    }
+
+    // 4. Successors from each block's final instruction. Compute into a side
+    //    vector first (immutable borrow of `blocks` for the label lookups),
+    //    then write them back.
+    let mut succs: Vec<Vec<usize>> = Vec::with_capacity(blocks.len());
+    for b in &blocks {
+        let last = b.end - 1;
+        let fallthrough = block_of_start.get(&b.end).copied();
+        let succ = match classify(&instrs[last].op) {
+            Term::Uncond(label) => vec![*block_of_label.get(label)?],
+            Term::Cond(label) => {
+                let t = *block_of_label.get(label)?;
+                let mut s = vec![t];
+                if let Some(f) = fallthrough
+                    && f != t
+                {
+                    s.push(f);
+                }
+                s
+            }
+            Term::Fall => fallthrough.into_iter().collect(),
+            Term::Unsupported => return None, // validated above; defensive
+        };
+        succs.push(succ);
+    }
+    for (b, succ) in blocks.iter_mut().zip(succs) {
+        b.succ = succ;
+    }
+
+    // 5. Backward dataflow fixpoint. Sets only grow and are bounded by the
+    //    finite register set, so the loop terminates.
+    let nb = blocks.len();
+    let (use_b, def_b): (Vec<_>, Vec<_>) = blocks.iter().map(|b| block_use_def(instrs, b)).unzip();
+    let mut live_in = vec![BTreeSet::<Reg>::new(); nb];
+    let mut live_out = vec![BTreeSet::<Reg>::new(); nb];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for bi in (0..nb).rev() {
+            let mut out = BTreeSet::new();
+            for &s in &blocks[bi].succ {
+                out.extend(live_in[s].iter().copied());
+            }
+            let mut in_ = use_b[bi].clone();
+            in_.extend(out.difference(&def_b[bi]).copied());
+            if out != live_out[bi] {
+                live_out[bi] = out;
+                changed = true;
+            }
+            if in_ != live_in[bi] {
+                live_in[bi] = in_;
+                changed = true;
+            }
+        }
+    }
+
+    Some(CfgLiveness {
+        blocks,
+        live_in,
+        live_out,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::instruction_selector::ArmInstruction;
-    use crate::rules::{ArmOp, Operand2, Reg};
+    use crate::rules::{ArmOp, Condition, Operand2, Reg};
 
     fn ins(op: ArmOp) -> ArmInstruction {
         ArmInstruction {
@@ -991,5 +1227,133 @@ mod tests {
             }),
         ];
         assert_eq!(local_dead_defs(&seq), None);
+    }
+
+    // ---- CFG-aware liveness (cfg_liveness) ---------------------------------
+
+    #[test]
+    fn cfg_liveness_straight_line_block_identifies_inputs() {
+        // movw r0,#1 ; add r2,r0,r1
+        // One block. r0 is defined locally (not live-in); r1 is read without a
+        // prior def → it is a function input, live on entry. live_out = ∅.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let cfg = cfg_liveness(&seq).expect("straight-line stream is analyzable");
+        assert_eq!(cfg.blocks.len(), 1);
+        assert!(cfg.blocks[0].succ.is_empty(), "no branch → no successor");
+        assert_eq!(
+            cfg.live_in[0],
+            BTreeSet::from([Reg::R1]),
+            "only r1 (a read-before-write input) is live on entry"
+        );
+        assert!(
+            cfg.live_out[0].is_empty(),
+            "exit block live_out is empty (ABI return-liveness is layered in later)"
+        );
+    }
+
+    #[test]
+    fn cfg_liveness_propagates_across_conditional_branch() {
+        // B0: movw r5,#42 ; bcc NE,"skip"   (succ: skip-block + fallthrough)
+        // B1: mov r6,r5                       (fallthrough; reads r5)
+        // B2: Label "skip" ; add r7,r5,r5     (target; reads r5)
+        //
+        // r5 is defined in B0 and read on *both* paths → it must be live OUT of
+        // B0 and live IN of both successors, but NOT live-in of B0 (defined there).
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R5,
+                imm16: 42,
+            }),
+            ins(ArmOp::Bcc {
+                cond: Condition::NE,
+                label: "skip".into(),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R6,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+            ins(ArmOp::Label {
+                name: "skip".into(),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R7,
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+        ];
+        let cfg = cfg_liveness(&seq).expect("label-form branch is analyzable");
+        assert_eq!(cfg.blocks.len(), 3, "three basic blocks");
+        // B0 ends in a conditional branch → two successors.
+        assert_eq!(cfg.blocks[0].succ.len(), 2);
+        // r5 is born in B0: live-out yes, live-in no.
+        assert!(cfg.live_out[0].contains(&Reg::R5));
+        assert!(
+            !cfg.live_in[0].contains(&Reg::R5),
+            "r5 is defined in B0, so it is not an entry input"
+        );
+        // Both successors see r5 live on entry.
+        for &s in &cfg.blocks[0].succ {
+            assert!(
+                cfg.live_in[s].contains(&Reg::R5),
+                "r5 must be live entering successor block {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn cfg_liveness_unconditional_branch_has_single_successor() {
+        // b "join" ; <unreachable filler> ; Label "join" ; nop
+        let seq = vec![
+            ins(ArmOp::B {
+                label: "join".into(),
+            }),
+            ins(ArmOp::Label {
+                name: "join".into(),
+            }),
+            ins(ArmOp::Nop),
+        ];
+        let cfg = cfg_liveness(&seq).expect("unconditional label branch is analyzable");
+        assert_eq!(
+            cfg.blocks[0].succ.len(),
+            1,
+            "an unconditional branch has exactly one successor (no fallthrough)"
+        );
+    }
+
+    #[test]
+    fn cfg_liveness_declines_on_call_and_offset_branch() {
+        // A direct call is outside the modeled (leaf-only) scope → decline.
+        let with_call = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Bl { label: "f".into() }),
+        ];
+        assert_eq!(cfg_liveness(&with_call), None, "calls are not yet modeled");
+
+        // A numeric-offset branch is not label-resolvable → decline.
+        let with_offset = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::BOffset { offset: -2 }),
+        ];
+        assert_eq!(
+            cfg_liveness(&with_offset),
+            None,
+            "numeric-offset branches are not CFG-resolvable here"
+        );
     }
 }

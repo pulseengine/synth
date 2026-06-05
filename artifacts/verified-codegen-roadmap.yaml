@@ -70,6 +70,15 @@ artifacts:
   # Track A — codegen core (sequential within: allocator first, then selector)
   # ---------------------------------------------------------------------------
 
+  # PROGRESS (substrate, side-by-side / unwired):
+  #  - reg_effect + per-segment dead-store/redundant-const analysis
+  #    (synth-synthesis/src/liveness.rs)
+  #  - CFG-aware liveness: cfg_liveness() builds the label-form basic-block CFG
+  #    and solves per-block live-in/live-out via the backward dataflow fixpoint
+  #    (the interference-graph substrate). Pure analysis, zero codegen callers,
+  #    so every frozen fixture stays bit-identical by construction. Leaf-only,
+  #    label-form scope; declines (None) on calls/offset/computed branches.
+  #    Remaining for VCR-RA-001: interference graph -> colouring -> spill/reload.
   - id: VCR-RA-001
     type: sw-req
     title: SSA-based register allocator with spilling (remove the hard-fail)

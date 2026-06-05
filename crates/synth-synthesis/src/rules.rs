@@ -1653,7 +1653,7 @@ pub enum Condition {
 }
 
 /// ARM register
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Reg {
     R0,
     R1,
