@@ -233,13 +233,19 @@ fn compile_wasm_to_arm(
         }
     };
 
-    // #257: fuse `mul` + `add` into `mla`. Runs on the selected stream *before*
-    // branch resolution (it removes instructions, shifting byte offsets) — and is
-    // sound across control flow (the fusion only fires when the mul result is read
-    // solely by the add; see `fuse_mul_add`). A no-op for streams with no fusable
-    // pattern, so existing output stays bit-identical unless a `mul;…;add` pair
-    // qualifies.
-    let (arm_instrs, _fused) = synth_synthesis::liveness::fuse_mul_add(&arm_instrs);
+    // #257/#277: `mul`+`add`→`mla` fusion is intentionally NOT wired here.
+    // The transform is correct and ready (`synth_synthesis::liveness::fuse_mul_add`,
+    // fully tested), but it is **register-allocation-coupled**: over the current
+    // greedy single-pass selector, folding `mul rM,..; add rD,rM,rX` → `mla`
+    // extends the live ranges of the mul inputs to the mla point, and the added
+    // pressure (extra moves/spills) costs more than the single-cycle MLA saves —
+    // gale measured a +2 cyc on-target REGRESSION (flat_flight 255→257, G474RE)
+    // even though it removes 2 instructions and the seam stays 0x07FDF307. So the
+    // fusion stays unwired until the spill-aware allocator (VCR-RA-001) chooses
+    // registers, at which point it becomes net-positive (per #272's plan and the
+    // wiring design note). Lesson (#277): a register-pressure-affecting transform
+    // needs an on-target/allocator-aware gate, not a byte-count gate, before it
+    // can default on.
 
     // ISA feature gate: validate that all generated instructions are supported
     // by the target. This catches FPU instructions on no-FPU targets, double-precision

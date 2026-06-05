@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.34] - 2026-06-05
+
+**Un-wire the default-on `mul`+`add`→`mla` fusion — it regresses on-target until
+the allocator lands (#277).**
+
+The fusion (v0.11.32, #257) correctly fires on the real `flat_flight`, but gale
+measured a **+2 cyc on-target regression** on the G474RE (255 → 257 cyc), stable
+across re-measures, even though it removes 2 instructions and the seam stays
+`0x07FDF307`. Root cause: over the greedy single-pass selector, folding
+`mul rM,..; add rD,rM,rX` → `mla` **extends the live ranges of the mul inputs**
+to the mla point, and the added register pressure costs more than the
+single-cycle `MLA` saves. The transform is **register-allocation-coupled** —
+net-positive only once a spill-aware allocator chooses registers (VCR-RA-001,
+#272).
+
+- **Fix:** remove the default-on wiring in `arm_backend`. `fuse_mul_add` stays as
+  fully-tested infrastructure in `synth_synthesis::liveness`, to be re-wired
+  *with* the allocator (where it pays off), per the wiring design note.
+- **Restores** `flat_flight` to the pre-fusion v0.11.31 codegen (mul 4 / mla 0 /
+  170 instr / 255 cyc). All three differential fixtures result-identical
+  (`control_step` 0x00210A55, `flight_seam` 0x07FDF307, `div_const` 338/338).
+
+**Lesson (gale's, recorded):** a register-pressure-affecting transform needs an
+**on-target / allocator-aware** gate, not a byte-count gate — `1891→1819 B` read
+as a win while silicon cycles regressed.
+
+**Falsification:** wrong if `flat_flight` is not byte-identical to v0.11.31, or
+any fixture differential diverges.
+
 ## [0.11.33] - 2026-06-05
 
 **Whole-reachable-graph closure now follows `call_indirect` into table functions
