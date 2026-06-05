@@ -753,6 +753,110 @@ pub fn cfg_liveness(instrs: &[ArmInstruction]) -> Option<CfgLiveness> {
     })
 }
 
+// ============================================================================
+// Interference graph (VCR-RA-001 — the colouring input)
+//
+// A graph-colouring register allocator asks: which registers are *simultaneously
+// live*, and therefore cannot share one physical register? That relation is the
+// interference graph, read directly off the per-instruction liveness derived
+// from [`cfg_liveness`]. Walking each block backward from its `live_out`, a
+// register *defined* at an instruction interferes with everything live
+// immediately *after* that instruction (they coexist), and co-defined registers
+// (e.g. `Umull`'s `rdlo`/`rdhi`) interfere with each other. The precision payoff:
+// in `add r3, r1, r2` the inputs die at the add, so `r3` does NOT interfere with
+// `r1`/`r2` and may reuse one of their registers — a naive "all operands
+// interfere" graph would forbid that.
+//
+// Pure analysis, no codegen callers: it informs a future allocator, it does not
+// (yet) drive one, so emitted bytes are unchanged.
+// ============================================================================
+
+/// Undirected register interference graph: `a` and `b` are adjacent iff they are
+/// ever simultaneously live (so a colouring must give them different physical
+/// registers).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct InterferenceGraph {
+    adj: BTreeMap<Reg, BTreeSet<Reg>>,
+}
+
+impl InterferenceGraph {
+    fn node(&mut self, r: Reg) {
+        self.adj.entry(r).or_default();
+    }
+
+    fn add_edge(&mut self, a: Reg, b: Reg) {
+        if a == b {
+            return;
+        }
+        self.adj.entry(a).or_default().insert(b);
+        self.adj.entry(b).or_default().insert(a);
+    }
+
+    /// Do `a` and `b` interfere (cannot share a physical register)?
+    pub fn interferes(&self, a: Reg, b: Reg) -> bool {
+        self.adj.get(&a).is_some_and(|s| s.contains(&b))
+    }
+
+    /// Registers that interfere with `r`.
+    pub fn neighbors(&self, r: Reg) -> impl Iterator<Item = Reg> + '_ {
+        self.adj.get(&r).into_iter().flat_map(|s| s.iter().copied())
+    }
+
+    /// Interference degree of `r` — the lower bound on distinct registers its
+    /// neighbourhood needs; `degree(r) < k` guarantees `r` is `k`-colourable
+    /// (the Chaitin/Briggs simplify criterion).
+    pub fn degree(&self, r: Reg) -> usize {
+        self.adj.get(&r).map_or(0, |s| s.len())
+    }
+
+    /// All registers mentioned in the graph (interfering or not).
+    pub fn nodes(&self) -> impl Iterator<Item = Reg> + '_ {
+        self.adj.keys().copied()
+    }
+
+    /// Total number of (undirected) interference edges.
+    pub fn edge_count(&self) -> usize {
+        self.adj.values().map(|s| s.len()).sum::<usize>() / 2
+    }
+}
+
+/// Build the interference graph of `instrs`, or `None` if [`cfg_liveness`]
+/// declines (a construct outside the modeled leaf-only, label-form scope). Sound
+/// by construction: a non-`None` graph is complete for the whole function.
+pub fn interference_graph(instrs: &[ArmInstruction]) -> Option<InterferenceGraph> {
+    let cfg = cfg_liveness(instrs)?;
+    let mut g = InterferenceGraph::default();
+
+    for (bi, b) in cfg.blocks.iter().enumerate() {
+        // `live` = registers live immediately AFTER the instruction being
+        // processed; seeded with the block's live-out and walked backward.
+        let mut live = cfg.live_out[bi].clone();
+        for idx in (b.start..b.end).rev() {
+            let eff = reg_effect(&instrs[idx].op).unwrap_or_default();
+            // Each def interferes with everything live after this instruction
+            // and with its co-defs; record defs/uses as nodes regardless.
+            for (i, d) in eff.defs.iter().enumerate() {
+                g.node(*d);
+                for r in &live {
+                    g.add_edge(*d, *r);
+                }
+                for d2 in &eff.defs[i + 1..] {
+                    g.add_edge(*d, *d2);
+                }
+            }
+            // live_before = (live − defs) ∪ uses
+            for d in &eff.defs {
+                live.remove(d);
+            }
+            for u in &eff.uses {
+                g.node(*u);
+                live.insert(*u);
+            }
+        }
+    }
+    Some(g)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1328,6 +1432,130 @@ mod tests {
             1,
             "an unconditional branch has exactly one successor (no fallthrough)"
         );
+    }
+
+    // ---- Interference graph (interference_graph) ---------------------------
+
+    #[test]
+    fn interference_simultaneously_live_regs_interfere() {
+        // movw r1,#5 ; movw r2,#7 ; add r3,r1,r2
+        // r1 and r2 are both live at the add → they interfere. r3 is defined
+        // when nothing else is live-out → it interferes with NOTHING (it may
+        // reuse r1's or r2's register: the precision a naive graph would lose).
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 5,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 7,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R3,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R2),
+            }),
+        ];
+        let g = interference_graph(&seq).expect("analyzable");
+        assert!(g.interferes(Reg::R1, Reg::R2), "r1,r2 overlap at the add");
+        assert!(
+            !g.interferes(Reg::R1, Reg::R3),
+            "r3 is defined after r1 dies → no interference (reuse allowed)"
+        );
+        assert!(!g.interferes(Reg::R2, Reg::R3));
+        assert_eq!(g.edge_count(), 1, "the only edge is r1—r2");
+        assert_eq!(g.degree(Reg::R1), 1);
+        assert_eq!(g.degree(Reg::R3), 0);
+    }
+
+    #[test]
+    fn interference_sequential_reuse_does_not_interfere() {
+        // movw r1,#5 ; mov r0,r1 ; movw r1,#9 ; mov r2,r1
+        // The first r1 dies into r0 before r1 is redefined → the two distinct
+        // live ranges of r1 don't add a self-edge, and r0/r2 never coexist.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 5,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 9,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let g = interference_graph(&seq).expect("analyzable");
+        assert!(
+            !g.interferes(Reg::R0, Reg::R2),
+            "r0 and r2 have disjoint live ranges"
+        );
+    }
+
+    #[test]
+    fn interference_co_defs_interfere() {
+        // umull r0,r1,r2,r3 — the two result registers must be distinct, so the
+        // co-defined r0 and r1 interfere even though neither is otherwise live.
+        let seq = vec![ins(ArmOp::Umull {
+            rdlo: Reg::R0,
+            rdhi: Reg::R1,
+            rn: Reg::R2,
+            rm: Reg::R3,
+        })];
+        let g = interference_graph(&seq).expect("analyzable");
+        assert!(
+            g.interferes(Reg::R0, Reg::R1),
+            "umull's rdlo and rdhi must not share a register"
+        );
+    }
+
+    #[test]
+    fn interference_value_live_across_a_branch_interferes_with_both_paths() {
+        // r5 live across a conditional; a fresh def on each path while r5 is
+        // still live must interfere with r5.
+        //   movw r5,#42 ; bcc NE,"skip"
+        //   mov r6,r5            (r6 defined while r5 live → interfere)
+        //   Label skip ; add r7,r5,r5
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R5,
+                imm16: 42,
+            }),
+            ins(ArmOp::Bcc {
+                cond: Condition::NE,
+                label: "skip".into(),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R6,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+            ins(ArmOp::Label {
+                name: "skip".into(),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R7,
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+        ];
+        let g = interference_graph(&seq).expect("analyzable");
+        // r6 is defined where r5 is still live (r5 reaches the add on the other
+        // path) → they interfere.
+        assert!(g.interferes(Reg::R5, Reg::R6), "r6 defined while r5 live");
+    }
+
+    #[test]
+    fn interference_declines_when_liveness_declines() {
+        // A call is outside the CFG scope → cfg_liveness declines → so does this.
+        let seq = vec![ins(ArmOp::Bl { label: "f".into() })];
+        assert_eq!(interference_graph(&seq), None);
     }
 
     #[test]
