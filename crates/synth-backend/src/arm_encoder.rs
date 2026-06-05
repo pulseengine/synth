@@ -1913,12 +1913,21 @@ impl ArmEncoder {
                 } else if let Operand2::Imm(imm) = op2 {
                     let rd_bits = reg_to_bits(rd);
                     let rn_bits = reg_to_bits(rn);
-                    let imm_val = *imm as u32;
 
-                    // Thumb-2 AND.W immediate T1: 11110 i 0 0000 S Rn | 0 imm3 Rd imm8
-                    let i_bit = (imm_val >> 11) & 1;
-                    let imm3 = (imm_val >> 8) & 0x7;
-                    let imm8 = imm_val & 0xFF;
+                    // Thumb-2 AND.W immediate T1: 11110 i 0 0000 S Rn | 0 imm3 Rd imm8.
+                    // The i:imm3:imm8 field is a ThumbExpandImm modified immediate —
+                    // encode it correctly (or error on an un-encodable value)
+                    // rather than packing raw bits, closing the silent-miscompile
+                    // class for AND alongside ORR/EOR (#251) / ADD/SUB (#253) /
+                    // CMP (#255).
+                    let field = try_thumb_expand_imm(*imm as u32).ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "AND immediate is not a valid ThumbExpandImm — materialize into a register",
+                        )
+                    })?;
+                    let i_bit = (field >> 11) & 1;
+                    let imm3 = (field >> 8) & 0x7;
+                    let imm8 = field & 0xFF;
 
                     let hw1: u16 = (0xF000 | (i_bit << 10) | rn_bits) as u16;
                     let hw2: u16 = ((imm3 << 12) | (rd_bits << 8) | imm8) as u16;
@@ -2198,19 +2207,24 @@ impl ArmEncoder {
                 let rn_bits = reg_to_bits(rn) as u16;
 
                 if let Operand2::Imm(imm) = op2 {
-                    // CMN.W Rn, #imm (32-bit encoding)
-                    // Encoding: F110 Rn | 0F00 imm8 (for small immediates 0-255)
-                    if *imm >= 0 && *imm <= 255 {
-                        let imm8 = *imm as u16 & 0xFF;
-                        let hw1: u16 = 0xF110 | rn_bits;
-                        let hw2: u16 = 0x0F00 | imm8;
-                        let mut bytes = hw1.to_le_bytes().to_vec();
-                        bytes.extend_from_slice(&hw2.to_le_bytes());
-                        Ok(bytes)
-                    } else {
-                        // For other immediates, fallback to NOP (should not happen in our use case)
-                        Ok(vec![0xBF, 0x00])
-                    }
+                    // CMN.W Rn, #imm (32-bit): i:imm3:imm8 is a ThumbExpandImm
+                    // modified immediate (the field sits in imm3=hw2[14:12],
+                    // imm8=hw2[7:0], i=hw1[10]). Encode it correctly, or error on
+                    // an un-encodable value — replacing the old silent `0xBF00`
+                    // NOP (the last of the silent-miscompile data-proc encoders).
+                    let field = try_thumb_expand_imm(*imm as u32).ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "CMN immediate is not a valid ThumbExpandImm — materialize into a register",
+                        )
+                    })?;
+                    let i_bit = (field >> 11) & 1;
+                    let imm3 = (field >> 8) & 0x7;
+                    let imm8 = field & 0xFF;
+                    let hw1: u16 = (0xF110 | (i_bit << 10) as u16) | rn_bits;
+                    let hw2: u16 = (imm3 << 12) as u16 | 0x0F00 | imm8 as u16;
+                    let mut bytes = hw1.to_le_bytes().to_vec();
+                    bytes.extend_from_slice(&hw2.to_le_bytes());
+                    Ok(bytes)
                 } else if let Operand2::Reg(rm) = op2 {
                     let rm_bits = reg_to_bits(rm) as u16;
                     // 16-bit CMN (T1) only encodes R0-R7; high registers overflow
@@ -9301,6 +9315,55 @@ mod tests {
                 })
                 .is_err(),
             "add #5000 must error (no single ADDW), not mis-encode"
+        );
+    }
+
+    /// Closes the data-proc immediate class: AND and CMN now go through
+    /// `try_thumb_expand_imm` like ORR/EOR/CMP — correct for any modified
+    /// immediate, `Err` (not raw-pack / NOP) on an un-encodable one. The byte
+    /// range stays bit-identical (`and r2,r0,#0x7e` is unchanged).
+    #[test]
+    fn and_cmn_immediate_thumb_expand_else_error() {
+        let encoder = ArmEncoder::new_thumb2();
+        // byte range unchanged (bit-identical with the pre-retrofit encoding)
+        assert_eq!(
+            encoder
+                .encode(&ArmOp::And {
+                    rd: Reg::R2,
+                    rn: Reg::R0,
+                    op2: Operand2::Imm(0x7e),
+                })
+                .unwrap(),
+            vec![0x00, 0xf0, 0x7e, 0x02],
+        );
+        // a valid replicated modified immediate now encodes (was silently wrong)
+        assert!(
+            encoder
+                .encode(&ArmOp::And {
+                    rd: Reg::R2,
+                    rn: Reg::R0,
+                    op2: Operand2::Imm(0xff00ff00u32 as i32),
+                })
+                .is_ok()
+        );
+        // a genuinely un-encodable immediate errors (AND was raw-pack; CMN NOP)
+        assert!(
+            encoder
+                .encode(&ArmOp::And {
+                    rd: Reg::R2,
+                    rn: Reg::R0,
+                    op2: Operand2::Imm(0x101),
+                })
+                .is_err()
+        );
+        assert!(
+            encoder
+                .encode(&ArmOp::Cmn {
+                    rn: Reg::R0,
+                    op2: Operand2::Imm(0x101),
+                })
+                .is_err(),
+            "CMN #0x101 must error, not emit a NOP"
         );
     }
 
