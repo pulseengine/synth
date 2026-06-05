@@ -870,17 +870,19 @@ fn add_uses_correct_source_registers() {
     let add = instrs.iter().find(|i| matches!(&i.op, ArmOp::Add { .. }));
     assert!(add.is_some(), "i32.add should produce an ADD instruction");
 
+    // Since #254 (constant-immediate folding), `i32.const 20; i32.add` folds the
+    // 20 into the ADD immediate — `add rd, r(=10), #20`. This is the correct,
+    // improved shape; the original concern (two consts collapsing onto the *same*
+    // source register, a #180-class bug) cannot arise when the second const is an
+    // immediate rather than a register.
     if let ArmOp::Add { rn, op2, .. } = &add.unwrap().op {
-        assert!(
-            matches!(op2, Operand2::Reg(_)),
-            "ADD should use register operand, got {:?}",
-            op2
-        );
-        if let Operand2::Reg(rm) = op2 {
-            assert_ne!(
+        match op2 {
+            Operand2::Imm(c) => assert_eq!(*c, 20, "the second const folds into #20"),
+            Operand2::Reg(rm) => assert_ne!(
                 rn, rm,
-                "ADD source registers should be different (two consts)"
-            );
+                "if not folded, the two const source registers must differ"
+            ),
+            other => panic!("unexpected ADD operand: {other:?}"),
         }
     }
 }

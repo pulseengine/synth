@@ -233,6 +233,14 @@ fn compile_wasm_to_arm(
         }
     };
 
+    // #257: fuse `mul` + `add` into `mla`. Runs on the selected stream *before*
+    // branch resolution (it removes instructions, shifting byte offsets) — and is
+    // sound across control flow (the fusion only fires when the mul result is read
+    // solely by the add; see `fuse_mul_add`). A no-op for streams with no fusable
+    // pattern, so existing output stays bit-identical unless a `mul;…;add` pair
+    // qualifies.
+    let (arm_instrs, _fused) = synth_synthesis::liveness::fuse_mul_add(&arm_instrs);
+
     // ISA feature gate: validate that all generated instructions are supported
     // by the target. This catches FPU instructions on no-FPU targets, double-precision
     // instructions on single-precision targets, etc.
