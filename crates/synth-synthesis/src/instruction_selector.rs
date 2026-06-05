@@ -14814,6 +14814,29 @@ mod tests {
         let (out, removed) = liveness::eliminate_dead_stores(&instrs);
         assert_eq!(removed, report.dead_defs.len());
         assert_eq!(out.len(), instrs.len() - removed);
+
+        // CFG-aware liveness on the same real output must either decline
+        // (out-of-scope construct) or return a *structurally sound* graph:
+        // blocks tile [0, len) gaplessly, every successor index is in range,
+        // and the per-block live-set vectors line up with the block count.
+        if let Some(cfg) = liveness::cfg_liveness(&instrs) {
+            assert_eq!(cfg.live_in.len(), cfg.blocks.len());
+            assert_eq!(cfg.live_out.len(), cfg.blocks.len());
+            let mut expected_start = 0usize;
+            for b in &cfg.blocks {
+                assert_eq!(b.start, expected_start, "blocks must tile without gaps");
+                assert!(b.end > b.start, "blocks are non-empty");
+                for &s in &b.succ {
+                    assert!(s < cfg.blocks.len(), "successor index in range");
+                }
+                expected_start = b.end;
+            }
+            assert_eq!(
+                expected_start,
+                instrs.len(),
+                "blocks cover the whole stream"
+            );
+        }
     }
 
     #[test]
