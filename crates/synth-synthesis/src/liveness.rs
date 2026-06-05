@@ -120,6 +120,22 @@ pub fn reg_effect(op: &ArmOp) -> Option<RegEffect> {
         // rd = cond (materialize a flag) — writes rd, reads flags only
         SetCond { rd, .. } => def_use(vec![*rd], vec![]),
 
+        // conditional move (IT-block clamp form): rd = rm if cond, else rd
+        // unchanged → rd is both read (preserved branch) and written; rm read.
+        // Modeling this keeps the int8-clamp sequences (the #209 const-CSE
+        // target) inside one analyzable segment instead of breaking at each
+        // predicated move, so the allocator analysis can see the resident
+        // clamp-bound constants across the whole clamp chain.
+        SelectMove { rd, rm, .. } => def_use(vec![*rd], vec![*rd, *rm]),
+
+        // rd = rcond != 0 ? rval1 : rval2 — writes rd, reads all three inputs.
+        Select {
+            rd,
+            rval1,
+            rval2,
+            rcond,
+        } => def_use(vec![*rd], vec![*rval1, *rval2, *rcond]),
+
         // loads: rd = mem[addr]
         Ldr { rd, addr }
         | Ldrb { rd, addr }
@@ -1244,6 +1260,62 @@ mod tests {
         .unwrap();
         assert_eq!(e.defs, vec![Reg::R5]);
         assert_eq!(e.uses, vec![Reg::R5], "Movt preserves the low half");
+    }
+
+    #[test]
+    fn reg_effect_models_conditional_move_as_read_modify_write() {
+        // SelectMove rd, rm, cond — rd preserved on the false branch → both a
+        // def and a use of rd; rm is a use. (Keeps clamp chains in one segment.)
+        let e = reg_effect(&ArmOp::SelectMove {
+            rd: Reg::R2,
+            rm: Reg::R3,
+            cond: Condition::EQ,
+        })
+        .unwrap();
+        assert_eq!(e.defs, vec![Reg::R2]);
+        assert_eq!(e.uses, vec![Reg::R2, Reg::R3]);
+    }
+
+    #[test]
+    fn reg_effect_models_select_reads_all_three_inputs() {
+        let e = reg_effect(&ArmOp::Select {
+            rd: Reg::R0,
+            rval1: Reg::R1,
+            rval2: Reg::R2,
+            rcond: Reg::R3,
+        })
+        .unwrap();
+        assert_eq!(e.defs, vec![Reg::R0]);
+        assert_eq!(e.uses, vec![Reg::R1, Reg::R2, Reg::R3]);
+    }
+
+    #[test]
+    fn redundant_const_seen_across_a_conditional_move_now_that_it_is_modeled() {
+        // movw r0,#0x7e ; selectmove r1,r2,EQ ; movw r3,#0x7e
+        // The SelectMove no longer breaks the segment, so the second 0x7e is
+        // detected as redundant (r0 still resident) — the #209 clamp pattern.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::SelectMove {
+                rd: Reg::R1,
+                rm: Reg::R2,
+                cond: Condition::EQ,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 0x7e,
+            }),
+        ];
+        let r = redundant_const_defs(&seq).expect("SelectMove is now modeled, no segment break");
+        assert_eq!(
+            r.len(),
+            1,
+            "the clamp bound is seen as redundant across the IT move"
+        );
+        assert_eq!(r[0].available_in, Reg::R0);
     }
 
     #[test]
