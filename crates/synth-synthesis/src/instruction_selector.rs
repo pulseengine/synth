@@ -14847,6 +14847,25 @@ mod tests {
                     assert!(g.interferes(m, n), "interference is symmetric");
                 }
             }
+
+            // The graph of real codegen must be colourable within the
+            // allocatable pool (R0–R8 = 9 colours): the current single-pass
+            // allocator already fits it, so a principled colouring must too, and
+            // the colouring it returns must be valid (adjacent nodes differ).
+            match liveness::color_graph(&g, 9) {
+                liveness::ColorResult::Colored(colour) => {
+                    for n in g.nodes() {
+                        let c = colour[&n];
+                        assert!(c < 9);
+                        for m in g.neighbors(n) {
+                            assert_ne!(colour[&n], colour[&m], "colouring is valid");
+                        }
+                    }
+                }
+                liveness::ColorResult::Spilled(s) => {
+                    panic!("real output should fit the 9-register pool, spilled {s:?}")
+                }
+            }
         }
     }
 
