@@ -1060,6 +1060,191 @@ pub fn verify_allocation(
     Ok(())
 }
 
+// ============================================================================
+// Allocator driver (VCR-RA-001 — the entry point the codegen wiring calls)
+//
+// Assembles the layer into one call: interference graph → k-colouring (reserved
+// registers precoloured) → self-check, plus the rematerialization-avoidance
+// opportunity count (the #209 const-CSE headroom). This is the function the
+// virtual-register selector output will hand a function to; today it runs on the
+// existing physical-register stream as a *shadow* allocation — it computes the
+// decision without yet mutating codegen, so it can be measured on the real
+// gale benches before anything is wired.
+// ============================================================================
+
+/// What the allocator decided for a function.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AllocationOutcome {
+    /// A valid physical-register assignment (colour = allocatable-pool index).
+    Allocated {
+        coloring: BTreeMap<Reg, usize>,
+        /// Redundant constant materializations the allocator would avoid by
+        /// keeping one copy resident — the #209 const-CSE / rematerialization
+        /// headroom, measured on this function.
+        remat_opportunities: usize,
+    },
+    /// `k`-colouring failed under the pool budget; these values must spill.
+    NeedsSpill(BTreeSet<Reg>),
+    /// The function contains a construct the analysis cannot model precisely
+    /// (calls, numeric-offset/computed branches, i64-pair / FP ops). The
+    /// allocator declines and codegen keeps the existing single-pass path.
+    Declined,
+}
+
+/// One virtual register: a single def-to-last-use value range that the greedy
+/// selector packed into physical register `reg`. `def`/`last_use` are indices
+/// into the straight-line segment (a `def == 0` with no instruction-0 def marks
+/// a segment input). This is the explicit form of the value the allocator
+/// colours — the renaming a re-allocation pass assigns physical registers to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValueRange {
+    pub vreg: usize,
+    pub reg: Reg,
+    pub def: usize,
+    pub last_use: usize,
+}
+
+/// Split each physical register's def-use chains in a straight-line segment into
+/// distinct **virtual registers** (value ranges). Returns `None` if the segment
+/// is not straight-line / fully modeled. Sound for straight-line code (the
+/// reaching definition of every use is unambiguous — the most recent def);
+/// cross-block web merging is a separate step. The number of ranges a physical
+/// register splits into is exactly the overloading that inflates the physical
+/// interference graph (e.g. `R1` → a dozen ranges, one spurious spill); colouring
+/// *these* ranges instead is what removes the spurious spill. This is the
+/// renaming the eventual virtual-register output / re-allocation consumes.
+pub fn straight_line_value_ranges(instrs: &[ArmInstruction]) -> Option<Vec<ValueRange>> {
+    let mut current: BTreeMap<Reg, usize> = BTreeMap::new(); // reg → open vreg index
+    let mut ranges: Vec<ValueRange> = Vec::new();
+    for (i, ins) in instrs.iter().enumerate() {
+        if !is_straight_line(&ins.op) {
+            return None;
+        }
+        let eff = reg_effect(&ins.op)?;
+        for u in &eff.uses {
+            let idx = *current.entry(*u).or_insert_with(|| {
+                ranges.push(ValueRange {
+                    vreg: ranges.len(),
+                    reg: *u,
+                    def: 0, // input: live from the segment start
+                    last_use: i,
+                });
+                ranges.len() - 1
+            });
+            ranges[idx].last_use = i;
+        }
+        for d in &eff.defs {
+            let vreg = ranges.len();
+            ranges.push(ValueRange {
+                vreg,
+                reg: *d,
+                def: i,
+                last_use: i, // dead-on-arrival until a later use extends it
+            });
+            current.insert(*d, vreg);
+        }
+    }
+    Some(ranges)
+}
+
+/// Peak **virtual-register pressure** of a straight-line segment: the maximum
+/// number of distinct *values* live on any instruction edge — where a value is a
+/// single def-to-last-use range, NOT a reused physical-register name. This is
+/// the true register requirement the spurious physical-register interference
+/// hides: the greedy selector reuses one physical register for many values, so
+/// counting physical registers (the shadow pass's "would spill R1") overstates
+/// the need. If this is ≤ the pool size, the segment fits with no spill once
+/// virtually allocated. Returns `None` if the segment is not straight-line /
+/// fully modeled. A register used before any def is an input, live from the
+/// segment start.
+pub fn straight_line_peak_pressure(instrs: &[ArmInstruction]) -> Option<usize> {
+    let n = instrs.len();
+    let mut current: BTreeMap<Reg, usize> = BTreeMap::new(); // reg → live value id
+    let mut def_at: Vec<usize> = Vec::new(); // value id → def edge (0 for inputs)
+    let mut last_use: Vec<usize> = Vec::new(); // value id → last-use index
+    for (i, ins) in instrs.iter().enumerate() {
+        if !is_straight_line(&ins.op) {
+            return None;
+        }
+        let eff = reg_effect(&ins.op)?;
+        for u in &eff.uses {
+            let vid = *current.entry(*u).or_insert_with(|| {
+                def_at.push(0); // input: live from the segment start
+                last_use.push(0);
+                def_at.len() - 1
+            });
+            last_use[vid] = i;
+        }
+        for d in &eff.defs {
+            def_at.push(i);
+            last_use.push(i); // dead-on-arrival until a later use extends it
+            current.insert(*d, def_at.len() - 1);
+        }
+    }
+    // A value used after its def occupies a register on edges [def, last_use).
+    let mut delta = vec![0i32; n + 1];
+    for vid in 0..def_at.len() {
+        let (d, l) = (def_at[vid], last_use[vid]);
+        if l > d {
+            delta[d] += 1;
+            delta[l] -= 1;
+        }
+    }
+    let (mut cur, mut peak) = (0i32, 0i32);
+    for d in delta.iter().take(n) {
+        cur += *d;
+        peak = peak.max(cur);
+    }
+    Some(peak as usize)
+}
+
+/// Peak virtual-register pressure across a whole (possibly branchy) function:
+/// the max [`straight_line_peak_pressure`] over its straight-line segments (a
+/// lower bound on the true register need). If ≤ the pool size, no segment forces
+/// a spill once virtually allocated — so a physical-register "spill" is spurious.
+pub fn function_peak_pressure(instrs: &[ArmInstruction]) -> usize {
+    let mut peak = 0;
+    let mut seg_start = 0;
+    let flush = |start: usize, end: usize, peak: &mut usize| {
+        if end > start
+            && let Some(p) = straight_line_peak_pressure(&instrs[start..end])
+        {
+            *peak = (*peak).max(p);
+        }
+    };
+    for (i, ins) in instrs.iter().enumerate() {
+        if !is_straight_line(&ins.op) || reg_effect(&ins.op).is_none() {
+            flush(seg_start, i, &mut peak);
+            seg_start = i + 1;
+        }
+    }
+    flush(seg_start, instrs.len(), &mut peak);
+    peak
+}
+
+/// Run the register-allocator pipeline on a function: interference graph →
+/// `k`-colouring with `precolored` reserved registers pinned → result. `k` is
+/// the allocatable-pool size (e.g. 9 for synth's R0–R8). Pure: it computes a
+/// decision and does not mutate the instruction stream — the call the codegen
+/// wiring (VCR-RA-001) makes, runnable today as a shadow pass.
+pub fn allocate_function(
+    instrs: &[ArmInstruction],
+    k: usize,
+    precolored: &BTreeMap<Reg, usize>,
+) -> AllocationOutcome {
+    let Some(graph) = interference_graph(instrs) else {
+        return AllocationOutcome::Declined;
+    };
+    let remat_opportunities = analyze_function(instrs).redundant_consts.len();
+    match color_graph_precolored(&graph, k, precolored) {
+        ColorResult::Colored(coloring) => AllocationOutcome::Allocated {
+            coloring,
+            remat_opportunities,
+        },
+        ColorResult::Spilled(s) => AllocationOutcome::NeedsSpill(s),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2056,6 +2241,186 @@ mod tests {
             verify_allocation(&g, &partial),
             Err(AllocationConflict::Unassigned(Reg::R1))
         );
+    }
+
+    // ---- Allocator driver (allocate_function) ------------------------------
+
+    #[test]
+    fn allocate_function_produces_a_valid_allocation_and_counts_remat() {
+        // movw r0,#7 ; mov r1,r0 ; movw r2,#7  — r2's #7 is redundant (resident
+        // in r0). The driver allocates a valid colouring and reports 1 remat
+        // opportunity (the #209 const-CSE headroom).
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R1,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 7,
+            }),
+        ];
+        match allocate_function(&seq, 9, &BTreeMap::new()) {
+            AllocationOutcome::Allocated {
+                coloring,
+                remat_opportunities,
+            } => {
+                let g = interference_graph(&seq).unwrap();
+                assert_eq!(verify_allocation(&g, &coloring), Ok(()));
+                assert_eq!(remat_opportunities, 1, "the resident #7 is CSE-able");
+            }
+            other => panic!("expected Allocated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn peak_pressure_counts_simultaneously_live_values_not_physical_regs() {
+        // movw r0,#1 ; movw r1,#2 ; movw r2,#3 ; add r3,r0,r1 ; add r4,r2,r3
+        // At the third movw, v0/v1/v2 are all live → peak 3. (The point: this is
+        // value pressure; physical-register reuse would not change it.)
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 2,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 3,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R3,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R4,
+                rn: Reg::R2,
+                op2: Operand2::Reg(Reg::R3),
+            }),
+        ];
+        assert_eq!(straight_line_peak_pressure(&seq), Some(3));
+        assert_eq!(function_peak_pressure(&seq), 3);
+    }
+
+    #[test]
+    fn value_ranges_split_a_reused_physical_register_into_distinct_vregs() {
+        // movw r1,#1 ; mov r0,r1 ; movw r1,#2 ; mov r2,r1
+        // R1 holds two unrelated values → two distinct virtual registers. This
+        // is the split that turns the overloaded physical-reg node (one spurious
+        // spill) into separately-colourable values.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 1,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 2,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        let r1_ranges: Vec<_> = ranges.iter().filter(|r| r.reg == Reg::R1).collect();
+        assert_eq!(
+            r1_ranges.len(),
+            2,
+            "R1 splits into two virtual registers (one per value)"
+        );
+        // First R1 range: def 0, last-used at 1 (the mov r0,r1).
+        assert_eq!((r1_ranges[0].def, r1_ranges[0].last_use), (0, 1));
+        // Second R1 range: def 2, last-used at 3 (the mov r2,r1).
+        assert_eq!((r1_ranges[1].def, r1_ranges[1].last_use), (2, 3));
+    }
+
+    #[test]
+    fn peak_pressure_unaffected_by_physical_register_reuse() {
+        // The same value churned through ONE physical register has pressure 1 —
+        // exactly the case the physical-register interference graph overstates.
+        // movw r0,#1 ; mov r1,r0 ; movw r0,#2 ; mov r2,r0  → never >1 live at once
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R1,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 2,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+        ];
+        // r0 holds two different values sequentially; peak simultaneous = 1.
+        assert_eq!(straight_line_peak_pressure(&seq), Some(1));
+    }
+
+    #[test]
+    fn allocate_function_declines_on_unmodeled_construct() {
+        let seq = vec![ins(ArmOp::Bl { label: "f".into() })];
+        assert_eq!(
+            allocate_function(&seq, 9, &BTreeMap::new()),
+            AllocationOutcome::Declined
+        );
+    }
+
+    #[test]
+    fn allocate_function_spills_when_pool_too_small() {
+        // A K4 clique of registers needs 4 colours; with k=3 the driver reports
+        // a spill rather than hard-failing (the whole point of VCR-RA-001).
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 2,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 3,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 4,
+            }),
+            // one instruction reading all four → all four simultaneously live
+            ins(ArmOp::Add {
+                rd: Reg::R4,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R4,
+                rn: Reg::R2,
+                op2: Operand2::Reg(Reg::R3),
+            }),
+        ];
+        // k=2 cannot colour 3+ simultaneously-live values → spill, not crash.
+        assert!(matches!(
+            allocate_function(&seq, 2, &BTreeMap::new()),
+            AllocationOutcome::NeedsSpill(_)
+        ));
     }
 
     #[test]
