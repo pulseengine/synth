@@ -247,6 +247,22 @@ fn compile_wasm_to_arm(
     // needs an on-target/allocator-aware gate, not a byte-count gate, before it
     // can default on.
 
+    // VCR-RA-001 const-CSE / rematerialization-avoidance (#209), the first
+    // allocator-analysis-driven CODEGEN change. Drops `movw` re-materializations
+    // of a constant already resident in another register and retargets the reads
+    // — every rewrite proven by the liveness analysis, and it ONLY removes
+    // materializations (pressure never rises), so unlike the mla fusion (#277) it
+    // cannot regress on-target. Runs on the selected stream before branch
+    // resolution (it removes instructions, shifting byte offsets). Behind
+    // `SYNTH_CONST_CSE=1` while it is validated against the differential oracle +
+    // gale's five on-target baselines; off by default keeps every fixture
+    // bit-identical.
+    let arm_instrs = if std::env::var("SYNTH_CONST_CSE").is_ok() {
+        synth_synthesis::liveness::apply_const_cse(&arm_instrs).0
+    } else {
+        arm_instrs
+    };
+
     // VCR-RA-001 SHADOW ALLOCATION (#209/#242): run the register allocator on
     // the selected stream and LOG what it finds — without changing a single
     // emitted byte. This is the measure-only bridge between the built analysis
