@@ -894,12 +894,37 @@ pub enum ColorResult {
 /// `k == 0` with a non-empty graph is trivially uncolourable (every node
 /// spills). Pure function: it computes a decision, it does not mutate codegen.
 pub fn color_graph(g: &InterferenceGraph, k: usize) -> ColorResult {
-    // Working adjacency we can shrink as we simplify.
-    let mut adj: BTreeMap<Reg, BTreeSet<Reg>> =
-        g.nodes().map(|n| (n, g.neighbors(n).collect())).collect();
+    color_graph_precolored(g, k, &BTreeMap::new())
+}
+
+/// `k`-colouring with **precoloured** nodes pinned to fixed colours — the
+/// mechanism for honouring synth's reserved registers and ABI pins. Each entry
+/// `(reg → colour)` in `precolored` keeps that colour and is never simplified or
+/// spilled; it only *constrains* its neighbours (occupying a colour they cannot
+/// reuse). Free nodes are coloured/​spilled by the same Chaitin/Briggs pass.
+///
+/// To reserve physical registers (e.g. keep `R11` = memory base), pin the
+/// corresponding node to its colour and treat that colour as taken for the pool;
+/// to force args, pin `R0..=R3`. Precoloured colours should be in `0..k`
+/// (out-of-range pins are ignored for conflict purposes rather than panicking).
+/// Pure function: a decision, not a codegen mutation.
+pub fn color_graph_precolored(
+    g: &InterferenceGraph,
+    k: usize,
+    precolored: &BTreeMap<Reg, usize>,
+) -> ColorResult {
+    // Working adjacency over the FREE (non-precoloured) nodes only; precoloured
+    // nodes are fixed, so they never enter the simplify worklist — but they
+    // remain in every free node's neighbourhood (via `g.neighbors`) so they
+    // still constrain colouring.
+    let mut adj: BTreeMap<Reg, BTreeSet<Reg>> = g
+        .nodes()
+        .filter(|n| !precolored.contains_key(n))
+        .map(|n| (n, g.neighbors(n).collect()))
+        .collect();
     let mut stack: Vec<Reg> = Vec::with_capacity(adj.len());
 
-    // SIMPLIFY / SPILL: push every node, preferring low-degree (< k) nodes;
+    // SIMPLIFY / SPILL: push every free node, preferring low-degree (< k) nodes;
     // when none qualify, optimistically push the highest-degree node.
     while !adj.is_empty() {
         let pick = adj
@@ -925,8 +950,10 @@ pub fn color_graph(g: &InterferenceGraph, k: usize) -> ColorResult {
     }
 
     // SELECT: pop in reverse, assign the lowest free colour using the ORIGINAL
-    // neighbourhood. A node with no free colour in 0..k is an actual spill.
-    let mut colour: BTreeMap<Reg, usize> = BTreeMap::new();
+    // neighbourhood. Seeded with the precoloured pins, so a free node avoids
+    // both its precoloured and its already-selected neighbours. A node with no
+    // free colour in 0..k is an actual spill.
+    let mut colour: BTreeMap<Reg, usize> = precolored.clone();
     let mut spilled: BTreeSet<Reg> = BTreeSet::new();
     while let Some(n) = stack.pop() {
         let mut used = vec![false; k];
@@ -1754,5 +1781,52 @@ mod tests {
         let mut g = InterferenceGraph::default();
         g.node(Reg::R0);
         assert!(matches!(color_graph(&g, 0), ColorResult::Spilled(_)));
+    }
+
+    #[test]
+    fn precolored_node_keeps_its_colour_and_constrains_neighbours() {
+        // Triangle R0—R1—R2; pin R0 to colour 2. With k=3, R1/R2 must avoid 2
+        // (and each other), so they take {0,1}.
+        let g = clique(&[Reg::R0, Reg::R1, Reg::R2]);
+        let pre = BTreeMap::from([(Reg::R0, 2usize)]);
+        match color_graph_precolored(&g, 3, &pre) {
+            ColorResult::Colored(c) => {
+                assert_eq!(c[&Reg::R0], 2, "precoloured node keeps its colour");
+                assert_ne!(c[&Reg::R1], 2);
+                assert_ne!(c[&Reg::R2], 2);
+                assert_ne!(c[&Reg::R1], c[&Reg::R2]);
+            }
+            ColorResult::Spilled(s) => panic!("3-colourable with the pin, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn precoloring_can_force_a_spill_by_exhausting_colours() {
+        // R2 interferes with R0 and R1; pin R0=0, R1=1. With only k=2 colours
+        // both are taken in R2's neighbourhood → R2 must spill, even though the
+        // bare graph (a path) is 2-colourable without the pins.
+        let mut g = InterferenceGraph::default();
+        g.add_edge(Reg::R2, Reg::R0);
+        g.add_edge(Reg::R2, Reg::R1);
+        let pre = BTreeMap::from([(Reg::R0, 0usize), (Reg::R1, 1usize)]);
+        match color_graph_precolored(&g, 2, &pre) {
+            ColorResult::Spilled(s) => assert!(s.contains(&Reg::R2)),
+            ColorResult::Colored(c) => panic!("R2 has no free colour, got {c:?}"),
+        }
+        // One more colour resolves it: R2 takes colour 2.
+        match color_graph_precolored(&g, 3, &pre) {
+            ColorResult::Colored(c) => assert_eq!(c[&Reg::R2], 2),
+            ColorResult::Spilled(s) => panic!("k=3 leaves a free colour, got {s:?}"),
+        }
+    }
+
+    #[test]
+    fn color_graph_delegates_to_empty_precoloring() {
+        // The plain entry point must agree with the precoloured one given no pins.
+        let g = clique(&[Reg::R0, Reg::R1, Reg::R2, Reg::R3]);
+        assert_eq!(
+            color_graph(&g, 4),
+            color_graph_precolored(&g, 4, &BTreeMap::new())
+        );
     }
 }
