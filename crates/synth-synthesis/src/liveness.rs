@@ -395,30 +395,6 @@ pub fn eliminate_dead_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
     (kept, dead.len())
 }
 
-/// Conservative "does `op` possibly read `reg`": precise via [`reg_effect`] when
-/// modeled; a pure branch/label reads no GP register; a call (`Bl`/`Blx`/…) may
-/// read the AAPCS argument registers `R0..=R3`; anything else unmodeled (`Bx`,
-/// the i64-pair / FP families) is conservatively assumed to read `reg`.
-fn op_may_use(op: &ArmOp, reg: Reg) -> bool {
-    if let Some(e) = reg_effect(op) {
-        return e.uses.contains(&reg);
-    }
-    use ArmOp::*;
-    match op {
-        Label { .. }
-        | B { .. }
-        | BOffset { .. }
-        | BCondOffset { .. }
-        | Bhs { .. }
-        | Blo { .. }
-        | Bcc { .. } => false,
-        Bl { .. } | Blx { .. } | Call { .. } | CallIndirect { .. } => {
-            matches!(reg, Reg::R0 | Reg::R1 | Reg::R2 | Reg::R3)
-        }
-        _ => true,
-    }
-}
-
 /// Fuse `mul` + `add` into `mla` (#257): for an `Add rD, x, Reg(y)` where one
 /// operand is the destination of an earlier `Mul rM, rn, rm`, the result is
 /// `mla rD, rn, rm, other`, and the now-redundant `Mul` is removed. Returns the
@@ -426,15 +402,19 @@ fn op_may_use(op: &ArmOp, reg: Reg) -> bool {
 ///
 /// Soundness conditions (all checked via [`reg_effect`]; any unmodeled
 /// instruction conservatively blocks a fusion across it):
-///  - the mul result `rM` is **not read** anywhere after the add (its value is
-///    consumed only by the add → the mul is dead once fused),
+///  - the mul result `rM`'s value is **consumed only by the add** — dead after
+///    the add until `rM` is next redefined. This is a precise *live-range*
+///    check, NOT "rM is read nowhere in the function": the single-pass allocator
+///    reuses `rM` for unrelated later values, and reads of those reincarnations
+///    must not block the fusion (#257: the whole-function scan fired zero times
+///    on the real `flat_flight`, where `r8` is recycled across axes),
 ///  - between the mul and the add, `rM` and the mul inputs `rn`/`rm` are
 ///    **neither redefined nor** (for `rM`) **read** — so the `mla` reading
 ///    `rn`/`rm` at the add's position sees the same values,
 ///  - `rM` and the other add operand are distinct, and the mul inputs are not
 ///    `rM` itself.
 ///
-/// Pure function: callers opt in. Not wired into codegen by this change.
+/// Pure function: callers opt in.
 pub fn fuse_mul_add(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
     let n = instrs.len();
     let mut removed = vec![false; n];
@@ -478,14 +458,42 @@ pub fn fuse_mul_add(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
             if !between_ok {
                 continue;
             }
-            // The mul result must be read *only* by this add anywhere in the
-            // function — then removing the mul and folding into the mla is sound
-            // regardless of control flow. `op_may_use` is call/branch-aware
-            // (calls may read R0-R3; pure branches read nothing).
-            let used_elsewhere =
-                (0..n).any(|k| k != j && !removed[k] && op_may_use(&instrs[k].op, rmul));
-            if used_elsewhere {
-                continue;
+            // The mul result must be consumed ONLY by this add: dead after `j`
+            // until `rmul` is next redefined. `between_ok` already proved no read
+            // in (i, j). A whole-function "is rmul read anywhere" scan is WRONG —
+            // the single-pass allocator REUSES `rmul` for unrelated later values,
+            // whose reads would falsely block the fusion (#257: this is exactly
+            // why fusion fired zero times on the real flat_flight, where r8 is
+            // recycled). Scan forward from j+1: a read of `rmul` before any redef
+            // means our value is still live → unsafe; a redef ends its live range
+            // → safe; an op we cannot see through (branch/call/pseudo) is treated
+            // conservatively as a possible later read → unsafe. When `rmul == rd`
+            // the add overwrites it with the (correct) result, so later reads are
+            // of the result, not the dangling product — always safe.
+            if rmul != rd {
+                let mut consumed_only_here = true;
+                for k in (j + 1)..n {
+                    if removed[k] {
+                        continue;
+                    }
+                    match reg_effect(&instrs[k].op) {
+                        Some(e) if e.uses.contains(&rmul) => {
+                            consumed_only_here = false; // still live → unsafe
+                            break;
+                        }
+                        Some(e) if e.defs.contains(&rmul) => break, // redef → dead → safe
+                        Some(_) => {}                               // unrelated → keep scanning
+                        None => {
+                            // Unmodeled (branch/call/pseudo): cannot prove the
+                            // value is dead past it → bail to stay sound.
+                            consumed_only_here = false;
+                            break;
+                        }
+                    }
+                }
+                if !consumed_only_here {
+                    continue;
+                }
             }
             rewritten[j] = Some(ArmOp::Mla {
                 rd,
@@ -1126,6 +1134,54 @@ mod tests {
         let (out, fused) = fuse_mul_add(&seq);
         assert_eq!(fused, 0, "mul result is live after the add → not fusable");
         assert_eq!(out.len(), 3);
+    }
+
+    #[test]
+    fn fuse_mul_add_fires_when_mul_result_is_reused_for_a_new_value_later() {
+        // #257 real flat_flight shape: r8 = r6*r7 is consumed ONLY by the add,
+        // then r8 is REDEFINED (movw) and reused for an unrelated value. The
+        // greedy allocator's reuse of r8 must NOT block the fusion — the old
+        // whole-function "r8 read anywhere?" scan wrongly counted the reads of
+        // the *new* r8 and fired zero times on the deployed object.
+        //   mul r8,r6,r7 ; add r2,r5,r8 ; movw r8,#980 ; mul r2,r7,r8
+        let seq = vec![
+            ins(ArmOp::Mul {
+                rd: Reg::R8,
+                rn: Reg::R6,
+                rm: Reg::R7,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R8),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R8,
+                imm16: 980,
+            }), // r8 redefined → unrelated value
+            ins(ArmOp::Mul {
+                rd: Reg::R2,
+                rn: Reg::R7,
+                rm: Reg::R8,
+            }), // reads the NEW r8
+        ];
+        let (out, fused) = fuse_mul_add(&seq);
+        assert_eq!(
+            fused, 1,
+            "reuse of r8 for a new value must not block fusion"
+        );
+        assert!(
+            out.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Mla {
+                    rd: Reg::R2,
+                    rn: Reg::R6,
+                    rm: Reg::R7,
+                    ra: Reg::R5
+                }
+            )),
+            "the op2-operand mul fuses with r5 as the accumulator"
+        );
     }
 
     #[test]

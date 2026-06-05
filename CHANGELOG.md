@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.32] - 2026-06-05
+
+**`mul`+`add` → `mla` fusion now fires on the real `flat_flight` (#257 follow-up).**
+
+The fusion shipped in v0.11.31 but fired **zero times** on gale's deployed
+`flat_flight` object (`mul=4, mla=0`, byte-identical to pre-fusion). Root cause:
+the soundness check `used_elsewhere` scanned the **whole function** for any read
+of the mul-result register — but the single-pass allocator *reuses* that register
+(`r8`) for unrelated later values, and the reads of those reincarnations falsely
+blocked every fusion.
+
+- **Fix:** replace the whole-function scan with a **precise live-range check** —
+  the mul result must be dead after the add until the register is next redefined.
+  Reads of a later, unrelated value in the same physical register no longer block
+  the fusion. (Commutativity was already handled; gale's guess was a red herring —
+  the bug was liveness precision.)
+- **Measured on the real object** (`flat_flight.loom.wasm`, `cortex-m4
+  --relocatable`): `mul 4 → 2`, `mla 0 → 2`, `170 → 168` instructions. The two
+  filter products (`gyro*980`, `accel*20`) now fuse as intended.
+- **Behavior-frozen:** all three differential fixtures result-identical
+  (`control_step` 0x00210A55, inlined+flat `flight_algo` **0x07FDF307 with the
+  fusion firing**, `div_const` 338/338).
+- Removes the now-dead `op_may_use` helper; adds a regression test pinning the
+  register-reuse pattern (`mul r8; add r2,r5,r8; movw r8,#980; mul r2,r7,r8`).
+
+**Falsification:** this release is wrong if gale's G474RE reflash shows
+`flat_flight` cycles *not* decreasing, or any fixture differential diverging from
+the hashes above.
+
 ## [0.11.31] - 2026-06-05
 
 **gale codegen pass: a load/store correctness fix + two `flat_flight` instruction-selection wins (#257/#258/#259).**
