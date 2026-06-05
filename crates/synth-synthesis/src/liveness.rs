@@ -857,6 +857,103 @@ pub fn interference_graph(instrs: &[ArmInstruction]) -> Option<InterferenceGraph
     Some(g)
 }
 
+// ============================================================================
+// Graph colouring (VCR-RA-001 — the allocation decision)
+//
+// Colouring the interference graph with `k` colours IS register allocation:
+// assign every node (value) a colour (physical register) so interfering values
+// differ. Chaitin/Briggs:
+//   1. SIMPLIFY — repeatedly remove a node of degree < k onto a stack (it can
+//      always be coloured after its neighbours, which use ≤ k−1 colours).
+//   2. SPILL    — if every remaining node has degree ≥ k, optimistically push
+//      one anyway (Briggs: it is often still colourable in practice).
+//   3. SELECT   — pop in reverse, giving each node the lowest colour not used by
+//      an already-coloured neighbour. A node that finds NO free colour is an
+//      actual spill.
+//
+// This is exactly the decision synth's single-pass allocator cannot make — it
+// hard-fails on exhaustion instead of spilling. Pure algorithm over the graph;
+// nothing here is wired into codegen.
+// ============================================================================
+
+/// Outcome of a `k`-colouring attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColorResult {
+    /// A valid assignment: every node → a colour in `0..k`, adjacent nodes
+    /// differ. (Colours map to physical registers at the wiring step.)
+    Colored(BTreeMap<Reg, usize>),
+    /// Not `k`-colourable by the heuristic; these nodes are the spill set a real
+    /// allocator would rewrite to stack slots and then re-attempt.
+    Spilled(BTreeSet<Reg>),
+}
+
+/// Chaitin/Briggs `k`-colouring of an interference graph with optimistic spill.
+/// Returns [`ColorResult::Colored`] with a full assignment, or
+/// [`ColorResult::Spilled`] with the nodes that could not be coloured.
+///
+/// `k == 0` with a non-empty graph is trivially uncolourable (every node
+/// spills). Pure function: it computes a decision, it does not mutate codegen.
+pub fn color_graph(g: &InterferenceGraph, k: usize) -> ColorResult {
+    // Working adjacency we can shrink as we simplify.
+    let mut adj: BTreeMap<Reg, BTreeSet<Reg>> =
+        g.nodes().map(|n| (n, g.neighbors(n).collect())).collect();
+    let mut stack: Vec<Reg> = Vec::with_capacity(adj.len());
+
+    // SIMPLIFY / SPILL: push every node, preferring low-degree (< k) nodes;
+    // when none qualify, optimistically push the highest-degree node.
+    while !adj.is_empty() {
+        let pick = adj
+            .iter()
+            .find(|(_, nbrs)| nbrs.len() < k)
+            .map(|(r, _)| *r)
+            .unwrap_or_else(|| {
+                // No simplifiable node → optimistic spill candidate: highest
+                // degree (ties broken by register order for determinism).
+                adj.iter()
+                    .max_by(|a, b| a.1.len().cmp(&b.1.len()).then(b.0.cmp(a.0)))
+                    .map(|(r, _)| *r)
+                    .unwrap()
+            });
+        // Remove `pick` from the working graph.
+        let nbrs = adj.remove(&pick).unwrap_or_default();
+        for n in &nbrs {
+            if let Some(s) = adj.get_mut(n) {
+                s.remove(&pick);
+            }
+        }
+        stack.push(pick);
+    }
+
+    // SELECT: pop in reverse, assign the lowest free colour using the ORIGINAL
+    // neighbourhood. A node with no free colour in 0..k is an actual spill.
+    let mut colour: BTreeMap<Reg, usize> = BTreeMap::new();
+    let mut spilled: BTreeSet<Reg> = BTreeSet::new();
+    while let Some(n) = stack.pop() {
+        let mut used = vec![false; k];
+        for nb in g.neighbors(n) {
+            if let Some(&c) = colour.get(&nb)
+                && c < k
+            {
+                used[c] = true;
+            }
+        }
+        match (0..k).find(|&c| !used[c]) {
+            Some(c) => {
+                colour.insert(n, c);
+            }
+            None => {
+                spilled.insert(n);
+            }
+        }
+    }
+
+    if spilled.is_empty() {
+        ColorResult::Colored(colour)
+    } else {
+        ColorResult::Spilled(spilled)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1583,5 +1680,79 @@ mod tests {
             None,
             "numeric-offset branches are not CFG-resolvable here"
         );
+    }
+
+    // ---- Graph colouring (color_graph) -------------------------------------
+
+    /// Assert `colour` is a valid `k`-colouring of `g`: every node has a colour
+    /// in `0..k` and no edge joins two equally-coloured nodes.
+    fn assert_valid_coloring(g: &InterferenceGraph, colour: &BTreeMap<Reg, usize>, k: usize) {
+        for n in g.nodes() {
+            let c = *colour.get(&n).expect("every node is coloured");
+            assert!(c < k, "colour in range");
+            for m in g.neighbors(n) {
+                assert_ne!(colour[&n], colour[&m], "adjacent nodes differ");
+            }
+        }
+    }
+
+    fn clique(regs: &[Reg]) -> InterferenceGraph {
+        let mut g = InterferenceGraph::default();
+        for (i, a) in regs.iter().enumerate() {
+            g.node(*a);
+            for b in &regs[i + 1..] {
+                g.add_edge(*a, *b);
+            }
+        }
+        g
+    }
+
+    #[test]
+    fn color_graph_empty_is_colored() {
+        let g = InterferenceGraph::default();
+        assert_eq!(color_graph(&g, 3), ColorResult::Colored(BTreeMap::new()));
+    }
+
+    #[test]
+    fn color_graph_colors_a_path_with_two_colors() {
+        // R0—R1—R2 (a path): 2-colourable (R0,R2 share, R1 differs).
+        let mut g = InterferenceGraph::default();
+        g.add_edge(Reg::R0, Reg::R1);
+        g.add_edge(Reg::R1, Reg::R2);
+        match color_graph(&g, 2) {
+            ColorResult::Colored(c) => assert_valid_coloring(&g, &c, 2),
+            ColorResult::Spilled(s) => panic!("path is 2-colourable, got spill {s:?}"),
+        }
+    }
+
+    #[test]
+    fn color_graph_k4_clique_spills_at_k3() {
+        // K4 needs 4 colours; with k=3 the heuristic must report a spill.
+        let g = clique(&[Reg::R0, Reg::R1, Reg::R2, Reg::R3]);
+        match color_graph(&g, 3) {
+            ColorResult::Spilled(s) => assert!(!s.is_empty(), "K4 is not 3-colourable"),
+            ColorResult::Colored(_) => panic!("K4 cannot be 3-coloured"),
+        }
+    }
+
+    #[test]
+    fn color_graph_k4_clique_colors_at_k4() {
+        // With enough colours, the same clique colours with all distinct values.
+        let g = clique(&[Reg::R0, Reg::R1, Reg::R2, Reg::R3]);
+        match color_graph(&g, 4) {
+            ColorResult::Colored(c) => {
+                assert_valid_coloring(&g, &c, 4);
+                let distinct: BTreeSet<usize> = c.values().copied().collect();
+                assert_eq!(distinct.len(), 4, "a clique uses all colours");
+            }
+            ColorResult::Spilled(s) => panic!("K4 is 4-colourable, got spill {s:?}"),
+        }
+    }
+
+    #[test]
+    fn color_graph_k0_spills_any_node() {
+        let mut g = InterferenceGraph::default();
+        g.node(Reg::R0);
+        assert!(matches!(color_graph(&g, 0), ColorResult::Spilled(_)));
     }
 }
