@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.31] - 2026-06-05
+
+**gale codegen pass: a load/store correctness fix + two `flat_flight` instruction-selection wins (#257/#258/#259).**
+
+Three gale-reported items from the wasm-cross-LTO silicon work, all behavior-frozen
+against the differential fixtures (`control_step` 0x00210A55, inlined+flat
+`flight_algo` 0x07FDF307, `div_const` 338/338 — all result-identical).
+
+- **Load/store `imm12` offset bounds check (#259, correctness).** The eight
+  thumb32 load/store immediate-offset encoders masked `offset & 0xFFF` and emitted
+  unconditionally — for `offset >= 4096` the access silently targeted the wrong
+  address. They now error (forcing register-offset addressing), closing the
+  load/store sibling of the #253/#255 silent-miscompile class. Defensive: the
+  selector already materializes large offsets, so no live breakage.
+- **`cmp`/`cmn` immediate folding (#258, lever #3).** A compare against a constant
+  bound now folds into `cmp a, #C` (positive) or `cmn a, #|C|` (negative) instead
+  of materializing the bound into a register — the int8 clamps cost 18 IT-blocks
+  vs native's 6.
+- **`mul` + `add` → `mla` fusion (#257, lever #2).** The flight filter's
+  `gyro*980 + accel*20` lowered as separate `mul` then `add`; it now fuses to a
+  single `mla`. New `ArmOp::Mla` + a liveness-driven, control-flow-sound fusion
+  pass (`fuse_mul_add`: fires only when the mul result is read solely by the add).
+  Measured: `flat_flight` text 1891 → 1819 bytes (~18 muls fused), `flight_seam`
+  still 0x07FDF307 with the fusion firing.
+
+**Falsification:** this release is wrong if a load/store with `offset >= 4096`
+emits a truncated (wrong) address instead of erroring, or if any `mul;add`
+fusion / `cmp`/`cmn` fold changes a frozen differential's result. Verified: all
+three fixtures result-identical; the fusion's measured byte delta lands only on
+the filter sites; new encoder/fusion unit tests cover the bounds + soundness
+declines.
+
 ## [0.11.30] - 2026-06-05
 
 **Self-contained native-pointer ABI: register-promote the stack-pointer global so a dissolved leaf seam runs with no host runtime (#237).**
