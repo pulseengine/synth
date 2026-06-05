@@ -102,6 +102,13 @@ pub struct DecodedModule {
     /// initializer is a linear-memory address (e.g. `$__stack_pointer`)
     /// self-contained rather than table-relative.
     pub globals: Vec<WasmGlobal>,
+    /// Function indices that populate any table via an element segment (#275).
+    /// These are the possible `call_indirect` targets — a function reached only
+    /// through the table is invisible to direct-`call` reachability, so the
+    /// whole-graph closure must treat every table entry as reachable once any
+    /// reachable function performs a `call_indirect`. Empty for modules with no
+    /// element section (every leaf/direct-call module), keeping output identical.
+    pub elem_func_indices: Vec<u32>,
 }
 
 /// Decode a WASM binary and extract functions, memory, and data segments
@@ -118,6 +125,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // arg count (indexed by full function index: imports first, then locals).
     let mut type_arg_counts: Vec<u32> = Vec::new();
     let mut func_arg_counts: Vec<u32> = Vec::new();
+    let mut elem_func_indices: Vec<u32> = Vec::new();
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
@@ -222,6 +230,37 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     }
                 }
             }
+            Payload::ElementSection(reader) => {
+                // #275: collect every function index that initializes a table.
+                // These are the `call_indirect` targets the direct-call closure
+                // cannot see; `reachable_from_exports` unions them in when a
+                // reachable function does a `call_indirect`. Both element forms
+                // are handled: a flat function-index list, and the const-expr
+                // form whose `ref.func` entries name the functions.
+                for elem in reader {
+                    let elem = elem.context("Failed to parse element segment")?;
+                    match elem.items {
+                        wasmparser::ElementItems::Functions(funcs) => {
+                            for f in funcs {
+                                elem_func_indices
+                                    .push(f.context("Failed to parse element func index")?);
+                            }
+                        }
+                        wasmparser::ElementItems::Expressions(_, exprs) => {
+                            for expr in exprs {
+                                let expr = expr.context("Failed to parse element expr")?;
+                                for op in expr.get_operators_reader() {
+                                    if let wasmparser::Operator::RefFunc { function_index } =
+                                        op.context("Failed to parse element op")?
+                                    {
+                                        elem_func_indices.push(function_index);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             Payload::ExportSection(exports) => {
                 for export in exports {
                     let export = export.context("Failed to parse export")?;
@@ -255,6 +294,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         func_arg_counts,
         type_arg_counts,
         globals,
+        elem_func_indices,
     })
 }
 

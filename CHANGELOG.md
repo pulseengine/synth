@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.33] - 2026-06-05
+
+**Whole-reachable-graph closure now follows `call_indirect` into table functions
+(#275, foundation — see the honest scope note).**
+
+`--all-exports` compiled the closure of the exports over **direct** `call`
+(#235), but a function reached only through `call_indirect` (a table entry) was
+invisible to that closure and left out of the ELF — so a module that dispatches
+through a function table is not self-contained.
+
+- **Decoder:** parse the Element section (`elem_func_indices` on `DecodedModule`)
+  — the function indices that populate the table, i.e. the possible
+  `call_indirect` targets. Empty for modules with no element section, so their
+  output is byte-identical.
+- **Closure:** `reachable_from_exports` now unions in every table function once a
+  reachable function performs a `call_indirect` (a sound over-approximation —
+  any table entry could be the dynamic callee), then keeps following their direct
+  calls transitively. Verified on a minimal indirect-call module: the
+  call-only-via-table target is now compiled into the object (was absent).
+- **Behavior-frozen:** the three differential fixtures stay result-identical
+  (`control_step` 0x00210A55, `flight_seam` 0x07FDF307, `div_const` 338/338) —
+  they use no element section, so the closure is unchanged.
+
+**Scope / known remaining (not in this release).** This lands the *reachability*
+half. `call_indirect` **dispatch** in the `select_with_stack` (`--all-exports`)
+path is still incomplete: the indirect call is currently dropped during
+selection, and the encoder's table-base expansion uses R11 — which collides with
+synth's R11 = linear-memory-base ABI. So a module using indirect dispatch now has
+its table functions *present* in the ELF but the indirect call itself is not yet
+wired end-to-end. Modules using only **direct** calls are fully self-contained.
+Tracked for a follow-up.
+
+**Falsification:** wrong if a module using only direct `call` still omits a
+reachable internal callee, or if any fixture differential diverges.
+
 ## [0.11.32] - 2026-06-05
 
 **`mul`+`add` → `mla` fusion now fires on the real `flat_flight` (#257 follow-up).**
