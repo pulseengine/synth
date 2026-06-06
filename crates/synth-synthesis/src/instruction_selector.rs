@@ -6991,7 +6991,25 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                    // #209/VCR-SEL-002 — in-place select. `val2` is consumed by
+                    // this op, so when it is a free temp (not a live param reg,
+                    // and distinct from cond/val1) we reuse ITS register as `dst`
+                    // and keep its value via the EQ fall-through — only ONE
+                    // conditional move is needed (cond != 0 overrides with val1).
+                    // This is exactly what native emits for a clamp `(x>k)?k:x`
+                    // and removes one `SelectMove` per select, the dominant cost
+                    // in flat_flight's saturation chain. The three guards rule out
+                    // the cases where overwriting val2's register is observable:
+                    //   - live param  → #193 param-clobber class
+                    //   - val2==cond  → cmp consumed cond, but a later read can't
+                    //   - val2==val1  → degenerate; fresh dst keeps it simple
+                    // Falls back to the fresh-dst two-move form otherwise.
+                    let in_place = !live_params.contains(&val2) && val2 != cond_reg && val2 != val1;
+                    let dst = if in_place {
+                        val2
+                    } else {
+                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                    };
 
                     // CMP cond, #0 — sets the flags FIRST, before anything writes
                     // `dst`. The previous lowering put a `MOV dst, val1` between
@@ -6999,10 +7017,12 @@ impl InstructionSelector {
                     // `MOVS` for low registers and SETS the flags, clobbering the
                     // comparison whenever the allocator picked a low `dst` — which
                     // mis-computed gale's br_table index so the binary-semaphore
-                    // WAKE path never ran. Both `SelectMove`s below are `IT;MOV`
+                    // WAKE path never ran. The `SelectMove`s below are `IT;MOV`
                     // (the flag-preserving 0x46xx MOV), so neither disturbs the
                     // flags and exactly one fires — correct under any aliasing of
                     // dst with cond/val1/val2 (cond is already consumed by CMP).
+                    // In the in-place case there is NO instruction between the CMP
+                    // and the conditional move, so the flags are likewise intact.
                     instructions.push(ArmInstruction {
                         op: ArmOp::Cmp {
                             rn: cond_reg,
@@ -7023,16 +7043,19 @@ impl InstructionSelector {
                     });
                     cf.add_instruction();
 
-                    // cond == 0 → dst = val2
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::SelectMove {
-                            rd: dst,
-                            rm: val2,
-                            cond: Condition::EQ,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // cond == 0 → dst = val2. Skipped when dst already IS val2
+                    // (in-place): the EQ branch is a no-op move on itself.
+                    if !in_place {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::SelectMove {
+                                rd: dst,
+                                rm: val2,
+                                cond: Condition::EQ,
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -10017,12 +10040,15 @@ mod tests {
         });
         assert!(has_cmp, "Select should emit CMP for condition");
 
-        // Should contain SelectMove for conditional assignment
+        // Should contain the NE override SelectMove (cond != 0 -> dst = val1).
+        // The in-place select (#209/VCR-SEL-002) reuses val2's register as dst
+        // and elides the EQ "keep val2" move, so NE is the form present in both
+        // the in-place and the fresh-dst fallback lowerings.
         let has_select_move = arm_instrs.iter().any(|i| {
             matches!(
                 &i.op,
                 ArmOp::SelectMove {
-                    cond: Condition::EQ,
+                    cond: Condition::NE,
                     ..
                 }
             )
@@ -11562,17 +11588,64 @@ mod tests {
         });
         assert!(has_cmp, "Select should emit CMP condition, #0");
 
-        // Should have SelectMove EQ (conditional override)
+        // Should have the NE override SelectMove. With in-place select
+        // (#209/VCR-SEL-002), val2 (the const-20 temp) is reused as dst and the
+        // EQ "keep" move is elided; the NE override is present in both forms.
         let has_select_move = instrs.iter().any(|i| {
             matches!(
                 &i.op,
                 ArmOp::SelectMove {
-                    cond: Condition::EQ,
+                    cond: Condition::NE,
                     ..
                 }
             )
         });
-        assert!(has_select_move, "Select should emit SelectMove with EQ");
+        assert!(has_select_move, "Select should emit SelectMove with NE");
+    }
+
+    #[test]
+    fn test_select_in_place_elides_keep_move_209() {
+        // #209/VCR-SEL-002: when val2 is a free temp (here the const-20 temp,
+        // not a live param, distinct from cond/val1), the select reuses val2's
+        // register as dst and keeps it via the EQ fall-through — so exactly ONE
+        // SelectMove (the NE override) is emitted, not two. Result-identity is
+        // verified on-target by the flight_seam / control_step differentials;
+        // this pins the structural win (one fewer IT;MOV per qualifying select).
+        let mut selector = fresh_selector();
+        let wasm_ops = vec![
+            WasmOp::I32Const(10), // val1
+            WasmOp::I32Const(20), // val2 — reusable temp
+            WasmOp::I32Const(1),  // cond
+            WasmOp::Select,
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        let ne = instrs
+            .iter()
+            .filter(|i| {
+                matches!(
+                    &i.op,
+                    ArmOp::SelectMove {
+                        cond: Condition::NE,
+                        ..
+                    }
+                )
+            })
+            .count();
+        let eq = instrs
+            .iter()
+            .filter(|i| {
+                matches!(
+                    &i.op,
+                    ArmOp::SelectMove {
+                        cond: Condition::EQ,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(ne, 1, "in-place select emits exactly one NE override move");
+        assert_eq!(eq, 0, "in-place select elides the EQ keep-val2 move");
     }
 
     #[test]
@@ -11624,12 +11697,14 @@ mod tests {
             "Should have 1 STR to global 2 at [R9, #8]"
         );
 
-        // Should have select logic
+        // Should have select logic — the NE override is emitted in both the
+        // in-place (#209/VCR-SEL-002) and fresh-dst forms (the EQ "keep val2"
+        // move is what in-place elides when val2's register is reused as dst).
         let has_select_move = instrs.iter().any(|i| {
             matches!(
                 &i.op,
                 ArmOp::SelectMove {
-                    cond: Condition::EQ,
+                    cond: Condition::NE,
                     ..
                 }
             )
