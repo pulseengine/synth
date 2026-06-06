@@ -272,3 +272,65 @@ artifacts:
         At least one previously load-bearing greedy-fix is removed with the full
         differential bit-identical and cycles equal-or-better; no new cost-gate
         introduced.
+
+  # ---------------------------------------------------------------------------
+  # Parallel ROI tracks (measured 2026-06-06): the allocator (VCR-RA-001) is the
+  # north-star but the const-remat is partly FORCED by the 9-register pool, so
+  # its measured win is modest. gale's #209 decomposition put the BIGGEST single
+  # chunk in clamp lowering (18 IT-blocks vs native 6), and a +1-register pool
+  # (free R10 when bounds-off) is a cheap pressure multiplier. B + C run in
+  # PARALLEL with A — disjoint code, gated by RESULT-identity (flight_seam
+  # 0x07FDF307) + measured delta, not byte-identity, so no fixture-freeze
+  # conflict.
+  # ---------------------------------------------------------------------------
+
+  - id: VCR-SEL-002
+    type: sw-req
+    title: Tighter int8-saturation (clamp) lowering — biggest measured lever (track B)
+    description: >
+      The int8 control saturations `if(x>127)x=127; if(x<-127)x=-127` (clamp to
+      [-127,127]) lower to 18 IT-blocks on flat_flight vs native gcc's 6 — gale's
+      #209 decomposition's single biggest chunk (~the middle of the 255->103
+      gap). ARM SSAT does NOT apply ([-127,127] != SSAT's [-128,127]); the lever
+      is a tighter Select/conditional-move lowering of the saturation idiom
+      (fewer moves per clamp, reuse a resident bound) emitted by the selector.
+      Independent of the allocator (different code region); composes with it.
+    status: proposed
+    tags: [codegen, selector, instruction-selection, clamp, track-b, perf]
+    links:
+      - type: derives-from
+        target: VCR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        flat_flight IT-block count strictly decreases; all three differential
+        fixtures RESULT-identical (control_step 0x00210A55 / flight_seam
+        0x07FDF307 / div_const 338/338); gale confirms on-target cycles
+        equal-or-better on the five frozen benches; flag-gated until confirmed.
+
+  - id: VCR-RA-002
+    type: sw-req
+    title: Conditional register pool — free R10 when bounds-checking is off (track C)
+    description: >
+      R10 is reserved unconditionally ("memory size for bounds checks") but used
+      ONLY in BoundsCheckConfig::{Software,Mpu,Masking} (verified:
+      instruction_selector.rs ~3952). In BoundsCheckConfig::None it is a wasted
+      reserve — a cheap +1 allocatable register (pool 9 -> 10) that directly
+      relieves the const-remat/spill pressure the 9-register limit forces (the
+      9-vs-12 gap to native). Make R10 allocatable iff bounds-checking is off.
+      Composes with the allocator (which reads the pool size from config).
+    status: proposed
+    tags: [codegen, register-allocation, pool, reserved-registers, track-c, perf]
+    links:
+      - type: derives-from
+        target: VCR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        With bounds-checking off, R10 is allocatable and flat_flight spill count
+        decreases; all three differentials RESULT-identical; with bounds-checking
+        ON, R10 stays reserved and bounds-mode codegen is byte-identical; gale
+        confirms on-target equal-or-better. Deliberate fixture re-freeze (bytes
+        change, result preserved) is part of landing it, not a violation.
