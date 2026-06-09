@@ -120,6 +120,13 @@ artifacts:
     links:
       - type: derives-from
         target: VCR-001
+      # Bootstrap-verification wiring: the SSA allocator is the structural
+      # satisfaction of the two STPA code-generation constraints that the
+      # single-pass allocator violates by construction (H-CODE-1).
+      - type: constraint-satisfies
+        target: SC-CODE-1
+      - type: constraint-satisfies
+        target: SC-CODE-2
     fields:
       req-type: functional
       priority: should

@@ -1,0 +1,139 @@
+# VCR Tool-Qualification Roots — multi-standard top-of-V
+#
+# System: synth — WebAssembly→ARM/RISC-V AOT compiler, treated as a SOFTWARE
+#   TOOL whose output (machine code) is incorporated into safety-related
+#   software. Cover targets i.MX RT1062 / STM32H743.
+#
+# WHY THIS FILE EXISTS (bootstrap-verification seed)
+#   The verified-codegen program (VCR-*, verified-codegen-roadmap.yaml) plans
+#   the structural cure for the recurring codegen bug class. What was MISSING
+#   was the top-of-V tool-qualification root: a stated tool classification and
+#   the evidence strategy that discharges it. This file seeds that root so the
+#   whole VCR program traces UP to a defensible certification claim, and the
+#   STPA code-generation hazards (H-CODE-*) trace to the program that
+#   eliminates them by construction rather than by accreting point-fixes.
+#
+# STANDARDS NOTE (honest tool-capability constraint)
+#   The four target standards are NOT separately loadable schemas in this rivet
+#   install (loaded: common / stpa / aspice / stpa-aspice.bridge / ai-
+#   provenance). They are therefore expressed here as CONTENT — a mapping of the
+#   VCR evidence to each standard's tool-qualification objectives — not as four
+#   schema declarations. Captured as tool friction for rivet (see
+#   report-tool-friction): a project targeting DO-178C/ISO 26262/IEC 61508/
+#   EN 50128 cannot today declare those presets in rivet.yaml.
+#
+# Format: rivet generic-yaml
+
+artifacts:
+
+  # ===========================================================================
+  # Tool classification — the integrity-level decision (bootstrap step 1)
+  # ===========================================================================
+  - id: VCR-TQ-001
+    type: system-req
+    title: >
+      synth codegen requires tool qualification across DO-178C / ISO 26262 /
+      IEC 61508 / EN 50128 (highest tool-impact class)
+    description: >
+      synth is a development TOOL whose output (ARM Thumb-2 / RISC-V RV32IMAC
+      machine code) is incorporated into safety-related software with NO
+      independent downstream verification of the generated binary beyond
+      synth's own evidence. Under every target standard this places synth in
+      the highest tool-impact class, REQUIRING qualification or an equivalent
+      tool-confidence argument:
+
+        - DO-178C §12.2 + DO-330: the tool can INSERT an error into the
+          airborne software and its output is not independently verified ->
+          tool qualification at a TQL set by the Criteria; for a code generator
+          whose output is not separately verified this is Criteria 1
+          (most rigorous).
+
+        - ISO 26262-8 §11: a tool error can violate a safety requirement
+          (Tool Impact TI2) and the confidence that such a malfunction is
+          prevented or detected is low without measures (Tool error Detection
+          TD3) -> Tool Confidence Level TCL3 -> qualification required.
+
+        - IEC 61508-3 §7.4.4: an off-line support tool whose output contributes
+          directly to the executable safety function is class T3 -> evidence of
+          tool correctness required.
+
+        - EN 50128 §6.5.4 + Table A.6: a tool that can introduce undetected
+          faults into the executable is class T3 -> a validated tool / proven-
+          in-use / diverse-evidence argument is required.
+
+      The conclusion is uniform across all four: synth-as-shipped cannot be
+      taken on trust; its correctness must be argued with evidence. The VCR
+      program (VCR-001) is that evidence strategy.
+    status: proposed
+    tags: [tool-qualification, do-178c, iso-26262, iec-61508, en-50128, vcr, bootstrap, release-v0.12]
+    links:
+      # A system-level tool-qualification requirement traces to the stakeholder
+      # need for a qualifiable compiler (BR-001 "Safety-critical qualification");
+      # the VCR program (VCR-001) is the sibling system-req that realizes it.
+      - type: derives-from
+        target: BR-001
+      - type: mitigates
+        target: H-CODE-1
+      - type: mitigates
+        target: H-CODE-3
+    fields:
+      req-type: safety
+      priority: must
+      verification-criteria: >
+        For each target standard, a tool-qualification / tool-confidence
+        argument exists that cites concrete synth evidence (formal proofs,
+        differential oracle, frozen-fixture result-identity) and is accepted at
+        the stated class (TQL/TCL3/T3). Kill-criterion: if any standard's
+        assessor rejects the argument as process-only with no product evidence,
+        VCR-TQ-002's evidence pillars are insufficient and must be strengthened.
+
+  # ===========================================================================
+  # Evidence strategy — how the VCR tracks discharge the qualification
+  # ===========================================================================
+  - id: VCR-TQ-002
+    type: sw-req
+    title: VCR evidence pillars discharge tool qualification by construction
+    description: >
+      The qualification argument rests on three product-evidence pillars, each
+      a VCR track, mapped to the standards' acceptable means:
+
+        1. FORMAL LOWERING PROOF (VCR-SEL-001 + VCR-ISA-001 + VCR-WASM-001):
+           verified-source -> verified-lowering -> verified-target, discharged
+           in Rocq against authoritative semantics (WasmCert-Coq source, Sail
+           ISA target). This is the DO-330 "verified tool" / EN 50128 "proven
+           by formal methods" / IEC 61508 Route 2s (formal) tier — the strongest
+           qualification evidence, and the means that lets a code generator be
+           trusted without independently verifying every output.
+
+        2. COVERAGE-GUIDED DIFFERENTIAL ORACLE (VCR-ORACLE-001): the empirical
+           witness that the hand-written ARM/RISC-V model matches silicon —
+           i.e. it validates the PROOF's assumptions. This is the ISO 26262 TD
+           (tool-error-detection) measure that lowers TCL, and the EN 50128 /
+           IEC 61508 "validation by testing" tier for the parts not yet proven.
+
+        3. FROZEN-FIXTURE RESULT-IDENTITY GATE (control_step 0x00210A55,
+           flight_algo 0x07FDF307, divseam 338/338): behavioral-regression
+           evidence that every change preserves established behavior — the
+           configuration-controlled baseline a tool-operational-requirements
+           argument needs.
+
+      Together the pillars are the defense-in-depth the standards reward:
+      proof where it reaches, validated testing where it does not, and a frozen
+      baseline that makes every increment auditable.
+    status: proposed
+    tags: [tool-qualification, evidence, formal, oracle, vcr, bootstrap, release-v0.12]
+    links:
+      - type: derives-from
+        target: VCR-TQ-001
+      - type: refines
+        target: VCR-001
+    fields:
+      req-type: safety
+      priority: must
+      verification-criteria: >
+        Each pillar has a concrete realized artifact cited in the qualification
+        argument: (1) >=1 op-class lowering Rocq-discharged end-to-end against
+        the Sail/WasmCert anchors; (2) the oracle reports rule-coverage and
+        flags any silicon-observed op absent from the model; (3) the frozen
+        fixtures remain bit-identical across the program. Kill-criterion: a
+        pillar with no realized artifact is a process promise, not evidence.
