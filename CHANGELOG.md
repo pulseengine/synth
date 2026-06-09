@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.35] - 2026-06-09
+
+**In-place select + spill-cost ranking — the first VCR codegen-quality release
+(#209/#242, VCR-SEL-002).**
+
+- **In-place select (#283):** the stack selector's `Select` lowering reuses
+  `val2`'s register as the destination when `val2` is a consumed temp (not a
+  live param, distinct from cond/val1), eliding the `EQ` "keep val2"
+  conditional move — one `IT;MOV` per qualifying select instead of two, which
+  is what native emits for a clamp `(x>k)?k:x`. Falls back to the fresh-dst
+  two-move form when the guards don't hold (#193 param-clobber class).
+  Measured `.text`: control_step 378→354 B (−6.3 %), flight_seam inlined
+  1058→1020 B (−3.6 %), flat 1294→1244 B (−3.9 %). All four differential
+  fixtures RESULT-identical (control_step 13/13 `0x00210A55`, flight_seam
+  inlined+flat `0x07FDF307`, div_const 338/338).
+- **Spill-cost ranking (#285, VCR-RA-001 wiring step 2):** the Chaitin/Briggs
+  colourer picks optimistic spill candidates by cost/degree (cost = def+use
+  occurrence count) instead of degree-only; the uncosted API reproduces the
+  historic choice exactly. Pure and unwired — fixture ELFs bit-identical.
+- **Allocator substrate (#279–#281, unwired/flag-gated):** SelectMove/Select
+  modeled in `reg_effect`; allocator driver + `SYNTH_SHADOW_ALLOC` shadow
+  pass; const-CSE rematerialization-avoidance behind `SYNTH_CONST_CSE`.
+- **VCR traceability (#282, #284):** VCR-SEL-002/VCR-RA-002 filed;
+  tool-qualification top-of-V (VCR-TQ-001/002: DO-178C/ISO 26262/IEC 61508/
+  EN 50128 classification + evidence pillars); release-plan tags
+  (`release-vX.Y`, queryable via `rivet list --filter`).
+
+Falsification: this release is wrong if any module produces a different
+*result* than wasmtime where `val2`'s register was still needed after a select
+— watched by the four differentials and gale's on-target baselines
+(filter_axis 37 / control_step 158 / flat_flight 255 / controller_step 162).
+
 ## [0.11.34] - 2026-06-05
 
 **Un-wire the default-on `mul`+`add`→`mla` fusion — it regresses on-target until
