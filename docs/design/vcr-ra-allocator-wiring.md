@@ -97,3 +97,62 @@ Coalescing, live-range splitting, and rematerialisation are regalloc2-class
 refinements deferred until the basic spill-capable allocator is wired and proven.
 The first win is simply: **stop hard-failing**, so the cost-gates become
 revert-able.
+
+## Step 3 design decision (settled 2026-06-09, before any code)
+
+Step 3 splits into two pieces with different power and different risk. They are
+sequenced — 3a first, because it is bounded and delivers the measured wins; 3b
+second, because only it can meet the acceptance criterion.
+
+### 3a. Post-pass range re-allocation (bounded; lands first)
+
+Re-allocate the **greedy physical stream** after selection: split it into value
+ranges (`straight_line_value_ranges` — already landed), build interference over
+*ranges* instead of physical registers, colour with the costed Chaitin pass
+(step 2), and rewrite each range to its assigned register.
+
+- **What it wins (already measured):** removes the spurious spills (flat_flight
+  peak value-pressure = 9 = pool → 17 spills eliminable) and restores constant
+  residency, which is what lets `apply_const_cse` fire >0 times.
+- **What it cannot win:** the hard-fail sites. The selector fails *during
+  emission*, before any post-pass runs — so 3a does not remove the exhaustion
+  hard-fail and does not unlock the cost-gate reverts.
+- **Machinery needed (no-regret — 3b consumes the same pieces):**
+  `rename_def` (the def-side sibling of `rename_use`), `range_interference`
+  (ranges → adjacency over vreg ids; ranges interfere iff
+  `a.def < b.last_use && b.def < a.last_use`, plus co-defined ranges — the
+  dies-at-birth boundary case is deliberately non-interfering so a consumer can
+  reuse its operand's register, the in-place-select pattern), a Chaitin core
+  generic over node id (the step-2 colourer refactored from `Reg` to any
+  `Ord + Copy`), and `apply_range_coloring` (replay ranges, rename uses from the
+  open-range map then defs from the at-this-index map).
+- **Scope guard:** leaf, straight-line, fully-modeled segments only — the same
+  scope every analysis in `liveness.rs` already declines outside of. Flag-gated
+  default-off; bounds: bit-identical fixtures when off, measured spill/movw
+  delta when on.
+
+### 3b. Selector-side virtual temps (the hard-fail remover; lands second)
+
+Teach `select_with_stack` to emit **virtual temp ids past the physical pool**
+instead of hard-failing in `alloc_temp_safe`: when all of R0–R8 are pinned by
+live stack values, hand out a virtual id (representation: keep `next_temp: u8`
+but let indices ≥ 9 denote virtuals — no `Reg` enum change; the virtual ids
+exist only between selection and allocation, and 3a's allocator+rewrite maps
+them onto physical registers, spilling per step 4 where k-colouring fails).
+Encoding is unreachable for virtual ids by construction: the allocate+rewrite
+pass runs before the encoder and either assigns physical registers or spills.
+
+- This — and only this — removes the exhaustion hard-fail, which is the
+  VCR-RA-001 acceptance criterion ("a previously load-bearing greedy fix
+  becomes revertable").
+- Risk containment: virtual ids are emitted **only on the would-have-failed
+  path** at first (the existing 9-register fast path stays byte-identical for
+  every function that never exhausts), so all frozen fixtures are untouched by
+  construction until the flag flips wider.
+
+### Why not pure selector-side vregs from the start
+
+Rewriting the selector to emit vregs for *every* temp invalidates the byte-level
+behavior of every function at once — the opposite of the per-function,
+differential-gated migration this plan requires. 3a + exhaustion-only-3b keeps
+the frozen world the default at every merge.
