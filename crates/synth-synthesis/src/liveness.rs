@@ -961,17 +961,41 @@ pub fn color_graph_precolored_costed(
     precolored: &BTreeMap<Reg, usize>,
     costs: &BTreeMap<Reg, usize>,
 ) -> ColorResult {
-    let cost_of = |r: &Reg| costs.get(r).copied().unwrap_or(1);
+    let full: BTreeMap<Reg, BTreeSet<Reg>> =
+        g.nodes().map(|n| (n, g.neighbors(n).collect())).collect();
+    let (colour, spilled) = chaitin_core(&full, k, precolored, costs);
+    if spilled.is_empty() {
+        ColorResult::Colored(colour)
+    } else {
+        ColorResult::Spilled(spilled)
+    }
+}
+
+/// The Chaitin/Briggs simplify→select core, generic over the node identity —
+/// `Reg` for the physical-register graph, `usize` vreg ids for value-range
+/// graphs (VCR-RA-001 step 3a). `full` is the complete adjacency: every node
+/// (including precoloured ones) with its full neighbour set. Returns
+/// `(colouring, spilled)`; an empty spill set means a complete colouring.
+/// Pure function — identical algorithm and tie-breaks as the historic
+/// `Reg`-typed implementation (a type-parameter refactor, not a behavior
+/// change).
+fn chaitin_core<N: Ord + Copy>(
+    full: &BTreeMap<N, BTreeSet<N>>,
+    k: usize,
+    precolored: &BTreeMap<N, usize>,
+    costs: &BTreeMap<N, usize>,
+) -> (BTreeMap<N, usize>, BTreeSet<N>) {
+    let cost_of = |r: &N| costs.get(r).copied().unwrap_or(1);
     // Working adjacency over the FREE (non-precoloured) nodes only; precoloured
     // nodes are fixed, so they never enter the simplify worklist — but they
-    // remain in every free node's neighbourhood (via `g.neighbors`) so they
-    // still constrain colouring.
-    let mut adj: BTreeMap<Reg, BTreeSet<Reg>> = g
-        .nodes()
-        .filter(|n| !precolored.contains_key(n))
-        .map(|n| (n, g.neighbors(n).collect()))
+    // remain in every free node's neighbourhood (via `full`) so they still
+    // constrain colouring.
+    let mut adj: BTreeMap<N, BTreeSet<N>> = full
+        .iter()
+        .filter(|(n, _)| !precolored.contains_key(n))
+        .map(|(n, nbrs)| (*n, nbrs.clone()))
         .collect();
-    let mut stack: Vec<Reg> = Vec::with_capacity(adj.len());
+    let mut stack: Vec<N> = Vec::with_capacity(adj.len());
 
     // SIMPLIFY / SPILL: push every free node, preferring low-degree (< k) nodes;
     // when none qualify, optimistically push the cheapest-to-spill node.
@@ -982,8 +1006,8 @@ pub fn color_graph_precolored_costed(
             .map(|(r, _)| *r)
             .unwrap_or_else(|| {
                 // No simplifiable node → optimistic spill candidate: minimise
-                // cost/degree (Chaitin), ties to the smallest register. The
-                // comparator never returns Equal for distinct registers, so the
+                // cost/degree (Chaitin), ties to the smallest node id. The
+                // comparator never returns Equal for distinct nodes, so the
                 // pick is deterministic regardless of iteration order.
                 adj.iter()
                     .min_by(|a, b| {
@@ -1008,15 +1032,17 @@ pub fn color_graph_precolored_costed(
     // neighbourhood. Seeded with the precoloured pins, so a free node avoids
     // both its precoloured and its already-selected neighbours. A node with no
     // free colour in 0..k is an actual spill.
-    let mut colour: BTreeMap<Reg, usize> = precolored.clone();
-    let mut spilled: BTreeSet<Reg> = BTreeSet::new();
+    let mut colour: BTreeMap<N, usize> = precolored.clone();
+    let mut spilled: BTreeSet<N> = BTreeSet::new();
     while let Some(n) = stack.pop() {
         let mut used = vec![false; k];
-        for nb in g.neighbors(n) {
-            if let Some(&c) = colour.get(&nb)
-                && c < k
-            {
-                used[c] = true;
+        if let Some(nbrs) = full.get(&n) {
+            for nb in nbrs {
+                if let Some(&c) = colour.get(nb)
+                    && c < k
+                {
+                    used[c] = true;
+                }
             }
         }
         match (0..k).find(|&c| !used[c]) {
@@ -1029,11 +1055,7 @@ pub fn color_graph_precolored_costed(
         }
     }
 
-    if spilled.is_empty() {
-        ColorResult::Colored(colour)
-    } else {
-        ColorResult::Spilled(spilled)
-    }
+    (colour, spilled)
 }
 
 // ============================================================================
@@ -1176,6 +1198,57 @@ pub fn straight_line_value_ranges(instrs: &[ArmInstruction]) -> Option<Vec<Value
         }
     }
     Some(ranges)
+}
+
+/// Interference over **value ranges** (vreg ids) — VCR-RA-001 step 3a. Two
+/// ranges interfere iff they are simultaneously live:
+///
+/// ```text
+/// a.def < b.last_use && b.def < a.last_use   (strict on both sides)
+///   || a.def == b.def                        (co-defined / both inputs)
+/// ```
+///
+/// The strict comparison makes the dies-at-birth boundary deliberately
+/// NON-interfering: a value whose last use is the instruction defining `b`
+/// is consumed as `b` is born, so `b` may reuse its register — the same
+/// convention as the physical `interference_graph` ("defs interfere with
+/// everything live *after*") and the in-place-select pattern. Co-defined
+/// ranges (`Umull` rdlo/rdhi) and segment inputs (both `def == 0`, live from
+/// the segment start) always interfere. An input consumed by instruction 0 is
+/// conservatively kept interfering with instruction-0 defs (both have
+/// `def == 0`, indistinguishable in this encoding) — sound, at worst one
+/// wasted register on that corner. Returns the complete adjacency (isolated
+/// ranges present with empty neighbour sets), ready for [`color_ranges`].
+pub fn range_interference(ranges: &[ValueRange]) -> BTreeMap<usize, BTreeSet<usize>> {
+    let mut adj: BTreeMap<usize, BTreeSet<usize>> =
+        ranges.iter().map(|r| (r.vreg, BTreeSet::new())).collect();
+    for (i, a) in ranges.iter().enumerate() {
+        for b in &ranges[i + 1..] {
+            let overlap = (a.def < b.last_use && b.def < a.last_use) || a.def == b.def;
+            if overlap {
+                adj.get_mut(&a.vreg).unwrap().insert(b.vreg);
+                adj.get_mut(&b.vreg).unwrap().insert(a.vreg);
+            }
+        }
+    }
+    adj
+}
+
+/// `k`-colour a value-range interference graph (from [`range_interference`])
+/// with precoloured pins and Chaitin spill-cost ranking — the value-range
+/// counterpart of [`color_graph_precolored_costed`], sharing the same core.
+/// Returns `(colouring, spilled)`: vreg id → colour (an allocatable-pool
+/// index), and the ranges that could not be coloured (the spill candidates a
+/// spill-code-insertion pass materialises). Empty spill set = complete
+/// colouring. Pins are for ABI/architectural constraints: segment inputs stay
+/// in their incoming register, live-outs in their outgoing one. Pure function.
+pub fn color_ranges(
+    adj: &BTreeMap<usize, BTreeSet<usize>>,
+    k: usize,
+    precolored: &BTreeMap<usize, usize>,
+    costs: &BTreeMap<usize, usize>,
+) -> (BTreeMap<usize, usize>, BTreeSet<usize>) {
+    chaitin_core(adj, k, precolored, costs)
 }
 
 /// Peak **virtual-register pressure** of a straight-line segment: the maximum
@@ -2605,6 +2678,171 @@ mod tests {
         assert_eq!(c.get(&Reg::R0), Some(&4));
         assert_eq!(c.get(&Reg::R1), Some(&2));
         assert_eq!(c.get(&Reg::R2), Some(&1));
+    }
+
+    #[test]
+    fn range_interference_overlap_and_dies_at_birth() {
+        // movw r0,#1        → A = r0[0..1]
+        // add  r1, r0, r0   → A consumed AT 1 as B = r1[1..2] is born
+        // mov  r2, r1       → B consumed AT 2 as C = r2[2..2] is born
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        let adj = range_interference(&ranges);
+        // Dies-at-birth: each value is consumed exactly as its successor is
+        // born, so NO pair interferes — the whole chain colours with k=1,
+        // which is exactly the register reuse the greedy selector performs.
+        let edges: usize = adj.values().map(|s| s.len()).sum();
+        assert_eq!(edges, 0, "a pure consume-chain has no interference");
+        let (coloring, spilled) = color_ranges(&adj, 1, &BTreeMap::new(), &BTreeMap::new());
+        assert!(spilled.is_empty());
+        assert_eq!(coloring.len(), ranges.len());
+    }
+
+    #[test]
+    fn range_interference_simultaneously_live_values_interfere() {
+        // movw r0,#1 ; movw r1,#2 ; add r2,r0,r1
+        // A = r0[0..2] and B = r1[1..2]: B is defined at 1 while A is still
+        // live (read at 2) → they interfere and need 2 colours.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 2,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        let adj = range_interference(&ranges);
+        let a = ranges.iter().find(|r| r.reg == Reg::R0).unwrap().vreg;
+        let b = ranges.iter().find(|r| r.reg == Reg::R1).unwrap().vreg;
+        assert!(adj[&a].contains(&b), "simultaneously-live values interfere");
+        // k=1 must spill; k=2 must colour (C reuses a dead register's colour).
+        let (_, spilled1) = color_ranges(&adj, 1, &BTreeMap::new(), &BTreeMap::new());
+        assert!(!spilled1.is_empty());
+        let (coloring2, spilled2) = color_ranges(&adj, 2, &BTreeMap::new(), &BTreeMap::new());
+        assert!(spilled2.is_empty());
+        // Validity: no interfering pair shares a colour.
+        for (n, nbrs) in &adj {
+            for m in nbrs {
+                assert_ne!(coloring2[n], coloring2[m], "{n} vs {m} share a colour");
+            }
+        }
+    }
+
+    #[test]
+    fn range_coloring_eliminates_the_spurious_physical_spill() {
+        // The VCR-RA-001 motivation in miniature. The greedy selector reuses
+        // ONE physical register (r0) for three sequential values:
+        //   movw r0,#1 ; mov r3,r0 ; movw r0,#2 ; mov r4,r0 ; movw r0,#3 ; mov r5,r0
+        // plus r3/r4/r5 all read at the end → r3,r4,r5 simultaneously live.
+        // Physical names: r0 is one overloaded node. Value ranges: r0 splits
+        // into THREE independent ranges (each dies at its mov), so the true
+        // pressure is 4 (three accumulators + one in-flight const), NOT the
+        // 6 distinct values. Ranges must colour at k=4.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R3,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 2,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R4,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 3,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R5,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R6,
+                rn: Reg::R3,
+                op2: Operand2::Reg(Reg::R4),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R6,
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        // r0 split into three distinct ranges — the de-overloading itself.
+        let r0_ranges = ranges.iter().filter(|r| r.reg == Reg::R0).count();
+        assert_eq!(r0_ranges, 3, "r0 reuse splits into three value ranges");
+        let adj = range_interference(&ranges);
+        let (coloring, spilled) = color_ranges(&adj, 4, &BTreeMap::new(), &BTreeMap::new());
+        assert!(
+            spilled.is_empty(),
+            "true value pressure is 4 — ranges colour where physical names overload"
+        );
+        for (n, nbrs) in &adj {
+            for m in nbrs {
+                assert_ne!(coloring[n], coloring[m]);
+            }
+        }
+    }
+
+    #[test]
+    fn color_ranges_honours_precoloured_input_pins() {
+        // Input range pinned to its incoming register's pool index: the pin
+        // survives and constrains neighbours.
+        let seq = vec![
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        let input = ranges
+            .iter()
+            .find(|r| r.reg == Reg::R0 && r.def == 0)
+            .unwrap()
+            .vreg;
+        let adj = range_interference(&ranges);
+        let pins: BTreeMap<usize, usize> = [(input, 0)].into();
+        let (coloring, spilled) = color_ranges(&adj, 3, &pins, &BTreeMap::new());
+        assert!(spilled.is_empty());
+        assert_eq!(coloring[&input], 0, "pinned input keeps its colour");
+        for nb in &adj[&input] {
+            assert_ne!(coloring[nb], 0, "neighbours avoid the pinned colour");
+        }
     }
 
     #[test]

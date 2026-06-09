@@ -104,10 +104,19 @@ artifacts:
   #    API delegates with all-costs-equal, reproducing the historic choice
   #    exactly. allocate_function now ranks by real counts. Pure, unwired,
   #    fixtures bit-identical (verified by cmp + full differential).
+  #  - Range interference + colouring (step 3a, part 1): range_interference
+  #    builds the adjacency over VALUE RANGES (vreg ids; dies-at-birth boundary
+  #    deliberately non-interfering, co-defs always interfere) and color_ranges
+  #    k-colours it via the chaitin_core now generic over node id (Reg for the
+  #    physical graph, usize for vregs — type-parameter refactor, identical
+  #    algorithm/tie-breaks). The spurious-physical-spill elimination is now
+  #    unit-proven in miniature (r0 reused for 3 values -> 3 independent ranges
+  #    -> colours at true pressure 4). Pure, unwired, fixtures bit-identical.
   #    Remaining for VCR-RA-001 (CONSEQUENTIAL, changes emitted bytes, full
-  #    differential gate): virtual-reg selector output (flag default-off) ->
-  #    spill-code insertion -> wire-in + per-function flip where the
-  #    differential proves no-regression -> delete a hard-fail site.
+  #    differential gate): rename_def + apply_range_coloring (3a part 2) ->
+  #    flag-gated re-allocation pass + measured flip -> 3b exhaustion-only
+  #    virtual temps -> spill-code insertion -> wire-in + per-function flip
+  #    where the differential proves no-regression -> delete a hard-fail site.
   - id: VCR-RA-001
     type: sw-req
     title: SSA-based register allocator with spilling (remove the hard-fail)
