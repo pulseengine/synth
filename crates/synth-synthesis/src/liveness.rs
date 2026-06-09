@@ -1544,10 +1544,10 @@ fn rewrite_op(
             addr: addr_map(addr, use_map),
         },
         Pop { regs } => Pop {
-            regs: regs.iter().map(|r| d(r)).collect(),
+            regs: regs.iter().map(d).collect(),
         },
         Push { regs } => Push {
-            regs: regs.iter().map(|r| u(r)).collect(),
+            regs: regs.iter().map(u).collect(),
         },
         Nop => Nop,
         Udf { imm } => Udf { imm: *imm },
