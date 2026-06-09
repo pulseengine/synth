@@ -65,7 +65,7 @@ artifacts:
       taken on trust; its correctness must be argued with evidence. The VCR
       program (VCR-001) is that evidence strategy.
     status: proposed
-    tags: [tool-qualification, do-178c, iso-26262, iec-61508, en-50128, vcr, bootstrap]
+    tags: [tool-qualification, do-178c, iso-26262, iec-61508, en-50128, vcr, bootstrap, release-v0.12]
     links:
       # A system-level tool-qualification requirement traces to the stakeholder
       # need for a qualifiable compiler (BR-001 "Safety-critical qualification");
@@ -121,7 +121,7 @@ artifacts:
       proof where it reaches, validated testing where it does not, and a frozen
       baseline that makes every increment auditable.
     status: proposed
-    tags: [tool-qualification, evidence, formal, oracle, vcr, bootstrap]
+    tags: [tool-qualification, evidence, formal, oracle, vcr, bootstrap, release-v0.12]
     links:
       - type: derives-from
         target: VCR-TQ-001
