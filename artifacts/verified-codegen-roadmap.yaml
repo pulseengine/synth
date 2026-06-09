@@ -98,10 +98,16 @@ artifacts:
   #    cross-check / defense-in-depth). Verified to accept color_graph's own
   #    output on real codegen. Still unwired. Wiring plan:
   #    docs/design/vcr-ra-allocator-wiring.md.
+  #  - Spill-cost ranking (wiring step 2): color_graph_precolored_costed picks
+  #    the optimistic spill candidate by Chaitin's cost/degree (cost = def+use
+  #    occurrence count via use_def_counts) instead of degree-only; the uncosted
+  #    API delegates with all-costs-equal, reproducing the historic choice
+  #    exactly. allocate_function now ranks by real counts. Pure, unwired,
+  #    fixtures bit-identical (verified by cmp + full differential).
   #    Remaining for VCR-RA-001 (CONSEQUENTIAL, changes emitted bytes, full
-  #    differential gate): spill-cost ranking -> virtual-reg selector output
-  #    (flag default-off) -> spill-code insertion -> wire-in + per-function flip
-  #    where the differential proves no-regression -> delete a hard-fail site.
+  #    differential gate): virtual-reg selector output (flag default-off) ->
+  #    spill-code insertion -> wire-in + per-function flip where the
+  #    differential proves no-regression -> delete a hard-fail site.
   - id: VCR-RA-001
     type: sw-req
     title: SSA-based register allocator with spilling (remove the hard-fail)

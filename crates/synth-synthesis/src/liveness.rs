@@ -937,6 +937,31 @@ pub fn color_graph_precolored(
     k: usize,
     precolored: &BTreeMap<Reg, usize>,
 ) -> ColorResult {
+    // No cost information: every node defaults to cost 1, so minimising
+    // cost/degree degenerates to maximising degree — exactly the historic
+    // degree-only heuristic (same candidate, same tie-break).
+    color_graph_precolored_costed(g, k, precolored, &BTreeMap::new())
+}
+
+/// `k`-colouring with precoloured pins **and spill-cost ranking** — VCR-RA-001
+/// wiring step 2 (`docs/design/vcr-ra-allocator-wiring.md`).
+///
+/// When no node can be simplified (every degree ≥ `k`), the optimistic spill
+/// candidate is chosen by **Chaitin's metric**: minimise `cost / degree`, where
+/// `cost` is the node's def+use occurrence count (each spill inserts a store
+/// per def and a reload per use, so cost scales with occurrences) and high
+/// degree is *good* to spill (removing the node relieves more interference).
+/// Compared cross-multiplied in integers (`cost_a·deg_b < cost_b·deg_a`) to
+/// avoid floats; ties break to the smallest register for determinism. A node
+/// missing from `costs` defaults to cost 1, so an empty map reproduces the
+/// degree-only heuristic exactly. Pure function: a decision, not a mutation.
+pub fn color_graph_precolored_costed(
+    g: &InterferenceGraph,
+    k: usize,
+    precolored: &BTreeMap<Reg, usize>,
+    costs: &BTreeMap<Reg, usize>,
+) -> ColorResult {
+    let cost_of = |r: &Reg| costs.get(r).copied().unwrap_or(1);
     // Working adjacency over the FREE (non-precoloured) nodes only; precoloured
     // nodes are fixed, so they never enter the simplify worklist — but they
     // remain in every free node's neighbourhood (via `g.neighbors`) so they
@@ -949,17 +974,23 @@ pub fn color_graph_precolored(
     let mut stack: Vec<Reg> = Vec::with_capacity(adj.len());
 
     // SIMPLIFY / SPILL: push every free node, preferring low-degree (< k) nodes;
-    // when none qualify, optimistically push the highest-degree node.
+    // when none qualify, optimistically push the cheapest-to-spill node.
     while !adj.is_empty() {
         let pick = adj
             .iter()
             .find(|(_, nbrs)| nbrs.len() < k)
             .map(|(r, _)| *r)
             .unwrap_or_else(|| {
-                // No simplifiable node → optimistic spill candidate: highest
-                // degree (ties broken by register order for determinism).
+                // No simplifiable node → optimistic spill candidate: minimise
+                // cost/degree (Chaitin), ties to the smallest register. The
+                // comparator never returns Equal for distinct registers, so the
+                // pick is deterministic regardless of iteration order.
                 adj.iter()
-                    .max_by(|a, b| a.1.len().cmp(&b.1.len()).then(b.0.cmp(a.0)))
+                    .min_by(|a, b| {
+                        (cost_of(a.0) * b.1.len())
+                            .cmp(&(cost_of(b.0) * a.1.len()))
+                            .then(a.0.cmp(b.0))
+                    })
                     .map(|(r, _)| *r)
                     .unwrap()
             });
@@ -1564,8 +1595,26 @@ pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
     (out, count)
 }
 
+/// Per-register def+use occurrence counts over an instruction stream — the
+/// numerator of Chaitin's spill cost (each spill inserts a store per def and a
+/// reload per use, so spill cost scales with occurrences). Unmodeled ops are
+/// skipped; callers needing strict modelling already gate on
+/// [`interference_graph`] returning `Some`, which implies every op is modeled.
+pub fn use_def_counts(instrs: &[ArmInstruction]) -> BTreeMap<Reg, usize> {
+    let mut counts: BTreeMap<Reg, usize> = BTreeMap::new();
+    for ins in instrs {
+        if let Some(e) = reg_effect(&ins.op) {
+            for r in e.defs.iter().chain(e.uses.iter()) {
+                *counts.entry(*r).or_insert(0) += 1;
+            }
+        }
+    }
+    counts
+}
+
 /// Run the register-allocator pipeline on a function: interference graph →
-/// `k`-colouring with `precolored` reserved registers pinned → result. `k` is
+/// `k`-colouring with `precolored` reserved registers pinned and spill
+/// candidates ranked by Chaitin cost (def+use count / degree) → result. `k` is
 /// the allocatable-pool size (e.g. 9 for synth's R0–R8). Pure: it computes a
 /// decision and does not mutate the instruction stream — the call the codegen
 /// wiring (VCR-RA-001) makes, runnable today as a shadow pass.
@@ -1578,7 +1627,8 @@ pub fn allocate_function(
         return AllocationOutcome::Declined;
     };
     let remat_opportunities = analyze_function(instrs).redundant_consts.len();
-    match color_graph_precolored(&graph, k, precolored) {
+    let costs = use_def_counts(instrs);
+    match color_graph_precolored_costed(&graph, k, precolored, &costs) {
         ColorResult::Colored(coloring) => AllocationOutcome::Allocated {
             coloring,
             remat_opportunities,
@@ -2491,6 +2541,70 @@ mod tests {
         let mut g = InterferenceGraph::default();
         g.node(Reg::R0);
         assert!(matches!(color_graph(&g, 0), ColorResult::Spilled(_)));
+    }
+
+    #[test]
+    fn costed_spill_picks_the_cheapest_node_not_the_smallest_reg() {
+        // K4 at k=3: every node has degree 3, so degree alone cannot
+        // discriminate — the degree-only heuristic falls back to the smallest
+        // register (R0). With costs, R3 is by far the cheapest to spill
+        // (fewest def+use occurrences), so Chaitin's cost/degree metric must
+        // pick it instead. Spilling R3 leaves K3, which 3-colours, so the
+        // spill set is exactly {R3}.
+        let g = clique(&[Reg::R0, Reg::R1, Reg::R2, Reg::R3]);
+        let costs: BTreeMap<Reg, usize> =
+            [(Reg::R0, 10), (Reg::R1, 10), (Reg::R2, 10), (Reg::R3, 2)].into();
+        match color_graph_precolored_costed(&g, 3, &BTreeMap::new(), &costs) {
+            ColorResult::Spilled(s) => {
+                assert_eq!(s, BTreeSet::from([Reg::R3]), "cheapest node spills");
+            }
+            ColorResult::Colored(_) => panic!("K4 cannot be 3-coloured"),
+        }
+    }
+
+    #[test]
+    fn empty_costs_reproduce_the_degree_only_choice() {
+        // Same K4 at k=3 with NO costs: all nodes default to cost 1, the
+        // ratios tie, and the tie-break picks the smallest register — the
+        // historic degree-only behavior, byte-for-byte.
+        let g = clique(&[Reg::R0, Reg::R1, Reg::R2, Reg::R3]);
+        match color_graph(&g, 3) {
+            ColorResult::Spilled(s) => {
+                assert_eq!(
+                    s,
+                    BTreeSet::from([Reg::R0]),
+                    "degree-only tie → smallest reg"
+                );
+            }
+            ColorResult::Colored(_) => panic!("K4 cannot be 3-coloured"),
+        }
+    }
+
+    #[test]
+    fn use_def_counts_sums_defs_and_uses() {
+        // movw r0,#7        → r0: 1 def
+        // add  r1, r0, r0   → r1: 1 def, r0: +2 uses
+        // add  r2, r1, r0   → r2: 1 def, r1: +1 use, r0: +1 use
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+        ];
+        let c = use_def_counts(&seq);
+        assert_eq!(c.get(&Reg::R0), Some(&4));
+        assert_eq!(c.get(&Reg::R1), Some(&2));
+        assert_eq!(c.get(&Reg::R2), Some(&1));
     }
 
     #[test]
