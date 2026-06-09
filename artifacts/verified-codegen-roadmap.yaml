@@ -122,7 +122,7 @@ artifacts:
       architecture (R9 globals / R11 mem-base / R12 IP-scratch) and the
       bounds-mode R10 invariant.
     status: proposed
-    tags: [codegen, register-allocation, ssa, regalloc2, track-a]
+    tags: [codegen, register-allocation, ssa, regalloc2, track-a, release-v0.11.37]
     links:
       - type: derives-from
         target: VCR-001
@@ -302,7 +302,7 @@ artifacts:
       (fewer moves per clamp, reuse a resident bound) emitted by the selector.
       Independent of the allocator (different code region); composes with it.
     status: proposed
-    tags: [codegen, selector, instruction-selection, clamp, track-b, perf]
+    tags: [codegen, selector, instruction-selection, clamp, track-b, perf, release-v0.11.35]
     links:
       - type: derives-from
         target: VCR-001
@@ -327,7 +327,7 @@ artifacts:
       9-vs-12 gap to native). Make R10 allocatable iff bounds-checking is off.
       Composes with the allocator (which reads the pool size from config).
     status: proposed
-    tags: [codegen, register-allocation, pool, reserved-registers, track-c, perf]
+    tags: [codegen, register-allocation, pool, reserved-registers, track-c, perf, release-v0.11.38]
     links:
       - type: derives-from
         target: VCR-001
