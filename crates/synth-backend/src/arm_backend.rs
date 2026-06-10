@@ -263,6 +263,39 @@ fn compile_wasm_to_arm(
         arm_instrs
     };
 
+    // VCR-RA-001 RANGE RE-ALLOCATION (#209/#242, wiring step 3a) — the first
+    // CONSEQUENTIAL allocator pass: re-colour each maximal straight-line
+    // segment over the R0-R8 pool with value ranges as the allocation unit
+    // (segment inputs + per-register live-outs pinned to their original
+    // registers, reserved R9-R12/SP identity-assigned — each segment is
+    // independently sound, no cross-segment liveness assumed). Renames
+    // registers only: never adds, removes, or reorders instructions, so
+    // labels/branch offsets are unaffected. Behind `SYNTH_RANGE_REALLOC=1`
+    // while it is validated against the differential oracle + gale's five
+    // on-target baselines; off by default keeps every fixture bit-identical.
+    let arm_instrs = if std::env::var("SYNTH_RANGE_REALLOC").is_ok() {
+        use synth_synthesis::rules::Reg;
+        const POOL: [Reg; 9] = [
+            Reg::R0,
+            Reg::R1,
+            Reg::R2,
+            Reg::R3,
+            Reg::R4,
+            Reg::R5,
+            Reg::R6,
+            Reg::R7,
+            Reg::R8,
+        ];
+        let (out, stats) = synth_synthesis::liveness::reallocate_function(&arm_instrs, &POOL);
+        eprintln!(
+            "[range-realloc] {} segments: {} reallocated, {} declined, {} need spill (step 4)",
+            stats.segments, stats.reallocated, stats.declined, stats.needs_spill
+        );
+        out
+    } else {
+        arm_instrs
+    };
+
     // VCR-RA-001 SHADOW ALLOCATION (#209/#242): run the register allocator on
     // the selected stream and LOG what it finds — without changing a single
     // emitted byte. This is the measure-only bridge between the built analysis
