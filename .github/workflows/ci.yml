@@ -144,7 +144,7 @@ jobs:
             --exclude synth-verify --exclude synth-qemu \
             --exclude synth-backend-awsm --exclude synth-backend-wasker
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v7
         with:
           files: lcov.info
           fail_ci_if_error: false
