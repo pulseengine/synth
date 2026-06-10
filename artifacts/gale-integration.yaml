@@ -412,7 +412,7 @@ artifacts:
       host-pointer seam is exercised. Until then, synth covers leaf seams
       (gale's exported mutex/sem seams, whose only calls are host imports).
     status: proposed
-    tags: [gale, native-pointer-abi, non-leaf, follow-up, planned]
+    tags: [gale, native-pointer-abi, non-leaf, follow-up, planned, release-v0.11.36]
     links:
       - type: derives-from
         target: GI-NPA-001

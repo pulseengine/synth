@@ -131,7 +131,7 @@ artifacts:
       architecture (R9 globals / R11 mem-base / R12 IP-scratch) and the
       bounds-mode R10 invariant.
     status: proposed
-    tags: [codegen, register-allocation, ssa, regalloc2, track-a, release-v0.11.37]
+    tags: [codegen, register-allocation, ssa, regalloc2, track-a, release-v0.11.40]
     links:
       - type: derives-from
         target: VCR-001
@@ -166,7 +166,7 @@ artifacts:
       miscompile. Depends on VCR-RA-001 landing first (a verified rule that
       can't be allocated is not yet correct end-to-end).
     status: proposed
-    tags: [codegen, selector, isle, verified-dsl, rocq, track-a, novel]
+    tags: [codegen, selector, isle, verified-dsl, rocq, track-a, novel, release-v0.12.1]
     links:
       - type: derives-from
         target: VCR-001
@@ -178,7 +178,17 @@ artifacts:
         with >=70% auto-discharged by existing tactics (kill-criterion: below
         70% it collapses into "CompCert with extra syntax" — abandon); the
         generated lowering matches the current selector bit-for-bit on all
-        fixtures.
+        fixtures. CALIBRATION (Crocus, ASPLOS'24 deep-research 2026-06-10):
+        the SMT state of the art hit ~88% per-attempted-rule on the Wasm 1.0
+        integer subset but needed 136-182 manual annotations (~1000 LOC),
+        custom VCs for 6 rules, timeouts on wide mul/div/rem/popcnt, and its
+        verified rules covered only 19.8% of dynamically-invoked rules — so
+        measure the criterion PER-ATTEMPTED-RULE on the integer pilot, budget
+        for annotations, and do NOT promise full-selector coverage. A rule DSL
+        is an enabler, not a prerequisite: CompCert verifies selection
+        functions directly, and synth's existing T1 tactic suite
+        (synth_binop_proof family vs exec_indexed) IS that direct path — the
+        DSL pays off only when rule count amortizes its cost.
 
   # ---------------------------------------------------------------------------
   # Track B — authoritative semantics (independent; parallel with Track A)
@@ -208,6 +218,12 @@ artifacts:
         target model for the supported instruction subset; if the Sail state
         monad makes the proofs intractable to port, fall back to using Sail
         emulators as a differential oracle (kill-criterion / partial credit).
+        GATE ADDED (deep-research 2026-06-10): substrate freshness is
+        UNVERIFIED — no claim about 2025-26 Sail-Rocq export maturity for the
+        Thumb-2/RV32IMAC integer slice survived adversarial verification. A
+        bounded feasibility SPIKE (can the Sail RV32 Rocq export build + one
+        instruction's semantics be related to ArmSemantics/RiscvSemantics?)
+        must precede any release commitment.
 
   - id: VCR-WASM-001
     type: sw-req
@@ -232,6 +248,9 @@ artifacts:
         synth's core-Wasm reduction relates to WasmCert-Coq's for the
         integer/control-flow fragment; kill-criterion: if the semantic gap is
         too large to relate without a major proof, scope to that fragment only.
+        GATE ADDED (deep-research 2026-06-10): WasmCert-Coq maintenance state
+        is UNVERIFIED (no surviving claim) — same bounded feasibility spike
+        required before release commitment.
 
   # ---------------------------------------------------------------------------
   # Track C — validation methodology (can start now; feeds Tracks A and B)
@@ -261,6 +280,10 @@ artifacts:
         Rule-coverage is measured and reported; unproven-op fixtures are
         prioritized; the suite flags any op exercised on silicon but absent from
         the model; frozen fixtures remain a subset and stay bit-identical.
+        GLUE COVERAGE (deep-research 2026-06-10, CVE-2022-31146 lesson): bugs
+        escape through the UNCHECKED boundary around a checked core — the
+        oracle must exercise prologue/epilogue, branch resolution, relocation,
+        and encoder glue explicitly, not just the allocator/selector cores.
 
   # ---------------------------------------------------------------------------
   # Program-level verification gate
@@ -343,7 +366,7 @@ artifacts:
       9-vs-12 gap to native). Make R10 allocatable iff bounds-checking is off.
       Composes with the allocator (which reads the pool size from config).
     status: proposed
-    tags: [codegen, register-allocation, pool, reserved-registers, track-c, perf, release-v0.11.38]
+    tags: [codegen, register-allocation, pool, reserved-registers, track-c, perf, release-v0.11.41]
     links:
       - type: derives-from
         target: VCR-001
@@ -356,3 +379,127 @@ artifacts:
         ON, R10 stays reserved and bounds-mode codegen is byte-identical; gale
         confirms on-target equal-or-better. Deliberate fixture re-freeze (bytes
         change, result preserved) is part of landing it, not a violation.
+
+  # ---------------------------------------------------------------------------
+  # Research-driven additions (deep-research run wf_2310ef0b-097, 2026-06-10:
+  # Crocus/regalloc2/CompCert-validation literature, 103 agents, 25 claims
+  # adversarially verified). The headline: per-run translation VALIDATION with
+  # a small mechanically-verified validator is the literature-consensus sweet
+  # spot (Rideau/Leroy CC'10: equal soundness, ~10x less proof, invented for
+  # register-poor targets) — so the validator, not the allocator, is the thing
+  # to verify.
+  # ---------------------------------------------------------------------------
+
+  - id: VCR-RA-003
+    type: sw-req
+    title: Backward-dataflow allocation validator (Rideau/Leroy-style), then mechanize it
+    description: >
+      Evolve verify_allocation + the per-segment edge-recheck into a single
+      backward-dataflow translation validator over (original, rewritten)
+      segment pairs — the Rideau/Leroy CC'10 architecture (350-line validator,
+      900-line Coq soundness proof in CompCert): refine liveness backward,
+      checking that every use in the rewritten code reads a location provably
+      holding the right value, covering renaming, coalescing, live-range
+      splitting, spill/reload, and architectural register constraints in one
+      pass. v1 = Rust, unverified but independent and complete for synth's
+      transformation class, wired as the re-allocation pass's acceptance
+      check and mutation-tested. v2 = Rocq-mechanized soundness (the
+      tool-qualification pillar-1 artifact for the allocator, cheaper and
+      stronger than proving the Chaitin/Briggs pass itself). Adaptations from
+      the paper: synth validates phys-to-phys rewrites (treat input physical
+      registers as variables); constant rematerialization is out of the
+      validated class initially (decline, don't guess).
+    status: proposed
+    tags: [codegen, register-allocation, translation-validation, rocq, track-a, release-v0.11.39]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: refines
+        target: VCR-RA-001
+      - type: constraint-satisfies
+        target: SC-CODE-1
+    fields:
+      req-type: safety
+      priority: must
+      verification-criteria: >
+        v1 accepts every rewrite the current pass produces on the fixtures AND
+        rejects mutation-injected wrong rewrites (>=95% mutant kill on a
+        seeded corpus of bad renames/clobbers); wired as the gate the pass
+        cannot bypass. v2: soundness theorem (validator-accepts implies
+        behavior preserved) Qed against exec_indexed for the straight-line
+        fragment. Kill-criterion: if the validator's decline rate on real
+        selector output exceeds ~5% of segments, its completeness is too weak
+        and the approach is re-evaluated (CompCert tested relative
+        completeness empirically; so will synth).
+
+  - id: VCR-RA-004
+    type: sw-req
+    title: Cycle-safe parallel-move resolver for spill/reload insertion
+    description: >
+      Step-4 spill insertion adds moves that form arbitrary permutations
+      (including cycles) at split points. The literature names this the
+      correctness-critical sub-piece (CompCert proves its parallel-move
+      algorithm separately, Rideau/Serpette/Leroy; regalloc2 needs a scratch
+      register, a stackslot-as-scratch fallback, and a last-ditch emergency
+      spill). Build the resolver as its own pure, testable component:
+      sequentialize a parallel move set with cycle detection, scratch
+      selection from dead registers, and a guaranteed-progress fallback;
+      property-tested against a reference permutation semantics. The second
+      named pitfall — split points landing inside hot loops — is bounded at
+      this stage by synth's straight-line segment scope (no interior loops),
+      and re-checked when segments widen.
+    status: proposed
+    tags: [codegen, register-allocation, parallel-move, spilling, track-a, release-v0.11.38]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: refines
+        target: VCR-RA-001
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        Property test: for random permutations (incl. cycles, swaps,
+        self-moves) over 1..9 registers with 0..2 free scratch regs, the
+        sequentialized moves produce the permutation's final state; spill
+        insertion on a synthetic over-pressure module compiles and runs
+        result-identical to wasmtime; no resolver path can emit an
+        unbounded-progress sequence.
+
+  - id: VCR-DEC-001
+    type: sw-req
+    title: "Decision: Chaitin/Briggs colouring over backtracking-bundle allocation — rationale + revisit trigger"
+    description: >
+      The production fast-compile Wasm allocators are NOT graph colouring:
+      regalloc2 (IonMonkey lineage) is a backtracking allocator over precise
+      live ranges (bundles, priority-queue assignment, eviction, on-demand
+      splitting), LLVM-greedy is the same family, and regalloc3
+      (github.com/Amanieu/regalloc3, active 2026) continues that line as
+      regalloc2's designed successor. synth deliberately stays on
+      Chaitin/Briggs + value-range splitting because (a) an AOT embedded
+      compiler's compile-time budget tolerates colouring, (b) the colouring
+      decision layer is simpler to translation-validate (VCR-RA-003) and its
+      interference convention matches the proof substrate, and (c) the
+      regalloc2 transition data shows the win comes from live-range
+      SPLITTING + sophistication, which synth gets via value ranges, not from
+      the backtracking search per se. REVISIT TRIGGER: if, after VCR-RA-001
+      acceptance, gale's on-target benches still show >=10% cycle gap
+      attributable to allocation (spill placement / split quality), evaluate
+      adopting or porting regalloc3's bundle model behind the same validator
+      — the validator (not the allocator) carries the assurance, so the
+      algorithm can be swapped without re-doing proofs (the exact decoupling
+      Rideau/Leroy name as validation's advantage).
+    status: approved
+    tags: [codegen, register-allocation, decision, regalloc3, track-a]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: refines
+        target: VCR-RA-001
+    fields:
+      req-type: constraint
+      priority: must
+      verification-criteria: >
+        The revisit trigger is checked at VCR-RA-001 acceptance (v0.11.40
+        gate): an explicit measured statement "allocation-attributable gap
+        <10% or regalloc3 evaluation filed" appears in the release notes.
