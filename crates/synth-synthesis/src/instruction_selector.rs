@@ -8809,6 +8809,15 @@ impl InstructionSelector {
         // Reload-aware (#171): a spilled final result is reloaded before the
         // AAPCS return-value move. Past the op loop, so use wasm_ops.len() as
         // the synthetic source line for any reload.
+        // #311 defect 3 (gale): an i64 RESULT is the (lo, hi) pair and BOTH
+        // halves must reach r0:r1 — the single-register move silently dropped
+        // the hi whenever the final value transited registers other than
+        // r0/r1 (decide() returned (0,0) where the contract says (0,1)).
+        // Capture the width BEFORE peek (which returns only the lo register).
+        let result_is_i64 = matches!(
+            stack.last(),
+            Some(StackVal::Reg { is_i64: true, .. }) | Some(StackVal::Spilled { is_i64: true, .. })
+        );
         let result_reg = if stack.is_empty() {
             None
         } else {
@@ -8821,16 +8830,32 @@ impl InstructionSelector {
                 wasm_ops.len(),
             )?)
         };
-        if let Some(result_reg) = result_reg
-            && result_reg != Reg::R0
-        {
-            instructions.push(ArmInstruction {
-                op: ArmOp::Mov {
-                    rd: Reg::R0,
-                    op2: Operand2::Reg(result_reg),
-                },
-                source_line: None,
-            });
+        if let Some(result_reg) = result_reg {
+            // lo move FIRST: for a consecutive pair (hi = lo+1) the only
+            // overlap case is lo == R1 (hi == R2), where r1 must be READ by
+            // the lo move before the hi move WRITES it — lo-first is safe for
+            // every possible pair (hi == R0 would require lo == "R-1").
+            if result_reg != Reg::R0 {
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Mov {
+                        rd: Reg::R0,
+                        op2: Operand2::Reg(result_reg),
+                    },
+                    source_line: None,
+                });
+            }
+            if result_is_i64 {
+                let hi = i64_pair_hi(result_reg)?;
+                if hi != Reg::R1 {
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Mov {
+                            rd: Reg::R1,
+                            op2: Operand2::Reg(hi),
+                        },
+                        source_line: None,
+                    });
+                }
+            }
         }
         if layout.frame_size > 0 {
             instructions.push(ArmInstruction {
@@ -15422,6 +15447,47 @@ mod tests {
     /// segment becomes `__synth_wasm_data`-relative (MovwSym/MovtSym), so a
     /// `base=0` host-pointer trampoline doesn't mis-resolve it. Without the flag
     /// (and for an out-of-range/runtime address) it stays base-relative.
+    #[test]
+    fn test_311_i64_return_moves_both_halves() {
+        // #311 defect 3 (gale): when a function's final i64 lands outside
+        // r0:r1, the return epilogue must move BOTH halves — the single-reg
+        // move dropped the hi (decide() returned (0,0), contract (0,1)).
+        // Three i64 consts force the final Or's destination pair off r0/r1.
+        let db = RuleDatabase::new();
+        let mut sel = InstructionSelector::new(db.rules().to_vec());
+        let ops = vec![
+            WasmOp::I64Const(1),
+            WasmOp::I64Const(2),
+            WasmOp::I64Const(3),
+            WasmOp::I64Or,
+            WasmOp::I64Or,
+        ];
+        let instrs = sel.select_with_stack(&ops, 0).unwrap();
+        // The epilogue's return moves: r0 <- lo, r1 <- hi of a CONSECUTIVE
+        // pair that is not already (r0, r1).
+        let mov_to = |rd: Reg| {
+            instrs.iter().rev().find_map(|i| match &i.op {
+                ArmOp::Mov {
+                    rd: d,
+                    op2: Operand2::Reg(src),
+                } if *d == rd => Some(*src),
+                _ => None,
+            })
+        };
+        let lo_src = mov_to(Reg::R0).expect("epilogue must move the lo half into r0");
+        let hi_src = mov_to(Reg::R1)
+            .expect("epilogue must move the HI half into r1 (the dropped-hi defect)");
+        assert_eq!(
+            i64_pair_hi(lo_src).unwrap(),
+            hi_src,
+            "the two moves must carry one consecutive pair (got {lo_src:?}/{hi_src:?})"
+        );
+        assert_ne!(
+            lo_src,
+            Reg::R0,
+            "premise: the pair transited high registers"
+        );
+    }
     #[test]
     fn test_311_i64_call_result_tagged_as_pair() {
         // #311 (gale, k_sem_give silent wrong-code): an i64-returning call

@@ -8,7 +8,7 @@ from unicorn.arm_const import (UC_ARM_REG_R0, UC_ARM_REG_R1, UC_ARM_REG_R11,
 # ground truth
 eng = wasmtime.Engine(); mod = wasmtime.Module(eng, open('/tmp/u64repro.wat','rb').read())
 st = wasmtime.Store(eng); inst = wasmtime.Instance(st, mod, [])
-gt = {n: inst.exports(st)[n] for n in ("check","check_call")}
+gt = {n: inst.exports(st)[n] for n in ("check","check_call","check_hot")}
 
 e = ELFFile(open('/tmp/u64.elf','rb'))
 text = bytearray(e.get_section_by_name('.text').data())
@@ -42,7 +42,7 @@ RET = CODE + 0xFF00
 mu.mem_write(RET, b"\x00\xbf\x00\xbf")
 
 ok = True
-for fn in ("check","check_call"):
+for fn in ("check","check_call","check_hot"):
     for (a,b) in ((3,4),(0,0),(250,5),(0x7FFFFFFF,1)):
         exp = gt[fn](st, a, b) & 0xFFFFFFFF
         mu.reg_write(UC_ARM_REG_R0, a); mu.reg_write(UC_ARM_REG_R1, b)

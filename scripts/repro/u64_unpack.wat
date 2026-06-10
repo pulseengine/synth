@@ -30,4 +30,25 @@
       (i32.const 0xDEAD)
       (i32.eq
         (i32.wrap_i64 (i64.and (local.get $r) (i64.const 255)))
+        (i32.const 1))))  (func $make_hot (param $a i32) (param $b i32) (result i64)
+    ;; enough live i32 values to push the final or destinations into high regs
+    (local $t1 i32) (local $t2 i32) (local $t3 i32)
+    (local.set $t1 (i32.add (local.get $a) (i32.const 3)))
+    (local.set $t2 (i32.mul (local.get $b) (i32.const 5)))
+    (local.set $t3 (i32.xor (local.get $t1) (local.get $t2)))
+    (i64.or
+      (i64.shl
+        (i64.extend_i32_u
+          (i32.add (i32.add (local.get $a) (local.get $b))
+                   (i32.and (local.get $t3) (i32.const 0))))
+        (i64.const 32))
+      (i64.extend_i32_u (i32.add (i32.const 1) (i32.and (local.get $t3) (i32.const 0))))))
+  (func (export "check_hot") (param $a i32) (param $b i32) (result i32)
+    (local $r i64)
+    (local.set $r (call $make_hot (local.get $a) (local.get $b)))
+    (select
+      (i32.wrap_i64 (i64.shr_u (local.get $r) (i64.const 32)))
+      (i32.const 0xDEAD)
+      (i32.eq
+        (i32.wrap_i64 (i64.and (local.get $r) (i64.const 255)))
         (i32.const 1)))))
