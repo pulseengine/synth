@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.36] - 2026-06-11
+
+**Four silicon blockers in one tag: the allocator goes default-ON, the mutex
+shadow-stack works, and the entire packed-u64 verified-decide pattern is
+correct (#209/#237/#311, VCR-RA-001 step 3a).**
+
+- **Range re-allocation DEFAULT-ON** (#309): the value-range re-colouring pass
+  (wiring step 3a) is on for every compile after gale's on-target gate cleared
+  it (byte-identical on flat_flight/controller/control_step, cycle-neutral +
+  smaller where it fires). Opt out with `SYNTH_RANGE_REALLOC=0`; stats via
+  `SYNTH_REALLOC_STATS=1`.
+- **Dead callee-saved-save elimination** (#309): prologue/epilogue save lists
+  shrink to the callee-saved registers the re-allocated body still touches
+  (leaf-only, SP-untouched, even-count-padded) — `push {r4-r8,lr}` overhead
+  (~12 cyc on a 37-cyc leaf) removed where the body packs into low registers.
+- **Native-pointer ABI: materialized global slots + used-extent sizing**
+  (#310, gale #237): every defined global lives at `__synth_globals + idx*4`
+  in `.data`, initialized from the wasm global section — `global.set` is a
+  real store (the old promotion DROPPED stores to the shadow-stack pointer),
+  and the SP global starts at the wasm-ld stack top instead of 0 (the
+  0xFFFFFFF4 bus fault). The region is sized to the USED extent (data end /
+  stack top / layout globals / static addends) instead of declared 64 KiB
+  pages: 131072 B -> ~4 KiB for gale's 830-byte module.
+- **i64 pair correctness, all three legs** (#310, gale #311): (1) call results
+  are pair-tagged (decoder result-type tables -> liveness sees r1, constants
+  can no longer materialize into the live u64 pair; i64-local inference models
+  call widths so both halves spill); (2) the encoder's I64SetCond/I64SetCondZ
+  high-rd MOVS->CMP transmutation is fixed with 32-bit MOV.W/CMP.W — closing
+  STPA hazard H-CODE-9; (3) the return epilogue moves BOTH halves of an i64
+  result into r0:r1 (lo-first, safe for every consecutive pair).
+
+Falsification: this release is wrong if gale's staged lanes disagree — the sem
+unicorn check (count 0->1) and gmutex oracle on the G474RE are the decisive
+gates, plus cycle-neutrality on the rebaselined suite (241/150/151/37). New
+committed oracles: u64_unpack(+inlined).wat differentials,
+native_pointer_shadow_stack differential, test_311_* + shrink_saves_* tests.
+
+
 ## [0.11.35] - 2026-06-09
 
 **In-place select + spill-cost ranking — the first VCR codegen-quality release
