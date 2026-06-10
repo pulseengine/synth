@@ -2913,10 +2913,26 @@ impl ArmEncoder {
                 // Helper: encode SetCond (ITE + MOV #1 + MOV #0) for given condition
                 let encode_setcond = |cond_bits: u16, rd_bits: u16| -> Vec<u8> {
                     let mut b = encode_ite(cond_bits);
-                    let mov_one: u16 = 0x2001 | (rd_bits << 8);
-                    let mov_zero: u16 = 0x2000 | (rd_bits << 8);
-                    b.extend_from_slice(&mov_one.to_le_bytes());
-                    b.extend_from_slice(&mov_zero.to_le_bytes());
+                    if rd_bits < 8 {
+                        let mov_one: u16 = 0x2001 | (rd_bits << 8);
+                        let mov_zero: u16 = 0x2000 | (rd_bits << 8);
+                        b.extend_from_slice(&mov_one.to_le_bytes());
+                        b.extend_from_slice(&mov_zero.to_le_bytes());
+                    } else {
+                        // #311: rd >= R8 — the 16-bit MOV imm8 form has a 3-bit
+                        // rd field; rd_bits<<8 overflows into bit 11 and
+                        // TRANSMUTES the MOV into CMP (0x2001|0x0800 = 0x2801 =
+                        // CMP r0,#1): the boolean dies in the flags and the
+                        // consumer reads a stale register. Use the 32-bit
+                        // MOV.W (T2: F04F 0000|rd<<8|imm8) — IT-legal,
+                        // flag-preserving. Same class as H-CODE-9 / #180.
+                        for imm in [1u16, 0u16] {
+                            let hw1: u16 = 0xF04F;
+                            let hw2: u16 = (rd_bits << 8) | imm;
+                            b.extend_from_slice(&hw1.to_le_bytes());
+                            b.extend_from_slice(&hw2.to_le_bytes());
+                        }
+                    }
                     b
                 };
 
@@ -3077,18 +3093,38 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&hw1.to_le_bytes());
                 bytes.extend_from_slice(&hw2.to_le_bytes());
 
-                // CMP rd, #0 (16-bit): 0010 1 Rd 0000 0000
-                let cmp_instr: u16 = 0x2800 | ((rd_bits as u16) << 8);
-                bytes.extend_from_slice(&cmp_instr.to_le_bytes());
+                // CMP rd, #0 — 16-bit form only for r0-r7 (3-bit rd field);
+                // high registers take CMP.W (T2: F1B0|rn 0F00|imm8). This was
+                // H-CODE-9: rd_bits<<8 overflowing the field compared the
+                // WRONG register. Same hardening as the #311 SetCond fix.
+                if rd_bits < 8 {
+                    let cmp_instr: u16 = 0x2800 | ((rd_bits as u16) << 8);
+                    bytes.extend_from_slice(&cmp_instr.to_le_bytes());
+                } else {
+                    let hw1: u16 = 0xF1B0 | (rd_bits as u16);
+                    let hw2: u16 = 0x0F00;
+                    bytes.extend_from_slice(&hw1.to_le_bytes());
+                    bytes.extend_from_slice(&hw2.to_le_bytes());
+                }
 
-                // ITE EQ; MOV rd, #1; MOV rd, #0
+                // ITE EQ; MOV rd, #1; MOV rd, #0 (32-bit MOV.W for rd >= R8,
+                // #311 — see I64SetCond)
                 let mask = 0xC_u16; // ITE EQ mask: firstcond[0]=0, mask=0xC
                 let ite_instr: u16 = 0xBF00 | mask;
                 bytes.extend_from_slice(&ite_instr.to_le_bytes());
-                let mov_one: u16 = 0x2001 | ((rd_bits as u16) << 8);
-                let mov_zero: u16 = 0x2000 | ((rd_bits as u16) << 8);
-                bytes.extend_from_slice(&mov_one.to_le_bytes());
-                bytes.extend_from_slice(&mov_zero.to_le_bytes());
+                if rd_bits < 8 {
+                    let mov_one: u16 = 0x2001 | ((rd_bits as u16) << 8);
+                    let mov_zero: u16 = 0x2000 | ((rd_bits as u16) << 8);
+                    bytes.extend_from_slice(&mov_one.to_le_bytes());
+                    bytes.extend_from_slice(&mov_zero.to_le_bytes());
+                } else {
+                    for imm in [1u16, 0u16] {
+                        let hw1: u16 = 0xF04F;
+                        let hw2: u16 = ((rd_bits as u16) << 8) | imm;
+                        bytes.extend_from_slice(&hw1.to_le_bytes());
+                        bytes.extend_from_slice(&hw2.to_le_bytes());
+                    }
+                }
 
                 Ok(bytes)
             }
@@ -7258,6 +7294,62 @@ mod tests {
     /// (`0x2c00`), so the boolean was never written — gale's `has_waiter` kept a
     /// stale value and the binary-sem WAKE dispatch read garbage. High Rd must
     /// use the 32-bit `MOV.W` (T2). Verify the bytes, not the IR.
+    /// #311: the SAME high-Rd MOVS→CMP transmutation as #204, but in the
+    /// i64 comparison expansions (I64SetCond / I64SetCondZ) — missed by the
+    /// #204 hardening. With rd=R8 the boolean died in the flags
+    /// (`ite eq; cmpeq r0,#1; cmpne r0,#0`), so gale's packed-u64 select
+    /// read a stale register on silicon. High Rd must take MOV.W / CMP.W.
+    #[test]
+    fn test_encode_i64setcond_high_reg_uses_mov_w_311() {
+        use synth_synthesis::{ArmOp, Condition, Reg};
+        let enc = ArmEncoder::new_thumb2();
+        let bytes = enc
+            .encode(&ArmOp::I64SetCond {
+                rd: Reg::R8,
+                rn_lo: Reg::R2,
+                rn_hi: Reg::R3,
+                rm_lo: Reg::R6,
+                rm_hi: Reg::R7,
+                cond: Condition::EQ,
+            })
+            .unwrap();
+        // The 32-bit MOV.W immediate (T2) first halfword is 0xF04F; the
+        // 16-bit transmuted forms would contain 0x2801/0x2800 (CMP r0,#1/#0).
+        let halfwords: Vec<u16> = bytes
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert!(
+            halfwords.iter().filter(|&&h| h == 0xF04F).count() == 2,
+            "high rd must use two MOV.W (T2) encodings, got {halfwords:04x?}"
+        );
+        assert!(
+            !halfwords.contains(&0x2801) && !halfwords.contains(&0x2800),
+            "no transmuted 16-bit CMP imm: {halfwords:04x?}"
+        );
+
+        let bytes_z = enc
+            .encode(&ArmOp::I64SetCondZ {
+                rd: Reg::R8,
+                rn_lo: Reg::R2,
+                rn_hi: Reg::R3,
+            })
+            .unwrap();
+        let hw_z: Vec<u16> = bytes_z
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert!(
+            hw_z.iter().filter(|&&h| h == 0xF04F).count() == 2,
+            "SetCondZ high rd MOV.W: {hw_z:04x?}"
+        );
+        // CMP.W rd,#0 (T2) first halfword: 0xF1B0 | rd
+        assert!(
+            hw_z.contains(&(0xF1B0 | 8)),
+            "SetCondZ high rd must use CMP.W: {hw_z:04x?}"
+        );
+    }
+
     #[test]
     fn test_encode_setcond_high_reg_uses_mov_w_204() {
         use synth_synthesis::{ArmOp, Condition, Reg};
