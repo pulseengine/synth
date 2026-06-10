@@ -191,7 +191,7 @@ jobs:
       # GitHub-native attestation (not the standalone SLSA generator)
       # keeps the workflow self-contained — see docs/release-process.md.
       - name: Generate SLSA build provenance
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: "release-assets/*.tar.gz"
 
