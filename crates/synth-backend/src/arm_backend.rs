@@ -174,6 +174,8 @@ fn compile_wasm_to_arm(
         selector.set_relocatable(config.relocatable);
         // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
         selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
+        // #311: i64 call results are register PAIRS — tag them.
+        selector.set_result_types(config.func_ret_i64.clone(), config.type_ret_i64.clone());
         // Stack-pointer promotion is meaningful only under the native-pointer ABI;
         // gating here keeps every non-native compile (all frozen fixtures) on the
         // legacy R9 globals-table path, bit-identical.

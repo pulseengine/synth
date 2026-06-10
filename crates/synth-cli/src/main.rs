@@ -1753,6 +1753,9 @@ fn compile_all_exports(
         type_arg_counts,
         all_data_segments, // #237: active data segments, for --native-pointer-abi
         stack_pointer_global_opt, // #237: (index, init) of the SP global, if any
+        all_globals, // #237: every defined global (index, init) — slot region under --native-pointer-abi
+        all_func_ret_i64, // #311: per-function returns-i64 (pair tagging)
+        all_type_ret_i64, // #311: per-type returns-i64 (call_indirect)
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
@@ -1845,6 +1848,9 @@ fn compile_all_exports(
             merged_type_arg_counts,
             Vec::new(), // #237: data segments not threaded for WAST (single-module .wasm path covers it)
             None,       // #237: SP-global promotion is single-module .wasm only
+            Vec::new(), // #237: globals slot region is single-module .wasm only
+            Vec::new(), // #311: WAST runs the fixture suite; i32-only
+            Vec::new(),
         )
     } else {
         let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
@@ -1873,6 +1879,13 @@ fn compile_all_exports(
         // linmem extent gates the "plausible stack top" heuristic.
         let linmem_bytes = memories.first().map(|m| m.initial_bytes()).unwrap_or(0);
         let sp_global = identify_stack_pointer_global(&module.globals, linmem_bytes);
+        // #237: every defined global gets a materialized slot under the
+        // native-pointer ABI (init defaults to 0 for non-i32.const inits).
+        let globals: Vec<(u32, i32)> = module
+            .globals
+            .iter()
+            .map(|g| (g.index, g.init_i32.unwrap_or(0)))
+            .collect();
         // #235: compile not just the exports but every internal (non-imported)
         // function reachable from them via `call`. A loom-dissolved export can
         // retain a non-inlinable callee (e.g. a panic helper from an overflow
@@ -1897,6 +1910,9 @@ fn compile_all_exports(
             type_arg_counts,
             data_segs,
             sp_global,
+            globals,
+            module.func_ret_i64,
+            module.type_ret_i64,
         )
     };
 
@@ -1964,6 +1980,8 @@ fn compile_all_exports(
         // #237: register-promote the stack-pointer global (only consulted under
         // native_pointer_abi) so the dissolved object needs no R9 globals table.
         stack_pointer_global: stack_pointer_global_opt,
+        func_ret_i64: all_func_ret_i64.clone(),
+        type_ret_i64: all_type_ret_i64.clone(),
         ..CompileConfig::default()
     };
 
@@ -2114,6 +2132,15 @@ fn compile_all_exports(
             &all_imports,
             &all_data_segments,
             all_memories.first().map(|m| m.initial_bytes()).unwrap_or(0),
+            // #237: used-extent sizing + globals slots, native-pointer ABI only.
+            if native_pointer_abi {
+                Some(NativeGlobalsLayout {
+                    globals: all_globals.clone(),
+                    sp_init: stack_pointer_global_opt.map(|(_, v)| v).unwrap_or(0),
+                })
+            } else {
+                None
+            },
         )?
     } else if cortex_m {
         build_multi_func_cortex_m_elf(&compiled_funcs, &all_memories, target_spec)?
@@ -2243,11 +2270,25 @@ fn build_multi_func_simple_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
 /// Produced when the WASM module has imports — the resulting .o needs to be linked
 /// with the Kiln bridge (which provides `__meld_dispatch_import` etc.) to create
 /// a final firmware binary.
+/// #237: native-pointer-ABI layout for the wasm data region — used-extent
+/// sizing (gale: 64 KiB-page granularity is RAM-prohibitive on the MCUs this
+/// targets) plus materialized global slots appended after the used extent.
+struct NativeGlobalsLayout {
+    /// Every defined global: (index, i32 init value). Slot `idx` lives at
+    /// `__synth_globals + idx*4`; slots hold wasm OFFSETS (the selector
+    /// rebases the SP global to an absolute pointer on read), so plain init
+    /// bytes suffice — no data relocations.
+    globals: Vec<(u32, i32)>,
+    /// The shadow-stack top (the SP global's init); the region must cover it.
+    sp_init: i32,
+}
+
 fn build_relocatable_elf(
     funcs: &[ElfFunction],
     imports: &[ImportEntry],
     data_segments: &[(u32, Vec<u8>)],
     linear_memory_bytes: u32,
+    native_globals: Option<NativeGlobalsLayout>,
 ) -> Result<Vec<u8>> {
     use std::collections::HashMap;
 
@@ -2289,11 +2330,107 @@ fn build_relocatable_elf(
     let needs_wasm_data = funcs
         .iter()
         .flat_map(|f| &f.relocations)
-        .any(|r| r.symbol == "__synth_wasm_data");
+        .any(|r| r.symbol == "__synth_wasm_data" || r.symbol == "__synth_globals");
     let emit_wasm_data = needs_wasm_data && linear_memory_bytes > 0;
+    // #237 (gale, mutex-on-silicon): under the native-pointer ABI the region
+    // is sized to the USED extent — data-segment end + shadow stack (the SP
+    // global's init is the stack top; the stack grows down inside the
+    // region) — not the declared 64 KiB pages, which overflow small-MCU RAM
+    // (131072 B .bss for an 830-byte module on a 128 KiB part). Materialized
+    // global slots follow at `__synth_globals = __synth_wasm_data +
+    // used_extent`, initialized from the wasm global section, which is what
+    // makes `global.set` real and the shadow-stack pointer start at its top
+    // instead of 0.
+    let native_layout = native_globals.filter(|_| emit_wasm_data);
+    // Decode a Thumb MOVW/MOVT imm16 from little-endian code bytes (the REL
+    // addend lives in the instruction).
+    fn thm_imm16(code: &[u8], off: usize) -> u32 {
+        let hw1 = u16::from_le_bytes([code[off], code[off + 1]]) as u32;
+        let hw2 = u16::from_le_bytes([code[off + 2], code[off + 3]]) as u32;
+        ((hw1 & 0xF) << 12) | (((hw1 >> 10) & 1) << 11) | (((hw2 >> 12) & 0x7) << 8) | (hw2 & 0xFF)
+    }
+    let used_extent: u32 = native_layout
+        .as_ref()
+        .map(|ng| {
+            let data_end = data_segments
+                .iter()
+                .map(|(off, d)| off + d.len() as u32)
+                .max()
+                .unwrap_or(0);
+            let sp_top = ng.sp_init.max(0) as u32;
+            // Layout-bound globals: wasm-ld emits __data_end/__heap_base as
+            // i32 globals whose inits mark the static-region extent — the
+            // linker's own answer to "how much is used".
+            let global_top = ng
+                .globals
+                .iter()
+                .map(|&(_, v)| v.max(0) as u32)
+                .filter(|&v| v <= linear_memory_bytes)
+                .max()
+                .unwrap_or(0);
+            // Static-access addends: every `__synth_wasm_data + A` the
+            // selector relocated marks a touched address; cover A plus an
+            // i64's width.
+            let static_top = funcs
+                .iter()
+                .flat_map(|f| {
+                    f.relocations
+                        .iter()
+                        .filter(|&r| {
+                            r.symbol == "__synth_wasm_data"
+                                && matches!(r.kind, synth_core::RelocKind::MovwAbs)
+                        })
+                        .map(|r| {
+                            let lo = thm_imm16(&f.code, r.offset as usize);
+                            // The paired MOVT immediately follows (emit order).
+                            let hi = f
+                                .relocations
+                                .iter()
+                                .find(|m| {
+                                    m.offset == r.offset + 4
+                                        && matches!(m.kind, synth_core::RelocKind::MovtAbs)
+                                })
+                                .map(|m| thm_imm16(&f.code, m.offset as usize))
+                                .unwrap_or(0);
+                            (hi << 16) | lo
+                        })
+                })
+                .map(|a: u32| a.saturating_add(8))
+                .max()
+                .unwrap_or(0);
+            data_end
+                .max(sp_top)
+                .max(global_top)
+                .max(static_top)
+                .max(4)
+                .min(linear_memory_bytes)
+                .next_multiple_of(4)
+        })
+        .unwrap_or(linear_memory_bytes);
+    let globals_bytes: u32 = native_layout
+        .as_ref()
+        .and_then(|ng| ng.globals.iter().map(|(i, _)| (i + 1) * 4).max())
+        .unwrap_or(0);
     if emit_wasm_data {
-        let size = linear_memory_bytes as usize;
-        let section = if data_segments.is_empty() {
+        let size = (used_extent + globals_bytes) as usize;
+        let section = if let Some(ng) = &native_layout {
+            // Native-pointer ABI: PROGBITS covering used extent + global
+            // slots (init values must reach the device, so NOBITS is out;
+            // the used extent is small by construction).
+            let mut blob = vec![0u8; size];
+            for (off, d) in data_segments {
+                blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
+            }
+            for (idx, init) in &ng.globals {
+                let at = (used_extent + idx * 4) as usize;
+                blob[at..at + 4].copy_from_slice(&init.to_le_bytes());
+            }
+            Section::new(".data", ElfSectionType::ProgBits)
+                .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+                .with_addr(0)
+                .with_align(4)
+                .with_data(blob)
+        } else if data_segments.is_empty() {
             // Pure zero-init (BSS) — NOBITS, no bytes in the object.
             Section::new(".bss", ElfSectionType::NoBits)
                 .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
@@ -2303,7 +2440,7 @@ fn build_relocatable_elf(
         } else {
             // Initialized data present — PROGBITS covering the whole memory,
             // segments placed at their offsets, the rest zero.
-            let mut blob = vec![0u8; size];
+            let mut blob = vec![0u8; linear_memory_bytes as usize];
             for (off, d) in data_segments {
                 blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
             }
@@ -2373,6 +2510,17 @@ fn build_relocatable_elf(
         elf_builder.add_symbol(data_sym);
         sym_count += 1;
         sym_indices.insert("__synth_wasm_data".to_string(), sym_count);
+        // #237: the globals slot region sits right after the used extent.
+        if native_layout.is_some() {
+            let globals_sym = Symbol::new("__synth_globals")
+                .with_value(used_extent)
+                .with_binding(SymbolBinding::Global)
+                .with_type(SymbolType::Object)
+                .with_section(5);
+            elf_builder.add_symbol(globals_sym);
+            sym_count += 1;
+            sym_indices.insert("__synth_globals".to_string(), sym_count);
+        }
     }
 
     let mut import_label_to_field: HashMap<String, String> = HashMap::new();

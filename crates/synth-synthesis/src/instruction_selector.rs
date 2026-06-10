@@ -760,9 +760,14 @@ struct LocalLayout {
 ///   encoder, in both cases corrupting the caller's stack or the callee's
 ///   own callee-saved-register spill).
 /// - Epilogue: `add sp, sp, #frame_size` before popping registers.
-fn compute_local_layout(wasm_ops: &[WasmOp], num_params: u32) -> LocalLayout {
+fn compute_local_layout(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    func_ret_i64: &[bool],
+    type_ret_i64: &[bool],
+) -> LocalLayout {
     use std::collections::{BTreeSet, HashMap};
-    let i64_set = infer_i64_locals(wasm_ops);
+    let i64_set = infer_i64_locals(wasm_ops, func_ret_i64, type_ret_i64);
 
     // Collect non-param local indices, in ascending order for deterministic layout.
     let mut used: BTreeSet<u32> = BTreeSet::new();
@@ -881,7 +886,11 @@ fn compute_local_layout(wasm_ops: &[WasmOp], num_params: u32) -> LocalLayout {
 /// Without this, the spilled-local store/load path would emit a single
 /// 4-byte STR/LDR for i64 locals, dropping the upper half — corrupting
 /// any function that returns or uses a u64-packed FFI struct.
-fn infer_i64_locals(wasm_ops: &[WasmOp]) -> std::collections::HashSet<u32> {
+fn infer_i64_locals(
+    wasm_ops: &[WasmOp],
+    func_ret_i64: &[bool],
+    type_ret_i64: &[bool],
+) -> std::collections::HashSet<u32> {
     use WasmOp::*;
     let mut i64_locals: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut vstack: Vec<bool> = Vec::new(); // true = i64
@@ -945,6 +954,36 @@ fn infer_i64_locals(wasm_ops: &[WasmOp]) -> std::collections::HashSet<u32> {
                 let v2 = vstack.pop();
                 let v1 = vstack.pop();
                 vstack.push(v1.or(v2).unwrap_or(false));
+            }
+            // #311: a call's result width comes from the callee's signature —
+            // without this, an i64-returning call feeding `local.set` left the
+            // local inferred as i32 (4-byte slot, single-word store: the hi
+            // half of gale's packed u64 decision was silently dropped).
+            Call(func_idx) => {
+                let (pops, pushes) = wasm_stack_effect(op);
+                for _ in 0..pops {
+                    vstack.pop();
+                }
+                let w = func_ret_i64
+                    .get(*func_idx as usize)
+                    .copied()
+                    .unwrap_or(false);
+                for _ in 0..pushes {
+                    vstack.push(w);
+                }
+            }
+            CallIndirect { type_index, .. } => {
+                let (pops, pushes) = wasm_stack_effect(op);
+                for _ in 0..pops {
+                    vstack.pop();
+                }
+                let w = type_ret_i64
+                    .get(*type_index as usize)
+                    .copied()
+                    .unwrap_or(false);
+                for _ in 0..pushes {
+                    vstack.push(w);
+                }
             }
             _ => {
                 let (pops, pushes) = wasm_stack_effect(op);
@@ -1240,6 +1279,10 @@ pub struct InstructionSelector {
     /// `global.get` materializes `__synth_wasm_data + init` (the real stack top),
     /// `global.set` is dead (no wasm reader; host imports don't touch wasm SP).
     sp_global: Option<(u32, i32)>,
+    /// #311: whether function `i` (full wasm index) returns i64.
+    func_ret_i64: Vec<bool>,
+    /// #311: whether type `i` returns i64 (`call_indirect`).
+    type_ret_i64: Vec<bool>,
     /// AAPCS argument count per function, indexed by the *full* WASM function
     /// index (imports first, then locals). Plumbed from the frontend's type +
     /// function sections (issue #195). `func_arg_counts[i]` = number of integer
@@ -1281,6 +1324,8 @@ impl InstructionSelector {
             linear_memory_bytes: 0,
             wasm_data_base: 0,
             sp_global: None,
+            func_ret_i64: Vec::new(),
+            type_ret_i64: Vec::new(),
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1305,6 +1350,8 @@ impl InstructionSelector {
             linear_memory_bytes: 0,
             wasm_data_base: 0,
             sp_global: None,
+            func_ret_i64: Vec::new(),
+            type_ret_i64: Vec::new(),
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1359,10 +1406,48 @@ impl InstructionSelector {
     /// #237: register the stack-pointer global discovered by the backend. Its
     /// initializer doubles as the static-data base (`wasm_data_base`), so const
     /// addresses at/above it relocate while frame-size scalars below it don't.
+    /// #311: register per-function / per-type i64-result tables so call
+    /// results are tagged as register pairs (hi half visible to liveness).
+    pub fn set_result_types(&mut self, func_ret_i64: Vec<bool>, type_ret_i64: Vec<bool>) {
+        self.func_ret_i64 = func_ret_i64;
+        self.type_ret_i64 = type_ret_i64;
+    }
+
     pub fn set_native_pointer_stack(&mut self, sp_index: u32, sp_init: i32) {
         self.sp_global = Some((sp_index, sp_init));
         if sp_init >= 0 {
             self.wasm_data_base = sp_init as u32;
+        }
+    }
+
+    /// #237: emit a `symbol + addend` absolute address into `rd` (MOVW+MOVT,
+    /// symbol-relocated) — base-independent addressing for any linker-placed
+    /// region (`__synth_wasm_data` statics, `__synth_globals` slots).
+    fn emit_sym_addr(
+        out: &mut Vec<ArmInstruction>,
+        rd: Reg,
+        symbol: &str,
+        addend: i32,
+        line: usize,
+    ) {
+        for hi in [false, true] {
+            let op = if hi {
+                ArmOp::MovtSym {
+                    rd,
+                    symbol: symbol.to_string(),
+                    addend,
+                }
+            } else {
+                ArmOp::MovwSym {
+                    rd,
+                    symbol: symbol.to_string(),
+                    addend,
+                }
+            };
+            out.push(ArmInstruction {
+                op,
+                source_line: Some(line),
+            });
         }
     }
 
@@ -4671,6 +4756,7 @@ impl InstructionSelector {
         local_to_reg: &std::collections::HashMap<u32, Reg>,
         layout: &LocalLayout,
         spill: &mut SpillState,
+        ret_i64: bool,
         idx: usize,
     ) -> Result<StackVal> {
         // If R0 (the return value) is among the preserved registers, its slot
@@ -4680,9 +4766,24 @@ impl InstructionSelector {
         // spill the result to the i64 frame area and return a `Spilled` value
         // that is reloaded when popped — this is what lets `z_impl_k_sem_give`
         // (i64 + several calls) compile rather than be skipped.
-        let r0_preserved = preserved.iter().any(|&(r, _)| r == Reg::R0);
+        //
+        // #311: an i64 result occupies the R0:R1 PAIR. It must be tagged i64 on
+        // the operand stack (so liveness sees the hi half and the next constant
+        // materialization cannot land in R1 — gale's k_sem_give silent
+        // wrong-code), and any restoration touching R0 OR R1 forces the pair
+        // through the spill path (the single-free-callee-saved move cannot
+        // carry both halves).
+        let r0_preserved = preserved
+            .iter()
+            .any(|&(r, _)| r == Reg::R0 || (ret_i64 && r == Reg::R1));
         let result = if r0_preserved {
-            match self.free_callee_saved(stack, local_to_reg, layout) {
+            match (!ret_i64)
+                .then(|| self.free_callee_saved(stack, local_to_reg, layout))
+                .transpose()
+                .ok()
+                .flatten()
+                .ok_or(())
+            {
                 Ok(free) => {
                     instructions.push(ArmInstruction {
                         op: ArmOp::Mov {
@@ -4725,6 +4826,8 @@ impl InstructionSelector {
                     }
                 }
             }
+        } else if ret_i64 {
+            StackVal::i64(Reg::R0)
         } else {
             StackVal::i32(Reg::R0)
         };
@@ -4800,7 +4903,8 @@ impl InstructionSelector {
         });
 
         // Compute non-param local layout (offsets + total frame size).
-        let layout = compute_local_layout(wasm_ops, num_params);
+        let layout =
+            compute_local_layout(wasm_ops, num_params, &self.func_ret_i64, &self.type_ret_i64);
         // Allocate stack space for non-param locals so they don't alias the
         // callee-saved-register spill area (which immediately follows SP
         // after Push above).
@@ -4864,7 +4968,7 @@ impl InstructionSelector {
             }
         }
 
-        let i64_locals = infer_i64_locals(wasm_ops);
+        let i64_locals = infer_i64_locals(wasm_ops, &self.func_ret_i64, &self.type_ret_i64);
 
         // #193/#210: a register-backed param (call-free function — call functions
         // frame-back via param_slots) lives in r0..r3 and is NOT on the operand
@@ -6821,6 +6925,12 @@ impl InstructionSelector {
                     }
                     cf.add_instruction();
 
+                    // #311: tag an i64 result as the R0:R1 pair.
+                    let ret_i64 = self
+                        .func_ret_i64
+                        .get(*func_idx as usize)
+                        .copied()
+                        .unwrap_or(false);
                     let result_reg = self.restore_caller_saved(
                         &mut instructions,
                         &preserved,
@@ -6828,6 +6938,7 @@ impl InstructionSelector {
                         &local_to_reg,
                         &layout,
                         &mut spill,
+                        ret_i64,
                         idx,
                     )?;
                     // Push the call's return value as a live operand (spilled to
@@ -6932,6 +7043,12 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     cf.add_instruction();
+                    // #311: tag an i64 result as the R0:R1 pair (static type).
+                    let ret_i64 = self
+                        .type_ret_i64
+                        .get(*type_index as usize)
+                        .copied()
+                        .unwrap_or(false);
                     let result_reg = self.restore_caller_saved(
                         &mut instructions,
                         &preserved,
@@ -6939,6 +7056,7 @@ impl InstructionSelector {
                         &local_to_reg,
                         &layout,
                         &mut spill,
+                        ret_i64,
                         idx,
                     )?;
                     stack.push(result_reg);
@@ -7216,18 +7334,50 @@ impl InstructionSelector {
                 }
 
                 GlobalGet(global_idx) => {
-                    // #237: under the native-pointer ABI, reading the stack-pointer
-                    // global yields the real stack top — `__synth_wasm_data + init`
-                    // — register-promoted, so the dissolved object needs no runtime
-                    // R9 globals table. Frame arithmetic on this real pointer keeps
-                    // the base; SP-relative loads become true memory accesses.
-                    if let Some((sp_idx, sp_init)) = self.sp_global
-                        && *global_idx == sp_idx
-                    {
+                    // #237 (gale, mutex-on-silicon): under the native-pointer ABI,
+                    // globals live in MATERIALIZED slots (`__synth_globals + idx*4`,
+                    // emitted into the object's .data with their wasm init values)
+                    // — mutable state that survives global.set, unlike the earlier
+                    // constant promotion whose paired dropped-store miscompiled any
+                    // multi-function module that moves the shadow-stack pointer.
+                    // Slots hold wasm OFFSETS (no data relocation needed); the SP
+                    // global is rebased to an absolute pointer on read so address
+                    // arithmetic and [r11=0 + addr] accesses see host pointers.
+                    if self.native_pointer_abi {
                         let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
-                        Self::emit_wasm_data_addr(&mut instructions, dst, sp_init, idx);
+                        Self::emit_sym_addr(
+                            &mut instructions,
+                            dst,
+                            "__synth_globals",
+                            (*global_idx as i32) * 4,
+                            idx,
+                        );
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Ldr {
+                                rd: dst,
+                                addr: MemAddr::imm(dst, 0),
+                            },
+                            source_line: Some(idx),
+                        });
                         cf.add_instruction();
                         stack.push(StackVal::i32(dst));
+                        if let Some((sp_idx, _)) = self.sp_global
+                            && *global_idx == sp_idx
+                        {
+                            // dst is on the operand stack now, so the base temp
+                            // cannot alias it.
+                            let base = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                            Self::emit_wasm_data_addr(&mut instructions, base, 0, idx);
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Add {
+                                    rd: dst,
+                                    rn: dst,
+                                    op2: Operand2::Reg(base),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                         continue;
                     }
                     // Load global value from globals table (R9 = globals base).
@@ -7254,15 +7404,51 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // #237: a write to the register-promoted stack-pointer global is
-                    // dead in a leaf, balanced function — the only readers are this
-                    // function's own `global.get`s (which re-materialize the init
-                    // address) and host imports (which never touch wasm SP). Pop the
-                    // operand (preserving stack discipline) and drop the store.
-                    if let Some((sp_idx, _)) = self.sp_global
-                        && *global_idx == sp_idx
-                    {
-                        let _ = val;
+                    // #237 (gale, mutex-on-silicon): under the native-pointer ABI
+                    // the store is REAL — write the value into the global's
+                    // materialized slot. The earlier "dropped store" leaf
+                    // assumption miscompiled multi-function modules whose callees
+                    // re-read the moved shadow-stack pointer. The SP global's
+                    // absolute pointer is rebased back to a wasm offset before the
+                    // store (slots hold offsets; no data relocation needed).
+                    if self.native_pointer_abi {
+                        let mut reserved = live_params.clone();
+                        reserved.push(val);
+                        let stored = if let Some((sp_idx, _)) = self.sp_global
+                            && *global_idx == sp_idx
+                        {
+                            let base = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
+                            Self::emit_wasm_data_addr(&mut instructions, base, 0, idx);
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Sub {
+                                    rd: base,
+                                    rn: val,
+                                    op2: Operand2::Reg(base),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            base
+                        } else {
+                            val
+                        };
+                        reserved.push(stored);
+                        let slot = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
+                        Self::emit_sym_addr(
+                            &mut instructions,
+                            slot,
+                            "__synth_globals",
+                            (*global_idx as i32) * 4,
+                            idx,
+                        );
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: stored,
+                                addr: MemAddr::imm(slot, 0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
                         continue;
                     }
                     instructions.push(ArmInstruction {
@@ -8623,6 +8809,15 @@ impl InstructionSelector {
         // Reload-aware (#171): a spilled final result is reloaded before the
         // AAPCS return-value move. Past the op loop, so use wasm_ops.len() as
         // the synthetic source line for any reload.
+        // #311 defect 3 (gale): an i64 RESULT is the (lo, hi) pair and BOTH
+        // halves must reach r0:r1 — the single-register move silently dropped
+        // the hi whenever the final value transited registers other than
+        // r0/r1 (decide() returned (0,0) where the contract says (0,1)).
+        // Capture the width BEFORE peek (which returns only the lo register).
+        let result_is_i64 = matches!(
+            stack.last(),
+            Some(StackVal::Reg { is_i64: true, .. }) | Some(StackVal::Spilled { is_i64: true, .. })
+        );
         let result_reg = if stack.is_empty() {
             None
         } else {
@@ -8635,16 +8830,32 @@ impl InstructionSelector {
                 wasm_ops.len(),
             )?)
         };
-        if let Some(result_reg) = result_reg
-            && result_reg != Reg::R0
-        {
-            instructions.push(ArmInstruction {
-                op: ArmOp::Mov {
-                    rd: Reg::R0,
-                    op2: Operand2::Reg(result_reg),
-                },
-                source_line: None,
-            });
+        if let Some(result_reg) = result_reg {
+            // lo move FIRST: for a consecutive pair (hi = lo+1) the only
+            // overlap case is lo == R1 (hi == R2), where r1 must be READ by
+            // the lo move before the hi move WRITES it — lo-first is safe for
+            // every possible pair (hi == R0 would require lo == "R-1").
+            if result_reg != Reg::R0 {
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Mov {
+                        rd: Reg::R0,
+                        op2: Operand2::Reg(result_reg),
+                    },
+                    source_line: None,
+                });
+            }
+            if result_is_i64 {
+                let hi = i64_pair_hi(result_reg)?;
+                if hi != Reg::R1 {
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Mov {
+                            rd: Reg::R1,
+                            op2: Operand2::Reg(hi),
+                        },
+                        source_line: None,
+                    });
+                }
+            }
         }
         if layout.frame_size > 0 {
             instructions.push(ArmInstruction {
@@ -14378,7 +14589,7 @@ mod tests {
     fn test_compute_local_layout_no_locals() {
         // Function with only params and no LocalGet/Set produces zero frame.
         let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add];
-        let layout = compute_local_layout(&ops, 2);
+        let layout = compute_local_layout(&ops, 2, &[], &[]);
         assert_eq!(layout.frame_size, 0);
         assert!(layout.locals.is_empty());
     }
@@ -14391,7 +14602,7 @@ mod tests {
             WasmOp::LocalSet(1),
             WasmOp::LocalGet(1),
         ];
-        let layout = compute_local_layout(&ops, 1);
+        let layout = compute_local_layout(&ops, 1, &[], &[]);
         assert!(layout.locals.contains_key(&1));
         let (off, is_i64) = layout.locals[&1];
         assert_eq!(off, 0);
@@ -14408,7 +14619,7 @@ mod tests {
             WasmOp::LocalSet(0),
             WasmOp::LocalGet(0),
         ];
-        let layout = compute_local_layout(&ops, 0);
+        let layout = compute_local_layout(&ops, 0, &[], &[]);
         let (off, is_i64) = layout.locals[&0];
         assert_eq!(off, 0);
         assert!(is_i64);
@@ -14428,7 +14639,7 @@ mod tests {
             WasmOp::I64Const(2),
             WasmOp::LocalSet(1),
         ];
-        let layout = compute_local_layout(&ops, 0);
+        let layout = compute_local_layout(&ops, 0, &[], &[]);
         let (off0, is_i64_0) = layout.locals[&0];
         let (off1, is_i64_1) = layout.locals[&1];
         assert_eq!(off0, 0);
@@ -14450,7 +14661,7 @@ mod tests {
             WasmOp::I32Add,
             WasmOp::LocalSet(2),
         ];
-        let layout = compute_local_layout(&ops, 2);
+        let layout = compute_local_layout(&ops, 2, &[], &[]);
         // Only idx 2 should be in the layout.
         assert!(!layout.locals.contains_key(&0));
         assert!(!layout.locals.contains_key(&1));
@@ -14461,7 +14672,7 @@ mod tests {
     fn test_infer_i64_locals_from_localset() {
         // i64.const → local.set marks that local as i64.
         let ops = vec![WasmOp::I64Const(7), WasmOp::LocalSet(3)];
-        let i64_locals = infer_i64_locals(&ops);
+        let i64_locals = infer_i64_locals(&ops, &[], &[]);
         assert!(i64_locals.contains(&3));
     }
 
@@ -14470,7 +14681,7 @@ mod tests {
         // local.tee preserves the value on the stack and stores to local —
         // its width should be inferred from what's on the stack.
         let ops = vec![WasmOp::I64Const(99), WasmOp::LocalTee(2), WasmOp::Drop];
-        let i64_locals = infer_i64_locals(&ops);
+        let i64_locals = infer_i64_locals(&ops, &[], &[]);
         assert!(i64_locals.contains(&2));
     }
 
@@ -14478,7 +14689,7 @@ mod tests {
     fn test_infer_i64_locals_does_not_flag_i32_locals() {
         // i32 ops should not produce i64 locals.
         let ops = vec![WasmOp::I32Const(1), WasmOp::LocalSet(0)];
-        let i64_locals = infer_i64_locals(&ops);
+        let i64_locals = infer_i64_locals(&ops, &[], &[]);
         assert!(!i64_locals.contains(&0));
     }
 
@@ -14491,7 +14702,7 @@ mod tests {
             WasmOp::I64Add,
             WasmOp::LocalSet(5),
         ];
-        let i64_locals = infer_i64_locals(&ops);
+        let i64_locals = infer_i64_locals(&ops, &[], &[]);
         assert!(i64_locals.contains(&5));
     }
 
@@ -15236,6 +15447,145 @@ mod tests {
     /// segment becomes `__synth_wasm_data`-relative (MovwSym/MovtSym), so a
     /// `base=0` host-pointer trampoline doesn't mis-resolve it. Without the flag
     /// (and for an out-of-range/runtime address) it stays base-relative.
+    #[test]
+    fn test_311_i64_return_moves_both_halves() {
+        // #311 defect 3 (gale): when a function's final i64 lands outside
+        // r0:r1, the return epilogue must move BOTH halves — the single-reg
+        // move dropped the hi (decide() returned (0,0), contract (0,1)).
+        // Three i64 consts force the final Or's destination pair off r0/r1.
+        let db = RuleDatabase::new();
+        let mut sel = InstructionSelector::new(db.rules().to_vec());
+        let ops = vec![
+            WasmOp::I64Const(1),
+            WasmOp::I64Const(2),
+            WasmOp::I64Const(3),
+            WasmOp::I64Or,
+            WasmOp::I64Or,
+        ];
+        let instrs = sel.select_with_stack(&ops, 0).unwrap();
+        // The epilogue's return moves: r0 <- lo, r1 <- hi of a CONSECUTIVE
+        // pair that is not already (r0, r1).
+        let mov_to = |rd: Reg| {
+            instrs.iter().rev().find_map(|i| match &i.op {
+                ArmOp::Mov {
+                    rd: d,
+                    op2: Operand2::Reg(src),
+                } if *d == rd => Some(*src),
+                _ => None,
+            })
+        };
+        let lo_src = mov_to(Reg::R0).expect("epilogue must move the lo half into r0");
+        let hi_src = mov_to(Reg::R1)
+            .expect("epilogue must move the HI half into r1 (the dropped-hi defect)");
+        assert_eq!(
+            i64_pair_hi(lo_src).unwrap(),
+            hi_src,
+            "the two moves must carry one consecutive pair (got {lo_src:?}/{hi_src:?})"
+        );
+        assert_ne!(
+            lo_src,
+            Reg::R0,
+            "premise: the pair transited high registers"
+        );
+    }
+    #[test]
+    fn test_311_i64_call_result_tagged_as_pair() {
+        // #311 (gale, k_sem_give silent wrong-code): an i64-returning call
+        // leaves its result in the R0:R1 PAIR. The result must be i64-tagged
+        // on the operand stack so liveness covers R1 — the mask constants of
+        // the following unpack must NOT materialize into the live pair.
+        let db = RuleDatabase::new();
+        let mut sel = InstructionSelector::new(db.rules().to_vec());
+        sel.set_func_arg_counts(vec![0, 0], vec![]);
+        sel.set_result_types(vec![false, true], vec![]);
+        let ops = vec![
+            WasmOp::Call(1),       // returns i64 in r0:r1
+            WasmOp::I64Const(255), // pair const — must avoid r0/r1
+            WasmOp::I64And,
+            WasmOp::I32WrapI64,
+        ];
+        let instrs = sel.select_with_stack(&ops, 0).unwrap();
+        let bl_at = instrs
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Bl { .. }))
+            .expect("call emitted");
+        let clobbers_pair = instrs[bl_at + 1..]
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Movw { rd, .. } if *rd == Reg::R0 || *rd == Reg::R1));
+        assert!(
+            !clobbers_pair,
+            "mask constants must not materialize into the live u64 pair r0/r1"
+        );
+    }
+
+    #[test]
+    fn test_311_call_fed_i64_local_inferred() {
+        // The second half of #311: `local.set` fed by an i64-returning call
+        // must mark the local i64 (8-byte slot, both halves stored) — without
+        // the result-type table the hi word was silently dropped.
+        let ops = vec![WasmOp::Call(1), WasmOp::LocalSet(0)];
+        let with_table = infer_i64_locals(&ops, &[false, true], &[]);
+        assert!(with_table.contains(&0), "call-fed local inferred i64");
+        let without = infer_i64_locals(&ops, &[], &[]);
+        assert!(!without.contains(&0), "no table -> conservative i32");
+    }
+
+    #[test]
+    fn test_237_globals_live_in_materialized_slots_under_native_pointer_abi() {
+        // #237 (gale, mutex-on-silicon): global.get/set go through
+        // `__synth_globals` slots — the set is a REAL store (the dropped-store
+        // leaf assumption miscompiled gmutex), the get reads the CURRENT value,
+        // and the SP global is rebased absolute-on-read / offset-on-write.
+        let db = RuleDatabase::new();
+        let mut sel = InstructionSelector::new(db.rules().to_vec());
+        sel.set_native_pointer_abi(true, 65536);
+        sel.set_native_pointer_stack(0, 4096);
+        let ops = vec![
+            WasmOp::GlobalGet(0),
+            WasmOp::I32Const(16),
+            WasmOp::I32Sub,
+            WasmOp::GlobalSet(0),
+        ];
+        let instrs = sel.select_with_stack(&ops, 0).unwrap();
+        let globals_syms = instrs
+            .iter()
+            .filter(
+                |i| matches!(&i.op, ArmOp::MovwSym { symbol, .. } if symbol == "__synth_globals"),
+            )
+            .count();
+        assert_eq!(
+            globals_syms, 2,
+            "one slot address for the get, one for the set"
+        );
+        let base_syms = instrs
+            .iter()
+            .filter(
+                |i| matches!(&i.op, ArmOp::MovwSym { symbol, .. } if symbol == "__synth_wasm_data"),
+            )
+            .count();
+        assert_eq!(base_syms, 2, "rebase on read (add) and on write (sub)");
+        assert!(
+            instrs.iter().any(|i| matches!(&i.op, ArmOp::Ldr { .. })),
+            "the get LOADS the slot (not a constant)"
+        );
+        assert!(
+            instrs.iter().any(|i| matches!(&i.op, ArmOp::Str { .. })),
+            "the set STORES to the slot (not dropped)"
+        );
+        assert!(
+            !instrs
+                .iter()
+                .any(|i| { reg_effect_touches(&i.op, Reg::R9) }),
+            "no R9 globals-table access under the native-pointer ABI"
+        );
+    }
+
+    fn reg_effect_touches(op: &ArmOp, reg: Reg) -> bool {
+        crate::liveness::reg_effect(op)
+            .map(|e| e.defs.contains(&reg) || e.uses.contains(&reg))
+            .unwrap_or(false)
+    }
+
     #[test]
     fn test_237_static_store_is_symbol_relative_under_native_pointer_abi() {
         let db = RuleDatabase::new();
