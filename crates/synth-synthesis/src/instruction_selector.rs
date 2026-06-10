@@ -1366,6 +1366,37 @@ impl InstructionSelector {
         }
     }
 
+    /// #237: emit a `symbol + addend` absolute address into `rd` (MOVW+MOVT,
+    /// symbol-relocated) — base-independent addressing for any linker-placed
+    /// region (`__synth_wasm_data` statics, `__synth_globals` slots).
+    fn emit_sym_addr(
+        out: &mut Vec<ArmInstruction>,
+        rd: Reg,
+        symbol: &str,
+        addend: i32,
+        line: usize,
+    ) {
+        for hi in [false, true] {
+            let op = if hi {
+                ArmOp::MovtSym {
+                    rd,
+                    symbol: symbol.to_string(),
+                    addend,
+                }
+            } else {
+                ArmOp::MovwSym {
+                    rd,
+                    symbol: symbol.to_string(),
+                    addend,
+                }
+            };
+            out.push(ArmInstruction {
+                op,
+                source_line: Some(line),
+            });
+        }
+    }
+
     /// #237: emit a `__synth_wasm_data + addend` address into `rd` (MOVW+MOVT,
     /// symbol-relocated) — the base-independent static-data address.
     fn emit_wasm_data_addr(out: &mut Vec<ArmInstruction>, rd: Reg, addend: i32, line: usize) {
@@ -7216,18 +7247,50 @@ impl InstructionSelector {
                 }
 
                 GlobalGet(global_idx) => {
-                    // #237: under the native-pointer ABI, reading the stack-pointer
-                    // global yields the real stack top — `__synth_wasm_data + init`
-                    // — register-promoted, so the dissolved object needs no runtime
-                    // R9 globals table. Frame arithmetic on this real pointer keeps
-                    // the base; SP-relative loads become true memory accesses.
-                    if let Some((sp_idx, sp_init)) = self.sp_global
-                        && *global_idx == sp_idx
-                    {
+                    // #237 (gale, mutex-on-silicon): under the native-pointer ABI,
+                    // globals live in MATERIALIZED slots (`__synth_globals + idx*4`,
+                    // emitted into the object's .data with their wasm init values)
+                    // — mutable state that survives global.set, unlike the earlier
+                    // constant promotion whose paired dropped-store miscompiled any
+                    // multi-function module that moves the shadow-stack pointer.
+                    // Slots hold wasm OFFSETS (no data relocation needed); the SP
+                    // global is rebased to an absolute pointer on read so address
+                    // arithmetic and [r11=0 + addr] accesses see host pointers.
+                    if self.native_pointer_abi {
                         let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
-                        Self::emit_wasm_data_addr(&mut instructions, dst, sp_init, idx);
+                        Self::emit_sym_addr(
+                            &mut instructions,
+                            dst,
+                            "__synth_globals",
+                            (*global_idx as i32) * 4,
+                            idx,
+                        );
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Ldr {
+                                rd: dst,
+                                addr: MemAddr::imm(dst, 0),
+                            },
+                            source_line: Some(idx),
+                        });
                         cf.add_instruction();
                         stack.push(StackVal::i32(dst));
+                        if let Some((sp_idx, _)) = self.sp_global
+                            && *global_idx == sp_idx
+                        {
+                            // dst is on the operand stack now, so the base temp
+                            // cannot alias it.
+                            let base = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                            Self::emit_wasm_data_addr(&mut instructions, base, 0, idx);
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Add {
+                                    rd: dst,
+                                    rn: dst,
+                                    op2: Operand2::Reg(base),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                         continue;
                     }
                     // Load global value from globals table (R9 = globals base).
@@ -7254,15 +7317,51 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    // #237: a write to the register-promoted stack-pointer global is
-                    // dead in a leaf, balanced function — the only readers are this
-                    // function's own `global.get`s (which re-materialize the init
-                    // address) and host imports (which never touch wasm SP). Pop the
-                    // operand (preserving stack discipline) and drop the store.
-                    if let Some((sp_idx, _)) = self.sp_global
-                        && *global_idx == sp_idx
-                    {
-                        let _ = val;
+                    // #237 (gale, mutex-on-silicon): under the native-pointer ABI
+                    // the store is REAL — write the value into the global's
+                    // materialized slot. The earlier "dropped store" leaf
+                    // assumption miscompiled multi-function modules whose callees
+                    // re-read the moved shadow-stack pointer. The SP global's
+                    // absolute pointer is rebased back to a wasm offset before the
+                    // store (slots hold offsets; no data relocation needed).
+                    if self.native_pointer_abi {
+                        let mut reserved = live_params.clone();
+                        reserved.push(val);
+                        let stored = if let Some((sp_idx, _)) = self.sp_global
+                            && *global_idx == sp_idx
+                        {
+                            let base = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
+                            Self::emit_wasm_data_addr(&mut instructions, base, 0, idx);
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Sub {
+                                    rd: base,
+                                    rn: val,
+                                    op2: Operand2::Reg(base),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            base
+                        } else {
+                            val
+                        };
+                        reserved.push(stored);
+                        let slot = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
+                        Self::emit_sym_addr(
+                            &mut instructions,
+                            slot,
+                            "__synth_globals",
+                            (*global_idx as i32) * 4,
+                            idx,
+                        );
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: stored,
+                                addr: MemAddr::imm(slot, 0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
                         continue;
                     }
                     instructions.push(ArmInstruction {
@@ -15236,6 +15335,62 @@ mod tests {
     /// segment becomes `__synth_wasm_data`-relative (MovwSym/MovtSym), so a
     /// `base=0` host-pointer trampoline doesn't mis-resolve it. Without the flag
     /// (and for an out-of-range/runtime address) it stays base-relative.
+    #[test]
+    fn test_237_globals_live_in_materialized_slots_under_native_pointer_abi() {
+        // #237 (gale, mutex-on-silicon): global.get/set go through
+        // `__synth_globals` slots — the set is a REAL store (the dropped-store
+        // leaf assumption miscompiled gmutex), the get reads the CURRENT value,
+        // and the SP global is rebased absolute-on-read / offset-on-write.
+        let db = RuleDatabase::new();
+        let mut sel = InstructionSelector::new(db.rules().to_vec());
+        sel.set_native_pointer_abi(true, 65536);
+        sel.set_native_pointer_stack(0, 4096);
+        let ops = vec![
+            WasmOp::GlobalGet(0),
+            WasmOp::I32Const(16),
+            WasmOp::I32Sub,
+            WasmOp::GlobalSet(0),
+        ];
+        let instrs = sel.select_with_stack(&ops, 0).unwrap();
+        let globals_syms = instrs
+            .iter()
+            .filter(
+                |i| matches!(&i.op, ArmOp::MovwSym { symbol, .. } if symbol == "__synth_globals"),
+            )
+            .count();
+        assert_eq!(
+            globals_syms, 2,
+            "one slot address for the get, one for the set"
+        );
+        let base_syms = instrs
+            .iter()
+            .filter(
+                |i| matches!(&i.op, ArmOp::MovwSym { symbol, .. } if symbol == "__synth_wasm_data"),
+            )
+            .count();
+        assert_eq!(base_syms, 2, "rebase on read (add) and on write (sub)");
+        assert!(
+            instrs.iter().any(|i| matches!(&i.op, ArmOp::Ldr { .. })),
+            "the get LOADS the slot (not a constant)"
+        );
+        assert!(
+            instrs.iter().any(|i| matches!(&i.op, ArmOp::Str { .. })),
+            "the set STORES to the slot (not dropped)"
+        );
+        assert!(
+            !instrs
+                .iter()
+                .any(|i| { reg_effect_touches(&i.op, Reg::R9) }),
+            "no R9 globals-table access under the native-pointer ABI"
+        );
+    }
+
+    fn reg_effect_touches(op: &ArmOp, reg: Reg) -> bool {
+        crate::liveness::reg_effect(op)
+            .map(|e| e.defs.contains(&reg) || e.uses.contains(&reg))
+            .unwrap_or(false)
+    }
+
     #[test]
     fn test_237_static_store_is_symbol_relative_under_native_pointer_abi() {
         let db = RuleDatabase::new();
