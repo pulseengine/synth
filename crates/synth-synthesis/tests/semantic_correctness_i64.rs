@@ -460,6 +460,27 @@ fn find_i64_result(instrs: &[ArmInstruction]) -> Option<I64Result> {
             _ => {}
         }
     }
+    // #311 defect 3: the return epilogue now moves a function-final i64 pair
+    // into the AAPCS result registers (mov r0, lo; mov r1, hi). When those
+    // moves are present for the pair we tracked, the OBSERVABLE result lives
+    // in r0:r1 — and the hi move may legitimately overwrite the old pair's
+    // registers, so reading the pre-move location is wrong. Follow the moves.
+    if let Some(p) = &last_pair {
+        let lo_moved = instrs.iter().any(
+            |i| matches!(&i.op, ArmOp::Mov { rd: Reg::R0, op2: Operand2::Reg(s) } if *s == p.lo),
+        );
+        if lo_moved || p.lo == Reg::R0 {
+            let hi_moved = instrs.iter().any(|i| {
+                matches!(&i.op, ArmOp::Mov { rd: Reg::R1, op2: Operand2::Reg(s) } if *s == p.hi)
+            });
+            if hi_moved || p.hi == Reg::R1 {
+                return Some(I64Result {
+                    lo: Reg::R0,
+                    hi: Reg::R1,
+                });
+            }
+        }
+    }
     last_pair
 }
 
@@ -983,6 +1004,20 @@ fn find_extend_i32u_pair(instrs: &[ArmInstruction]) -> Option<(Reg, Reg)> {
             }
             ArmOp::Movw { rd, imm16: 0 } => {
                 if let Some(lo) = last_mov_rd.take() {
+                    // #311 defect 3: follow the return epilogue's pair moves (mov r0, lo;
+                    // mov r1, hi) — reading the pre-move registers is wrong once the hi move
+                    // legitimately overwrites them.
+                    if let Some((lo, hi)) = found {
+                        let lo_moved = instrs.iter().any(|i| {
+            matches!(&i.op, ArmOp::Mov { rd: Reg::R0, op2: Operand2::Reg(s) } if *s == lo)
+        });
+                        let hi_moved = instrs.iter().any(|i| {
+            matches!(&i.op, ArmOp::Mov { rd: Reg::R1, op2: Operand2::Reg(s) } if *s == hi)
+        });
+                        if (lo_moved || lo == Reg::R0) && (hi_moved || hi == Reg::R1) {
+                            return Some((Reg::R0, Reg::R1));
+                        }
+                    }
                     found = Some((lo, *rd));
                 }
             }
@@ -993,6 +1028,20 @@ fn find_extend_i32u_pair(instrs: &[ArmInstruction]) -> Option<(Reg, Reg)> {
                     last_mov_rd = None;
                 }
             }
+        }
+    }
+    // #311 defect 3: follow the return epilogue's pair moves (mov r0, lo;
+    // mov r1, hi) — reading the pre-move registers is wrong once the hi move
+    // legitimately overwrites them.
+    if let Some((lo, hi)) = found {
+        let lo_moved = instrs.iter().any(
+            |i| matches!(&i.op, ArmOp::Mov { rd: Reg::R0, op2: Operand2::Reg(s) } if *s == lo),
+        );
+        let hi_moved = instrs.iter().any(
+            |i| matches!(&i.op, ArmOp::Mov { rd: Reg::R1, op2: Operand2::Reg(s) } if *s == hi),
+        );
+        if (lo_moved || lo == Reg::R0) && (hi_moved || hi == Reg::R1) {
+            return Some((Reg::R0, Reg::R1));
         }
     }
     found
