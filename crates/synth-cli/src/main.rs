@@ -2369,8 +2369,8 @@ fn build_relocatable_elf(
                     f.relocations
                         .iter()
                         .filter(|&r| {
-                            (r.symbol == "__synth_wasm_data"
-                                && matches!(r.kind, synth_core::RelocKind::MovwAbs))
+                            r.symbol == "__synth_wasm_data"
+                                && matches!(r.kind, synth_core::RelocKind::MovwAbs)
                         })
                         .map(|r| {
                             let lo = thm_imm16(&f.code, r.offset as usize);
