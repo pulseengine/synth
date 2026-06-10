@@ -2366,10 +2366,13 @@ fn build_relocatable_elf(
             let static_top = funcs
                 .iter()
                 .flat_map(|f| {
-                    f.relocations.iter().filter_map(|r| {
-                        (r.symbol == "__synth_wasm_data"
-                            && matches!(r.kind, synth_core::RelocKind::MovwAbs))
-                        .then(|| {
+                    f.relocations
+                        .iter()
+                        .filter(|&r| {
+                            (r.symbol == "__synth_wasm_data"
+                                && matches!(r.kind, synth_core::RelocKind::MovwAbs))
+                        })
+                        .map(|r| {
                             let lo = thm_imm16(&f.code, r.offset as usize);
                             // The paired MOVT immediately follows (emit order).
                             let hi = f
@@ -2383,7 +2386,6 @@ fn build_relocatable_elf(
                                 .unwrap_or(0);
                             (hi << 16) | lo
                         })
-                    })
                 })
                 .map(|a: u32| a.saturating_add(8))
                 .max()
