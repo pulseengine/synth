@@ -270,10 +270,23 @@ fn compile_wasm_to_arm(
     // registers, reserved R9-R12/SP identity-assigned — each segment is
     // independently sound, no cross-segment liveness assumed). Renames
     // registers only: never adds, removes, or reorders instructions, so
-    // labels/branch offsets are unaffected. Behind `SYNTH_RANGE_REALLOC=1`
-    // while it is validated against the differential oracle + gale's five
-    // on-target baselines; off by default keeps every fixture bit-identical.
-    let arm_instrs = if std::env::var("SYNTH_RANGE_REALLOC").is_ok() {
+    // labels/branch offsets are unaffected.
+    //
+    // DEFAULT-ON since v0.11.36: gale cleared the gate on-target (G474RE,
+    // #209 2026-06-10) — flag-on output byte-identical to flag-off on
+    // flat_flight/controller/control_step, fires on the filter family with
+    // zero cycle delta and a small size win, all selfchecks green on silicon.
+    // Opt out with `SYNTH_RANGE_REALLOC=0`; per-function stats with
+    // `SYNTH_REALLOC_STATS=1`.
+    //
+    // The companion dead callee-saved-save elimination (gale's "next
+    // consequential lever", same issue comment) then shrinks the prologue
+    // `push {r4-r8,lr}` / epilogue `pop {r4-r8,pc}` to the callee-saved
+    // registers the re-allocated body still touches (leaf-only,
+    // SP-untouched, even-count-padded — see shrink_callee_saved_saves):
+    // ~12 cycles of pure save/restore overhead removed on small leaves.
+    let realloc_on = std::env::var("SYNTH_RANGE_REALLOC").map_or(true, |v| v != "0");
+    let arm_instrs = if realloc_on {
         use synth_synthesis::rules::Reg;
         const POOL: [Reg; 9] = [
             Reg::R0,
@@ -287,11 +300,13 @@ fn compile_wasm_to_arm(
             Reg::R8,
         ];
         let (out, stats) = synth_synthesis::liveness::reallocate_function(&arm_instrs, &POOL);
-        eprintln!(
-            "[range-realloc] {} segments: {} reallocated, {} declined, {} need spill (step 4)",
-            stats.segments, stats.reallocated, stats.declined, stats.needs_spill
-        );
-        out
+        if std::env::var("SYNTH_REALLOC_STATS").is_ok() {
+            eprintln!(
+                "[range-realloc] {} segments: {} reallocated, {} declined, {} need spill (step 4)",
+                stats.segments, stats.reallocated, stats.declined, stats.needs_spill
+            );
+        }
+        synth_synthesis::liveness::shrink_callee_saved_saves(&out).unwrap_or(out)
     } else {
         arm_instrs
     };

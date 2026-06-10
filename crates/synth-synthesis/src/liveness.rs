@@ -1647,6 +1647,123 @@ pub struct ReallocStats {
 /// control-flow instructions always pass through verbatim, so labels, branch
 /// targets, and instruction counts are unchanged.
 ///
+/// Dead callee-saved-save elimination (gale, #209 v0.11.36): after
+/// re-allocation packs a small function's body into low registers, the
+/// prologue still saves callee-saved registers nothing uses — on the M4,
+/// `push {r4-r8,lr}` + `ldmia {r4-r8,pc}` is ~12 cycles of pure overhead on a
+/// 37-cycle leaf. Shrink the prologue `Push {.., LR}` / epilogue
+/// `Pop {.., PC}` register lists to the callee-saved registers (R4–R8) the
+/// body actually touches, padded to an EVEN total count so the 8-byte AAPCS
+/// SP alignment the original even-count push established is preserved
+/// everywhere.
+///
+/// Deliberately bounded v1 scope — returns `None` (caller keeps the original)
+/// unless ALL hold:
+///   - exactly one prologue `Push` containing `LR`; every `Pop` contains `PC`
+///     (epilogues) and shares the same shrink;
+///   - the body never touches SP (no `[sp]`-relative access, no frame
+///     `add/sub sp` — shrinking the push shifts SP-relative offsets);
+///   - no calls (`Bl`/`Blx`/`Call`/`CallIndirect`) — leaf only, so the AAPCS
+///     call-boundary alignment question never arises beyond the even-count
+///     padding;
+///   - every instruction is either register-modeled (`reg_effect`) or pure
+///     label control flow with no register operands (`BrTable` reads an index
+///     register invisibly to `reg_effect`, so it declines; `Bx {LR}` is an
+///     allowed return).
+pub fn shrink_callee_saved_saves(instrs: &[ArmInstruction]) -> Option<Vec<ArmInstruction>> {
+    use ArmOp::*;
+    const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+
+    // Pass 1: classify. Find the single LR-push and the PC-pops; collect the
+    // callee-saved registers the rest of the body touches; decline on
+    // anything outside the modeled scope.
+    let mut prologue: Option<usize> = None;
+    let mut epilogues: Vec<usize> = Vec::new();
+    let mut used: BTreeSet<Reg> = BTreeSet::new();
+    for (i, ins) in instrs.iter().enumerate() {
+        match &ins.op {
+            Push { regs } => {
+                if !regs.contains(&Reg::LR) || prologue.is_some() {
+                    return None; // mid-body push or second prologue
+                }
+                prologue = Some(i);
+            }
+            Pop { regs } => {
+                if !regs.contains(&Reg::PC) {
+                    return None; // mid-body pop
+                }
+                epilogues.push(i);
+            }
+            // Pure label control flow with no register operands.
+            Label { .. }
+            | B { .. }
+            | BOffset { .. }
+            | BCondOffset { .. }
+            | Bhs { .. }
+            | Blo { .. }
+            | Bcc { .. } => {}
+            Bx { rm } if *rm == Reg::LR => {}
+            op => {
+                let e = reg_effect(op)?; // unmodeled (BrTable/calls/...) → decline
+                for r in e.defs.iter().chain(e.uses.iter()) {
+                    if *r == Reg::SP {
+                        return None; // frame/SP-relative function — offsets would shift
+                    }
+                    if CALLEE_SAVED.contains(r) {
+                        used.insert(*r);
+                    }
+                }
+                // SP hides inside addressing modes too.
+                if let Ldr { addr, .. }
+                | Ldrb { addr, .. }
+                | Ldrsb { addr, .. }
+                | Ldrh { addr, .. }
+                | Ldrsh { addr, .. }
+                | Str { addr, .. }
+                | Strb { addr, .. }
+                | Strh { addr, .. } = op
+                    && (addr.base == Reg::SP || addr.offset_reg == Some(Reg::SP))
+                {
+                    return None;
+                }
+            }
+        }
+    }
+    let prologue = prologue?;
+    if epilogues.is_empty() {
+        return None;
+    }
+
+    // New save list: used callee-saved registers, padded with the lowest
+    // unused one if the total (incl. LR/PC) would be odd.
+    let mut saves: Vec<Reg> = CALLEE_SAVED
+        .iter()
+        .filter(|r| used.contains(r))
+        .copied()
+        .collect();
+    if !(saves.len() + 1).is_multiple_of(2)
+        && let Some(pad) = CALLEE_SAVED.iter().find(|r| !used.contains(r))
+    {
+        saves.push(*pad);
+        saves.sort();
+    }
+    // Nothing to shrink?
+    if saves.len() == CALLEE_SAVED.len() {
+        return None;
+    }
+
+    let mut out = instrs.to_vec();
+    let mut push_regs = saves.clone();
+    push_regs.push(Reg::LR);
+    out[prologue].op = Push { regs: push_regs };
+    for e in epilogues {
+        let mut pop_regs = saves.clone();
+        pop_regs.push(Reg::PC);
+        out[e].op = Pop { regs: pop_regs };
+    }
+    Some(out)
+}
+
 /// Defense-in-depth: before accepting a segment's rewrite, every interference
 /// edge is re-checked against the final assignment (independent of the
 /// colourer), mirroring `verify_allocation`.
@@ -3771,6 +3888,150 @@ mod tests {
                 assert_ne!(reg_of[n], reg_of[m], "interfering ranges share a register");
             }
         }
+    }
+
+    fn prologue() -> ArmInstruction {
+        ins(ArmOp::Push {
+            regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR],
+        })
+    }
+    fn epilogue() -> ArmInstruction {
+        ins(ArmOp::Pop {
+            regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
+        })
+    }
+
+    #[test]
+    fn shrink_saves_drops_dead_callee_saved_and_pads_even() {
+        // Body lives entirely in r0/r1 (the post-realloc filter shape): all of
+        // r4-r8 are dead, so the save list shrinks to {r4(pad), lr} — padded
+        // to an even count to preserve the 8-byte AAPCS SP alignment.
+        let seq = vec![
+            prologue(),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            epilogue(),
+        ];
+        let out = shrink_callee_saved_saves(&seq).expect("shrinks");
+        assert_eq!(
+            out[0].op,
+            ArmOp::Push {
+                regs: vec![Reg::R4, Reg::LR]
+            }
+        );
+        assert_eq!(
+            out[3].op,
+            ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC]
+            }
+        );
+        // Body untouched.
+        assert_eq!(out[1], seq[1]);
+        assert_eq!(out[2], seq[2]);
+    }
+
+    #[test]
+    fn shrink_saves_keeps_used_callee_saved() {
+        // Body uses r5: the save list keeps it ({r5, lr} = even, no padding).
+        let seq = vec![
+            prologue(),
+            ins(ArmOp::Add {
+                rd: Reg::R5,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+            epilogue(),
+        ];
+        let out = shrink_callee_saved_saves(&seq).expect("shrinks");
+        assert_eq!(
+            out[0].op,
+            ArmOp::Push {
+                regs: vec![Reg::R5, Reg::LR]
+            }
+        );
+    }
+
+    #[test]
+    fn shrink_saves_declines_on_calls_sp_and_brtable() {
+        use crate::rules::MemAddr;
+        // Call in body → not a leaf → decline.
+        let with_call = vec![
+            prologue(),
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            epilogue(),
+        ];
+        assert_eq!(shrink_callee_saved_saves(&with_call), None);
+        // SP-relative store → frame offsets would shift → decline.
+        let with_sp = vec![
+            prologue(),
+            ins(ArmOp::Str {
+                rd: Reg::R0,
+                addr: MemAddr {
+                    base: Reg::SP,
+                    offset: 4,
+                    offset_reg: None,
+                },
+            }),
+            epilogue(),
+        ];
+        assert_eq!(shrink_callee_saved_saves(&with_sp), None);
+        // BrTable reads an index register invisibly to reg_effect → decline.
+        let with_brtable = vec![
+            prologue(),
+            ins(ArmOp::BrTable {
+                rd: Reg::R1,
+                index_reg: Reg::R0,
+                targets: vec![],
+                default: 0,
+            }),
+            epilogue(),
+        ];
+        assert_eq!(shrink_callee_saved_saves(&with_brtable), None);
+    }
+
+    #[test]
+    fn shrink_saves_handles_multiple_epilogues_and_branches() {
+        // Two return paths + a label/branch between them: both pops shrink
+        // identically, control flow untouched.
+        let seq = vec![
+            prologue(),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::B {
+                label: "L_end".to_string(),
+            }),
+            epilogue(),
+            ins(ArmOp::Label {
+                name: "L_end".to_string(),
+            }),
+            epilogue(),
+        ];
+        let out = shrink_callee_saved_saves(&seq).expect("shrinks");
+        for i in [3usize, 5] {
+            assert_eq!(
+                out[i].op,
+                ArmOp::Pop {
+                    regs: vec![Reg::R4, Reg::PC]
+                }
+            );
+        }
+        assert_eq!(out[2], seq[2]);
+        assert_eq!(out[4], seq[4]);
     }
 
     #[test]

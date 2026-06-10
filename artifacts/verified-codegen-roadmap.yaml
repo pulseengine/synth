@@ -503,3 +503,55 @@ artifacts:
         The revisit trigger is checked at VCR-RA-001 acceptance (v0.11.40
         gate): an explicit measured statement "allocation-attributable gap
         <10% or regalloc3 evaluation filed" appears in the release notes.
+
+  # ---------------------------------------------------------------------------
+  # gale-proposed (issue #290, 2026-06-10): scry consumption at two trust levels
+  # ---------------------------------------------------------------------------
+
+  - id: VCR-RA-010
+    type: sw-req
+    title: "scry → synth: sound AI annotations as untrusted regalloc oracle + soundness-bearing narrowing pass"
+    description: >
+      synth consumes scry's sound over-approximation (range / known-bits /
+      reachability lattices over fused Core-Model modules emitted by meld) at
+      two distinct trust levels, kept architecturally separate so scry's
+      soundness is load-bearing in exactly one of them.
+      (A) UNTRUSTED ORACLE — regalloc quality: annotations feed
+      rematerialization candidate selection, spill-cost pricing (MOV /
+      MOVW+MOVT / literal-pool costs from the known constant), coalescing,
+      split placement, and liveness pruning via constant-condition dead-edge
+      elimination. HINTS only: VCR-RA-003 re-derives liveness/interference
+      and validates the assignment, so nothing scry asserts enters the TCB —
+      a wrong annotation degrades quality, never correctness.
+      (B) SOUNDNESS-BEARING — narrowing rewrite BEFORE regalloc: where scry
+      proves an i64's observable range fits 32 bits, synth carries it in one
+      GP register and synthesizes the high half on demand, halving pressure
+      for that value on 32-bit Cortex. Each narrowing carries its own
+      discharged refinement obligation in the Rocq substrate; no narrowing
+      fires without it — the assurance surface is one localized refinement
+      check, not the interpreter-in-TCB (Verasco-style).
+      Relationship to VCR-DEC-001: path (A) is a candidate to close part of
+      the VCR-RA-001 revisit-trigger cycle gap WITHOUT porting regalloc3's
+      bundle model (the regalloc2 win came from split/remat sophistication,
+      which scry sharpens directly). Depends on a scry-side annotation schema
+      + soundness statement (SCRY-001, to be filed in the scry repo; linked
+      here as text until that artifact exists).
+    status: proposed
+    tags: [codegen, register-allocation, scry, abstract-interpretation, do-333, track-a]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: refines
+        target: VCR-RA-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        (A) Annotation-fuzzing: under arbitrary/corrupted scry annotations,
+        VCR-RA-003 still accepts and observable behaviour is identical to the
+        no-annotation build — only cycle counts move (evidence path A is
+        outside the TCB). (B) CI fails on any narrowing rewrite without a
+        discharged refinement obligation. (C) At VCR-RA-001 acceptance
+        (v0.11.40 gate) the release notes report the measured cycle-gap delta
+        attributable to scry-driven remat + narrowing, feeding VCR-DEC-001's
+        revisit decision.
