@@ -74,7 +74,7 @@ jobs:
     # safe to interpolate.
     continue-on-error: ${{ matrix.gating == false }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install nightly Rust
         uses: dtolnay/rust-toolchain@nightly
