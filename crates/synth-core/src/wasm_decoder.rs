@@ -97,6 +97,12 @@ pub struct DecodedModule {
     /// Used by `call_indirect`, whose callee arg count comes from the static
     /// type index (issue #195).
     pub type_arg_counts: Vec<u32>,
+    /// #311: whether each *function* (full index, imports first) returns i64 —
+    /// the call lowering must tag the result as a register PAIR (r0:r1) or the
+    /// hi half is invisible to liveness and the next constant clobbers it.
+    pub func_ret_i64: Vec<bool>,
+    /// #311: whether each *function type* returns i64 (for `call_indirect`).
+    pub type_ret_i64: Vec<bool>,
     /// Defined globals with their initializers (#237). Empty if the module has
     /// no global section. Used by the native-pointer ABI to make a global whose
     /// initializer is a linear-memory address (e.g. `$__stack_pointer`)
@@ -125,6 +131,8 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // arg count (indexed by full function index: imports first, then locals).
     let mut type_arg_counts: Vec<u32> = Vec::new();
     let mut func_arg_counts: Vec<u32> = Vec::new();
+    let mut type_ret_i64: Vec<bool> = Vec::new();
+    let mut func_ret_i64: Vec<bool> = Vec::new();
     let mut elem_func_indices: Vec<u32> = Vec::new();
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
@@ -137,13 +145,18 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 for rec_group in reader {
                     let rec_group = rec_group.context("Failed to parse type")?;
                     for sub_ty in rec_group.types() {
-                        let count = match &sub_ty.composite_type.inner {
-                            wasmparser::CompositeInnerType::Func(func_ty) => {
-                                func_ty.params().len() as u32
-                            }
-                            _ => 0,
+                        let (count, ret_i64) = match &sub_ty.composite_type.inner {
+                            wasmparser::CompositeInnerType::Func(func_ty) => (
+                                func_ty.params().len() as u32,
+                                func_ty
+                                    .results()
+                                    .first()
+                                    .is_some_and(|t| *t == wasmparser::ValType::I64),
+                            ),
+                            _ => (0, false),
                         };
                         type_arg_counts.push(count);
+                        type_ret_i64.push(ret_i64);
                     }
                 }
             }
@@ -158,6 +171,12 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             // full function index (imports come first).
                             func_arg_counts
                                 .push(type_arg_counts.get(type_idx as usize).copied().unwrap_or(0));
+                            func_ret_i64.push(
+                                type_ret_i64
+                                    .get(type_idx as usize)
+                                    .copied()
+                                    .unwrap_or(false),
+                            );
                             (ImportKind::Function(type_idx), idx)
                         }
                         wasmparser::TypeRef::Memory(_) => (ImportKind::Memory, 0),
@@ -182,6 +201,12 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     let type_idx = ty.context("Failed to parse function type index")?;
                     func_arg_counts
                         .push(type_arg_counts.get(type_idx as usize).copied().unwrap_or(0));
+                    func_ret_i64.push(
+                        type_ret_i64
+                            .get(type_idx as usize)
+                            .copied()
+                            .unwrap_or(false),
+                    );
                 }
             }
             Payload::MemorySection(reader) => {
@@ -293,6 +318,8 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         num_imported_funcs,
         func_arg_counts,
         type_arg_counts,
+        func_ret_i64,
+        type_ret_i64,
         globals,
         elem_func_indices,
     })

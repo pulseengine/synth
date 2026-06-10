@@ -1754,6 +1754,8 @@ fn compile_all_exports(
         all_data_segments, // #237: active data segments, for --native-pointer-abi
         stack_pointer_global_opt, // #237: (index, init) of the SP global, if any
         all_globals, // #237: every defined global (index, init) — slot region under --native-pointer-abi
+        all_func_ret_i64, // #311: per-function returns-i64 (pair tagging)
+        all_type_ret_i64, // #311: per-type returns-i64 (call_indirect)
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
@@ -1847,6 +1849,8 @@ fn compile_all_exports(
             Vec::new(), // #237: data segments not threaded for WAST (single-module .wasm path covers it)
             None,       // #237: SP-global promotion is single-module .wasm only
             Vec::new(), // #237: globals slot region is single-module .wasm only
+            Vec::new(), // #311: WAST runs the fixture suite; i32-only
+            Vec::new(),
         )
     } else {
         let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
@@ -1907,6 +1911,8 @@ fn compile_all_exports(
             data_segs,
             sp_global,
             globals,
+            module.func_ret_i64,
+            module.type_ret_i64,
         )
     };
 
@@ -1974,6 +1980,8 @@ fn compile_all_exports(
         // #237: register-promote the stack-pointer global (only consulted under
         // native_pointer_abi) so the dissolved object needs no R9 globals table.
         stack_pointer_global: stack_pointer_global_opt,
+        func_ret_i64: all_func_ret_i64.clone(),
+        type_ret_i64: all_type_ret_i64.clone(),
         ..CompileConfig::default()
     };
 

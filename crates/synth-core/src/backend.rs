@@ -134,6 +134,11 @@ pub struct CompileConfig {
     /// top) and the init value doubles as the static-data base that separates
     /// pointer consts (`>= init`) from frame-size scalars (`< init`).
     pub stack_pointer_global: Option<(u32, i32)>,
+    /// #311: per-function (full index) / per-type "returns i64" — the call
+    /// lowering must tag i64 results as a register pair or the hi half is
+    /// invisible to liveness.
+    pub func_ret_i64: Vec<bool>,
+    pub type_ret_i64: Vec<bool>,
 }
 
 impl CompileConfig {
@@ -165,6 +170,8 @@ impl Default for CompileConfig {
             native_pointer_abi: false,
             linear_memory_bytes: 0,
             stack_pointer_global: None,
+            func_ret_i64: Vec::new(),
+            type_ret_i64: Vec::new(),
         }
     }
 }
