@@ -961,17 +961,41 @@ pub fn color_graph_precolored_costed(
     precolored: &BTreeMap<Reg, usize>,
     costs: &BTreeMap<Reg, usize>,
 ) -> ColorResult {
-    let cost_of = |r: &Reg| costs.get(r).copied().unwrap_or(1);
+    let full: BTreeMap<Reg, BTreeSet<Reg>> =
+        g.nodes().map(|n| (n, g.neighbors(n).collect())).collect();
+    let (colour, spilled) = chaitin_core(&full, k, precolored, costs);
+    if spilled.is_empty() {
+        ColorResult::Colored(colour)
+    } else {
+        ColorResult::Spilled(spilled)
+    }
+}
+
+/// The Chaitin/Briggs simplify→select core, generic over the node identity —
+/// `Reg` for the physical-register graph, `usize` vreg ids for value-range
+/// graphs (VCR-RA-001 step 3a). `full` is the complete adjacency: every node
+/// (including precoloured ones) with its full neighbour set. Returns
+/// `(colouring, spilled)`; an empty spill set means a complete colouring.
+/// Pure function — identical algorithm and tie-breaks as the historic
+/// `Reg`-typed implementation (a type-parameter refactor, not a behavior
+/// change).
+fn chaitin_core<N: Ord + Copy>(
+    full: &BTreeMap<N, BTreeSet<N>>,
+    k: usize,
+    precolored: &BTreeMap<N, usize>,
+    costs: &BTreeMap<N, usize>,
+) -> (BTreeMap<N, usize>, BTreeSet<N>) {
+    let cost_of = |r: &N| costs.get(r).copied().unwrap_or(1);
     // Working adjacency over the FREE (non-precoloured) nodes only; precoloured
     // nodes are fixed, so they never enter the simplify worklist — but they
-    // remain in every free node's neighbourhood (via `g.neighbors`) so they
-    // still constrain colouring.
-    let mut adj: BTreeMap<Reg, BTreeSet<Reg>> = g
-        .nodes()
-        .filter(|n| !precolored.contains_key(n))
-        .map(|n| (n, g.neighbors(n).collect()))
+    // remain in every free node's neighbourhood (via `full`) so they still
+    // constrain colouring.
+    let mut adj: BTreeMap<N, BTreeSet<N>> = full
+        .iter()
+        .filter(|(n, _)| !precolored.contains_key(n))
+        .map(|(n, nbrs)| (*n, nbrs.clone()))
         .collect();
-    let mut stack: Vec<Reg> = Vec::with_capacity(adj.len());
+    let mut stack: Vec<N> = Vec::with_capacity(adj.len());
 
     // SIMPLIFY / SPILL: push every free node, preferring low-degree (< k) nodes;
     // when none qualify, optimistically push the cheapest-to-spill node.
@@ -982,8 +1006,8 @@ pub fn color_graph_precolored_costed(
             .map(|(r, _)| *r)
             .unwrap_or_else(|| {
                 // No simplifiable node → optimistic spill candidate: minimise
-                // cost/degree (Chaitin), ties to the smallest register. The
-                // comparator never returns Equal for distinct registers, so the
+                // cost/degree (Chaitin), ties to the smallest node id. The
+                // comparator never returns Equal for distinct nodes, so the
                 // pick is deterministic regardless of iteration order.
                 adj.iter()
                     .min_by(|a, b| {
@@ -1008,15 +1032,17 @@ pub fn color_graph_precolored_costed(
     // neighbourhood. Seeded with the precoloured pins, so a free node avoids
     // both its precoloured and its already-selected neighbours. A node with no
     // free colour in 0..k is an actual spill.
-    let mut colour: BTreeMap<Reg, usize> = precolored.clone();
-    let mut spilled: BTreeSet<Reg> = BTreeSet::new();
+    let mut colour: BTreeMap<N, usize> = precolored.clone();
+    let mut spilled: BTreeSet<N> = BTreeSet::new();
     while let Some(n) = stack.pop() {
         let mut used = vec![false; k];
-        for nb in g.neighbors(n) {
-            if let Some(&c) = colour.get(&nb)
-                && c < k
-            {
-                used[c] = true;
+        if let Some(nbrs) = full.get(&n) {
+            for nb in nbrs {
+                if let Some(&c) = colour.get(nb)
+                    && c < k
+                {
+                    used[c] = true;
+                }
             }
         }
         match (0..k).find(|&c| !used[c]) {
@@ -1029,11 +1055,7 @@ pub fn color_graph_precolored_costed(
         }
     }
 
-    if spilled.is_empty() {
-        ColorResult::Colored(colour)
-    } else {
-        ColorResult::Spilled(spilled)
-    }
+    (colour, spilled)
 }
 
 // ============================================================================
@@ -1176,6 +1198,414 @@ pub fn straight_line_value_ranges(instrs: &[ArmInstruction]) -> Option<Vec<Value
         }
     }
     Some(ranges)
+}
+
+/// Interference over **value ranges** (vreg ids) — VCR-RA-001 step 3a. Two
+/// ranges interfere iff they are simultaneously live:
+///
+/// ```text
+/// a.def < b.last_use && b.def < a.last_use   (strict on both sides)
+///   || a.def == b.def                        (co-defined / both inputs)
+/// ```
+///
+/// The strict comparison makes the dies-at-birth boundary deliberately
+/// NON-interfering: a value whose last use is the instruction defining `b`
+/// is consumed as `b` is born, so `b` may reuse its register — the same
+/// convention as the physical `interference_graph` ("defs interfere with
+/// everything live *after*") and the in-place-select pattern. Co-defined
+/// ranges (`Umull` rdlo/rdhi) and segment inputs (both `def == 0`, live from
+/// the segment start) always interfere. An input consumed by instruction 0 is
+/// conservatively kept interfering with instruction-0 defs (both have
+/// `def == 0`, indistinguishable in this encoding) — sound, at worst one
+/// wasted register on that corner. Returns the complete adjacency (isolated
+/// ranges present with empty neighbour sets), ready for [`color_ranges`].
+pub fn range_interference(ranges: &[ValueRange]) -> BTreeMap<usize, BTreeSet<usize>> {
+    let mut adj: BTreeMap<usize, BTreeSet<usize>> =
+        ranges.iter().map(|r| (r.vreg, BTreeSet::new())).collect();
+    for (i, a) in ranges.iter().enumerate() {
+        for b in &ranges[i + 1..] {
+            let overlap = (a.def < b.last_use && b.def < a.last_use) || a.def == b.def;
+            if overlap {
+                adj.get_mut(&a.vreg).unwrap().insert(b.vreg);
+                adj.get_mut(&b.vreg).unwrap().insert(a.vreg);
+            }
+        }
+    }
+    adj
+}
+
+/// `k`-colour a value-range interference graph (from [`range_interference`])
+/// with precoloured pins and Chaitin spill-cost ranking — the value-range
+/// counterpart of [`color_graph_precolored_costed`], sharing the same core.
+/// Returns `(colouring, spilled)`: vreg id → colour (an allocatable-pool
+/// index), and the ranges that could not be coloured (the spill candidates a
+/// spill-code-insertion pass materialises). Empty spill set = complete
+/// colouring. Pins are for ABI/architectural constraints: segment inputs stay
+/// in their incoming register, live-outs in their outgoing one. Pure function.
+pub fn color_ranges(
+    adj: &BTreeMap<usize, BTreeSet<usize>>,
+    k: usize,
+    precolored: &BTreeMap<usize, usize>,
+    costs: &BTreeMap<usize, usize>,
+) -> (BTreeMap<usize, usize>, BTreeSet<usize>) {
+    chaitin_core(adj, k, precolored, costs)
+}
+
+fn map_reg(m: &BTreeMap<Reg, Reg>, r: Reg) -> Reg {
+    m.get(&r).copied().unwrap_or(r)
+}
+
+fn op2_map(op2: &Operand2, m: &BTreeMap<Reg, Reg>) -> Operand2 {
+    match op2 {
+        Operand2::Reg(r) => Operand2::Reg(map_reg(m, *r)),
+        Operand2::RegShift { rm, shift, amount } => Operand2::RegShift {
+            rm: map_reg(m, *rm),
+            shift: *shift,
+            amount: *amount,
+        },
+        Operand2::Imm(i) => Operand2::Imm(*i),
+    }
+}
+
+fn addr_map(a: &MemAddr, m: &BTreeMap<Reg, Reg>) -> MemAddr {
+    MemAddr {
+        base: map_reg(m, a.base),
+        offset: a.offset,
+        offset_reg: a.offset_reg.map(|r| map_reg(m, r)),
+    }
+}
+
+/// Simultaneously rewrite `op`'s registers: definitions through `def_map`,
+/// uses through `use_map` (a register absent from a map is unchanged). The
+/// positional mirror of [`reg_effect`] — every op it models is rewritten here,
+/// covering the same field-by-field def/use classification. Simultaneous
+/// substitution is essential: the per-pair `rename_use` applied sequentially
+/// mis-rewrites register swaps (`{r0→r1, r1→r0}`).
+///
+/// Returns `None` for unmodeled ops, and for **read-modify-write** fields
+/// (`Movt`/`MovtSym`/`SelectMove` `rd`, which is both def and use of one
+/// physical field) when the two maps disagree — the old and new value ranges
+/// of an RMW must be assigned the same register (a coalescing constraint the
+/// colouring layer does not yet express), so a disagreement is a decline, not
+/// a guess.
+fn rewrite_op(
+    op: &ArmOp,
+    use_map: &BTreeMap<Reg, Reg>,
+    def_map: &BTreeMap<Reg, Reg>,
+) -> Option<ArmOp> {
+    use ArmOp::*;
+    let u = |r: &Reg| map_reg(use_map, *r);
+    let d = |r: &Reg| map_reg(def_map, *r);
+    Some(match op {
+        Add { rd, rn, op2 } => Add {
+            rd: d(rd),
+            rn: u(rn),
+            op2: op2_map(op2, use_map),
+        },
+        Sub { rd, rn, op2 } => Sub {
+            rd: d(rd),
+            rn: u(rn),
+            op2: op2_map(op2, use_map),
+        },
+        Adds { rd, rn, op2 } => Adds {
+            rd: d(rd),
+            rn: u(rn),
+            op2: op2_map(op2, use_map),
+        },
+        Subs { rd, rn, op2 } => Subs {
+            rd: d(rd),
+            rn: u(rn),
+            op2: op2_map(op2, use_map),
+        },
+        Adc { rd, rn, op2 } => Adc {
+            rd: d(rd),
+            rn: u(rn),
+            op2: op2_map(op2, use_map),
+        },
+        Sbc { rd, rn, op2 } => Sbc {
+            rd: d(rd),
+            rn: u(rn),
+            op2: op2_map(op2, use_map),
+        },
+        And { rd, rn, op2 } => And {
+            rd: d(rd),
+            rn: u(rn),
+            op2: op2_map(op2, use_map),
+        },
+        Orr { rd, rn, op2 } => Orr {
+            rd: d(rd),
+            rn: u(rn),
+            op2: op2_map(op2, use_map),
+        },
+        Eor { rd, rn, op2 } => Eor {
+            rd: d(rd),
+            rn: u(rn),
+            op2: op2_map(op2, use_map),
+        },
+        Rsb { rd, rn, imm } => Rsb {
+            rd: d(rd),
+            rn: u(rn),
+            imm: *imm,
+        },
+        Mov { rd, op2 } => Mov {
+            rd: d(rd),
+            op2: op2_map(op2, use_map),
+        },
+        Mvn { rd, op2 } => Mvn {
+            rd: d(rd),
+            op2: op2_map(op2, use_map),
+        },
+        Movw { rd, imm16 } => Movw {
+            rd: d(rd),
+            imm16: *imm16,
+        },
+        MovwSym { rd, symbol, addend } => MovwSym {
+            rd: d(rd),
+            symbol: symbol.clone(),
+            addend: *addend,
+        },
+        // RMW: rd is def AND use of the same field — maps must agree.
+        Movt { rd, imm16 } => {
+            if d(rd) != u(rd) {
+                return None;
+            }
+            Movt {
+                rd: d(rd),
+                imm16: *imm16,
+            }
+        }
+        MovtSym { rd, symbol, addend } => {
+            if d(rd) != u(rd) {
+                return None;
+            }
+            MovtSym {
+                rd: d(rd),
+                symbol: symbol.clone(),
+                addend: *addend,
+            }
+        }
+        Mul { rd, rn, rm } => Mul {
+            rd: d(rd),
+            rn: u(rn),
+            rm: u(rm),
+        },
+        Sdiv { rd, rn, rm } => Sdiv {
+            rd: d(rd),
+            rn: u(rn),
+            rm: u(rm),
+        },
+        Udiv { rd, rn, rm } => Udiv {
+            rd: d(rd),
+            rn: u(rn),
+            rm: u(rm),
+        },
+        LslReg { rd, rn, rm } => LslReg {
+            rd: d(rd),
+            rn: u(rn),
+            rm: u(rm),
+        },
+        LsrReg { rd, rn, rm } => LsrReg {
+            rd: d(rd),
+            rn: u(rn),
+            rm: u(rm),
+        },
+        AsrReg { rd, rn, rm } => AsrReg {
+            rd: d(rd),
+            rn: u(rn),
+            rm: u(rm),
+        },
+        RorReg { rd, rn, rm } => RorReg {
+            rd: d(rd),
+            rn: u(rn),
+            rm: u(rm),
+        },
+        Umull { rdlo, rdhi, rn, rm } => Umull {
+            rdlo: d(rdlo),
+            rdhi: d(rdhi),
+            rn: u(rn),
+            rm: u(rm),
+        },
+        Mls { rd, rn, rm, ra } => Mls {
+            rd: d(rd),
+            rn: u(rn),
+            rm: u(rm),
+            ra: u(ra),
+        },
+        Mla { rd, rn, rm, ra } => Mla {
+            rd: d(rd),
+            rn: u(rn),
+            rm: u(rm),
+            ra: u(ra),
+        },
+        Lsl { rd, rn, shift } => Lsl {
+            rd: d(rd),
+            rn: u(rn),
+            shift: *shift,
+        },
+        Lsr { rd, rn, shift } => Lsr {
+            rd: d(rd),
+            rn: u(rn),
+            shift: *shift,
+        },
+        Asr { rd, rn, shift } => Asr {
+            rd: d(rd),
+            rn: u(rn),
+            shift: *shift,
+        },
+        Ror { rd, rn, shift } => Ror {
+            rd: d(rd),
+            rn: u(rn),
+            shift: *shift,
+        },
+        Clz { rd, rm } => Clz {
+            rd: d(rd),
+            rm: u(rm),
+        },
+        Rbit { rd, rm } => Rbit {
+            rd: d(rd),
+            rm: u(rm),
+        },
+        Popcnt { rd, rm } => Popcnt {
+            rd: d(rd),
+            rm: u(rm),
+        },
+        Sxtb { rd, rm } => Sxtb {
+            rd: d(rd),
+            rm: u(rm),
+        },
+        Sxth { rd, rm } => Sxth {
+            rd: d(rd),
+            rm: u(rm),
+        },
+        Cmp { rn, op2 } => Cmp {
+            rn: u(rn),
+            op2: op2_map(op2, use_map),
+        },
+        Cmn { rn, op2 } => Cmn {
+            rn: u(rn),
+            op2: op2_map(op2, use_map),
+        },
+        SetCond { rd, cond } => SetCond {
+            rd: d(rd),
+            cond: *cond,
+        },
+        // RMW: rd preserved on the false branch — def and use of one field.
+        SelectMove { rd, rm, cond } => {
+            if d(rd) != u(rd) {
+                return None;
+            }
+            SelectMove {
+                rd: d(rd),
+                rm: u(rm),
+                cond: *cond,
+            }
+        }
+        Select {
+            rd,
+            rval1,
+            rval2,
+            rcond,
+        } => Select {
+            rd: d(rd),
+            rval1: u(rval1),
+            rval2: u(rval2),
+            rcond: u(rcond),
+        },
+        Ldr { rd, addr } => Ldr {
+            rd: d(rd),
+            addr: addr_map(addr, use_map),
+        },
+        Ldrb { rd, addr } => Ldrb {
+            rd: d(rd),
+            addr: addr_map(addr, use_map),
+        },
+        Ldrsb { rd, addr } => Ldrsb {
+            rd: d(rd),
+            addr: addr_map(addr, use_map),
+        },
+        Ldrh { rd, addr } => Ldrh {
+            rd: d(rd),
+            addr: addr_map(addr, use_map),
+        },
+        Ldrsh { rd, addr } => Ldrsh {
+            rd: d(rd),
+            addr: addr_map(addr, use_map),
+        },
+        Str { rd, addr } => Str {
+            rd: u(rd),
+            addr: addr_map(addr, use_map),
+        },
+        Strb { rd, addr } => Strb {
+            rd: u(rd),
+            addr: addr_map(addr, use_map),
+        },
+        Strh { rd, addr } => Strh {
+            rd: u(rd),
+            addr: addr_map(addr, use_map),
+        },
+        Pop { regs } => Pop {
+            regs: regs.iter().map(d).collect(),
+        },
+        Push { regs } => Push {
+            regs: regs.iter().map(u).collect(),
+        },
+        Nop => Nop,
+        Udf { imm } => Udf { imm: *imm },
+        _ => return None,
+    })
+}
+
+/// Apply a value-range colouring to a straight-line segment — VCR-RA-001 step
+/// 3a's rewrite. `assignment` maps each vreg id (the numbering
+/// [`straight_line_value_ranges`] produces — recomputed here with the identical
+/// replay, so the ids cannot drift) to the physical register its colour
+/// resolves to. Every register occurrence is rewritten simultaneously: uses
+/// through the open range at that instruction, defs through the range born
+/// there.
+///
+/// Returns `None` (declines, never a wrong answer) if the segment is not
+/// straight-line / fully modeled, a range has no assignment, or an RMW op's
+/// old and new ranges were assigned different registers (see [`rewrite_op`]).
+/// Pure function — the flag-gated re-allocation pass is its only intended
+/// caller.
+pub fn apply_range_coloring(
+    instrs: &[ArmInstruction],
+    assignment: &BTreeMap<usize, Reg>,
+) -> Option<Vec<ArmInstruction>> {
+    let mut current: BTreeMap<Reg, usize> = BTreeMap::new(); // reg → open vreg id
+    let mut next_vreg = 0usize;
+    let mut out = Vec::with_capacity(instrs.len());
+    for ins in instrs {
+        if !is_straight_line(&ins.op) {
+            return None;
+        }
+        let eff = reg_effect(&ins.op)?;
+        // Uses resolve through the range OPEN at this instruction (an unseen
+        // register is a segment input: open its range now, same as the
+        // analysis replay).
+        let mut use_map: BTreeMap<Reg, Reg> = BTreeMap::new();
+        for r in &eff.uses {
+            let vreg = *current.entry(*r).or_insert_with(|| {
+                let v = next_vreg;
+                next_vreg += 1;
+                v
+            });
+            use_map.insert(*r, *assignment.get(&vreg)?);
+        }
+        // Defs open new ranges.
+        let mut def_map: BTreeMap<Reg, Reg> = BTreeMap::new();
+        for r in &eff.defs {
+            let vreg = next_vreg;
+            next_vreg += 1;
+            current.insert(*r, vreg);
+            def_map.insert(*r, *assignment.get(&vreg)?);
+        }
+        out.push(ArmInstruction {
+            op: rewrite_op(&ins.op, &use_map, &def_map)?,
+            source_line: ins.source_line,
+        });
+    }
+    Some(out)
 }
 
 /// Peak **virtual-register pressure** of a straight-line segment: the maximum
@@ -2605,6 +3035,346 @@ mod tests {
         assert_eq!(c.get(&Reg::R0), Some(&4));
         assert_eq!(c.get(&Reg::R1), Some(&2));
         assert_eq!(c.get(&Reg::R2), Some(&1));
+    }
+
+    #[test]
+    fn range_interference_overlap_and_dies_at_birth() {
+        // movw r0,#1        → A = r0[0..1]
+        // add  r1, r0, r0   → A consumed AT 1 as B = r1[1..2] is born
+        // mov  r2, r1       → B consumed AT 2 as C = r2[2..2] is born
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        let adj = range_interference(&ranges);
+        // Dies-at-birth: each value is consumed exactly as its successor is
+        // born, so NO pair interferes — the whole chain colours with k=1,
+        // which is exactly the register reuse the greedy selector performs.
+        let edges: usize = adj.values().map(|s| s.len()).sum();
+        assert_eq!(edges, 0, "a pure consume-chain has no interference");
+        let (coloring, spilled) = color_ranges(&adj, 1, &BTreeMap::new(), &BTreeMap::new());
+        assert!(spilled.is_empty());
+        assert_eq!(coloring.len(), ranges.len());
+    }
+
+    #[test]
+    fn range_interference_simultaneously_live_values_interfere() {
+        // movw r0,#1 ; movw r1,#2 ; add r2,r0,r1
+        // A = r0[0..2] and B = r1[1..2]: B is defined at 1 while A is still
+        // live (read at 2) → they interfere and need 2 colours.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 2,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        let adj = range_interference(&ranges);
+        let a = ranges.iter().find(|r| r.reg == Reg::R0).unwrap().vreg;
+        let b = ranges.iter().find(|r| r.reg == Reg::R1).unwrap().vreg;
+        assert!(adj[&a].contains(&b), "simultaneously-live values interfere");
+        // k=1 must spill; k=2 must colour (C reuses a dead register's colour).
+        let (_, spilled1) = color_ranges(&adj, 1, &BTreeMap::new(), &BTreeMap::new());
+        assert!(!spilled1.is_empty());
+        let (coloring2, spilled2) = color_ranges(&adj, 2, &BTreeMap::new(), &BTreeMap::new());
+        assert!(spilled2.is_empty());
+        // Validity: no interfering pair shares a colour.
+        for (n, nbrs) in &adj {
+            for m in nbrs {
+                assert_ne!(coloring2[n], coloring2[m], "{n} vs {m} share a colour");
+            }
+        }
+    }
+
+    #[test]
+    fn range_coloring_eliminates_the_spurious_physical_spill() {
+        // The VCR-RA-001 motivation in miniature. The greedy selector reuses
+        // ONE physical register (r0) for three sequential values:
+        //   movw r0,#1 ; mov r3,r0 ; movw r0,#2 ; mov r4,r0 ; movw r0,#3 ; mov r5,r0
+        // plus r3/r4/r5 all read at the end → r3,r4,r5 simultaneously live.
+        // Physical names: r0 is one overloaded node. Value ranges: r0 splits
+        // into THREE independent ranges (each dies at its mov), so the true
+        // pressure is 4 (three accumulators + one in-flight const), NOT the
+        // 6 distinct values. Ranges must colour at k=4.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R3,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 2,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R4,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 3,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R5,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R6,
+                rn: Reg::R3,
+                op2: Operand2::Reg(Reg::R4),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R6,
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        // r0 split into three distinct ranges — the de-overloading itself.
+        let r0_ranges = ranges.iter().filter(|r| r.reg == Reg::R0).count();
+        assert_eq!(r0_ranges, 3, "r0 reuse splits into three value ranges");
+        let adj = range_interference(&ranges);
+        let (coloring, spilled) = color_ranges(&adj, 4, &BTreeMap::new(), &BTreeMap::new());
+        assert!(
+            spilled.is_empty(),
+            "true value pressure is 4 — ranges colour where physical names overload"
+        );
+        for (n, nbrs) in &adj {
+            for m in nbrs {
+                assert_ne!(coloring[n], coloring[m]);
+            }
+        }
+    }
+
+    #[test]
+    fn color_ranges_honours_precoloured_input_pins() {
+        // Input range pinned to its incoming register's pool index: the pin
+        // survives and constrains neighbours.
+        let seq = vec![
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        let input = ranges
+            .iter()
+            .find(|r| r.reg == Reg::R0 && r.def == 0)
+            .unwrap()
+            .vreg;
+        let adj = range_interference(&ranges);
+        let pins: BTreeMap<usize, usize> = [(input, 0)].into();
+        let (coloring, spilled) = color_ranges(&adj, 3, &pins, &BTreeMap::new());
+        assert!(spilled.is_empty());
+        assert_eq!(coloring[&input], 0, "pinned input keeps its colour");
+        for nb in &adj[&input] {
+            assert_ne!(coloring[nb], 0, "neighbours avoid the pinned colour");
+        }
+    }
+
+    #[test]
+    fn apply_range_coloring_handles_register_swaps_simultaneously() {
+        // movw r0,#1 ; movw r1,#2 ; add r2,r0,r1
+        // Assignment swaps the two constants' registers (A:r0→R1, B:r1→R0).
+        // Sequential single-pair renaming would alias them; the simultaneous
+        // rewrite must produce: movw r1,#1 ; movw r0,#2 ; add r2,r1,r0.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 2,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        // vreg ids in replay order: 0 = movw r0's def, 1 = movw r1's def,
+        // 2 = add's def.
+        let assignment: BTreeMap<usize, Reg> = [(0, Reg::R1), (1, Reg::R0), (2, Reg::R2)].into();
+        let out = apply_range_coloring(&seq, &assignment).expect("rewrites");
+        assert_eq!(
+            out[0].op,
+            ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 1
+            }
+        );
+        assert_eq!(
+            out[1].op,
+            ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 2
+            }
+        );
+        assert_eq!(
+            out[2].op,
+            ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R1,
+                op2: Operand2::Reg(Reg::R0)
+            }
+        );
+    }
+
+    #[test]
+    fn apply_range_coloring_identity_is_a_noop() {
+        // Assignment mapping every range back to its original register must
+        // reproduce the input byte-for-byte.
+        use crate::rules::MemAddr;
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 7,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Str {
+                rd: Reg::R1,
+                addr: MemAddr {
+                    base: Reg::R11,
+                    offset: 4,
+                    offset_reg: None,
+                },
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        let identity: BTreeMap<usize, Reg> = ranges.iter().map(|r| (r.vreg, r.reg)).collect();
+        let out = apply_range_coloring(&seq, &identity).expect("rewrites");
+        assert_eq!(out, seq, "identity assignment is a no-op");
+    }
+
+    #[test]
+    fn range_reallocation_end_to_end_shrinks_the_register_set() {
+        // The full 3a pipeline on the spurious-spill miniature: ranges →
+        // interference → colour at k=4 → rewrite. The input uses 7 distinct
+        // physical registers; the re-allocated output must use at most 4 and
+        // stay a valid straight-line program with the same value structure.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R3,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 2,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R4,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 3,
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R5,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R6,
+                rn: Reg::R3,
+                op2: Operand2::Reg(Reg::R4),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R6,
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+        ];
+        let ranges = straight_line_value_ranges(&seq).expect("straight-line");
+        let adj = range_interference(&ranges);
+        let (coloring, spilled) = color_ranges(&adj, 4, &BTreeMap::new(), &BTreeMap::new());
+        assert!(spilled.is_empty());
+        // colour index → pool register R0..R3.
+        let pool = [Reg::R0, Reg::R1, Reg::R2, Reg::R3];
+        let assignment: BTreeMap<usize, Reg> =
+            coloring.iter().map(|(v, c)| (*v, pool[*c])).collect();
+        let out = apply_range_coloring(&seq, &assignment).expect("rewrites");
+        // The rewritten program touches at most 4 physical registers.
+        let used: BTreeSet<Reg> = out
+            .iter()
+            .flat_map(|i| {
+                let e = reg_effect(&i.op).unwrap();
+                e.defs.into_iter().chain(e.uses)
+            })
+            .collect();
+        assert!(used.len() <= 4, "re-allocated set {used:?} exceeds k=4");
+        // And it is still a well-formed straight-line program with the same
+        // value structure (same number of ranges).
+        let out_ranges = straight_line_value_ranges(&out).expect("still straight-line");
+        assert_eq!(out_ranges.len(), ranges.len());
+    }
+
+    #[test]
+    fn apply_range_coloring_declines_rmw_color_mismatch() {
+        // movw r0 ; movt r0 — movt reads AND writes r0 (one field), so its
+        // old and new ranges must land in the same register. An assignment
+        // that splits them is declined, not guessed at.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movt {
+                rd: Reg::R0,
+                imm16: 2,
+            }),
+        ];
+        // vreg 0 = movw def, vreg 1 = movt's new range (its use hits vreg 0).
+        let split: BTreeMap<usize, Reg> = [(0, Reg::R0), (1, Reg::R1)].into();
+        assert_eq!(apply_range_coloring(&seq, &split), None);
+        // The agreeing assignment rewrites fine.
+        let agree: BTreeMap<usize, Reg> = [(0, Reg::R2), (1, Reg::R2)].into();
+        let out = apply_range_coloring(&seq, &agree).expect("agreeing RMW ok");
+        assert_eq!(
+            out[1].op,
+            ArmOp::Movt {
+                rd: Reg::R2,
+                imm16: 2
+            }
+        );
     }
 
     #[test]
