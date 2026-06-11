@@ -183,6 +183,14 @@ struct SpillState {
     /// exhaustion `Err` — so every function that compiles without it keeps
     /// byte-identical output by construction.
     spill_on_exhaustion: bool,
+    /// Whether `compute_local_layout` actually reserved the spill area this
+    /// state hands slots out of (`has_i64 || force_spill_area`). When it did
+    /// NOT (an i32-only first pass), `base` is just the end of the frame and
+    /// any slot handed out would alias the #204 param-backing slots — callers
+    /// that can need a slot outside the i64 paths (the #326 arg-cycle
+    /// resolver) must check this and fail with the ladder-recoverable
+    /// exhaustion `Err` instead.
+    area_reserved: bool,
 }
 
 impl SpillState {
@@ -191,6 +199,7 @@ impl SpillState {
             base,
             used: [false; I64_SPILL_SLOTS],
             spill_on_exhaustion: false,
+            area_reserved: true,
         }
     }
     /// Reserve a free slot, returning its byte offset from SP.
@@ -679,66 +688,6 @@ fn is_caller_saved(reg: Reg) -> bool {
 /// the scope note on `marshal_call_args`).
 const ARG_REGS: [Reg; 4] = [Reg::R0, Reg::R1, Reg::R2, Reg::R3];
 
-/// Emit a cycle-safe parallel register move: for each `(src, dst)` pair, move
-/// `src` into `dst`, even when the moves form chains or cycles (e.g. moving
-/// `R1 -> R0` and `R0 -> R1` simultaneously). This is needed for AAPCS argument
-/// marshalling because an argument's source register may itself be another
-/// argument's destination.
-///
-/// Algorithm: repeatedly emit any move whose destination is not (still) needed
-/// as a source by a pending move. When only cycles remain, break one by routing
-/// a single source through a scratch register, then continue. Self-moves
-/// (`src == dst`) are skipped.
-///
-/// `scratch` must be a register not used as any source or destination here.
-fn emit_parallel_move(
-    instructions: &mut Vec<ArmInstruction>,
-    moves: &[(Reg, Reg)],
-    scratch: Reg,
-    idx: usize,
-) {
-    // Pending moves still to be performed (skip trivial self-moves).
-    let mut pending: Vec<(Reg, Reg)> = moves
-        .iter()
-        .copied()
-        .filter(|(src, dst)| src != dst)
-        .collect();
-
-    let emit_mov = |instructions: &mut Vec<ArmInstruction>, dst: Reg, src: Reg| {
-        instructions.push(ArmInstruction {
-            op: ArmOp::Mov {
-                rd: dst,
-                op2: Operand2::Reg(src),
-            },
-            source_line: Some(idx),
-        });
-    };
-
-    while !pending.is_empty() {
-        // Find a move whose destination is not the source of any other pending
-        // move — safe to emit now without clobbering a value still needed.
-        if let Some(pos) = pending
-            .iter()
-            .position(|&(_, dst)| !pending.iter().any(|&(src2, _)| src2 == dst))
-        {
-            let (src, dst) = pending.remove(pos);
-            emit_mov(instructions, dst, src);
-        } else {
-            // Only cycles remain: break one by parking its source in scratch.
-            // Rewrite every move that reads that source to read scratch instead.
-            let (cycle_src, cycle_dst) = pending[0];
-            emit_mov(instructions, scratch, cycle_src);
-            emit_mov(instructions, cycle_dst, scratch);
-            pending.remove(0);
-            for m in pending.iter_mut() {
-                if m.0 == cycle_src {
-                    m.0 = scratch;
-                }
-            }
-        }
-    }
-}
-
 /// Given the low register of an i64 register pair, return the high register.
 ///
 /// Convention: i64 values on 32-bit ARM use two consecutive registers.
@@ -793,6 +742,10 @@ struct LocalLayout {
     /// never clobbered in its home reg between reads. Appended last so existing
     /// local/spill offsets are unchanged.
     param_slots: std::collections::HashMap<u32, (i32, bool)>,
+    /// Whether the `i64_spill_base` area was actually reserved
+    /// (`has_i64 || force_spill_area`). Mirrored into
+    /// [`SpillState::area_reserved`]; see that field for why (#326).
+    spill_area_reserved: bool,
 }
 
 /// Compute the stack-frame layout for non-parameter locals in a function.
@@ -937,6 +890,7 @@ fn compute_local_layout(
         spill_base,
         i64_spill_base,
         param_slots,
+        spill_area_reserved: has_i64,
     }
 }
 
@@ -4761,36 +4715,101 @@ impl InstructionSelector {
         stack: &[Reg],
         local_to_reg: &std::collections::HashMap<u32, Reg>,
         layout: &LocalLayout,
+        spill: &mut SpillState,
         idx: usize,
     ) -> Result<usize> {
+        use crate::parallel_move::{MoveStep, sequentialize};
         if arg_srcs.is_empty() {
             return Ok(0);
         }
+        // The resolver takes (dst, src) pairs; arg `i` goes to ARG_REGS[i].
         let moves: Vec<(Reg, Reg)> = arg_srcs
             .iter()
             .enumerate()
-            .map(|(i, &src)| (src, ARG_REGS[i]))
+            .map(|(i, &src)| (ARG_REGS[i], src))
             .collect();
-        // Scratch for cycle-breaking: a callee-saved register holding no live
-        // value. `emit_parallel_move` uses it ONLY to break a true cycle, so it
-        // is needed only when some move source is also a destination. Acquiring
-        // it lazily avoids spurious exhaustion under i64 pressure (#171): a
-        // single acyclic arg move needs no scratch even when R4–R8 are full.
-        let dests: Vec<Reg> = moves.iter().map(|&(_, d)| d).collect();
-        // A scratch is needed only for a genuine cycle: a NON-self move whose
-        // source is also some move's destination. Self-moves (src == dst) and
-        // acyclic chains never use it.
-        let needs_scratch = moves
+        // Scratch candidate for cycle-breaking: a callee-saved register holding
+        // no live value, when one exists — the resolver uses it ONLY to break a
+        // true cycle, and filters it against the move set itself (an arg source
+        // parked in a callee-saved register is invisible to `free_callee_saved`
+        // because the args were already popped). When NONE is free (#326: the
+        // #311 i64 result pairs legitimately pin R4–R8), the resolver breaks
+        // the cycle through ONE stack slot instead of hard-failing — this is
+        // exactly the exhaustion gale's dissolved `z_impl_k_mutex_unlock` hit.
+        let scratch: Vec<Reg> = self
+            .free_callee_saved(stack, local_to_reg, layout)
+            .ok()
+            .into_iter()
+            .collect();
+        let steps = sequentialize(&moves, &scratch).map_err(|e| {
+            synth_core::Error::synthesis(format!(
+                "call-arg marshalling produced an invalid parallel move set: {e} \
+                 (compiler bug: ARG_REGS destinations are distinct by construction)"
+            ))
+        })?;
+
+        // A stack-slot scratch is needed only when a cycle exists AND no
+        // callee-saved register was free. Reserve one resolver slot from the
+        // spill area for the duration of the sequence.
+        let needs_slot = steps
             .iter()
-            .any(|&(src, dst)| src != dst && dests.contains(&src));
-        let scratch = if needs_scratch {
-            self.free_callee_saved(stack, local_to_reg, layout)?
+            .any(|s| matches!(s, MoveStep::SpillScratch { .. }));
+        let slot = if needs_slot {
+            if !spill.area_reserved {
+                // i32-only first pass: the spill area does not exist, so a slot
+                // would alias the param-backing frame slots. Fail with the
+                // ladder-recoverable exhaustion Err — the backend retry
+                // (VCR-RA-001 3b-lite) re-runs with the area reserved and the
+                // resolver then breaks the cycle through it.
+                return Err(synth_core::Error::synthesis(
+                    "register exhaustion: all allocatable registers are live on the stack — \
+                     arg-move cycle needs a resolver spill slot but no spill area is reserved"
+                        .to_string(),
+                ));
+            }
+            Some(spill.alloc().ok_or_else(|| {
+                synth_core::Error::synthesis(
+                    "register exhaustion: i64 spill-slot pool exhausted while \
+                     breaking a call-arg move cycle — function too complex"
+                        .to_string(),
+                )
+            })?)
         } else {
-            // Unused for acyclic moves; pass a harmless caller-saved register.
-            Reg::R12
+            None
         };
+
         let before = instructions.len();
-        emit_parallel_move(instructions, &moves, scratch, idx);
+        for step in &steps {
+            let op = match *step {
+                MoveStep::Move { dst, src } => ArmOp::Mov {
+                    rd: dst,
+                    op2: Operand2::Reg(src),
+                },
+                MoveStep::SpillScratch { slot_store } => ArmOp::Str {
+                    rd: slot_store,
+                    addr: MemAddr::imm(
+                        Reg::SP,
+                        slot.expect("SpillScratch implies a reserved resolver slot"),
+                    ),
+                },
+                MoveStep::ReloadScratch { slot_load_into } => ArmOp::Ldr {
+                    rd: slot_load_into,
+                    addr: MemAddr::imm(
+                        Reg::SP,
+                        slot.expect("ReloadScratch implies a reserved resolver slot"),
+                    ),
+                },
+            };
+            instructions.push(ArmInstruction {
+                op,
+                source_line: Some(idx),
+            });
+        }
+        // The marshal sequence is self-contained: the slot is dead once the
+        // last reload ran, so release it for reuse by later spills.
+        if let Some(off) = slot {
+            spill.free(off);
+        }
         Ok(instructions.len() - before)
     }
 
@@ -5048,6 +5067,7 @@ impl InstructionSelector {
         // i64 register-pair spill slots (#171), reused across the function.
         let mut spill = SpillState::new(layout.i64_spill_base);
         spill.spill_on_exhaustion = self.spill_on_exhaustion;
+        spill.area_reserved = layout.spill_area_reserved;
         // Next available register for temporaries (start after params)
         let mut next_temp = num_params.min(4) as u8;
 
@@ -7173,6 +7193,7 @@ impl InstructionSelector {
                         &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,
+                        &mut spill,
                         idx,
                     )?;
                     for _ in 0..n_arg_moves {
@@ -7308,6 +7329,7 @@ impl InstructionSelector {
                         &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,
+                        &mut spill,
                         idx,
                     )?;
                     for _ in 0..n_arg_moves {
@@ -15327,6 +15349,167 @@ mod tests {
         assert_eq!(reloads.len(), 1, "exactly one reload of the spilled slot");
         // The slot was freed on reload — allocatable again.
         assert_eq!(spill.alloc(), Some(0), "slot 0 reusable after reload");
+    }
+
+    // ── #326: arg-move cycles break via the parallel-move resolver ──
+
+    /// Minimal layout for driving `emit_arg_moves` directly.
+    fn arg_move_layout(spill_area_reserved: bool) -> LocalLayout {
+        LocalLayout {
+            locals: std::collections::HashMap::new(),
+            frame_size: 0,
+            spill_base: None,
+            i64_spill_base: 0,
+            param_slots: std::collections::HashMap::new(),
+            spill_area_reserved,
+        }
+    }
+
+    /// gale's #326 shape: a genuine arg cycle (swap into R0/R1) while every
+    /// callee-saved register R4–R8 is pinned by live operand-stack values
+    /// (`free_callee_saved` sees [R4, R6, R8] as i64-conservative, pinning
+    /// R5/R7 as implicit pair-his too). The old path `Err`ed here ("no free
+    /// callee-saved register..."); the resolver must break the cycle through
+    /// ONE stack slot: `STR R0; MOV R0, R1; LDR R1`.
+    #[test]
+    fn arg_move_cycle_with_saturated_callee_saved_spills_not_errs_326() {
+        let selector = fresh_selector();
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(40); // resolver slot at [SP, #40]
+        let live = [Reg::R4, Reg::R6, Reg::R8]; // pins R4..R8 (pair-his)
+        let n = selector
+            .emit_arg_moves(
+                &mut instructions,
+                &[Reg::R1, Reg::R0], // arg0 in R1, arg1 in R0 — a swap
+                &live,
+                &std::collections::HashMap::new(),
+                &arg_move_layout(true),
+                &mut spill,
+                3,
+            )
+            .expect("#326: saturated callee-saved must not be an Err anymore");
+        assert_eq!(n, 3, "swap via stack slot is exactly STR + MOV + LDR");
+        match (
+            &instructions[0].op,
+            &instructions[1].op,
+            &instructions[2].op,
+        ) {
+            (
+                ArmOp::Str { rd: s, addr: sa },
+                ArmOp::Mov {
+                    rd: m,
+                    op2: Operand2::Reg(msrc),
+                },
+                ArmOp::Ldr { rd: l, addr: la },
+            ) => {
+                assert_eq!((*s, sa.clone()), (Reg::R0, MemAddr::imm(Reg::SP, 40)));
+                assert_eq!((*m, *msrc), (Reg::R0, Reg::R1));
+                assert_eq!((*l, la.clone()), (Reg::R1, MemAddr::imm(Reg::SP, 40)));
+            }
+            other => panic!("expected STR/MOV/LDR swap sequence, got {other:?}"),
+        }
+        // The resolver slot was released after the sequence.
+        assert_eq!(spill.alloc(), Some(40), "resolver slot freed for reuse");
+    }
+
+    /// With a free callee-saved register the cycle still goes through the
+    /// register (no stack traffic): `MOV R4, R0; MOV R0, R1; MOV R1, R4`.
+    #[test]
+    fn arg_move_cycle_with_free_callee_saved_uses_register_326() {
+        let selector = fresh_selector();
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        let n = selector
+            .emit_arg_moves(
+                &mut instructions,
+                &[Reg::R1, Reg::R0],
+                &[],
+                &std::collections::HashMap::new(),
+                &arg_move_layout(true),
+                &mut spill,
+                3,
+            )
+            .unwrap();
+        assert_eq!(n, 3);
+        let movs: Vec<(Reg, Reg)> = instructions
+            .iter()
+            .map(|i| match &i.op {
+                ArmOp::Mov {
+                    rd,
+                    op2: Operand2::Reg(src),
+                } => (*rd, *src),
+                other => panic!("register cycle must be pure MOVs, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            movs,
+            vec![(Reg::R4, Reg::R0), (Reg::R0, Reg::R1), (Reg::R1, Reg::R4)]
+        );
+        // No stack slot was touched.
+        assert_eq!(spill.alloc(), Some(0), "no resolver slot consumed");
+    }
+
+    /// Acyclic marshals never need scratch — even fully saturated, they are
+    /// plain MOVs in ascending destination order (byte-identity with the
+    /// legacy emitter).
+    #[test]
+    fn arg_move_acyclic_saturated_is_plain_movs_326() {
+        let selector = fresh_selector();
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        let live = [Reg::R4, Reg::R6, Reg::R8];
+        let n = selector
+            .emit_arg_moves(
+                &mut instructions,
+                &[Reg::R2, Reg::R3],
+                &live,
+                &std::collections::HashMap::new(),
+                &arg_move_layout(true),
+                &mut spill,
+                0,
+            )
+            .unwrap();
+        assert_eq!(n, 2);
+        let movs: Vec<(Reg, Reg)> = instructions
+            .iter()
+            .map(|i| match &i.op {
+                ArmOp::Mov {
+                    rd,
+                    op2: Operand2::Reg(src),
+                } => (*rd, *src),
+                other => panic!("expected MOV, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(movs, vec![(Reg::R0, Reg::R2), (Reg::R1, Reg::R3)]);
+    }
+
+    /// An i32-only first pass has NO spill area: a cycle that needs the slot
+    /// must fail with the LADDER-RECOVERABLE exhaustion `Err` (the backend
+    /// retry re-runs with the area reserved), not silently alias the frame.
+    #[test]
+    fn arg_move_cycle_without_spill_area_errs_ladder_recoverable_326() {
+        let selector = fresh_selector();
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        spill.area_reserved = false;
+        let live = [Reg::R4, Reg::R6, Reg::R8];
+        let err = selector
+            .emit_arg_moves(
+                &mut instructions,
+                &[Reg::R1, Reg::R0],
+                &live,
+                &std::collections::HashMap::new(),
+                &arg_move_layout(false),
+                &mut spill,
+                0,
+            )
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("all allocatable registers are live on the stack"),
+            "must be the retry-ladder exhaustion class, got: {err}"
+        );
+        assert!(instructions.is_empty(), "no partial sequence on Err");
     }
 
     /// End-to-end fail-then-retry contract (the backend's wrapper): the

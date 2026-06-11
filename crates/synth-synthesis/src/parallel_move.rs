@@ -32,8 +32,13 @@
 //! shrank after every cycle. The emitted sequence is bounded by
 //! `moves.len() + 2 * cycle_count` steps, asserted before returning.
 //!
-//! Nothing here is wired into codegen yet: it is a pure function over
-//! [`Reg`], so it cannot change emitted bytes.
+//! **Consumers.** `InstructionSelector::emit_arg_moves` (#326) lowers the
+//! returned steps when marshalling call arguments into R0–R3: `Move` becomes
+//! `MOV`, the spill/reload pair becomes `STR`/`LDR` against one reserved
+//! resolver stack slot. Phase 1 emits the lowest-destination ready move first
+//! — exactly the order the legacy `emit_parallel_move` produced for the
+//! ascending-destination arg-move lists — so wiring the resolver in keeps
+//! every acyclic marshal byte-identical.
 
 use crate::rules::Reg;
 use std::collections::{BTreeMap, BTreeSet};
@@ -121,12 +126,17 @@ pub fn sequentialize(
     // exactly one pending move; each destination enters the worklist at most
     // once (initially, or on the single transition of its read-count to 0),
     // so this loop runs at most `pending.len()` times by construction.
-    let mut ready: Vec<Reg> = pending
+    //
+    // The worklist is an ordered set popped lowest-destination-first: for an
+    // ascending-destination move list (the arg-marshal shape) this selects
+    // exactly the move the legacy `emit_parallel_move` scan picked, keeping
+    // the emitted `MOV` order — and therefore bytes — identical (#326).
+    let mut ready: BTreeSet<Reg> = pending
         .keys()
         .filter(|dst| src_reads.get(dst).copied().unwrap_or(0) == 0)
         .copied()
         .collect();
-    while let Some(dst) = ready.pop() {
+    while let Some(dst) = ready.pop_first() {
         let src = pending
             .remove(&dst)
             .expect("worklist invariant: every ready destination has a pending move");
@@ -138,7 +148,7 @@ pub fn sequentialize(
         if *reads == 0 && pending.contains_key(&src) {
             // Emitting `dst <- src` freed `src`: the move writing `src` is
             // now safe.
-            ready.push(src);
+            ready.insert(src);
         }
     }
 
@@ -406,6 +416,61 @@ mod tests {
         assert!(
             steps.iter().all(|s| matches!(s, MoveStep::Move { .. })),
             "chains must not touch the stack slot"
+        );
+    }
+
+    /// #326 wiring contract: acyclic move sets come out lowest-destination
+    /// first — the exact order the legacy `emit_parallel_move` produced for
+    /// the ascending-destination arg-marshal lists. The byte-identity of
+    /// every already-compiling function's call marshalling depends on this.
+    #[test]
+    fn phase1_emits_lowest_destination_first_326() {
+        // Independent moves: ascending destination order.
+        let steps = sequentialize(
+            &[(Reg::R0, Reg::R4), (Reg::R1, Reg::R5), (Reg::R2, Reg::R6)],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            steps,
+            vec![
+                MoveStep::Move {
+                    dst: Reg::R0,
+                    src: Reg::R4
+                },
+                MoveStep::Move {
+                    dst: Reg::R1,
+                    src: Reg::R5
+                },
+                MoveStep::Move {
+                    dst: Reg::R2,
+                    src: Reg::R6
+                },
+            ]
+        );
+        // A freed LOW destination is emitted before a higher initially-ready
+        // one (the legacy scan restarted from the front after every emission).
+        let steps = sequentialize(
+            &[(Reg::R0, Reg::R1), (Reg::R1, Reg::R5), (Reg::R2, Reg::R6)],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            steps,
+            vec![
+                MoveStep::Move {
+                    dst: Reg::R0,
+                    src: Reg::R1
+                },
+                MoveStep::Move {
+                    dst: Reg::R1,
+                    src: Reg::R5
+                },
+                MoveStep::Move {
+                    dst: Reg::R2,
+                    src: Reg::R6
+                },
+            ]
         );
     }
 
