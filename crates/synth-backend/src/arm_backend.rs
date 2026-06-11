@@ -328,8 +328,12 @@ fn compile_wasm_to_arm(
         let (out, stats) = synth_synthesis::liveness::reallocate_function(&arm_instrs, &POOL);
         if std::env::var("SYNTH_REALLOC_STATS").is_ok() {
             eprintln!(
-                "[range-realloc] {} segments: {} reallocated, {} declined, {} need spill (step 4)",
-                stats.segments, stats.reallocated, stats.declined, stats.needs_spill
+                "[range-realloc] {} segments: {} reallocated, {} declined ({} validator-rejected), {} need spill (step 4)",
+                stats.segments,
+                stats.reallocated,
+                stats.declined,
+                stats.validator_rejects,
+                stats.needs_spill
             );
         }
         synth_synthesis::liveness::shrink_callee_saved_saves(&out).unwrap_or(out)
