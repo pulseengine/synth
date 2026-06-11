@@ -143,7 +143,7 @@ artifacts:
       shortcuts be reverted toward the clean form. Must keep the reserved-reg
       architecture (R9 globals / R11 mem-base / R12 IP-scratch) and the
       bounds-mode R10 invariant.
-    status: proposed
+    status: implemented
     tags: [codegen, register-allocation, ssa, regalloc2, track-a, release-v0.11.40]
     links:
       - type: derives-from
