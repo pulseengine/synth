@@ -393,6 +393,23 @@ struct Selector {
     /// rather than emitting a clobbering allocation (honest skip, not a silent
     /// miscompile — the same discipline as the ARM regalloc-exhaustion path).
     alloc_exhausted: bool,
+    /// #312: registers pinned for the duration of the *current wasm op's*
+    /// lowering. Covers the two holes `live_regs()` (vstack liveness) cannot
+    /// see, both opened by the #231 lowest-free allocator:
+    ///
+    /// 1. **Popped operands** leave the vstack before the multi-instruction
+    ///    expansion that reads them finishes — without pinning, a scratch
+    ///    `alloc_temp` lands on a popped operand and clobbers it mid-sequence
+    ///    (the #232 signed-div guard bug, generalized).
+    /// 2. **Scratch already handed out for this op** isn't on the vstack
+    ///    either, so two back-to-back `alloc_temp` calls returned the *same*
+    ///    register — every `(lo, hi)` i64 pair collapsed to one register.
+    ///
+    /// `pop_*` pins what it pops, `alloc_temp_avoiding` pins what it returns,
+    /// and `lower_one` clears the set at the start of each op. High-pressure
+    /// lowerings (`i64.div_s`, shifts/rotates, clz/ctz/popcnt) `unpin` scratch
+    /// as it dies to stay inside the 13-register pool.
+    op_pinned: Vec<Reg>,
     /// Counter for generating unique labels (L0, L1, ...).
     next_label: u32,
     /// Tracks whether we already emitted the function-final return.
@@ -448,6 +465,7 @@ impl Selector {
             arg_regs: Reg::arg_regs(num_params as usize),
             temps,
             alloc_exhausted: false,
+            op_pinned: Vec::new(),
             next_label: 0,
             emitted_return: false,
             options,
@@ -544,16 +562,18 @@ impl Selector {
         self.alloc_temp_avoiding(&[])
     }
 
-    /// Like [`alloc_temp`], but also avoids the registers in `avoid` — operands
-    /// that have been *popped off the vstack* into local variables but are still
-    /// live (so `live_regs` no longer covers them). The signed-division guard is
-    /// the motivating case (#232): it pops the dividend/divisor, then needs
-    /// scratch registers for its `INT_MIN`/`-1` comparison constants that must
-    /// not land on the still-live dividend before the `div` reads it.
+    /// Like [`alloc_temp`], but also avoids the registers in `avoid`.
+    ///
+    /// #312: beyond the vstack-live set (#226) and the explicit `avoid` list
+    /// (#232), this also skips — and adds the returned register to — the
+    /// per-op `op_pinned` set, so (a) operands popped earlier in the current
+    /// op's lowering are never clobbered by its own scratch, and (b) two
+    /// allocations within one op never alias each other.
     fn alloc_temp_avoiding(&mut self, avoid: &[Reg]) -> Reg {
         let live = self.live_regs();
         for &r in &self.temps {
-            if !live.contains(&r) && !avoid.contains(&r) {
+            if !live.contains(&r) && !avoid.contains(&r) && !self.op_pinned.contains(&r) {
+                self.pin(r);
                 return r;
             }
         }
@@ -561,6 +581,20 @@ impl Selector {
         // skip-and-continue rather than emit a clobber.
         self.alloc_exhausted = true;
         self.temps[0]
+    }
+
+    /// Pin `r` for the remainder of the current wasm op's lowering (#312).
+    fn pin(&mut self, r: Reg) {
+        if !self.op_pinned.contains(&r) {
+            self.op_pinned.push(r);
+        }
+    }
+
+    /// Release registers whose value is dead for the rest of the current op —
+    /// used by the high-pressure lowerings (i64 div/shift/rotate, clz/ctz/
+    /// popcnt) so their fully-pinned peak stays inside the 13-register pool.
+    fn unpin(&mut self, regs: &[Reg]) {
+        self.op_pinned.retain(|r| !regs.contains(r));
     }
 
     fn push_i32(&mut self, r: Reg) {
@@ -572,9 +606,21 @@ impl Selector {
     }
 
     fn pop_any(&mut self, op: &WasmOp) -> Result<VstackVal, SelectorError> {
-        self.vstack
+        let v = self
+            .vstack
             .pop()
-            .ok_or_else(|| SelectorError::StackUnderflow(op.clone()))
+            .ok_or_else(|| SelectorError::StackUnderflow(op.clone()))?;
+        // #312: a popped operand leaves `live_regs` but is still read by the
+        // remainder of this op's expansion — pin it so scratch allocations
+        // can't land on it (clobber class of #232, generalized).
+        match v {
+            VstackVal::I32(r) => self.pin(r),
+            VstackVal::I64 { lo, hi } => {
+                self.pin(lo);
+                self.pin(hi);
+            }
+        }
+        Ok(v)
     }
 
     /// Pop the top of stack and assert it's an i32. Errors with
@@ -641,6 +687,9 @@ impl Selector {
 
     fn lower_one(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
         use WasmOp::*;
+        // #312: per-op pin scope — operands popped and scratch allocated while
+        // lowering `op` stay pinned until the next op starts.
+        self.op_pinned.clear();
         match op {
             // ─── Locals ─────────────────────────────────────────────────
             LocalGet(idx) => self.lower_local_get(*idx, op)?,
@@ -2153,7 +2202,8 @@ impl Selector {
     /// fill is the sign bit, materialised once via `sra hi, 31`).
     fn lower_i64_shift(&mut self, op: &WasmOp, kind: ShiftKind) -> Result<(), SelectorError> {
         // rhs is the i64 shift amount; only its low limb is relevant.
-        let ((vlo, vhi), (samt, _samt_hi)) = self.pop_pair_i64(op)?;
+        let ((vlo, vhi), (samt, samt_hi)) = self.pop_pair_i64(op)?;
+        self.unpin(&[samt_hi]); // #312: the amount's high limb is never read
         // s = shamt & 63 — clamp to the 0..=63 window wasm guarantees.
         let s = self.alloc_temp();
         self.out.push(RiscVOp::Andi {
@@ -2190,6 +2240,7 @@ impl Selector {
             rs2: Reg::ZERO,
             label: big_label.clone(),
         });
+        self.unpin(&[s, test]); // #312: both dead after the bit-5 branch
 
         // ── small case: shamt < 32 ───────────────────────────────────────
         // `inv = 31 - s_lo` is the complementary shift used to extract the
@@ -2237,6 +2288,7 @@ impl Selector {
                     rs1: hi_shifted,
                     rs2: carry,
                 });
+                self.unpin(&[carry, hi_shifted]); // #312: arm-local scratch
             }
             ShiftKind::ShrS | ShiftKind::ShrU => {
                 // hi' = hi >> s  (sra for shr_s, srl for shr_u)
@@ -2277,6 +2329,7 @@ impl Selector {
                     rs1: lo_shifted,
                     rs2: carry,
                 });
+                self.unpin(&[carry, lo_shifted]); // #312: arm-local scratch
             }
         }
         self.out.push(RiscVOp::Jal {
@@ -2331,6 +2384,7 @@ impl Selector {
             }
         }
         self.out.push(RiscVOp::Label { name: done_label });
+        self.unpin(&[s_lo, inv]); // #312: shift scratch dead past the join
         self.push_i64(res_lo, res_hi);
         Ok(())
     }
@@ -2347,7 +2401,8 @@ impl Selector {
     /// than a 64-bit shift (which the shift helper would treat as `shamt &
     /// 63 == 0` anyway — but computing it explicitly keeps the intent clear).
     fn lower_i64_rotate(&mut self, op: &WasmOp, left: bool) -> Result<(), SelectorError> {
-        let ((vlo, vhi), (namt, _namt_hi)) = self.pop_i64_then_amount(op)?;
+        let ((vlo, vhi), (namt, namt_hi)) = self.pop_i64_then_amount(op)?;
+        self.unpin(&[namt_hi]); // #312: the amount's high limb is never read
         // n = amount & 63
         let n = self.alloc_temp();
         self.out.push(RiscVOp::Andi {
@@ -2355,6 +2410,7 @@ impl Selector {
             rs1: namt,
             imm: 63,
         });
+        self.unpin(&[namt]); // #312: dead once masked into n
         // comp = (64 - n) & 63  — the complementary rotate distance.
         let comp = self.alloc_temp();
         self.out.push(RiscVOp::Addi {
@@ -2380,6 +2436,7 @@ impl Selector {
         } else {
             self.emit_i64_shift_inline(vlo, vhi, amt_a, ShiftKind::ShrU)
         };
+        self.unpin(&[amt_a]); // #312: n is dead after the first shift
         let (b_lo, b_hi) = if left {
             self.emit_i64_shift_inline(vlo, vhi, amt_b, ShiftKind::ShrU)
         } else {
@@ -2450,6 +2507,7 @@ impl Selector {
             rs2: Reg::ZERO,
             label: big_label.clone(),
         });
+        self.unpin(&[s, test]); // #312: both dead after the bit-5 branch
         // small case
         let inv = self.alloc_temp();
         self.out.push(RiscVOp::Addi {
@@ -2491,6 +2549,7 @@ impl Selector {
                     rs1: hi_shifted,
                     rs2: carry,
                 });
+                self.unpin(&[carry, hi_shifted]); // #312: arm-local scratch
             }
             ShiftKind::ShrS | ShiftKind::ShrU => {
                 self.out.push(if kind == ShiftKind::ShrS {
@@ -2528,6 +2587,7 @@ impl Selector {
                     rs1: lo_shifted,
                     rs2: carry,
                 });
+                self.unpin(&[carry, lo_shifted]); // #312: arm-local scratch
             }
         }
         self.out.push(RiscVOp::Jal {
@@ -2575,6 +2635,7 @@ impl Selector {
             }
         }
         self.out.push(RiscVOp::Label { name: done_label });
+        self.unpin(&[s_lo, inv]); // #312: shift scratch dead past the join
         (res_lo, res_hi)
     }
 
@@ -2607,6 +2668,7 @@ impl Selector {
             rs1: hi_clz,
             imm: 0,
         });
+        self.unpin(&[hi_clz]); // #312: dead once copied into result
         self.out.push(RiscVOp::Jal {
             rd: Reg::ZERO,
             label: done.clone(),
@@ -2649,6 +2711,7 @@ impl Selector {
             rs1: lo_ctz,
             imm: 0,
         });
+        self.unpin(&[lo_ctz]); // #312: dead once copied into result
         self.out.push(RiscVOp::Jal {
             rd: Reg::ZERO,
             label: done.clone(),
@@ -2749,6 +2812,9 @@ impl Selector {
                 rs1: x,
                 rs2: add,
             });
+            // #312: the probe scratch is dead at the end of each step — release
+            // it so the five unrolled steps reuse three registers, not fifteen.
+            self.unpin(&[probe, is_zero, add]);
         }
         // After the five probes, n is 31 for an all-zero input (each window
         // contributed) and the true count for anything else. Correct the
@@ -2765,6 +2831,8 @@ impl Selector {
             rs1: n,
             rs2: is_src_zero,
         });
+        // #312: only the result survives this helper.
+        self.unpin(&[x, n, is_src_zero]);
         result
     }
 
@@ -2831,6 +2899,8 @@ impl Selector {
             rs1: ctz,
             rs2: corr,
         });
+        // #312: only the result survives this helper.
+        self.unpin(&[neg, iso, clz_iso, thirty_one, ctz, is_src_zero, corr]);
         result
     }
 
@@ -2925,6 +2995,8 @@ impl Selector {
             rs1: x,
             shamt: 24,
         });
+        // #312: only the result survives this helper.
+        self.unpin(&[m1, m2, m4, m8, x, t, a, b]);
         result
     }
 
@@ -3411,6 +3483,7 @@ impl Selector {
         });
         self.out.push(RiscVOp::Ebreak);
         self.out.push(RiscVOp::Label { name: div_ok });
+        self.unpin(&[zero_or]); // #312: dead after the zero-divisor branch
 
         // ── Trap 2: signed INT64_MIN / -1 overflow (div_s only) ──────────
         // INT64_MIN = 0x8000_0000_0000_0000 → lo == 0, hi == 0x8000_0000.
@@ -3459,6 +3532,7 @@ impl Selector {
             // dividend == INT64_MIN and divisor == -1 → overflow, trap.
             self.out.push(RiscVOp::Ebreak);
             self.out.push(RiscVOp::Label { name: sdiv_ok });
+            self.unpin(&[tmin_hi, neg1]); // #312: guard constants are dead
         }
 
         if !signed {
@@ -3489,9 +3563,13 @@ impl Selector {
         // would also work, but the operands here came from `alloc_temp`, so
         // we just negate into fresh temps and branch-select.
         let (nabs_lo, nabs_hi) = self.emit_i64_abs(nl, nh, nsign);
+        self.unpin(&[nl, nh]); // #312: dividend halves replaced by |dividend|
         let (dabs_lo, dabs_hi) = self.emit_i64_abs(dl, dh, dsign);
+        self.unpin(&[dl, dh]); // #312: divisor halves replaced by |divisor|
 
         self.emit_i64_udiv_inline((nabs_lo, nabs_hi), (dabs_lo, dabs_hi));
+        // #312: the core copied its inputs into the fixed DIV_* registers.
+        self.unpin(&[nabs_lo, nabs_hi, dabs_lo, dabs_hi]);
         let (mag_lo, mag_hi) = self.copy_div_result(want_rem);
 
         // Result sign:
@@ -3583,6 +3661,8 @@ impl Selector {
             rs1: res_hi,
             rs2: borrow,
         });
+        // #312: only the result pair survives this helper.
+        self.unpin(&[xl, xh, borrow]);
         (res_lo, res_hi)
     }
 
@@ -5687,7 +5767,11 @@ mod tests {
             sel.push_i32(r);
         }
         // Spin the allocator well past the pool size; it must dodge all three.
+        // #312: allocations within one op pin their result (so pairs never
+        // alias) — clear the per-op scope each iteration, as `lower_one` does
+        // at every op boundary.
         for _ in 0..(sel.temps.len() * 3) {
+            sel.op_pinned.clear();
             let r = sel.alloc_temp();
             assert!(
                 !pinned.contains(&r),
@@ -5769,6 +5853,63 @@ mod tests {
         assert!(
             sel.alloc_exhausted,
             "all temps pinned → exhaustion flagged for skip-and-continue"
+        );
+    }
+
+    /// #312: within one op's lowering, back-to-back `alloc_temp` calls (an
+    /// i64 `(lo, hi)` pair) must never alias, and freshly allocated scratch
+    /// must never land on an operand popped earlier in the same op. Before
+    /// the per-op pin scope, lowest-free (#231) collapsed every i64 pair to
+    /// a single register — `check(3,4)` returned 0x0 on the u64-unpack
+    /// oracle because each pair's hi write destroyed its own lo.
+    #[test]
+    fn i64_pair_registers_never_alias_312() {
+        // i64.const: lo/hi must be two registers.
+        let mut sel = Selector::new_with_options(0, SelectorOptions::wasm_compliant());
+        sel.lower_one(&WasmOp::I64Const(5)).unwrap();
+        let Some(&VstackVal::I64 { lo, hi }) = sel.vstack.last() else {
+            panic!("i64.const must push an i64 pair");
+        };
+        assert_ne!(lo, hi, "i64.const pair collapsed to one register");
+
+        // i64.extend_i32_u: the fresh hi (= 0) must not land on the popped
+        // src, which becomes the pair's lo.
+        let mut sel = Selector::new_with_options(0, SelectorOptions::wasm_compliant());
+        sel.lower_one(&WasmOp::I32Const(7)).unwrap();
+        sel.lower_one(&WasmOp::I64ExtendI32U).unwrap();
+        let Some(&VstackVal::I64 { lo, hi }) = sel.vstack.last() else {
+            panic!("i64.extend_i32_u must push an i64 pair");
+        };
+        assert_ne!(lo, hi, "extend_i32_u zeroed hi on top of its own lo");
+    }
+
+    /// #312: an i64 local.get must load the two frame words into two distinct
+    /// registers (the repro loaded both `0(sp)` and `4(sp)` into the same reg).
+    #[test]
+    fn i64_local_get_loads_distinct_pair_312() {
+        let sel = select(
+            &[
+                WasmOp::I64Const(1),
+                WasmOp::LocalSet(0),
+                WasmOp::LocalGet(0),
+            ],
+            0,
+        )
+        .unwrap();
+        let frame_loads: Vec<Reg> = sel
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                RiscVOp::Lw {
+                    rd, rs1: Reg::SP, ..
+                } => Some(*rd),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(frame_loads.len(), 2, "i64 local.get loads both slot words");
+        assert_ne!(
+            frame_loads[0], frame_loads[1],
+            "i64 local.get pair collapsed to one register"
         );
     }
 
