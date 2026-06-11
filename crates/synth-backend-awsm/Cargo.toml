@@ -11,6 +11,6 @@ categories.workspace = true
 description = "aWsm backend integration for the Synth compiler"
 
 [dependencies]
-synth-core = { path = "../synth-core", version = "0.11.38" }
+synth-core = { path = "../synth-core", version = "0.11.39" }
 anyhow.workspace = true
 thiserror.workspace = true
