@@ -154,39 +154,63 @@ fn compile_wasm_to_arm(
     // The non-optimized (direct) instruction-selection path. Handles f32 via
     // VFP/FPU. Used directly when `--no-optimize` is set, and as the fallback
     // when the optimized path declines a module (see issue #120 below).
+    //
+    // VCR-RA-001 step 3b-lite (#242): a FRESH selector per attempt, with
+    // `spill_on_exhaustion` set only on the retry — the first pass is the
+    // unmodified default, so every function that compiles today is selected by
+    // exactly the code that compiled it yesterday (bit-identity is structural,
+    // not behavioural).
+    let select_direct_attempt =
+        |spill_on_exhaustion: bool| -> Result<Vec<ArmInstruction>, synth_core::Error> {
+            let db = RuleDatabase::with_standard_rules();
+            let mut selector =
+                InstructionSelector::with_bounds_check(db.rules().to_vec(), bounds_config);
+            selector.set_target(config.target.fpu, &config.target.triple);
+            if config.num_imports > 0 {
+                selector.set_num_imports(config.num_imports);
+            }
+            // #195: plumb the callee argument-count tables so the direct selector can
+            // marshal call arguments into R0–R3 per AAPCS.
+            selector.set_func_arg_counts(
+                config.func_arg_counts.clone(),
+                config.type_arg_counts.clone(),
+            );
+            // #197: in relocatable host-link mode, emit direct `func_N` BLs for
+            // imports (rewritten to the wasm field name by build_relocatable_elf)
+            // instead of `__meld_dispatch_import`.
+            selector.set_relocatable(config.relocatable);
+            // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
+            selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
+            // #311: i64 call results are register PAIRS — tag them.
+            selector.set_result_types(config.func_ret_i64.clone(), config.type_ret_i64.clone());
+            // Stack-pointer promotion is meaningful only under the native-pointer ABI;
+            // gating here keeps every non-native compile (all frozen fixtures) on the
+            // legacy R9 globals-table path, bit-identical.
+            if config.native_pointer_abi
+                && let Some((sp_idx, sp_init)) = config.stack_pointer_global
+            {
+                selector.set_native_pointer_stack(sp_idx, sp_init);
+            }
+            selector.set_spill_on_exhaustion(spill_on_exhaustion);
+            selector.select_with_stack(wasm_ops, num_params)
+        };
     let select_direct = || -> Result<Vec<ArmInstruction>, String> {
-        let db = RuleDatabase::with_standard_rules();
-        let mut selector =
-            InstructionSelector::with_bounds_check(db.rules().to_vec(), bounds_config);
-        selector.set_target(config.target.fpu, &config.target.triple);
-        if config.num_imports > 0 {
-            selector.set_num_imports(config.num_imports);
+        match select_direct_attempt(false) {
+            Ok(instrs) => Ok(instrs),
+            // VCR-RA-001 step 3b-lite (#242): the i32 register-exhaustion
+            // hard-fail is recoverable — retry once with spill-on-exhaustion,
+            // which reserves the spill area and spills the deepest stack value
+            // when the pool is full. Only functions that FAILED the first pass
+            // ever reach this, so existing output is untouched by construction.
+            Err(e)
+                if e.to_string()
+                    .contains("all allocatable registers are live on the stack") =>
+            {
+                select_direct_attempt(true)
+                    .map_err(|e| format!("instruction selection failed: {}", e))
+            }
+            Err(e) => Err(format!("instruction selection failed: {}", e)),
         }
-        // #195: plumb the callee argument-count tables so the direct selector can
-        // marshal call arguments into R0–R3 per AAPCS.
-        selector.set_func_arg_counts(
-            config.func_arg_counts.clone(),
-            config.type_arg_counts.clone(),
-        );
-        // #197: in relocatable host-link mode, emit direct `func_N` BLs for
-        // imports (rewritten to the wasm field name by build_relocatable_elf)
-        // instead of `__meld_dispatch_import`.
-        selector.set_relocatable(config.relocatable);
-        // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
-        selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
-        // #311: i64 call results are register PAIRS — tag them.
-        selector.set_result_types(config.func_ret_i64.clone(), config.type_ret_i64.clone());
-        // Stack-pointer promotion is meaningful only under the native-pointer ABI;
-        // gating here keeps every non-native compile (all frozen fixtures) on the
-        // legacy R9 globals-table path, bit-identical.
-        if config.native_pointer_abi
-            && let Some((sp_idx, sp_init)) = config.stack_pointer_global
-        {
-            selector.set_native_pointer_stack(sp_idx, sp_init);
-        }
-        selector
-            .select_with_stack(wasm_ops, num_params)
-            .map_err(|e| format!("instruction selection failed: {}", e))
     };
 
     // Instruction selection: optimized or direct.
