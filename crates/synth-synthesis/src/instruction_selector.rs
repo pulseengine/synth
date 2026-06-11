@@ -5745,78 +5745,65 @@ impl InstructionSelector {
                         reserved.push(dividend);
                         reserved.push(dst);
 
-                        // Cost-gate (#209 regression): the reciprocal-multiply
-                        // needs scratch (the magic constant + UMULL's two output
-                        // registers). Under heavy pressure — control_step's 4
-                        // const `div_u` on the 9-reg R0–R8 pool (after the #212
-                        // R12 reserve) with a deep operand stack — the allocation
-                        // can fail; fall back to the guard-elided UDIV, which
-                        // needs no new temps and is always correct. The a==false
-                        // path reuses `dst` as the throwaway low word (2 temps);
-                        // a==true keeps `dividend` live past the UMULL, so it
-                        // needs a distinct rlo (3 temps).
-                        let recip: Option<(Reg, Reg, Reg)> = match alloc_temp_or_spill(
+                        // Scratch for the reciprocal-multiply: the magic
+                        // constant + UMULL's outputs. The a==false path reuses
+                        // `dst` as the throwaway low word (2 temps); a==true
+                        // keeps `dividend` live past the UMULL (3 temps).
+                        // Exhaustion here is recovered by the #320 spill retry
+                        // — the historical v0.11.20 UDIV cost-gate is deleted
+                        // (VCR-VER-001; it was already dead on the frozen
+                        // suite).
+                        // VCR-VER-001 (#242): the v0.11.20 cost-gate is GONE.
+                        // The #320 spill-on-exhaustion retry recovers the
+                        // pressure case the UDIV fallback guarded, and the
+                        // fallback was already dead on the entire frozen suite
+                        // (reverting it is byte-identical) — the first greedy
+                        // patch deleted under the VCR program's exit criterion.
+                        let rmag = alloc_temp_or_spill(
                             &mut next_temp,
                             &mut stack,
                             &mut instructions,
                             &mut spill,
                             &reserved,
                             idx,
-                        )
-                        .ok()
-                        {
-                            Some(rmag) if a => {
-                                reserved.push(rmag);
-                                match alloc_temp_or_spill(
-                                    &mut next_temp,
-                                    &mut stack,
-                                    &mut instructions,
-                                    &mut spill,
-                                    &reserved,
-                                    idx,
-                                )
-                                .ok()
-                                {
-                                    Some(rlo) => {
-                                        reserved.push(rlo);
-                                        alloc_temp_or_spill(
-                                            &mut next_temp,
-                                            &mut stack,
-                                            &mut instructions,
-                                            &mut spill,
-                                            &reserved,
-                                            idx,
-                                        )
-                                        .ok()
-                                        .map(|rhi| (rmag, rlo, rhi))
-                                    }
-                                    None => None,
-                                }
-                            }
-                            Some(rmag) => {
-                                // a==false: `dst` doubles as UMULL's RdLo.
-                                reserved.push(rmag);
-                                alloc_temp_or_spill(
-                                    &mut next_temp,
-                                    &mut stack,
-                                    &mut instructions,
-                                    &mut spill,
-                                    &reserved,
-                                    idx,
-                                )
-                                .ok()
-                                .map(|rhi| (rmag, dst, rhi))
-                            }
-                            None => None,
+                        )?;
+                        reserved.push(rmag);
+                        let (rlo, rhi) = if a {
+                            let rlo = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &reserved,
+                                idx,
+                            )?;
+                            reserved.push(rlo);
+                            let rhi = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &reserved,
+                                idx,
+                            )?;
+                            (rlo, rhi)
+                        } else {
+                            // a==false: `dst` doubles as UMULL's RdLo.
+                            let rhi = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &reserved,
+                                idx,
+                            )?;
+                            (dst, rhi)
                         };
-
-                        if let Some((rmag, rlo, rhi)) = recip {
+                        {
                             // #209 cleanup: the reciprocal-multiply reads the magic
                             // constant, never the divisor — so the divisor's eager
                             // materialization (the `i32.const` at idx-1, the only op
-                            // tagged there) is dead on this path. Drop it. The
-                            // cost-gate UDIV fallback below still materializes its
-                            // own divisor, so behavior is unchanged.
+                            // tagged there) is dead on this path. Drop it.
                             if idx >= 1 {
                                 instructions.retain(|i| i.source_line != Some(idx - 1));
                             }
@@ -5910,17 +5897,6 @@ impl InstructionSelector {
                                     source_line: Some(idx),
                                 });
                             }
-                        } else {
-                            // Register-pressure fallback: guard-elided UDIV (the
-                            // divisor is a known nonzero constant, so no trap).
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::Udiv {
-                                    rd: dst,
-                                    rn: dividend,
-                                    rm: divisor,
-                                },
-                                source_line: Some(idx),
-                            });
                         }
                     } else {
                         // A nonzero constant divisor can never trap; only emit
