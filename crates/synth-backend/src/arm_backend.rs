@@ -160,57 +160,72 @@ fn compile_wasm_to_arm(
     // unmodified default, so every function that compiles today is selected by
     // exactly the code that compiled it yesterday (bit-identity is structural,
     // not behavioural).
-    let select_direct_attempt =
-        |spill_on_exhaustion: bool| -> Result<Vec<ArmInstruction>, synth_core::Error> {
-            let db = RuleDatabase::with_standard_rules();
-            let mut selector =
-                InstructionSelector::with_bounds_check(db.rules().to_vec(), bounds_config);
-            selector.set_target(config.target.fpu, &config.target.triple);
-            if config.num_imports > 0 {
-                selector.set_num_imports(config.num_imports);
-            }
-            // #195: plumb the callee argument-count tables so the direct selector can
-            // marshal call arguments into R0–R3 per AAPCS.
-            selector.set_func_arg_counts(
-                config.func_arg_counts.clone(),
-                config.type_arg_counts.clone(),
-            );
-            // #197: in relocatable host-link mode, emit direct `func_N` BLs for
-            // imports (rewritten to the wasm field name by build_relocatable_elf)
-            // instead of `__meld_dispatch_import`.
-            selector.set_relocatable(config.relocatable);
-            // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
-            selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
-            // #311: i64 call results are register PAIRS — tag them.
-            selector.set_result_types(config.func_ret_i64.clone(), config.type_ret_i64.clone());
-            // Stack-pointer promotion is meaningful only under the native-pointer ABI;
-            // gating here keeps every non-native compile (all frozen fixtures) on the
-            // legacy R9 globals-table path, bit-identical.
-            if config.native_pointer_abi
-                && let Some((sp_idx, sp_init)) = config.stack_pointer_global
-            {
-                selector.set_native_pointer_stack(sp_idx, sp_init);
-            }
-            selector.set_spill_on_exhaustion(spill_on_exhaustion);
-            selector.select_with_stack(wasm_ops, num_params)
-        };
-    let select_direct = || -> Result<Vec<ArmInstruction>, String> {
-        match select_direct_attempt(false) {
-            Ok(instrs) => Ok(instrs),
-            // VCR-RA-001 step 3b-lite (#242): the i32 register-exhaustion
-            // hard-fail is recoverable — retry once with spill-on-exhaustion,
-            // which reserves the spill area and spills the deepest stack value
-            // when the pool is full. Only functions that FAILED the first pass
-            // ever reach this, so existing output is untouched by construction.
-            Err(e)
-                if e.to_string()
-                    .contains("all allocatable registers are live on the stack") =>
-            {
-                select_direct_attempt(true)
-                    .map_err(|e| format!("instruction selection failed: {}", e))
-            }
-            Err(e) => Err(format!("instruction selection failed: {}", e)),
+    let select_direct_attempt = |spill_on_exhaustion: bool,
+                                 param_backing_on_exhaustion: bool|
+     -> Result<Vec<ArmInstruction>, synth_core::Error> {
+        let db = RuleDatabase::with_standard_rules();
+        let mut selector =
+            InstructionSelector::with_bounds_check(db.rules().to_vec(), bounds_config);
+        selector.set_target(config.target.fpu, &config.target.triple);
+        if config.num_imports > 0 {
+            selector.set_num_imports(config.num_imports);
         }
+        // #195: plumb the callee argument-count tables so the direct selector can
+        // marshal call arguments into R0–R3 per AAPCS.
+        selector.set_func_arg_counts(
+            config.func_arg_counts.clone(),
+            config.type_arg_counts.clone(),
+        );
+        // #197: in relocatable host-link mode, emit direct `func_N` BLs for
+        // imports (rewritten to the wasm field name by build_relocatable_elf)
+        // instead of `__meld_dispatch_import`.
+        selector.set_relocatable(config.relocatable);
+        // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
+        selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
+        // #311: i64 call results are register PAIRS — tag them.
+        selector.set_result_types(config.func_ret_i64.clone(), config.type_ret_i64.clone());
+        // Stack-pointer promotion is meaningful only under the native-pointer ABI;
+        // gating here keeps every non-native compile (all frozen fixtures) on the
+        // legacy R9 globals-table path, bit-identical.
+        if config.native_pointer_abi
+            && let Some((sp_idx, sp_init)) = config.stack_pointer_global
+        {
+            selector.set_native_pointer_stack(sp_idx, sp_init);
+        }
+        selector.set_spill_on_exhaustion(spill_on_exhaustion);
+        selector.set_param_backing_on_exhaustion(param_backing_on_exhaustion);
+        selector.select_with_stack(wasm_ops, num_params)
+    };
+    let select_direct = || -> Result<Vec<ArmInstruction>, String> {
+        // The two recoverable exhaustion classes. NOT retried: the i64
+        // spill-slot-pool Err ("spill-slot pool exhausted") — the honest
+        // remaining bound of the 3b-lite allocator.
+        const SINGLE_EXHAUSTION: &str = "all allocatable registers are live on the stack";
+        const PAIR_EXHAUSTION: &str = "no consecutive pair of free registers for i64";
+        let mut attempt = select_direct_attempt(false, false);
+        // VCR-RA-001 step 3b-lite (#242): the i32 register-exhaustion
+        // hard-fail is recoverable — retry with spill-on-exhaustion, which
+        // reserves the spill area and spills the deepest stack value when the
+        // pool is full. Only functions that FAILED the first pass ever reach
+        // this, so existing output is untouched by construction.
+        if let Err(e) = &attempt
+            && e.to_string().contains(SINGLE_EXHAUSTION)
+        {
+            attempt = select_direct_attempt(true, false);
+        }
+        // VCR-RA-001 acceptance increment (#242): the i64 consecutive-PAIR
+        // exhaustion is recoverable too — but not by stack spilling (the pair
+        // allocator already spills stack values, #171): the blockers are the
+        // pinned param home registers. The final retry frame-backs the params
+        // (#204 machinery) so they stop pinning R0-R3, with spill-on-exhaustion
+        // kept on for the single-register pressure the reloads add. Reached
+        // only by functions that failed every earlier pass.
+        if let Err(e) = &attempt
+            && e.to_string().contains(PAIR_EXHAUSTION)
+        {
+            attempt = select_direct_attempt(true, true);
+        }
+        attempt.map_err(|e| format!("instruction selection failed: {}", e))
     };
 
     // Instruction selection: optimized or direct.
