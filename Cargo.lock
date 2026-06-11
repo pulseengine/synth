@@ -1933,14 +1933,14 @@ dependencies = [
 
 [[package]]
 name = "synth-abi"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "synth-wit",
 ]
 
 [[package]]
 name = "synth-analysis"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1949,7 +1949,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1959,7 +1959,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-awsm"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1968,7 +1968,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-riscv"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "anyhow",
  "proptest",
@@ -1980,7 +1980,7 @@ dependencies = [
 
 [[package]]
 name = "synth-backend-wasker"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -1989,11 +1989,11 @@ dependencies = [
 
 [[package]]
 name = "synth-cfg"
-version = "0.11.36"
+version = "0.11.37"
 
 [[package]]
 name = "synth-cli"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "anyhow",
  "clap",
@@ -2015,7 +2015,7 @@ dependencies = [
 
 [[package]]
 name = "synth-core"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "anyhow",
  "serde",
@@ -2028,7 +2028,7 @@ dependencies = [
 
 [[package]]
 name = "synth-frontend"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "anyhow",
  "synth-core",
@@ -2042,14 +2042,14 @@ dependencies = [
 
 [[package]]
 name = "synth-memory"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "bitflags",
 ]
 
 [[package]]
 name = "synth-opt"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "criterion",
  "synth-cfg",
@@ -2057,11 +2057,11 @@ dependencies = [
 
 [[package]]
 name = "synth-qemu"
-version = "0.11.36"
+version = "0.11.37"
 
 [[package]]
 name = "synth-synthesis"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "anyhow",
  "proptest",
@@ -2076,7 +2076,7 @@ dependencies = [
 
 [[package]]
 name = "synth-test"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "anyhow",
  "clap",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "synth-verify"
-version = "0.11.36"
+version = "0.11.37"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2110,7 +2110,7 @@ dependencies = [
 
 [[package]]
 name = "synth-wit"
-version = "0.11.36"
+version = "0.11.37"
 
 [[package]]
 name = "tempfile"
