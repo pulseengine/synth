@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.38] - 2026-06-11
+
+**The first register-exhaustion hard-fail becomes recoverable
+(#242, VCR-RA-001 steps 3b-lite + 4 substrate).**
+
+- **Spill-on-exhaustion retry**: when `alloc_temp_safe` would hard-fail
+  ("register exhaustion: all allocatable registers are live on the stack"),
+  the function is re-selected with spilling enabled — the deepest
+  stack-resident value moves to a frame slot (existing #171 `Spilled`
+  reload-on-pop machinery) and selection continues. Bit-identity for every
+  currently-compiling function is STRUCTURAL: the unmodified first pass runs
+  for everyone; only the exact exhaustion error triggers the fresh-selector
+  retry (which also forces the spill-area reservation that i32-only frames
+  lacked). Honest bound: 8 spill slots cap simultaneous spills; the i64
+  consecutive-pair and call-result hard-fail sites remain (next increments).
+- **Cycle-safe parallel-move resolver** (`synth_synthesis::parallel_move`,
+  VCR-RA-004): chains leaf-first, cycles broken via move-set-filtered scratch
+  or a self-bracketing stack-scratch pair; property-tested across 6000
+  deterministic sequentializations + directed swap/cycle cases with a
+  structural size bound. Pure substrate for upcoming spill/reload insertion.
+- NEW committed oracle: `scripts/repro/high_pressure_i32.wat` +
+  unicorn-vs-wasmtime differential — hard `Err` on v0.11.37, compiles and
+  passes 6/6 on this release.
+
+All fixtures sha256-identical to v0.11.37; differentials PASS (13/13,
+338/338, 0x07FDF307). gale's v0.11.36/37 scorecard verified everything
+shipped (filter −8 cyc, #311 closed on silicon, #237 sizing confirmed).
+
+Falsification: wrong if any previously-compiling module's bytes change, or
+the high-pressure lane disagrees with wasmtime. The reciprocal-mult
+cost-gate revert experiment (VCR-VER-001 evidence) is now runnable.
+
+
 ## [0.11.37] - 2026-06-11
 
 **RV32 i64 locals + the per-op register-aliasing fix the behavioral oracle
