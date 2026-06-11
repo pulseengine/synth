@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.37] - 2026-06-11
+
+**RV32 i64 locals + the per-op register-aliasing fix the behavioral oracle
+caught (#312) — the packed-u64 verified-decide pattern is now correct on BOTH
+lanes.**
+
+- **RV32 i64 locals**: 8-byte (8-aligned) frame slots; `local.get/set/tee`
+  emit two `lw`/`sw` (lo at off, hi at off+4) using the existing pair
+  convention; call results from i64-returning callees are tagged as the
+  `a0:a1` pair via the shared decoder result tables (#311); width inference
+  reused from `synth_synthesis::infer_i64_locals` (now `pub`). i64 params
+  stay fail-loud `Unsupported` (the psABI pair-register convention is its own
+  increment).
+- **Per-op alloc pin scope** (the real find): under the lowest-free allocator
+  (#231), back-to-back `alloc_temp` calls within ONE wasm op's expansion
+  returned the SAME register — every i64 pair collapsed to a single reg
+  (`sw t0,0(sp); sw t0,4(sp)`), and popped operands lost clobber protection
+  (the #232 class, generalized). `pop_any` now pins its operands and
+  `alloc_temp` pins its grants for the duration of the op; targeted unpins
+  keep worst-case pressure ≤ 11 of 13 pool registers.
+- NEW committed oracle: `scripts/repro/u64_unpack_riscv_differential.py`
+  (unicorn vs wasmtime) — 4/4 FAIL before the pin-scope fix, 4/4 PASS after;
+  compile-only gating would have shipped the wrong code.
+
+All four existing RV32 differentials PASS (controller_step, filter_axis,
+signed-div-const, control_step); ARM fixtures cmp-bit-identical to v0.11.36;
+175/175 backend-riscv tests.
+
+Falsification: wrong if gale's RV32 funccheck lane disagrees with wasmtime on
+the u64 family or any RV32 baseline regresses. Known + filed separately:
+pre-existing `i64.div_s/rem_s` sign clobber (#317, probe staged).
+
+
 ## [0.11.36] - 2026-06-11
 
 **Four silicon blockers in one tag: the allocator goes default-ON, the mutex
