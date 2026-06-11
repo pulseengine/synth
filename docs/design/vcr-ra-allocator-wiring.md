@@ -150,6 +150,34 @@ pass runs before the encoder and either assigns physical registers or spills.
   every function that never exhausts), so all frozen fixtures are untouched by
   construction until the flag flips wider.
 
+#### 3b-lite (landed first, 2026-06-11): spill-on-exhaustion retry — no virtual ids
+
+The first 3b increment removes the *i32* exhaustion hard-fail without any
+virtual-id plumbing, by reusing the #171 `StackVal::Spilled` machinery at the
+exact moment the old code returned `Err`:
+
+- `alloc_temp_or_spill` wraps `alloc_temp_safe`; on exhaustion **and only when
+  `SpillState::spill_on_exhaustion` is set**, it spills the deepest
+  register-resident stack value (`spill_deepest_reg`, LIFO ⇒ least likely
+  consumed next) to an i64-spill-area slot and retries. The value reloads on
+  pop/peek through the existing `Spilled` path.
+- The mode is set by the **backend retry**: `compile_wasm_to_arm` runs the
+  unmodified first pass; only if it fails with the specific exhaustion `Err`
+  does it re-select with a fresh selector and the flag on (which also forces
+  `compute_local_layout` to reserve the spill area, since the prologue is
+  emitted before any spill can be predicted). Bit-identity for everything that
+  compiles today is therefore **structural**, not measured-after-the-fact.
+- Honest bound (the hard-fail shrinks, doesn't vanish): `I64_SPILL_SLOTS = 8`
+  can still exhaust (now surfacing the slot-pool `Err`), and the i64
+  consecutive-pair (`~609`) and call-result callee-saved (`~4765`) sites keep
+  their hard-fails for this increment.
+- Oracle: `scripts/repro/high_pressure_i32.wat` (hard-fails on pre-3b main,
+  compiles + unicorn-vs-wasmtime differential PASS with the retry) + the three
+  frozen fixtures sha256-identical against a main-built compiler.
+
+Full 3b (virtual ids ≥ 9 mapped by the 3a allocator) remains the path to
+allocator-*chosen* spills; 3b-lite only guarantees forward progress.
+
 ### Why not pure selector-side vregs from the start
 
 Rewriting the selector to emit vregs for *every* temp invalidates the byte-level

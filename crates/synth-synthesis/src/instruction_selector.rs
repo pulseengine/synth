@@ -176,6 +176,13 @@ const I64_SPILL_SLOTS: usize = 8;
 struct SpillState {
     base: i32,
     used: [bool; I64_SPILL_SLOTS],
+    /// VCR-RA-001 step 3b-lite (#242): when set, i32 temp allocation under
+    /// register exhaustion spills the deepest stack value instead of
+    /// hard-failing (see [`alloc_temp_or_spill`]). Default OFF; flipped on only
+    /// by the retry pass in the backend after a first pass failed with the
+    /// exhaustion `Err` — so every function that compiles without it keeps
+    /// byte-identical output by construction.
+    spill_on_exhaustion: bool,
 }
 
 impl SpillState {
@@ -183,6 +190,7 @@ impl SpillState {
         SpillState {
             base,
             used: [false; I64_SPILL_SLOTS],
+            spill_on_exhaustion: false,
         }
     }
     /// Reserve a free slot, returning its byte offset from SP.
@@ -365,6 +373,46 @@ fn alloc_temp_safe(next_temp: &mut u8, stack: &[StackVal], reserved: &[Reg]) -> 
     ))
 }
 
+/// [`alloc_temp_safe`] + spill-on-exhaustion (VCR-RA-001 step 3b-lite, #242).
+///
+/// Fast path: identical to `alloc_temp_safe` — a free register exists and is
+/// returned with no instruction emitted. Exhaustion path: when
+/// `spill.spill_on_exhaustion` is set (only the backend's retry pass after a
+/// first pass already failed — never a function that compiles today), spill the
+/// DEEPEST register-resident stack value to an i64-spill-area slot via
+/// [`spill_deepest_reg`] (the deepest entry is the least likely to be consumed
+/// next; operand stack = LIFO) and retry, freeing that register for the new
+/// temp. The spilled value reloads automatically on pop/peek through the
+/// existing [`StackVal::Spilled`] machinery (#171).
+///
+/// Terminates: each spill converts one `StackVal::Reg` to `StackVal::Spilled`,
+/// so either a register frees or nothing register-resident remains and the
+/// original exhaustion `Err` is returned. The hard-fail shrinks but does not
+/// vanish: with all `I64_SPILL_SLOTS` slots in use, `spill_deepest_reg`
+/// propagates its slot-pool-exhausted `Err` (an honest bound).
+fn alloc_temp_or_spill(
+    next_temp: &mut u8,
+    stack: &mut [StackVal],
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    reserved: &[Reg],
+    line: usize,
+) -> Result<Reg> {
+    loop {
+        match alloc_temp_safe(next_temp, stack, reserved) {
+            Ok(reg) => return Ok(reg),
+            Err(e) => {
+                if !spill.spill_on_exhaustion
+                    || !spill_deepest_reg(stack, instructions, spill, line)?
+                {
+                    return Err(e);
+                }
+                // A register was freed — retry the allocation.
+            }
+        }
+    }
+}
+
 /// Spill the DEEPEST register-resident stack entry to a fresh frame slot (#171),
 /// freeing its register pair. Emits `STR lo,[sp,slot]; STR hi,[sp,slot+4]` and
 /// rewrites the entry to [`StackVal::Spilled`]. Returns `Ok(true)` on success,
@@ -465,7 +513,8 @@ fn pop_operand(
                 });
                 lo
             } else {
-                let lo = alloc_temp_safe(next_temp, stack, reserved)?;
+                let lo =
+                    alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, line)?;
                 instructions.push(ArmInstruction {
                     op: ArmOp::Ldr {
                         rd: lo,
@@ -525,7 +574,8 @@ fn peek_operand(
                 });
                 lo
             } else {
-                let lo = alloc_temp_safe(next_temp, stack, reserved)?;
+                let lo =
+                    alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, line)?;
                 instructions.push(ArmInstruction {
                     op: ArmOp::Ldr {
                         rd: lo,
@@ -765,6 +815,7 @@ fn compute_local_layout(
     num_params: u32,
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
+    force_spill_area: bool,
 ) -> LocalLayout {
     use std::collections::{BTreeSet, HashMap};
     let i64_set = infer_i64_locals(wasm_ops, func_ret_i64, type_ret_i64);
@@ -817,8 +868,14 @@ fn compute_local_layout(
     // unchanged). The op debug-name check is a robust sufficient condition that
     // catches every i64 variant without enumerating them; it runs once per
     // function. Slots are reused (freed on reload).
-    let has_i64 =
-        !i64_set.is_empty() || wasm_ops.iter().any(|op| format!("{op:?}").contains("I64"));
+    // VCR-RA-001 step 3b-lite (#242): the spill-on-exhaustion retry pass spills
+    // i32 stack values into this same area, so it must exist even for i64-free
+    // functions — `force_spill_area` is set ONLY on that retry (the function
+    // failed to compile at all on the first pass), so no function that compiles
+    // today changes frame size.
+    let has_i64 = force_spill_area
+        || !i64_set.is_empty()
+        || wasm_ops.iter().any(|op| format!("{op:?}").contains("I64"));
     let i64_spill_base = if has_i64 {
         if (offset % 8) != 0 {
             offset += 4;
@@ -1313,6 +1370,14 @@ pub struct InstructionSelector {
     has_helium: bool,
     /// Next available Q-register (Q0-Q7, wrapping)
     next_qreg: u8,
+    /// VCR-RA-001 step 3b-lite (#242): spill-on-exhaustion retry mode. Default
+    /// OFF — the backend sets it only for a retry after `select_with_stack`
+    /// failed with the i32 register-exhaustion `Err`, so every function that
+    /// compiles without it stays bit-identical by construction. When ON:
+    /// (a) the i64 spill area is always reserved in the frame, and (b) i32 temp
+    /// allocation under exhaustion spills the deepest stack value instead of
+    /// hard-failing ([`alloc_temp_or_spill`]).
+    spill_on_exhaustion: bool,
 }
 
 impl InstructionSelector {
@@ -1339,6 +1404,7 @@ impl InstructionSelector {
             label_counter: 0,
             has_helium: false,
             next_qreg: 0,
+            spill_on_exhaustion: false,
         }
     }
 
@@ -1365,12 +1431,22 @@ impl InstructionSelector {
             label_counter: 0,
             has_helium: false,
             next_qreg: 0,
+            spill_on_exhaustion: false,
         }
     }
 
     /// Set the number of imported functions for Meld dispatch
     pub fn set_num_imports(&mut self, num_imports: u32) {
         self.num_imports = num_imports;
+    }
+
+    /// VCR-RA-001 step 3b-lite (#242): enable spill-on-exhaustion. Intended
+    /// ONLY as a retry after `select_with_stack` failed with the i32
+    /// register-exhaustion `Err` — enabling it changes the frame layout (the
+    /// i64 spill area is always reserved), so calling it for a function that
+    /// compiles without it would change its bytes.
+    pub fn set_spill_on_exhaustion(&mut self, enabled: bool) {
+        self.spill_on_exhaustion = enabled;
     }
 
     /// Enable relocatable host-link mode (#197): import calls emit a direct
@@ -4907,8 +4983,13 @@ impl InstructionSelector {
         });
 
         // Compute non-param local layout (offsets + total frame size).
-        let layout =
-            compute_local_layout(wasm_ops, num_params, &self.func_ret_i64, &self.type_ret_i64);
+        let layout = compute_local_layout(
+            wasm_ops,
+            num_params,
+            &self.func_ret_i64,
+            &self.type_ret_i64,
+            self.spill_on_exhaustion,
+        );
         // Allocate stack space for non-param locals so they don't alias the
         // callee-saved-register spill area (which immediately follows SP
         // after Push above).
@@ -4928,6 +5009,7 @@ impl InstructionSelector {
         let mut stack: Vec<StackVal> = Vec::new();
         // i64 register-pair spill slots (#171), reused across the function.
         let mut spill = SpillState::new(layout.i64_spill_base);
+        spill.spill_on_exhaustion = self.spill_on_exhaustion;
         // Next available register for temporaries (start after params)
         let mut next_temp = num_params.min(4) as u8;
 
@@ -5034,7 +5116,14 @@ impl InstructionSelector {
                                 });
                                 (dst_lo, true)
                             } else {
-                                let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                                let dst = alloc_temp_or_spill(
+                                    &mut next_temp,
+                                    &mut stack,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &live_params,
+                                    idx,
+                                )?;
                                 instructions.push(ArmInstruction {
                                     op: ArmOp::Ldr {
                                         rd: dst,
@@ -5076,7 +5165,14 @@ impl InstructionSelector {
                             (dst_lo, true)
                         } else if let Some(&(off, false)) = layout.locals.get(local_idx) {
                             // i32 local: single 4-byte load from the locals frame.
-                            let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                            let dst = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Ldr {
                                     rd: dst,
@@ -5088,7 +5184,14 @@ impl InstructionSelector {
                         } else {
                             // Local not in layout (shouldn't happen for valid wasm,
                             // but fall back to legacy behaviour for compatibility).
-                            let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                            let dst = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Ldr {
                                     rd: dst,
@@ -5105,7 +5208,14 @@ impl InstructionSelector {
                 }
 
                 I32Const(val) => {
-                    let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                    let dst = alloc_temp_or_spill(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
                     let uval = *val as u32;
                     // #237: under the native-pointer ABI, when a stack-pointer
                     // global establishes a real static-data base, a const at/above
@@ -5222,7 +5332,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Add {
@@ -5286,7 +5403,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Sub {
@@ -5319,7 +5443,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Mul {
@@ -5385,7 +5516,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::And {
@@ -5449,7 +5587,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Orr {
@@ -5513,7 +5658,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Eor {
@@ -5551,7 +5703,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
 
                     if cdiv == Some(1) {
@@ -5596,29 +5755,60 @@ impl InstructionSelector {
                         // path reuses `dst` as the throwaway low word (2 temps);
                         // a==true keeps `dividend` live past the UMULL, so it
                         // needs a distinct rlo (3 temps).
-                        let recip: Option<(Reg, Reg, Reg)> =
-                            match alloc_temp_safe(&mut next_temp, &stack, &reserved).ok() {
-                                Some(rmag) if a => {
-                                    reserved.push(rmag);
-                                    match alloc_temp_safe(&mut next_temp, &stack, &reserved).ok() {
-                                        Some(rlo) => {
-                                            reserved.push(rlo);
-                                            alloc_temp_safe(&mut next_temp, &stack, &reserved)
-                                                .ok()
-                                                .map(|rhi| (rmag, rlo, rhi))
-                                        }
-                                        None => None,
-                                    }
-                                }
-                                Some(rmag) => {
-                                    // a==false: `dst` doubles as UMULL's RdLo.
-                                    reserved.push(rmag);
-                                    alloc_temp_safe(&mut next_temp, &stack, &reserved)
+                        let recip: Option<(Reg, Reg, Reg)> = match alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &reserved,
+                            idx,
+                        )
+                        .ok()
+                        {
+                            Some(rmag) if a => {
+                                reserved.push(rmag);
+                                match alloc_temp_or_spill(
+                                    &mut next_temp,
+                                    &mut stack,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &reserved,
+                                    idx,
+                                )
+                                .ok()
+                                {
+                                    Some(rlo) => {
+                                        reserved.push(rlo);
+                                        alloc_temp_or_spill(
+                                            &mut next_temp,
+                                            &mut stack,
+                                            &mut instructions,
+                                            &mut spill,
+                                            &reserved,
+                                            idx,
+                                        )
                                         .ok()
-                                        .map(|rhi| (rmag, dst, rhi))
+                                        .map(|rhi| (rmag, rlo, rhi))
+                                    }
+                                    None => None,
                                 }
-                                None => None,
-                            };
+                            }
+                            Some(rmag) => {
+                                // a==false: `dst` doubles as UMULL's RdLo.
+                                reserved.push(rmag);
+                                alloc_temp_or_spill(
+                                    &mut next_temp,
+                                    &mut stack,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &reserved,
+                                    idx,
+                                )
+                                .ok()
+                                .map(|rhi| (rmag, dst, rhi))
+                            }
+                            None => None,
+                        };
 
                         if let Some((rmag, rlo, rhi)) = recip {
                             // #209 cleanup: the reciprocal-multiply reads the magic
@@ -5797,7 +5987,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
 
                     if cdiv == Some(1) {
@@ -5839,7 +6036,14 @@ impl InstructionSelector {
                         let needs_ovf_guard = cdiv.is_none_or(|c| c == -1);
                         if needs_ovf_guard {
                             // We need a temp register for INT_MIN (0x80000000)
-                            let tmp = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                            let tmp = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
 
                             // Load INT_MIN into tmp: MOVW tmp, #0; MOVT tmp, #0x8000
                             instructions.push(ArmInstruction {
@@ -5931,7 +6135,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
 
                     if cdiv == Some(1) {
@@ -5970,7 +6181,14 @@ impl InstructionSelector {
 
                         // Remainder: dst = dividend - (dividend / divisor) * divisor
                         // quotient = UDIV tmp, dividend, divisor
-                        let tmp = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                        let tmp = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
                         instructions.push(ArmInstruction {
                             op: ArmOp::Udiv {
                                 rd: tmp,
@@ -6017,7 +6235,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
 
                     if cdiv == Some(1) {
@@ -6056,7 +6281,14 @@ impl InstructionSelector {
                         }
 
                         // Signed remainder: dst = dividend - (dividend/divisor)*divisor
-                        let tmp = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                        let tmp = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
                         instructions.push(ArmInstruction {
                             op: ArmOp::Sdiv {
                                 rd: tmp,
@@ -6099,7 +6331,14 @@ impl InstructionSelector {
                     let dst = if is_return_value {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
 
                     if let Some(eff_offset) = folded {
@@ -6169,7 +6408,14 @@ impl InstructionSelector {
                         if let Some(addend) = self.static_data_addend(eff_offset) {
                             // #237: static store — materialize the base-independent
                             // address into a scratch reg, then `STR value, [addr]`.
-                            let a = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                            let a = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
                             Self::emit_wasm_data_addr(&mut instructions, a, addend, idx);
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Str {
@@ -6221,7 +6467,14 @@ impl InstructionSelector {
                     let dst = if is_return_value {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
 
                     let (access_size, sign_extend) = match op {
@@ -6511,7 +6764,14 @@ impl InstructionSelector {
 
                 // Memory management
                 MemorySize(_mem_idx) => {
-                    let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                    let dst = alloc_temp_or_spill(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::MemorySize { rd: dst },
                         source_line: Some(idx),
@@ -6529,7 +6789,14 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                    let dst = alloc_temp_or_spill(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::MemoryGrow { rd: dst, rn: pages },
                         source_line: Some(idx),
@@ -7130,7 +7397,14 @@ impl InstructionSelector {
                     let dst = if in_place {
                         val2
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
 
                     // CMP cond, #0 — sets the flags FIRST, before anything writes
@@ -7348,7 +7622,14 @@ impl InstructionSelector {
                     // global is rebased to an absolute pointer on read so address
                     // arithmetic and [r11=0 + addr] accesses see host pointers.
                     if self.native_pointer_abi {
-                        let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                        let dst = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
                         Self::emit_sym_addr(
                             &mut instructions,
                             dst,
@@ -7370,7 +7651,14 @@ impl InstructionSelector {
                         {
                             // dst is on the operand stack now, so the base temp
                             // cannot alias it.
-                            let base = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                            let base = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
                             Self::emit_wasm_data_addr(&mut instructions, base, 0, idx);
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Add {
@@ -7386,7 +7674,14 @@ impl InstructionSelector {
                     }
                     // Load global value from globals table (R9 = globals base).
                     // Each i32 global occupies 4 bytes at offset index * 4.
-                    let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                    let dst = alloc_temp_or_spill(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::Ldr {
                             rd: dst,
@@ -7421,7 +7716,14 @@ impl InstructionSelector {
                         let stored = if let Some((sp_idx, _)) = self.sp_global
                             && *global_idx == sp_idx
                         {
-                            let base = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
+                            let base = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &reserved,
+                                idx,
+                            )?;
                             Self::emit_wasm_data_addr(&mut instructions, base, 0, idx);
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Sub {
@@ -7437,7 +7739,14 @@ impl InstructionSelector {
                             val
                         };
                         reserved.push(stored);
-                        let slot = alloc_temp_safe(&mut next_temp, &stack, &reserved)?;
+                        let slot = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &reserved,
+                            idx,
+                        )?;
                         Self::emit_sym_addr(
                             &mut instructions,
                             slot,
@@ -7954,7 +8263,14 @@ impl InstructionSelector {
                     let src_hi = i64_pair_hi(src_lo)?;
 
                     // Result is a single i32 (0 or 1)
-                    let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                    let dst = alloc_temp_or_spill(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
 
                     instructions.push(ArmInstruction {
                         op: ArmOp::I64SetCondZ {
@@ -8051,7 +8367,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     let cond = match op {
                         I32Eq => Condition::EQ,
@@ -8094,7 +8417,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Cmp {
@@ -8138,7 +8468,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     let shift_op = match op {
                         I32Shl => ArmOp::LslReg {
@@ -8193,9 +8530,23 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
-                    let tmp = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                    let tmp = alloc_temp_or_spill(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::Rsb {
                             rd: tmp,
@@ -8232,7 +8583,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Clz { rd: dst, rm: src },
@@ -8255,7 +8613,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Rbit { rd: dst, rm: src },
@@ -8284,7 +8649,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Popcnt { rd: dst, rm: src },
@@ -8309,7 +8681,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Sxtb { rd: dst, rm: src },
@@ -8331,7 +8710,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     instructions.push(ArmInstruction {
                         op: ArmOp::Sxth { rd: dst, rm: src },
@@ -8385,7 +8771,14 @@ impl InstructionSelector {
                     let dst = if idx == wasm_ops.len() - 1 {
                         Reg::R0
                     } else {
-                        alloc_temp_safe(&mut next_temp, &stack, &live_params)?
+                        alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?
                     };
                     let cond = match op {
                         I64Eq => Condition::EQ,
@@ -8755,7 +9148,14 @@ impl InstructionSelector {
                     // landing on R3, then I32WrapI64 pinning rd=R0). The
                     // function epilogue now handles the return-value Mov to R0
                     // explicitly via `emit_return_move_if_needed` below.
-                    let dst = alloc_temp_safe(&mut next_temp, &stack, &live_params)?;
+                    let dst = alloc_temp_or_spill(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
                     instructions.push(ArmInstruction {
                         op: ArmOp::I32WrapI64 {
                             rd: dst,
@@ -14593,7 +14993,7 @@ mod tests {
     fn test_compute_local_layout_no_locals() {
         // Function with only params and no LocalGet/Set produces zero frame.
         let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add];
-        let layout = compute_local_layout(&ops, 2, &[], &[]);
+        let layout = compute_local_layout(&ops, 2, &[], &[], false);
         assert_eq!(layout.frame_size, 0);
         assert!(layout.locals.is_empty());
     }
@@ -14606,7 +15006,7 @@ mod tests {
             WasmOp::LocalSet(1),
             WasmOp::LocalGet(1),
         ];
-        let layout = compute_local_layout(&ops, 1, &[], &[]);
+        let layout = compute_local_layout(&ops, 1, &[], &[], false);
         assert!(layout.locals.contains_key(&1));
         let (off, is_i64) = layout.locals[&1];
         assert_eq!(off, 0);
@@ -14623,7 +15023,7 @@ mod tests {
             WasmOp::LocalSet(0),
             WasmOp::LocalGet(0),
         ];
-        let layout = compute_local_layout(&ops, 0, &[], &[]);
+        let layout = compute_local_layout(&ops, 0, &[], &[], false);
         let (off, is_i64) = layout.locals[&0];
         assert_eq!(off, 0);
         assert!(is_i64);
@@ -14643,7 +15043,7 @@ mod tests {
             WasmOp::I64Const(2),
             WasmOp::LocalSet(1),
         ];
-        let layout = compute_local_layout(&ops, 0, &[], &[]);
+        let layout = compute_local_layout(&ops, 0, &[], &[], false);
         let (off0, is_i64_0) = layout.locals[&0];
         let (off1, is_i64_1) = layout.locals[&1];
         assert_eq!(off0, 0);
@@ -14665,7 +15065,7 @@ mod tests {
             WasmOp::I32Add,
             WasmOp::LocalSet(2),
         ];
-        let layout = compute_local_layout(&ops, 2, &[], &[]);
+        let layout = compute_local_layout(&ops, 2, &[], &[], false);
         // Only idx 2 should be in the layout.
         assert!(!layout.locals.contains_key(&0));
         assert!(!layout.locals.contains_key(&1));
@@ -14792,6 +15192,188 @@ mod tests {
         assert_ne!(hi, Reg::R1, "implicit hi must not be allocated");
         // The returned pair is still consecutive.
         assert_eq!(hi, i64_pair_hi(lo).unwrap());
+    }
+
+    // ── VCR-RA-001 step 3b-lite (#242): spill-on-exhaustion for i32 temps ──
+
+    /// Build a stack pinning ALL nine allocatable registers with i32 values.
+    fn full_i32_stack() -> Vec<StackVal> {
+        ALLOCATABLE_REGS.iter().map(|&r| StackVal::i32(r)).collect()
+    }
+
+    /// Flag OFF (the default / first-pass world): exhaustion keeps the exact
+    /// hard-fail `Err` and emits nothing — bit-identity of the fast path.
+    #[test]
+    fn alloc_temp_or_spill_keeps_hard_fail_when_flag_off_242() {
+        let mut next_temp: u8 = 0;
+        let mut stack = full_i32_stack();
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0); // spill_on_exhaustion: false
+        let err = alloc_temp_or_spill(
+            &mut next_temp,
+            &mut stack,
+            &mut instructions,
+            &mut spill,
+            &[],
+            0,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("all allocatable registers are live on the stack"),
+            "must preserve the original exhaustion Err, got: {err}"
+        );
+        assert!(instructions.is_empty(), "must not emit anything when off");
+        assert!(stack.iter().all(|v| matches!(v, StackVal::Reg { .. })));
+    }
+
+    /// Flag ON (the retry pass): exhaustion spills the DEEPEST stack value
+    /// (stack[0] — least likely to be consumed next) via a single `STR` into
+    /// the spill area, rewrites it to `StackVal::Spilled`, and returns its
+    /// freed register.
+    #[test]
+    fn alloc_temp_or_spill_spills_deepest_and_returns_its_reg_242() {
+        let mut next_temp: u8 = 0;
+        let mut stack = full_i32_stack();
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        spill.spill_on_exhaustion = true;
+        let got = alloc_temp_or_spill(
+            &mut next_temp,
+            &mut stack,
+            &mut instructions,
+            &mut spill,
+            &[],
+            7,
+        )
+        .unwrap();
+        // The deepest entry held R0 (full_i32_stack order = ALLOCATABLE_REGS).
+        assert_eq!(got, Reg::R0, "freed register of the deepest entry");
+        assert_eq!(
+            stack[0],
+            StackVal::Spilled {
+                lo_slot: 0,
+                is_i64: false
+            },
+            "deepest entry rewritten to Spilled"
+        );
+        // Exactly one i32 spill store: STR R0, [SP, #0].
+        assert_eq!(instructions.len(), 1);
+        match &instructions[0].op {
+            ArmOp::Str { rd, addr } => {
+                assert_eq!(*rd, Reg::R0);
+                assert_eq!(*addr, MemAddr::imm(Reg::SP, 0));
+            }
+            other => panic!("expected STR spill, got {other:?}"),
+        }
+        assert_eq!(instructions[0].source_line, Some(7));
+    }
+
+    /// The spilled value reloads through the existing `StackVal::Spilled`
+    /// machinery (#171): popping it emits `LDR` from its slot and frees the
+    /// slot for reuse.
+    #[test]
+    fn alloc_temp_or_spill_spilled_value_reloads_on_pop_242() {
+        let mut next_temp: u8 = 0;
+        let mut stack = full_i32_stack();
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        spill.spill_on_exhaustion = true;
+        let fresh = alloc_temp_or_spill(
+            &mut next_temp,
+            &mut stack,
+            &mut instructions,
+            &mut spill,
+            &[],
+            0,
+        )
+        .unwrap();
+        stack.push(StackVal::i32(fresh)); // the new temp pins its register
+        // Drain the stack: every entry must pop to a register, including the
+        // spilled one, which reloads via LDR [SP, #0].
+        let before = instructions.len();
+        while !stack.is_empty() {
+            pop_operand(
+                &mut stack,
+                &mut next_temp,
+                &mut instructions,
+                &mut spill,
+                &[],
+                1,
+            )
+            .unwrap();
+        }
+        let reloads: Vec<_> = instructions[before..]
+            .iter()
+            .filter_map(|i| match &i.op {
+                ArmOp::Ldr { rd, addr } if *addr == MemAddr::imm(Reg::SP, 0) => Some(*rd),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(reloads.len(), 1, "exactly one reload of the spilled slot");
+        // The slot was freed on reload — allocatable again.
+        assert_eq!(spill.alloc(), Some(0), "slot 0 reusable after reload");
+    }
+
+    /// End-to-end fail-then-retry contract (the backend's wrapper): the
+    /// high-pressure body (10 simultaneously-live i32 consts + 2 reserved
+    /// params = > 9-reg pool) hard-fails by default with the exhaustion `Err`,
+    /// and compiles under `set_spill_on_exhaustion(true)` — the
+    /// `scripts/repro/high_pressure_i32.wat` sequence.
+    #[test]
+    fn select_with_stack_exhaustion_recoverable_via_spill_retry_242() {
+        use WasmOp::*;
+        let mut ops: Vec<WasmOp> = [3, 5, 7, 11, 13, 17, 19, 23, 29, 31].map(I32Const).to_vec();
+        ops.extend([
+            I32Mul,
+            I32Add,
+            I32Xor,
+            I32Add,
+            I32Sub,
+            I32Add,
+            I32Mul,
+            I32Xor,
+            I32Sub,
+            LocalGet(0),
+            I32Add,
+            LocalGet(1),
+            I32Xor,
+        ]);
+
+        // First pass (default world): the hard-fail, verbatim.
+        let err = fresh_selector().select_with_stack(&ops, 2).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("all allocatable registers are live on the stack"),
+            "expected the exhaustion hard-fail, got: {err}"
+        );
+
+        // Retry pass: spill-on-exhaustion makes it compile, with at least one
+        // SP-relative spill store and matching reload in the body.
+        let mut retry = fresh_selector();
+        retry.set_spill_on_exhaustion(true);
+        let instrs = retry
+            .select_with_stack(&ops, 2)
+            .expect("retry with spill-on-exhaustion must compile");
+        let spills = instrs
+            .iter()
+            .filter(|i| {
+                matches!(&i.op, ArmOp::Str { addr, .. } if addr.base == Reg::SP)
+                    && i.source_line.is_some()
+            })
+            .count();
+        let reloads = instrs
+            .iter()
+            .filter(|i| {
+                matches!(&i.op, ArmOp::Ldr { addr, .. } if addr.base == Reg::SP)
+                    && i.source_line.is_some()
+            })
+            .count();
+        assert!(
+            spills >= 1,
+            "expected at least one spill store, got {spills}"
+        );
+        assert_eq!(spills, reloads, "every spill must reload exactly once");
     }
 
     #[test]

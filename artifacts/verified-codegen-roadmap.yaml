@@ -112,11 +112,24 @@ artifacts:
   #    algorithm/tie-breaks). The spurious-physical-spill elimination is now
   #    unit-proven in miniature (r0 reused for 3 values -> 3 independent ranges
   #    -> colours at true pressure 4). Pure, unwired, fixtures bit-identical.
+  #  - Spill-on-exhaustion retry (step 3b-lite, LANDED): the i32 register-
+  #    exhaustion hard-fail ("all allocatable registers are live on the stack",
+  #    alloc_temp_safe) is now recoverable — the backend retries the failed
+  #    function once with spill_on_exhaustion, which always reserves the i64
+  #    spill area and makes alloc_temp_or_spill spill the deepest stack value
+  #    (reusing the #171 StackVal::Spilled reload-on-pop machinery) instead of
+  #    failing. Bit-identity is STRUCTURAL: only functions whose first
+  #    (unmodified) pass already failed ever reach the retry. Honest bound:
+  #    the hard-fail shrinks, doesn't vanish — I64_SPILL_SLOTS=8 pool
+  #    exhaustion, the i64 consecutive-pair site, and the call-result
+  #    callee-saved site keep their Err. Oracle: high_pressure_i32.wat
+  #    (fails on pre-3b main, compiles + unicorn-vs-wasmtime PASS now) +
+  #    3 frozen fixtures sha256-identical.
   #    Remaining for VCR-RA-001 (CONSEQUENTIAL, changes emitted bytes, full
   #    differential gate): rename_def + apply_range_coloring (3a part 2) ->
-  #    flag-gated re-allocation pass + measured flip -> 3b exhaustion-only
-  #    virtual temps -> spill-code insertion -> wire-in + per-function flip
-  #    where the differential proves no-regression -> delete a hard-fail site.
+  #    flag-gated re-allocation pass + measured flip -> full 3b virtual temps ->
+  #    spill-code insertion -> wire-in + per-function flip where the
+  #    differential proves no-regression -> delete a hard-fail site.
   - id: VCR-RA-001
     type: sw-req
     title: SSA-based register allocator with spilling (remove the hard-fail)
