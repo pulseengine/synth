@@ -1608,6 +1608,204 @@ pub fn apply_range_coloring(
     Some(out)
 }
 
+/// Why [`validate_segment_rewrite`] rejected an `(original, rewritten)` pair.
+/// Structured so a reject is diagnosable, not just a boolean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RewriteViolation {
+    /// Different instruction counts — not a renames-only rewrite, outside the
+    /// validated class.
+    LengthMismatch { orig: usize, rewritten: usize },
+    /// Instruction `index` is outside the modeled class (no [`reg_effect`], or
+    /// not straight-line) in either segment. A decline, never a guess.
+    Unmodeled { index: usize },
+    /// Instruction `index` has a different opcode shape in the two segments
+    /// (opcode, immediates, conditions, shift kinds, symbol, or register-list
+    /// length differ) — the lockstep correspondence does not hold.
+    ShapeMismatch { index: usize },
+    /// At instruction `index`, a definition overwrites a register that a
+    /// downstream equation needs under a DIFFERENT pairing: the original's
+    /// value in `orig` can no longer be shown equal to the rewritten's value
+    /// in `rewritten`.
+    DefClobbersEquation {
+        index: usize,
+        orig: Reg,
+        rewritten: Reg,
+    },
+    /// An equation survived to segment entry without being identity: the
+    /// rewritten code expects an input in `rewritten` where the original (and
+    /// the pass's input-pinning contract) delivers it in `orig`.
+    EntryNotIdentity { orig: Reg, rewritten: Reg },
+}
+
+/// `op` with every register operand replaced by `R0` — its register-erased
+/// *shape*. Two instructions correspond under a renames-only rewrite iff their
+/// shapes are equal: same opcode, same immediates/conditions/shifts/symbols,
+/// same register-list lengths, same addressing-mode form. `None` for ops
+/// [`rewrite_op`] does not model.
+fn op_shape(op: &ArmOp) -> Option<ArmOp> {
+    use Reg::*;
+    let wipe: BTreeMap<Reg, Reg> = [
+        R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12, SP, LR, PC,
+    ]
+    .into_iter()
+    .map(|r| (r, R0))
+    .collect();
+    // The RMW agreement check inside rewrite_op is trivially satisfied (both
+    // maps send everything to R0), so this declines only on unmodeled ops.
+    rewrite_op(op, &wipe, &wipe)
+}
+
+/// Backward-dataflow translation validator over an `(original, rewritten)`
+/// straight-line segment pair — VCR-RA-003 v1 (#242), the Rideau/Leroy CC'10
+/// architecture adapted to synth's phys-to-phys, renames-only rewrite class.
+///
+/// Instead of trusting the re-allocation pass (colourer + rewrite), this
+/// independently PROVES the rewrite preserves the original's dataflow, by
+/// walking both segments backward in lockstep maintaining a set of
+/// **equations** `orig_reg ~ rewritten_reg`: "at this program point, for the
+/// downstream code to behave identically, the rewritten execution's value in
+/// `rewritten_reg` must equal the original execution's value in `orig_reg`."
+///
+/// - **Exit seed:** for every register the original segment *writes* (the
+///   per-register last-written set), require `r ~ r` — the pass's live-out
+///   pinning contract (later segments read live-outs from their original
+///   registers). One refinement, because the seed models the segment's exit
+///   INTERFACE: when the segment ends in a function return (`pop {..., pc}`),
+///   the AAPCS caller-saved scratch registers `R2/R3/R12/LR` are dead-out by
+///   calling convention (synth's own callers never read them after a call),
+///   so they are not seeded — `R0`/`R1` (result registers), the callee-saved
+///   set (re-defined by the `pop` itself from identical memory), and `SP`
+///   remain seeded. Without this refinement the validator rejects
+///   contextually-sound whole-leaf-function rewrites that recycle a dead
+///   scratch register's exit slot (the flight_seam_flat filter shape).
+///   Registers the original never writes hold their entry values in the
+///   original; the rewritten side is NOT checked for clobbers of such
+///   pass-through registers — see the honest-bound note below.
+/// - **Defs (backward step):** the instruction pair's definitions correspond
+///   positionally (`d_o[k] ~ d_r[k]`, guaranteed meaningful by the shape
+///   check). A positional pair present in the equation set is *discharged* by
+///   this instruction — given its uses agree, both sides compute the same
+///   function (same shape), so the defined values agree. Any OTHER equation
+///   touching a defined register (original side or rewritten side) can no
+///   longer be established by code above this point → violation.
+/// - **Uses (backward step):** add the positional use equations
+///   `u_o[k] ~ u_r[k]` — **unconditionally**, even when the instruction's
+///   register result is downstream-dead. This is deliberately stronger than
+///   the minimal liveness refinement: flags (`Cmp`/`Adds`/... feed `SetCond`/
+///   `SelectMove`, invisible to `reg_effect`) and memory (`Str*` data +
+///   addresses, `Ldr*` addresses) stay correct because every operand that
+///   feeds them is constrained equal; and the pass renames every use
+///   consistently anyway, so the extra strength costs no completeness on real
+///   pass output (criterion: <5% validator-attributable declines; current
+///   truth on the fixtures is 0).
+/// - **Entry check:** every surviving equation must be identity `r ~ r` —
+///   inputs arrive in their original registers (the pass's input pinning).
+///
+/// RMW ops (`Movt`/`MovtSym`/`SelectMove`) need no special case: `reg_effect`
+/// lists `rd` in both `defs` and `uses`, so the backward step discharges the
+/// def pairing and immediately re-imposes the use pairing on the *prior*
+/// value of the same field — which in concrete syntax is necessarily the same
+/// register on each side.
+///
+/// **Honest v1 bound** (matches the pass's own cross-segment contract, which
+/// pins only registers the original holds at exit): a rewritten-side write to
+/// a register the original segment never defines (clobbering a pass-through
+/// value) is accepted when that write is segment-internally dead. Closing
+/// this requires cross-segment liveness (step 5) for both the pass and the
+/// validator. Everything else in the renames-only class — wrong renames, def
+/// redirects, live clobbers, swapped destinations, RMW splits — is rejected.
+pub fn validate_segment_rewrite(
+    orig: &[ArmInstruction],
+    rewritten: &[ArmInstruction],
+) -> Result<(), RewriteViolation> {
+    if orig.len() != rewritten.len() {
+        return Err(RewriteViolation::LengthMismatch {
+            orig: orig.len(),
+            rewritten: rewritten.len(),
+        });
+    }
+
+    // Pass 1 (forward): model + shape-check every instruction pair.
+    let mut effects: Vec<(RegEffect, RegEffect)> = Vec::with_capacity(orig.len());
+    for (i, (o, r)) in orig.iter().zip(rewritten).enumerate() {
+        if !is_straight_line(&o.op) || !is_straight_line(&r.op) {
+            return Err(RewriteViolation::Unmodeled { index: i });
+        }
+        let (Some(eo), Some(er)) = (reg_effect(&o.op), reg_effect(&r.op)) else {
+            return Err(RewriteViolation::Unmodeled { index: i });
+        };
+        let (Some(so), Some(sr)) = (op_shape(&o.op), op_shape(&r.op)) else {
+            return Err(RewriteViolation::Unmodeled { index: i });
+        };
+        // Equal shapes imply equal def/use arity; the explicit length check is
+        // a belt-and-braces guard for the positional zips below.
+        if so != sr || eo.defs.len() != er.defs.len() || eo.uses.len() != er.uses.len() {
+            return Err(RewriteViolation::ShapeMismatch { index: i });
+        }
+        effects.push((eo, er));
+    }
+
+    // Exit seed: identity equations for the original's written registers.
+    // At a function return (`pop {..., pc}` as the final instruction) the
+    // AAPCS caller-saved scratch registers are dead-out by convention and
+    // are exempted; everywhere else every written register is conservatively
+    // treated as a live-out candidate.
+    let ends_in_return = matches!(
+        orig.last().map(|i| &i.op),
+        Some(ArmOp::Pop { regs }) if regs.contains(&Reg::PC)
+    );
+    let aapcs_dead_at_return = [Reg::R2, Reg::R3, Reg::R12, Reg::LR];
+    let mut eqs: BTreeSet<(Reg, Reg)> = effects
+        .iter()
+        .flat_map(|(eo, _)| eo.defs.iter())
+        .filter(|r| !(ends_in_return && aapcs_dead_at_return.contains(r)))
+        .map(|r| (*r, *r))
+        .collect();
+
+    // Backward walk.
+    for (i, (eo, er)) in effects.iter().enumerate().rev() {
+        let pairs: BTreeSet<(Reg, Reg)> = eo
+            .defs
+            .iter()
+            .copied()
+            .zip(er.defs.iter().copied())
+            .collect();
+        let defs_o: BTreeSet<Reg> = eo.defs.iter().copied().collect();
+        let defs_r: BTreeSet<Reg> = er.defs.iter().copied().collect();
+        let mut above: BTreeSet<(Reg, Reg)> = BTreeSet::new();
+        for eq in &eqs {
+            if !defs_o.contains(&eq.0) && !defs_r.contains(&eq.1) {
+                above.insert(*eq); // untouched: must already hold above
+            } else if !pairs.contains(eq) {
+                // A defined register appears under a different pairing: the
+                // equation cannot be established by any code above this def.
+                return Err(RewriteViolation::DefClobbersEquation {
+                    index: i,
+                    orig: eq.0,
+                    rewritten: eq.1,
+                });
+            }
+            // else: positionally discharged by this instruction (its uses are
+            // constrained below, so both sides compute the same value).
+        }
+        for (uo, ur) in eo.uses.iter().zip(er.uses.iter()) {
+            above.insert((*uo, *ur));
+        }
+        eqs = above;
+    }
+
+    // Entry: inputs arrive in their original registers.
+    for (o, r) in &eqs {
+        if o != r {
+            return Err(RewriteViolation::EntryNotIdentity {
+                orig: *o,
+                rewritten: *r,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// What [`reallocate_function`] did, for the flag-gated measurement pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReallocStats {
@@ -1620,6 +1818,13 @@ pub struct ReallocStats {
     /// Segments whose ranges did not colour within the pool (need step-4 spill
     /// insertion — passed through untouched for now).
     pub needs_spill: usize,
+    /// Segments whose rewrite the backward-dataflow validator (VCR-RA-003)
+    /// REJECTED — counted inside `declined` as well, but tracked separately
+    /// because a nonzero value means the pass produced a rewrite it cannot
+    /// justify (a pass bug caught before it reached codegen). Must be 0 on
+    /// the frozen fixtures; the roadmap kill-criterion re-evaluates the
+    /// validator if attributable declines ever exceed ~5% of segments.
+    pub validator_rejects: usize,
 }
 
 /// Re-allocate every maximal straight-line segment of a function over `pool`
@@ -1793,6 +1998,15 @@ pub fn reallocate_function(
                     stats.declined += 1;
                     out.append(seg);
                 }
+                SegmentOutcome::ValidatorRejected => {
+                    // The colourer + edge-recheck accepted a rewrite the
+                    // backward-dataflow validator could not justify: keep the
+                    // original bytes (safe) and surface the event in stats —
+                    // a nonzero count is a pass bug, not a validator feature.
+                    stats.declined += 1;
+                    stats.validator_rejects += 1;
+                    out.append(seg);
+                }
             }
             seg.clear();
         };
@@ -1812,6 +2026,8 @@ enum SegmentOutcome {
     Rewritten(Vec<ArmInstruction>),
     NeedsSpill,
     Declined,
+    /// The rewrite was produced but the VCR-RA-003 validator rejected it.
+    ValidatorRejected,
 }
 
 fn try_reallocate_segment(seg: &[ArmInstruction], pool: &[Reg]) -> SegmentOutcome {
@@ -1903,7 +2119,20 @@ fn try_reallocate_segment(seg: &[ArmInstruction], pool: &[Reg]) -> SegmentOutcom
     }
 
     match apply_range_coloring(seg, &assignment) {
-        Some(new) => SegmentOutcome::Rewritten(new),
+        // VCR-RA-003: the rewrite is accepted only if the backward-dataflow
+        // translation validator can independently prove it preserves the
+        // original segment's dataflow (exit live-outs + entry inputs pinned).
+        // The edge-recheck above stays as defense in depth; this is the
+        // acceptance gate the pass cannot bypass.
+        Some(new) => match validate_segment_rewrite(seg, &new) {
+            Ok(()) => SegmentOutcome::Rewritten(new),
+            Err(v) => {
+                if std::env::var("SYNTH_VALIDATOR_DEBUG").is_ok() {
+                    eprintln!("[validator] REJECT {v:?}\n  orig: {seg:?}\n  rew:  {new:?}");
+                }
+                SegmentOutcome::ValidatorRejected
+            }
+        },
         None => SegmentOutcome::Declined,
     }
 }
@@ -3813,12 +4042,17 @@ mod tests {
     fn reallocate_function_is_sound_and_near_identity_on_packed_greedy_code() {
         // On greedy code with NO spills and NO duplicate constants, the
         // conservative pass (inputs + per-register live-outs pinned) has
-        // little freedom — the honest property is SOUNDNESS, not shrinkage:
-        // identical instruction count and value structure, every pinned
-        // live-out in place, and the output's own range interference is
-        // conflict-free under the registers actually assigned. (The measured
-        // wins arrive with step-4 spill removal and the slack-aware
-        // assignment policy — this pass is the sound transform skeleton.)
+        // little freedom — the honest property is SOUNDNESS, not shrinkage.
+        //
+        // VCR-RA-003 UPDATE: the backward-dataflow validator found that the
+        // colourer's candidate rewrite for THIS segment relocates the first
+        // r6 value onto r0 AFTER r0's pinned last range dies (dies-at-birth
+        // non-interference), changing r0's EXIT value (3 → r3+r4). For a
+        // mid-function segment a downstream read of r0 would then be a
+        // miscompile — the pinning protects where the last range LIVES, not
+        // the register's exit state. The validator therefore REJECTS the
+        // rewrite and the pass keeps the original bytes: soundness is now
+        // FULL identity here, enforced by the gate rather than assumed.
         let seq = vec![
             ins(ArmOp::Movw {
                 rd: Reg::R0,
@@ -3867,27 +4101,15 @@ mod tests {
             Reg::R8,
         ];
         let (out, stats) = reallocate_function(&seq, &pool);
-        assert_eq!(stats.reallocated, 1);
-        assert_eq!(out.len(), seq.len());
-        // Live-outs (accumulators + final result) in their pinned registers.
-        match &out[7].op {
-            ArmOp::Add { rd, .. } => assert_eq!(*rd, Reg::R6),
-            other => panic!("unexpected op {other:?}"),
-        }
-        // The output is itself a valid allocation: re-derive its ranges and
-        // interference, and confirm no interfering pair shares a register.
-        let out_ranges = straight_line_value_ranges(&out).unwrap();
+        assert_eq!(stats.segments, 1);
         assert_eq!(
-            out_ranges.len(),
-            straight_line_value_ranges(&seq).unwrap().len()
+            stats.validator_rejects, 1,
+            "the exit-state-changing candidate rewrite must be caught"
         );
-        let out_adj = range_interference(&out_ranges);
-        let reg_of: BTreeMap<usize, Reg> = out_ranges.iter().map(|r| (r.vreg, r.reg)).collect();
-        for (n, nbrs) in &out_adj {
-            for m in nbrs {
-                assert_ne!(reg_of[n], reg_of[m], "interfering ranges share a register");
-            }
-        }
+        assert_eq!(stats.reallocated, 0);
+        // The rejected segment passes through byte-identical — the safe
+        // fallback IS the original greedy code.
+        assert_eq!(out, seq);
     }
 
     fn prologue() -> ArmInstruction {
@@ -4428,5 +4650,763 @@ mod tests {
         g.add_edge(Reg::R1, Reg::R2);
         let ok = BTreeMap::from([(Reg::R0, 0usize), (Reg::R1, 1usize), (Reg::R2, 0usize)]);
         assert_eq!(verify_allocation(&g, &ok), Ok(()));
+    }
+
+    // =====================================================================
+    // VCR-RA-003: backward-dataflow translation validator
+    // =====================================================================
+
+    use crate::rules::MemAddr;
+
+    const VPOOL: [Reg; 9] = [
+        Reg::R0,
+        Reg::R1,
+        Reg::R2,
+        Reg::R3,
+        Reg::R4,
+        Reg::R5,
+        Reg::R6,
+        Reg::R7,
+        Reg::R8,
+    ];
+
+    /// A #209-style int8 clamp chain: cmp + SelectMove (RMW) + store, with an
+    /// internal temp. Inputs: r0 (value), r11 (reserved base).
+    fn clamp_segment() -> Vec<ArmInstruction> {
+        vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 127,
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R2),
+            }),
+            ins(ArmOp::SelectMove {
+                rd: Reg::R0,
+                rm: Reg::R2,
+                cond: Condition::GT,
+            }),
+            ins(ArmOp::Mvn {
+                rd: Reg::R3,
+                op2: Operand2::Imm(127),
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R3),
+            }),
+            ins(ArmOp::SelectMove {
+                rd: Reg::R0,
+                rm: Reg::R3,
+                cond: Condition::LT,
+            }),
+            ins(ArmOp::Strb {
+                rd: Reg::R0,
+                addr: MemAddr::imm(Reg::R11, 4),
+            }),
+        ]
+    }
+
+    /// Umull reciprocal-mult shape (#209 Opt 1b) + a shifted-operand add.
+    fn umull_segment() -> Vec<ArmInstruction> {
+        vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 52429,
+            }),
+            ins(ArmOp::Movt {
+                rd: Reg::R1,
+                imm16: 52428,
+            }),
+            ins(ArmOp::Umull {
+                rdlo: Reg::R2,
+                rdhi: Reg::R3,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            }),
+            ins(ArmOp::Lsr {
+                rd: Reg::R4,
+                rn: Reg::R3,
+                shift: 2,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R4,
+                op2: Operand2::RegShift {
+                    rm: Reg::R2,
+                    shift: crate::rules::ShiftType::LSR,
+                    amount: 31,
+                },
+            }),
+        ]
+    }
+
+    /// Indexed loads/stores through the reserved memory base + ALU.
+    fn loadstore_segment() -> Vec<ArmInstruction> {
+        vec![
+            ins(ArmOp::Ldr {
+                rd: Reg::R3,
+                addr: MemAddr {
+                    base: Reg::R11,
+                    offset: 0,
+                    offset_reg: Some(Reg::R1),
+                },
+            }),
+            ins(ArmOp::Ldr {
+                rd: Reg::R4,
+                addr: MemAddr::imm(Reg::R11, 8),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R5,
+                rn: Reg::R3,
+                op2: Operand2::Reg(Reg::R4),
+            }),
+            ins(ArmOp::Str {
+                rd: Reg::R5,
+                addr: MemAddr {
+                    base: Reg::R11,
+                    offset: 0,
+                    offset_reg: Some(Reg::R1),
+                },
+            }),
+        ]
+    }
+
+    /// Compare/flag-materialize/sign-extend chain (defless flag-setter, a
+    /// flags-only def, unary ops).
+    fn setcond_segment() -> Vec<ArmInstruction> {
+        vec![
+            ins(ArmOp::Sub {
+                rd: Reg::R3,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R3,
+                op2: Operand2::Imm(0),
+            }),
+            ins(ArmOp::SetCond {
+                rd: Reg::R4,
+                cond: Condition::EQ,
+            }),
+            ins(ArmOp::Sxtb {
+                rd: Reg::R5,
+                rm: Reg::R4,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R4,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+        ]
+    }
+
+    /// The reshuffle-prone shape from
+    /// `reallocate_function_pins_inputs_and_liveouts_and_reshuffles_internals`:
+    /// r5 carries two values, the interior one re-colourable.
+    fn reshuffle_segment() -> Vec<ArmInstruction> {
+        vec![
+            ins(ArmOp::Add {
+                rd: Reg::R5,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R5,
+                imm16: 3,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R2),
+            }),
+        ]
+    }
+
+    /// Contains a DEAD def (movw r6 overwritten unused) — the documented
+    /// survivor class for redirect mutations — plus an input use (r1).
+    fn dead_def_segment() -> Vec<ArmInstruction> {
+        vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R6,
+                imm16: 1,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R6,
+                imm16: 2,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ]
+    }
+
+    #[test]
+    fn validator_accepts_identity_rewrites() {
+        for seg in [
+            clamp_segment(),
+            umull_segment(),
+            loadstore_segment(),
+            setcond_segment(),
+            reshuffle_segment(),
+            dead_def_segment(),
+        ] {
+            assert_eq!(validate_segment_rewrite(&seg, &seg.clone()), Ok(()));
+        }
+    }
+
+    #[test]
+    fn validator_accepts_every_rewrite_the_pass_produces() {
+        // Criterion 1 (segment level): whatever try_reallocate_segment emits
+        // must validate. (The wiring itself enforces this — a reject would
+        // surface as ValidatorRejected — so here we call the validator
+        // directly on the pass output to make the property explicit.)
+        for seg in [
+            clamp_segment(),
+            umull_segment(),
+            loadstore_segment(),
+            setcond_segment(),
+            reshuffle_segment(),
+            dead_def_segment(),
+        ] {
+            if let SegmentOutcome::Rewritten(new) = try_reallocate_segment(&seg, &VPOOL) {
+                assert_eq!(
+                    validate_segment_rewrite(&seg, &new),
+                    Ok(()),
+                    "pass output must validate for {seg:?} -> {new:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn validator_rejects_length_mismatch() {
+        let seg = reshuffle_segment();
+        let mut shorter = seg.clone();
+        shorter.pop();
+        assert_eq!(
+            validate_segment_rewrite(&seg, &shorter),
+            Err(RewriteViolation::LengthMismatch {
+                orig: 4,
+                rewritten: 3
+            })
+        );
+    }
+
+    #[test]
+    fn validator_rejects_shape_mismatch() {
+        // Same opcode, different immediate — a renames-only rewrite cannot
+        // change a constant.
+        let seg = reshuffle_segment();
+        let mut rew = seg.clone();
+        rew[2].op = ArmOp::Movw {
+            rd: Reg::R5,
+            imm16: 4,
+        };
+        assert_eq!(
+            validate_segment_rewrite(&seg, &rew),
+            Err(RewriteViolation::ShapeMismatch { index: 2 })
+        );
+        // Different opcode entirely.
+        let mut rew2 = seg.clone();
+        rew2[0].op = ArmOp::Sub {
+            rd: Reg::R5,
+            rn: Reg::R0,
+            op2: Operand2::Imm(1),
+        };
+        assert_eq!(
+            validate_segment_rewrite(&seg, &rew2),
+            Err(RewriteViolation::ShapeMismatch { index: 0 })
+        );
+    }
+
+    #[test]
+    fn validator_rejects_unmodeled_ops() {
+        let seg = vec![ins(ArmOp::Bl {
+            label: "f".to_string(),
+        })];
+        assert_eq!(
+            validate_segment_rewrite(&seg, &seg.clone()),
+            Err(RewriteViolation::Unmodeled { index: 0 })
+        );
+    }
+
+    #[test]
+    fn validator_rejects_swapped_input_use() {
+        // Reading the input from the wrong register: r0+r1 vs r0+r2. The
+        // equation (r1 ~ r2) survives to entry non-identity.
+        let seg = vec![ins(ArmOp::Add {
+            rd: Reg::R3,
+            rn: Reg::R0,
+            op2: Operand2::Reg(Reg::R1),
+        })];
+        let rew = vec![ins(ArmOp::Add {
+            rd: Reg::R3,
+            rn: Reg::R0,
+            op2: Operand2::Reg(Reg::R2),
+        })];
+        assert_eq!(
+            validate_segment_rewrite(&seg, &rew),
+            Err(RewriteViolation::EntryNotIdentity {
+                orig: Reg::R1,
+                rewritten: Reg::R2
+            })
+        );
+    }
+
+    #[test]
+    fn validator_rejects_redirected_live_def() {
+        // The rewrite moves a def to r7 but a downstream use still reads the
+        // original register: the def kills the (r3 ~ r3) equation under a
+        // different pairing.
+        let seg = setcond_segment();
+        let mut rew = seg.clone();
+        rew[0].op = ArmOp::Sub {
+            rd: Reg::R7,
+            rn: Reg::R0,
+            op2: Operand2::Reg(Reg::R1),
+        };
+        assert_eq!(
+            validate_segment_rewrite(&seg, &rew),
+            Err(RewriteViolation::DefClobbersEquation {
+                index: 0,
+                orig: Reg::R3,
+                rewritten: Reg::R3
+            })
+        );
+    }
+
+    #[test]
+    fn validator_rejects_clobber_of_live_value() {
+        // A def renamed ONTO a register that still carries a live value (#226
+        // class, the alloc_temp-clobbers-vstack bug shape): r4's def lands on
+        // r3 while r3's umull-high value is still live.
+        let seg = umull_segment();
+        let mut rew = seg.clone();
+        // lsr r4,r3 → lsr r2,r3 BUT r2 (umull rdlo) is read by the final add.
+        rew[3].op = ArmOp::Lsr {
+            rd: Reg::R2,
+            rn: Reg::R3,
+            shift: 2,
+        };
+        // also point the add's rn at the new home so the simple rename is
+        // "locally consistent" — the validator must still catch the clobber.
+        rew[4].op = ArmOp::Add {
+            rd: Reg::R0,
+            rn: Reg::R2,
+            op2: Operand2::RegShift {
+                rm: Reg::R2,
+                shift: crate::rules::ShiftType::LSR,
+                amount: 31,
+            },
+        };
+        assert!(validate_segment_rewrite(&seg, &rew).is_err());
+    }
+
+    #[test]
+    fn validator_rejects_movt_split_from_its_movw() {
+        // RMW: movt reads the low half its movw wrote. Renaming the movt's
+        // register without the movw is a torn 32-bit constant.
+        let seg = umull_segment();
+        let mut rew = seg.clone();
+        rew[1].op = ArmOp::Movt {
+            rd: Reg::R5,
+            imm16: 52428,
+        };
+        rew[2].op = ArmOp::Umull {
+            rdlo: Reg::R2,
+            rdhi: Reg::R3,
+            rn: Reg::R0,
+            rm: Reg::R5,
+        };
+        assert!(
+            validate_segment_rewrite(&seg, &rew).is_err(),
+            "torn movw/movt pair must be rejected"
+        );
+        // Even the CONSISTENT rename of the whole constant (movw+movt+use to
+        // r5) is rejected here: r1 is in the original's last-written set, so
+        // its exit pinning (r1 ~ r1) is seeded, and the rewritten movt no
+        // longer establishes it — the exact live-out-pinning contract the
+        // pass itself honours.
+        let mut rew2 = seg.clone();
+        rew2[0].op = ArmOp::Movw {
+            rd: Reg::R5,
+            imm16: 52429,
+        };
+        rew2[1].op = ArmOp::Movt {
+            rd: Reg::R5,
+            imm16: 52428,
+        };
+        rew2[2].op = ArmOp::Umull {
+            rdlo: Reg::R2,
+            rdhi: Reg::R3,
+            rn: Reg::R0,
+            rm: Reg::R5,
+        };
+        assert_eq!(
+            validate_segment_rewrite(&seg, &rew2),
+            Err(RewriteViolation::DefClobbersEquation {
+                index: 1,
+                orig: Reg::R1,
+                rewritten: Reg::R1
+            }),
+            "renaming away a pinned live-out must be rejected"
+        );
+    }
+
+    #[test]
+    fn validator_rejects_selectmove_rm_rename() {
+        // SelectMove's rm (the clamp bound) renamed to a register holding
+        // something else.
+        let seg = clamp_segment();
+        let mut rew = seg.clone();
+        rew[5].op = ArmOp::SelectMove {
+            rd: Reg::R0,
+            rm: Reg::R2,
+            cond: Condition::LT,
+        };
+        assert!(
+            validate_segment_rewrite(&seg, &rew).is_err(),
+            "clamp lower bound read from the upper-bound register"
+        );
+    }
+
+    #[test]
+    fn validator_rejects_swapped_dsts() {
+        let seg = loadstore_segment();
+        let mut rew = seg.clone();
+        // Swap the two load destinations without touching the consumers.
+        rew[0].op = ArmOp::Ldr {
+            rd: Reg::R4,
+            addr: MemAddr {
+                base: Reg::R11,
+                offset: 0,
+                offset_reg: Some(Reg::R1),
+            },
+        };
+        rew[1].op = ArmOp::Ldr {
+            rd: Reg::R3,
+            addr: MemAddr::imm(Reg::R11, 8),
+        };
+        assert!(validate_segment_rewrite(&seg, &rew).is_err());
+    }
+
+    #[test]
+    fn validator_accepts_dead_def_redirect_the_documented_v1_bound() {
+        // HONEST BOUND (documented on validate_segment_rewrite): a
+        // segment-internally DEAD def redirected to a register the original
+        // never writes is accepted — the validated contract covers exactly
+        // the original's last-written exit state (the pass's own pinning
+        // contract). Closing this needs cross-segment liveness (step 5).
+        let seg = dead_def_segment();
+        let mut rew = seg.clone();
+        rew[0].op = ArmOp::Movw {
+            rd: Reg::R7,
+            imm16: 1,
+        }; // dead in both; r7 not in the original's written set
+        assert_eq!(validate_segment_rewrite(&seg, &rew), Ok(()));
+        // ... and a redirect that is dead in BOTH segments w.r.t. the
+        // written-set contract (movw r0 overwritten by the add) is likewise
+        // accepted — genuinely equivalent exit state, not a miss.
+        let mut rew2 = seg.clone();
+        rew2[0].op = ArmOp::Movw {
+            rd: Reg::R0,
+            imm16: 1,
+        };
+        assert_eq!(validate_segment_rewrite(&seg, &rew2), Ok(()));
+        // ... but the SAME dead def redirected onto a LIVE input (r1, read by
+        // the add) clobbers a value downstream code still needs → rejected.
+        let mut rew3 = seg.clone();
+        rew3[0].op = ArmOp::Movw {
+            rd: Reg::R1,
+            imm16: 1,
+        };
+        assert_eq!(
+            validate_segment_rewrite(&seg, &rew3),
+            Err(RewriteViolation::DefClobbersEquation {
+                index: 0,
+                orig: Reg::R1,
+                rewritten: Reg::R1
+            })
+        );
+    }
+
+    #[test]
+    fn validator_accepts_a_legitimate_internal_rename() {
+        // Hand-built valid rewrite: the interior r5 range (born 0, dies 1) of
+        // reshuffle_segment moved to r4; inputs (r0) and live-outs
+        // (r1/r2/r5-final) untouched.
+        let seg = reshuffle_segment();
+        let mut rew = seg.clone();
+        rew[0].op = ArmOp::Add {
+            rd: Reg::R4,
+            rn: Reg::R0,
+            op2: Operand2::Imm(1),
+        };
+        rew[1].op = ArmOp::Mov {
+            rd: Reg::R2,
+            op2: Operand2::Reg(Reg::R4),
+        };
+        assert_eq!(validate_segment_rewrite(&seg, &rew), Ok(()));
+    }
+
+    // --- VCR-RA-003 criterion 2: seeded mutation campaign ----------------
+
+    /// Deterministic splitmix64 — no rand dependency.
+    struct MutRng(u64);
+    impl MutRng {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+        fn pick(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// Apply one random rename-class mutation to `rew`: swap one register
+    /// occurrence's uses, redirect one def, or swap two instructions' dsts.
+    /// Returns `None` when the drawn mutation is inapplicable (no candidates,
+    /// RMW field disagreement, or a no-op draw) — the caller redraws.
+    fn mutate_rewrite(rew: &[ArmInstruction], rng: &mut MutRng) -> Option<Vec<ArmInstruction>> {
+        let mut out = rew.to_vec();
+        match rng.pick(3) {
+            // Swap one instruction's occurrences of a used register.
+            0 => {
+                let mut cands: Vec<(usize, Reg)> = Vec::new();
+                for (i, instr) in rew.iter().enumerate() {
+                    if let Some(e) = reg_effect(&instr.op) {
+                        for u in e.uses {
+                            if VPOOL.contains(&u) {
+                                cands.push((i, u));
+                            }
+                        }
+                    }
+                }
+                if cands.is_empty() {
+                    return None;
+                }
+                let (i, from) = cands[rng.pick(cands.len())];
+                let to = VPOOL[rng.pick(VPOOL.len())];
+                if to == from {
+                    return None;
+                }
+                let use_map = BTreeMap::from([(from, to)]);
+                out[i].op = rewrite_op(&rew[i].op, &use_map, &BTreeMap::new())?;
+            }
+            // Redirect one instruction's def.
+            1 => {
+                let mut cands: Vec<(usize, Reg)> = Vec::new();
+                for (i, instr) in rew.iter().enumerate() {
+                    if let Some(e) = reg_effect(&instr.op) {
+                        for d in e.defs {
+                            if VPOOL.contains(&d) {
+                                cands.push((i, d));
+                            }
+                        }
+                    }
+                }
+                if cands.is_empty() {
+                    return None;
+                }
+                let (i, from) = cands[rng.pick(cands.len())];
+                let to = VPOOL[rng.pick(VPOOL.len())];
+                if to == from {
+                    return None;
+                }
+                let def_map = BTreeMap::from([(from, to)]);
+                out[i].op = rewrite_op(&rew[i].op, &BTreeMap::new(), &def_map)?;
+            }
+            // Swap the destinations of two single-def instructions.
+            _ => {
+                let singles: Vec<(usize, Reg)> = rew
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, instr)| {
+                        let e = reg_effect(&instr.op)?;
+                        if e.defs.len() == 1 && VPOOL.contains(&e.defs[0]) {
+                            Some((i, e.defs[0]))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if singles.len() < 2 {
+                    return None;
+                }
+                let (i, di) = singles[rng.pick(singles.len())];
+                let (j, dj) = singles[rng.pick(singles.len())];
+                if i == j || di == dj {
+                    return None;
+                }
+                out[i].op = rewrite_op(&rew[i].op, &BTreeMap::new(), &BTreeMap::from([(di, dj)]))?;
+                out[j].op = rewrite_op(&rew[j].op, &BTreeMap::new(), &BTreeMap::from([(dj, di)]))?;
+            }
+        }
+        if out == rew { None } else { Some(out) }
+    }
+
+    #[test]
+    fn validator_mutation_campaign_kill_rate_at_least_95_percent() {
+        // VCR-RA-003 criterion: >=95% mutant kill on a seeded corpus of bad
+        // renames / def redirects / dst swaps applied to VALID (orig, rew)
+        // pairs. Survivors are mutations equivalent UNDER THE VALIDATED
+        // CONTRACT (e.g. redirecting a segment-dead def to an
+        // original-unwritten register) — counted and bounded by the same 95%.
+        let mut corpus: Vec<(Vec<ArmInstruction>, Vec<ArmInstruction>)> = Vec::new();
+        for seg in [
+            clamp_segment(),
+            umull_segment(),
+            loadstore_segment(),
+            setcond_segment(),
+            reshuffle_segment(),
+            dead_def_segment(),
+        ] {
+            // The pass's own rewrite where it produces one, plus the identity
+            // rewrite — both are valid pairs the mutations corrupt.
+            if let SegmentOutcome::Rewritten(new) = try_reallocate_segment(&seg, &VPOOL) {
+                corpus.push((seg.clone(), new));
+            }
+            corpus.push((seg.clone(), seg));
+        }
+        for (o, r) in &corpus {
+            assert_eq!(
+                validate_segment_rewrite(o, r),
+                Ok(()),
+                "corpus pair invalid"
+            );
+        }
+
+        let mut rng = MutRng(0x5EED_0242_0003); // #242, VCR-RA-003
+        let target = 200usize; // >= 40 per the rivet criterion; more = tighter
+        let mut applied = 0usize;
+        let mut killed = 0usize;
+        let mut survivors: Vec<usize> = Vec::new();
+        let mut draws = 0usize;
+        while applied < target && draws < 100_000 {
+            draws += 1;
+            let (orig, rew) = &corpus[rng.pick(corpus.len())];
+            let Some(mutant) = mutate_rewrite(rew, &mut rng) else {
+                continue;
+            };
+            applied += 1;
+            match validate_segment_rewrite(orig, &mutant) {
+                Err(_) => killed += 1,
+                Ok(()) => survivors.push(applied),
+            }
+        }
+        assert_eq!(applied, target, "mutation engine starved (draws={draws})");
+        println!(
+            "VCR-RA-003 mutation campaign: {killed}/{applied} killed ({:.1}%), {} survivors",
+            killed as f64 * 100.0 / applied as f64,
+            survivors.len()
+        );
+        // killed/applied >= 95%  ⇔  killed*20 >= applied*19
+        assert!(
+            killed * 20 >= applied * 19,
+            "VCR-RA-003 mutant kill rate {killed}/{applied} = {:.1}% is below \
+             the 95% criterion; {} survivors (mutants the contract cannot \
+             distinguish): {survivors:?}",
+            killed as f64 * 100.0 / applied as f64,
+            survivors.len(),
+        );
+    }
+
+    // --- VCR-RA-003 criteria 1+3: real selector output from the fixtures --
+
+    /// Backend `count_params` replica (arm_backend.rs): an index whose first
+    /// access is a read is a parameter.
+    fn fixture_count_params(ops: &[synth_core::wasm_op::WasmOp]) -> u32 {
+        use synth_core::wasm_op::WasmOp;
+        let mut first: BTreeMap<u32, bool> = BTreeMap::new();
+        for op in ops {
+            match op {
+                WasmOp::LocalGet(i) => {
+                    first.entry(*i).or_insert(true);
+                }
+                WasmOp::LocalSet(i) | WasmOp::LocalTee(i) => {
+                    first.entry(*i).or_insert(false);
+                }
+                _ => {}
+            }
+        }
+        first
+            .iter()
+            .filter_map(|(&i, &read)| if read { Some(i + 1) } else { None })
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn realloc_on_repro_fixture_streams_has_zero_validator_rejects() {
+        // VCR-RA-003 criteria 1 + 3 on REAL selector output: run the wired
+        // pass over every function of the three frozen repro fixtures.
+        //   1. the validator accepts every rewrite the pass produces
+        //      (reallocated > 0 proves the pass actually fired);
+        //   3. validator-attributable declines == 0 — the roadmap
+        //      kill-criterion allows up to ~5% of segments before the
+        //      approach is re-evaluated, but 0 is the current truth, so 0 is
+        //      what this test pins.
+        use crate::instruction_selector::{BoundsCheckConfig, InstructionSelector};
+        use crate::rules::RuleDatabase;
+
+        let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/repro");
+        let mut total = ReallocStats::default();
+        let mut selected_fns = 0usize;
+        for name in [
+            "control_step.wasm",
+            "div_const.wat",
+            "flight_seam_flat.wasm",
+        ] {
+            let bytes = std::fs::read(format!("{root}/{name}"))
+                .unwrap_or_else(|e| panic!("read fixture {name}: {e}"));
+            let wasm = if name.ends_with(".wat") {
+                wat::parse_bytes(&bytes).expect("wat parse").into_owned()
+            } else {
+                bytes
+            };
+            let funcs =
+                synth_core::wasm_decoder::decode_wasm_functions(&wasm).expect("decode fixture");
+            for f in &funcs {
+                let db = RuleDatabase::with_standard_rules();
+                let mut sel = InstructionSelector::with_bounds_check(
+                    db.rules().to_vec(),
+                    BoundsCheckConfig::None,
+                );
+                sel.set_relocatable(true); // the differential-fixture path (#197)
+                let Ok(instrs) = sel.select_with_stack(&f.ops, fixture_count_params(&f.ops)) else {
+                    continue; // out-of-scope function (not what this test pins)
+                };
+                selected_fns += 1;
+                let (_, stats) = reallocate_function(&instrs, &VPOOL);
+                total.segments += stats.segments;
+                total.reallocated += stats.reallocated;
+                total.declined += stats.declined;
+                total.needs_spill += stats.needs_spill;
+                total.validator_rejects += stats.validator_rejects;
+            }
+        }
+        assert!(selected_fns > 0, "no fixture function selected");
+        assert!(
+            total.reallocated > 0,
+            "the pass must actually fire on the fixtures (segments={})",
+            total.segments
+        );
+        assert_eq!(
+            total.validator_rejects, 0,
+            "validator-attributable declines on the fixture streams \
+             (criterion: <5% of {} segments; current truth and the pinned \
+             value: 0)",
+            total.segments
+        );
     }
 }
