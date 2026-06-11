@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.39] - 2026-06-11
+
+**The assurance carrier: a backward-dataflow translation validator now guards
+every re-allocated segment (#242, VCR-RA-003 v1) — and the v0.11.20 cost-gate
+is deleted (VCR-VER-001 executed).**
+
+- **Allocation validator** (`validate_segment_rewrite`, Rideau/Leroy CC'10
+  style): every segment rewrite by the default-ON re-allocation pass must
+  PROVE dataflow preservation — backward lockstep walk, equation sets
+  (defs discharge, uses impose, entry must be identity vs the pass's input
+  pinning) — or the segment falls back to original bytes. On first contact
+  with production output it caught a real latent hazard (live-out pinning
+  pins the last RANGE, not the register's exit VALUE) — benign at function
+  returns (principled AAPCS scratch exemption), mechanically rejected with
+  safe fallback mid-function until cross-segment liveness lands. Evidence:
+  98.0% seeded-mutant kill (196/200; survivors are the documented dead-def
+  equivalence class), 0 validator rejects on real fixtures, fixtures
+  cmp-bit-identical.
+- **The v0.11.20 reciprocal-mult cost-gate is DELETED** (#322): reverting
+  proved byte-identical on every frozen fixture (the pressure vanished under
+  accumulated improvements) and the guarded case is covered by v0.11.38's
+  spill-on-exhaustion retry. The first greedy patch removed under the VCR
+  program's exit criterion — allocation failures at the reciprocal-multiply
+  now propagate to the retry instead of degrading to UDIV.
+
+Falsification: wrong if the validator accepts a rewrite that changes observable
+behavior (watched by the differential lanes + 98% mutant kill), or if any
+previously-compiling module's bytes change (all fixtures sha-verified).
+
+
 ## [0.11.38] - 2026-06-11
 
 **The first register-exhaustion hard-fail becomes recoverable
