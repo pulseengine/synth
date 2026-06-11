@@ -6,7 +6,7 @@
 //! Track B2/B3/B4 deliverable.
 
 use crate::elf_builder::{RiscVElfBuilder, RiscVElfFunction};
-use crate::selector::{RvBoundsMode, SelectorOptions, select_with_options};
+use crate::selector::{RvBoundsMode, SelectorOptions, select_with_result_types};
 use synth_core::backend::{
     Backend, BackendCapabilities, BackendError, CompilationResult, CompileConfig, CompiledFunction,
     SafetyBounds,
@@ -82,7 +82,7 @@ impl Backend for RiscVBackend {
             let compiled = compile_function_with_opts(&name, &func.ops, config, opts)?;
             elf_funcs.push(RiscVElfFunction {
                 name: compiled.name.clone(),
-                ops: compile_to_riscv_ops(&func.ops, opts, &compiled)?,
+                ops: compile_to_riscv_ops(&func.ops, config, opts, &compiled)?,
             });
             functions.push(compiled);
         }
@@ -152,8 +152,16 @@ fn compile_function_with_opts(
     ensure_supported_target(&config.target)?;
 
     let num_params = count_params(ops);
-    let selection = select_with_options(ops, num_params, opts)
-        .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
+    // #312: pass the decoder's "returns i64" tables down so call-fed i64
+    // locals get 8-byte frame slots and i64 call results the a0:a1 pair.
+    let selection = select_with_result_types(
+        ops,
+        num_params,
+        opts,
+        &config.func_ret_i64,
+        &config.type_ret_i64,
+    )
+    .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
 
     // Encode the function via the ELF builder's per-function pipeline so
     // we benefit from label resolution. We discard the ELF and keep the
@@ -258,12 +266,19 @@ fn encode_function_bytes(f: &RiscVElfFunction) -> Result<Vec<u8>, BackendError> 
 /// arch-neutral, so this re-derives it on demand for ELF emission.
 fn compile_to_riscv_ops(
     ops: &[WasmOp],
+    config: &CompileConfig,
     opts: SelectorOptions,
     _compiled: &CompiledFunction,
 ) -> Result<Vec<crate::riscv_op::RiscVOp>, BackendError> {
     let num_params = count_params(ops);
-    let selection = select_with_options(ops, num_params, opts)
-        .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
+    let selection = select_with_result_types(
+        ops,
+        num_params,
+        opts,
+        &config.func_ret_i64,
+        &config.type_ret_i64,
+    )
+    .map_err(|e| BackendError::CompilationFailed(format!("RISC-V selector: {e}")))?;
     Ok(selection.ops)
 }
 
@@ -367,7 +382,12 @@ mod tests {
             wasm_ops: ops.clone(),
             relocations: Vec::new(),
         };
-        let rv = compile_to_riscv_ops(&ops, SelectorOptions::wasm_compliant(), &dummy).unwrap();
+        let cfg = CompileConfig {
+            target: TargetSpec::riscv32imac(),
+            ..Default::default()
+        };
+        let rv =
+            compile_to_riscv_ops(&ops, &cfg, SelectorOptions::wasm_compliant(), &dummy).unwrap();
         // First two ops should move param regs into temporaries (immediate 0).
         assert!(matches!(
             rv[0],

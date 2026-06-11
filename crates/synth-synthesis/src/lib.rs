@@ -16,7 +16,7 @@ pub use control_flow::{
 };
 pub use instruction_selector::{
     ArmInstruction, BoundsCheckConfig, InstructionSelector, RegisterState, SelectionStats,
-    validate_instructions, validate_instructions_with_helium,
+    infer_i64_locals, validate_instructions, validate_instructions_with_helium,
 };
 pub use optimizer_bridge::{OptimizationConfig, OptimizationStats, OptimizerBridge};
 pub use pattern_matcher::{
