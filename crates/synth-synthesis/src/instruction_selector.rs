@@ -886,7 +886,11 @@ fn compute_local_layout(
 /// Without this, the spilled-local store/load path would emit a single
 /// 4-byte STR/LDR for i64 locals, dropping the upper half — corrupting
 /// any function that returns or uses a u64-packed FFI struct.
-fn infer_i64_locals(
+///
+/// `pub` because the RV32 selector (`synth-backend-riscv`) reuses the same
+/// inference for its i64 frame-slot layout (#312 — the RISC-V analogue of
+/// the ARM #311 fix); the wasm op stream and width rules are ISA-neutral.
+pub fn infer_i64_locals(
     wasm_ops: &[WasmOp],
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
