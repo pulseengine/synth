@@ -816,6 +816,7 @@ fn compute_local_layout(
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
     force_spill_area: bool,
+    force_param_backing: bool,
 ) -> LocalLayout {
     use std::collections::{BTreeSet, HashMap};
     let i64_set = infer_i64_locals(wasm_ops, func_ret_i64, type_ret_i64);
@@ -899,7 +900,14 @@ fn compute_local_layout(
     // register-backed — no behaviour change, and isolated-lowering tests (and
     // the common case) are untouched. Call-free temp-allocation clobbers are the
     // distinct, non-blocking #193 fuzz class (allocator reservation, deferred).
-    if has_call {
+    // VCR-RA-001 acceptance increment (#242): `force_param_backing` extends the
+    // same frame-backing to call-FREE functions, set ONLY on the backend's
+    // retry after the i64 consecutive-pair exhaustion `Err` — the pinned param
+    // home registers (#193 reservation) are the one blocker the pair
+    // allocator's stack-spill loop (#171) cannot free, so the retry spills
+    // them to the frame at entry instead. Functions that compile without it
+    // keep byte-identical frames by construction.
+    if has_call || force_param_backing {
         let mut used_params: BTreeSet<u32> = BTreeSet::new();
         for op in wasm_ops {
             let pidx = match op {
@@ -1378,6 +1386,21 @@ pub struct InstructionSelector {
     /// allocation under exhaustion spills the deepest stack value instead of
     /// hard-failing ([`alloc_temp_or_spill`]).
     spill_on_exhaustion: bool,
+    /// VCR-RA-001 acceptance increment (#242): param-backing-on-exhaustion
+    /// retry mode. Default OFF — the backend sets it only for a retry after
+    /// `select_with_stack` failed with the i64 consecutive-PAIR exhaustion
+    /// `Err`. The pair allocator already spills register-resident STACK values
+    /// (#171, pair-aware); the only remaining blockers at the pair hard-fail
+    /// are the *pinned param home registers* (#193 `reserved`) plus the popped
+    /// operand pairs (`extra_avoid`) — and params are not stack values, so no
+    /// amount of stack spilling can free them. When ON, every read param is
+    /// frame-backed via the proven #204 `param_slots` machinery (spilled to a
+    /// frame slot at entry, reloaded on read), so `reserved` is empty and a
+    /// free consecutive pair always exists after stack spilling (at most two
+    /// adjacent operand pairs can be blocked among the 9-register pool). Like
+    /// `spill_on_exhaustion`, bit-identity is structural: only functions that
+    /// failed BOTH earlier passes ever compile with this set.
+    param_backing_on_exhaustion: bool,
 }
 
 impl InstructionSelector {
@@ -1405,6 +1428,7 @@ impl InstructionSelector {
             has_helium: false,
             next_qreg: 0,
             spill_on_exhaustion: false,
+            param_backing_on_exhaustion: false,
         }
     }
 
@@ -1432,6 +1456,7 @@ impl InstructionSelector {
             has_helium: false,
             next_qreg: 0,
             spill_on_exhaustion: false,
+            param_backing_on_exhaustion: false,
         }
     }
 
@@ -1447,6 +1472,18 @@ impl InstructionSelector {
     /// compiles without it would change its bytes.
     pub fn set_spill_on_exhaustion(&mut self, enabled: bool) {
         self.spill_on_exhaustion = enabled;
+    }
+
+    /// VCR-RA-001 acceptance increment (#242): enable param frame-backing on
+    /// i64 consecutive-pair exhaustion. Intended ONLY as the backend's final
+    /// retry after `select_with_stack` failed with the pair-exhaustion `Err`
+    /// (which stack spilling alone cannot recover — the blockers are pinned
+    /// param home registers, not stack values). Forces the #204 `param_slots`
+    /// frame-backing for every read param, so it changes the frame layout and
+    /// every param read; calling it for a function that compiles without it
+    /// would change its bytes.
+    pub fn set_param_backing_on_exhaustion(&mut self, enabled: bool) {
+        self.param_backing_on_exhaustion = enabled;
     }
 
     /// Enable relocatable host-link mode (#197): import calls emit a direct
@@ -4989,6 +5026,7 @@ impl InstructionSelector {
             &self.func_ret_i64,
             &self.type_ret_i64,
             self.spill_on_exhaustion,
+            self.param_backing_on_exhaustion,
         );
         // Allocate stack space for non-param locals so they don't alias the
         // callee-saved-register spill area (which immediately follows SP
@@ -14969,7 +15007,7 @@ mod tests {
     fn test_compute_local_layout_no_locals() {
         // Function with only params and no LocalGet/Set produces zero frame.
         let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add];
-        let layout = compute_local_layout(&ops, 2, &[], &[], false);
+        let layout = compute_local_layout(&ops, 2, &[], &[], false, false);
         assert_eq!(layout.frame_size, 0);
         assert!(layout.locals.is_empty());
     }
@@ -14982,7 +15020,7 @@ mod tests {
             WasmOp::LocalSet(1),
             WasmOp::LocalGet(1),
         ];
-        let layout = compute_local_layout(&ops, 1, &[], &[], false);
+        let layout = compute_local_layout(&ops, 1, &[], &[], false, false);
         assert!(layout.locals.contains_key(&1));
         let (off, is_i64) = layout.locals[&1];
         assert_eq!(off, 0);
@@ -14999,7 +15037,7 @@ mod tests {
             WasmOp::LocalSet(0),
             WasmOp::LocalGet(0),
         ];
-        let layout = compute_local_layout(&ops, 0, &[], &[], false);
+        let layout = compute_local_layout(&ops, 0, &[], &[], false, false);
         let (off, is_i64) = layout.locals[&0];
         assert_eq!(off, 0);
         assert!(is_i64);
@@ -15019,7 +15057,7 @@ mod tests {
             WasmOp::I64Const(2),
             WasmOp::LocalSet(1),
         ];
-        let layout = compute_local_layout(&ops, 0, &[], &[], false);
+        let layout = compute_local_layout(&ops, 0, &[], &[], false, false);
         let (off0, is_i64_0) = layout.locals[&0];
         let (off1, is_i64_1) = layout.locals[&1];
         assert_eq!(off0, 0);
@@ -15041,7 +15079,7 @@ mod tests {
             WasmOp::I32Add,
             WasmOp::LocalSet(2),
         ];
-        let layout = compute_local_layout(&ops, 2, &[], &[], false);
+        let layout = compute_local_layout(&ops, 2, &[], &[], false, false);
         // Only idx 2 should be in the layout.
         assert!(!layout.locals.contains_key(&0));
         assert!(!layout.locals.contains_key(&1));
@@ -15350,6 +15388,234 @@ mod tests {
             "expected at least one spill store, got {spills}"
         );
         assert_eq!(spills, reloads, "every spill must reload exactly once");
+    }
+
+    // ── VCR-RA-001 acceptance increment (#242): i64 PAIR exhaustion ──
+
+    /// The pair allocator's #171 stack-spill loop is pair-aware: when every
+    /// register is pinned and the deepest stack entry is an i64, BOTH halves
+    /// spill into one 8-byte slot (two STRs, lo then hi) and the freed pair is
+    /// returned.
+    #[test]
+    fn alloc_consecutive_pair_spills_pair_victim_242() {
+        let mut next_temp: u8 = 0;
+        // 4 i64 pairs (R0/R1, R2/R3, R4/R5, R6/R7) + one i32 in R8 = all nine
+        // allocatable registers pinned.
+        let mut stack = vec![
+            StackVal::i64(Reg::R0),
+            StackVal::i64(Reg::R2),
+            StackVal::i64(Reg::R4),
+            StackVal::i64(Reg::R6),
+            StackVal::i32(Reg::R8),
+        ];
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        let (lo, hi) = alloc_consecutive_pair(
+            &mut next_temp,
+            &mut stack,
+            &mut instructions,
+            &mut spill,
+            &[],
+            &[],
+            3,
+        )
+        .unwrap();
+        // The deepest entry (i64 in R0/R1) spilled — its pair is the result.
+        assert_eq!((lo, hi), (Reg::R0, Reg::R1));
+        assert_eq!(
+            stack[0],
+            StackVal::Spilled {
+                lo_slot: 0,
+                is_i64: true
+            },
+            "deepest i64 entry rewritten to Spilled"
+        );
+        // Exactly two STRs: lo -> [SP,#0], hi -> [SP,#4] (one 8-byte slot).
+        assert_eq!(instructions.len(), 2);
+        match (&instructions[0].op, &instructions[1].op) {
+            (ArmOp::Str { rd: r0, addr: a0 }, ArmOp::Str { rd: r1, addr: a1 }) => {
+                assert_eq!((*r0, a0.clone()), (Reg::R0, MemAddr::imm(Reg::SP, 0)));
+                assert_eq!((*r1, a1.clone()), (Reg::R1, MemAddr::imm(Reg::SP, 4)));
+            }
+            other => panic!("expected two STR spills, got {other:?}"),
+        }
+    }
+
+    /// Pair exhaustion with i32 victims: freeing a consecutive pair takes TWO
+    /// single-register spills (each into its own slot) before (R0,R1) frees.
+    #[test]
+    fn alloc_consecutive_pair_spills_single_victims_242() {
+        let mut next_temp: u8 = 0;
+        let mut stack = full_i32_stack(); // nine i32s pin R0-R8
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        let (lo, hi) = alloc_consecutive_pair(
+            &mut next_temp,
+            &mut stack,
+            &mut instructions,
+            &mut spill,
+            &[],
+            &[],
+            5,
+        )
+        .unwrap();
+        assert_eq!((lo, hi), (Reg::R0, Reg::R1));
+        assert_eq!(
+            stack[0],
+            StackVal::Spilled {
+                lo_slot: 0,
+                is_i64: false
+            }
+        );
+        assert_eq!(
+            stack[1],
+            StackVal::Spilled {
+                lo_slot: 8,
+                is_i64: false
+            }
+        );
+        // Two single STRs into two distinct slots.
+        assert_eq!(instructions.len(), 2);
+        for (i, (reg, off)) in [(Reg::R0, 0), (Reg::R1, 8)].iter().enumerate() {
+            match &instructions[i].op {
+                ArmOp::Str { rd, addr } => {
+                    assert_eq!((*rd, addr.clone()), (*reg, MemAddr::imm(Reg::SP, *off)));
+                }
+                other => panic!("expected STR spill, got {other:?}"),
+            }
+        }
+    }
+
+    /// When the blockers are NOT stack values (pinned param registers in
+    /// `reserved` + popped operand pairs in `extra_avoid`), stack spilling
+    /// cannot help and the exact original pair-exhaustion `Err` is preserved
+    /// with nothing emitted — the case only the backend's param-backing retry
+    /// recovers.
+    #[test]
+    fn alloc_consecutive_pair_err_when_only_pinned_blockers_242() {
+        let mut next_temp: u8 = 4;
+        let mut stack: Vec<StackVal> = Vec::new(); // nothing register-resident
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let mut spill = SpillState::new(0);
+        let err = alloc_consecutive_pair(
+            &mut next_temp,
+            &mut stack,
+            &mut instructions,
+            &mut spill,
+            &[Reg::R4, Reg::R5, Reg::R6, Reg::R7], // popped operand pairs
+            &[Reg::R0, Reg::R1, Reg::R2, Reg::R3], // pinned params (#193)
+            0,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no consecutive pair of free registers for i64"),
+            "must preserve the original pair-exhaustion Err, got: {err}"
+        );
+        assert!(instructions.is_empty(), "must not emit on the Err path");
+    }
+
+    /// A spilled i64 PAIR reloads on pop through the #171 machinery: a fresh
+    /// consecutive pair and two LDRs (lo from slot, hi from slot+4), freeing
+    /// the slot.
+    #[test]
+    fn spilled_i64_pair_reloads_on_pop_242() {
+        let mut next_temp: u8 = 0;
+        let mut spill = SpillState::new(0);
+        let slot = spill.alloc().unwrap(); // occupy slot 0 as the spill did
+        let mut stack = vec![StackVal::Spilled {
+            lo_slot: slot,
+            is_i64: true,
+        }];
+        let mut instructions: Vec<ArmInstruction> = Vec::new();
+        let lo = pop_operand(
+            &mut stack,
+            &mut next_temp,
+            &mut instructions,
+            &mut spill,
+            &[],
+            9,
+        )
+        .unwrap();
+        let hi = i64_pair_hi(lo).unwrap();
+        assert_eq!(instructions.len(), 2, "lo + hi reload LDRs");
+        match (&instructions[0].op, &instructions[1].op) {
+            (ArmOp::Ldr { rd: r0, addr: a0 }, ArmOp::Ldr { rd: r1, addr: a1 }) => {
+                assert_eq!((*r0, a0.clone()), (lo, MemAddr::imm(Reg::SP, slot)));
+                assert_eq!((*r1, a1.clone()), (hi, MemAddr::imm(Reg::SP, slot + 4)));
+            }
+            other => panic!("expected two LDR reloads, got {other:?}"),
+        }
+        assert_eq!(spill.alloc(), Some(slot), "slot freed for reuse on reload");
+    }
+
+    /// End-to-end fail-then-retry contract for the PAIR site (the backend's
+    /// three-pass ladder, `scripts/repro/high_pressure_i64.wat` sequence):
+    ///   pass 1 (default)         -> the pair-exhaustion hard-fail, verbatim;
+    ///   pass 2 (spill-only #320) -> STILL the pair hard-fail (stack spilling
+    ///                               cannot free pinned param registers);
+    ///   pass 3 (+param backing)  -> compiles, params frame-backed at entry.
+    #[test]
+    fn select_with_stack_pair_exhaustion_recoverable_via_param_backing_242() {
+        use WasmOp::*;
+        let ops = vec![
+            I64Const(0x1111111111111111),
+            I64Const(0x2222222222222222),
+            I64Const(0x3333333333333333),
+            I64Const(0x4444444444444444),
+            I64Add,
+            I64Sub,
+            I64Xor,
+            LocalGet(0),
+            I64ExtendI32U,
+            I64Add,
+            LocalGet(1),
+            I64ExtendI32U,
+            I64Sub,
+            LocalGet(2),
+            I64ExtendI32U,
+            I64Xor,
+            LocalGet(3),
+            I64ExtendI32U,
+            I64Add,
+        ];
+
+        // Pass 1 (default world): the pair hard-fail, verbatim.
+        let err = fresh_selector().select_with_stack(&ops, 4).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no consecutive pair of free registers for i64"),
+            "expected the pair-exhaustion hard-fail, got: {err}"
+        );
+
+        // Pass 2 (#320 spill-only): insufficient by construction — the
+        // blockers are param home registers, not stack values.
+        let mut spill_only = fresh_selector();
+        spill_only.set_spill_on_exhaustion(true);
+        let err = spill_only.select_with_stack(&ops, 4).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("no consecutive pair of free registers for i64"),
+            "spill-only retry must still hit the pair hard-fail, got: {err}"
+        );
+
+        // Pass 3 (param-backing retry): compiles; the entry spills each read
+        // param to its frame slot before any operand-stack traffic.
+        let mut retry = fresh_selector();
+        retry.set_spill_on_exhaustion(true);
+        retry.set_param_backing_on_exhaustion(true);
+        let instrs = retry
+            .select_with_stack(&ops, 4)
+            .expect("param-backing retry must compile");
+        let entry_param_spills = instrs
+            .iter()
+            .take_while(|i| i.source_line.is_none())
+            .filter(|i| matches!(&i.op, ArmOp::Str { addr, .. } if addr.base == Reg::SP))
+            .count();
+        assert_eq!(
+            entry_param_spills, 4,
+            "all four read params frame-backed at entry"
+        );
     }
 
     #[test]
