@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.40] - 2026-06-11
+
+**THE ALLOCATOR ACCEPTANCE RELEASE — VCR-RA-001's five criteria are all met,
+and gale's k_mutex_unlock lane unblocks (#242, #326).**
+
+- **i64 pair-spill via param frame-backing** (#325): the last acceptance
+  criterion closes. The true pair-exhaustion blocker was pinned param home
+  registers (no stack spill can free them); a third retry-ladder rung forces
+  the proven #204 param frame-backing onto call-free functions, after which
+  a consecutive pair always exists (pigeonhole over the freed pool). Ladder:
+  default -> spill-only (#320) -> spill+param-backing, each rung triggered
+  only by its predecessor's exact error — bit-identity stays structural.
+  NEW high-pressure-i64 lane: hard Err on v0.11.39 -> 6/6 vs wasmtime.
+- **Arg-move cycles via the parallel-move resolver** (#327, gale #326): the
+  call-marshal cycle-breaker no longer demands a callee-saved register —
+  VCR-RA-004's resolver (v0.11.38) breaks cycles via a stack-scratch cell
+  when registers are saturated. This unblocks the dissolved k_mutex_unlock
+  (gale's exact error reproduced on main by the committed mutex_pressure
+  lane; 7/7 vs wasmtime on the fix) AND killed a latent wrong-code bug: the
+  old cycle-breaker miscompiled genuine 2-swaps (duplicated a value).
+- **VCR-RA-001 status: implemented.** All five criteria verified: no
+  hard-fail on high-pressure i32 AND i64 modules; fixtures bit-identical
+  through six releases; cycles equal-or-better on the G474RE (gale); the
+  v0.11.20 cost-gate revert EXECUTED (#322); the backward-dataflow validator
+  guarding every re-allocated segment (#323). Honest bounds: the 8-slot
+  spill pool, stack-passed params, the R8-pair/i64-param class (tracked).
+
+Falsification: wrong if gale's mutex lane fails on silicon (native ref 124),
+any previously-compiling module's bytes change, or any pressure lane
+disagrees with wasmtime.
+
+
 ## [0.11.39] - 2026-06-11
 
 **The assurance carrier: a backward-dataflow translation validator now guards
