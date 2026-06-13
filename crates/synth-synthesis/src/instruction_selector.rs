@@ -4931,6 +4931,26 @@ impl InstructionSelector {
                     StackVal::i32(free)
                 }
                 Err(_) => {
+                    // #331: when the i64 spill area was NOT reserved (an i32-only
+                    // function — `has_i64 == false`), `i64_spill_base` aliases the
+                    // #204 param home slots, so `spill.alloc()` here would hand out
+                    // a slot ON TOP of a live param's home slot. gale's dissolved
+                    // `k_mutex_unlock`: the mutex-ptr arg's home slot was reused to
+                    // park `z_unpend_first_thread`'s result, so the later
+                    // `lock_count = 0` store reloaded the clobbered slot and wrote
+                    // to `linmem[0+12]` instead of `mutex+12` → silicon deadlock.
+                    // Fail with the ladder-recoverable exhaustion `Err` (same guard
+                    // the arg-move-cycle resolver uses): the backend retry re-runs
+                    // with the spill area reserved, which relocates the param home
+                    // slots ABOVE the i64 pool, so the reload is non-aliasing and
+                    // the function compiles CORRECTLY (not skipped).
+                    if !spill.area_reserved {
+                        return Err(synth_core::Error::synthesis(
+                            "register exhaustion: all allocatable registers are live on the stack — \
+                             parking a call result needs a spill slot but no spill area is reserved"
+                                .to_string(),
+                        ));
+                    }
                     let slot = spill.alloc().ok_or_else(|| {
                         synth_core::Error::synthesis(
                             "register exhaustion: i64 spill-slot pool exhausted while \

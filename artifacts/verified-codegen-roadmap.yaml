@@ -490,6 +490,15 @@ artifacts:
         fixtures (was 3) — with 0 validator-attributable declines (0% << the 5%
         kill-criterion, which is now asserted explicitly, not just the stronger
         0 pin). v2 (Rocq-mechanized soundness) remains the open step.
+        V-NEXT (from gale #331): extend the validator to the SPILL-SLOT /
+        frame-allocation layer — it currently validates register rewrites in
+        straight-line segments only, NOT frame-slot non-aliasing. #331 was a
+        param-home vs spill-pool slot collision (`i64_spill_base` aliases the
+        #204 `param_slots` when `has_i64 == false`); a "validate slot
+        non-aliasing" invariant would have caught it mechanically. Fixed for now
+        by an `area_reserved` guard on the call-result park (ladder-recoverable
+        Err → retry reserves the area), but the validator does not yet cover this
+        class.
 
   - id: VCR-RA-004
     type: sw-req
