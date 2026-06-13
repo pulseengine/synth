@@ -5405,7 +5405,9 @@ mod tests {
             first
                 .as_ref()
                 .err()
-                .map(|e| e.to_string().contains("all allocatable registers are live on the stack"))
+                .map(|e| e
+                    .to_string()
+                    .contains("all allocatable registers are live on the stack"))
                 .unwrap_or(false),
             "first pass must hit the #331 area-reserved guard (ladder-recoverable Err); got {:?}",
             first.as_ref().map(|i| i.len())
