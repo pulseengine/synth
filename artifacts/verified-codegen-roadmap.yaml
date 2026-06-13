@@ -367,6 +367,46 @@ artifacts:
         0x07FDF307 / div_const 338/338); gale confirms on-target cycles
         equal-or-better on the five frozen benches; flag-gated until confirmed.
 
+  - id: VCR-SEL-003
+    type: sw-req
+    title: Multi-value-return ABI — multi-result call feeding select (selector op-gap, gale #329)
+    description: >
+      `synth compile --cortex-m --all-exports` silently skips a function when a
+      multi-value `call` result feeds a `select` (falcon-flight func_39; func_30
+      LocalSet one consumer over) — on a module `wasm-tools validate` accepts.
+      Root cause is two-sided and confirmed from source @ v0.11.40: (1) caller —
+      the `Call` arm (instruction_selector.rs ~7252) pushes exactly ONE operand
+      per call regardless of result count (no `func_ret_count` metadata is
+      threaded; only `func_ret_i64` exists), so `select` (pops 3) underflows in
+      `pop_operand`; (2) callee — multi-value return is unimplemented: `$two`
+      emits `movs r4,#10; movs r5,#20; bx lr`, leaving results in r4/r5, not the
+      AAPCS return registers r0/r1. The two sides MUST land together: a
+      caller-only push would compile-but-MISCOMPILE (read r0/r1, callee wrote
+      r4/r5), converting today's safe skip into silent wrong-code. This is the
+      "selector missed an op" class (VCR-SEL-001), not a one-line patch — it
+      needs result-count metadata threaded through both codegen paths, an N-result
+      push at call sites, and multi-result placement in r0..r(N-1) in both the
+      explicit `Return` and the implicit fall-through epilogue. Non-blocking: no
+      shipped wasm-cross-LTO module hits this shape (gale concurs). Regression
+      lock landed in tests/fixtures/multivalue_call_select (PR #330).
+    status: proposed
+    tags: [codegen, selector, instruction-selection, multi-value, abi, op-gap, gale-329, track-a]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: traces-to
+        target: VCR-SEL-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        repro_call_select.wat compiles AND `f` evaluates to the wasmtime golden
+        (f(1)=10, f(0)=20) on a differential RUN — not merely "it compiles"; the
+        three control fixtures stay compiling; >register-capacity result counts
+        (>4 int results / memory-return-area) stay a clean skip, never a
+        miscompile; the three frozen differentials (control_step 0x00210A55 /
+        flight_seam 0x07FDF307 / div_const 338/338) remain RESULT-identical.
+
   - id: VCR-RA-002
     type: sw-req
     title: Conditional register pool — free R10 when bounds-checking is off (track C)
