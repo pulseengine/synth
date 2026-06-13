@@ -12,27 +12,3 @@ updates:
       interval: weekly
     labels:
       - dependencies
-  - package-ecosystem: cargo
-    directory: /crates/synth-abi
-    schedule:
-      interval: weekly
-    labels:
-      - dependencies
-  - package-ecosystem: cargo
-    directory: /crates/synth-analysis
-    schedule:
-      interval: weekly
-    labels:
-      - dependencies
-  - package-ecosystem: cargo
-    directory: /crates/synth-backend-awsm
-    schedule:
-      interval: weekly
-    labels:
-      - dependencies
-  - package-ecosystem: cargo
-    directory: /crates/synth-backend-wasker
-    schedule:
-      interval: weekly
-    labels:
-      - dependencies
