@@ -472,6 +472,77 @@ fn spill_deepest_reg(
     Ok(true)
 }
 
+/// Reconcile one if-result position between the two arms (#313): make the
+/// else-arm's result register(s) hold the SAME value the then-arm's do, by
+/// emitting `MOV R_then, R_else` (i64: lo and hi) on the ELSE path when the two
+/// arms chose different registers. Emitting NOTHING when they match is what
+/// keeps register-symmetric / control-flow-only if/else byte-identical.
+///
+/// The merged value lives in the then-arm's register afterwards (the caller
+/// pushes the then-result back onto the vstack). These movs are placed between
+/// the else-arm body and `end_label`; the then-path branches over them.
+///
+/// A spilled result on either side only arises under register-exhaustion
+/// spilling (the retry pass, `spill_on_exhaustion`). Rather than risk a
+/// mis-reconciliation there, return the honest exhaustion `Err` — the same
+/// recoverable signal the rest of the allocator uses — so the function is
+/// retried/skipped, never miscompiled.
+fn reconcile_if_result(
+    then_v: &StackVal,
+    else_v: &StackVal,
+    instructions: &mut Vec<ArmInstruction>,
+    line: usize,
+) -> Result<()> {
+    match (then_v, else_v) {
+        (
+            StackVal::Reg {
+                reg: then_lo,
+                is_i64: then_i64,
+            },
+            StackVal::Reg {
+                reg: else_lo,
+                is_i64: else_i64,
+            },
+        ) => {
+            // Both arms must agree on width for a well-typed if-result.
+            if then_i64 != else_i64 {
+                return Err(synth_core::Error::synthesis(
+                    "if/else result width mismatch between arms (#313)".to_string(),
+                ));
+            }
+            if then_lo != else_lo {
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Mov {
+                        rd: *then_lo,
+                        op2: Operand2::Reg(*else_lo),
+                    },
+                    source_line: Some(line),
+                });
+            }
+            if *then_i64 {
+                let then_hi = i64_pair_hi(*then_lo)?;
+                let else_hi = i64_pair_hi(*else_lo)?;
+                if then_hi != else_hi {
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Mov {
+                            rd: then_hi,
+                            op2: Operand2::Reg(else_hi),
+                        },
+                        source_line: Some(line),
+                    });
+                }
+            }
+            Ok(())
+        }
+        _ => Err(synth_core::Error::synthesis(
+            "if/else result reconciliation with a spilled arm result is not \
+             supported by the current register allocator (#313) — function too \
+             complex; retried/skipped rather than miscompiled"
+                .to_string(),
+        )),
+    }
+}
+
 /// Pop the top operand, returning its `lo` register (#171). If the entry was
 /// spilled, reload it: allocate a fresh consecutive pair and emit
 /// `LDR lo,[sp,slot]; LDR hi,[sp,slot+4]`, freeing the slot.
@@ -5099,6 +5170,20 @@ impl InstructionSelector {
         let mut block_labels: Vec<(String, bool)> = Vec::new();
         // Stack of (else_label, end_label) for if/else blocks
         let mut if_labels: Vec<(String, String)> = Vec::new();
+        // #313: per-if-block operand-stack checkpoint (vstack depth captured at
+        // `If`, after popping the condition). The result arity of an
+        // `if (result …)` is observable as (vstack depth − checkpoint).
+        let mut if_checkpoints: Vec<usize> = Vec::new();
+        // #313: per-if-block reservation of the THEN-arm's result registers.
+        // Captured at `Else` (the then-arm's results, popped off and truncated
+        // back to the checkpoint so the else-arm starts from the same stack
+        // shape) and threaded into the temp/pair/reload allocators across the
+        // else-arm — exactly as those result regs were protected in the buggy
+        // code by sitting on the vstack. Popped at the matching `End`, where
+        // the else-arm's result registers are reconciled INTO the then-arm's
+        // (a `mov R_then, R_else` on the else path when they differ). Each
+        // inner `Vec` is one if-block's then-arm results, top-most-last.
+        let mut if_then_results: Vec<Vec<StackVal>> = Vec::new();
 
         // Map of local index -> register
         let mut local_to_reg: std::collections::HashMap<u32, Reg> =
@@ -5164,7 +5249,23 @@ impl InstructionSelector {
             // Param registers still live at this op — reserved from temp/pair/
             // reload allocation so a constant/result/reload never clobbers a live
             // param (#193).
-            let live_params = live_param_regs(idx);
+            let mut live_params = live_param_regs(idx);
+            // #313: while inside the else-arm of one or more if-blocks, the
+            // then-arm result registers of each enclosing if-block must be
+            // protected from the allocators exactly as they were when they sat
+            // on the vstack in the buggy code (this is what makes the else-arm
+            // allocate byte-identically). Reserve them — and the conventional
+            // hi register of any i64 result — for the duration of the else-arm.
+            for results in &if_then_results {
+                for v in results {
+                    if let StackVal::Reg { reg, is_i64 } = v {
+                        live_params.push(*reg);
+                        if *is_i64 && let Ok(hi) = i64_pair_hi(*reg) {
+                            live_params.push(hi);
+                        }
+                    }
+                }
+            }
             match op {
                 LocalGet(local_idx) => {
                     // Get the register for this local. Three cases:
@@ -6898,6 +6999,13 @@ impl InstructionSelector {
                     // Store both labels: else_label for the if-branch, end_label for the end
                     if_labels.push((else_label.clone(), end_label.clone()));
                     block_labels.push((end_label, false));
+                    // #313: checkpoint the operand-stack depth (the condition is
+                    // already popped). The then-arm runs from here; its results
+                    // are whatever sits ABOVE this depth at `Else`. Reservation
+                    // starts EMPTY — nothing needs protecting during the then-arm
+                    // (it runs first); it is filled at `Else`.
+                    if_checkpoints.push(stack.len());
+                    if_then_results.push(Vec::new());
 
                     // CMP cond_reg, #0
                     instructions.push(ArmInstruction {
@@ -6921,6 +7029,21 @@ impl InstructionSelector {
                 }
 
                 Else => {
+                    // #313: the then-arm's results are the vstack entries above
+                    // the checkpoint. Pop them (top-most last) and truncate the
+                    // vstack back to the checkpoint so the else-arm starts from
+                    // the SAME stack shape the then-arm did. The captured regs
+                    // are reserved across the else-arm (via `if_then_results`,
+                    // merged into `live_params` above) so the else-arm cannot
+                    // clobber them — reproducing the buggy code's incidental
+                    // protection (the then-results were on the vstack) exactly,
+                    // which is what keeps the else-arm allocation byte-identical.
+                    if let Some(&cp) = if_checkpoints.last() {
+                        let then_results: Vec<StackVal> = stack.split_off(cp);
+                        if let Some(slot) = if_then_results.last_mut() {
+                            *slot = then_results;
+                        }
+                    }
                     // End of then-block: jump to end of if
                     if let Some((_, end_label)) = if_labels.last() {
                         instructions.push(ArmInstruction {
@@ -6954,12 +7077,58 @@ impl InstructionSelector {
                             .iter()
                             .any(|i| matches!(&i.op, ArmOp::Label { name } if *name == else_label));
                         if !else_emitted {
-                            // No else clause: emit else label (same as end)
+                            // No else clause: emit else label (same as end).
+                            // A valid if-without-else has arity 0 (no result),
+                            // so there is nothing to reconcile (#313).
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Label { name: else_label },
                                 source_line: Some(idx),
                             });
                             cf.add_instruction();
+                        }
+                        // #313: reconcile the two arms onto a single set of
+                        // result registers. The then-arm's results were captured
+                        // and reserved at `Else` (`if_then_results`); the
+                        // else-arm's results are the vstack entries above the
+                        // checkpoint right now. The `mov R_then, R_else`s emitted
+                        // here sit on the ELSE path (between the else-arm body and
+                        // `end_label`); the then-path's `B end_label` (emitted at
+                        // `Else`) jumps over them, so the then-arm's value is the
+                        // one live at `end_label` on the then path while the else
+                        // path moves its value into the same registers. When the
+                        // two arms already chose the same register, NO `mov` is
+                        // emitted (this is what keeps register-symmetric and
+                        // control-flow-only if/else byte-identical to before).
+                        let then_results = if_then_results.pop().unwrap_or_default();
+                        let checkpoint = if_checkpoints.pop();
+                        if else_emitted {
+                            if let Some(cp) = checkpoint {
+                                // else-arm results above the checkpoint, in the
+                                // same bottom→top order as `then_results`.
+                                let else_results: Vec<StackVal> = stack.split_off(cp);
+                                if else_results.len() == then_results.len() {
+                                    for (then_v, else_v) in
+                                        then_results.iter().zip(else_results.iter())
+                                    {
+                                        reconcile_if_result(
+                                            then_v,
+                                            else_v,
+                                            &mut instructions,
+                                            idx,
+                                        )?;
+                                    }
+                                } else {
+                                    // Arity mismatch between arms (should not
+                                    // happen for valid wasm). Restore what we
+                                    // took rather than silently miscompile;
+                                    // downstream may still Err cleanly.
+                                    stack.extend(else_results);
+                                }
+                            }
+                            // The merged results live in the then-arm's
+                            // registers — push them back onto the vstack so the
+                            // surrounding code (return / outer op) reads them.
+                            stack.extend(then_results);
                         }
                         instructions.push(ArmInstruction {
                             op: ArmOp::Label { name: end_label },
@@ -15530,6 +15699,163 @@ mod tests {
             "must be the retry-ladder exhaustion class, got: {err}"
         );
         assert!(instructions.is_empty(), "no partial sequence on Err");
+    }
+
+    /// #313: an `if (result i32)` with ASYMMETRIC arms must reconcile both
+    /// arms onto a SINGLE result register. The buggy selector left the
+    /// then-arm's result on the vstack across the else-arm and read the
+    /// else-arm's register unconditionally at `End`, so the then-path returned
+    /// a register it never wrote. The fix reconciles: the value live at the
+    /// `if_end` label is the THEN-arm's register, and a `MOV R_then, R_else`
+    /// sits on the else path (between the `else` label and the `if_end` label)
+    /// so the else path moves its result into that same register. Mirrors
+    /// `scripts/repro/u64_unpack_if.wat` (`f`).
+    #[test]
+    fn if_result_asymmetric_arms_reconcile_to_one_register_313() {
+        use WasmOp::*;
+        // param0 = i64 $r. Condition: (wrap(r & 255) == 1). Then: wrap(r>>32).
+        // Else: const 0xDEAD. The two arms land in different registers.
+        let ops: Vec<WasmOp> = vec![
+            LocalGet(0),
+            I64Const(255),
+            I64And,
+            I32WrapI64,
+            I32Const(1),
+            I32Eq,
+            If,
+            LocalGet(0),
+            I64Const(32),
+            I64ShrU,
+            I32WrapI64,
+            Else,
+            I32Const(0xDEAD),
+            End,
+        ];
+        // One i64 param (occupies R0/R1), result i32.
+        let mut sel = fresh_selector();
+        sel.func_ret_i64 = vec![false];
+        let instrs = sel
+            .select_with_stack(&ops, 1)
+            .expect("if-result must compile");
+
+        // Locate the `else` and `if_end` labels.
+        let else_pos = instrs
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Label { name } if name.contains("else")))
+            .expect("else label present");
+        let end_pos = instrs
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Label { name } if name.contains("if_end")))
+            .expect("if_end label present");
+        assert!(else_pos < end_pos, "else label precedes if_end label");
+
+        // Exactly one reconciliation MOV between the else label and the end
+        // label (the else path moving its result into the then register).
+        let reconcile: Vec<(Reg, Reg)> = instrs[else_pos + 1..end_pos]
+            .iter()
+            .filter_map(|i| match &i.op {
+                ArmOp::Mov {
+                    rd,
+                    op2: Operand2::Reg(rs),
+                } => Some((*rd, *rs)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reconcile.len(),
+            1,
+            "exactly one reconciliation MOV on the else path, got {reconcile:?}"
+        );
+        let (r_then, r_else) = reconcile[0];
+        assert_ne!(
+            r_then, r_else,
+            "reconciliation only emitted when the arms differ"
+        );
+
+        // The then-path `B if_end` must jump OVER the reconciliation MOV: there
+        // is a branch to the end label emitted before the else label.
+        let then_branch_over = instrs[..else_pos]
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::B { label } if label.contains("if_end")));
+        assert!(
+            then_branch_over,
+            "then-path branches to if_end, skipping the reconciliation MOV"
+        );
+
+        // The else-arm materialized 0xDEAD into r_else (so it is genuinely the
+        // else result being moved into the then register).
+        let else_makes_dead = instrs[else_pos + 1..end_pos].iter().any(|i| {
+            matches!(&i.op, ArmOp::Mov { rd, op2: Operand2::Imm(v) } if *rd == r_else && *v == 0xDEAD)
+                || matches!(&i.op, ArmOp::Movw { rd, imm16 } if *rd == r_else && *imm16 == 0xDEAD)
+        });
+        assert!(
+            else_makes_dead,
+            "the else arm materializes 0xDEAD into the moved-from register"
+        );
+    }
+
+    /// #313: a control-flow-only / result-less `if/else` (arity 0) gets NO
+    /// reconciliation move — results carried via locals, not the vstack. This
+    /// is the byte-identity guarantee for the frozen fixtures (which have no
+    /// if-with-result). Here both arms only `local.set`, leaving the vstack at
+    /// the checkpoint depth, so `End` emits nothing extra.
+    #[test]
+    fn if_without_result_emits_no_reconciliation_313() {
+        use WasmOp::*;
+        // if (local.get 0) { local.set 1 (const 7) } else { local.set 1 (const 9) }
+        let ops: Vec<WasmOp> = vec![
+            LocalGet(0),
+            If,
+            I32Const(7),
+            LocalSet(1),
+            Else,
+            I32Const(9),
+            LocalSet(1),
+            End,
+            LocalGet(1),
+        ];
+        let instrs = fresh_selector()
+            .select_with_stack(&ops, 2)
+            .expect("arity-0 if must compile");
+        let end_pos = instrs
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Label { name } if name.contains("if_end")))
+            .expect("if_end label present");
+        // #313: for an arity-0 if/else the result-reconciliation is a no-op —
+        // `if_then_results` is empty at `End`, so NOTHING is emitted between the
+        // last else-arm instruction and the `if_end` label (the buggy and fixed
+        // selectors are byte-identical here; this is the property the frozen
+        // fixtures depend on). The instruction immediately preceding `if_end` is
+        // therefore the else-arm's own `local.set` store/mov, never a #313 MOV.
+        // We assert the closing structure is `… ; if_end: ; (LocalGet 1 read)`
+        // with no reconciliation slipped in: the only thing after the `else`
+        // label region tied to the merge is the label itself.
+        //
+        // Concretely: there must be exactly one then-arm body MOV (const 7 ->
+        // local) before the else label and one else-arm body MOV (const 9 ->
+        // local) after it, and the two destinations are the SAME register (both
+        // write local 1) — i.e. the arms reconcile themselves through the local,
+        // and `End` adds nothing.
+        let else_pos = instrs
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Label { name } if name.contains("else")))
+            .expect("else label present");
+        let dest_of_setlocal = |slice: &[ArmInstruction]| -> Option<Reg> {
+            slice.iter().rev().find_map(|i| match &i.op {
+                ArmOp::Mov {
+                    rd,
+                    op2: Operand2::Reg(_),
+                } => Some(*rd),
+                _ => None,
+            })
+        };
+        let then_local = dest_of_setlocal(&instrs[..else_pos]);
+        let else_local = dest_of_setlocal(&instrs[else_pos + 1..end_pos]);
+        assert!(
+            then_local.is_some() && then_local == else_local,
+            "both arms write the same local register; End adds no reconciliation \
+             (then={then_local:?} else={else_local:?})"
+        );
     }
 
     /// End-to-end fail-then-retry contract (the backend's wrapper): the
