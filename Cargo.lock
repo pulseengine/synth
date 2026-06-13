@@ -2037,7 +2037,7 @@ dependencies = [
  "wasm-encoder 0.219.2",
  "wasmparser 0.219.2",
  "wit-component 0.219.2",
- "wit-parser 0.219.2",
+ "wit-parser 0.244.0",
 ]
 
 [[package]]
