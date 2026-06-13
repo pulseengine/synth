@@ -407,6 +407,45 @@ artifacts:
         miscompile; the three frozen differentials (control_step 0x00210A55 /
         flight_seam 0x07FDF307 / div_const 338/338) remain RESULT-identical.
 
+  - id: VCR-SEL-004
+    type: sw-req
+    title: Compare→select/br_if fusion — drop the bool-materialize+re-test flag round-trip (gale #209)
+    description: >
+      synth lowers each wasm op independently, so an `i32` comparison whose result
+      feeds a `select`/`br_if` is materialized into a GPR bool (ITE + two movCC)
+      and then RE-TESTED (`cmp #0`) to recover a condition the original comparison
+      already set — `cmp <real>; ite; movCC #1/#0; cmp #0; it; movCC` = 7
+      instructions where 3 suffice (`cmp <real>; it CC; movCC` / a predicated
+      branch). gale #209 measured this on `control_step_decide`: 6 re-test sites,
+      ~4 removable insns each ≈ 24 cyc ≈ 29% of the 84-cyc gap to native, and it
+      recurs in every dissolved body with a comparison feeding a select
+      (controller_step/filter_axis clamps, k_sem_give). Fix: a LATE peephole —
+      when an i32 comparison's result is sole-consumed by a select/br_if in the
+      same block with no intervening flag clobber, keep the condition in NZCV and
+      emit the consumer as a single predicated movCC / conditional branch.
+      Detection is local (def = comparison, single use = select/br_if), so it
+      fits the existing SelectMove + reg_effect flag modeling (#279) without a
+      flag-liveness rework. Byte-changing → deliberate fixture re-freeze. The
+      companion finding (21% [sp] spill density on the sem path) is the VCR-RA
+      allocator track, not this item.
+    status: proposed
+    tags: [codegen, selector, peephole, compare-select, flag-fusion, gale-209, perf, track-b]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: traces-to
+        target: VCR-SEL-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        A re-decode of control_step_decide shows NO `cmp <real>; ite; movCC #1/#0;
+        cmp #0; it; movCC` round-trip for a comparison feeding a select (gale's
+        kill-criterion); the three frozen differentials stay RESULT-identical
+        (bytes re-froze, results preserved); gale confirms on-silicon
+        control_step drops toward ~127 cyc (151 − ~24) and k_sem_give materially
+        below 860 on the G474RE; flag-gated until that silicon confirmation.
+
   - id: VCR-RA-002
     type: sw-req
     title: Conditional register pool — free R10 when bounds-checking is off (track C)
