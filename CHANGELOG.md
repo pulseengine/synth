@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.41] - 2026-06-13
+
+**SPILL-SLOT COLLISION BUG-FIX — gale #331: dissolved `k_mutex_unlock`
+silently miscompiled into a silicon deadlock; now fixed.**
+
+- **Spill-slot / param-home collision** (#331): on a function with no i64
+  (`has_i64 == false`), `compute_local_layout` set `i64_spill_base` to the same
+  offset where the `#204 param_slots` are appended, so the i64 spill pool
+  **aliased** the param home slots. `restore_caller_saved`'s call-result park
+  called `spill.alloc()` without the `area_reserved` guard the arg-move-cycle
+  resolver already used, parking `z_unpend_first_thread`'s result onto the live
+  mutex-ptr arg's home slot — the no-waiter `lock_count = 0` store then reloaded
+  the clobbered slot and wrote `linmem[0+12]` instead of `mutex+12`, deadlocking
+  the G474RE (`owner=0, lock_count=1`). Fix: mirror the resolver's
+  `area_reserved` guard at the result-park, so the first pass returns the
+  ladder-recoverable exhaustion `Err` and the backend retry reserves the i64
+  pool — relocating the param home slots above it so the park is non-aliasing
+  and the function compiles **correctly** (not skipped). Verified on gale's exact
+  committed module (`scripts/repro/synth-331/`): kill-criterion satisfied
+  (no-waiter `lock_count` base = mutex pointer), all frozen differentials
+  bit-identical. Regression test `synth_331_call_result_not_parked_on_live_param_home_slot`.
+- **Multi-value-call × select regression lock** (#329/#330): the minimal
+  reproducer + 3 discriminating controls committed as
+  `tests/fixtures/multivalue_call_select/`; the multi-value-return ABI itself is
+  tracked as VCR-SEL-003 (the selector still cleanly *skips* that shape).
+- **VCR-RA-003 validator completeness gate broadened** (#332): the real-codegen
+  zero-validator-rejects gate now spans the full ARM frozen suite (32 functions
+  / 57 segments across 10 fixtures, was 3); the ≤5% decline kill-criterion is
+  now asserted explicitly. Records the v-next "validate slot non-aliasing"
+  extension (the layer #331 lived in).
+
 ## [0.11.40] - 2026-06-11
 
 **THE ALLOCATOR ACCEPTANCE RELEASE — VCR-RA-001's five criteria are all met,

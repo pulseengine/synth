@@ -11,8 +11,8 @@ categories.workspace = true
 description = "RISC-V encoder, ELF builder, PMP allocator, and bare-metal startup for synth"
 
 [dependencies]
-synth-core = { path = "../synth-core", version = "0.11.40" }
-synth-synthesis = { path = "../synth-synthesis", version = "0.11.40" }
+synth-core = { path = "../synth-core", version = "0.11.41" }
+synth-synthesis = { path = "../synth-synthesis", version = "0.11.41" }
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
