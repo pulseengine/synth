@@ -484,6 +484,12 @@ artifacts:
         selector output exceeds ~5% of segments, its completeness is too weak
         and the approach is re-evaluated (CompCert tested relative
         completeness empirically; so will synth).
+        PROGRESS (criteria 1 + 3): the empirical real-codegen completeness gate
+        (realloc_on_repro_fixture_streams_has_zero_validator_rejects) now spans
+        the FULL ARM frozen suite — 32 functions / 57 segments across 10
+        fixtures (was 3) — with 0 validator-attributable declines (0% << the 5%
+        kill-criterion, which is now asserted explicitly, not just the stronger
+        0 pin). v2 (Rocq-mechanized soundness) remains the open step.
 
   - id: VCR-RA-004
     type: sw-req
