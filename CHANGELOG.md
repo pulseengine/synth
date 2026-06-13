@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.42] - 2026-06-14
+
+**IF/ELSE-WITH-RESULT RECONCILIATION BUG-FIX — gale #313: asymmetric arms
+silently miscompiled (then-path returned garbage); now fixed.**
+
+- **if/else-with-result register reconciliation** (#313): `select_with_stack`'s
+  `If`/`Else`/`End` lowering tracked the operand stack textually through both
+  arms with no checkpoint at `If`, no restore at `Else`, and no reconciliation at
+  `End`. For an `if (result …)` with asymmetric arms the two arms' results piled
+  onto the vstack and `End` read the top (the else-arm's register)
+  **unconditionally**, so the then-path — which branches over the else-arm —
+  returned a register it never wrote (silent wrong-code, the #311/#331 class).
+  Fix: checkpoint the vstack depth at `If`; at `Else` capture the then-arm's
+  result registers and reserve them across the else-arm (reproducing the buggy
+  code's incidental on-vstack protection, which is what keeps register-symmetric
+  if/else byte-identical); at `End` reconcile the else-arm's result into the
+  then-arm's register with a `MOV R_then, R_else` on the else path, emitting
+  **nothing** when the arms already agree. No decoder/enum change — the result
+  arity is observable from the vstack depth. A spilled or width-mismatched arm
+  returns the ladder-recoverable exhaustion `Err` (retried/skipped, never
+  miscompiled). Regression fixture `scripts/repro/u64_unpack_if.wat` +
+  differential (`check_call(3,4) = 8`, was 0); the four frozen differentials
+  (control_step 0x00210A55, flight_seam 0x07FDF307, div_const 338/338,
+  mutex_pressure) stay **byte-identical** (none contains an `if`-with-result).
+
+  **Falsification:** this fix is wrong if a re-decode of any `if (result …)` with
+  asymmetric arms still shows `End`/return reading the else-arm's register on the
+  then path, or if `check_call(3,4)` on `u64_unpack_if.wat` returns anything but
+  8 on silicon. (The RISC-V selector has the same gap — tracked as #343, not
+  fixed here.)
+
+- **CI: `std::hint::black_box`** (#344): criterion (bumped to 0.8.2 in #339)
+  deprecated `criterion::black_box`; stable-clippy's `-D warnings` then failed
+  the synth-opt bench on every PR. Imported `black_box` from `std::hint`.
+
 ## [0.11.41] - 2026-06-13
 
 **SPILL-SLOT COLLISION BUG-FIX — gale #331: dissolved `k_mutex_unlock`
