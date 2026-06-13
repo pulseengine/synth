@@ -5428,10 +5428,24 @@ mod tests {
         let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../../scripts/repro");
         let mut total = ReallocStats::default();
         let mut selected_fns = 0usize;
+        // The full ARM frozen/differential suite (one form per program; the
+        // _riscv harnesses and the sp_global/native-pointer-ABI fixtures —
+        // native_pointer_*, mutex_pressure — are out of this selector config's
+        // scope and excluded; the high_pressure_* fixtures intentionally
+        // exhaust the first pass and `continue`-skip here). Broadening from the
+        // original 3 streams turns the "0 validator-rejects" guarantee into a
+        // whole-suite property (VCR-RA-003 criteria 1 + 3 on real codegen).
         for name in [
             "control_step.wasm",
             "div_const.wat",
             "flight_seam_flat.wasm",
+            "flight_seam.wasm",
+            "controller_step.wasm",
+            "filter_axis.wasm",
+            "signed_div_const.wasm",
+            "u64_unpack.wat",
+            "u64_unpack_inlined.wat",
+            "reachable_helper.wasm",
         ] {
             let bytes = std::fs::read(format!("{root}/{name}"))
                 .unwrap_or_else(|e| panic!("read fixture {name}: {e}"));
@@ -5467,9 +5481,33 @@ mod tests {
             "the pass must actually fire on the fixtures (segments={})",
             total.segments
         );
+        println!(
+            "[VCR-RA-003 real-codegen completeness] {selected_fns} fns, \
+             {} segments: {} reallocated, {} declined ({} validator-rejected), \
+             {} need spill",
+            total.segments,
+            total.reallocated,
+            total.declined,
+            total.validator_rejects,
+            total.needs_spill
+        );
+        // Criterion 1: the validator accepted real rewrites (the pass fired).
+        // Criterion 3 (roadmap kill-criterion): validator-attributable declines
+        // must stay below ~5% of segments before the approach is re-evaluated.
+        // Enforce the criterion explicitly AND pin the current stronger truth
+        // (0) — so a regression that merely stays under 5% is still caught.
+        let pct = (total.validator_rejects as f64) / (total.segments as f64) * 100.0;
+        assert!(
+            pct < 5.0,
+            "validator-attributable decline rate {pct:.1}% exceeds the VCR-RA-003 \
+             5% kill-criterion ({} of {} segments) — validator completeness on \
+             real selector output has regressed",
+            total.validator_rejects,
+            total.segments
+        );
         assert_eq!(
             total.validator_rejects, 0,
-            "validator-attributable declines on the fixture streams \
+            "validator-attributable declines on the full ARM frozen suite \
              (criterion: <5% of {} segments; current truth and the pinned \
              value: 0)",
             total.segments
