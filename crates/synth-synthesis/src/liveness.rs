@@ -5347,6 +5347,72 @@ mod tests {
     }
 
     #[test]
+    fn synth_331_call_result_not_parked_on_live_param_home_slot() {
+        // #331: gale's dissolved `k_mutex_unlock` (z_impl) parked a call result
+        // on the live mutex-ptr arg's #204 param HOME slot — because when the
+        // function has no i64 (`has_i64 == false`), `i64_spill_base` aliases the
+        // appended `param_slots`, and `restore_caller_saved`'s `spill.alloc()`
+        // handed out that aliased slot under R4–R8 pressure. The clobbered slot
+        // was then reloaded as the mutex base, so `lock_count = 0` wrote to
+        // `linmem[0+12]` → silicon deadlock. Fix: guard the result-park with
+        // `area_reserved`, so the first pass returns the ladder-recoverable
+        // exhaustion `Err` and the backend retry (spill_on_exhaustion →
+        // force_spill_area) reserves the i64 pool, relocating the param home
+        // slots ABOVE it so the park is non-aliasing and the function compiles
+        // CORRECTLY (not skipped).
+        use crate::instruction_selector::{BoundsCheckConfig, InstructionSelector};
+        use crate::rules::RuleDatabase;
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../scripts/repro/synth-331/k_mutex_unlock.dissolved.wasm"
+        );
+        let bytes = std::fs::read(path).unwrap_or_else(|e| panic!("read #331 fixture: {e}"));
+        let funcs = synth_core::wasm_decoder::decode_wasm_functions(&bytes).expect("decode #331");
+        let f = funcs
+            .iter()
+            .find(|f| f.export_name.as_deref() == Some("z_impl_k_mutex_unlock"))
+            .expect("z_impl_k_mutex_unlock present in fixture");
+        let nparams = fixture_count_params(&f.ops);
+        let mk = || {
+            let db = RuleDatabase::with_standard_rules();
+            let mut s = InstructionSelector::with_bounds_check(
+                db.rules().to_vec(),
+                BoundsCheckConfig::None,
+            );
+            s.set_relocatable(true);
+            s.set_native_pointer_abi(true, 0x10000);
+            s
+        };
+        // The load-bearing unit invariant: on the default (first) pass the #331
+        // result-park can no longer obtain a non-aliasing slot without a reserved
+        // spill area, so it returns the ladder-recoverable exhaustion `Err`
+        // ("all allocatable registers are live on the stack") instead of
+        // SILENTLY clobbering arg0's home slot. This is what flips the bug from a
+        // silent miscompile to a fail-loud, retry-recoverable condition.
+        //
+        // Pre-fix this same call returned `Ok` (compiled, with the aliasing
+        // miscompile); post-fix it must `Err` — that is the regression lock.
+        // (End-to-end CORRECTNESS of the retry — param slots relocated above the
+        // reserved i64 pool, the no-waiter `lock_count` store deriving its base
+        // from the mutex pointer — is verified at the backend/CLI level on this
+        // exact committed module: `--target cortex-m4f --native-pointer-abi
+        // --relocatable` produces a 886 B body with no `str <call-result>` on the
+        // mutex home slot; that path needs the full backend config
+        // (func_arg_counts / native_pointer_stack / num_imports) this unit
+        // harness deliberately does not replicate.)
+        let first = mk().select_with_stack(&f.ops, nparams);
+        assert!(
+            first
+                .as_ref()
+                .err()
+                .map(|e| e.to_string().contains("all allocatable registers are live on the stack"))
+                .unwrap_or(false),
+            "first pass must hit the #331 area-reserved guard (ladder-recoverable Err); got {:?}",
+            first.as_ref().map(|i| i.len())
+        );
+    }
+
+    #[test]
     fn realloc_on_repro_fixture_streams_has_zero_validator_rejects() {
         // VCR-RA-003 criteria 1 + 3 on REAL selector output: run the wired
         // pass over every function of the three frozen repro fixtures.

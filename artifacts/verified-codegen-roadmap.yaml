@@ -484,6 +484,15 @@ artifacts:
         selector output exceeds ~5% of segments, its completeness is too weak
         and the approach is re-evaluated (CompCert tested relative
         completeness empirically; so will synth).
+        V-NEXT (from gale #331): extend the validator to the SPILL-SLOT /
+        frame-allocation layer — it currently validates register rewrites in
+        straight-line segments only, NOT frame-slot non-aliasing. #331 was a
+        param-home vs spill-pool slot collision (`i64_spill_base` aliases the
+        #204 `param_slots` when `has_i64 == false`); a "validate slot
+        non-aliasing" invariant would have caught it mechanically. Fixed for now
+        by an `area_reserved` guard on the call-result park (ladder-recoverable
+        Err → retry reserves the area), but the validator does not yet cover this
+        class.
 
   - id: VCR-RA-004
     type: sw-req
