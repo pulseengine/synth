@@ -516,3 +516,51 @@ artifacts:
       pass-criteria: >
         Linked dissolved seam runs with no runtime and matches the native
         reference behavior; no MPU fault from mis-addressed statics or stack.
+
+  - id: GI-NPA-004
+    type: sw-req
+    title: Per-region .bss/.data split for high-offset init segments (#354)
+    description: >
+      The #345 zero-init split is binary: `split_linmem_bss =
+      native_layout.is_some() && data_segments.is_empty()` (synth-cli
+      build_relocatable_elf). When ANY initialized `(data)` segment is
+      present the whole `[0, used_extent)` linmem image is emitted as one
+      PROGBITS `.data`. gale #354: a dissolved stack_push seam carries a
+      12-byte `.rodata` const (`0xfffffff4` = -12/-ENOMEM) at linmem offset
+      65536 — above the 64 KiB shadow stack — so the entire zero stack-gap
+      ships as 65552 bytes of PROGBITS `.data` (MCU-unshippable; the mutex
+      seam, with no init segment, is `.data=4`/`.bss=65536`). synth shall
+      split the linmem image PER REGION: each initialized byte-range as a
+      small PROGBITS section and the surrounding zero runs as SHT_NOBITS
+      `.bss`, so `.data` is bounded to the initialized bytes. Because a
+      single `__synth_wasm_data` base symbol + selector-baked addends cannot
+      span independently-placed sections (the link-fragility deferred in the
+      #345 code comment), the split shall use PER-REGION SYMBOLS: the zero
+      reservation keeps `__synth_wasm_data` (.bss); each init segment gets
+      its own PROGBITS section + symbol; the selector relocates each static
+      access against the symbol of the region the offset falls in. Sound
+      only if init-data accesses are statically separable from the zero
+      region (the rodata const is reached only by a static address, never by
+      a dynamic pointer that also walks the shadow stack) — to be confirmed
+      against gale's stack_push.loom.wasm before implementation.
+    status: proposed
+    tags: [gale, native-pointer-abi, bss, elf, mcu-shippability, release-v0.11.45]
+    links:
+      - type: derives-from
+        target: GI-NPA-001
+      - type: traces-to
+        target: gale:354
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        scripts/repro/high_offset_init_segment_354.wat (SP global init
+        65536 + 12-byte init segment at 65536 + a static load at addr
+        65544) compiled with --native-pointer-abi --relocatable
+        --all-exports yields `.data` bounded to the initialized bytes (~12 B)
+        with the zero stack-gap as SHT_NOBITS `.bss` (matching the mutex
+        shape); mutex_unlock stays `.data=4`/`.bss=65536`; the four frozen
+        differentials (control_step 0x00210A55, flight_seam 0x07FDF307,
+        div_const 338/338, mutex_pressure) stay byte-identical; gale's
+        stack_push runs correctly on G474RE (loads the -12 const, walks the
+        shadow stack) under the differential oracle.
