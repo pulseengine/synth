@@ -548,8 +548,12 @@ artifacts:
       #356 (v0.11.45): per-region symbols (__synth_wasm_seg_K) + in-place REL
       addend retargeting in build_relocatable_elf; selector untouched. On-target
       confirmation (stack/msgq .data bounded + stack_pop shim+silicon) is gale's
-      gate, run when v0.11.45 tags.
-    status: implemented
+      gate, run when v0.11.45 tags. VERIFIED on v0.11.45 (gale, 2026-06-14):
+      gale_k_msgq_put/get_decide .data 65556 -> 20 B; z_impl_k_stack_push
+      65552 -> 16 B; both dual-gates GREEN; sem .o byte-identical (540 B); no
+      regression. stack + msgq now ship as wasm-cross-LTO MCU modules — the
+      last of the #331 -> #345 -> #350 -> #354 on-target arc cleared.
+    status: verified
     tags: [gale, native-pointer-abi, bss, elf, mcu-shippability, release-v0.11.45]
     links:
       - type: derives-from
