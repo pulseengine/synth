@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.43] - 2026-06-14
+
+**ON-TARGET SHIPPABILITY — gale #345: dissolved `--relocatable` objects are now
+MCU-shippable and link-survivable (both fix steps bundled).**
+
+- **#345 step 1 — zero-init wasm linmem → `.bss`** (#347): a dissolved
+  `--relocatable --native-pointer-abi` object emitted the entire wasm
+  linear-memory reservation as a SHT_PROGBITS `.data` section — ~64 KB of
+  mostly-zero bytes, a non-starter on a 128 KB-RAM MCU. Now the zero-init
+  reservation rides a SHT_NOBITS `.bss` (zero file bytes; the host loader zeroes
+  it, preserving wasm zero-init semantics), with only the materialized
+  `__synth_globals` slots in a tiny PROGBITS `.data`. Initialized `(data)`
+  segments stay PROGBITS. Measured on the dissolved `k_mutex_unlock`: `.data`
+  **65548 → 4 bytes**.
+- **#345 step 2 — link-survivable linmem addressing** (#348): the
+  `__synth_wasm_data`/`__synth_globals` addresses were loaded with inline-immediate
+  `MOVW`/`MOVT-ABS` (`R_ARM_MOVW_ABS_NC`/`MOVT_ABS`), whose instruction-immediate
+  form gets mangled into an undefined instruction when linked into a large Zephyr
+  image (G474RE USAGE FAULT). Replaced with a **literal-pool load** — `LDR rX,
+  [pc, #off]` from a `.text` word carrying `R_ARM_ABS32` (which `ld`/bfd patches
+  in a data word and survives a large multi-object link). Mutex object: **22
+  inline `MOVW/MOVT-ABS` → 0; 11 link-survivable `R_ARM_ABS32`**. (A new
+  `LdrSym` literal-pool op, wired through the encoder + reg_effect; a defensive
+  `func_base % 4 == 0` assert makes the imm12 alignment coupling explicit.)
+  Together these unblock the 51 struct-return decide drop-ins + jess PR #60.
+  The four frozen differentials (control_step 0x00210A55, flight_seam
+  0x07FDF307, div_const 338/338, mutex_pressure) stay **byte-identical** (the
+  whole change is gated on `--native-pointer-abi`).
+
+  **Falsification:** wrong if a dissolved `--native-pointer-abi --relocatable`
+  object still carries a 64 KB PROGBITS `.data` or any inline
+  `R_ARM_MOVW_ABS_NC`/`MOVT_ABS` against `__synth_wasm_data`; or if gale's
+  G474RE `mutex_api` (`CONFIG_GALE_WASM_LTO_MUTEX=y`) still links to a USAGE
+  FAULT. (Reloc-shape + value-differential verified in-tree; gale's silicon
+  link-test is the final gate.)
+
 ## [0.11.42] - 2026-06-14
 
 **IF/ELSE-WITH-RESULT RECONCILIATION BUG-FIX — gale #313: asymmetric arms
