@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.44] - 2026-06-14
+
+**ENCODER ROBUSTNESS — gale #350: out-of-range `ADD #imm` now lowers instead of
+failing the whole function (and the lowering is panic-free under fuzz).**
+
+- **#350 — lower out-of-range `ADD #imm` to `MOVW(/MOVT)+ADD-reg`** (#351):
+  `encode_thumb32_add_imm` returned `Err("ADD immediate too large for single
+  instruction")` for any `imm > 0xFFF`, so a function using the indexed-address
+  path `ADD ip, base, #off` with `off > 0xFFF` (e.g. `i32.store offset=70000`,
+  as in gale's struct-return `gale_k_stack_push_decide`) failed to compile —
+  emitting an empty object. The encoder now materializes the immediate into a
+  scratch register (`MOVW ip,#lo16; MOVT ip,#hi16; ADD.W rd, rn, ip`, MOVT
+  skipped when `imm ≤ 0xFFFF`), picking the scratch so it never aliases `Rn`
+  (`rd` when `rd != rn`, else `R12`). Size-probe-consistent: the byte length
+  depends only on `imm` and `rd==rn`, so the twice-encoded function agrees. The
+  `#180`/`#185` "encoder produces a legal sequence, never asserts" class.
+- **#350 follow-up — `rd==rn==R12` returns `Err`, not a panic** (#352): the
+  lowering's in-place scratch is `R12`, which the `encoder_no_panic` fuzz harness
+  can alias by feeding `Add{rd=R12, rn=R12, imm>0xFFF}` (arbitrary registers).
+  An interim `debug_assert!` documenting "scratch ≠ Rn" therefore *panicked* under
+  the fuzz's debug-assertions profile, breaking the Ok-or-Err contract. Replaced
+  with a real `return Err` — the only register configuration the lowering cannot
+  serve (no free scratch). Real codegen never emits `rd==rn==R12` (R12 is
+  non-allocatable), so this is a **no-op for emitted code**: the #350 repro
+  compiles to the same SHA256 with and without the guard. Fuzz: 2.46M execs,
+  no panic.
+
+  **Falsification:** wrong if `synth compile` of a wasm function with a
+  `≥0x1000`-byte static offset (`scripts/repro/add_imm_large.wat`) emits an empty
+  object or an address-truncated store (`add_imm_large_differential.py` would
+  drop below 8/8 vs wasmtime); or if `cargo +nightly fuzz run encoder_no_panic`
+  panics on any input. The four frozen behavior differentials (control_step
+  0x00210A55, flight_seam 0x07FDF307, div_const 338/338, mutex_pressure) stay
+  **byte-identical** — the change only adds a previously-erroring lowering path
+  and an adversarial-only `Err` guard.
+
 ## [0.11.43] - 2026-06-14
 
 **ON-TARGET SHIPPABILITY — gale #345: dissolved `--relocatable` objects are now
