@@ -2309,13 +2309,14 @@ fn build_relocatable_elf(
         all_code.extend_from_slice(&func.code);
     }
 
-    let text_section = Section::new(".text", ElfSectionType::ProgBits)
-        .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
-        .with_addr(0) // Relocatable: addresses start at 0
-        .with_align(4)
-        .with_data(all_code);
-
-    elf_builder.add_section(text_section);
+    // #354: the `.text` section is built + added LATER (just before the
+    // `.bss`/`.data` sections, so it stays section index 4). The per-region
+    // split (below) may need to rewrite in-place `R_ARM_ABS32` literal-pool
+    // addend words inside `all_code` first — those are REL (the linker computes
+    // `S + A` with `A` stored in the data word), so retargeting a static-data
+    // reloc from `__synth_wasm_data + C` to `__synth_wasm_seg_K + (C - seg_off)`
+    // must patch the word before `.text` is frozen. `all_code` is kept mutable
+    // until then.
 
     // #237: if any function addresses a wasm static via `__synth_wasm_data`
     // (the --native-pointer-abi path), emit the whole wasm linear memory as one
@@ -2426,8 +2427,141 @@ fn build_relocatable_elf(
     // emission, the two symbol defs, and the `.meld_import_table` index off one
     // `split_linmem_bss` flag so they cannot diverge.
     let split_linmem_bss = native_layout.is_some() && data_segments.is_empty();
+
+    // #354: per-region split for the MIXED case (native-pointer ABI WITH an
+    // initialized `(data)` segment). The #345 split only handled the all-zero
+    // case; any init segment fell to the one-PROGBITS arm, so a small `.rodata`
+    // const at a HIGH linmem offset (gale's stack_push: a 12-byte -ENOMEM const
+    // at 65536, above the 64 KiB shadow stack) dragged the whole zero gap into a
+    // 65552-byte PROGBITS `.data` (MCU-unshippable). Split per region instead:
+    // the zero reservation is `.bss` (NOBITS, `__synth_wasm_data`); each init
+    // segment is packed into a small PROGBITS `.data` under its own
+    // `__synth_wasm_seg_K` symbol; and every `__synth_wasm_data + C` static-data
+    // reloc whose addend C lands in segment K is retargeted to
+    // `__synth_wasm_seg_K + (C - seg_off_K)` (symbol + in-place REL addend word).
+    //
+    // SAFE-BY-CONSTRUCTION GATE: fire only when every init segment sits in the
+    // static-data region (offset >= wasm_data_base = the SP-global init, the
+    // same boundary the selector uses to classify addresses >= base as static
+    // relocs vs `<` as frame offsets) AND every `__synth_wasm_data` reloc is the
+    // retargetable literal-pool `Abs32` form (the live form post-#345-step-2).
+    // The shadow stack is reached only via the SP register value (dynamic, never
+    // a static reloc with an addend in that range), so per-region symbols cannot
+    // mis-address anything the selector doesn't already assume separable. If the
+    // gate fails, fall back to the one-PROGBITS arm (fat but always correct).
+    let wasm_data_base: u32 = native_layout
+        .as_ref()
+        .map(|ng| ng.sp_init.max(0) as u32)
+        .unwrap_or(0);
+    let all_static_data_abs32 = funcs.iter().flat_map(|f| &f.relocations).all(|r| {
+        r.symbol != "__synth_wasm_data" || matches!(r.kind, synth_core::backend::RelocKind::Abs32)
+    });
+    let mixed_separable = native_layout.is_some()
+        && !data_segments.is_empty()
+        && all_static_data_abs32
+        && data_segments.iter().all(|(off, _)| *off >= wasm_data_base);
+    // Packed layout of the init segments inside the mixed-case `.data`: each
+    // segment 4-aligned in declaration order (i32 loads stay aligned — seg_off
+    // is 4-aligned in wasm and the packed start is 4-aligned), then the globals
+    // slots. (packed_off per segment, globals packed offset, total .data size).
+    let mixed_layout: Option<(Vec<u32>, u32, u32)> = if mixed_separable {
+        let mut packed = Vec::with_capacity(data_segments.len());
+        let mut cur = 0u32;
+        for (_off, d) in data_segments {
+            cur = cur.next_multiple_of(4);
+            packed.push(cur);
+            cur += d.len() as u32;
+        }
+        let globals_off = cur.next_multiple_of(4);
+        Some((packed, globals_off, globals_off + globals_bytes))
+    } else {
+        None
+    };
+    let do_mixed_split = mixed_layout.is_some();
+    if native_layout.is_some() && !data_segments.is_empty() && !do_mixed_split {
+        info!(
+            "Native-pointer linmem: init (data) segment not separable (below base \
+             {wasm_data_base} or non-Abs32 static reloc); keeping one PROGBITS \
+             .data (correct, not per-region split) — #354 fallback"
+        );
+    }
+
+    // #354: retarget map + in-place REL addend patch for the mixed case. Keyed
+    // by (func index, reloc offset) -> (new symbol, new addend). The addend C is
+    // read from the in-place `.text` literal word (Abs32 is REL — `S + A`).
+    let mut retarget: HashMap<(usize, u32), (String, i32)> = HashMap::new();
+    if do_mixed_split {
+        for (i, func) in funcs.iter().enumerate() {
+            for reloc in &func.relocations {
+                if reloc.symbol != "__synth_wasm_data"
+                    || !matches!(reloc.kind, synth_core::backend::RelocKind::Abs32)
+                {
+                    continue;
+                }
+                let pos = (func_offsets[i] + reloc.offset) as usize;
+                if pos + 4 > all_code.len() {
+                    continue;
+                }
+                let c = u32::from_le_bytes([
+                    all_code[pos],
+                    all_code[pos + 1],
+                    all_code[pos + 2],
+                    all_code[pos + 3],
+                ]);
+                if let Some(k) = data_segments
+                    .iter()
+                    .position(|(off, d)| c >= *off && c < *off + d.len() as u32)
+                {
+                    let new_addend = (c - data_segments[k].0) as i32;
+                    retarget.insert(
+                        (i, reloc.offset),
+                        (format!("__synth_wasm_seg_{k}"), new_addend),
+                    );
+                    all_code[pos..pos + 4].copy_from_slice(&new_addend.to_le_bytes());
+                }
+            }
+        }
+    }
+
+    // #354/#345: build + add `.text` (section index 4) now — after any in-place
+    // addend patch and before the `.bss`/`.data` sections, so `.text` keeps its
+    // index and the patched literal words are what ship.
+    let text_section = Section::new(".text", ElfSectionType::ProgBits)
+        .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
+        .with_addr(0)
+        .with_align(4)
+        .with_data(all_code);
+    elf_builder.add_section(text_section);
+
     if emit_wasm_data {
-        if split_linmem_bss {
+        if do_mixed_split {
+            // #354: zero reservation -> NOBITS `.bss` (section 5),
+            // `__synth_wasm_data` = 0; init segments packed into a small PROGBITS
+            // `.data` (section 6), each under its own `__synth_wasm_seg_K`.
+            let (packed, globals_off, data_size) = mixed_layout.as_ref().unwrap();
+            let bss = Section::new(".bss", ElfSectionType::NoBits)
+                .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+                .with_addr(0)
+                .with_align(4)
+                .with_size(used_extent);
+            elf_builder.add_section(bss);
+            let mut blob = vec![0u8; *data_size as usize];
+            for ((_off, d), &poff) in data_segments.iter().zip(packed.iter()) {
+                blob[poff as usize..poff as usize + d.len()].copy_from_slice(d);
+            }
+            if let Some(ng) = &native_layout {
+                for (idx, init) in &ng.globals {
+                    let at = (*globals_off + idx * 4) as usize;
+                    blob[at..at + 4].copy_from_slice(&init.to_le_bytes());
+                }
+            }
+            let data = Section::new(".data", ElfSectionType::ProgBits)
+                .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+                .with_addr(0)
+                .with_align(4)
+                .with_data(blob);
+            elf_builder.add_section(data);
+        } else if split_linmem_bss {
             // #345: zero-init linmem reservation → NOBITS `.bss` (section 5).
             let bss = Section::new(".bss", ElfSectionType::NoBits)
                 .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
@@ -2550,12 +2684,31 @@ fn build_relocatable_elf(
         elf_builder.add_symbol(data_sym);
         sym_count += 1;
         sym_indices.insert("__synth_wasm_data".to_string(), sym_count);
-        // #237/#345: the globals slot region. In the non-split (PROGBITS) case
-        // it sits right after the used extent inside section 5. In the #345
-        // split case the slots live in their own PROGBITS `.data` (section 6),
-        // at value 0.
+        // #354: per-region segment symbols. In the mixed split each init
+        // segment is packed into the `.data` section (index 6) at its packed
+        // offset; `__synth_wasm_seg_K` is its base, and the retargeted static
+        // relocs resolve against it (+ the rewritten in-place addend).
+        if let Some((packed, _goff, _sz)) = &mixed_layout {
+            for (k, &poff) in packed.iter().enumerate() {
+                let seg_sym = Symbol::new(&format!("__synth_wasm_seg_{k}"))
+                    .with_value(poff)
+                    .with_binding(SymbolBinding::Global)
+                    .with_type(SymbolType::Object)
+                    .with_section(6);
+                elf_builder.add_symbol(seg_sym);
+                sym_count += 1;
+                sym_indices.insert(format!("__synth_wasm_seg_{k}"), sym_count);
+            }
+        }
+        // #237/#345/#354: the globals slot region. In the non-split (PROGBITS)
+        // case it sits right after the used extent inside section 5. In the #345
+        // all-zero split and the #354 mixed split the slots live in the PROGBITS
+        // `.data` (section 6) — at value 0 (#345) or after the packed segments
+        // (#354).
         if native_layout.is_some() {
-            let (gv, gsec) = if split_linmem_bss {
+            let (gv, gsec) = if let Some((_packed, goff, _sz)) = &mixed_layout {
+                (*goff, 6)
+            } else if split_linmem_bss {
                 (0, 6)
             } else {
                 (used_extent, 5)
@@ -2613,7 +2766,14 @@ fn build_relocatable_elf(
     for (i, func) in funcs.iter().enumerate() {
         let func_base = func_offsets[i];
         for reloc in &func.relocations {
-            let sym_idx = sym_indices[&reloc.symbol];
+            // #354: a static-data reloc retargeted to a per-region segment
+            // symbol resolves against that symbol; all others against their
+            // original symbol.
+            let sym_name = retarget
+                .get(&(i, reloc.offset))
+                .map(|(s, _)| s.as_str())
+                .unwrap_or(reloc.symbol.as_str());
+            let sym_idx = sym_indices[sym_name];
             // #237: map the relocation kind. BL calls → R_ARM_THM_CALL; the
             // symbol-relative static-data MOVW/MOVT → R_ARM_MOVW_ABS_NC/MOVT_ABS.
             let reloc_type = match reloc.kind {
@@ -4001,6 +4161,134 @@ mod tests {
         assert_eq!(
             movw_movt, 0,
             "#345: NO inline MOVW/MOVT-ABS relocs may remain on the native-pointer path"
+        );
+    }
+
+    /// #354: a native-pointer module with an initialized `(data)` segment at a
+    /// HIGH linmem offset (above the shadow stack) must NOT ship the whole
+    /// `[0, used_extent)` image as one PROGBITS `.data` (65552 bytes for gale's
+    /// stack_push). It splits per region: the zero reservation is NOBITS `.bss`
+    /// (`__synth_wasm_data`), the init segment is packed into a tiny PROGBITS
+    /// `.data` under `__synth_wasm_seg_0`, and the static-data reloc is
+    /// retargeted (`__synth_wasm_data + C` -> `__synth_wasm_seg_0 + (C-seg_off)`,
+    /// symbol AND in-place REL addend word).
+    #[test]
+    fn mixed_high_offset_segment_splits_per_region_354() {
+        use object::Endianness;
+        use object::read::elf::{FileHeader, SectionHeader};
+
+        // The const is accessed by a literal-pool Abs32 load whose in-place word
+        // is the absolute linmem offset C = 65544 (8 bytes into a segment based
+        // at 65536 — gale's `\f4\ff\ff\ff` = -12/-ENOMEM at offset+8).
+        const C: u32 = 65_544;
+        const SEG_OFF: u32 = 65_536;
+        let mut code = vec![0u8; 4];
+        code[0..4].copy_from_slice(&C.to_le_bytes());
+        let func = ElfFunction {
+            name: "stack_push_decide".to_string(),
+            wasm_index: 0,
+            code,
+            relocations: vec![synth_core::backend::CodeRelocation {
+                offset: 0,
+                symbol: "__synth_wasm_data".to_string(),
+                kind: synth_core::backend::RelocKind::Abs32,
+            }],
+        };
+        // 12-byte init segment at the high offset, above the shadow stack.
+        let seg: Vec<u8> = vec![0, 0, 0, 0, 0, 0, 0, 0, 0xf4, 0xff, 0xff, 0xff];
+        let data_segments = vec![(SEG_OFF, seg)];
+        let native = NativeGlobalsLayout {
+            globals: vec![(0, 65_536)],
+            sp_init: 65_536,
+        };
+
+        let elf = build_relocatable_elf(&[func], &[], &data_segments, 131_072, Some(native))
+            .expect("#354: mixed-case object builds");
+
+        let header = object::elf::FileHeader32::<Endianness>::parse(&*elf).expect("valid ELF32");
+        let endian = header.endian().expect("endian");
+        let sections = header.sections(endian, &*elf).expect("sections");
+
+        let mut bss_size: Option<u64> = None;
+        let mut bss_is_nobits = false;
+        let mut data_size: Option<u64> = None;
+        let mut text_data: Vec<u8> = Vec::new();
+        for section in sections.iter() {
+            let name = sections
+                .section_name(endian, section)
+                .map(|n| String::from_utf8_lossy(n).into_owned())
+                .unwrap_or_default();
+            match name.as_str() {
+                ".bss" => {
+                    bss_is_nobits = section.sh_type(endian) == object::elf::SHT_NOBITS;
+                    bss_size = Some(section.sh_size(endian).into());
+                }
+                ".data" => data_size = Some(section.sh_size(endian).into()),
+                ".text" => {
+                    text_data = section.data(endian, &*elf).unwrap_or_default().to_vec();
+                }
+                _ => {}
+            }
+        }
+
+        // The zero reservation is a NOBITS .bss spanning the used extent.
+        let bss = bss_size.expect("#354: a .bss reservation must be present");
+        assert!(
+            bss_is_nobits,
+            "#354: the zero reservation must be SHT_NOBITS"
+        );
+        assert!(
+            bss >= 65_536,
+            "#354: .bss spans the zero gap (got {bss} bytes)"
+        );
+        // The PROGBITS .data is bounded to the packed segment + globals, NOT the
+        // 64 KiB image.
+        let data = data_size.expect("#354: a small PROGBITS .data must be present");
+        assert!(
+            data < 256,
+            "#354: .data is bounded to the init bytes, not the 64 KiB image (got {data} bytes)"
+        );
+
+        // The static-data reloc is retargeted to __synth_wasm_seg_0 — verified
+        // via the stable high-level API (avoids the low-level Sym trait, which is
+        // ambiguous with two `object` versions in the tree).
+        {
+            use object::{Object, ObjectSection, ObjectSymbol};
+            let file = object::File::parse(&*elf).expect("#354: parse ELF");
+            assert!(
+                file.symbols().any(|s| s.name() == Ok("__synth_wasm_seg_0")),
+                "#354: __synth_wasm_seg_0 symbol must be defined"
+            );
+            let mut retargeted = false;
+            for section in file.sections() {
+                for (_off, rel) in section.relocations() {
+                    if let object::RelocationTarget::Symbol(idx) = rel.target()
+                        && file
+                            .symbol_by_index(idx)
+                            .ok()
+                            .and_then(|s| s.name().ok().map(|n| n == "__synth_wasm_seg_0"))
+                            .unwrap_or(false)
+                    {
+                        retargeted = true;
+                    }
+                }
+            }
+            assert!(
+                retargeted,
+                "#354: the static-data reloc must retarget to __synth_wasm_seg_0"
+            );
+        }
+
+        // The in-place REL addend word in .text was rewritten C -> C - seg_off.
+        assert!(
+            text_data.len() >= 4,
+            "#354: .text must hold the pooled word"
+        );
+        let patched = u32::from_le_bytes([text_data[0], text_data[1], text_data[2], text_data[3]]);
+        assert_eq!(
+            patched,
+            C - SEG_OFF,
+            "#354: in-place addend rewritten to C-seg_off (8); link computes seg0_base+8 = the const"
         );
     }
 
