@@ -1562,9 +1562,17 @@ impl InstructionSelector {
         }
     }
 
-    /// #237: emit a `symbol + addend` absolute address into `rd` (MOVW+MOVT,
-    /// symbol-relocated) — base-independent addressing for any linker-placed
-    /// region (`__synth_wasm_data` statics, `__synth_globals` slots).
+    /// #237/#345: emit a `symbol + addend` absolute address into `rd` —
+    /// base-independent addressing for any linker-placed region
+    /// (`__synth_wasm_data` statics, `__synth_globals` slots).
+    ///
+    /// #345: this now emits a single link-survivable literal-pool load
+    /// (`LdrSym` → `LDR rd,[pc,#off]` + a pooled word with R_ARM_ABS32) instead
+    /// of the inline-immediate `MovwSym`+`MovtSym` pair. The inline `MOVW_ABS`
+    /// immediate could be mangled into an undefined instruction when linked into
+    /// a large Zephyr image (USAGE FAULT on G474RE); an `R_ARM_ABS32` on a data
+    /// word is what `ld`/bfd patches at link time and survives a big multi-object
+    /// link. The `MovwSym`/`MovtSym` ops remain available for other paths.
     fn emit_sym_addr(
         out: &mut Vec<ArmInstruction>,
         rd: Reg,
@@ -1572,49 +1580,21 @@ impl InstructionSelector {
         addend: i32,
         line: usize,
     ) {
-        for hi in [false, true] {
-            let op = if hi {
-                ArmOp::MovtSym {
-                    rd,
-                    symbol: symbol.to_string(),
-                    addend,
-                }
-            } else {
-                ArmOp::MovwSym {
-                    rd,
-                    symbol: symbol.to_string(),
-                    addend,
-                }
-            };
-            out.push(ArmInstruction {
-                op,
-                source_line: Some(line),
-            });
-        }
+        out.push(ArmInstruction {
+            op: ArmOp::LdrSym {
+                rd,
+                symbol: symbol.to_string(),
+                addend,
+            },
+            source_line: Some(line),
+        });
     }
 
-    /// #237: emit a `__synth_wasm_data + addend` address into `rd` (MOVW+MOVT,
-    /// symbol-relocated) — the base-independent static-data address.
+    /// #237/#345: emit a `__synth_wasm_data + addend` address into `rd` — the
+    /// base-independent static-data address, via the link-survivable literal-pool
+    /// load (see [`Self::emit_sym_addr`] for the #345 rationale).
     fn emit_wasm_data_addr(out: &mut Vec<ArmInstruction>, rd: Reg, addend: i32, line: usize) {
-        for hi in [false, true] {
-            let op = if hi {
-                ArmOp::MovtSym {
-                    rd,
-                    symbol: "__synth_wasm_data".to_string(),
-                    addend,
-                }
-            } else {
-                ArmOp::MovwSym {
-                    rd,
-                    symbol: "__synth_wasm_data".to_string(),
-                    addend,
-                }
-            };
-            out.push(ArmInstruction {
-                op,
-                source_line: Some(line),
-            });
-        }
+        Self::emit_sym_addr(out, rd, "__synth_wasm_data", addend, line);
     }
 
     /// Set the per-function AAPCS argument-count table (issue #195).
@@ -16904,10 +16884,12 @@ mod tests {
             WasmOp::GlobalSet(0),
         ];
         let instrs = sel.select_with_stack(&ops, 0).unwrap();
+        // #345: addresses now load via the link-survivable literal pool (LdrSym),
+        // not the inline MovwSym/MovtSym pair.
         let globals_syms = instrs
             .iter()
             .filter(
-                |i| matches!(&i.op, ArmOp::MovwSym { symbol, .. } if symbol == "__synth_globals"),
+                |i| matches!(&i.op, ArmOp::LdrSym { symbol, .. } if symbol == "__synth_globals"),
             )
             .count();
         assert_eq!(
@@ -16917,10 +16899,19 @@ mod tests {
         let base_syms = instrs
             .iter()
             .filter(
-                |i| matches!(&i.op, ArmOp::MovwSym { symbol, .. } if symbol == "__synth_wasm_data"),
+                |i| matches!(&i.op, ArmOp::LdrSym { symbol, .. } if symbol == "__synth_wasm_data"),
             )
             .count();
         assert_eq!(base_syms, 2, "rebase on read (add) and on write (sub)");
+        // #345: NO inline absolute MOVW/MOVT against these symbols remain.
+        assert!(
+            !instrs.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::MovwSym { symbol, .. } | ArmOp::MovtSym { symbol, .. }
+                    if symbol == "__synth_globals" || symbol == "__synth_wasm_data"
+            )),
+            "no inline MOVW/MOVT-ABS against linmem symbols (#345)"
+        );
         assert!(
             instrs.iter().any(|i| matches!(&i.op, ArmOp::Ldr { .. })),
             "the get LOADS the slot (not a constant)"
@@ -16956,8 +16947,10 @@ mod tests {
             },
             WasmOp::End,
         ];
+        // #345: the address now loads via a link-survivable literal pool (LdrSym),
+        // not the inline MovwSym/MovtSym pair.
         let is_data_sym = |i: &ArmInstruction| {
-            matches!(&i.op, ArmOp::MovwSym { symbol, .. } | ArmOp::MovtSym { symbol, .. }
+            matches!(&i.op, ArmOp::LdrSym { symbol, .. }
                 if symbol == "__synth_wasm_data")
         };
 
@@ -16967,8 +16960,8 @@ mod tests {
         sel.set_native_pointer_abi(true, 65536);
         let on = sel.select_with_stack(&ops, 0).unwrap();
         assert!(
-            on.iter().filter(|i| is_data_sym(i)).count() >= 2,
-            "static store must emit MovwSym+MovtSym __synth_wasm_data. got: {on:#?}"
+            on.iter().filter(|i| is_data_sym(i)).count() >= 1,
+            "static store must emit LdrSym __synth_wasm_data. got: {on:#?}"
         );
 
         // Flag OFF → base-relative, no symbol relocation (frozen behavior).
@@ -17017,18 +17010,28 @@ mod tests {
         sel.set_native_pointer_stack(0, 65536);
         let out = sel.select_with_stack(&ops, 1).unwrap();
 
+        // #345: each materialization is now a single literal-pool load (LdrSym),
+        // not a MovwSym+MovtSym pair.
         let data_syms = out
             .iter()
             .filter(|i| {
-                matches!(&i.op, ArmOp::MovwSym { symbol, .. } | ArmOp::MovtSym { symbol, .. }
+                matches!(&i.op, ArmOp::LdrSym { symbol, .. }
                     if symbol == "__synth_wasm_data")
             })
             .count();
-        // Two materializations × (MovwSym + MovtSym): the SP read and the
-        // static-pointer const.
+        // Two materializations × one LdrSym: the SP read and the static-pointer.
         assert!(
-            data_syms >= 4,
-            "expected SP-read + static-ptr both __synth_wasm_data-relative (>=4 sym ops); got {data_syms}: {out:#?}"
+            data_syms >= 2,
+            "expected SP-read + static-ptr both __synth_wasm_data-relative (>=2 LdrSym); got {data_syms}: {out:#?}"
+        );
+        // #345: no inline absolute MOVW/MOVT against the linmem base remain.
+        assert!(
+            !out.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::MovwSym { symbol, .. } | ArmOp::MovtSym { symbol, .. }
+                    if symbol == "__synth_wasm_data"
+            )),
+            "no inline MOVW/MOVT-ABS against __synth_wasm_data (#345): {out:#?}"
         );
         // The frame-size 16 must remain a plain scalar immediate, never
         // relocated as `__synth_wasm_data`. Since #253/Add-Sub folding it is

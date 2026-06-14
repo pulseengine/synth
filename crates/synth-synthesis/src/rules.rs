@@ -258,6 +258,20 @@ pub enum ArmOp {
         addend: i32,
     },
 
+    // #345: link-survivable symbol-address load — `LDR rd, [pc, #off]` reading a
+    // 4-byte literal-pool word (placed at the end of the function's `.text`) that
+    // carries the address of `symbol + addend` via an R_ARM_ABS32 relocation. The
+    // backend places the pool, patches the PC-relative offset, and initializes the
+    // word to the addend (REL: the linker computes `S + A`). This replaces the
+    // fragile inline-immediate MovwSym+MovtSym pair on the `--native-pointer-abi`
+    // static-data (`__synth_wasm_data`) and sp-global (`__synth_globals`) paths,
+    // which `ld` could mangle into an undefined instruction in a large image.
+    LdrSym {
+        rd: Reg,
+        symbol: String,
+        addend: i32,
+    },
+
     // Compare
     Cmp {
         rn: Reg,

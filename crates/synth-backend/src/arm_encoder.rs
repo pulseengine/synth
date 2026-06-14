@@ -439,6 +439,15 @@ impl ArmEncoder {
                 0xE3400000 | (((v >> 12) & 0xF) << 16) | (rd_bits << 12) | (v & 0xFFF)
             }
 
+            // #345: LdrSym is the Thumb-2 literal-pool address load. A32 mode is
+            // not used for relocatable native-pointer objects; fail loudly rather
+            // than miscompile if it is ever reached here.
+            ArmOp::LdrSym { .. } => {
+                return Err(synth_core::Error::synthesis(
+                    "LdrSym (literal-pool address load) is Thumb-2-only",
+                ));
+            }
+
             // Compare
             ArmOp::Cmp { rn, op2 } => {
                 let rn_bits = reg_to_bits(rn);
@@ -2811,6 +2820,23 @@ impl ArmEncoder {
             }
             ArmOp::MovtSym { rd, addend, .. } => {
                 self.encode_thumb32_movt_raw(reg_to_bits(rd), ((*addend as u32) >> 16) & 0xffff)
+            }
+
+            // #345: literal-pool address load — emit a PLACEHOLDER `LDR.W rd,
+            // [pc, #0]` (U=1, imm12=0). The backend (arm_backend.rs) places the
+            // 4-byte pool word at the end of the function, records the R_ARM_ABS32
+            // relocation against `symbol+addend`, and patches the imm12 with the
+            // real PC-relative distance once the pool offset is known.
+            // Encoding T2: 1111 1000 1101 1111 | Rt(4) imm12(12), with the literal
+            // base = Align(PC,4) and PC = address of this instruction + 4.
+            ArmOp::LdrSym { rd, .. } => {
+                let rt = reg_to_bits(rd) as u16;
+                let hw1: u16 = 0xF8DF; // LDR.W (literal), U=1
+                let hw2: u16 = rt << 12; // imm12 = 0 placeholder
+                let mut bytes = Vec::with_capacity(4);
+                bytes.extend_from_slice(&hw1.to_le_bytes());
+                bytes.extend_from_slice(&hw2.to_le_bytes());
+                Ok(bytes)
             }
 
             // SetCond: Materialize condition flag into register (0 or 1)

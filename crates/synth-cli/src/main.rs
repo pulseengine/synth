@@ -2620,6 +2620,29 @@ fn build_relocatable_elf(
                 synth_core::backend::RelocKind::ThmCall => ArmRelocationType::ThmCall,
                 synth_core::backend::RelocKind::MovwAbs => ArmRelocationType::MovwAbsNc,
                 synth_core::backend::RelocKind::MovtAbs => ArmRelocationType::MovtAbs,
+                // #345: literal-pool word carrying a symbol address — link-survivable
+                // R_ARM_ABS32 (the linker patches the data word, `S + A`).
+                synth_core::backend::RelocKind::Abs32 => {
+                    // The `LDR rX,[pc,#imm12]` that reads this pooled word had its
+                    // imm12 computed function-locally (`Align(PC,4)+imm12`, with PC
+                    // and the pool offset both relative to the function start). That
+                    // is correct at the function's ABSOLUTE address ONLY if the
+                    // function begins 4-byte-aligned — otherwise `Align()` rounds
+                    // differently and the load lands ±2 bytes off the word. The
+                    // `.text` layout loop 4-aligns every function start (and `.text`
+                    // itself is `with_align(4)`), so this holds; assert it so a
+                    // future layout change that breaks the invariant fails loudly
+                    // rather than miscompiling the pool load (#345, the #212/#215
+                    // "layout change exposes latent fragility" class).
+                    assert_eq!(
+                        func_base % 4,
+                        0,
+                        "#345: function carrying an R_ARM_ABS32 literal-pool reloc \
+                         must start 4-byte-aligned (func_base={func_base}); the \
+                         PC-relative LDR imm12 assumes it"
+                    );
+                    ArmRelocationType::Abs32
+                }
             };
             elf_builder.add_relocation(Relocation {
                 offset: func_base + reloc.offset,
@@ -3895,6 +3918,89 @@ mod tests {
         assert!(
             data > 0 && data < 1024,
             "#345: .data holds only global slots (got {data} bytes)"
+        );
+    }
+
+    /// #345 step 2: the `--native-pointer-abi` linmem-address loads must use the
+    /// link-survivable literal-pool form (`R_ARM_ABS32` on a `.text` data word),
+    /// NOT the inline-immediate `R_ARM_MOVW_ABS_NC`/`R_ARM_MOVT_ABS` pair — the
+    /// latter could be mangled into an undefined instruction in a large Zephyr
+    /// image (USAGE FAULT on G474RE). This test drives the real ELF reloc-emission
+    /// path: a function carrying `RelocKind::Abs32` against `__synth_wasm_data` and
+    /// `__synth_globals` must yield `.rel.text` entries of type R_ARM_ABS32 (2) and
+    /// ZERO MOVW/MOVT-ABS (43/44) against those symbols.
+    #[test]
+    fn native_pointer_linmem_addressing_is_abs32_not_movw_movt_345() {
+        use object::Endianness;
+        use object::read::elf::{FileHeader, SectionHeader};
+
+        // A function whose `.text` ends in two literal-pool words (the LdrSym
+        // form): one for `__synth_wasm_data`, one for `__synth_globals`. Each
+        // word carries its addend in place (REL) and an Abs32 reloc.
+        let mut code = vec![0u8; 8]; // two pooled words at offsets 0 and 4
+        code[0..4].copy_from_slice(&0u32.to_le_bytes()); // __synth_wasm_data + 0
+        code[4..8].copy_from_slice(&0u32.to_le_bytes()); // __synth_globals + 0
+        let func = ElfFunction {
+            name: "decide".to_string(),
+            wasm_index: 0,
+            code,
+            relocations: vec![
+                synth_core::backend::CodeRelocation {
+                    offset: 0,
+                    symbol: "__synth_wasm_data".to_string(),
+                    kind: synth_core::backend::RelocKind::Abs32,
+                },
+                synth_core::backend::CodeRelocation {
+                    offset: 4,
+                    symbol: "__synth_globals".to_string(),
+                    kind: synth_core::backend::RelocKind::Abs32,
+                },
+            ],
+        };
+        let native = NativeGlobalsLayout {
+            globals: vec![(0, 65_536)],
+            sp_init: 65_536,
+        };
+        let elf = build_relocatable_elf(&[func], &[], &[], 131_072, Some(native))
+            .expect("#345: native-pointer literal-pool object builds");
+
+        let header = object::elf::FileHeader32::<Endianness>::parse(&*elf).expect("valid ELF32");
+        let endian = header.endian().expect("endian");
+        let sections = header.sections(endian, &*elf).expect("sections");
+
+        // Collect every relocation type emitted against .text.
+        const R_ARM_ABS32: u32 = 2;
+        const R_ARM_MOVW_ABS_NC: u32 = 43;
+        const R_ARM_MOVT_ABS: u32 = 44;
+        let mut abs32 = 0usize;
+        let mut movw_movt = 0usize;
+        for section in sections.iter() {
+            let name = sections
+                .section_name(endian, section)
+                .map(|n| String::from_utf8_lossy(n).into_owned())
+                .unwrap_or_default();
+            if name != ".rel.text" {
+                continue;
+            }
+            let (rels, _) = section
+                .rel(endian, &*elf)
+                .expect("rel section")
+                .expect("has rel entries");
+            for rel in rels {
+                match rel.r_type(endian) {
+                    R_ARM_ABS32 => abs32 += 1,
+                    R_ARM_MOVW_ABS_NC | R_ARM_MOVT_ABS => movw_movt += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert_eq!(
+            abs32, 2,
+            "#345: both linmem-address loads must be R_ARM_ABS32 literal-pool words"
+        );
+        assert_eq!(
+            movw_movt, 0,
+            "#345: NO inline MOVW/MOVT-ABS relocs may remain on the native-pointer path"
         );
     }
 

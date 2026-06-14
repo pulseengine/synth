@@ -80,6 +80,9 @@ pub fn reg_effect(op: &ArmOp) -> Option<RegEffect> {
 
         // rd = imm (low half); upper half zeroed — no use
         Movw { rd, .. } | MovwSym { rd, .. } => def_use(vec![*rd], vec![]),
+        // #345: rd = full symbol address loaded from the literal pool — pure def
+        // of rd (NOT an RMW like Movt), no register use.
+        LdrSym { rd, .. } => def_use(vec![*rd], vec![]),
         // rd[31:16] = imm, rd[15:0] preserved — reads and writes rd
         Movt { rd, .. } | MovtSym { rd, .. } => def_use(vec![*rd], vec![*rd]),
 
@@ -1360,6 +1363,12 @@ fn rewrite_op(
             imm16: *imm16,
         },
         MovwSym { rd, symbol, addend } => MovwSym {
+            rd: d(rd),
+            symbol: symbol.clone(),
+            addend: *addend,
+        },
+        // #345: pure def of rd (literal-pool load) — like Movw, not an RMW.
+        LdrSym { rd, symbol, addend } => LdrSym {
             rd: d(rd),
             symbol: symbol.clone(),
             addend: *addend,
