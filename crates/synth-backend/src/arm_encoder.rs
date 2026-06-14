@@ -6599,11 +6599,41 @@ impl ArmEncoder {
             bytes.extend_from_slice(&hw2.to_le_bytes());
             Ok(bytes)
         } else {
-            // For larger immediates, would need MOVW/MOVT + ADD
-            // For now, return error
-            Err(synth_core::Error::synthesis(
-                "ADD immediate too large for single instruction",
-            ))
+            // Out-of-range immediate (> 0xFFF): materialize it into a scratch
+            // register, then ADD.W Rd, Rn, scratch. This is the #180/#185
+            // "encoder must produce a legal sequence, not assert" class — see #350.
+            //
+            // Scratch choice (must NEVER equal Rn, or Rn would be clobbered before
+            // the ADD reads it):
+            //   - rd != rn  => use rd itself (rn is untouched, since rd != rn).
+            //   - rd == rn  => use R12/IP (the reserved encoder scratch). rd/rn are
+            //                  never R12 (R12 is non-allocatable), so it can't alias.
+            //
+            // The materialized value is the same whether or not MOVT is emitted, so
+            // the byte length depends only on `imm` (and rd==rn) — the size probe and
+            // the final emit therefore agree (mandatory: the function is encoded twice).
+            let scratch: u32 = if rd_bits == rn_bits {
+                12 // R12/IP — in-place add, can't use rd because rd == rn
+            } else {
+                rd_bits // rn is preserved because rd != rn
+            };
+            // Invariant: the scratch must never alias Rn (would clobber it before
+            // the ADD reads it). Unreachable today (rd/rn are never R12), asserted
+            // to document the contract — #350.
+            debug_assert!(
+                scratch != rn_bits,
+                "ADD #imm lowering scratch must not equal Rn"
+            );
+
+            let lo16 = imm & 0xFFFF;
+            let hi16 = (imm >> 16) & 0xFFFF;
+
+            let mut bytes = self.encode_thumb32_movw_raw(scratch, lo16)?;
+            if hi16 != 0 {
+                bytes.extend_from_slice(&self.encode_thumb32_movt_raw(scratch, hi16)?);
+            }
+            bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(rd_bits, rn_bits, scratch)?);
+            Ok(bytes)
         }
     }
 
@@ -7666,6 +7696,85 @@ mod tests {
         let instr = u32::from_le_bytes([code[0], code[1], code[2], code[3]]);
         // Verify it's an ADD instruction with correct opcode
         assert_eq!(instr & 0x0FE00000, 0x00800000);
+    }
+
+    /// #350 — `encode_thumb32_add_imm` must lower an out-of-range immediate
+    /// (> 0xFFF) to a legal MOVW(/MOVT) + ADD.W-register sequence instead of
+    /// erroring. The small-imm fast path (imm <= 0xFFF) stays byte-identical.
+    #[test]
+    fn test_encode_add_imm_large_350() {
+        let enc = ArmEncoder::new_thumb2();
+
+        // --- Fast path unchanged: imm <= 0xFFF is a single 4-byte ADD.W ---
+        let small = enc
+            .encode_thumb32_add_imm(&Reg::R0, &Reg::R1, 0x123)
+            .unwrap();
+        assert_eq!(small.len(), 4, "small imm must stay a single instruction");
+
+        // helper: decode a Thumb-2 MOVW/MOVT halfword pair back to its imm16
+        fn movx_imm16(b: &[u8]) -> u32 {
+            let hw1 = u16::from_le_bytes([b[0], b[1]]) as u32;
+            let hw2 = u16::from_le_bytes([b[2], b[3]]) as u32;
+            let imm4 = hw1 & 0xF;
+            let i = (hw1 >> 10) & 1;
+            let imm3 = (hw2 >> 12) & 0x7;
+            let imm8 = hw2 & 0xFF;
+            (imm4 << 12) | (i << 11) | (imm3 << 8) | imm8
+        }
+        fn movx_rd(b: &[u8]) -> u32 {
+            (u16::from_le_bytes([b[2], b[3]]) as u32 >> 8) & 0xF
+        }
+
+        // --- rd != rn: scratch is rd. imm = 70000 = 0x11170 needs MOVW+MOVT. ---
+        // 0x11170: lo16 = 0x1170, hi16 = 0x0001
+        let seq = enc
+            .encode_thumb32_add_imm(&Reg::R12, &Reg::R0, 70000)
+            .unwrap();
+        assert_eq!(seq.len(), 12, "MOVW + MOVT + ADD = 12 bytes");
+        // MOVW r12, #0x1170
+        assert_eq!(u16::from_le_bytes([seq[0], seq[1]]) & 0xFBF0, 0xF240);
+        assert_eq!(movx_rd(&seq[0..4]), 12);
+        assert_eq!(movx_imm16(&seq[0..4]), 0x1170);
+        // MOVT r12, #0x0001
+        assert_eq!(u16::from_le_bytes([seq[4], seq[5]]) & 0xFBF0, 0xF2C0);
+        assert_eq!(movx_rd(&seq[4..8]), 12);
+        assert_eq!(movx_imm16(&seq[4..8]), 0x0001);
+        // ADD.W r12, r0, r12  (EB00 | rn=0 ; rd=12, rm=12)
+        let add1 = u16::from_le_bytes([seq[8], seq[9]]) as u32;
+        let add2 = u16::from_le_bytes([seq[10], seq[11]]) as u32;
+        assert_eq!(add1 & 0xFFF0, 0xEB00);
+        assert_eq!(add1 & 0xF, 0); // rn = r0
+        assert_eq!((add2 >> 8) & 0xF, 12); // rd = r12
+        assert_eq!(add2 & 0xF, 12); // rm = scratch = r12
+        // The materialized scratch must reconstruct exactly 70000.
+        assert_eq!(
+            (movx_imm16(&seq[4..8]) << 16) | movx_imm16(&seq[0..4]),
+            70000
+        );
+
+        // --- imm <= 0xFFFF: MOVT is skipped (MOVW + ADD = 8 bytes). ---
+        let seq16 = enc
+            .encode_thumb32_add_imm(&Reg::R3, &Reg::R0, 0xABCD)
+            .unwrap();
+        assert_eq!(seq16.len(), 8, "imm <= 0xFFFF skips MOVT");
+        assert_eq!(movx_imm16(&seq16[0..4]), 0xABCD);
+        assert_eq!(movx_rd(&seq16[0..4]), 3); // scratch = rd = r3
+
+        // --- rd == rn (in-place add): scratch must be R12, not rd. ---
+        // imm = 0x12345: lo16 = 0x2345, hi16 = 0x0001
+        let inplace = enc
+            .encode_thumb32_add_imm(&Reg::R5, &Reg::R5, 0x12345)
+            .unwrap();
+        assert_eq!(inplace.len(), 12);
+        assert_eq!(movx_rd(&inplace[0..4]), 12, "rd==rn must use R12 scratch");
+        assert_eq!(
+            (movx_imm16(&inplace[4..8]) << 16) | movx_imm16(&inplace[0..4]),
+            0x12345
+        );
+        // ADD.W r5, r5, r12 — rm must be the scratch (12), never rn.
+        let ip_add2 = u16::from_le_bytes([inplace[10], inplace[11]]) as u32;
+        assert_eq!(ip_add2 & 0xF, 12);
+        assert_eq!((ip_add2 >> 8) & 0xF, 5);
     }
 
     #[test]
