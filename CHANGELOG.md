@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.45] - 2026-06-14
+
+**ON-TARGET SHIPPABILITY — gale #354: a high-offset init segment no longer
+defeats the `.bss` split. Native-pointer mixed-memory modules (`stack`/`msgq`
+decides) ship a bounded `.data` instead of a 64 KiB PROGBITS blob.**
+
+- **#354 — per-region `.bss`/`.data` split for high-offset init segments**
+  (#356): the #345 zero-init split was binary
+  (`split_linmem_bss = native_layout.is_some() && data_segments.is_empty()`), so
+  ANY initialized `(data)` segment fell to the one-PROGBITS arm. A small
+  `.rodata` const at a HIGH linmem offset (gale's `stack_push`: a 12-byte
+  `0xfffffff4` = -12/-ENOMEM at offset 65536, above the 64 KiB shadow stack)
+  dragged the whole zero gap into a **65552-byte PROGBITS `.data`**
+  (MCU-unshippable; `msgq` was 65556). `build_relocatable_elf` now splits the
+  mixed case PER REGION using per-region **symbols**: the zero reservation is a
+  NOBITS `.bss` (`__synth_wasm_data`); each init segment is packed into a small
+  PROGBITS `.data` under its own `__synth_wasm_seg_K`; and every
+  `__synth_wasm_data + C` static reloc whose addend `C` lands in segment K is
+  retargeted to `__synth_wasm_seg_K + (C - seg_off_K)` — both the symbol AND the
+  in-place REL addend word in `.text` (`R_ARM_ABS32` is `S + A`). Per-region
+  *symbols* (not just sections) let the linker place the sections
+  independently — a single base symbol + selector-baked addends can't span the
+  link gap (the fragility the #345 code comment deferred). The selector is
+  untouched. **Safe-by-construction gate:** the split fires only when every init
+  segment sits at offset `>= wasm_data_base` (the SP-global init — the exact
+  static-vs-frame boundary the selector already uses) AND every
+  `__synth_wasm_data` reloc is the retargetable `Abs32` form; otherwise it falls
+  back to the one-PROGBITS arm (fat but always correct, never mis-addressed).
+  Measured on the `high_offset_init_segment_354` repro: `.data` **65552 → 16
+  bytes**, `.bss` 65548 NOBITS; the reloc retargets to `__synth_wasm_seg_0` with
+  the in-place addend rewritten 65544 → 8. This is the mixed-case deferred in the
+  #345 comment coming due — NOT a v0.11.44 regression; #350 just made
+  `stack_push` compile far enough to expose it.
+
+  **Falsification:** wrong if a native-pointer module with a `(data)` segment at
+  offset `>= wasm_data_base` still emits a 64 KiB PROGBITS `.data`; or if the
+  retargeted symbol/addend mis-resolves the const (the `native_pointer_shadow_stack`
+  differential would drop below ORACLE PASS). The non-mixed paths stay
+  byte-identical: `control_step` (non-native, `0x00210A55`) and
+  `native_pointer_bss` (the #345 all-zero NOBITS `.bss` shape) compile to the
+  same SHA with/without the change; the four frozen differentials (control_step
+  `0x00210A55`, flight_seam `0x07FDF307`, div_const 338/338, mutex_pressure)
+  stay green. **Closing gate is gale's on-target run** — `stack`/`msgq` `.data`
+  bounded + `stack_pop` shim+silicon end-to-end, to run when this tags; synth-side
+  is not marked verified alone.
+
 ## [0.11.44] - 2026-06-14
 
 **ENCODER ROBUSTNESS — gale #350: out-of-range `ADD #imm` now lowers instead of

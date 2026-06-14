@@ -541,9 +541,15 @@ artifacts:
       access against the symbol of the region the offset falls in. Sound
       only if init-data accesses are statically separable from the zero
       region (the rodata const is reached only by a static address, never by
-      a dynamic pointer that also walks the shadow stack) — to be confirmed
-      against gale's stack_push.loom.wasm before implementation.
-    status: proposed
+      a dynamic pointer that also walks the shadow stack) — the split fires
+      only when every init segment sits at offset >= wasm_data_base (the
+      SP-global init the selector uses for static-vs-frame), else it falls back
+      to the one-PROGBITS arm (correct, never mis-addressed). Implemented in
+      #356 (v0.11.45): per-region symbols (__synth_wasm_seg_K) + in-place REL
+      addend retargeting in build_relocatable_elf; selector untouched. On-target
+      confirmation (stack/msgq .data bounded + stack_pop shim+silicon) is gale's
+      gate, run when v0.11.45 tags.
+    status: implemented
     tags: [gale, native-pointer-abi, bss, elf, mcu-shippability, release-v0.11.45]
     links:
       - type: derives-from
