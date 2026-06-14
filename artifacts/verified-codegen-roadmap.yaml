@@ -611,6 +611,59 @@ artifacts:
         gate): an explicit measured statement "allocation-attributable gap
         <10% or regalloc3 evaluation filed" appears in the release notes.
 
+  - id: VCR-DEC-002
+    type: sw-req
+    title: "Decision: spill-reduction leapfrogs greedy heuristics — optimal-because-tiny + SSA-chordal + proof-carrying facts (gale #209)"
+    description: >
+      gale's #209 strategic framing (2026-06-14, on G474RE composed-bench data:
+      t_lock +82%, handoff +21%, dominated by 21-34% `[sp]` spill density):
+      the spill-reduction increment must NOT re-implement LLVM/GCC greedy
+      heuristics — those are heuristic ONLY because they must scale to
+      million-instruction TUs. synth's hot kernels are tiny (sem 83, mutex 167,
+      control_step 113 insns), so the scaling constraint does not apply, which
+      unlocks three shortcuts a mature backend cannot retrofit:
+      (1) OPTIMAL allocation — PBQP (Scholz-Eckstein) or a small ILP is
+      tractable in ms at <200 insns -> provably minimal spills, not greedy
+      leftovers; directly attacks the measured `[sp]` density and beats
+      LLVM-by-construction on exactly the functions that matter.
+      (2) SSA-CHORDAL coloring (Hack 2006) — on SSA the interference graph is
+      chordal -> optimal coloring in P-time; LLVM/GCC destruct SSA before
+      regalloc so they cannot use this. Aligns with VCR-RA-001's SSA substrate.
+      (3) PROOF-CARRYING optimization facts — pipe Verus's value-range /
+      no-overflow / alias facts (we own Verus -> wasm -> loom -> synth) into
+      synth as optimization inputs (narrower types, elided bounds/overflow
+      guards). The lever that makes verified code FASTER than defensive C.
+      TENSION with VCR-DEC-001: that decision chose Chaitin/Briggs (heuristic)
+      for translation-validation simplicity; #209 argues optimal is tractable
+      AND the validator (VCR-RA-003), not the allocator, carries assurance, so
+      an optimal core can sit behind the same validator. Resolve at the
+      spill-reduction increment: evaluate PBQP/ILP + SSA-chordal against the
+      Chaitin/Briggs baseline under VCR-RA-003, pick by measured spill count +
+      validation cost. Target: below LLVM-LTO on the tiny hot kernels, not
+      merely parity. Pairs with loom#219 (dissolve the seam first, then
+      allocate the smaller result optimally).
+    status: proposed
+    tags: [codegen, register-allocation, decision, optimal, pbqp, ssa-chordal, proof-carrying, gale-209, track-a]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: refines
+        target: VCR-RA-001
+      - type: refines
+        target: VCR-DEC-001
+      - type: traces-to
+        target: gale:209
+    fields:
+      req-type: constraint
+      priority: should
+      verification-criteria: >
+        At the spill-reduction increment, the release notes report: the chosen
+        allocation core (optimal PBQP/ILP vs Chaitin/Briggs), the measured spill
+        count before/after on the hot kernels (sem/mutex/control_step), and
+        gale's G474RE composed-bench delta against the 860/472 baselines (kill-
+        criterion: t_lock << 887, handoff < 1661). All frozen fixtures stay
+        bit-identical at every step.
+
   # ---------------------------------------------------------------------------
   # gale-proposed (issue #290, 2026-06-10): scry consumption at two trust levels
   # ---------------------------------------------------------------------------
