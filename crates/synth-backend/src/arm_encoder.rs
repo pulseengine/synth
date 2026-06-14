@@ -6618,12 +6618,18 @@ impl ArmEncoder {
                 rd_bits // rn is preserved because rd != rn
             };
             // Invariant: the scratch must never alias Rn (would clobber it before
-            // the ADD reads it). Unreachable today (rd/rn are never R12), asserted
-            // to document the contract — #350.
-            debug_assert!(
-                scratch != rn_bits,
-                "ADD #imm lowering scratch must not equal Rn"
-            );
+            // the ADD reads it). Unreachable in real codegen (rd/rn are never R12,
+            // which is reserved encoder scratch), but the encoder is also driven by
+            // the `encoder_no_panic` fuzz harness with ARBITRARY registers — incl.
+            // rd==rn==R12, which makes scratch (R12) alias Rn. The encoder contract
+            // (#180/#185) is Ok-or-Err, never a panic, so return a typed error
+            // instead of asserting. #350 follow-up.
+            if scratch == rn_bits {
+                return Err(synth_core::Error::synthesis(format!(
+                    "ADD #imm: cannot lower #{imm:#x} for Rd==Rn==R12 — no free scratch \
+                     register (R12 is the reserved encoder scratch and aliases Rn here)"
+                )));
+            }
 
             let lo16 = imm & 0xFFFF;
             let hi16 = (imm >> 16) & 0xFFFF;
@@ -7775,6 +7781,29 @@ mod tests {
         let ip_add2 = u16::from_le_bytes([inplace[10], inplace[11]]) as u32;
         assert_eq!(ip_add2 & 0xF, 12);
         assert_eq!((ip_add2 >> 8) & 0xF, 5);
+    }
+
+    /// #350 follow-up — the `encoder_no_panic` fuzz harness drives the encoder
+    /// with ARBITRARY registers, including the one case the in-place lowering
+    /// cannot serve: rd==rn==R12. There the scratch (R12, the reserved encoder
+    /// register) would alias Rn and clobber it before the ADD reads it. The
+    /// encoder contract (#180/#185) is Ok-or-Err, never a panic — so this must
+    /// return Err, not assert. (Real codegen never emits rd==rn==R12 because R12
+    /// is non-allocatable; this guards only the fuzz/adversarial path.)
+    #[test]
+    fn test_encode_add_imm_large_rd_rn_r12_errs_not_panics_350() {
+        let enc = ArmEncoder::new_thumb2();
+        // Out-of-range imm with rd==rn==R12: no free scratch -> Err.
+        let r = enc.encode_thumb32_add_imm(&Reg::R12, &Reg::R12, 70000);
+        assert!(
+            r.is_err(),
+            "rd==rn==R12 with out-of-range imm must Err (no free scratch), got {r:?}"
+        );
+        // Small imm with rd==rn==R12 still takes the single-instruction fast path
+        // (no scratch needed) and must succeed — the guard is scoped to the
+        // out-of-range lowering only.
+        let small = enc.encode_thumb32_add_imm(&Reg::R12, &Reg::R12, 0x10);
+        assert!(small.is_ok(), "small imm needs no scratch, must stay Ok");
     }
 
     #[test]
