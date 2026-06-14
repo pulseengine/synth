@@ -431,6 +431,17 @@ fn compile_wasm_to_arm(
     let mut code = Vec::new();
     let mut relocations = Vec::new();
 
+    // #345: literal-pool address loads. Each `LdrSym` was encoded as a placeholder
+    // `LDR.W rd,[pc,#0]`; record where its instruction sits and what it loads so
+    // we can append a pooled word (carrying the symbol address via R_ARM_ABS32)
+    // and patch the PC-relative offset once the pool position is known.
+    struct PendingLiteral {
+        ldr_offset: u32,
+        symbol: String,
+        addend: i32,
+    }
+    let mut pending_literals: Vec<PendingLiteral> = Vec::new();
+
     for instr in &arm_instrs {
         // Record a relocation for every BL: the encoder emits `bl #0` and
         // relies on a relocation to patch the target. This covers BOTH import
@@ -462,11 +473,72 @@ fn compile_wasm_to_arm(
                 kind: synth_core::backend::RelocKind::MovtAbs,
             });
         }
+        // #345: defer the literal-pool word + reloc + offset patch to the
+        // post-loop pass (the pool address is not yet known).
+        if let ArmOp::LdrSym { symbol, addend, .. } = &instr.op {
+            pending_literals.push(PendingLiteral {
+                ldr_offset: code.len() as u32,
+                symbol: symbol.clone(),
+                addend: *addend,
+            });
+        }
 
         let encoded = encoder
             .encode(&instr.op)
             .map_err(|e| format!("ARM encoding failed: {}", e))?;
         code.extend_from_slice(&encoded);
+    }
+
+    // #345: place the literal pool at the end of this function's `.text`. Gated on
+    // there being at least one `LdrSym` — functions without one are byte-identical
+    // to before (no trailing padding, so downstream `func_offsets` are unchanged
+    // and the frozen differential fixtures stay bit-for-bit equal).
+    if !pending_literals.is_empty() {
+        if !use_thumb2 {
+            return Err("LdrSym literal-pool addressing requires Thumb-2".to_string());
+        }
+        // 4-byte align the pool start (Thumb-2 word loads require it, and
+        // `Align(PC,4)` in the LDR-literal semantics assumes a word-aligned pool).
+        while code.len() % 4 != 0 {
+            code.push(0x00);
+        }
+        // One distinct pooled word per LdrSym (no dedup: different sites carry
+        // different addends, and the REL addend lives in the word).
+        for lit in &pending_literals {
+            let word_offset = code.len() as u32;
+
+            // REL semantics: the linker computes `S + A`, where A is the in-place
+            // value of the relocated word. Initialize the word to the addend so
+            // the final loaded address is `symbol + addend`.
+            code.extend_from_slice(&(lit.addend as u32).to_le_bytes());
+            relocations.push(CodeRelocation {
+                offset: word_offset,
+                symbol: lit.symbol.clone(),
+                kind: synth_core::backend::RelocKind::Abs32,
+            });
+
+            // Patch the placeholder `LDR.W rd,[pc,#imm12]`. Thumb-2 LDR (literal):
+            // address = Align(PC,4) + imm12, with PC = ldr_offset + 4. The pool is
+            // always after the LDR, so U=1 (already set in hw1 = 0xF8DF).
+            let pc = lit.ldr_offset + 4;
+            let aligned_pc = pc & !3u32;
+            let imm12 = word_offset - aligned_pc;
+            if imm12 > 0xFFF {
+                // Wide LDR-literal range is ±4 KB; these function bodies are far
+                // smaller, but fail cleanly rather than miscompile if exceeded.
+                return Err(format!(
+                    "LdrSym literal pool out of range (#345): imm12={} > 4095 \
+                     for symbol {}",
+                    imm12, lit.symbol
+                ));
+            }
+            let hw2_off = (lit.ldr_offset + 2) as usize;
+            let mut hw2 = u16::from_le_bytes([code[hw2_off], code[hw2_off + 1]]);
+            hw2 = (hw2 & 0xF000) | (imm12 as u16); // keep Rt, set imm12
+            let hw2_bytes = hw2.to_le_bytes();
+            code[hw2_off] = hw2_bytes[0];
+            code[hw2_off + 1] = hw2_bytes[1];
+        }
     }
 
     Ok((code, relocations))

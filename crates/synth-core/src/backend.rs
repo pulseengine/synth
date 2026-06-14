@@ -189,6 +189,13 @@ pub enum RelocKind {
     MovwAbs,
     /// R_ARM_MOVT_ABS — the MOVT half of a symbol-relative address (#237).
     MovtAbs,
+    /// R_ARM_ABS32 — a 32-bit absolute address held in a `.text` literal-pool
+    /// word, loaded via `LDR rX, [pc, #off]` (#345). The link-survivable
+    /// replacement for the inline-immediate MOVW/MOVT-ABS pair: `ld`/bfd patches
+    /// the data word at link time (`S + A`, the addend living in the word, REL
+    /// semantics), which survives placement into a large multi-object image —
+    /// whereas an inline-instruction MOVW_ABS immediate can be mangled.
+    Abs32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

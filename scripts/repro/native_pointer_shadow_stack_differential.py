@@ -40,11 +40,22 @@ def patch_movwt(code, off, value16):
 
 # synth labels its Thumb MOVW/MOVT relocations with the ARM32 type numbers
 # (43/44) — patch them with the THUMB bit layout (what the encoder emitted).
+# #345: the linmem-address loads are now link-survivable literal-pool loads —
+# `LDR rX,[pc,#off]` reading a `.text` word relocated by R_ARM_ABS32 (type 2).
+# Relocate those words in place (REL: final value = symbol_base + in-place addend)
+# so the emulated load sees the real DATA-relative address, exactly as `ld` would.
 MOVW_TYPES, MOVT_TYPES = (43, 47), (44, 48)
+ABS32_TYPE = 2
 rel = e.get_section_by_name(".rel.text")
 symtab = [sec for sec in e.iter_sections() if sec["sh_type"] == "SHT_SYMTAB"][0]
 for r in rel.iter_relocations():
     t = r["r_info_type"]
+    if t == ABS32_TYPE:
+        sym = symtab.get_symbol(r["r_info_sym"])
+        # REL: the addend lives in the pooled word; final = sym_base + addend.
+        (add,) = struct.unpack_from("<I", text, r["r_offset"])
+        struct.pack_into("<I", text, r["r_offset"], (DATA + syms[sym.name] + add) & 0xFFFFFFFF)
+        continue
     if t not in MOVW_TYPES + MOVT_TYPES:
         continue
     sym = symtab.get_symbol(r["r_info_sym"])
