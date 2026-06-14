@@ -2411,46 +2411,86 @@ fn build_relocatable_elf(
         .as_ref()
         .and_then(|ng| ng.globals.iter().map(|(i, _)| (i + 1) * 4).max())
         .unwrap_or(0);
+    // #345 step 1: under the native-pointer ABI the `[0, used_extent)`
+    // `__synth_wasm_data` region is the wasm linear memory. When it carries NO
+    // initialized `(data)` segment it is a pure zero-init reservation (e.g. a
+    // 64 KiB shadow stack with SP-init = 65536, as in the mutex decide) — that
+    // must NOT ship as a PROGBITS `.data` of 64 KiB zero bytes (unshippable on
+    // a 128 KiB-RAM MCU). Emit it as a SHT_NOBITS `.bss` (zero file bytes; the
+    // Zephyr loader zeroes `.bss`, preserving wasm zero-init semantics) and put
+    // the materialized `__synth_globals` slots (which DO carry non-zero inits)
+    // in their own small PROGBITS `.data`. Only this all-zero linmem case is
+    // split; when a `(data)` segment is present the region stays one PROGBITS
+    // section (the prefix/tail split is link-fragile across a multi-object link
+    // and is deferred to step 2 / PC-relative relocs). Branch the section
+    // emission, the two symbol defs, and the `.meld_import_table` index off one
+    // `split_linmem_bss` flag so they cannot diverge.
+    let split_linmem_bss = native_layout.is_some() && data_segments.is_empty();
     if emit_wasm_data {
-        let size = (used_extent + globals_bytes) as usize;
-        let section = if let Some(ng) = &native_layout {
-            // Native-pointer ABI: PROGBITS covering used extent + global
-            // slots (init values must reach the device, so NOBITS is out;
-            // the used extent is small by construction).
-            let mut blob = vec![0u8; size];
-            for (off, d) in data_segments {
-                blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
-            }
-            for (idx, init) in &ng.globals {
-                let at = (used_extent + idx * 4) as usize;
-                blob[at..at + 4].copy_from_slice(&init.to_le_bytes());
-            }
-            Section::new(".data", ElfSectionType::ProgBits)
+        if split_linmem_bss {
+            // #345: zero-init linmem reservation → NOBITS `.bss` (section 5).
+            let bss = Section::new(".bss", ElfSectionType::NoBits)
                 .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
                 .with_addr(0)
                 .with_align(4)
-                .with_data(blob)
-        } else if data_segments.is_empty() {
-            // Pure zero-init (BSS) — NOBITS, no bytes in the object.
-            Section::new(".bss", ElfSectionType::NoBits)
-                .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
-                .with_addr(0)
-                .with_align(4)
-                .with_size(linear_memory_bytes)
+                .with_size(used_extent);
+            elf_builder.add_section(bss);
+            // #345: materialized global slots (non-zero inits) → small PROGBITS
+            // `.data` (section 6). `__synth_globals` is value 0 in this section.
+            if let Some(ng) = &native_layout {
+                let mut blob = vec![0u8; globals_bytes as usize];
+                for (idx, init) in &ng.globals {
+                    let at = (idx * 4) as usize;
+                    blob[at..at + 4].copy_from_slice(&init.to_le_bytes());
+                }
+                let globals = Section::new(".data", ElfSectionType::ProgBits)
+                    .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+                    .with_addr(0)
+                    .with_align(4)
+                    .with_data(blob);
+                elf_builder.add_section(globals);
+            }
         } else {
-            // Initialized data present — PROGBITS covering the whole memory,
-            // segments placed at their offsets, the rest zero.
-            let mut blob = vec![0u8; linear_memory_bytes as usize];
-            for (off, d) in data_segments {
-                blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
-            }
-            Section::new(".data", ElfSectionType::ProgBits)
-                .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
-                .with_addr(0)
-                .with_align(4)
-                .with_data(blob)
-        };
-        elf_builder.add_section(section);
+            let size = (used_extent + globals_bytes) as usize;
+            let section = if let Some(ng) = &native_layout {
+                // Native-pointer ABI with initialized data: PROGBITS covering
+                // the used extent + global slots (init values must reach the
+                // device; the used extent is small by construction).
+                let mut blob = vec![0u8; size];
+                for (off, d) in data_segments {
+                    blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
+                }
+                for (idx, init) in &ng.globals {
+                    let at = (used_extent + idx * 4) as usize;
+                    blob[at..at + 4].copy_from_slice(&init.to_le_bytes());
+                }
+                Section::new(".data", ElfSectionType::ProgBits)
+                    .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+                    .with_addr(0)
+                    .with_align(4)
+                    .with_data(blob)
+            } else if data_segments.is_empty() {
+                // Pure zero-init (BSS) — NOBITS, no bytes in the object.
+                Section::new(".bss", ElfSectionType::NoBits)
+                    .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+                    .with_addr(0)
+                    .with_align(4)
+                    .with_size(linear_memory_bytes)
+            } else {
+                // Initialized data present — PROGBITS covering the whole memory,
+                // segments placed at their offsets, the rest zero.
+                let mut blob = vec![0u8; linear_memory_bytes as usize];
+                for (off, d) in data_segments {
+                    blob[*off as usize..*off as usize + d.len()].copy_from_slice(d);
+                }
+                Section::new(".data", ElfSectionType::ProgBits)
+                    .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
+                    .with_addr(0)
+                    .with_align(4)
+                    .with_data(blob)
+            };
+            elf_builder.add_section(section);
+        }
     }
 
     // Symbol-name -> symbol index map. Symbol indices are 1-based (index 0 is
@@ -2510,13 +2550,21 @@ fn build_relocatable_elf(
         elf_builder.add_symbol(data_sym);
         sym_count += 1;
         sym_indices.insert("__synth_wasm_data".to_string(), sym_count);
-        // #237: the globals slot region sits right after the used extent.
+        // #237/#345: the globals slot region. In the non-split (PROGBITS) case
+        // it sits right after the used extent inside section 5. In the #345
+        // split case the slots live in their own PROGBITS `.data` (section 6),
+        // at value 0.
         if native_layout.is_some() {
+            let (gv, gsec) = if split_linmem_bss {
+                (0, 6)
+            } else {
+                (used_extent, 5)
+            };
             let globals_sym = Symbol::new("__synth_globals")
-                .with_value(used_extent)
+                .with_value(gv)
                 .with_binding(SymbolBinding::Global)
                 .with_type(SymbolType::Object)
-                .with_section(5);
+                .with_section(gsec);
             elf_builder.add_symbol(globals_sym);
             sym_count += 1;
             sym_indices.insert("__synth_globals".to_string(), sym_count);
@@ -3755,6 +3803,99 @@ mod tests {
             "and its transitive direct callee follows too"
         );
         assert!(!r.contains(&3), "a non-table, uncalled internal stays out");
+    }
+
+    /// #345 step 1: under `--native-pointer-abi`, a module whose linear memory
+    /// is pure zero-init (no `(data)` segment — e.g. a 64 KiB shadow-stack
+    /// reservation with SP-init = 65536, the k_mutex_unlock decide) must NOT
+    /// emit the reservation as a 64 KiB PROGBITS `.data` of zero bytes
+    /// (unshippable on a 128 KiB-RAM MCU). The `__synth_wasm_data` region lands
+    /// in a SHT_NOBITS `.bss` (zero file bytes), and only the materialized
+    /// global slots (non-zero inits) ride in a small PROGBITS `.data`.
+    #[test]
+    fn native_pointer_zero_linmem_lands_in_nobits_bss_345() {
+        use object::Endianness;
+        use object::read::elf::{FileHeader, SectionHeader};
+
+        // One function with a `__synth_wasm_data` MOVW/MOVT access (so the
+        // wasm-data region is emitted) but NO data segments — pure zero-init.
+        let code = vec![0u8; 8]; // MOVW + MOVT placeholders
+        let func = ElfFunction {
+            name: "decide".to_string(),
+            wasm_index: 0,
+            code,
+            relocations: vec![
+                synth_core::backend::CodeRelocation {
+                    offset: 0,
+                    symbol: "__synth_wasm_data".to_string(),
+                    kind: synth_core::backend::RelocKind::MovwAbs,
+                },
+                synth_core::backend::CodeRelocation {
+                    offset: 4,
+                    symbol: "__synth_wasm_data".to_string(),
+                    kind: synth_core::backend::RelocKind::MovtAbs,
+                },
+            ],
+        };
+        let linear_memory_bytes: u32 = 131_072; // 2 wasm pages
+        // Native globals: SP-init = 65536 (the shadow-stack top) drives the
+        // reservation up to ~64 KiB; one global slot holds that offset.
+        let native = NativeGlobalsLayout {
+            globals: vec![(0, 65_536)],
+            sp_init: 65_536,
+        };
+
+        let elf = build_relocatable_elf(&[func], &[], &[], linear_memory_bytes, Some(native))
+            .expect("#345: native-pointer zero-linmem object builds");
+
+        // Parse the ELF and inspect sections by name + type.
+        let header = object::elf::FileHeader32::<Endianness>::parse(&*elf).expect("valid ELF32");
+        let endian = header.endian().expect("endian");
+        let sections = header.sections(endian, &*elf).expect("sections");
+
+        let mut bss_size: Option<u64> = None;
+        let mut data_size: Option<u64> = None;
+        let mut bss_is_nobits = false;
+        for section in sections.iter() {
+            let name = sections
+                .section_name(endian, section)
+                .map(|n| String::from_utf8_lossy(n).into_owned())
+                .unwrap_or_default();
+            let sh_type = section.sh_type(endian);
+            if name == ".bss" {
+                bss_is_nobits = sh_type == object::elf::SHT_NOBITS;
+                bss_size = Some(section.sh_size(endian).into());
+            } else if name == ".data" {
+                data_size = Some(section.sh_size(endian).into());
+                // The linmem reservation must NOT have leaked into a giant
+                // PROGBITS `.data` — only the small global-slot region rides
+                // here.
+                assert!(
+                    section.sh_size(endian) < 1024,
+                    "#345: PROGBITS .data must be tiny (global slots only), not the 64 KiB reservation; got {} bytes",
+                    section.sh_size(endian)
+                );
+            }
+        }
+
+        let bss = bss_size.expect("#345: a .bss section must be present");
+        assert!(
+            bss_is_nobits,
+            "#345: the linmem reservation must be SHT_NOBITS"
+        );
+        // The reservation covers the used extent (~64 KiB shadow stack), with
+        // zero file bytes — far below the full 128 KiB pages and never a 64 KiB
+        // PROGBITS blob.
+        assert!(
+            bss >= 65_536 && bss <= linear_memory_bytes as u64,
+            "#345: .bss spans the zero-init reservation (got {bss} bytes)"
+        );
+        // The small PROGBITS .data (global slots) carries the non-zero SP init.
+        let data = data_size.expect("#345: a small PROGBITS .data (global slots) must be present");
+        assert!(
+            data > 0 && data < 1024,
+            "#345: .data holds only global slots (got {data} bytes)"
+        );
     }
 
     /// Without a `call_indirect`, table entries are NOT force-included — a module
