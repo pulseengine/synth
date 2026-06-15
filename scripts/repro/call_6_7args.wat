@@ -1,0 +1,18 @@
+(module
+  (memory (export "memory") 1)
+  (global $sp (mut i32) (i32.const 65536))
+  ;; 6-param callee: packs a|b<<4|c<<8|d<<12|e<<16|f<<20 (2 stack args: e,f)
+  (func $c6 (param i32 i32 i32 i32 i32 i32) (result i32)
+    (i32.or (i32.or (i32.or (local.get 0) (i32.shl (local.get 1) (i32.const 4)))
+                    (i32.or (i32.shl (local.get 2) (i32.const 8)) (i32.shl (local.get 3) (i32.const 12))))
+            (i32.or (i32.shl (local.get 4) (i32.const 16)) (i32.shl (local.get 5) (i32.const 20)))))
+  ;; 7-param callee: + g<<24 (3 stack args: e,f,g) — gale's mem_domain_add worst case
+  (func $c7 (param i32 i32 i32 i32 i32 i32 i32) (result i32)
+    (i32.or (i32.or (i32.or (i32.or (local.get 0) (i32.shl (local.get 1) (i32.const 4)))
+                            (i32.or (i32.shl (local.get 2) (i32.const 8)) (i32.shl (local.get 3) (i32.const 12))))
+                    (i32.or (i32.shl (local.get 4) (i32.const 16)) (i32.shl (local.get 5) (i32.const 20))))
+            (i32.shl (local.get 6) (i32.const 24))))
+  (func (export "call6") (param i32 i32 i32 i32 i32 i32) (result i32)
+    (call $c6 (local.get 0)(local.get 1)(local.get 2)(local.get 3)(local.get 4)(local.get 5)))
+  (func (export "call7") (param i32 i32 i32 i32 i32 i32 i32) (result i32)
+    (call $c7 (local.get 0)(local.get 1)(local.get 2)(local.get 3)(local.get 4)(local.get 5)(local.get 6))))
