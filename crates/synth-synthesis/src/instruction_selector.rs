@@ -10603,6 +10603,95 @@ mod tests {
         );
     }
 
+    /// #359: a call with 5 i32 args must pass args 0..3 in r0..r3 AND arg4 on the
+    /// outgoing stack at [sp,#0] (frame-bottom outgoing region) — NOT drop arg0.
+    /// Pre-fix `pop_call_args` popped only the top 4 (args 1..4), dropping arg0.
+    #[test]
+    fn test_359_fifth_arg_passed_on_outgoing_stack() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        // func_3 takes 5 i32 args.
+        selector.set_func_arg_counts(vec![0, 0, 0, 5], Vec::new());
+        let wasm_ops = vec![
+            WasmOp::I32Const(10),
+            WasmOp::I32Const(20),
+            WasmOp::I32Const(30),
+            WasmOp::I32Const(40),
+            WasmOp::I32Const(50), // arg4 → outgoing stack
+            WasmOp::Call(3),
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 0).unwrap();
+        let bl_pos = arm
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Bl { .. }))
+            .expect("a BL must be emitted");
+        // arg4 stored to the outgoing region at [sp,#0] before the BL.
+        let stores_outgoing = arm[..bl_pos]
+            .iter()
+            .any(|i| matches!(&i.op, ArmOp::Str { addr, .. } if addr.base == Reg::SP && addr.offset == 0));
+        assert!(
+            stores_outgoing,
+            "5th arg must be stored to the outgoing stack [sp,#0] before the BL: {arm:#?}"
+        );
+        // r0 must still be written (arg0 NOT dropped).
+        assert!(
+            arm[..bl_pos].iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Mov { rd: Reg::R0, .. } | ArmOp::Movw { rd: Reg::R0, .. }
+            )),
+            "arg0 must reach r0 (not be dropped): {arm:#?}"
+        );
+    }
+
+    /// #359: a function with 5 params must read its 5th param (index 4) from the
+    /// INCOMING stack (above the frame), not from a register. Pre-fix it had no
+    /// slot at all (`param_count = num_params.min(4)`).
+    #[test]
+    fn test_359_fifth_param_read_from_incoming_stack() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        // 5-param function that returns its 5th param.
+        let wasm_ops = vec![WasmOp::LocalGet(4)];
+        let arm = selector.select_with_stack(&wasm_ops, 5).unwrap();
+        // The 5th param is read via Ldr [sp, #off] with off above the frame.
+        assert!(
+            arm.iter()
+                .any(|i| matches!(&i.op, ArmOp::Ldr { addr, .. } if addr.base == Reg::SP)),
+            "5th param must be loaded from the incoming stack: {arm:#?}"
+        );
+    }
+
+    /// #359 Ok-or-Err: a 64-bit param in the stack region (>4 params, param i64)
+    /// is NOT lowered (AAPCS pair math differs) — it must return Err, never a
+    /// silent miscompile (#180/#185).
+    #[test]
+    fn test_359_i64_stack_param_errs() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_params_i64(vec![false, false, false, false, true]); // param4 = i64
+        let wasm_ops = vec![WasmOp::LocalGet(0)];
+        let r = selector.select_with_stack(&wasm_ops, 5);
+        assert!(
+            r.is_err(),
+            "a 5-param function with an i64 param must Err, not lower: {r:?}"
+        );
+    }
+
+    /// #359 Ok-or-Err: more than 8 call args exceeds the verified range → Err.
+    #[test]
+    fn test_359_too_many_args_errs() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(vec![0, 0, 0, 9], Vec::new());
+        let mut wasm_ops: Vec<WasmOp> = (0..9).map(|n| WasmOp::I32Const(n)).collect();
+        wasm_ops.push(WasmOp::Call(3));
+        let r = selector.select_with_stack(&wasm_ops, 0);
+        assert!(
+            r.is_err(),
+            "a 9-arg call must Err (verified range is ≤8): {r:?}"
+        );
+    }
+
     /// #195 + #188 compose: gale's `z_impl_k_sem_give` shape — a value is live
     /// across a call that ALSO takes an argument. Both must hold: (a) the arg is
     /// passed in R0, and (b) the live value (param0) is preserved across the
