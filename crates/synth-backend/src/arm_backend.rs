@@ -75,7 +75,20 @@ impl Backend for ArmBackend {
         let mut functions = Vec::new();
         for func in &exports {
             let name = func.export_name.clone().unwrap();
-            let compiled = self.compile_function(&name, &func.ops, config)?;
+            // #359: copy THIS function's declared param widths into the config so
+            // `compile_function` (which carries no function index) can refuse a
+            // 64-bit param on the AAPCS stack-argument path. Cheap clone only when
+            // a signature table is present and this function has a width entry —
+            // otherwise reuse the shared config (every existing module unchanged).
+            let func_config = match config.func_params_i64.get(func.index as usize) {
+                Some(p) if !p.is_empty() => Some(CompileConfig {
+                    current_func_params_i64: p.clone(),
+                    ..config.clone()
+                }),
+                _ => None,
+            };
+            let cfg = func_config.as_ref().unwrap_or(config);
+            let compiled = self.compile_function(&name, &func.ops, cfg)?;
             functions.push(compiled);
         }
 
@@ -184,6 +197,9 @@ fn compile_wasm_to_arm(
         selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
         // #311: i64 call results are register PAIRS — tag them.
         selector.set_result_types(config.func_ret_i64.clone(), config.type_ret_i64.clone());
+        // #359: declared param widths of THIS function, so the AAPCS stack-arg
+        // path can refuse 64-bit params (Ok-or-Err). Empty ⇒ assume i32.
+        selector.set_params_i64(config.current_func_params_i64.clone());
         // Stack-pointer promotion is meaningful only under the native-pointer ABI;
         // gating here keeps every non-native compile (all frozen fixtures) on the
         // legacy R9 globals-table path, bit-identical.
