@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.46] - 2026-06-15
+
+**ABI CORRECTNESS — gale #359: calls/params with >4 args no longer silently
+miscompile. Unblocks 10/56 gale decides (mutex_lock, msgq, scheduler,
+mem_domain).**
+
+- **#359 — full AAPCS i32 stack arguments** (#360): a call to a function with
+  **>4 scalar args** mis-assigned argument registers, and a callee with **>4
+  params** mis-read the 5th+ param — both **silent miscompiles** (no fault).
+  gale's dissolved `z_impl_k_msgq_put` (msgq's decide is the first with 5
+  scalars + an sret pointer = 6 wasm params) returned `-ENOMSG` on an empty
+  queue. Root cause: caller `pop_call_args` popped only the top 4 operand-stack
+  values (`min(arg_count, 4)`) — for a 5-arg call those are args 2..5, so arg1
+  (bottom of the operand stack) was dropped and args shifted into r0..r3; and
+  callee `compute_local_layout`'s `param_count = num_params.min(4)` gave params
+  index ≥ 4 no frame slot. Fixed with full AAPCS i32 stack arguments,
+  **frame-reserved** (no dynamic SP — the fixed `push {r4-r8,lr}` = 24 bytes is
+  the constant): the caller passes args 0..3 in r0..r3 and args 4+ in an
+  outgoing-arg area at the frame bottom (`[sp+0],[sp+4],…`, stored before the
+  r0..r3 parallel move); the callee reads param k≥4 from the incoming stack
+  `[sp, frame_size+24+(k-4)*4]`. Declared i64/f64 widths are threaded
+  decoder→backend→selector so an unused i64 param still shifts the layout. The
+  optimized path now declines `num_params>4` (it homed only params 0..3 — a
+  separate latent miscompile), falling back to the fixed direct selector.
+  **Ok-or-Err** (#180/#185): a typed `Err` for any stack-region arg/param that
+  is i64/f64, `arg_count>8`, `num_params>8`, or a `[sp,#imm]` offset exceeding
+  the 12-bit range — never a silent miscompile.
+
+  **Falsification:** wrong if a >4-arg i32 call/callee still scrambles args, or
+  any frozen fixture's bytes move. Verified: `call_5args` (callee packs each arg
+  into a distinct nibble) **0/5 → 5/5**; `call6` (2 stack args = gale's real
+  case) + `call7` (3 stack args = `mem_domain_add` worst case) **4/4**; all six
+  frozen fixtures (control_step `0x00210A55`, flight_seam + flight_seam_flat
+  `0x07FDF307`, signed_div_const, mutex_pressure, native_pointer_shadow_stack)
+  compile to the **same SHA** with/without the change (purely additive, gated on
+  >4 args / >4 params); the i64-stack-param guard returns `Err`; 6 in-CI Rust
+  unit tests cover both call sites + the frame-shift + both Err guards.
+  **Closing gate is gale's G474RE msgq-microbench** (`rc=0` + value round-trip
+  on an empty queue), to run when this tags.
+
+### CI
+- **Signing E2E** is now resilient to sigstore cert-pin rotations (#361, separate
+  PR): `wsc`'s frozen TLS pins for `rekor.sigstore.dev` go stale when sigstore
+  rotates its server cert, which is not a synth regression — that specific
+  cert-pin-mismatch is now an XFAIL (synth's own `--sign-output` contract stays
+  hard-asserted), instead of a perpetually-red gate.
+
 ## [0.11.45] - 2026-06-14
 
 **ON-TARGET SHIPPABILITY — gale #354: a high-offset init segment no longer

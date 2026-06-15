@@ -574,3 +574,45 @@ artifacts:
         div_const 338/338, mutex_pressure) stay byte-identical; gale's
         stack_push runs correctly on G474RE (loads the -12 const, walks the
         shadow stack) under the differential oracle.
+
+  - id: GI-NPA-005
+    type: sw-req
+    title: Full AAPCS i32 stack arguments for calls/params with >4 args (#359)
+    description: >
+      The direct selector marshalled only the first 4 integer arguments
+      (ARG_REGS = r0..r3) and frame-backed only the first 4 params
+      (param_count = num_params.min(4)). gale #359: a struct-return decide with
+      >=4 scalar args overflows the register window (the sret pointer is wasm
+      param 0, so msgq_put = 6 params), and BOTH sides miscompiled silently:
+      pop_call_args popped only the top 4 operand-stack values (dropping arg0
+      and shifting the rest into r0..r3), and a callee read params index>=4 from
+      no slot at all. Blast radius: 10/56 gale decides (mutex_lock completing
+      the mutex pair, msgq put/get, the scheduler decides, the mem_domain/
+      userspace surface). synth implements full AAPCS i32 stack arguments: the
+      caller passes args 0..3 in r0..r3 and args 4+ in a frame-bottom
+      outgoing-arg area stored before the r0..r3 parallel move (no dynamic SP --
+      the fixed push {r4-r8,lr}=24B is the constant P); the callee reads param
+      k>=4 from the incoming stack [sp,frame_size+24+(k-4)*4]. Declared i64/f64
+      param widths are threaded decoder->backend->selector so an unused i64
+      param still shifts the layout. Ok-or-Err (#180/#185): typed Err for any
+      stack-region i64/f64 arg/param, >8 args, >8 params, or a [sp,#imm] offset
+      exceeding the 12-bit range. Gated on >4 args / >4 params, so all <=4
+      functions stay byte-identical.
+    status: implemented
+    tags: [gale, native-pointer-abi, aapcs, stack-arguments, regalloc, release-v0.11.46]
+    links:
+      - type: derives-from
+        target: GI-NPA-001
+      - type: traces-to
+        target: gale:359
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        call_5args.wat (callee packs each arg into a distinct nibble)
+        differential 0/5 -> 5/5; call_6_7args.wat (call6 = 2 stack args = gale's
+        real 6-param case, call7 = 3 stack args = mem_domain_add worst case)
+        4/4; all six frozen fixtures byte-identical with/without the change; the
+        i64-stack-param guard returns Err; 6 in-CI Rust unit tests (test_359_*);
+        gale's G474RE msgq-microbench returns rc=0 + round-trips the value on an
+        empty queue (closing gate).
