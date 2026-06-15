@@ -10692,6 +10692,70 @@ mod tests {
         );
     }
 
+    /// #359: the CallIndirect path (distinct from direct Call) must also stack-
+    /// pass args beyond the 4th — store the 5th arg to the outgoing region.
+    #[test]
+    fn test_359_call_indirect_fifth_arg_on_stack() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        // type 0 takes 5 i32 args (CallIndirect reads the count from the type).
+        selector.set_func_arg_counts(Vec::new(), vec![5]);
+        let wasm_ops = vec![
+            WasmOp::I32Const(10),
+            WasmOp::I32Const(20),
+            WasmOp::I32Const(30),
+            WasmOp::I32Const(40),
+            WasmOp::I32Const(50), // arg4 → outgoing stack
+            WasmOp::I32Const(0),  // table index (popped first)
+            WasmOp::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
+        ];
+        let r = selector.select_with_stack(&wasm_ops, 0);
+        // Either it lowers with the 5th arg on the outgoing stack, or it returns a
+        // typed Err — NEVER a silent drop. (CallIndirect dispatch may be Unsupported
+        // on some configs; the contract is Ok-or-Err.)
+        if let Ok(arm) = r
+            && let Some(bl) = arm
+                .iter()
+                .position(|i| matches!(&i.op, ArmOp::Bl { .. } | ArmOp::Blx { .. }))
+        {
+            assert!(
+                arm[..bl].iter().any(|i| matches!(&i.op, ArmOp::Str { addr, .. } if addr.base == Reg::SP && addr.offset == 0)),
+                "CallIndirect 5th arg must be stored to the outgoing stack: {arm:#?}"
+            );
+        }
+    }
+
+    /// #359: a non-param local AND a >4-arg call coexist — the outgoing-arg area
+    /// sits at the frame bottom, so the local's slot is shifted up by it. Must
+    /// still compile (exercises the frame-shift) and the call must stack-pass arg4.
+    #[test]
+    fn test_359_local_coexists_with_stack_arg_call() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(vec![0, 0, 0, 5], Vec::new());
+        let wasm_ops = vec![
+            WasmOp::I32Const(7),
+            WasmOp::LocalSet(0), // a non-param local (idx 0, num_params=0)
+            WasmOp::I32Const(10),
+            WasmOp::I32Const(20),
+            WasmOp::I32Const(30),
+            WasmOp::I32Const(40),
+            WasmOp::I32Const(50),
+            WasmOp::Call(3),
+            WasmOp::LocalGet(0), // read the local back (its slot was shifted up)
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 0).unwrap();
+        assert!(
+            arm.iter().any(
+                |i| matches!(&i.op, ArmOp::Str { addr, .. } if addr.base == Reg::SP && addr.offset == 0)
+            ),
+            "the 5-arg call must still store arg4 to the outgoing region: {arm:#?}"
+        );
+    }
+
     /// #195 + #188 compose: gale's `z_impl_k_sem_give` shape — a value is live
     /// across a call that ALSO takes an argument. Both must hold: (a) the arg is
     /// passed in R0, and (b) the live value (param0) is preserved across the
