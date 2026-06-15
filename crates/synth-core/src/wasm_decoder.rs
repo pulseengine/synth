@@ -103,6 +103,11 @@ pub struct DecodedModule {
     pub func_ret_i64: Vec<bool>,
     /// #311: whether each *function type* returns i64 (for `call_indirect`).
     pub type_ret_i64: Vec<bool>,
+    /// #359: declared parameter widths per *function* (full index, imports
+    /// first): `func_params_i64[f][k]` is true when param `k` is i64/f64. The
+    /// AAPCS stack-argument path needs the declared widths — op-stream inference
+    /// can't see an unused i64 param that still shifts the incoming-stack layout.
+    pub func_params_i64: Vec<Vec<bool>>,
     /// Defined globals with their initializers (#237). Empty if the module has
     /// no global section. Used by the native-pointer ABI to make a global whose
     /// initializer is a linear-memory address (e.g. `$__stack_pointer`)
@@ -133,6 +138,9 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     let mut func_arg_counts: Vec<u32> = Vec::new();
     let mut type_ret_i64: Vec<bool> = Vec::new();
     let mut func_ret_i64: Vec<bool> = Vec::new();
+    // #359: declared param widths per type / per function (full index).
+    let mut type_params_i64: Vec<Vec<bool>> = Vec::new();
+    let mut func_params_i64: Vec<Vec<bool>> = Vec::new();
     let mut elem_func_indices: Vec<u32> = Vec::new();
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
@@ -145,18 +153,33 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 for rec_group in reader {
                     let rec_group = rec_group.context("Failed to parse type")?;
                     for sub_ty in rec_group.types() {
-                        let (count, ret_i64) = match &sub_ty.composite_type.inner {
+                        let (count, ret_i64, params_i64) = match &sub_ty.composite_type.inner {
                             wasmparser::CompositeInnerType::Func(func_ty) => (
                                 func_ty.params().len() as u32,
                                 func_ty
                                     .results()
                                     .first()
                                     .is_some_and(|t| *t == wasmparser::ValType::I64),
+                                // #359: i64/f64 params occupy 8 bytes / a register
+                                // pair under AAPCS. f32/f64 are not in scope for the
+                                // stack-arg path (refused), but mark both 64-bit
+                                // float and i64 so the guard catches them.
+                                func_ty
+                                    .params()
+                                    .iter()
+                                    .map(|t| {
+                                        matches!(
+                                            t,
+                                            wasmparser::ValType::I64 | wasmparser::ValType::F64
+                                        )
+                                    })
+                                    .collect::<Vec<bool>>(),
                             ),
-                            _ => (0, false),
+                            _ => (0, false, Vec::new()),
                         };
                         type_arg_counts.push(count);
                         type_ret_i64.push(ret_i64);
+                        type_params_i64.push(params_i64);
                     }
                 }
             }
@@ -176,6 +199,12 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                                     .get(type_idx as usize)
                                     .copied()
                                     .unwrap_or(false),
+                            );
+                            func_params_i64.push(
+                                type_params_i64
+                                    .get(type_idx as usize)
+                                    .cloned()
+                                    .unwrap_or_default(),
                             );
                             (ImportKind::Function(type_idx), idx)
                         }
@@ -206,6 +235,12 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             .get(type_idx as usize)
                             .copied()
                             .unwrap_or(false),
+                    );
+                    func_params_i64.push(
+                        type_params_i64
+                            .get(type_idx as usize)
+                            .cloned()
+                            .unwrap_or_default(),
                     );
                 }
             }
@@ -320,6 +355,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         type_arg_counts,
         func_ret_i64,
         type_ret_i64,
+        func_params_i64,
         globals,
         elem_func_indices,
     })

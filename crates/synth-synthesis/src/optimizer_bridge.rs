@@ -2231,6 +2231,19 @@ impl OptimizerBridge {
             ));
         }
 
+        // #359: this lowering homes only params 0..4 in R0..R3 (see the
+        // `addr < num_params && addr < 4` Load map below); a 5th+ param arrives
+        // on the AAPCS incoming stack and would be silently read from a garbage
+        // temp register. Decline functions with >4 params so they fall back to
+        // the direct selector, which implements the stack-argument path (#359).
+        if num_params > 4 {
+            return Err(synth_core::Error::synthesis(
+                "optimized path declines functions with >4 params (no AAPCS \
+                 stack-argument model — see #359); falling back to direct selector"
+                    .to_string(),
+            ));
+        }
+
         let mut arm_instrs = Vec::new();
         let mut vreg_to_arm: HashMap<u32, Reg> = HashMap::new();
 

@@ -139,6 +139,22 @@ pub struct CompileConfig {
     /// invisible to liveness.
     pub func_ret_i64: Vec<bool>,
     pub type_ret_i64: Vec<bool>,
+    /// #359: declared parameter widths per *function* (full index, imports
+    /// first): `func_params_i64[f][k]` is true when param `k` of function `f` is
+    /// i64/f64. The AAPCS stack-argument path needs the *declared* widths
+    /// (op-stream inference can't see an unused i64 param that still shifts the
+    /// incoming-stack layout). The source of truth — a per-function driver loop
+    /// (`compile_module` / the CLI loop) indexes it by `func.index` and copies
+    /// the slice into [`current_func_params_i64`] before each `compile_function`.
+    /// Empty → every param assumed i32 (the legacy path; keeps every function
+    /// with <=4 params, or all-i32 params, byte-identical).
+    pub func_params_i64: Vec<Vec<bool>>,
+    /// #359: declared parameter widths of the function CURRENTLY being compiled
+    /// — `current_func_params_i64[k]` is true when param `k` is i64/f64. Set per
+    /// function (a cheap clone of the config) from [`func_params_i64`] by the
+    /// driver loop, because `compile_function` is shared across backends and
+    /// carries no function index. Empty → assume i32.
+    pub current_func_params_i64: Vec<bool>,
 }
 
 impl CompileConfig {
@@ -172,6 +188,8 @@ impl Default for CompileConfig {
             stack_pointer_global: None,
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
+            func_params_i64: Vec::new(),
+            current_func_params_i64: Vec::new(),
         }
     }
 }

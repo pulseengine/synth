@@ -163,6 +163,13 @@ impl StackVal {
     fn i64(reg: Reg) -> Self {
         StackVal::Reg { reg, is_i64: true }
     }
+    /// Width of this operand-stack value.
+    #[inline]
+    fn is_i64(&self) -> bool {
+        match self {
+            StackVal::Reg { is_i64, .. } | StackVal::Spilled { is_i64, .. } => *is_i64,
+        }
+    }
 }
 
 /// Number of i64 spill slots reserved in the frame (#171). Each is 8 bytes
@@ -813,6 +820,13 @@ struct LocalLayout {
     /// never clobbered in its home reg between reads. Appended last so existing
     /// local/spill offsets are unchanged.
     param_slots: std::collections::HashMap<u32, (i32, bool)>,
+    /// #359: frame slot (offset from SP) per incoming stack-passed param the fn
+    /// references — wasm param indices in `[4, num_params)` that AAPCS delivers
+    /// on the caller's stack (not in r0..r3). Computed AFTER `frame_size` is
+    /// finalized: such a param sits at `[sp, frame_size + 24 + (k-4)*4]` (24 =
+    /// the fixed `push {r4-r8,lr}`). i32-only; an i64/f64 stack param is an
+    /// Ok-or-Err refusal at the use site. Empty unless `num_params > 4`.
+    incoming_params: std::collections::HashMap<u32, i32>,
     /// Whether the `i64_spill_base` area was actually reserved
     /// (`has_i64 || force_spill_area`). Mirrored into
     /// [`SpillState::area_reserved`]; see that field for why (#326).
@@ -841,6 +855,7 @@ fn compute_local_layout(
     type_ret_i64: &[bool],
     force_spill_area: bool,
     force_param_backing: bool,
+    outgoing_arg_bytes: i32,
 ) -> LocalLayout {
     use std::collections::{BTreeSet, HashMap};
     let i64_set = infer_i64_locals(wasm_ops, func_ret_i64, type_ret_i64);
@@ -859,7 +874,14 @@ fn compute_local_layout(
     }
 
     let mut locals: HashMap<u32, (i32, bool)> = HashMap::new();
-    let mut offset: i32 = 0;
+    // #359: reserve the AAPCS outgoing stack-argument region at the BOTTOM of
+    // the frame (offset 0). Every other frame field accumulates from `offset`,
+    // so initializing it to `outgoing_arg_bytes` shifts locals, spill_base,
+    // i64_spill_base and param_slots up by exactly that amount. When 0 (no call
+    // passes >4 args), the frame is byte-identical to before. `outgoing_arg_bytes`
+    // is always a multiple of 8 (rounded by the caller) so the downstream
+    // `offset % 8` alignment checks are preserved exactly.
+    let mut offset: i32 = outgoing_arg_bytes;
     for &idx in &used {
         let is_i64 = i64_set.contains(&idx);
         // i64 locals require 8-byte alignment.
@@ -955,12 +977,38 @@ fn compute_local_layout(
     // Round frame to 8-byte multiple for AAPCS SP alignment.
     let frame_size = (offset + 7) & !7;
 
+    // #359: locate the incoming stack-passed params (wasm idx in [4, num_params)
+    // that AAPCS delivers on the caller's stack). After `push {r4-r8,lr}` (24
+    // bytes) + `sub sp,#frame_size`, param k sits at
+    // `[sp, frame_size + 24 + (k-4)*4]`. Only the params actually referenced are
+    // recorded. Empty when num_params <= 4. i32-only is enforced at the use site
+    // (Ok-or-Err) — the offset is the same regardless of width.
+    let mut incoming_params: HashMap<u32, i32> = HashMap::new();
+    if num_params > 4 {
+        const FIXED_PUSH_BYTES: i32 = 24; // push {r4,r5,r6,r7,r8,lr}
+        let mut used_incoming: BTreeSet<u32> = BTreeSet::new();
+        for op in wasm_ops {
+            let k = match op {
+                WasmOp::LocalGet(idx) | WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) => *idx,
+                _ => continue,
+            };
+            if (4..num_params).contains(&k) {
+                used_incoming.insert(k);
+            }
+        }
+        for &k in &used_incoming {
+            let off = frame_size + FIXED_PUSH_BYTES + (k as i32 - 4) * 4;
+            incoming_params.insert(k, off);
+        }
+    }
+
     LocalLayout {
         locals,
         frame_size,
         spill_base,
         i64_spill_base,
         param_slots,
+        incoming_params,
         spill_area_reserved: has_i64,
     }
 }
@@ -1377,6 +1425,11 @@ pub struct InstructionSelector {
     func_ret_i64: Vec<bool>,
     /// #311: whether type `i` returns i64 (`call_indirect`).
     type_ret_i64: Vec<bool>,
+    /// #359: declared param widths of the function being compiled —
+    /// `params_i64[k]` true ⇒ param `k` is i64/f64. The AAPCS stack-argument
+    /// path refuses (Ok-or-Err) when any param is 64-bit. Empty ⇒ assume i32
+    /// (the legacy path; every function with <=4 i32 params is byte-identical).
+    params_i64: Vec<bool>,
     /// AAPCS argument count per function, indexed by the *full* WASM function
     /// index (imports first, then locals). Plumbed from the frontend's type +
     /// function sections (issue #195). `func_arg_counts[i]` = number of integer
@@ -1443,6 +1496,7 @@ impl InstructionSelector {
             sp_global: None,
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
+            params_i64: Vec::new(),
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1471,6 +1525,7 @@ impl InstructionSelector {
             sp_global: None,
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
+            params_i64: Vec::new(),
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1553,6 +1608,13 @@ impl InstructionSelector {
     pub fn set_result_types(&mut self, func_ret_i64: Vec<bool>, type_ret_i64: Vec<bool>) {
         self.func_ret_i64 = func_ret_i64;
         self.type_ret_i64 = type_ret_i64;
+    }
+
+    /// #359: register the declared parameter widths of the function about to be
+    /// compiled so the AAPCS stack-argument path can refuse 64-bit params
+    /// (Ok-or-Err). Empty ⇒ all params assumed i32 (the legacy path).
+    pub fn set_params_i64(&mut self, params_i64: Vec<bool>) {
+        self.params_i64 = params_i64;
     }
 
     pub fn set_native_pointer_stack(&mut self, sp_index: u32, sp_init: i32) {
@@ -4737,7 +4799,27 @@ impl InstructionSelector {
         arg_count: u32,
         idx: usize,
     ) -> Result<Vec<Reg>> {
-        let n = (arg_count as usize).min(ARG_REGS.len());
+        // #359: pop ALL `arg_count` operands (previously only the top 4, which
+        // for a >4-arg call dropped arg0 and shifted args into r0..r3). After the
+        // reverse, `srcs[0..N]` == arg0..argN-1; the caller marshals srcs[0..4]
+        // into r0..r3 and stores srcs[4..N] to the outgoing stack region.
+        let n = arg_count as usize;
+        // #359 Ok-or-Err (#180/#185): a stack-passed arg (index >= 4) that is i64
+        // would be stored as a single 4-byte STR (silent lo-half truncation) —
+        // the register conversion below discards width. Refuse before popping.
+        // The top of `stack` is the LAST arg, so arg index k sits at
+        // `stack[stack.len() - n + k]`.
+        if n > ARG_REGS.len() && stack.len() >= n {
+            let base = stack.len() - n;
+            for k in ARG_REGS.len()..n {
+                if stack[base + k].is_i64() {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "#359: call arg {k} is passed on the stack and is i64/f64; \
+                         only i32 stack args are supported"
+                    )));
+                }
+            }
+        }
         let mut srcs: Vec<Reg> = Vec::with_capacity(n);
         for _ in 0..n {
             let r = pop_operand(stack, next_temp, instructions, spill, &[], idx)?;
@@ -4745,6 +4827,44 @@ impl InstructionSelector {
         }
         srcs.reverse();
         Ok(srcs)
+    }
+
+    /// #359: spill the stack-passed call arguments (index >= 4) into the
+    /// outgoing-argument region at the bottom of the current frame, BEFORE
+    /// caller-saved preservation, the CallIndirect table-index relocation, and
+    /// the r0..r3 parallel move. The popped arg registers are NOT in
+    /// `stack_live_regs`, so any of those later steps could otherwise clobber a
+    /// stack-arg source; storing first (there is no dynamic SP, so `[sp,#imm]` is
+    /// valid the instant after the pop) closes every clobber window.
+    ///
+    /// `arg_srcs[k]` for k in 4..N goes to `[sp, (k-4)*4]`. Returns the count of
+    /// instructions emitted (for the cf counter). Ok-or-Err (#180/#185): refuses
+    /// when a computed `[sp,#imm]` offset exceeds the 12-bit (4095) immediate.
+    fn emit_stack_args(
+        &self,
+        instructions: &mut Vec<ArmInstruction>,
+        arg_srcs: &[Reg],
+        idx: usize,
+    ) -> Result<usize> {
+        let mut emitted = 0;
+        for (k, &src) in arg_srcs.iter().enumerate().skip(ARG_REGS.len()) {
+            let off = (k as i32 - ARG_REGS.len() as i32) * 4;
+            if off > 4095 {
+                return Err(synth_core::Error::synthesis(format!(
+                    "#359: outgoing stack-arg offset {off} exceeds the 12-bit \
+                     [sp,#imm] range"
+                )));
+            }
+            instructions.push(ArmInstruction {
+                op: ArmOp::Str {
+                    rd: src,
+                    addr: MemAddr::imm(Reg::SP, off),
+                },
+                source_line: Some(idx),
+            });
+            emitted += 1;
+        }
+        Ok(emitted)
     }
 
     /// #195: Emit the cycle-safe parallel move of call arguments into R0–R3.
@@ -5094,6 +5214,72 @@ impl InstructionSelector {
         // a panic deep in the selector's pop sequence (see PR #117).
         synth_core::wasm_stack_check::check_no_underflow(wasm_ops)?;
 
+        // #359: AAPCS stack arguments. We pass params index>=4 on the outgoing
+        // stack and read incoming params index>=4 from the caller's stack. The
+        // frame-reserved (no dynamic SP) scheme this implements bounds the count:
+        // refuse functions with more than 8 scalar params (the [sp,#imm] offsets
+        // and the outgoing-region size stay small and in-range). Ok-or-Err — this
+        // repo is never silently wrong (#180/#185).
+        if num_params > 8 {
+            return Err(synth_core::Error::synthesis(format!(
+                "#359: function has {num_params} params; the AAPCS stack-argument \
+                 path supports at most 8 scalar params"
+            )));
+        }
+        // #359 Ok-or-Err (#180/#185): the register-homing + incoming-stack-slot
+        // scheme assumes every param is a 4-byte i32. A 64-bit param (i64/f64)
+        // occupies a register PAIR / 8-byte stack slot and shifts which params
+        // land on the stack — even an UNUSED one. Declared widths (not op-stream
+        // inference, which can't see an unused i64 param) drive this refusal.
+        // Gated on num_params>4: a <=4-param function never touches the stack-arg
+        // path, so the legacy i64-param handling (param_slots) is unchanged and
+        // every existing fixture stays byte-identical. Empty `params_i64`
+        // (no signature plumbed, e.g. unit tests) ⇒ assume i32.
+        if num_params > 4 && self.params_i64.iter().take(num_params as usize).any(|&w| w) {
+            return Err(synth_core::Error::synthesis(format!(
+                "#359: function has {num_params} params including a 64-bit (i64/f64) \
+                 param; the AAPCS stack-argument path supports only i32 params"
+            )));
+        }
+
+        // #359: size of the outgoing stack-argument region = the max over all
+        // Call/CallIndirect sites of `max(0, arg_count - 4) * 4`, rounded up to 8.
+        // Reserved at the BOTTOM of the frame (offset 0) by `compute_local_layout`.
+        // 0 when every call passes <=4 args — the frame is then byte-identical to
+        // the pre-#359 layout. `saturating_sub` avoids the u32 underflow that would
+        // otherwise inflate the region for every small-arg call.
+        let mut max_stack_args: u32 = 0;
+        for op in wasm_ops {
+            let arg_count = match op {
+                Call(func_idx) => {
+                    // Meld dispatch imports take no AAPCS args (index in R0).
+                    let is_import = *func_idx < self.num_imports;
+                    if is_import && !self.relocatable {
+                        0
+                    } else {
+                        self.func_arg_counts
+                            .get(*func_idx as usize)
+                            .copied()
+                            .unwrap_or(0)
+                    }
+                }
+                CallIndirect { type_index, .. } => self
+                    .type_arg_counts
+                    .get(*type_index as usize)
+                    .copied()
+                    .unwrap_or(0),
+                _ => continue,
+            };
+            if arg_count > 8 {
+                return Err(synth_core::Error::synthesis(format!(
+                    "#359: call passes {arg_count} args; the AAPCS stack-argument \
+                     path supports at most 8 scalar args"
+                )));
+            }
+            max_stack_args = max_stack_args.max(arg_count.saturating_sub(4));
+        }
+        let outgoing_arg_bytes = ((max_stack_args as i32) * 4 + 7) & !7;
+
         let mut instructions = Vec::new();
 
         // Function prologue: save callee-saved registers and LR, then
@@ -5117,7 +5303,22 @@ impl InstructionSelector {
             &self.type_ret_i64,
             self.spill_on_exhaustion,
             self.param_backing_on_exhaustion,
+            outgoing_arg_bytes,
         );
+        // #359 Ok-or-Err (#180/#185): an incoming stack-passed param is read via
+        // `ldr rd,[sp,#off]` where `off = frame_size + 24 + (k-4)*4` and
+        // `frame_size` is unbounded (a function with a large locals frame). The
+        // Thumb-2 `ldr [sp,#imm]` immediate is 12-bit (0..4095); refuse rather
+        // than silently emit an out-of-range encoding. Checked once here over the
+        // finalized layout instead of at each use site.
+        if let Some(&max_off) = layout.incoming_params.values().max()
+            && max_off > 4095
+        {
+            return Err(synth_core::Error::synthesis(format!(
+                "#359: incoming stack-param offset {max_off} exceeds the 12-bit \
+                 [sp,#imm] range (frame too large for the stack-argument path)"
+            )));
+        }
         // Allocate stack space for non-param locals so they don't alias the
         // callee-saved-register spill area (which immediately follows SP
         // after Push above).
@@ -5248,12 +5449,35 @@ impl InstructionSelector {
             }
             match op {
                 LocalGet(local_idx) => {
+                    // #359: an incoming stack-passed param (idx in [4,num_params))
+                    // is i32 by construction — a 64-bit param is refused up front
+                    // in `select_with_stack` (declared-width guard), so this path
+                    // only ever sees i32 stack params.
                     // Get the register for this local. Three cases:
                     //  1. Param in register — use the cached mapping.
                     //  2. Spilled i64 local — load both halves via I64Ldr.
                     //  3. Spilled i32 local — single Ldr.
                     let (reg, val_is_i64) =
-                        if let Some(&(off, is_i64)) = layout.param_slots.get(local_idx) {
+                        if let Some(&off) = layout.incoming_params.get(local_idx) {
+                            // #359: read the incoming stack-passed param into a
+                            // fresh temp pushed on the vstack — NOT register-homed.
+                            let dst = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Ldr {
+                                    rd: dst,
+                                    addr: MemAddr::imm(Reg::SP, off),
+                                },
+                                source_line: Some(idx),
+                            });
+                            (dst, false)
+                        } else if let Some(&(off, is_i64)) = layout.param_slots.get(local_idx) {
                             // #204/#193: frame-backed param — reload from its slot.
                             if is_i64 {
                                 let (dst_lo, dst_hi) = alloc_consecutive_pair(
@@ -7338,6 +7562,16 @@ impl InstructionSelector {
                         idx,
                     )?;
 
+                    // #359: store args index>=4 to the outgoing stack region
+                    // BEFORE preservation and the r0..r3 move (their sources are
+                    // already popped, so the move could otherwise clobber them).
+                    let n_stack_args = self.emit_stack_args(&mut instructions, &arg_srcs, idx)?;
+                    for _ in 0..n_stack_args {
+                        cf.add_instruction();
+                    }
+                    // Only the first <=4 args are marshalled into r0..r3.
+                    let reg_srcs = &arg_srcs[..arg_srcs.len().min(ARG_REGS.len())];
+
                     // ── #188: caller-saved preservation across the call ──
                     // A BL clobbers R0–R3 and R12. Any live value (operand-stack
                     // temp or param) residing in one of those registers and needed
@@ -7358,7 +7592,7 @@ impl InstructionSelector {
                     // parallel move so chains/swaps among R0–R3 are handled.
                     let n_arg_moves = self.emit_arg_moves(
                         &mut instructions,
-                        &arg_srcs,
+                        reg_srcs,
                         &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,
@@ -7448,6 +7682,17 @@ impl InstructionSelector {
                         idx,
                     )?;
 
+                    // #359: store args index>=4 to the outgoing stack region
+                    // BEFORE the table-index relocation (free_callee_saved below
+                    // could pick an R4–R8 reg still holding a stack-arg source),
+                    // preservation, and the r0..r3 move. The popped arg regs are
+                    // not in stack_live_regs, so storing first closes the window.
+                    let n_stack_args = self.emit_stack_args(&mut instructions, &arg_srcs, idx)?;
+                    for _ in 0..n_stack_args {
+                        cf.add_instruction();
+                    }
+                    let reg_srcs = &arg_srcs[..arg_srcs.len().min(ARG_REGS.len())];
+
                     // #195: the arg moves write R0–R3, but the `CallIndirect`
                     // expansion reads `table_idx_reg` to compute the branch
                     // target (and clobbers R12). When there are args to marshal,
@@ -7457,7 +7702,7 @@ impl InstructionSelector {
                     // marshalling so every `free_callee_saved` call avoids it,
                     // then pop it back off just before emitting the call.
                     let mut table_pushed = false;
-                    if !arg_srcs.is_empty() {
+                    if !reg_srcs.is_empty() {
                         let safe = self.free_callee_saved(
                             &stack_live_regs(&stack),
                             &local_to_reg,
@@ -7494,7 +7739,7 @@ impl InstructionSelector {
                     // index on the stack keeps the scratch picker away from it.
                     let n_arg_moves = self.emit_arg_moves(
                         &mut instructions,
-                        &arg_srcs,
+                        reg_srcs,
                         &stack_live_regs(&stack),
                         &local_to_reg,
                         &layout,
@@ -7669,7 +7914,19 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    if let Some(&(off, is_i64)) = layout.param_slots.get(local_idx) {
+                    if let Some(&off) = layout.incoming_params.get(local_idx) {
+                        // #359: write to the incoming stack-passed param's slot.
+                        // i32 by construction — a 64-bit param is refused up front
+                        // in `select_with_stack`.
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: val,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else if let Some(&(off, is_i64)) = layout.param_slots.get(local_idx) {
                         // #204/#193: frame-backed param — store to its slot.
                         let op = if is_i64 {
                             ArmOp::I64Str {
@@ -7749,7 +8006,19 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    if let Some(&(off, is_i64)) = layout.param_slots.get(local_idx) {
+                    if let Some(&off) = layout.incoming_params.get(local_idx) {
+                        // #359: write to the incoming stack-passed param's slot;
+                        // value stays on the operand stack (peek kept it). i32 by
+                        // construction — a 64-bit param is refused up front.
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: val,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else if let Some(&(off, is_i64)) = layout.param_slots.get(local_idx) {
                         // #204/#193: frame-backed param — store to its slot; value
                         // stays on the operand stack (peek kept it).
                         let op = if is_i64 {
@@ -15198,7 +15467,7 @@ mod tests {
     fn test_compute_local_layout_no_locals() {
         // Function with only params and no LocalGet/Set produces zero frame.
         let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add];
-        let layout = compute_local_layout(&ops, 2, &[], &[], false, false);
+        let layout = compute_local_layout(&ops, 2, &[], &[], false, false, 0);
         assert_eq!(layout.frame_size, 0);
         assert!(layout.locals.is_empty());
     }
@@ -15211,7 +15480,7 @@ mod tests {
             WasmOp::LocalSet(1),
             WasmOp::LocalGet(1),
         ];
-        let layout = compute_local_layout(&ops, 1, &[], &[], false, false);
+        let layout = compute_local_layout(&ops, 1, &[], &[], false, false, 0);
         assert!(layout.locals.contains_key(&1));
         let (off, is_i64) = layout.locals[&1];
         assert_eq!(off, 0);
@@ -15228,7 +15497,7 @@ mod tests {
             WasmOp::LocalSet(0),
             WasmOp::LocalGet(0),
         ];
-        let layout = compute_local_layout(&ops, 0, &[], &[], false, false);
+        let layout = compute_local_layout(&ops, 0, &[], &[], false, false, 0);
         let (off, is_i64) = layout.locals[&0];
         assert_eq!(off, 0);
         assert!(is_i64);
@@ -15248,7 +15517,7 @@ mod tests {
             WasmOp::I64Const(2),
             WasmOp::LocalSet(1),
         ];
-        let layout = compute_local_layout(&ops, 0, &[], &[], false, false);
+        let layout = compute_local_layout(&ops, 0, &[], &[], false, false, 0);
         let (off0, is_i64_0) = layout.locals[&0];
         let (off1, is_i64_1) = layout.locals[&1];
         assert_eq!(off0, 0);
@@ -15270,7 +15539,7 @@ mod tests {
             WasmOp::I32Add,
             WasmOp::LocalSet(2),
         ];
-        let layout = compute_local_layout(&ops, 2, &[], &[], false, false);
+        let layout = compute_local_layout(&ops, 2, &[], &[], false, false, 0);
         // Only idx 2 should be in the layout.
         assert!(!layout.locals.contains_key(&0));
         assert!(!layout.locals.contains_key(&1));
@@ -15530,6 +15799,7 @@ mod tests {
             spill_base: None,
             i64_spill_base: 0,
             param_slots: std::collections::HashMap::new(),
+            incoming_params: std::collections::HashMap::new(),
             spill_area_reserved,
         }
     }

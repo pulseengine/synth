@@ -1756,6 +1756,7 @@ fn compile_all_exports(
         all_globals, // #237: every defined global (index, init) — slot region under --native-pointer-abi
         all_func_ret_i64, // #311: per-function returns-i64 (pair tagging)
         all_type_ret_i64, // #311: per-type returns-i64 (call_indirect)
+        all_func_params_i64, // #359: per-function declared param widths (stack-arg ABI)
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
@@ -1851,6 +1852,7 @@ fn compile_all_exports(
             Vec::new(), // #237: globals slot region is single-module .wasm only
             Vec::new(), // #311: WAST runs the fixture suite; i32-only
             Vec::new(),
+            Vec::new(), // #359: WAST fixture suite is i32-only — no stack params
         )
     } else {
         let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
@@ -1913,6 +1915,7 @@ fn compile_all_exports(
             globals,
             module.func_ret_i64,
             module.type_ret_i64,
+            module.func_params_i64,
         )
     };
 
@@ -1982,6 +1985,10 @@ fn compile_all_exports(
         stack_pointer_global: stack_pointer_global_opt,
         func_ret_i64: all_func_ret_i64.clone(),
         type_ret_i64: all_type_ret_i64.clone(),
+        // #359: indexed declared param widths (per full function index) — the
+        // source of truth for the AAPCS stack-argument refusal. The per-function
+        // `current_func_params_i64` is derived from this in the compile loop.
+        func_params_i64: all_func_params_i64.clone(),
         ..CompileConfig::default()
     };
 
@@ -2009,7 +2016,23 @@ fn compile_all_exports(
         // output object. Callers that need it get a link error naming the
         // missing symbol, which is far more actionable than a whole-module
         // failure on dead-weight pulled in by `--whole-archive`.
-        let compiled = match backend.compile_function(&name, &func.ops, &config) {
+        // #359: tell the backend the CURRENT function's declared param widths
+        // (indexed by full function index). The AAPCS stack-argument path needs
+        // the declared widths — an unused i64 param still shifts the layout, so
+        // op-stream inference cannot reconstruct them. Cheap per-function clone
+        // (`compile_function` is a shared trait method with no function index).
+        let func_config = if all_func_params_i64
+            .get(func.index as usize)
+            .is_some_and(|p| !p.is_empty())
+        {
+            CompileConfig {
+                current_func_params_i64: all_func_params_i64[func.index as usize].clone(),
+                ..config.clone()
+            }
+        } else {
+            config.clone()
+        };
+        let compiled = match backend.compile_function(&name, &func.ops, &func_config) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!(
