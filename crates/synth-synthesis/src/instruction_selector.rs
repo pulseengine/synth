@@ -10683,7 +10683,7 @@ mod tests {
         let db = RuleDatabase::new();
         let mut selector = InstructionSelector::new(db.rules().to_vec());
         selector.set_func_arg_counts(vec![0, 0, 0, 9], Vec::new());
-        let mut wasm_ops: Vec<WasmOp> = (0..9).map(|n| WasmOp::I32Const(n)).collect();
+        let mut wasm_ops: Vec<WasmOp> = (0..9).map(WasmOp::I32Const).collect();
         wasm_ops.push(WasmOp::Call(3));
         let r = selector.select_with_stack(&wasm_ops, 0);
         assert!(
