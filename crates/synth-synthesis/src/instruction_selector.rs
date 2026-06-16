@@ -6722,6 +6722,47 @@ impl InstructionSelector {
                                 source_line: Some(idx),
                             });
                         }
+                    } else if self.native_pointer_abi
+                        && self.wasm_data_base > 0
+                        && *offset >= self.wasm_data_base
+                    {
+                        // #359: a DYNAMIC-index access whose constant `offset`
+                        // lands in the static-data region (e.g. an action→ret
+                        // `.rodata` table at `[idx + 65536]`). The static path
+                        // above relocates a constant address; this dynamic case
+                        // was previously emitted as raw `[R11 + addr + offset]`,
+                        // which mis-addresses the table once it's relocated to
+                        // `__synth_wasm_data`/`__synth_wasm_seg_K` (under the
+                        // native-pointer ABI R11/fp is 0, and #354 moves a
+                        // high-offset segment out of line). Relocate the base to
+                        // `__synth_wasm_data + offset` (the ELF builder retargets
+                        // it to the owning segment symbol) and add the dynamic
+                        // index: `__synth_wasm_data + offset + addr`.
+                        let base = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[live_params.as_slice(), &[addr, dst]].concat(),
+                            idx,
+                        )?;
+                        Self::emit_wasm_data_addr(&mut instructions, base, *offset as i32, idx);
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Add {
+                                rd: base,
+                                rn: base,
+                                op2: Operand2::Reg(addr),
+                            },
+                            source_line: Some(idx),
+                        });
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Ldr {
+                                rd: dst,
+                                addr: MemAddr::imm(base, 0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
                     } else {
                         // Generate load with optional bounds checking
                         let load_ops =
@@ -6792,6 +6833,40 @@ impl InstructionSelector {
                                 source_line: Some(idx),
                             });
                         }
+                    } else if self.native_pointer_abi
+                        && self.wasm_data_base > 0
+                        && *offset >= self.wasm_data_base
+                    {
+                        // #359 (symmetric to I32Load): a dynamic-index store whose
+                        // constant `offset` lands in the static-data region must
+                        // relocate the base to `__synth_wasm_data + offset` (ELF
+                        // builder retargets to the owning segment) + the dynamic
+                        // index, not raw `[R11 + addr + offset]`.
+                        let base = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[live_params.as_slice(), &[addr, value]].concat(),
+                            idx,
+                        )?;
+                        Self::emit_wasm_data_addr(&mut instructions, base, *offset as i32, idx);
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Add {
+                                rd: base,
+                                rn: base,
+                                op2: Operand2::Reg(addr),
+                            },
+                            source_line: Some(idx),
+                        });
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: value,
+                                addr: MemAddr::imm(base, 0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
                     } else {
                         // Generate store with optional bounds checking
                         let store_ops =
@@ -17404,6 +17479,56 @@ mod tests {
         assert!(
             !oor.iter().any(is_data_sym),
             "an address outside any data segment stays base-relative. got: {oor:#?}"
+        );
+    }
+
+    /// #359: a DYNAMIC-index load whose constant `offset` lands in the static-data
+    /// region (an action→ret `.rodata` table at offset 65536, indexed by a runtime
+    /// value) must relocate the base to `__synth_wasm_data + offset` (the ELF
+    /// builder retargets it to the owning segment) and add the dynamic index —
+    /// NOT emit a raw `[R11 + addr + offset]`, which mis-addresses the table once
+    /// it's relocated (#354) and R11/fp is 0. Requires a real static-data base
+    /// (`wasm_data_base > 0`); without an SP global the access stays base-relative.
+    #[test]
+    fn test_359_dynamic_high_offset_load_is_relocated() {
+        let db = RuleDatabase::new();
+        // param0 << 2, then i32.load offset=65536 → table[param0].
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(2),
+            WasmOp::I32Shl,
+            WasmOp::I32Load {
+                offset: 65536,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let is_data_sym = |i: &ArmInstruction| matches!(&i.op, ArmOp::LdrSym { symbol, .. } if symbol == "__synth_wasm_data");
+
+        // Native-pointer + a real static-data base (sp_init = 65536) → relocated.
+        let mut sel = InstructionSelector::new(db.rules().to_vec());
+        sel.set_relocatable(true);
+        sel.set_native_pointer_abi(true, 131072);
+        sel.set_native_pointer_stack(0, 65536); // wasm_data_base = 65536
+        let on = sel.select_with_stack(&ops, 1).unwrap();
+        assert!(
+            on.iter().any(is_data_sym),
+            "dynamic high-offset load must relocate via LdrSym __synth_wasm_data. got: {on:#?}"
+        );
+        // and add the dynamic index to the relocated base.
+        assert!(
+            on.iter().any(|i| matches!(&i.op, ArmOp::Add { .. })),
+            "the dynamic index must be added to the relocated base. got: {on:#?}"
+        );
+
+        // No SP global (wasm_data_base = 0) → stays base-relative (frozen).
+        let mut sel0 = InstructionSelector::new(db.rules().to_vec());
+        sel0.set_relocatable(true);
+        sel0.set_native_pointer_abi(true, 131072);
+        let off = sel0.select_with_stack(&ops, 1).unwrap();
+        assert!(
+            !off.iter().any(is_data_sym),
+            "without a static-data base the dynamic access stays base-relative. got: {off:#?}"
         );
     }
 
