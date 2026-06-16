@@ -17482,6 +17482,56 @@ mod tests {
         );
     }
 
+    /// #359: a DYNAMIC-index load whose constant `offset` lands in the static-data
+    /// region (an action→ret `.rodata` table at offset 65536, indexed by a runtime
+    /// value) must relocate the base to `__synth_wasm_data + offset` (the ELF
+    /// builder retargets it to the owning segment) and add the dynamic index —
+    /// NOT emit a raw `[R11 + addr + offset]`, which mis-addresses the table once
+    /// it's relocated (#354) and R11/fp is 0. Requires a real static-data base
+    /// (`wasm_data_base > 0`); without an SP global the access stays base-relative.
+    #[test]
+    fn test_359_dynamic_high_offset_load_is_relocated() {
+        let db = RuleDatabase::new();
+        // param0 << 2, then i32.load offset=65536 → table[param0].
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Const(2),
+            WasmOp::I32Shl,
+            WasmOp::I32Load {
+                offset: 65536,
+                align: 2,
+            },
+            WasmOp::End,
+        ];
+        let is_data_sym = |i: &ArmInstruction| matches!(&i.op, ArmOp::LdrSym { symbol, .. } if symbol == "__synth_wasm_data");
+
+        // Native-pointer + a real static-data base (sp_init = 65536) → relocated.
+        let mut sel = InstructionSelector::new(db.rules().to_vec());
+        sel.set_relocatable(true);
+        sel.set_native_pointer_abi(true, 131072);
+        sel.set_native_pointer_stack(0, 65536); // wasm_data_base = 65536
+        let on = sel.select_with_stack(&ops, 1).unwrap();
+        assert!(
+            on.iter().any(is_data_sym),
+            "dynamic high-offset load must relocate via LdrSym __synth_wasm_data. got: {on:#?}"
+        );
+        // and add the dynamic index to the relocated base.
+        assert!(
+            on.iter().any(|i| matches!(&i.op, ArmOp::Add { .. })),
+            "the dynamic index must be added to the relocated base. got: {on:#?}"
+        );
+
+        // No SP global (wasm_data_base = 0) → stays base-relative (frozen).
+        let mut sel0 = InstructionSelector::new(db.rules().to_vec());
+        sel0.set_relocatable(true);
+        sel0.set_native_pointer_abi(true, 131072);
+        let off = sel0.select_with_stack(&ops, 1).unwrap();
+        assert!(
+            !off.iter().any(is_data_sym),
+            "without a static-data base the dynamic access stays base-relative. got: {off:#?}"
+        );
+    }
+
     /// #237: register-promote the stack-pointer global so a dissolved leaf object
     /// is self-contained (no R9 globals table). Mirrors gmutex's prologue:
     /// `global.get $sp; i32.const 16; i32.sub; global.set $sp` plus a
