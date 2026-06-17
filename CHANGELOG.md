@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.46] - 2026-06-17
+
+**CORRECTNESS — #369: an op the backend cannot lower now LOUD-SKIPS its
+function instead of being silently dropped into a wrong-value miscompile.**
+
+- **#369 / GI-FPU-001 — unsupported decoder ops no longer silently drop**
+  (#371): `convert_operator` returns `None` for any operator it can't lower, and
+  the caller previously **dropped it silently** — leaving the operand stack wrong
+  and the function a silent miscompile (`f32.add(a,b)` lowered to `mov r0,r1`,
+  returning an operand instead of the sum; the same `_ => None` line drops
+  `memory.copy`). Per the #180/#185 contract, an unsupported op must surface
+  loudly. `FunctionOps` now carries `unsupported: Option<String>`;
+  `decode_function_body` records the first value-affecting op that decodes to
+  `None` (everything except the intentional `Nop`/`Unreachable`); and the
+  compile loop **loud-skips** a flagged function (warning naming the op + symbol
+  absent → a caller gets a link error), reusing the #168 `skipped_funcs` path. An
+  all-skipped module errors loudly rather than emitting an empty object. Covers
+  scalar f32/f64 (#369, jess AFD-024/AFD-008), bulk-memory (`memory.copy`/
+  `fill`), and any other decoder-dropped value-affecting op — the honest interim
+  until real VFP (GI-FPU-002) and bulk-memory lowering land.
+
+  **Falsification:** a module whose only function uses a scalar `f32`/`f64` op
+  (or `memory.copy`) no longer produces an object containing that function — it
+  is reported skipped and absent. A pure-integer module is byte-identical to
+  before: the three frozen oracles stay bit-identical (control_step `0x00210A55`
+  13/13, flight_seam `0x07FDF307`, div_const 338/338); no fixture uses floats.
+
 ## [0.11.45] - 2026-06-14
 
 **ON-TARGET SHIPPABILITY — gale #354: a high-offset init segment no longer
