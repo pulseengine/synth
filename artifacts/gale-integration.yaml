@@ -574,3 +574,97 @@ artifacts:
         div_const 338/338, mutex_pressure) stay byte-identical; gale's
         stack_push runs correctly on G474RE (loads the -12 const, walks the
         shadow stack) under the differential oracle.
+
+  - id: GI-FPU-001
+    type: sw-req
+    title: Unsupported f32/f64 ops must Err (loud skip), never silently miscompile (#369)
+    description: >
+      gale #369 reported soft-float for all f32/f64; deterministic diagnosis
+      against v0.11.45 showed it is WORSE — a silent wrong-value miscompile,
+      and the drop is at the DECODER, not the selector. `map_operator` in
+      crates/synth-core/src/wasm_decoder.rs decodes the SIMD `F32x4*` family
+      (lines 765-780) but has NO arm for any scalar `f32.*`/`f64.*` op, so
+      scalar floats fall through the catch-all `_ => None`
+      (wasm_decoder.rs:783, "Other operators not yet supported") and are
+      SILENTLY DROPPED before the selector runs. That is why the
+      `WasmOp::F32Add` variant (wasm_op.rs:169) and `select_default`'s VFP arm
+      (instruction_selector.rs:2769 — itself a dead prototype: it allocates
+      fresh `s` regs disconnected from the operand stack) are never reached.
+      With the op dropped, the operand stack keeps the two un-consumed
+      `local.get` inputs, so the function returns the stale top-of-stack —
+      `f32.add(a,b)` lowers to `mov r0,r1; bx lr` (returns b, not a+b),
+      confirmed value-level via a param-based `i32.reinterpret_f32(f32.add(
+      p0,p1))` repro on cortex-m7dp on BOTH the default optimized and
+      `--no-optimize` paths. There are 0 VFP and 0 `__aeabi_*` soft-float
+      calls because there is no float arithmetic at all. This is the SAME
+      `_ => None` line that silently drops `memory.copy` (the tracked
+      bulk-memory gap) — same #180/#185 class: an op the decoder cannot lower
+      must surface as `Err`/diagnostic, never `None`. synth shall stop
+      silently dropping unsupported scalar FP ops: decode them to their
+      `WasmOp` so a downstream selector `Err` LOUDLY skips the function
+      (diagnostic + symbol absent → link error naming it), per the established
+      honest-degradation contract. Frozen-safe by construction: no frozen
+      fixture uses floats (zero `f32.`/`f64.` in scripts/repro/*.wat), so
+      every frozen differential stays byte-identical. Shippable independently
+      of GI-FPU-002 (the hard-float feature); bundles naturally with the
+      memory.copy-drop fix (same decoder catch-all).
+    status: proposed
+    tags: [gale, fpu, float, correctness, silent-miscompile, ok-or-err, release-pending]
+    links:
+      - type: derives-from
+        target: GI-002
+      - type: traces-to
+        target: gale:369
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        A module with a scalar f32/f64 arithmetic op compiled for any ARM
+        target no longer emits a silent wrong-value stub: the function is
+        either correctly lowered (GI-FPU-002) or reported skipped with a
+        diagnostic and its symbol absent from the object (loud link failure),
+        never `mov r0,r1`. The seven frozen differentials (control_step
+        0x00210A55, flight_seam + flight_seam_flat 0x07FDF307,
+        signed_div_const, mutex_pressure, native_pointer_shadow_stack,
+        native_pointer_bss) stay byte-identical. A unit test asserts the FP
+        op yields Err, not a stub.
+
+  - id: GI-FPU-002
+    type: sw-req
+    title: Hardware-FPU (VFP) lowering for f32/f64 on Cortex-M FPU targets (#369, REQ-PIX-001)
+    description: >
+      The VFP lowering that exists (`F32Add if self.fpu.is_some() =>
+      ArmOp::F32Add{sd,sn,sm}`, instruction_selector.rs:2769) lives in the
+      LEGACY `select()` function (line 1726) which NO production compile path
+      calls — a dead prototype. synth shall implement real hardware-FPU
+      lowering wired into the production `select_with_stack`: `vmov`/`vldr`/
+      `vstr` to move floats between GPR/memory and VFP s/d registers, the VFP
+      arithmetic/compare/convert ops (`vadd/vsub/vmul/vdiv/vcvt/vcmp/vabs/
+      vneg/vsqrt/...`) on s registers (f32) and d registers (f64), full op
+      coverage for gale's falcon mix (2044 f32 + 480 f64), correct value
+      semantics, and the EABI build attributes (`Tag_FP_arch`,
+      `Tag_ABI_VFP_args`) so the FP mode is verifiable from the artifact.
+      Target FPU mapping: cortex-m4f → fpv4-sp, cortex-m7 → fpv5-sp,
+      cortex-m7dp → fpv5-d16; soft path retained for no-FPU targets
+      (cortex-m3, rv32i). Multi-pass feature; behavior frozen and oracle-gated
+      every increment. Blocks jess REQ-PIX-001 / AFD-024 (Pixhawk 6X-RT M7
+      hard-float). Supersedes the GI-FPU-001 loud-skip degradation per op as
+      coverage lands.
+    status: proposed
+    tags: [gale, fpu, vfp, hard-float, float, performance, pixhawk, feature, multi-pass]
+    links:
+      - type: derives-from
+        target: GI-002
+      - type: traces-to
+        target: gale:369
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        falcon-v1.56.fused.wasm compiled for cortex-m7dp emits VFP
+        instructions (vadd/vmul/vcvt on d registers) and the ELF carries
+        Tag_FP_arch=fpv5-d16 / Tag_ABI_VFP_args; a numeric differential of FP
+        results against wasmtime matches bit-for-bit on gale's G474RE/RT1176
+        re-test; cortex-m7 (sp) and cortex-m7dp (dp) outputs DIFFER (FPU mode
+        consulted); all frozen fixtures stay byte-identical (no float content,
+        unaffected); soft-float retained and unchanged for cortex-m3.
