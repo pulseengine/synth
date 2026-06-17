@@ -607,9 +607,12 @@ artifacts:
       fixture uses floats (zero `f32.`/`f64.` in scripts/repro/*.wat), so
       every frozen differential stays byte-identical. Shippable independently
       of GI-FPU-002 (the hard-float feature); bundles naturally with the
-      memory.copy-drop fix (same decoder catch-all).
-    status: proposed
-    tags: [gale, fpu, float, correctness, silent-miscompile, ok-or-err, release-pending]
+      memory.copy-drop fix (same decoder catch-all). IMPLEMENTED in v0.11.46
+      (#371): FunctionOps.unsupported flag + decode_function_body recording +
+      compile-loop loud-skip; f32/f64 module loud-skips (was silent mov r0,r1);
+      3 frozen oracles byte-identical; unit test; covers memory.copy too.
+    status: implemented
+    tags: [gale, fpu, float, correctness, silent-miscompile, ok-or-err, release-v0.11.46]
     links:
       - type: derives-from
         target: GI-002
@@ -668,3 +671,27 @@ artifacts:
         re-test; cortex-m7 (sp) and cortex-m7dp (dp) outputs DIFFER (FPU mode
         consulted); all frozen fixtures stay byte-identical (no float content,
         unaffected); soft-float retained and unchanged for cortex-m3.
+
+  - id: GI-FPU-VER-001
+    type: sw-verification
+    title: "Unsupported-op loud-skip (#369) — unit test + frozen byte-identity"
+    description: >
+      Verifies GI-FPU-001 (v0.11.46, #371). Unit test
+      `test_369_scalar_float_op_flags_function_unsupported_not_dropped`
+      (crates/synth-core/src/wasm_decoder.rs) asserts a scalar `f32.add` flags
+      its function `unsupported` (naming `F32Add`) while a pure-integer function
+      stays clean. Manual: an f32/f64 module compiled for cortex-m7dp loud-skips
+      both functions (symbol absent; warning names the op) where it previously
+      emitted the silent `mov r0,r1` stub. Frozen byte-identity confirmed: the
+      three differential oracles (control_step 0x00210A55 13/13, flight_seam
+      0x07FDF307, div_const 338/338) PASS unchanged (no fixture uses floats).
+    status: implemented
+    tags: [gale, fpu, verification, unit-test, frozen, release-v0.11.46]
+    links:
+      - type: verifies
+        target: GI-FPU-001
+    fields:
+      method: test
+      pass-criteria: >
+        cargo test test_369 green; f32 module emits no fadd/dmul symbol;
+        control_step / flight_seam / div_const differentials byte-identical.
