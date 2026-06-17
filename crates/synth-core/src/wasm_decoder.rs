@@ -575,6 +575,20 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
             offset: memarg.offset as u32,
             align: memarg.align as u32,
         }),
+        // #372: full-width i64 load/store. The selector already lowers these to
+        // a lo/hi i32 register-pair access (`generate_i64_load/store_with_bounds_check`,
+        // reusing the #171 pair regalloc) — only the decoder arm was missing, so
+        // `i64.load`/`i64.store` fell through `_ => None` and (since v0.11.46)
+        // loud-skipped their function. The narrow forms (I64Load8.. / I64Store32)
+        // were already decoded below.
+        I64Load { memarg } => Some(WasmOp::I64Load {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I64Store { memarg } => Some(WasmOp::I64Store {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
 
         // Sub-word loads (i32)
         I32Load8S { memarg } => Some(WasmOp::I32Load8S {
