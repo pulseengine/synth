@@ -611,6 +611,8 @@ artifacts:
     status: proposed
     tags: [gale, fpu, float, correctness, silent-miscompile, ok-or-err, release-pending]
     links:
+      - type: derives-from
+        target: GI-002
       - type: traces-to
         target: gale:369
     fields:
@@ -651,10 +653,10 @@ artifacts:
     status: proposed
     tags: [gale, fpu, vfp, hard-float, float, performance, pixhawk, feature, multi-pass]
     links:
+      - type: derives-from
+        target: GI-002
       - type: traces-to
         target: gale:369
-      - type: derives-from
-        target: GI-FPU-001
     fields:
       req-type: functional
       priority: must
