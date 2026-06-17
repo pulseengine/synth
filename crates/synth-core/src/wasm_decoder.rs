@@ -184,7 +184,12 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 }
             }
             Payload::ImportSection(reader) => {
-                for import in reader {
+                // wasmparser 0.221+ groups imports (the "compact imports"
+                // proposal): the section reader yields `Imports` groups, each of
+                // which may expand to several `Import`s. `into_imports()`
+                // flattens groups back to individual `Import`s (preserving the
+                // module/name/ty fields), keeping the per-import loop intact.
+                for import in reader.into_imports() {
                     let import = import.context("Failed to parse import")?;
                     let (kind, idx) = match import.ty {
                         wasmparser::TypeRef::Func(type_idx) => {
@@ -373,7 +378,9 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
 
         match payload {
             Payload::ImportSection(imports) => {
-                for import in imports {
+                // wasmparser 0.221+ compact-imports grouping — flatten groups
+                // to individual imports (see the ImportSection handler above).
+                for import in imports.into_imports() {
                     let import = import.context("Failed to parse import")?;
                     if matches!(import.ty, wasmparser::TypeRef::Func(_)) {
                         num_imported_funcs += 1;
