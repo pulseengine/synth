@@ -38,7 +38,7 @@ crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
 crate.spec(package = "anyhow", version = "1.0")
 
 # WebAssembly tooling (matching workspace versions)
-crate.spec(package = "wasmparser", version = "0.219")
+crate.spec(package = "wasmparser", version = "0.248")
 crate.spec(package = "wasm-encoder", version = "0.219")
 crate.spec(package = "wit-parser", version = "0.219")
 crate.spec(package = "wit-component", version = "0.219")
