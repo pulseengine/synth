@@ -5307,10 +5307,20 @@ impl ArmEncoder {
                 } else {
                     addr.offset as u32
                 };
-                bytes.extend_from_slice(&self.encode_thumb32_ldr(rdlo, &addr.base, offset)?);
+                // #372: a memory `i64.load` carries an index register
+                // (`reg_imm(R11, addr_reg, offset)` = R11 + addr + offset). The
+                // immediate `encode_thumb32_ldr` below uses only base+offset and
+                // would SILENTLY DROP `offset_reg` — the #206 defect, here for
+                // i64. Materialize the effective base `ip = base + index` first
+                // (ADD.W ip, base, index — byte-verified), then load with
+                // immediate offsets. Frame i64 loads (no `offset_reg`, e.g. a
+                // spilled local at `[SP, #off]`) keep the plain `[base,#off]`
+                // form unchanged — so existing output is byte-identical.
+                let base = self.i64_effective_base(&mut bytes, addr);
+                bytes.extend_from_slice(&self.encode_thumb32_ldr(rdlo, &base, offset)?);
                 bytes.extend_from_slice(&self.encode_thumb32_ldr(
                     rdhi,
-                    &addr.base,
+                    &base,
                     offset.wrapping_add(4),
                 )?);
                 Ok(bytes)
@@ -5324,10 +5334,12 @@ impl ArmEncoder {
                 } else {
                     addr.offset as u32
                 };
-                bytes.extend_from_slice(&self.encode_thumb32_str(rdlo, &addr.base, offset)?);
+                // #372: same index-materialization as I64Ldr (see above).
+                let base = self.i64_effective_base(&mut bytes, addr);
+                bytes.extend_from_slice(&self.encode_thumb32_str(rdlo, &base, offset)?);
                 bytes.extend_from_slice(&self.encode_thumb32_str(
                     rdhi,
-                    &addr.base,
+                    &base,
                     offset.wrapping_add(4),
                 )?);
                 Ok(bytes)
@@ -6353,6 +6365,29 @@ impl ArmEncoder {
         let mut bytes = hw1.to_le_bytes().to_vec();
         bytes.extend_from_slice(&hw2.to_le_bytes());
         Ok(bytes)
+    }
+
+    /// #372: resolve the base register for an `I64Ldr`/`I64Str` whose address
+    /// may carry an index register. If `addr.offset_reg` is set (a memory
+    /// `i64.load`/`i64.store`: `R11 + addr + offset`), emit `ADD.W ip, base,
+    /// index` and return `ip` (R12) as the base for the two immediate-offset
+    /// halves. If unset (a frame access at `[base, #off]`), return `addr.base`
+    /// unchanged — emitting nothing — so non-indexed i64 access is byte-identical.
+    /// `ip = base + index` is computed BEFORE the halves load, so an `rdlo`
+    /// aliasing the index register is safe (the address is already materialized).
+    fn i64_effective_base(&self, bytes: &mut Vec<u8>, addr: &MemAddr) -> Reg {
+        match addr.offset_reg {
+            Some(idx) => {
+                let ip = Reg::R12;
+                // ADD.W ip, addr.base, idx  (Thumb-2, byte-verified vs as)
+                let hw1: u16 = 0xEB00 | reg_to_bits(&addr.base) as u16;
+                let hw2: u16 = 0x0C00 | reg_to_bits(&idx) as u16;
+                bytes.extend_from_slice(&hw1.to_le_bytes());
+                bytes.extend_from_slice(&hw2.to_le_bytes());
+                ip
+            }
+            None => addr.base,
+        }
     }
 
     /// Encode Thumb-2 32-bit LDR
@@ -8773,6 +8808,41 @@ mod tests {
         let code = encoder.encode(&op).unwrap();
         // Two LDR instructions (lo at offset, hi at offset+4)
         assert!(code.len() >= 4, "I64Ldr should emit at least 4 bytes");
+    }
+
+    #[test]
+    fn test_372_i64_ldr_indexed_materializes_address() {
+        // #372: a memory i64.load carries an index register (R11 + addr + off).
+        // The encoder must materialize `ip = base + index` (ADD.W) and load via
+        // `[ip,#off]` — NOT drop the index. A frame (non-indexed) i64.load must
+        // stay byte-identical (plain `[base,#off]`, no ADD).
+        let encoder = ArmEncoder::new_thumb2();
+        let indexed = encoder
+            .encode(&ArmOp::I64Ldr {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                addr: MemAddr::reg_imm(Reg::R11, Reg::R0, 0),
+            })
+            .unwrap();
+        // ADD.W ip, fp, r0 = eb0b 0c00 (byte-verified vs arm-none-eabi-as).
+        assert_eq!(
+            &indexed[0..4],
+            &[0x0b, 0xeb, 0x00, 0x0c],
+            "indexed I64Ldr must start with ADD.W ip, base, index"
+        );
+        let frame = encoder
+            .encode(&ArmOp::I64Ldr {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, 8),
+            })
+            .unwrap();
+        // No index -> no ADD.W prefix (byte-identical frame access).
+        assert_ne!(
+            &frame[0..2],
+            &[0x0b, 0xeb],
+            "frame (non-indexed) I64Ldr must NOT emit an ADD.W"
+        );
     }
 
     #[test]
