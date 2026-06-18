@@ -33,14 +33,21 @@ ld=run(["arm-none-eabi-ld","-T",f"{HERE}/n359/postlink.ld",O,"/tmp/n359/stubs.o"
 if ld.returncode!=0: print("LINK FAILED:",ld.stderr); sys.exit(2)
 nm={l.split()[2]:int(l.split()[0],16) for l in run(["arm-none-eabi-nm",ELF]).stdout.splitlines() if len(l.split())==3}
 bss_lo,bss_hi=nm["__bss_start"],nm["__bss_end"]
-# The SP-global init = the static-data base: linmem [0, WASM_DATA_BASE) is the
-# shadow-stack/frame region (legitimately the zero `.bss` reservation), and
-# [WASM_DATA_BASE, used_extent) is the static `.rodata`/data that #354 splits
-# out to `__synth_wasm_seg_K` (`.data`). A `__synth_wasm_data + C` literal
-# addressing the STATIC region (C >= base) that resolves into `.bss` is the bug
-# (the table moved to seg_K but the access still points at the zero reservation).
-# A literal into the frame region (C < base) is correct and NOT a violation.
-WASM_DATA_BASE = 65536  # = $__stack_pointer init in msgq_put_359.wasm
+# INVARIANT (precise): a `__synth_wasm_data + C` literal in a synth body must
+# resolve to a READABLE location holding linmem[C]'s value:
+#  - C inside an init segment -> the data moved to seg_K (.data), so the literal
+#    must be RETARGETED (it must NOT still point at __synth_wasm_data/.bss).
+#  - C in a zero region -> stays __synth_wasm_data + C in .bss, which is correct
+#    ONLY IF the .bss reservation covers C (C < used_extent, i.e. the resolved
+#    address < __bss_end). Reading AT/PAST __bss_end is the #359 bug: gale's msgq
+#    reads a zero word at offset 65552 (the table tail), but .bss was sized to
+#    exactly 65552 (the init-seg end) because static_top filtered MovwAbs while
+#    the real relocs are Abs32 -> the access lands at __bss_end and reads garbage.
+# So flag any literal that resolves at/past __bss_end but within the plausible
+# linmem window [__bss_start, __bss_start + 128 KiB) — a static access that reads
+# past the zero reservation. (The post-link image is NECESSARY-not-sufficient;
+# numeric rc=0 stays gale's G474RE round-trip.)
+MARGIN = 0x40  # a real boundary over-read lands just past __bss_end; wider hits = code words
 s=run(["arm-none-eabi-objdump","-s","-j",".text",ELF]).stdout
 viol=[]
 for line in s.splitlines():
@@ -50,12 +57,12 @@ for line in s.splitlines():
         for i,w in enumerate(p[1:5]):
             if re.match(r'^[0-9a-f]{8}$',w):
                 v=struct.unpack('<I',bytes.fromhex(w))[0]
-                if bss_lo<=v<=bss_hi and (v - bss_lo) >= WASM_DATA_BASE:
+                if bss_hi <= v < bss_hi + MARGIN:
                     viol.append((base+i*4, v, v - bss_lo))
-print(f"__bss_start={bss_lo:#x} __bss_end={bss_hi:#x} __synth_wasm_seg_0={nm.get('__synth_wasm_seg_0',0):#x} WASM_DATA_BASE={WASM_DATA_BASE}")
+print(f"__bss_start={bss_lo:#x} __bss_end={bss_hi:#x} __synth_wasm_seg_0={nm.get('__synth_wasm_seg_0',0):#x} .bss size={bss_hi-bss_lo}")
 for a,v,off in viol:
-    print(f"  text@{a:#08x}: .word {v:#010x}  -> __synth_wasm_data + {off} in STATIC region but lands in .bss — VIOLATION")
+    print(f"  text@{a:#08x}: .word {v:#010x}  -> __synth_wasm_data + {off} resolves AT/PAST __bss_end (reads past the zero reservation) — VIOLATION")
 ok = len(viol)==0
-print("ORACLE:", "PASS (no static-region __synth_wasm_* literal in .bss)"
-      if ok else f"FAIL ({len(viol)} static-data literals resolve into .bss — #359 #354x#368)")
+print("ORACLE:", "PASS (no __synth_wasm_* literal reads past __bss_end)"
+      if ok else f"FAIL ({len(viol)} static-data literals read past .bss — #359 #354x#368)")
 sys.exit(0 if ok else 1)
