@@ -748,3 +748,40 @@ artifacts:
       pass-criteria: >
         ld64(16)=0x8877665544332211 on optimized + direct ELFs; frozen oracles
         + u64_unpack byte-identical; cargo test test_372 green.
+
+  - id: GI-NPA-005
+    type: sw-req
+    title: Native-pointer .bss sized for Abs32 static accesses (#359 — #354 x #368)
+    description: >
+      gale's dissolved k_msgq_put returned rc=-35 on G474RE: the action→ret
+      lookup read a ZERO word at linmem offset 65552 (the table tail, just past
+      the 16-byte init segment) but the .bss reservation was sized to the
+      init-segment end (65552), so the access landed at __bss_end and read
+      garbage -> queue-full on an empty queue. Root cause:
+      build_relocatable_elf's used_extent/static_top filtered RelocKind::MovwAbs,
+      but the native-pointer path emits Abs32 LITERAL-POOL relocs (S + A), so
+      static_top saw nothing and used_extent under-sized .bss. IMPLEMENTED
+      v0.11.48 (870920d): static_top_abs32 reads the addend from each
+      __synth_wasm_data Abs32 literal so .bss spans every accessed offset (msgq
+      65552 -> .bss 65560). General bug: native_pointer_bss (store@256, .bss was
+      4) grows 4->264 (.bss NOBITS, no bloat). NOT the retarget-completeness
+      first assumed (the naive boundary tweak would mis-point at __synth_globals).
+      Necessary-not-sufficient post-link oracle (postlink_359_oracle.py) gated the
+      fix; gale's G474RE round-trip was the sufficient gate.
+    status: verified
+    tags: [gale, native-pointer-abi, bss, elf, on-target, silicon-verified, release-v0.11.48]
+    links:
+      - type: derives-from
+        target: GI-NPA-001
+      - type: traces-to
+        target: gale:359
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        scripts/repro/postlink_359_oracle.py (links the real image, asserts no
+        __synth_wasm_data literal resolves past __bss_end) FAIL->PASS; the three
+        frozen fixtures (control_step 0x00210A55, flight_seam 0x07FDF307,
+        div_const 338/338) byte-identical; native_pointer_shadow_stack
+        differential PASS; 32 cli tests green; gale G474RE silicon rc=0 +
+        val=0xABCD round-trip on an empty queue (was rc=-35/val=0x0).

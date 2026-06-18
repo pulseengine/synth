@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.48] - 2026-06-18
+
+**ON-TARGET — #359 closed on silicon (G474RE `rc=0`): the dissolved msgq
+primitive is functionally correct. Native-pointer `.bss` is now sized for the
+Abs32 static accesses it was silently undersizing.**
+
+- **#359 — `.bss` under-sizing for native-pointer Abs32 static accesses** (the
+  `#354 × #368` interaction): gale's dissolved `k_msgq_put` returned `rc=-35`
+  (`-ENOMSG`, queue-full on an empty queue). Root cause: `build_relocatable_elf`'s
+  `used_extent`/`static_top` computation filtered `RelocKind::MovwAbs`, but the
+  native-pointer path relocates static-data accesses as **`Abs32` literal-pool**
+  words (`S + A`). So `static_top` saw nothing, `used_extent` fell back to the
+  init-segment end, and the decide's action→ret lookup — a **zero word at offset
+  65552** (the table tail, just past the 16-byte init segment) — landed at
+  `__bss_end` and read **garbage** instead of zero, taking the queue-full branch.
+  New `static_top_abs32` reads the addend from each `__synth_wasm_data` `Abs32`
+  literal (the in-place `.text` word, pre-retarget) so the `.bss` reservation
+  spans every offset the code touches (msgq: 65552 → `.bss` 65560). General
+  native-pointer bug, not msgq-specific: `native_pointer_bss` (`i32.store
+  (i32.const 256) …`) had `.bss=4` while writing at 256 — fix grows it 4→264
+  (`.bss` is NOBITS, so zero binary bloat; `.bss` `sh_size` is the only delta,
+  code byte-identical).
+
+  Verified: a new **post-link oracle** (`scripts/repro/postlink_359_oracle.py` —
+  links the real image and asserts no `__synth_wasm_data` literal resolves past
+  `__bss_end`, the structural fix to the `.o`-only oracle that let #368 pass
+  locally and fail on silicon) went **FAIL → PASS**; the three frozen fixtures
+  (control_step `0x00210A55`, flight_seam `0x07FDF307`, div_const 338/338) stay
+  byte-identical; native-pointer numeric differential PASS; 32 cli tests green.
+  **Silicon-confirmed by gale on NUCLEO-G474RE: `rc=0`, `val=0xABCD`, correct
+  round-trip on an empty queue** (was `rc=-35`/`val=0x0`). This clears msgq's
+  last on-target blocker (#372 was the other, v0.11.47).
+
+  **Falsification:** a native-pointer module whose highest static access lands at
+  offset `O` now reserves `.bss ≥ O + 8`; a `__synth_wasm_data + O` access reads
+  within the reservation (correct zero / data) instead of past `__bss_end`.
+
 ## [0.11.47] - 2026-06-18
 
 **CORRECTNESS — #372: `i64.load`/`i64.store` now lower correctly (they were

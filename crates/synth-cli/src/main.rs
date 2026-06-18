@@ -2438,10 +2438,45 @@ fn build_relocatable_elf(
                 .map(|a: u32| a.saturating_add(8))
                 .max()
                 .unwrap_or(0);
+            // #359: the native-pointer path relocates static-data accesses as
+            // Abs32 LITERAL-POOL words (`S + A`), NOT MovwAbs — so the MovwAbs-only
+            // `static_top` above sees nothing and under-sizes the `.bss`
+            // reservation. A legitimate high-offset access (gale's msgq action→ret
+            // lookup reads a ZERO word at offset 65552 — the tail of the table,
+            // just past the 16-byte init segment) then lands at/past `__bss_end`
+            // and reads garbage instead of zero, taking the queue-full branch on
+            // an empty queue → rc=-35 (the #354 × #368 interaction). Cover the
+            // Abs32 literal addends too (read C from the in-place `.text` word,
+            // pre-retarget) so the reservation spans every offset the code reads.
+            let static_top_abs32 = funcs
+                .iter()
+                .flat_map(|f| {
+                    f.relocations.iter().filter_map(move |r| {
+                        if r.symbol != "__synth_wasm_data"
+                            || !matches!(r.kind, synth_core::RelocKind::Abs32)
+                        {
+                            return None;
+                        }
+                        let pos = r.offset as usize;
+                        if pos + 4 > f.code.len() {
+                            return None;
+                        }
+                        Some(u32::from_le_bytes([
+                            f.code[pos],
+                            f.code[pos + 1],
+                            f.code[pos + 2],
+                            f.code[pos + 3],
+                        ]))
+                    })
+                })
+                .map(|a: u32| a.saturating_add(8))
+                .max()
+                .unwrap_or(0);
             data_end
                 .max(sp_top)
                 .max(global_top)
                 .max(static_top)
+                .max(static_top_abs32)
                 .max(4)
                 .min(linear_memory_bytes)
                 .next_multiple_of(4)
