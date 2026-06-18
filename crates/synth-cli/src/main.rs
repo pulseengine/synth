@@ -2032,6 +2032,22 @@ fn compile_all_exports(
         } else {
             config.clone()
         };
+        // #369: the decoder flagged a value-affecting op it cannot lower (e.g.
+        // scalar f32/f64, bulk-memory). Lowering would have SILENTLY DROPPED it
+        // and miscompiled the function (wrong value, no diagnostic). Loud-skip
+        // instead — honest degradation: the symbol is absent, so a caller gets a
+        // link error naming it rather than a silently-wrong result. (#180/#185
+        // "unsupported op must Err, never silently continue".)
+        if let Some(reason) = &func.unsupported {
+            eprintln!(
+                "warning: skipping function '{name}': contains an unsupported \
+                 operator ({reason}) the {} backend cannot lower — emitting no \
+                 code for it rather than a silent miscompile (#369)",
+                backend.name()
+            );
+            skipped_funcs.push((name.clone(), format!("unsupported operator: {reason}")));
+            continue;
+        }
         let compiled = match backend.compile_function(&name, &func.ops, &func_config) {
             Ok(c) => c,
             Err(e) => {
@@ -3943,6 +3959,7 @@ mod tests {
             index,
             export_name: export.map(String::from),
             ops,
+            unsupported: None,
         }
     }
 

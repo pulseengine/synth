@@ -2058,6 +2058,21 @@ impl OptimizerBridge {
             )));
         }
 
+        // #372: the optimized path also has no IR opcode for full-width
+        // `i64.load`/`i64.store` — it would drop them to a stub (`ld64` -> `bx
+        // lr`). Decline so the backend falls back to the direct selector, which
+        // lowers them to a correct lo/hi register-pair access (I64Ldr/I64Str,
+        // now index-correct per #372). Same decline pattern as #120/#188.
+        if let Some(mem_op) = wasm_ops
+            .iter()
+            .find(|op| matches!(op, WasmOp::I64Load { .. } | WasmOp::I64Store { .. }))
+        {
+            return Err(Error::UnsupportedInstruction(format!(
+                "optimized lowering path does not support full-width i64 memory \
+                 ops ({mem_op:?}); the direct instruction selector lowers them — issue #372"
+            )));
+        }
+
         // Issue #178/#180: the optimized linear-memory miscompilation was
         // root-caused to the Thumb encoder, NOT this lowering — `ArmOp::Add`
         // (and `Adds`/`Subs`) unconditionally used the 16-bit form, whose 3-bit

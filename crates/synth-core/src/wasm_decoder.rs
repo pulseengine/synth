@@ -335,7 +335,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let ops = decode_function_body(&body)?;
+                let (ops, unsupported) = decode_function_body(&body)?;
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
 
@@ -343,6 +343,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     index: actual_index,
                     export_name,
                     ops,
+                    unsupported,
                 });
                 func_index += 1;
             }
@@ -396,7 +397,7 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let ops = decode_function_body(&body)?;
+                let (ops, unsupported) = decode_function_body(&body)?;
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
 
@@ -404,6 +405,7 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                     index: actual_index,
                     export_name,
                     ops,
+                    unsupported,
                 });
                 func_index += 1;
             }
@@ -423,11 +425,26 @@ pub struct FunctionOps {
     pub export_name: Option<String>,
     /// The WASM operations in this function body
     pub ops: Vec<WasmOp>,
+    /// `Some(reason)` when the body contained a value-affecting operator the
+    /// decoder cannot lower (e.g. scalar f32/f64 — #369, bulk-memory
+    /// memory.copy/fill). Such an op would otherwise be silently *dropped*
+    /// (`convert_operator` → `None`), leaving the operand stack wrong and the
+    /// function a silent miscompile. The compile path LOUD-SKIPS a flagged
+    /// function (diagnostic + symbol absent → link error names it) instead —
+    /// the #180/#185 "unsupported op must Err, never silently continue"
+    /// contract. `None` once every op decoded or was intentionally ignorable
+    /// (Nop/Unreachable).
+    pub unsupported: Option<String>,
 }
 
-/// Decode a single function body to WasmOp sequence
-fn decode_function_body(body: &wasmparser::FunctionBody) -> Result<Vec<WasmOp>> {
+/// Decode a single function body to WasmOp sequence.
+///
+/// Returns the ops plus `Some(reason)` if any operator was a value-affecting
+/// op the decoder cannot lower (so the function must be loud-skipped, #369 —
+/// not silently miscompiled by dropping the op).
+fn decode_function_body(body: &wasmparser::FunctionBody) -> Result<(Vec<WasmOp>, Option<String>)> {
     let mut ops = Vec::new();
+    let mut unsupported: Option<String> = None;
 
     let ops_reader = body.get_operators_reader()?;
     for op_result in ops_reader {
@@ -435,10 +452,24 @@ fn decode_function_body(body: &wasmparser::FunctionBody) -> Result<Vec<WasmOp>> 
 
         if let Some(wasm_op) = convert_operator(&op) {
             ops.push(wasm_op);
+        } else if unsupported.is_none() && !is_intentionally_ignored(&op) {
+            // The op was DROPPED by `convert_operator` (`_ => None`) and is not
+            // an intentional no-op (Nop/Unreachable) — record it so the
+            // function is loud-skipped rather than silently miscompiled (#369).
+            unsupported = Some(format!("{op:?}"));
         }
     }
 
-    Ok(ops)
+    Ok((ops, unsupported))
+}
+
+/// Operators that `convert_operator` returns `None` for *on purpose* — they
+/// carry no value-affecting semantics for our backend, so dropping them is
+/// correct (NOT a silent miscompile). Everything else that decodes to `None`
+/// is an unsupported op that must loud-skip its function (#369).
+fn is_intentionally_ignored(op: &wasmparser::Operator) -> bool {
+    use wasmparser::Operator::*;
+    matches!(op, Nop | Unreachable)
 }
 
 /// Convert a wasmparser Operator to our WasmOp enum
@@ -541,6 +572,20 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
             align: memarg.align as u32,
         }),
         I32Store { memarg } => Some(WasmOp::I32Store {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        // #372: full-width i64 load/store. The selector already lowers these to
+        // a lo/hi i32 register-pair access (`generate_i64_load/store_with_bounds_check`,
+        // reusing the #171 pair regalloc) — only the decoder arm was missing, so
+        // `i64.load`/`i64.store` fell through `_ => None` and (since v0.11.46)
+        // loud-skipped their function. The narrow forms (I64Load8.. / I64Store32)
+        // were already decoded below.
+        I64Load { memarg } => Some(WasmOp::I64Load {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        I64Store { memarg } => Some(WasmOp::I64Store {
             offset: memarg.offset as u32,
             align: memarg.align as u32,
         }),
@@ -1359,6 +1404,45 @@ mod tests {
 
         assert_eq!(functions.len(), 1);
         assert!(functions[0].ops.contains(&WasmOp::F32x4Add));
+    }
+
+    #[test]
+    fn test_369_scalar_float_op_flags_function_unsupported_not_dropped() {
+        // #369: a scalar f32/f64 op the decoder can't lower must FLAG the
+        // function (-> loud skip), never be silently dropped (which left a
+        // `mov r0,r1` wrong-value stub). A pure-integer function stays clean.
+        let wat = r#"
+            (module
+                (func (export "fadd") (param f32 f32) (result f32)
+                    local.get 0 local.get 1 f32.add)
+                (func (export "iadd") (param i32 i32) (result i32)
+                    local.get 0 local.get 1 i32.add))
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let functions = decode_wasm_functions(&wasm).expect("decode");
+        let fadd = functions
+            .iter()
+            .find(|f| f.export_name.as_deref() == Some("fadd"))
+            .unwrap();
+        let iadd = functions
+            .iter()
+            .find(|f| f.export_name.as_deref() == Some("iadd"))
+            .unwrap();
+        assert!(
+            fadd.unsupported.is_some(),
+            "f32.add must flag the function unsupported (loud-skip), got {:?}",
+            fadd.unsupported
+        );
+        assert!(
+            fadd.unsupported.as_deref().unwrap().contains("F32Add"),
+            "diagnostic should name the op: {:?}",
+            fadd.unsupported
+        );
+        assert!(
+            iadd.unsupported.is_none(),
+            "a pure-integer function must NOT be flagged: {:?}",
+            iadd.unsupported
+        );
     }
 
     #[test]

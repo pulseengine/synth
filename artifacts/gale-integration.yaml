@@ -607,9 +607,12 @@ artifacts:
       fixture uses floats (zero `f32.`/`f64.` in scripts/repro/*.wat), so
       every frozen differential stays byte-identical. Shippable independently
       of GI-FPU-002 (the hard-float feature); bundles naturally with the
-      memory.copy-drop fix (same decoder catch-all).
-    status: proposed
-    tags: [gale, fpu, float, correctness, silent-miscompile, ok-or-err, release-pending]
+      memory.copy-drop fix (same decoder catch-all). IMPLEMENTED in v0.11.46
+      (#371): FunctionOps.unsupported flag + decode_function_body recording +
+      compile-loop loud-skip; f32/f64 module loud-skips (was silent mov r0,r1);
+      3 frozen oracles byte-identical; unit test; covers memory.copy too.
+    status: implemented
+    tags: [gale, fpu, float, correctness, silent-miscompile, ok-or-err, release-v0.11.46]
     links:
       - type: derives-from
         target: GI-002
@@ -668,3 +671,80 @@ artifacts:
         re-test; cortex-m7 (sp) and cortex-m7dp (dp) outputs DIFFER (FPU mode
         consulted); all frozen fixtures stay byte-identical (no float content,
         unaffected); soft-float retained and unchanged for cortex-m3.
+
+  - id: GI-FPU-VER-001
+    type: sw-verification
+    title: "Unsupported-op loud-skip (#369) — unit test + frozen byte-identity"
+    description: >
+      Verifies GI-FPU-001 (v0.11.46, #371). Unit test
+      `test_369_scalar_float_op_flags_function_unsupported_not_dropped`
+      (crates/synth-core/src/wasm_decoder.rs) asserts a scalar `f32.add` flags
+      its function `unsupported` (naming `F32Add`) while a pure-integer function
+      stays clean. Manual: an f32/f64 module compiled for cortex-m7dp loud-skips
+      both functions (symbol absent; warning names the op) where it previously
+      emitted the silent `mov r0,r1` stub. Frozen byte-identity confirmed: the
+      three differential oracles (control_step 0x00210A55 13/13, flight_seam
+      0x07FDF307, div_const 338/338) PASS unchanged (no fixture uses floats).
+    status: implemented
+    tags: [gale, fpu, verification, unit-test, frozen, release-v0.11.46]
+    links:
+      - type: verifies
+        target: GI-FPU-001
+    fields:
+      method: test
+      pass-criteria: >
+        cargo test test_369 green; f32 module emits no fadd/dmul symbol;
+        control_step / flight_seam / div_const differentials byte-identical.
+
+  - id: GI-MEM-001
+    type: sw-req
+    title: Full-width i64.load/i64.store lower correctly (#372)
+    description: >
+      gale/jess #372 (surfaced by the GI-FPU-001 loud-skip): full-width
+      `i64.load`/`i64.store` were a 3-layer gap blocking 39 falcon sites.
+      DECODER had no full-width I64Load/I64Store arm (only narrow I64Load8..32),
+      so they dropped to `_ => None` and loud-skipped. OPTIMIZER had no IR
+      opcode and stubbed them (`ld64` -> `bx lr`). ENCODER (the real bug)
+      I64Ldr/I64Str ignored `addr.offset_reg`, emitting `[R11+offset]` and
+      DROPPING the address (ld64(16) read mem[0], not mem[16] — #206 class).
+      IMPLEMENTED v0.11.47 (#373): decoder arms + optimizer decline->direct
+      fallback (#120/#188 pattern) + `i64_effective_base` materializing
+      `ADD.W ip, base, index` then `[ip,#off]`/`[ip,#off+4]`; non-indexed frame
+      i64 access unchanged (byte-identical). Verified value-level on both paths.
+    status: implemented
+    tags: [gale, jess, i64, memory, encoder, correctness, falcon, release-v0.11.47]
+    links:
+      - type: derives-from
+        target: GI-005
+      - type: traces-to
+        target: gale:372
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        scripts/repro/i64_load_store_372_differential.py: ld64(16) returns
+        mem[16] (0x8877665544332211), not mem[0], on BOTH the optimized and
+        --no-optimize ELFs (unicorn); st64 materializes the index symmetrically;
+        unit test test_372_i64_ldr_indexed_materializes_address; the three frozen
+        oracles (control_step 0x00210A55, flight_seam 0x07FDF307, div_const
+        338/338) and i64-frame fixtures (u64_unpack) stay byte-identical.
+
+  - id: GI-MEM-VER-001
+    type: sw-verification
+    title: "i64.load/store value-level + frozen byte-identity (#372)"
+    description: >
+      Verifies GI-MEM-001 (v0.11.47). Numeric differential
+      i64_load_store_372_differential.py proves ld64 reads mem[addr] (was mem[0]
+      pre-fix) on both compile paths; unit test asserts indexed I64Ldr emits the
+      ADD.W index materialization and non-indexed does not; 39 suites green;
+      control_step/flight_seam/div_const + u64_unpack byte-identical.
+    status: implemented
+    tags: [gale, i64, verification, frozen, release-v0.11.47]
+    links:
+      - type: verifies
+        target: GI-MEM-001
+    fields:
+      method: test
+      pass-criteria: >
+        ld64(16)=0x8877665544332211 on optimized + direct ELFs; frozen oracles
+        + u64_unpack byte-identical; cargo test test_372 green.

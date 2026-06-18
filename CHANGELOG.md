@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.47] - 2026-06-18
+
+**CORRECTNESS — #372: `i64.load`/`i64.store` now lower correctly (they were
+dropped, then mis-addressed). Unblocks 39 falcon i64-memory sites.**
+
+- **#372 — full-width i64 load/store** (#373): three independent defects, the
+  deepest a real miscompile:
+  - **decoder** — `convert_operator` decoded the narrow forms
+    (`I64Load8..32`, `I64Store8..32`) and `I32Load/Store` but had **no arm for
+    full-width `I64Load`/`I64Store`**, so they fell through `_ => None`, were
+    dropped, and (since v0.11.46) loud-skipped. Added the two arms.
+  - **optimizer** — the optimized path has no IR opcode for them and dropped
+    them to a stub (`ld64` → `bx lr`). `optimize_full` now **declines**
+    `i64.load`/`i64.store` and falls back to the direct selector (the #120/#188
+    pattern), which lowers them as a lo/hi register pair.
+  - **encoder (the real bug)** — `I64Ldr`/`I64Str` used `addr.base + offset`
+    and **ignored `addr.offset_reg`**, emitting `[R11 + offset]` and **dropping
+    the address operand**: `ld64(16)` read `mem[0]`, not `mem[16]` (same class
+    as #206). The new `i64_effective_base` materializes `ADD.W ip, base, index`
+    then loads/stores via `[ip, #off]`/`[ip, #off+4]`. Non-indexed (frame) i64
+    access keeps the plain `[base, #off]` form → byte-identical.
+
+  **Falsification:** `ld64(addr)`/`st64(addr)` now read/write `mem[addr]` on
+  both the optimized and direct paths (`i64_load_store_372_differential.py`);
+  i64-*frame* access and the three frozen oracles stay bit-identical
+  (control_step `0x00210A55` 13/13, flight_seam `0x07FDF307`, div_const 338/338;
+  `u64_unpack` byte-identical). No fixture uses `i64.load`/`i64.store`.
+
+## [0.11.46] - 2026-06-17
+
+**CORRECTNESS — #369: an op the backend cannot lower now LOUD-SKIPS its
+function instead of being silently dropped into a wrong-value miscompile.**
+
+- **#369 / GI-FPU-001 — unsupported decoder ops no longer silently drop**
+  (#371): `convert_operator` returns `None` for any operator it can't lower, and
+  the caller previously **dropped it silently** — leaving the operand stack wrong
+  and the function a silent miscompile (`f32.add(a,b)` lowered to `mov r0,r1`,
+  returning an operand instead of the sum; the same `_ => None` line drops
+  `memory.copy`). Per the #180/#185 contract, an unsupported op must surface
+  loudly. `FunctionOps` now carries `unsupported: Option<String>`;
+  `decode_function_body` records the first value-affecting op that decodes to
+  `None` (everything except the intentional `Nop`/`Unreachable`); and the
+  compile loop **loud-skips** a flagged function (warning naming the op + symbol
+  absent → a caller gets a link error), reusing the #168 `skipped_funcs` path. An
+  all-skipped module errors loudly rather than emitting an empty object. Covers
+  scalar f32/f64 (#369, jess AFD-024/AFD-008), bulk-memory (`memory.copy`/
+  `fill`), and any other decoder-dropped value-affecting op — the honest interim
+  until real VFP (GI-FPU-002) and bulk-memory lowering land.
+
+  **Falsification:** a module whose only function uses a scalar `f32`/`f64` op
+  (or `memory.copy`) no longer produces an object containing that function — it
+  is reported skipped and absent. A pure-integer module is byte-identical to
+  before: the three frozen oracles stay bit-identical (control_step `0x00210A55`
+  13/13, flight_seam `0x07FDF307`, div_const 338/338); no fixture uses floats.
+
 ## [0.11.45] - 2026-06-14
 
 **ON-TARGET SHIPPABILITY — gale #354: a high-offset init segment no longer
