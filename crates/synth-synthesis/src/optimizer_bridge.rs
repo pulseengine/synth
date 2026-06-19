@@ -21,6 +21,31 @@ use synth_opt::{
     Instruction, Opcode, OptResult, PassManager, PeepholeOptimization, Reg as OptReg,
 };
 
+/// #382: fold a static memory offset that exceeds the 12-bit load/store
+/// immediate range into the compile-time-constant linear-memory base.
+///
+/// The optimized path materializes the linear-memory base as a constant
+/// (`MOVW/MOVT R12, #base`), adds the dynamic index (`ADD R12, R12, Raddr`),
+/// and then accesses `[R12, #offset]`. When the wasm `offset` is `> 0xFFF` the
+/// encoder's `check_ldst_imm12` (#259) correctly REFUSES the imm12 form (it
+/// never silently masks to `offset & 0xFFF`), so the function was skipped.
+///
+/// Because `base` is a compile-time constant and `offset` is too, their sum is
+/// also constant: `(base + offset) + addr ≡ base + addr + offset (mod 2^32)`.
+/// Folding the offset into the materialized base keeps the access immediate at
+/// `#0` with ZERO added instructions and never produces an `ADD R12, R12, #imm`
+/// (which would hit the `rd==rn==R12` no-scratch corner — #350).
+///
+/// Gated to `offset > 0xFFF` so existing small-offset output stays
+/// byte-identical (the frozen differential fixtures must not move).
+fn fold_mem_offset(base: u32, offset: u32) -> (u32, i32) {
+    if offset > 0xFFF {
+        (base.wrapping_add(offset), 0)
+    } else {
+        (base, offset as i32)
+    }
+}
+
 /// Optimization configuration
 #[derive(Debug, Clone)]
 pub struct OptimizationConfig {
@@ -4620,8 +4645,10 @@ impl OptimizerBridge {
                     );
                     vreg_to_arm.insert(dest.0, rd);
 
-                    // Linear memory base address: 0x20000100 (in SRAM, above stack area)
-                    let base: u32 = 0x20000100;
+                    // Linear memory base 0x20000100 (SRAM, above stack area).
+                    // #382: fold a large static offset (> imm12) into the
+                    // compile-time-constant base so the access immediate is 0.
+                    let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
                     let base_lo = (base & 0xFFFF) as u16;
                     let base_hi = ((base >> 16) & 0xFFFF) as u16;
 
@@ -4643,7 +4670,7 @@ impl OptimizerBridge {
                     // Load from [base + wasm_addr + static_offset]
                     arm_instrs.push(ArmOp::Ldr {
                         rd,
-                        addr: crate::rules::MemAddr::imm(Reg::R12, *offset as i32),
+                        addr: crate::rules::MemAddr::imm(Reg::R12, mem_off),
                     });
                     last_result_vreg = Some(dest.0);
                 }
@@ -4654,8 +4681,10 @@ impl OptimizerBridge {
                     let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
                     let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs)?;
 
-                    // Linear memory base address: 0x20000100 (in SRAM, above stack area)
-                    let base: u32 = 0x20000100;
+                    // Linear memory base 0x20000100 (SRAM, above stack area).
+                    // #382: fold a large static offset (> imm12) into the
+                    // compile-time-constant base so the access immediate is 0.
+                    let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
                     let base_lo = (base & 0xFFFF) as u16;
                     let base_hi = ((base >> 16) & 0xFFFF) as u16;
 
@@ -4677,7 +4706,7 @@ impl OptimizerBridge {
                     // Store to [base + wasm_addr + static_offset]
                     arm_instrs.push(ArmOp::Str {
                         rd: r_src,
-                        addr: crate::rules::MemAddr::imm(Reg::R12, *offset as i32),
+                        addr: crate::rules::MemAddr::imm(Reg::R12, mem_off),
                     });
                     // MemStore does not produce a value
                 }
@@ -4706,7 +4735,9 @@ impl OptimizerBridge {
                     );
                     vreg_to_arm.insert(dest.0, rd);
 
-                    let base: u32 = 0x20000100;
+                    // #382: fold a large static offset (> imm12) into the
+                    // compile-time-constant base so the access immediate is 0.
+                    let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
                     let base_lo = (base & 0xFFFF) as u16;
                     let base_hi = ((base >> 16) & 0xFFFF) as u16;
                     arm_instrs.push(ArmOp::Movw {
@@ -4722,7 +4753,7 @@ impl OptimizerBridge {
                         rn: Reg::R12,
                         op2: Operand2::Reg(r_addr),
                     });
-                    let addr_mem = crate::rules::MemAddr::imm(Reg::R12, *offset as i32);
+                    let addr_mem = crate::rules::MemAddr::imm(Reg::R12, mem_off);
                     let sub_op = match (*width, *signed) {
                         (1, false) => ArmOp::Ldrb { rd, addr: addr_mem },
                         (1, true) => ArmOp::Ldrsb { rd, addr: addr_mem },
@@ -4749,7 +4780,9 @@ impl OptimizerBridge {
                     let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
                     let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs)?;
 
-                    let base: u32 = 0x20000100;
+                    // #382: fold a large static offset (> imm12) into the
+                    // compile-time-constant base so the access immediate is 0.
+                    let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
                     let base_lo = (base & 0xFFFF) as u16;
                     let base_hi = ((base >> 16) & 0xFFFF) as u16;
                     arm_instrs.push(ArmOp::Movw {
@@ -4765,7 +4798,7 @@ impl OptimizerBridge {
                         rn: Reg::R12,
                         op2: Operand2::Reg(r_addr),
                     });
-                    let addr_mem = crate::rules::MemAddr::imm(Reg::R12, *offset as i32);
+                    let addr_mem = crate::rules::MemAddr::imm(Reg::R12, mem_off);
                     let sub_op = match *width {
                         1 => ArmOp::Strb {
                             rd: r_src,
@@ -6169,6 +6202,83 @@ mod tests {
         assert!(
             !has_runtime_shift,
             "IR-level: i64.shr_u with constant 32 should NOT emit ArmOp::I64ShrU; got: {:#?}",
+            arm
+        );
+    }
+
+    #[test]
+    fn fold_mem_offset_gates_on_imm12_382() {
+        // Small offsets (<= 0xFFF) are left in the access immediate so existing
+        // output stays byte-identical; large offsets fold into the const base.
+        assert_eq!(fold_mem_offset(0x2000_0100, 100), (0x2000_0100, 100));
+        assert_eq!(fold_mem_offset(0x2000_0100, 0xFFF), (0x2000_0100, 0xFFF));
+        // Boundary: 0x1000 (4096) is the first offset that must fold.
+        assert_eq!(fold_mem_offset(0x2000_0100, 0x1000), (0x2000_1100, 0));
+        assert_eq!(fold_mem_offset(0x2000_0100, 5000), (0x2000_1488, 0));
+        // Arithmetic identity holds: (base + off) + 0 == base + off.
+        let (b, imm) = fold_mem_offset(0x2000_0100, 5000);
+        assert_eq!(
+            b.wrapping_add(imm as u32),
+            0x2000_0100u32.wrapping_add(5000)
+        );
+    }
+
+    #[test]
+    fn memstore_large_offset_folds_into_base_382() {
+        // #382: a MemStore with offset > imm12 must NOT emit a `[R12, #offset]`
+        // whose immediate exceeds 0xFFF (the encoder would refuse it and the
+        // function would be skipped). The offset is folded into the MOVW/MOVT
+        // base instead, leaving the access immediate at 0.
+        let bridge = OptimizerBridge::new();
+        let instrs = vec![
+            Instruction {
+                id: 0,
+                opcode: Opcode::Const {
+                    dest: OptReg(0),
+                    value: 0,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 1,
+                opcode: Opcode::Const {
+                    dest: OptReg(1),
+                    value: 0xDEAD,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+            Instruction {
+                id: 2,
+                opcode: Opcode::MemStore {
+                    src: OptReg(1),
+                    addr: OptReg(0),
+                    offset: 5000,
+                },
+                block_id: 0,
+                is_dead: false,
+            },
+        ];
+        let arm = bridge.ir_to_arm(&instrs, 0).expect("valid IR lowers");
+        // No load/store may carry an immediate > 0xFFF.
+        for op in &arm {
+            if let ArmOp::Str { addr, .. } = op {
+                assert!(
+                    addr.offset.unsigned_abs() <= 0xFFF,
+                    "STR immediate {:#x} exceeds imm12 — offset was not folded: {:#?}",
+                    addr.offset,
+                    arm
+                );
+            }
+        }
+        // The base must be materialized as 0x20000100 + 5000 = 0x20001488.
+        let has_folded_base = arm
+            .iter()
+            .any(|op| matches!(op, ArmOp::Movw { imm16, .. } if *imm16 == 0x1488));
+        assert!(
+            has_folded_base,
+            "expected MOVW #0x1488 (0x20000100 + 5000 low half); got: {:#?}",
             arm
         );
     }
