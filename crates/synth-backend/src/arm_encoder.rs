@@ -137,7 +137,7 @@ impl ArmEncoder {
             ArmOp::Add { rd, rn, op2 } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // ADD encoding: cond(4) | 00 | I(1) | 0100 | S(1) | Rn(4) | Rd(4) | operand2(12)
                 0xE0800000 // condition=always(E), opcode=ADD(0100), S=0
@@ -150,7 +150,7 @@ impl ArmEncoder {
             ArmOp::Sub { rd, rn, op2 } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // SUB encoding: opcode=0010
                 0xE0400000 | (i_flag << 25) | (rn_bits << 16) | (rd_bits << 12) | op2_bits
@@ -160,7 +160,7 @@ impl ArmEncoder {
             ArmOp::Adds { rd, rn, op2 } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // ADDS encoding: opcode=0100, S=1
                 0xE0900000 | (i_flag << 25) | (rn_bits << 16) | (rd_bits << 12) | op2_bits
@@ -169,7 +169,7 @@ impl ArmEncoder {
             ArmOp::Adc { rd, rn, op2 } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // ADC encoding: opcode=0101
                 0xE0A00000 | (i_flag << 25) | (rn_bits << 16) | (rd_bits << 12) | op2_bits
@@ -178,7 +178,7 @@ impl ArmEncoder {
             ArmOp::Subs { rd, rn, op2 } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // SUBS encoding: opcode=0010, S=1
                 0xE0500000 | (i_flag << 25) | (rn_bits << 16) | (rd_bits << 12) | op2_bits
@@ -187,7 +187,7 @@ impl ArmEncoder {
             ArmOp::Sbc { rd, rn, op2 } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // SBC encoding: opcode=0110
                 0xE0C00000 | (i_flag << 25) | (rn_bits << 16) | (rd_bits << 12) | op2_bits
@@ -257,7 +257,7 @@ impl ArmEncoder {
             ArmOp::And { rd, rn, op2 } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // AND encoding: opcode=0000
                 0xE0000000 | (i_flag << 25) | (rn_bits << 16) | (rd_bits << 12) | op2_bits
@@ -266,7 +266,7 @@ impl ArmEncoder {
             ArmOp::Orr { rd, rn, op2 } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // ORR encoding: opcode=1100
                 0xE1800000 | (i_flag << 25) | (rn_bits << 16) | (rd_bits << 12) | op2_bits
@@ -275,7 +275,7 @@ impl ArmEncoder {
             ArmOp::Eor { rd, rn, op2 } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // EOR encoding: opcode=0001
                 0xE0200000 | (i_flag << 25) | (rn_bits << 16) | (rd_bits << 12) | op2_bits
@@ -394,7 +394,7 @@ impl ArmEncoder {
             // Move instructions
             ArmOp::Mov { rd, op2 } => {
                 let rd_bits = reg_to_bits(rd);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // MOV encoding: opcode=1101
                 0xE1A00000 | (i_flag << 25) | (rd_bits << 12) | op2_bits
@@ -402,7 +402,7 @@ impl ArmEncoder {
 
             ArmOp::Mvn { rd, op2 } => {
                 let rd_bits = reg_to_bits(rd);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // MVN encoding: opcode=1111
                 0xE1E00000 | (i_flag << 25) | (rd_bits << 12) | op2_bits
@@ -451,7 +451,7 @@ impl ArmEncoder {
             // Compare
             ArmOp::Cmp { rn, op2 } => {
                 let rn_bits = reg_to_bits(rn);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // CMP encoding: opcode=1010, S=1
                 0xE1500000 | (i_flag << 25) | (rn_bits << 16) | op2_bits
@@ -460,7 +460,7 @@ impl ArmEncoder {
             // Compare Negative (CMN) - computes Rn + op2 and sets flags
             ArmOp::Cmn { rn, op2 } => {
                 let rn_bits = reg_to_bits(rn);
-                let (op2_bits, i_flag) = encode_operand2(op2);
+                let (op2_bits, i_flag) = encode_operand2(op2)?;
 
                 // CMN encoding: opcode=1011, S=1
                 0xE1700000 | (i_flag << 25) | (rn_bits << 16) | op2_bits
@@ -6951,26 +6951,33 @@ fn try_encode_rotated_imm(val: u32) -> Option<(u32, u32)> {
 /// For ARM32 mode, immediates use the rotated-immediate encoding (imm8 ROR 2*rot4).
 /// Panics if an immediate value cannot be represented. Callers that need large
 /// immediates should use MOVW/MOVT instead of Operand2::Imm.
-fn encode_operand2(op2: &Operand2) -> (u32, u32) {
+fn encode_operand2(op2: &Operand2) -> Result<(u32, u32)> {
     match op2 {
         Operand2::Imm(val) => {
             let uval = *val as u32;
             // Attempt rotated-immediate encoding (ARM32 Operand2)
             if let Some(encoded) = try_encode_rotated_imm(uval) {
-                encoded
+                Ok(encoded)
             } else {
-                // Fallback: mask to 8 bits (legacy behavior for values that
-                // cannot be represented). This should not be reached for
-                // correctly-selected instructions; the instruction selector
-                // must use MOVW/MOVT for large constants.
-                let imm = uval & 0xFF;
-                (imm, 1)
+                // #378-class honesty: an immediate that can't be expressed as an
+                // ARM32 rotated immediate is an INTERNAL selector bug — large
+                // constants must be materialized via MOVW/MOVT, not passed here.
+                // FAIL HONESTLY with an Err rather than silently masking to
+                // `uval & 0xFF` and emitting a WRONG immediate. The encoder is
+                // Ok-or-Err, never corrupt (#180/#185); a loud Err is also why
+                // this is an Err and not a panic (the `encoder_no_panic` fuzz
+                // contract — malformed/oversized input must degrade, not crash).
+                Err(synth_core::Error::synthesis(format!(
+                    "encode_operand2: immediate {uval:#x} ({val}) is not an ARM32 \
+                     rotated immediate — the selector must materialize large \
+                     constants via MOVW/MOVT"
+                )))
             }
         }
 
         Operand2::Reg(reg) => {
             let reg_bits = reg_to_bits(reg);
-            (reg_bits, 0) // I=0 for register
+            Ok((reg_bits, 0)) // I=0 for register
         }
 
         Operand2::RegShift {
@@ -6981,7 +6988,7 @@ fn encode_operand2(op2: &Operand2) -> (u32, u32) {
             // Simplified encoding with shift
             let rm_bits = reg_to_bits(rm);
             let shift_bits = (*amount & 0x1F) << 7;
-            (shift_bits | rm_bits, 0)
+            Ok((shift_bits | rm_bits, 0))
         }
     }
 }
@@ -7839,6 +7846,39 @@ mod tests {
         // out-of-range lowering only.
         let small = enc.encode_thumb32_add_imm(&Reg::R12, &Reg::R12, 0x10);
         assert!(small.is_ok(), "small imm needs no scratch, must stay Ok");
+    }
+
+    /// #378 — `encode_operand2` (ARM32 data-processing operand) must FAIL
+    /// HONESTLY on an immediate that is not a valid rotated immediate, rather
+    /// than silently masking it to `imm & 0xFF` and emitting a WRONG
+    /// instruction. `0x1FF` has 9 set bits, so it cannot come from rotating an
+    /// 8-bit imm8 — non-encodable. Real codegen materializes large constants via
+    /// MOVW/MOVT; this guards the encoder's Ok-or-Err contract (#180/#185)
+    /// directly. It is an Err (not a panic) so the `encoder_no_panic` fuzz
+    /// harness — which drives arbitrary operands — still passes.
+    #[test]
+    fn test_encode_operand2_non_rotatable_imm_errs_not_masks_378() {
+        let enc = ArmEncoder::new_arm32();
+        let bad = enc.encode(&ArmOp::Add {
+            rd: Reg::R0,
+            rn: Reg::R1,
+            op2: Operand2::Imm(0x1FF),
+        });
+        assert!(
+            bad.is_err(),
+            "non-rotatable ARM32 immediate 0x1FF must Err (was silently masked \
+             to 0xFF), got {bad:?}"
+        );
+        // A representable rotated immediate still encodes fine (regression guard).
+        let ok = enc.encode(&ArmOp::Add {
+            rd: Reg::R0,
+            rn: Reg::R1,
+            op2: Operand2::Imm(0xFF),
+        });
+        assert!(
+            ok.is_ok(),
+            "0xFF is a valid rotated immediate, must stay Ok"
+        );
     }
 
     #[test]
