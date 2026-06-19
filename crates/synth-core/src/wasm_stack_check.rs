@@ -158,6 +158,11 @@ fn stack_effect_or_bail(op: &WasmOp) -> StackEffect {
         // memory.grow: pops page count, pushes previous size or -1
         MemoryGrow(_) => modeled(1, 1),
 
+        // ---- bulk memory (#374) -----------------------------------------
+        // memory.copy(dst, src, len) and memory.fill(dst, val, len) each pop
+        // three i32 operands and push nothing.
+        MemoryCopy | MemoryFill => modeled(3, 0),
+
         // ---- select / nop / unreachable ---------------------------------
         // select: pops two values and a condition (i32), pushes one value
         Select => modeled(3, 1),
@@ -238,6 +243,30 @@ mod tests {
     fn drop_at_empty_stack_is_underflow() {
         let err = check_no_underflow(&[WasmOp::Drop]).unwrap_err();
         assert!(matches!(err, Error::ValidationError(_)));
+    }
+
+    #[test]
+    fn bulk_memory_pops_three_374() {
+        // memory.copy / memory.fill pop 3, push 0: three pushed operands then the
+        // op must balance to depth 0.
+        for op in [WasmOp::MemoryCopy, WasmOp::MemoryFill] {
+            let ok = vec![
+                WasmOp::I32Const(0),
+                WasmOp::I32Const(0),
+                WasmOp::I32Const(0),
+                op.clone(),
+            ];
+            assert!(check_no_underflow(&ok).is_ok(), "{op:?} with 3 operands");
+            // only two operands -> underflow
+            let bad = vec![WasmOp::I32Const(0), WasmOp::I32Const(0), op.clone()];
+            assert!(
+                matches!(
+                    check_no_underflow(&bad).unwrap_err(),
+                    Error::ValidationError(_)
+                ),
+                "{op:?} with 2 operands must underflow"
+            );
+        }
     }
 
     #[test]

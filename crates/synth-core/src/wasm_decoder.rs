@@ -714,6 +714,18 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         MemorySize { mem, .. } => Some(WasmOp::MemorySize(*mem)),
         MemoryGrow { mem, .. } => Some(WasmOp::MemoryGrow(*mem)),
 
+        // Bulk memory (#374). The backend supports a single linear memory
+        // (memory 0); any non-zero memory index falls through to `_ => None` and
+        // loud-skips the function (GI-FPU-001 honesty contract) rather than
+        // miscompiling a multi-memory copy. memory.copy reads dst/src memories;
+        // memory.fill one. The selector lowers these to a bounds-checked byte
+        // loop (see select_with_stack).
+        MemoryCopy {
+            dst_mem: 0,
+            src_mem: 0,
+        } => Some(WasmOp::MemoryCopy),
+        MemoryFill { mem: 0 } => Some(WasmOp::MemoryFill),
+
         // ========================================================================
         // v128 SIMD operations (WASM SIMD proposal, 0xFD prefix)
         // ========================================================================
@@ -1140,6 +1152,29 @@ mod tests {
 
         assert_eq!(functions.len(), 1);
         assert!(functions[0].ops.contains(&WasmOp::MemoryGrow(0)));
+    }
+
+    #[test]
+    fn test_decode_bulk_memory_374() {
+        // #374: memory.copy / memory.fill on the single linear memory decode to
+        // the new WasmOp variants (was `_ => None` -> loud-skip).
+        let wat = r#"
+            (module
+                (memory 1)
+                (func (export "cpy") (param i32 i32 i32)
+                    local.get 0 local.get 1 local.get 2 memory.copy)
+                (func (export "fil") (param i32 i32 i32)
+                    local.get 0 local.get 1 local.get 2 memory.fill)
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let functions = decode_wasm_functions(&wasm).expect("Failed to decode");
+        assert_eq!(functions.len(), 2);
+        assert!(functions[0].ops.contains(&WasmOp::MemoryCopy));
+        assert!(functions[1].ops.contains(&WasmOp::MemoryFill));
+        // Neither function is flagged unsupported (they now lower).
+        assert!(functions[0].unsupported.is_none());
+        assert!(functions[1].unsupported.is_none());
     }
 
     #[test]
