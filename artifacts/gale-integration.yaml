@@ -851,3 +851,72 @@ artifacts:
       pass-criteria: >
         bulk_memory_374_differential.py 16/16; cargo test 374/bulk_memory green;
         control_step / flight_seam / div_const differentials byte-identical.
+
+  - id: GI-MEM-003
+    type: sw-req
+    title: "Large static load/store offset (> imm12) materialized, not skipped (#382)"
+    description: >
+      gust's kernel init (a large static struct field store) compiled to a
+      memory access with a static `offset > 0xFFF` (4095). The optimized
+      (non-relocatable) ARM path lowers a memory op to `MOVW/MOVT R12,#0x20000100;
+      ADD R12,R12,Raddr; LDR/STR [R12,#offset]`; the encoder's check_ldst_imm12
+      (#259) correctly REFUSES the imm12 form for offset > 4095 (it never
+      silently masks to offset&0xFFF), so the whole function was SKIPPED — gust
+      could not compile. (The `reg_imm` bounds-checked path and the #95 const-fold
+      path were already range-safe: the former self-materializes the offset via
+      encode_thumb32_add_imm, the latter is gated `eff <= 0xFFF`. Only the
+      optimizer-path const-base sites bailed.) IMPLEMENTED (next release):
+      optimizer_bridge::fold_mem_offset folds the large CONSTANT offset into the
+      compile-time-CONSTANT base — `(base+offset)+addr == base+addr+offset`
+      (mod 2^32) — so the access immediate becomes #0 with ZERO added
+      instructions and never an `ADD R12,R12,#imm` (which would hit the
+      rd==rn==R12 no-scratch corner, #350). Applied at all four optimizer memory
+      sites (MemLoad, MemStore, MemLoadSubword, MemStoreSubword). Gated to
+      offset > 0xFFF so small-offset output stays byte-identical. Frozen-safe.
+      Same honesty class as GI-FPU-001/GI-MEM-001/GI-MEM-002 — fail/skip honestly
+      was already correct (#259); this makes the previously-skipped case compile
+      correctly.
+    status: implemented
+    tags: [gale, gust, codegen, load-store, offset, encoder, release-pending]
+    links:
+      - type: derives-from
+        target: GI-005
+      - type: traces-to
+        target: gale:382
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        scripts/repro/load_store_big_offset_382_differential.py: 5/5 vs wasmtime
+        (cross-addressed store offset=5000 read back via absolute load at
+        addr+5000, and the symmetric load-offset and sub-word half-word cases —
+        a dropped offset reads 0, not the stored value); the four skipped repro
+        functions now compile; the three frozen fixtures (control_step
+        0x00210A55, flight_seam 0x07FDF307, div_const 338/338) byte-identical;
+        gust_boot 10/10 functions compile PENDING gust.loom.wasm (integration
+        confirmation, not a correctness gate the differential leaves open).
+
+  - id: GI-MEM-003-VER-001
+    type: sw-verification
+    title: "Large load/store offset (#382) — differential + frozen byte-identity"
+    description: >
+      Verifies GI-MEM-003. scripts/repro/load_store_big_offset_382_differential.py
+      runs wasmtime (ground truth) vs unicorn (synth Thumb-2, optimized absolute
+      base) over a cross-addressed call program: a value stored via offset=5000 is
+      read back through an ABSOLUTE load (offset=0, never-folded path) at addr+5000
+      — so a silently-dropped offset reads 0, not the value (non-vacuous). Also a
+      symmetric offset-load and an i32.store16/load16_u sub-word case. Unit tests:
+      optimizer_bridge fold_mem_offset_gates_on_imm12_382 (boundary 0xFFF vs
+      0x1000) and memstore_large_offset_folds_into_base_382 (no STR immediate
+      > imm12; base materialized as 0x20001488). Frozen byte-identity confirmed.
+    status: implemented
+    tags: [gale, gust, codegen, verification, differential, unit-test, frozen]
+    links:
+      - type: verifies
+        target: GI-MEM-003
+    fields:
+      method: test
+      pass-criteria: >
+        load_store_big_offset_382_differential.py 5/5; cargo test 382 green
+        (fold_mem_offset_gates_on_imm12_382, memstore_large_offset_folds_into_base_382);
+        control_step / flight_seam / div_const differentials byte-identical.
