@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.50] - 2026-06-19
+
+**LARGE LOAD/STORE OFFSET — #382: a static memory `offset > 0xFFF` (4095) no
+longer skips the function.** Surfaced by the `gust` wasm kernel init (a large
+static struct field store). Bundles the previously-unreleased honesty fixes
+(#378, #381) and promotes the bulk-memory traceability (`GI-MEM-002`) to
+`verified` now that jess's hermetic Renode RT1176 OOB-trap oracle (TEST-PIX-013)
+has confirmed #374 on silicon.
+
+- **#382 — large static load/store offset materialized** (was: function
+  skipped). The optimized (non-relocatable) path lowers a memory access to
+  `MOVW/MOVT R12,#0x20000100; ADD R12,R12,Raddr; LDR/STR [R12,#offset]`. For
+  `offset > 0xFFF` the encoder's `check_ldst_imm12` (#259) correctly **refuses**
+  the imm12 form (it never silently masks to `offset & 0xFFF`), so the whole
+  function was dropped. The `reg_imm` bounds-checked path and the #95 const-fold
+  path were already range-safe; only the optimizer const-base sites bailed.
+  - Fix (`optimizer_bridge::fold_mem_offset`): since both the base and the
+    `offset` are compile-time constants, fold the large offset into the
+    materialized base — `(base+offset)+addr ≡ base+addr+offset` (mod 2³²) — so
+    the access immediate becomes `#0` with **zero added instructions**, and it
+    never emits an `ADD R12,R12,#imm` (which would hit the `rd==rn==R12`
+    no-scratch corner, #350). Applied at all four optimizer memory sites
+    (`MemLoad`, `MemStore`, `MemLoadSubword`, `MemStoreSubword`).
+  - Gated to `offset > 0xFFF`, so small-offset output stays byte-identical
+    (the frozen differential fixtures do not move).
+  - Oracle: `scripts/repro/load_store_big_offset_382_differential.py` 5/5 vs
+    wasmtime — cross-addressed so a *dropped* offset is observable (store via
+    `offset=5000`, read back via an absolute load at `addr+5000` reads 0 if the
+    offset is lost), plus an `i32.store16`/`load16_u` sub-word case. Unit tests
+    `fold_mem_offset_gates_on_imm12_382` + `memstore_large_offset_folds_into_base_382`.
+  - The literal `gust_boot` 10/10-functions integration confirmation is pending
+    `gust.loom.wasm` (not yet available); the differential is the hermetic
+    correctness gate — pure address arithmetic, no trap/timing path it leaves
+    uncovered.
+- **#378 / #381 — honesty hardening** (bundled, both bit-identical, no behavior
+  change): `select_with_stack` no longer guesses a frame offset for an
+  out-of-layout local (returns a loud `Err`), and `encode_operand2` returns
+  `Err` on an un-encodable ARM32 immediate instead of masking to `uval & 0xFF`.
+- **Traceability:** `GI-MEM-002` + `GI-MEM-002-VER-001` promoted
+  `implemented → verified` (jess Renode RT1176 TEST-PIX-013); `GI-MEM-003`
+  (#382) added as `implemented`.
+
+Frozen fixtures byte-identical across all of the above: control_step
+`0x00210A55`, flight_seam `0x07FDF307`, div_const `338/338`.
+
 ## [0.11.49] - 2026-06-19
 
 **BULK-MEMORY — #374: `memory.copy` / `memory.fill` now lower to bounds-checked

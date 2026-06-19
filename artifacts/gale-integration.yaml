@@ -807,14 +807,20 @@ artifacts:
       UsageFault/HardFault routes to Trap_Handler via the vector table.) The 3
       dead popped operands are reused as walking pointers (only R12 extra), so no
       temp allocation. Frozen-safe (no fixture uses bulk-mem). Ships its own
-      release. Same honesty class as GI-FPU-001/GI-MEM-001.
-    status: implemented
-    tags: [gale, jess, bulk-memory, memory-copy, memory-fill, falcon, release-pending]
+      release. Same honesty class as GI-FPU-001/GI-MEM-001. VERIFIED on silicon
+      via jess's hermetic Renode RT1176 OOB-trap oracle (TEST-PIX-013): an
+      out-of-bounds memory.copy parks PC at Trap_Handler (UDF -> HardFault
+      escalation -> vector table), an in-bounds copy does not false-trap
+      (v0.11.49, tag 39010ce).
+    status: verified
+    tags: [gale, jess, bulk-memory, memory-copy, memory-fill, falcon, silicon-verified, release-v0.11.49]
     links:
       - type: derives-from
         target: GI-005
       - type: traces-to
         target: gale:374
+      - type: traces-to
+        target: jess:TEST-PIX-013
     fields:
       req-type: functional
       priority: must
@@ -840,12 +846,16 @@ artifacts:
       written). Unit tests: wasm_decoder test_decode_bulk_memory_374,
       wasm_stack_check bulk_memory_pops_three_374, instruction_selector
       test_bulk_memory_{fill,copy}_lowers_374. Frozen byte-identity confirmed
-      (the three oracles PASS unchanged — no fixture uses bulk-mem).
-    status: implemented
-    tags: [gale, bulk-memory, verification, differential, unit-test, frozen]
+      (the three oracles PASS unchanged — no fixture uses bulk-mem). Silicon
+      verification closed by jess's Renode RT1176 OOB-trap oracle TEST-PIX-013
+      (the unicorn-blind UDF -> HardFault -> Trap_Handler vector routing).
+    status: verified
+    tags: [gale, jess, bulk-memory, verification, differential, unit-test, frozen, silicon-verified]
     links:
       - type: verifies
         target: GI-MEM-002
+      - type: traces-to
+        target: jess:TEST-PIX-013
     fields:
       method: test
       pass-criteria: >
