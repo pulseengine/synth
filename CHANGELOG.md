@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.49] - 2026-06-19
+
+**BULK-MEMORY — #374: `memory.copy` / `memory.fill` now lower to bounds-checked
+byte loops, closing the largest remaining falcon on-target gap (19 sites: 11
+fill + 8 copy).** Self-contained, value-level differential vs wasmtime (16/16);
+falcon-v1.56 silicon confirmation gates closing #374.
+
+- **#374 — `memory.copy` / `memory.fill` lowered** (was unsupported): like the
+  scalar floats (#369) and the former `i64.load/store` (#372), bulk-memory fell
+  through the decoder `_ => None` and (since v0.11.46 / GI-FPU-001) **loud-skipped
+  the whole function**. Unlike #372 the lowering did not exist at all — no
+  `WasmOp` variant, no decoder arm, no selector handler. Added:
+  - `WasmOp::MemoryCopy` / `MemoryFill` + decoder arms for **memory 0** (a
+    non-zero memory index still loud-skips — the GI-FPU-001 honesty contract);
+  - stack effect `pop 3, push 0`;
+  - optimizer **decline → direct-selector fallback** (the `#120/#188/#372`
+    pattern; the optimized path has no bulk-mem IR opcode);
+  - a bounds-checked byte-loop lowering in `select_with_stack`:
+    `memory.fill(dst,val,len)` → `STRB` loop writing the **low byte** of `val`;
+    `memory.copy(dst,src,len)` → a **memmove** byte loop whose direction follows
+    `dst`/`src` order (`dst > src` copies **backward**, so overlapping copies
+    don't corrupt the source). Under `--safety-bounds software` an **inline
+    `UDF`**, guarded by a local skip branch, traps **end-exclusive** (`off+len >
+    size`, or a `u32` overflow; `off+len == size` is in-bounds) to match
+    wasmtime. (A body branch to the external `Trap_Handler` is only relocated in
+    `--relocatable` mode, not in the self-contained image, so the trap is a
+    self-contained `UDF`; on silicon UsageFault/HardFault routes to
+    `Trap_Handler` via the vector table.) The three dead popped operands are
+    reused as walking pointers — only `R12` extra, no temp allocation.
+  - **Falsification:** `scripts/repro/bulk_memory_374_differential.py` runs 16
+    discriminating vectors against wasmtime (forward, overlap `dst>src`
+    backward, overlap `dst<src` forward, self-copy, `len==0`, `dst+len==size` &
+    `src+len==size` boundaries that must **not** trap, OOB `dst`/`src` that
+    **must** trap, fill with high bits set → only low byte written), comparing
+    the full 64 KiB image **and** the trap outcome — **16/16**. Were the
+    direction logic, the pop order, or the end-exclusive bound wrong, a vector
+    flips. The RISC-V backend continues to loud-skip bulk-mem (symbol absent,
+    warning names the op) — the silent-drop class is not reintroduced.
+  - **Frozen-safe:** `control_step` `0x00210A55` (13/13), `flight_seam`
+    `0x07FDF307`, `div_const` 338/338 stay byte-identical (no fixture uses
+    bulk-mem; the change is purely additive). rivet `GI-MEM-002` (+`VER-001`).
+
 ## [0.11.48] - 2026-06-18
 
 **ON-TARGET — #359 closed on silicon (G474RE `rc=0`): the dissolved msgq

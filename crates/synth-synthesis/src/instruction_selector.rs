@@ -4171,6 +4171,20 @@ impl InstructionSelector {
                     self.target_name
                 )));
             }
+
+            // Bulk memory (#374). `select_default` is the blind-alloc fallback —
+            // it round-robins rd/rn/rm without tracking the operand stack, so it
+            // cannot correctly pop the 3 operands (dst, src/val, len) a copy/fill
+            // needs. The real lowering lives in `select_with_stack`; here we
+            // honestly loud-skip (the GI-FPU-001 / #372 contract) rather than emit
+            // a wrong 3-operand sequence from mis-allocated registers.
+            MemoryCopy | MemoryFill => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "bulk-memory {wasm_op:?} is lowered only by the stack-tracking \
+                     selector (select_with_stack); select_default cannot pop its \
+                     3 operands"
+                )));
+            }
         };
         Ok(instrs)
     }
@@ -9716,6 +9730,335 @@ impl InstructionSelector {
                     stack.push(StackVal::i32(dst));
                 }
 
+                // Bulk memory (#374): memory.fill / memory.copy. Both pop three
+                // i32 operands (dst, val/src, len) and push nothing, so all three
+                // popped registers are DEAD after the op — we reuse them as walking
+                // pointers and the byte buffer, needing only R12 as extra scratch
+                // (no temp allocation). Lowered to a bounds-checked byte loop:
+                //   - bounds (Software mode only, mirroring the store helper): trap
+                //     iff `off + len` overflows u32 OR `off + len > size` (R10, in
+                //     bytes). End-EXCLUSIVE, so a zero-length op at `off == size`
+                //     and an access ending exactly at `size` do NOT trap (matches
+                //     wasmtime). Trap target is the established "Trap_Handler".
+                //   - addresses are R11-relative (R11 = linear-memory base);
+                //     R10 = size in bytes.
+                // None/Mpu/Masking emit just the loop (Masking does NOT wrap each
+                // byte address — a documented gap; Software is the safe default).
+                MemoryFill => {
+                    let len = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
+                    let val = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
+                    let dst = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
+                    let loop_label = self.alloc_label("memfill_loop");
+                    let done_label = self.alloc_label("memfill_done");
+                    let software = matches!(self.bounds_check, BoundsCheckConfig::Software);
+                    let mut ops: Vec<ArmOp> = Vec::new();
+                    // R12 = dst + len (wasm offset of one-past-end); ADDS sets carry
+                    // on u32 overflow.
+                    ops.push(ArmOp::Adds {
+                        rd: Reg::R12,
+                        rn: dst,
+                        op2: Operand2::Reg(len),
+                    });
+                    if software {
+                        // Trap (inline UDF) iff `dst+len` overflows u32 OR
+                        // `dst+len > size` (end-EXCLUSIVE, so `== size` is ok). The
+                        // trap is a self-contained `UDF` guarded by a LOCAL skip
+                        // branch — a body branch to the external `Trap_Handler` is
+                        // only relocated in `--relocatable` mode, not in the
+                        // self-contained image; `UDF` faults to UsageFault/HardFault
+                        // which the vector table routes to `Trap_Handler` on real
+                        // silicon (matching wasmtime's trap).
+                        let ovf_ok = self.alloc_label("memfill_ovf_ok");
+                        let size_ok = self.alloc_label("memfill_size_ok");
+                        // no overflow => carry clear (LO) => skip the trap
+                        ops.push(ArmOp::Bcc {
+                            cond: Condition::LO,
+                            label: ovf_ok.clone(),
+                        });
+                        ops.push(ArmOp::Udf { imm: 0 });
+                        ops.push(ArmOp::Label { name: ovf_ok });
+                        // size >= end (HS after `CMP size,end`) => in bounds => skip
+                        ops.push(ArmOp::Cmp {
+                            rn: Reg::R10,
+                            op2: Operand2::Reg(Reg::R12),
+                        });
+                        ops.push(ArmOp::Bcc {
+                            cond: Condition::HS,
+                            label: size_ok.clone(),
+                        });
+                        ops.push(ArmOp::Udf { imm: 0 });
+                        ops.push(ArmOp::Label { name: size_ok });
+                    }
+                    // R12 = base + (dst+len) = absolute end pointer; dst = base + dst
+                    // = absolute start pointer. `len` is dead after the Adds above.
+                    ops.push(ArmOp::Add {
+                        rd: Reg::R12,
+                        rn: Reg::R11,
+                        op2: Operand2::Reg(Reg::R12),
+                    });
+                    ops.push(ArmOp::Add {
+                        rd: dst,
+                        rn: Reg::R11,
+                        op2: Operand2::Reg(dst),
+                    });
+                    ops.push(ArmOp::Label {
+                        name: loop_label.clone(),
+                    });
+                    ops.push(ArmOp::Cmp {
+                        rn: dst,
+                        op2: Operand2::Reg(Reg::R12),
+                    });
+                    ops.push(ArmOp::Bcc {
+                        cond: Condition::HS,
+                        label: done_label.clone(),
+                    });
+                    // STRB writes only the low byte of `val` (free high-bit mask).
+                    ops.push(ArmOp::Strb {
+                        rd: val,
+                        addr: MemAddr::imm(dst, 0),
+                    });
+                    ops.push(ArmOp::Add {
+                        rd: dst,
+                        rn: dst,
+                        op2: Operand2::Imm(1),
+                    });
+                    ops.push(ArmOp::B {
+                        label: loop_label.clone(),
+                    });
+                    ops.push(ArmOp::Label {
+                        name: done_label.clone(),
+                    });
+                    for op in ops {
+                        instructions.push(ArmInstruction {
+                            op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
+                }
+
+                MemoryCopy => {
+                    let len = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
+                    let src = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
+                    let dst = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
+                    let fwd_loop = self.alloc_label("memcpy_fwd");
+                    let bwd_setup = self.alloc_label("memcpy_bwd");
+                    let bwd_loop = self.alloc_label("memcpy_bwd_loop");
+                    let done_label = self.alloc_label("memcpy_done");
+                    let software = matches!(self.bounds_check, BoundsCheckConfig::Software);
+                    let mut ops: Vec<ArmOp> = Vec::new();
+                    if software {
+                        // Both `dst+len` and `src+len` must be in bounds
+                        // (end-exclusive; overflow or `> size` traps, `== size` is
+                        // ok). Inline UDF guarded by LOCAL skip branches — see
+                        // MemoryFill above for why an external Trap_Handler branch
+                        // is not used in the self-contained image.
+                        for (base_reg, tag) in [(dst, "memcpy_dst"), (src, "memcpy_src")] {
+                            let ovf_ok = self.alloc_label(&format!("{tag}_ovf_ok"));
+                            let size_ok = self.alloc_label(&format!("{tag}_size_ok"));
+                            ops.push(ArmOp::Adds {
+                                rd: Reg::R12,
+                                rn: base_reg,
+                                op2: Operand2::Reg(len),
+                            });
+                            ops.push(ArmOp::Bcc {
+                                cond: Condition::LO,
+                                label: ovf_ok.clone(),
+                            });
+                            ops.push(ArmOp::Udf { imm: 0 });
+                            ops.push(ArmOp::Label { name: ovf_ok });
+                            ops.push(ArmOp::Cmp {
+                                rn: Reg::R10,
+                                op2: Operand2::Reg(Reg::R12),
+                            });
+                            ops.push(ArmOp::Bcc {
+                                cond: Condition::HS,
+                                label: size_ok.clone(),
+                            });
+                            ops.push(ArmOp::Udf { imm: 0 });
+                            ops.push(ArmOp::Label { name: size_ok });
+                        }
+                    }
+                    // memmove direction: overlapping `dst > src` MUST copy backward
+                    // (a forward loop would overwrite source bytes before reading
+                    // them). `dst <= src` (incl. non-overlap) copies forward. The
+                    // compare is on wasm offsets, monotone under +R11.
+                    ops.push(ArmOp::Cmp {
+                        rn: dst,
+                        op2: Operand2::Reg(src),
+                    });
+                    ops.push(ArmOp::Bcc {
+                        cond: Condition::HI,
+                        label: bwd_setup.clone(),
+                    });
+                    // ---- forward: sptr=R11+src, dptr=R11+dst, dend=dptr+len ----
+                    ops.push(ArmOp::Add {
+                        rd: src,
+                        rn: Reg::R11,
+                        op2: Operand2::Reg(src),
+                    });
+                    ops.push(ArmOp::Add {
+                        rd: dst,
+                        rn: Reg::R11,
+                        op2: Operand2::Reg(dst),
+                    });
+                    ops.push(ArmOp::Add {
+                        rd: Reg::R12,
+                        rn: dst,
+                        op2: Operand2::Reg(len),
+                    });
+                    // `len` dead from here; reused as the byte buffer below.
+                    ops.push(ArmOp::Label {
+                        name: fwd_loop.clone(),
+                    });
+                    ops.push(ArmOp::Cmp {
+                        rn: dst,
+                        op2: Operand2::Reg(Reg::R12),
+                    });
+                    ops.push(ArmOp::Bcc {
+                        cond: Condition::HS,
+                        label: done_label.clone(),
+                    });
+                    ops.push(ArmOp::Ldrb {
+                        rd: len,
+                        addr: MemAddr::imm(src, 0),
+                    });
+                    ops.push(ArmOp::Strb {
+                        rd: len,
+                        addr: MemAddr::imm(dst, 0),
+                    });
+                    ops.push(ArmOp::Add {
+                        rd: src,
+                        rn: src,
+                        op2: Operand2::Imm(1),
+                    });
+                    ops.push(ArmOp::Add {
+                        rd: dst,
+                        rn: dst,
+                        op2: Operand2::Imm(1),
+                    });
+                    ops.push(ArmOp::B {
+                        label: fwd_loop.clone(),
+                    });
+                    // ---- backward: walk from one-past-end down to dlo (exclusive) ----
+                    ops.push(ArmOp::Label {
+                        name: bwd_setup.clone(),
+                    });
+                    // R12 = dlo = R11 + dst (lowest dst byte; exclusive lower bound)
+                    ops.push(ArmOp::Add {
+                        rd: Reg::R12,
+                        rn: Reg::R11,
+                        op2: Operand2::Reg(dst),
+                    });
+                    // dst = R11 + dst + len (one past highest dst byte)
+                    ops.push(ArmOp::Add {
+                        rd: dst,
+                        rn: dst,
+                        op2: Operand2::Reg(len),
+                    });
+                    ops.push(ArmOp::Add {
+                        rd: dst,
+                        rn: Reg::R11,
+                        op2: Operand2::Reg(dst),
+                    });
+                    // src = R11 + src + len (one past highest src byte); `len` dead after
+                    ops.push(ArmOp::Add {
+                        rd: src,
+                        rn: src,
+                        op2: Operand2::Reg(len),
+                    });
+                    ops.push(ArmOp::Add {
+                        rd: src,
+                        rn: Reg::R11,
+                        op2: Operand2::Reg(src),
+                    });
+                    ops.push(ArmOp::Label {
+                        name: bwd_loop.clone(),
+                    });
+                    // dptr <= dlo => all bytes copied
+                    ops.push(ArmOp::Cmp {
+                        rn: dst,
+                        op2: Operand2::Reg(Reg::R12),
+                    });
+                    ops.push(ArmOp::Bcc {
+                        cond: Condition::LS,
+                        label: done_label.clone(),
+                    });
+                    ops.push(ArmOp::Sub {
+                        rd: dst,
+                        rn: dst,
+                        op2: Operand2::Imm(1),
+                    });
+                    ops.push(ArmOp::Sub {
+                        rd: src,
+                        rn: src,
+                        op2: Operand2::Imm(1),
+                    });
+                    ops.push(ArmOp::Ldrb {
+                        rd: len,
+                        addr: MemAddr::imm(src, 0),
+                    });
+                    ops.push(ArmOp::Strb {
+                        rd: len,
+                        addr: MemAddr::imm(dst, 0),
+                    });
+                    ops.push(ArmOp::B {
+                        label: bwd_loop.clone(),
+                    });
+                    ops.push(ArmOp::Label {
+                        name: done_label.clone(),
+                    });
+                    for op in ops {
+                        instructions.push(ArmInstruction {
+                            op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
+                }
+
                 // For other operations, fall back to default behavior.
                 // Stack tracking is approximate after this point: select_default
                 // uses its own register allocator and doesn't update the virtual stack.
@@ -14121,6 +14464,63 @@ mod tests {
             .iter()
             .any(|i| matches!(&i.op, ArmOp::MemorySize { .. }));
         assert!(has_mem_size, "Should contain MemorySize instruction");
+    }
+
+    #[test]
+    fn test_bulk_memory_fill_lowers_374() {
+        // #374: memory.fill(dst,val,len) lowers to a byte loop — a STRB inside a
+        // labelled loop (Label + backward B). Previously loud-skipped.
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(2),
+            WasmOp::MemoryFill,
+            WasmOp::End,
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 3).unwrap();
+        assert!(
+            arm.iter().any(|i| matches!(&i.op, ArmOp::Strb { .. })),
+            "fill must store bytes"
+        );
+        assert!(
+            arm.iter().any(|i| matches!(&i.op, ArmOp::Label { .. })),
+            "fill must emit a loop label"
+        );
+    }
+
+    #[test]
+    fn test_bulk_memory_copy_lowers_374() {
+        // #374: memory.copy lowers to a memmove byte loop with a direction branch
+        // (forward/backward) — LDRB + STRB and multiple loop labels.
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(2),
+            WasmOp::MemoryCopy,
+            WasmOp::End,
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 3).unwrap();
+        assert!(
+            arm.iter().any(|i| matches!(&i.op, ArmOp::Ldrb { .. })),
+            "copy must load bytes"
+        );
+        assert!(
+            arm.iter().any(|i| matches!(&i.op, ArmOp::Strb { .. })),
+            "copy must store bytes"
+        );
+        // forward + backward loops + direction => at least two labels
+        let labels = arm
+            .iter()
+            .filter(|i| matches!(&i.op, ArmOp::Label { .. }))
+            .count();
+        assert!(
+            labels >= 2,
+            "copy must emit forward+backward loop labels, got {labels}"
+        );
     }
 
     #[test]

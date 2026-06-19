@@ -2073,6 +2073,21 @@ impl OptimizerBridge {
             )));
         }
 
+        // #374: bulk-memory `memory.copy`/`memory.fill` have no IR opcode in the
+        // optimized path (the `Opcode` enum has no bulk-mem). Decline so the
+        // backend falls back to the direct selector, which lowers them to a
+        // bounds-checked byte loop (select_with_stack). Same decline pattern as
+        // #120/#188/#372.
+        if let Some(bulk_op) = wasm_ops
+            .iter()
+            .find(|op| matches!(op, WasmOp::MemoryCopy | WasmOp::MemoryFill))
+        {
+            return Err(Error::UnsupportedInstruction(format!(
+                "optimized lowering path does not support bulk-memory \
+                 ops ({bulk_op:?}); the direct instruction selector lowers them — issue #374"
+            )));
+        }
+
         // Issue #178/#180: the optimized linear-memory miscompilation was
         // root-caused to the Thumb encoder, NOT this lowering — `ArmOp::Add`
         // (and `Adds`/`Subs`) unconditionally used the 16-bit form, whose 3-bit

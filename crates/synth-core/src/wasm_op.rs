@@ -85,6 +85,12 @@ pub enum WasmOp {
     MemorySize(u32), // returns current memory size in pages (memory index)
     MemoryGrow(u32), // grow memory by N pages, returns previous size or -1 (memory index)
 
+    // Bulk memory (#374) — single linear memory (memory 0) only; the decoder
+    // loud-skips any non-zero memory index. Each pops (dst, src/val, len) = 3
+    // i32 operands and pushes nothing.
+    MemoryCopy, // memory.copy: copy `len` bytes from `src` to `dst` (memmove semantics)
+    MemoryFill, // memory.fill: set `len` bytes at `dst` to the low byte of `val`
+
     // More ops
     Drop,
     Select,

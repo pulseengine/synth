@@ -785,3 +785,69 @@ artifacts:
         div_const 338/338) byte-identical; native_pointer_shadow_stack
         differential PASS; 32 cli tests green; gale G474RE silicon rc=0 +
         val=0xABCD round-trip on an empty queue (was rc=-35/val=0x0).
+
+  - id: GI-MEM-002
+    type: sw-req
+    title: Lower memory.copy/memory.fill (bulk-memory) — bounds-checked, trap-correct (#374)
+    description: >
+      gale/jess #374 (surfaced by the GI-FPU-001 loud-skip): memory.copy/
+      memory.fill were unsupported (`_ => None`) — 19 falcon sites (11 fill,
+      8 copy), the largest remaining bulk-mem gap. Unlike #372 the lowering did
+      NOT exist: no WasmOp::MemoryCopy/MemoryFill, no decoder arm, no selector
+      handler. IMPLEMENTED (next release): WasmOp::MemoryCopy/MemoryFill +
+      decoder arms (memory 0 only; non-zero memory index loud-skips) + stack
+      effect (pop 3, push 0) + optimizer decline->direct fallback (#120/#188/#372
+      pattern) + a bounds-checked byte-loop lowering in select_with_stack. fill
+      = STRB loop (low byte of val); copy = memmove byte loop with direction by
+      dst/src order (dst>src copies backward). Bounds (Software mode) trap via an
+      inline UDF guarded by a LOCAL skip branch — end-EXCLUSIVE (`off+len>size`
+      or u32-overflow trap; `==size` ok), matching wasmtime. (An external
+      Trap_Handler branch is only relocated in --relocatable mode, not the
+      self-contained image, so a self-contained UDF is used; on silicon
+      UsageFault/HardFault routes to Trap_Handler via the vector table.) The 3
+      dead popped operands are reused as walking pointers (only R12 extra), so no
+      temp allocation. Frozen-safe (no fixture uses bulk-mem). Ships its own
+      release. Same honesty class as GI-FPU-001/GI-MEM-001.
+    status: implemented
+    tags: [gale, jess, bulk-memory, memory-copy, memory-fill, falcon, release-pending]
+    links:
+      - type: derives-from
+        target: GI-005
+      - type: traces-to
+        target: gale:374
+    fields:
+      req-type: functional
+      priority: must
+      verification-criteria: >
+        scripts/repro/bulk_memory_374_differential.py: 16/16 vs wasmtime
+        (forward, overlap dst>src backward, overlap dst<src forward, self-copy,
+        len==0, dst+len==size & src+len==size boundaries NO trap, OOB dst/src
+        TRAP, low-byte fill); the three frozen fixtures (control_step 0x00210A55,
+        flight_seam 0x07FDF307, div_const 338/338) byte-identical; gale falcon
+        silicon round-trip (falcon-v1.56.fused.wasm) before verified.
+
+  - id: GI-MEM-002-VER-001
+    type: sw-verification
+    title: "Bulk-memory copy/fill (#374) — numeric differential + frozen byte-identity"
+    description: >
+      Verifies GI-MEM-002. scripts/repro/bulk_memory_374_differential.py runs
+      wasmtime (ground truth) vs unicorn (synth Thumb-2, --safety-bounds
+      software) over 16 DISCRIMINATING vectors comparing the full 64 KiB image
+      AND trap outcome: copy non-overlap (asymmetric, catches pop-order swap),
+      overlap dst>src (backward), overlap dst<src (forward), dst==src, len==0 at
+      dst==size, dst+len==size & src+len==size boundaries (must NOT trap), OOB
+      dst+len/src+len (must TRAP), fill with high bits set (only low byte
+      written). Unit tests: wasm_decoder test_decode_bulk_memory_374,
+      wasm_stack_check bulk_memory_pops_three_374, instruction_selector
+      test_bulk_memory_{fill,copy}_lowers_374. Frozen byte-identity confirmed
+      (the three oracles PASS unchanged — no fixture uses bulk-mem).
+    status: implemented
+    tags: [gale, bulk-memory, verification, differential, unit-test, frozen]
+    links:
+      - type: verifies
+        target: GI-MEM-002
+    fields:
+      method: test
+      pass-criteria: >
+        bulk_memory_374_differential.py 16/16; cargo test 374/bulk_memory green;
+        control_step / flight_seam / div_const differentials byte-identical.
