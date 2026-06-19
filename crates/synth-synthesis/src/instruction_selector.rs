@@ -5579,24 +5579,19 @@ impl InstructionSelector {
                             });
                             (dst, false)
                         } else {
-                            // Local not in layout (shouldn't happen for valid wasm,
-                            // but fall back to legacy behaviour for compatibility).
-                            let dst = alloc_temp_or_spill(
-                                &mut next_temp,
-                                &mut stack,
-                                &mut instructions,
-                                &mut spill,
-                                &live_params,
-                                idx,
-                            )?;
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::Ldr {
-                                    rd: dst,
-                                    addr: MemAddr::imm(Reg::SP, (*local_idx as i32 - 4) * 4),
-                                },
-                                source_line: Some(idx),
-                            });
-                            (dst, false)
+                            // #378 honesty: a local absent from the computed frame
+                            // layout is either malformed wasm (out-of-range index,
+                            // which validation should have rejected) or a
+                            // layout-computation bug. Either way, FAIL HONESTLY —
+                            // a loud `Err` loud-skips the function — rather than
+                            // GUESS a frame offset `(local_idx-4)*4` and silently
+                            // miscompile. Same never-guess contract as GI-FPU-001
+                            // (decoder) and #180/#185 (encoder Ok-or-Err).
+                            return Err(synth_core::Error::synthesis(format!(
+                                "local.get {local_idx} (op {idx}) is absent from the \
+                                 computed frame layout — refusing to guess a stack \
+                                 offset (would silently miscompile)"
+                            )));
                         };
                     stack.push(StackVal::Reg {
                         reg,
@@ -8072,15 +8067,14 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     } else {
-                        // Fall-through for compatibility (shouldn't happen).
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Str {
-                                rd: val,
-                                addr: MemAddr::imm(Reg::SP, (*local_idx as i32 - 4) * 4),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
+                        // #378 honesty: refuse to guess a frame offset for a local
+                        // absent from the layout — fail loud (loud-skip) rather than
+                        // silently store to a guessed address. See LocalGet above.
+                        return Err(synth_core::Error::synthesis(format!(
+                            "local.set {local_idx} (op {idx}) is absent from the \
+                             computed frame layout — refusing to guess a stack \
+                             offset (would silently miscompile)"
+                        )));
                     }
                 }
 
@@ -8162,15 +8156,14 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     } else {
-                        // Fall-through for compatibility.
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Str {
-                                rd: val,
-                                addr: MemAddr::imm(Reg::SP, (*local_idx as i32 - 4) * 4),
-                            },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
+                        // #378 honesty: refuse to guess a frame offset for a local
+                        // absent from the layout — fail loud (loud-skip) rather than
+                        // silently store to a guessed address. See LocalGet above.
+                        return Err(synth_core::Error::synthesis(format!(
+                            "local.tee {local_idx} (op {idx}) is absent from the \
+                             computed frame layout — refusing to guess a stack \
+                             offset (would silently miscompile)"
+                        )));
                     }
                 }
 
