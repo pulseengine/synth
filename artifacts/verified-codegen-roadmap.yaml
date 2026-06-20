@@ -932,6 +932,11 @@ artifacts:
         target: VCR-001
       - type: refines
         target: VCR-RA-001
+      # scry SCRY-001 soundness contract (scry REQ-011, tagged scry-001): the
+      # over-approximation facts (resolved-targets, recursive) this consumes are
+      # HINTS — VCR-RA-003 re-validates — but the narrowing path (B) rests on it.
+      - type: traces-to
+        target: scry:REQ-011
     fields:
       req-type: functional
       priority: should
@@ -1057,6 +1062,11 @@ artifacts:
         target: VCR-001
       - type: traces-to
         target: VCR-RA-010
+      # scry SCRY-001 soundness contract (filed 2026-06-20 as scry REQ-011,
+      # tagged scry-001): resolved-targets ⊇ concrete + recursive ⇒ reachable
+      # cycle; reach_superset mechanized. The footprint proof rests on it.
+      - type: traces-to
+        target: scry:REQ-011
     fields:
       req-type: functional
       priority: should

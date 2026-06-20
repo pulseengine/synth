@@ -69,3 +69,9 @@ externals:
     path: /Volumes/Home/git/pulseengine/gale
     ref: main
     prefix: gale
+
+  scry:
+    git: https://github.com/pulseengine/scry.git
+    path: /Volumes/Home/git/pulseengine/scry
+    ref: main
+    prefix: scry
