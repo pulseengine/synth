@@ -1112,8 +1112,38 @@ artifacts:
       DWARF is additive non-loadable sections ⇒ `.text` and the frozen fixtures
       stay bit-identical. Coordinate the line/var encodings with meld so
       source → meld → synth → on-target debugger composes end-to-end.
-    status: proposed
-    tags: [toolchain, dwarf, debuggability, elf, meld-coordination, gale-adjacent, synth-394]
+
+      FEATURE-LOOP PLAN — Tier 1, release v0.12.0 (the FIRST North-Star FEATURE
+      release; user-selected 2026-06-20). Chosen first because additive
+      non-loadable sections ⇒ ZERO flight-path risk (no re-freeze, no silicon
+      gate) while delivering real integrator value + exercising the
+      source-to-object provenance spine. DE-RISKED (spike 2026-06-20): the core
+      crux is that synth's `source_line` is the wasm OP INDEX
+      (instruction_selector.rs:5428 `wasm_ops.iter().enumerate()`), NOT the wasm
+      code BYTE-OFFSET that DWARF .debug_line keys on; and the decoder
+      (wasm_decoder.rs decode_function_body:445) DISCARDS the byte offsets
+      wasmparser exposes. So the bridge is wasm-op-index → wasm-byte-offset.
+      Steps, each oracle-gated:
+        (1) DECODER byte-offset side-table: capture per-op wasm code byte offset
+            in decode_function_body (wasmparser OperatorsReaderWithOffsets) →
+            additive `op_offsets: Vec<u32>` on FunctionOps. Codegen IGNORES it ⇒
+            .text byte-identical ⇒ frozen fixtures bit-identical (the first,
+            safe, enabling step).
+        (2) READ the input wasm DWARF: extract `.debug_*` custom sections
+            (wasmparser, already a dep) + parse `.debug_line` (gimli, NEW
+            production dep ⇒ deliberate MODULE.bazel pin + repin — in-scope for a
+            feature loop) → (wasm-byte-offset → file:line) rows.
+        (3) COMPOSE: ARM-text-offset → wasm-op-index (source_line) → wasm-byte-offset
+            (step 1) → file:line (step 2). Build the address→line table.
+        (4) EMIT the ARM/RV32 `.debug_line` (+ minimal `.debug_info`/`.debug_abbrev`/
+            `.debug_str`) as non-ALLOC ELF sections; ensure they survive the
+            relocatable host-link path.
+        (5) ORACLE: parse the output ELF's `.debug_line`, assert a known
+            ARM address resolves to the correct source line; AND assert `.text`
+            byte-identical to the no-DWARF build (the load-bearing safety
+            property). Then cut v0.12.0.
+    status: approved
+    tags: [toolchain, dwarf, debuggability, elf, meld-coordination, feature-loop, release-v0.12.0, synth-394]
     links:
       - type: derives-from
         target: VCR-001
