@@ -791,6 +791,72 @@ artifacts:
         criterion: t_lock << 887, handoff < 1661). All frozen fixtures stay
         bit-identical at every step.
 
+  - id: VCR-PERF-001
+    type: sw-req
+    title: "Silicon-quantified gust hot-path size gap: 3.9× vs LLVM, per-pass attribution (gale #390)"
+    description: >
+      gale #390 (2026-06-20, synth v0.11.50 / loom v1.1.14, gust mini-RTOS
+      dissolve, thumbv7m disassembly): synth's wasm→ARM lowering emits 3.9× the
+      code size of native rustc/LLVM on the gust scheduler hot path — gust_poll
+      816 B (240 insns) vs 208 B (104), gust_mix 44 B vs 12 B. The input wasm
+      from loom is already compact; the gap is almost entirely synth-side
+      lowering. This SUPERSEDES gale #209's qualitative "regalloc is the
+      universal lever" with hard per-category byte attribution, and is the
+      measurement / kill-criterion the VCR-RA program (epic #242) was waiting
+      for. Attribution of the 608 B gap (per gale's disassembly):
+        - Pass 1 — NO register allocation: every wasm local/operand spilled to a
+          stack slot, the `sched` pointer reloaded from [sp,#0x3c] 10×. ~288 B
+          (47%). OWNER: VCR-RA-001 + the allocator-wiring substrate (built:
+          interference graph, Chaitin/Briggs color_graph, spill-cost ranking,
+          allocation verifier — all side-by-side, UNWIRED). #390 is the payoff
+          number that justifies wiring. THE HEADLINE.
+        - Pass 2 — const linmem offset not folded into the addressing mode;
+          scaled-index `ldr.w rD,[rN,rM,lsl#k]` unused; address materialized in
+          r12 before every access. ~128 B. OWNER: addressing-mode folding,
+          EXTENDS #382 fold_mem_offset (which folded the const-BASE path; the
+          reg-base fold + scaled-index is new).
+        - Pass 3 — `__stack_pointer` shadow-stack prologue/epilogue emitted even
+          when the function touches no linmem below the frame (gust_poll is
+          by-pointer, needs no shadow stack). ~64 B. OWNER: VCR-MEM-001 (#383) +
+          scry. CONVERGENCE: this is the SAME analysis as #383 at a third
+          granularity — scry's analyze().stack_usage.max_stack_bytes proves the
+          worst-case depth; Bytes(0) ⇒ the whole prologue/epilogue is provably
+          dead and ELIDED (not just the .bss shrunk). Unblocked by the scry
+          integration (scry#51, VCR-MEM-001 layer-2).
+        - Pass 4 — comparison feeding only a br_if materialized as bool+cmp#0
+          instead of branching off flags. ~46 B. OWNER: VCR-SEL-004 (already
+          filed, gale #209).
+        - Pass 5 — no copy coalescing (identity mov survive); `and #0xffff` not
+          peepholed to `uxth`. ~6 B. OWNER: regalloc coalescing + peephole.
+        - Pass 6 — unconditional callee-save of r4–r8 in leaf-ish wrappers.
+          ~4 B/fn. OWNER: prologue minimization (save only clobbered).
+      Passes 1+3 dominate. Estimated 1–3 alone bring gust_poll from 816 B toward
+      ~300–350 B (≈1.5–1.7× vs LLVM), within the project's 10–20%-overhead thesis.
+    status: proposed
+    tags: [codegen, perf, regalloc, addressing-mode, size, gale-390, measurement, track-a, silicon]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: traces-to
+        target: VCR-RA-001
+      - type: traces-to
+        target: VCR-MEM-001
+      - type: traces-to
+        target: VCR-SEL-004
+    fields:
+      req-type: non-functional
+      priority: should
+      verification-criteria: >
+        Each pass lands behind the frozen-fixture re-freeze (control_step
+        0x00210A55, flat+inlined flight_algo 0x07FDF307, divseam) + the
+        differential oracle + gale's on-silicon size confirmation — byte-changing
+        optimizations on the flight path, never rushed (the #193/#212/#215
+        latent-regalloc lesson). Headline kill-criterion: wiring the built
+        allocator substrate (pass 1) drops gust_poll spill count to near-zero and
+        the size toward LLVM parity, measured on gale's compare-codegen.sh
+        before/after; no frozen fixture changes a byte except via a deliberate,
+        gale-confirmed re-freeze.
+
   # ---------------------------------------------------------------------------
   # gale-proposed (issue #290, 2026-06-10): scry consumption at two trust levels
   # ---------------------------------------------------------------------------
