@@ -1076,3 +1076,109 @@ artifacts:
         LAYER (2), next: acyclic + direct-only + canonical-frame modules derive
         B automatically (output "proven"); call_indirect / recursion / non-canonical
         frame ⇒ refuse → fall back to (1). LAYER (3): scry#51 proves the tail.
+
+  # ---------------------------------------------------------------------------
+  # Toolchain completeness — debuggability (not a VCR correctness item, but
+  # Tier-2 depends on the VCR-RA value→location mapping)
+  # ---------------------------------------------------------------------------
+
+  - id: VCR-DBG-001
+    type: sw-req
+    title: "Emit DWARF in the ARM/RISC-V ELF — synth drops debug info (synth #394)"
+    description: >
+      synth #394: synth lowers WASM → bare-metal ELF but emits ZERO DWARF
+      (confirmed: no `.debug_*` in any output), so a synth-compiled image is not
+      source-debuggable (no source line at a PC, no variable locations, no named
+      backtraces). The input carries it and the upstream preserves it: real
+      Rust/clang→wasm modules ship DWARF in custom sections (e.g.
+      msgq_put_359.wasm: `.debug_*` across 8 custom sections), and MELD already
+      REMAPS that wasm DWARF through fusion (meld-core/src/dwarf.rs +
+      dwarf_remap_witness/dwarf_passthrough tests). synth is the ONLY stage that
+      drops it — like meld adjusts wasm-DWARF through its transform, synth must
+      EMIT ARM/RISC-V-ELF DWARF through its WASM→machine lowering.
+      TRACTABLE — synth already has the spine: every ArmInstruction carries
+      `source_line` (the wasm op index, ~220 threading sites) = the
+      (machine-addr → wasm-offset) half; compose with the wasm DWARF
+      (wasm-offset → source) for (machine-addr → source).
+      TWO TIERS:
+        - Tier 1 `.debug_line` (near-term, raw material ready): machine-addr →
+          source line ⇒ breakpoints/single-step land on source, file:line
+          backtraces. Independent of regalloc.
+        - Tier 2 `.debug_info` variable locations (DWARF location lists):
+          source var → ARM reg/stack-slot range. Needs the value→physical-location
+          mapping the register allocator produces — the SAME (pc, local) →
+          ARM-vreg mapping surfaced in VCR-RA-010 — so it is GATED on the VCR-RA
+          allocator wiring.
+      DWARF is additive non-loadable sections ⇒ `.text` and the frozen fixtures
+      stay bit-identical. Coordinate the line/var encodings with meld so
+      source → meld → synth → on-target debugger composes end-to-end.
+    status: proposed
+    tags: [toolchain, dwarf, debuggability, elf, meld-coordination, gale-adjacent, synth-394]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: constrained-by
+        target: VCR-RA-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        Tier 1: a synth-compiled ELF from a DWARF-carrying wasm, loaded in
+        gdb/lldb (or Renode) against the target, stops at the correct SOURCE line
+        on a PC breakpoint and shows a file:line backtrace; `.text` byte-identical
+        to the no-DWARF build (DWARF additive, non-loadable) ⇒ all frozen fixtures
+        unchanged. Tier 2: a local variable resolves to its register/stack
+        location at a breakpoint, validated once the VCR-RA value→location map
+        exists.
+
+  - id: VCR-COV-001
+    type: sw-req
+    title: "MC/DC source-to-object traceability: synth's branch folding changes witness's decision set (synth #396)"
+    description: >
+      synth #396: witness measures MC/DC by instrumenting WASM branches, but
+      synth's WASM→ARM lowering CHANGES the branch set, so the WASM-level MC/DC
+      does not 1:1 represent the OBJECT code's structural coverage (DO-178C
+      6.4.4.2 / ISO 26262 ASIL D source-to-object obligation). Three directions,
+      all present in synth today (select→cmov, the #390 pass-4 compare→br_if
+      fusion, i64-compare, br_table):
+        (1) FOLD to predication — a WASM decision becomes branchless (no PC
+            branch). SAFE: WASM-level MC/DC stays authoritative; the object code
+            realizes the same decision via a flag, no untraceable branch.
+        (2) ELIMINATE a provably-constant branch — one side unreachable ⇒ MC/DC
+            infeasible by construction. Needs JUSTIFICATION, and scry's
+            constant-condition/reachability analysis is the sound evidence that
+            the dead side is justified-deactivated, not a coverage hole.
+        (3) SPLIT into N object branches (i64 cmp → cmp/bne/cmp; br_table →
+            ladder) — compiler-INTRODUCED branches. Needs object-level MC/DC OR a
+            faithful-implementation argument that the source decision's vectors
+            cover them. The one direction that genuinely ADDS obligations.
+      FIX = the SAME provenance spine as VCR-DBG-001 (#394): synth emits a
+      decision-provenance map per WASM decision (br_if/select/if/br_table) →
+      {1:1 branch | folded-predication | eliminated-constant(+scry evidence) |
+      split-into-N}. One mechanism (the source_line threading already present),
+      two consumers — the debugger (DWARF) and a coverage reconciler (witness).
+      The reconciler keeps WASM MC/DC authoritative for (1), marks scry-proven
+      dead branches justified for (2), flags (3) for object coverage.
+      Coordinate with witness (consume the map) + scry (dead-branch evidence,
+      ties to VCR-RA-010 / scry#51).
+    status: proposed
+    tags: [toolchain, mcdc, structural-coverage, do-178c, witness-coordination, scry, traceability, synth-396]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: refines
+        target: VCR-DBG-001
+      - type: constrained-by
+        target: VCR-RA-010
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        A synth-compiled module's witness MC/DC truth table reconciles against
+        the ARM object code via the decision-provenance map: every WASM decision
+        is classified (folded / eliminated / split / 1:1); folded decisions keep
+        their WASM-level obligation; scry-proven-dead branches are marked
+        justified-infeasible (not gaps); split decisions either get object-level
+        MC/DC or a recorded faithful-implementation argument. No object branch is
+        untraceable to a source decision. Frozen fixtures bit-identical (the map
+        is emitted metadata, not a codegen change).
