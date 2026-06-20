@@ -842,3 +842,114 @@ artifacts:
         (v0.11.40 gate) the release notes report the measured cycle-gap delta
         attributable to scry-driven remat + narrowing, feeding VCR-DEC-001's
         revisit decision.
+
+  - id: VCR-MEM-001
+    type: sw-req
+    title: "Bounded + provable native-pointer linear-memory footprint (shadow-stack budget → scry stack-depth AI) — gale #383"
+    description: >
+      gale #383: under --native-pointer-abi, build_relocatable_elf
+      (synth-cli/src/main.rs:2475) sizes the wasm linmem region to
+      used_extent = max(data_end, sp_top, global_top, static_top,
+      static_top_abs32).min(linear_memory_bytes). The sp_top term is sp_init —
+      the shadow-stack top, which wasm-ld sets to the DECLARED page top (65536
+      for `(memory 1)`). So the region spans [0, 65536) even when actual data +
+      live stack is a few KB, and an 8 KiB-RAM target (STM32F100) cannot place
+      it. MEASURED 2026-06-20 (synthetic repro, no gale binary needed —
+      reproduced like #354/#382): a `(memory 1)` module with sp_init=65536
+      emits a 64 KiB NOBITS .bss (all-zero linmem) or a 64 KiB PROGBITS .data
+      (with an init segment below the static region). Root cause is purely
+      structural — sp_top dominates used_extent.
+
+      DO NOT fix as a bare CLI cap (integrator declares a number, synth shrinks
+      the reservation blindly): shrinking below the live shadow-stack depth
+      silently overflows the stack into static data. The integrator declaring a
+      RAM budget is the INPUT; the obligation is to keep the footprint claim
+      HONEST about what is proven vs asserted. CRITICAL DISCOVERY (2026-06-20):
+      synth has ZERO shadow-stack tracking today — the comment at main.rs:2522
+      ("the shadow stack is reached only via the SP register value, dynamic,
+      never a static reloc") confirms it treats [0, sp_init) as opaque. So the
+      shadow stack is a wasm-level construct (the __stack_pointer global's
+      decrement idiom), NOT the ARM machine-stack frame_size. Computing its
+      depth is a NEW abstract interpretation — which is scry's mandate. Layered
+      by risk (advisor-reviewed) so the unblock does NOT depend on the new AI:
+
+        (1) LOAD-BEARING — layout re-base + integrator budget + consistency
+            check + honest refuse (THIS issue's fix). New
+            `--shadow-stack-size <bytes>` on `compile`: re-base sp_init to a
+            budget B instead of the declared page top. Output is "asserted
+            (B), not proven"; DEFAULT unset = full-page = byte-identical
+            (frozen-safe). SCOPE CORRECTION (2026-06-20, measured on the REAL
+            gust-family module msgq_put_359.wasm, not just a synthetic repro):
+            sp_init doubles as the selector's classification boundary
+            (set_native_pointer_stack → wasm_data_base, instruction_selector.rs:1623;
+            classify at 6735/6846: addr >= boundary ⇒ static `__synth_wasm_data + C`
+            reloc, < ⇒ SP-relative frame). The selector ALREADY RAN with
+            boundary=65536, so a pure post-selection re-base is sound ONLY when
+            nothing was classified against it (no static reloc). BUT the real
+            msgq module carries 10 `__synth_wasm_data` relocs (zero-init
+            k_spinlock-class statics ABOVE the shadow stack: .bss=0x10018=65560 =
+            stack [0,65536) + zero statics [65536,65560)). So pure-only REFUSES
+            on the real module — it would ship green and NOT unblock gale. The
+            actual layer-1 is the #354 per-region retarget extended to the
+            NOBITS region: shift the high `__synth_wasm_data + C` (C >= boundary)
+            relocs DOWN by (sp_init - B) and size the .bss to B + zero-static
+            extent, so the stack reservation shrinks while the zero statics
+            stay covered. Re-bases the SP global slot init to B. Sound (stack
+            grows down from B; statics at [B, B+ext) above it never overlap).
+            HONEST REFUSE for unhandled geometries (static C below the stack /
+            B > sp_init / non-Abs32 static relocs). This is link-fragile
+            native-pointer surgery (the #354 step-2 work it explicitly
+            deferred) on the path gale FLIES ⇒ silicon-gated (held for gale
+            confirmation, the #368→#359 lesson — do not rush-ship). The one
+            open disambiguation posted to gale: does the gust target use the
+            --stack-first layout (statics above the stack, as msgq shows) so
+            the down-shift is a uniform addend rewrite.
+        (2) OPT-IN, NOT LOAD-BEARING — conservative auto-proof: where the
+            reachable graph is ACYCLIC + direct-call-only + every reachable
+            function matches the canonical single-`sub`-at-entry shadow-frame
+            idiom, synth PROVES max_depth = longest weighted path over the
+            reachable DAG (reachable_from_exports, main.rs:1671), weight = the
+            per-function __stack_pointer decrement held ACROSS calls (not merely
+            the entry decrement; multiple/conditional/variable SP adjustments or
+            SP-stored-elsewhere ⇒ REFUSE). This upgrades (1)'s "asserted" to
+            "proven" with no integrator input; on refuse it falls back to (1).
+            call_indirect MUST force refuse — reachable_from_exports
+            over-approximates indirect by pulling in ALL table funcs (sound for
+            reachability, but for longest-path the edge set explodes and can
+            fabricate cycles). DISCRIMINATING RISK (advisor): kernels usually
+            dispatch through tables, so if gale's gust kernel uses call_indirect
+            this auto-proof refuses and ONLY (1) unblocks it — do not bet the
+            unblock on (2). (This is the #383 ↔ #275 link.)
+        (3) SCRY TAIL (VCR-RA-010 / SCRY-001, scry#51): scry proves the
+            indirect/recursive tail (call_indirect target sets, recursion
+            bounds, reachability narrowing) that (2) refuses — the sound
+            abstract interpretation synth cannot do alone.
+      Build order: (1) now (this release), (2) immediately after, (3) as scry#51
+      matures. The proven-minimal path stays opt-in until silicon-validated (the
+      native-pointer #345/#354/#359 lesson — gale/jess confirms the final image).
+    status: proposed
+    tags: [codegen, native-pointer-abi, memory-layout, abstract-interpretation, scry, stack-depth, gale-383, track-a]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: traces-to
+        target: VCR-RA-010
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        LAYER (1), this release: with `--shadow-stack-size B`, a `(memory 1)`
+        native-pointer module (sp_init=65536, small static-data extent) reserves
+        static_data_high_water + B and re-bases sp_init to that top — a region
+        of a few KB instead of 64 KiB, placeable in an 8 KiB-RAM linker script.
+        Synth REFUSES honestly (typed Err, never silent shrink) when the
+        static-data high-water would collide with the re-based stack top. The
+        emitted footprint is labelled "asserted (B), not proven". WITHOUT the
+        flag the reservation and every byte are UNCHANGED ⇒ all frozen fixtures
+        (control_step 0x00210A55, flat+inlined flight_algo 0x07FDF307, divseam)
+        byte-identical. A post-link oracle asserts (a) stack region and data
+        region do not overlap AND (b) the reservation still covers every
+        relocated __synth_wasm_data access (the #359 msgq regression check).
+        LAYER (2), next: acyclic + direct-only + canonical-frame modules derive
+        B automatically (output "proven"); call_indirect / recursion / non-canonical
+        frame ⇒ refuse → fall back to (1). LAYER (3): scry#51 proves the tail.
