@@ -1100,3 +1100,55 @@ artifacts:
         unchanged. Tier 2: a local variable resolves to its register/stack
         location at a breakpoint, validated once the VCR-RA value→location map
         exists.
+
+  - id: VCR-COV-001
+    type: sw-req
+    title: "MC/DC source-to-object traceability: synth's branch folding changes witness's decision set (synth #396)"
+    description: >
+      synth #396: witness measures MC/DC by instrumenting WASM branches, but
+      synth's WASM→ARM lowering CHANGES the branch set, so the WASM-level MC/DC
+      does not 1:1 represent the OBJECT code's structural coverage (DO-178C
+      6.4.4.2 / ISO 26262 ASIL D source-to-object obligation). Three directions,
+      all present in synth today (select→cmov, the #390 pass-4 compare→br_if
+      fusion, i64-compare, br_table):
+        (1) FOLD to predication — a WASM decision becomes branchless (no PC
+            branch). SAFE: WASM-level MC/DC stays authoritative; the object code
+            realizes the same decision via a flag, no untraceable branch.
+        (2) ELIMINATE a provably-constant branch — one side unreachable ⇒ MC/DC
+            infeasible by construction. Needs JUSTIFICATION, and scry's
+            constant-condition/reachability analysis is the sound evidence that
+            the dead side is justified-deactivated, not a coverage hole.
+        (3) SPLIT into N object branches (i64 cmp → cmp/bne/cmp; br_table →
+            ladder) — compiler-INTRODUCED branches. Needs object-level MC/DC OR a
+            faithful-implementation argument that the source decision's vectors
+            cover them. The one direction that genuinely ADDS obligations.
+      FIX = the SAME provenance spine as VCR-DBG-001 (#394): synth emits a
+      decision-provenance map per WASM decision (br_if/select/if/br_table) →
+      {1:1 branch | folded-predication | eliminated-constant(+scry evidence) |
+      split-into-N}. One mechanism (the source_line threading already present),
+      two consumers — the debugger (DWARF) and a coverage reconciler (witness).
+      The reconciler keeps WASM MC/DC authoritative for (1), marks scry-proven
+      dead branches justified for (2), flags (3) for object coverage.
+      Coordinate with witness (consume the map) + scry (dead-branch evidence,
+      ties to VCR-RA-010 / scry#51).
+    status: proposed
+    tags: [toolchain, mcdc, structural-coverage, do-178c, witness-coordination, scry, traceability, synth-396]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: refines
+        target: VCR-DBG-001
+      - type: constrained-by
+        target: VCR-RA-010
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        A synth-compiled module's witness MC/DC truth table reconciles against
+        the ARM object code via the decision-provenance map: every WASM decision
+        is classified (folded / eliminated / split / 1:1); folded decisions keep
+        their WASM-level obligation; scry-proven-dead branches are marked
+        justified-infeasible (not gaps); split decisions either get object-level
+        MC/DC or a recorded faithful-implementation argument. No object branch is
+        untraceable to a source decision. Frozen fixtures bit-identical (the map
+        is emitted metadata, not a codegen change).
