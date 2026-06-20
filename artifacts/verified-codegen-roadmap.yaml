@@ -1046,3 +1046,57 @@ artifacts:
         LAYER (2), next: acyclic + direct-only + canonical-frame modules derive
         B automatically (output "proven"); call_indirect / recursion / non-canonical
         frame ⇒ refuse → fall back to (1). LAYER (3): scry#51 proves the tail.
+
+  # ---------------------------------------------------------------------------
+  # Toolchain completeness — debuggability (not a VCR correctness item, but
+  # Tier-2 depends on the VCR-RA value→location mapping)
+  # ---------------------------------------------------------------------------
+
+  - id: VCR-DBG-001
+    type: sw-req
+    title: "Emit DWARF in the ARM/RISC-V ELF — synth drops debug info (synth #394)"
+    description: >
+      synth #394: synth lowers WASM → bare-metal ELF but emits ZERO DWARF
+      (confirmed: no `.debug_*` in any output), so a synth-compiled image is not
+      source-debuggable (no source line at a PC, no variable locations, no named
+      backtraces). The input carries it and the upstream preserves it: real
+      Rust/clang→wasm modules ship DWARF in custom sections (e.g.
+      msgq_put_359.wasm: `.debug_*` across 8 custom sections), and MELD already
+      REMAPS that wasm DWARF through fusion (meld-core/src/dwarf.rs +
+      dwarf_remap_witness/dwarf_passthrough tests). synth is the ONLY stage that
+      drops it — like meld adjusts wasm-DWARF through its transform, synth must
+      EMIT ARM/RISC-V-ELF DWARF through its WASM→machine lowering.
+      TRACTABLE — synth already has the spine: every ArmInstruction carries
+      `source_line` (the wasm op index, ~220 threading sites) = the
+      (machine-addr → wasm-offset) half; compose with the wasm DWARF
+      (wasm-offset → source) for (machine-addr → source).
+      TWO TIERS:
+        - Tier 1 `.debug_line` (near-term, raw material ready): machine-addr →
+          source line ⇒ breakpoints/single-step land on source, file:line
+          backtraces. Independent of regalloc.
+        - Tier 2 `.debug_info` variable locations (DWARF location lists):
+          source var → ARM reg/stack-slot range. Needs the value→physical-location
+          mapping the register allocator produces — the SAME (pc, local) →
+          ARM-vreg mapping surfaced in VCR-RA-010 — so it is GATED on the VCR-RA
+          allocator wiring.
+      DWARF is additive non-loadable sections ⇒ `.text` and the frozen fixtures
+      stay bit-identical. Coordinate the line/var encodings with meld so
+      source → meld → synth → on-target debugger composes end-to-end.
+    status: proposed
+    tags: [toolchain, dwarf, debuggability, elf, meld-coordination, gale-adjacent, synth-394]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: constrained-by
+        target: VCR-RA-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        Tier 1: a synth-compiled ELF from a DWARF-carrying wasm, loaded in
+        gdb/lldb (or Renode) against the target, stops at the correct SOURCE line
+        on a PC breakpoint and shows a file:line backtrace; `.text` byte-identical
+        to the no-DWARF build (DWARF additive, non-loadable) ⇒ all frozen fixtures
+        unchanged. Tier 2: a local variable resolves to its register/stack
+        location at a breakpoint, validated once the VCR-RA value→location map
+        exists.
