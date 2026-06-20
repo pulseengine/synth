@@ -1210,6 +1210,12 @@ artifacts:
         target: VCR-DBG-001
       - type: constrained-by
         target: VCR-RA-010
+      # scry FEAT-023 / REQ-012 (shipped v1.13.0, 2026-06-20): per-program-point
+      # `operand_stack: Vec<AbstractValue>`. A decision's CONDITION values live on
+      # the operand stack, so this is the granularity the MC/DC reconciler needs
+      # to classify a folded/eliminated branch precisely (synth#396 / witness#109).
+      - type: traces-to
+        target: scry:REQ-012
     fields:
       req-type: functional
       priority: should
