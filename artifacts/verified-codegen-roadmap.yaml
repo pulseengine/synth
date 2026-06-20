@@ -178,11 +178,44 @@ artifacts:
       a missing rule is a coverage gap the DSL can enumerate, not a silent
       miscompile. Depends on VCR-RA-001 landing first (a verified rule that
       can't be allocated is not yet correct end-to-end).
-    status: proposed
+
+      FIRST MEASUREMENT (2026-06-20, coq/Synth/Synth/VcrSelPilot.v, built green
+      via //coq:vcr_sel_pilot, 7 Qed / 0 Admitted): the go/abandon question is
+      whether the existing synth_binop_proof tactic family still auto-discharges
+      once a rule is lifted from fixed R0/R1 to universally-quantified registers.
+      Two-tier result. (A) NO-SCRATCH single-instruction i32 binops
+      (Add/Sub/Mul/And/Or/Xor): 6/6 auto-discharge UNCHANGED — synth_binop_proof_poly
+      is verbatim synth_binop_proof modulo the lowering-unfold target; one Qed per
+      op covers every aliasing (universal over rd/rn/rm). (B) SCRATCH-USING
+      multi-instruction op (Rotl = RSB scratch + ROR): generalizes too but NOT for
+      free — needs an explicit rs<>rn scratch-non-aliasing side condition (the
+      fixed-register proof's `discriminate` on R0<>R2 becomes a real hypothesis
+      the DSL must carry and feed the allocator) plus a per-shape proof. CONCLUSION:
+      DSL viable; auto-discharge "for free" is ~100% only for the no-scratch class,
+      and the DSL must model scratch non-aliasing — exactly why SEL depends on
+      RA-001. NOT YET MET: the >=70%-per-attempted-rule over the FULL integer
+      pilot (div/rem trap-control-flow tail unmeasured), and the bit-for-bit
+      selector match (this is a discharge measurement, not a wired DSL — generates
+      no Rust, replaces no selector arms). Also: the lemmas carry but do not USE
+      the wasm hypotheses (pre-existing T1 property — they prove "ARM computes the
+      named result", not "ARM refines the WASM op").
+
+      CONTROL-FLOW OP CLASS GATED ON VCR-ISA-001: the measurement is complete for
+      the straight-line classes (no-scratch binops generalize free; scratch ops
+      need the rs<>rn non-aliasing constraint). The TRAP-GUARDED ops (i32 div/rem)
+      are NOT a register-generalization question at all — their fixed-register
+      proofs are already Admitted (coq/STATUS.md), blocked upstream by the flat
+      exec_program's no-op BCondOffset (see VCR-ISA-001). So div/rem SEL coverage
+      depends on VCR-ISA-001's real-control-flow executor, not on this track.
+    status: approved
     tags: [codegen, selector, isle, verified-dsl, rocq, track-a, novel, release-v0.12.1]
     links:
       - type: derives-from
         target: VCR-001
+      - type: constrained-by
+        target: VCR-RA-001
+      - type: constrained-by
+        target: VCR-ISA-001
     fields:
       req-type: functional
       priority: should
@@ -218,8 +251,20 @@ artifacts:
       integer core against them. Collapses a major TCB component: "verified
       against the authoritative spec" becomes a defensible claim. Independent of
       Track A — can proceed in parallel.
+
+      GATES THE TRAP-GUARD ADMITS (found via the VCR-SEL-001 pilot, 2026-06-20):
+      the current hand-written ArmSemantics.v exec_program is a FLAT sequential
+      executor with no program counter — BCondOffset is a literal no-op
+      (ArmSemantics.v ~715, "No-op in sequential model"). So every trap-guarded
+      lowering (CMP; BCondOffset; UDF; <op> — i32 div/rem, the 4 i32_div*/rem*
+      admits + their i64 analogues, the bulk of coq/STATUS.md's 9 admits) CANNOT
+      be discharged: the model can't express "skip the UDF when the divisor is
+      non-zero". A real-control-flow executor (PC-indexed, which a Sail-derived
+      model supplies natively) is the precondition. This also gates VCR-SEL-001
+      coverage of the control-flow op class (div/rem) — straight-line and
+      scratch-using ops generalize without it, control-flow ops do not.
     status: proposed
-    tags: [semantics, sail, isa, trust, rocq, track-b]
+    tags: [semantics, sail, isa, trust, rocq, track-b, unblocks-admits]
     links:
       - type: derives-from
         target: VCR-001
