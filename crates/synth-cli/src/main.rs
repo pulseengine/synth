@@ -4040,6 +4040,7 @@ mod tests {
             index,
             export_name: export.map(String::from),
             ops,
+            op_offsets: Vec::new(),
             unsupported: None,
         }
     }
