@@ -184,6 +184,18 @@ rocq_library(
     deps = _CORRECTNESS_FULL_DEPS + [":tactics", ":arm_flag_lemmas"],
 )
 
+# VCR-SEL-001 pilot: register-polymorphic i32 binop lowering (go/abandon measurement)
+rocq_library(
+    name = "vcr_sel_pilot",
+    srcs = ["Synth/Synth/VcrSelPilot.v"],
+    include_path = "Synth",
+    # :tactics transitively requires ArmFlagLemmas; the Rocq loadpath needs it
+    # listed directly (matches correctness_tactics) — a transitive dep is not
+    # enough for the -Q path. Omitting it builds locally off a stale cache but
+    # fails CI's hermetic build ("Cannot find library Synth.ARM.ArmFlagLemmas").
+    deps = _CORRECTNESS_FULL_DEPS + [":tactics", ":arm_flag_lemmas"],
+)
+
 # Master index: imports all correctness proofs
 rocq_library(
     name = "correctness_complete",
@@ -205,7 +217,7 @@ rocq_library(
 
 rocq_proof_test(
     name = "verify_proofs",
-    deps = [":correctness_complete", ":extraction", ":arm_refinement"],
+    deps = [":correctness_complete", ":extraction", ":arm_refinement", ":vcr_sel_pilot"],
 )
 
 # Validate proofs (lightweight — counts Admitted)
