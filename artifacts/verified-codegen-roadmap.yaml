@@ -207,6 +207,32 @@ artifacts:
       proofs are already Admitted (coq/STATUS.md), blocked upstream by the flat
       exec_program's no-op BCondOffset (see VCR-ISA-001). So div/rem SEL coverage
       depends on VCR-ISA-001's real-control-flow executor, not on this track.
+
+      MOTIVATION-1 RE-SCOPED — "selector missed an op" silent-drop is already
+      structurally closed (measured 2026-06-20). The original framing ("a missing
+      rule is a silent miscompile the DSL enumerates away") is now only partly a
+      DSL job, because the existing selectors no longer silent-drop:
+        - ARM select_default (instruction_selector.rs:1799→4189) is an EXHAUSTIVE
+          match over WasmOp with NO `_ =>` wildcard (the SIMD and
+          MemoryCopy|MemoryFill arms `return Err`). A newly-added WasmOp variant is
+          a COMPILE error, not a silent NOP — exhaustiveness checking IS coverage
+          enumeration for ARM. select_with_stack's `_ =>` (10057) delegates to
+          select_default, so every op is Ok-or-typed-Err: no drop path.
+        - RISC-V selector.rs:911 `other => Err(SelectorError::Unsupported(op))` is a
+          RUNTIME typed loud-skip — kills silent WRONG-CODE but, unlike ARM, is not
+          compile-checked, so a new op silently DIVERGES (loud-skipped on RV32,
+          lowered on ARM) rather than failing the build.
+        - Clean split of the cited #223/#226/#232 class: the REGALLOC subset (#226
+          alloc_temp live-value clobber) is owned by VCR-RA-001 and already landed;
+          the OP-GAP subset (#223/#232 "RV32 rejected ops ARM handles") is NOT a
+          silent drop — it is a CROSS-BACKEND PARITY gap (ARM lowers X; RV32
+          loud-declines X) that no oracle covers today and gale, not a gate, caught.
+      So VCR-SEL-001's remaining value is NOT silent-drop prevention (the compiler
+      + typed-Err terminals own that). It is: (i) correctness-by-construction of the
+      lowering rules; (ii) collapsing the two/three-selector accretion
+      (select_default / select_with_stack / optimizer_bridge) into one verified
+      source; and (iii) cross-backend op-parity — the concrete near-term increment,
+      tracked as VCR-SEL-005 below.
     status: approved
     tags: [codegen, selector, isle, verified-dsl, rocq, track-a, novel, release-v0.12.1]
     links:
@@ -235,6 +261,62 @@ artifacts:
         functions directly, and synth's existing T1 tactic suite
         (synth_binop_proof family vs exec_indexed) IS that direct path — the
         DSL pays off only when rule count amortizes its cost.
+
+  - id: VCR-SEL-005
+    type: sw-req
+    title: Cross-backend op-parity oracle
+    description: >
+      A test-time gate (crates/synth-backend-riscv/tests/cross_backend_op_parity.rs,
+      cross_backend_integer_op_parity_242) that lowers a curated set of
+      self-contained, minimally-valid WasmOp sequences on BOTH the ARM (Thumb-2)
+      and RISC-V (RV32IMAC) selectors and asserts integer-core PARITY: an op the
+      ARM selector lowers must be lowered-or-explicitly-ledgered by the RV32
+      selector. This is the concrete near-term increment of VCR-SEL-001: the
+      VCR-SEL-001 pilot measurement (2026-06-20) established that "selector missed
+      an op" is no longer a silent miscompile (ARM select_default is an exhaustive
+      WasmOp match; RV32 ends dispatch with a typed Unsupported Err), so the
+      residual #223/#232 risk is purely cross-backend DIVERGENCE — ARM lowers op
+      X, RV32 loud-declines it, and the function silently compiles on one target
+      and is skipped on the other. Historically that gap was found only by gale on
+      qemu; this oracle surfaces it as a gate.
+
+      The ledger (KNOWN_DIVERGENCES) is bidirectional: a NEW divergence not in the
+      ledger fails the build (a fresh op-gap, owned here not on silicon), and a
+      ledgered divergence that has CLOSED also fails (a stale entry the fix must
+      delete) — so a parity claim cannot outlive the gap it documents, and a
+      landed RV32 lowering is forced to retire its ledger line.
+
+      FIRST MEASUREMENT (2026-06-20, first run): the oracle found FIVE
+      ARM-lowers / RV32-declines integer op-gaps, all the Zbb bit-manipulation
+      class — i32.rotl, i32.rotr, i32.clz, i32.ctz, i32.popcnt. RV32IMAC and
+      rv32imc (incl. ESP32-C3) do not include Zbb, so there is no single native
+      instruction; ARM lowers them via sequences (ROR/CLZ/RBIT, and a software
+      sequence for popcount which ARMv7-M also lacks natively), proving they are
+      sequence-lowerable on RV32 too (as Select already is). Recorded as tracked
+      deferrals under this requirement. NOTE the i64 bit-manip analogues
+      (i64.clz/i64.popcnt) came back at PARITY — not flagged. SCOPE: integer core
+      only; float (VFP) and SIMD (Helium) parity is a separate, large, known gap
+      and is intentionally NOT asserted by this oracle.
+
+      FOLLOW-UP (the work this oracle drives): implement the five RV32 sequence
+      lowerings, each differential-validated against wasmtime per the established
+      bug-loop discipline; landing each one retires its ledger entry via the
+      stale-entry check.
+    status: implemented
+    tags: [codegen, selector, riscv, parity, oracle, track-a, release-v0.11.51]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: traces-to
+        target: VCR-SEL-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        cross_backend_integer_op_parity_242 is green: every integer-core probe is
+        at ARM/RV32 parity OR carries a reasoned KNOWN_DIVERGENCES entry, with the
+        at-parity floor (>=30 common-core ops) guarding against a construction
+        regression that would let "everything errors" masquerade as parity.
 
   # ---------------------------------------------------------------------------
   # Track B — authoritative semantics (independent; parallel with Track A)
