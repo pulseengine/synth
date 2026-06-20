@@ -226,6 +226,22 @@ enum Commands {
         /// `docs/sigil-integration.md`.
         #[arg(long)]
         sign_output: bool,
+
+        /// #383 (VCR-MEM-001): integrator-declared shadow-stack budget in BYTES
+        /// for the `--native-pointer-abi` linear-memory reservation. Without
+        /// this flag synth reserves the wasm linmem region up to the declared
+        /// page top (the SP global's init, e.g. 65536 for `(memory 1)`), which
+        /// is RAM-prohibitive on small MCUs. With it, the region is reserved as
+        /// `static_data_high_water + budget` and the shadow-stack top is
+        /// re-based to that smaller extent — so a few-KB-live module links into
+        /// an 8 KiB-RAM part. Synth REFUSES (does not silently shrink) if the
+        /// static-data high-water would collide with the re-based stack top.
+        /// The footprint is ASSERTED (the budget is trusted), not proven —
+        /// synth does not yet prove the program's max shadow-stack depth fits
+        /// the budget (that is the layer-2 auto-proof / scry tail, VCR-MEM-001).
+        /// Only meaningful with `--native-pointer-abi`.
+        #[arg(long, value_name = "BYTES")]
+        shadow_stack_size: Option<u32>,
     },
 
     /// Disassemble an ARM ELF file (e.g., synth disasm output.elf)
@@ -342,6 +358,7 @@ fn main() -> Result<()> {
             native_pointer_abi,
             sbom,
             sign_output,
+            shadow_stack_size,
         } => {
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
             let target_spec = resolve_target_spec(target.as_deref(), cortex_m, &backend)?;
@@ -381,6 +398,7 @@ fn main() -> Result<()> {
                 native_pointer_abi,
                 sbom_path,
                 sign_output,
+                shadow_stack_size,
             )?;
 
             // If --link requested, invoke the cross-linker
@@ -930,6 +948,7 @@ fn compile_command(
     native_pointer_abi: bool,
     sbom_path: Option<PathBuf>,
     sign_output: bool,
+    shadow_stack_size: Option<u32>,
 ) -> Result<()> {
     // Validate backend exists
     let registry = build_backend_registry();
@@ -976,6 +995,7 @@ fn compile_command(
             native_pointer_abi,
             sbom_path,
             sign_output,
+            shadow_stack_size,
         );
     }
 
@@ -1730,6 +1750,7 @@ fn compile_all_exports(
     native_pointer_abi: bool,
     sbom_path: Option<PathBuf>,
     sign_output: bool,
+    shadow_stack_size: Option<u32>,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -2176,6 +2197,7 @@ fn compile_all_exports(
                 Some(NativeGlobalsLayout {
                     globals: all_globals.clone(),
                     sp_init: stack_pointer_global_opt.map(|(_, v)| v).unwrap_or(0),
+                    shadow_stack_size,
                 })
             } else {
                 None
@@ -2320,6 +2342,13 @@ struct NativeGlobalsLayout {
     globals: Vec<(u32, i32)>,
     /// The shadow-stack top (the SP global's init); the region must cover it.
     sp_init: i32,
+    /// #383 (VCR-MEM-001): integrator-declared shadow-stack budget in bytes. When
+    /// `Some(B)`, the caller asked to shrink the [0, sp_init) reservation to `B`
+    /// (re-basing the stack top and shifting the high zero-init static relocs
+    /// down). The retarget surgery is silicon-gated (link-fragile native-pointer
+    /// path, the #368→#359 lesson); until it lands, a `Some` here is an honest
+    /// Err, never a silent no-op.
+    shadow_stack_size: Option<u32>,
 }
 
 fn build_relocatable_elf(
@@ -2330,6 +2359,23 @@ fn build_relocatable_elf(
     native_globals: Option<NativeGlobalsLayout>,
 ) -> Result<Vec<u8>> {
     use std::collections::HashMap;
+
+    // #383 (VCR-MEM-001): the integrator-declared shadow-stack budget shrinks the
+    // [0, sp_init) reservation by re-basing the stack top and shifting the high
+    // zero-init static relocs down. That is link-fragile native-pointer surgery on
+    // the path gale flies, so it is silicon-gated and not yet active. Fail HONESTLY
+    // (the #378/#381 contract) rather than accept the flag and silently ignore it.
+    if let Some(layout) = native_globals.as_ref()
+        && layout.shadow_stack_size.is_some()
+    {
+        anyhow::bail!(
+            "--shadow-stack-size is accepted but not yet active: the
+             native-pointer linear-memory shrink (re-base sp_init + retarget the
+             high zero-init static relocations down) is link-fragile and held for
+             on-silicon confirmation. Tracked as VCR-MEM-001 / gale #383. Omit the
+             flag to reserve the full declared page (current behaviour)."
+        );
+    }
 
     let mut elf_builder = ElfBuilder::new_arm32()
         .with_entry(0)
@@ -4101,6 +4147,7 @@ mod tests {
         let native = NativeGlobalsLayout {
             globals: vec![(0, 65_536)],
             sp_init: 65_536,
+            shadow_stack_size: None,
         };
 
         let elf = build_relocatable_elf(&[func], &[], &[], linear_memory_bytes, Some(native))
@@ -4195,6 +4242,7 @@ mod tests {
         let native = NativeGlobalsLayout {
             globals: vec![(0, 65_536)],
             sp_init: 65_536,
+            shadow_stack_size: None,
         };
         let elf = build_relocatable_elf(&[func], &[], &[], 131_072, Some(native))
             .expect("#345: native-pointer literal-pool object builds");
@@ -4275,6 +4323,7 @@ mod tests {
         let native = NativeGlobalsLayout {
             globals: vec![(0, 65_536)],
             sp_init: 65_536,
+            shadow_stack_size: None,
         };
 
         let elf = build_relocatable_elf(&[func], &[], &data_segments, 131_072, Some(native))

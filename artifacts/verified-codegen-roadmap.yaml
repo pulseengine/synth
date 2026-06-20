@@ -874,16 +874,36 @@ artifacts:
       by risk (advisor-reviewed) so the unblock does NOT depend on the new AI:
 
         (1) LOAD-BEARING — layout re-base + integrator budget + consistency
-            check + honest refuse (THIS issue's fix; unblocks gale
-            unconditionally). New `--shadow-stack-size <bytes>` on `compile`:
-            reserve static_data_high_water + budget and RE-BASE sp_init to that
-            top, instead of reserving up to the declared page top. Synth CHECKS
-            layout consistency (static-data high-water must sit below the new
-            stack top — refuse honestly on collision, #378/#381 contract) but
-            does NOT prove the budget suffices at runtime: the output must say
-            "asserted, not proven" (the honesty contract applied to the
-            soundness CLAIM itself). DEFAULT unset = full-page reservation =
-            byte-identical (frozen-safe).
+            check + honest refuse (THIS issue's fix). New
+            `--shadow-stack-size <bytes>` on `compile`: re-base sp_init to a
+            budget B instead of the declared page top. Output is "asserted
+            (B), not proven"; DEFAULT unset = full-page = byte-identical
+            (frozen-safe). SCOPE CORRECTION (2026-06-20, measured on the REAL
+            gust-family module msgq_put_359.wasm, not just a synthetic repro):
+            sp_init doubles as the selector's classification boundary
+            (set_native_pointer_stack → wasm_data_base, instruction_selector.rs:1623;
+            classify at 6735/6846: addr >= boundary ⇒ static `__synth_wasm_data + C`
+            reloc, < ⇒ SP-relative frame). The selector ALREADY RAN with
+            boundary=65536, so a pure post-selection re-base is sound ONLY when
+            nothing was classified against it (no static reloc). BUT the real
+            msgq module carries 10 `__synth_wasm_data` relocs (zero-init
+            k_spinlock-class statics ABOVE the shadow stack: .bss=0x10018=65560 =
+            stack [0,65536) + zero statics [65536,65560)). So pure-only REFUSES
+            on the real module — it would ship green and NOT unblock gale. The
+            actual layer-1 is the #354 per-region retarget extended to the
+            NOBITS region: shift the high `__synth_wasm_data + C` (C >= boundary)
+            relocs DOWN by (sp_init - B) and size the .bss to B + zero-static
+            extent, so the stack reservation shrinks while the zero statics
+            stay covered. Re-bases the SP global slot init to B. Sound (stack
+            grows down from B; statics at [B, B+ext) above it never overlap).
+            HONEST REFUSE for unhandled geometries (static C below the stack /
+            B > sp_init / non-Abs32 static relocs). This is link-fragile
+            native-pointer surgery (the #354 step-2 work it explicitly
+            deferred) on the path gale FLIES ⇒ silicon-gated (held for gale
+            confirmation, the #368→#359 lesson — do not rush-ship). The one
+            open disambiguation posted to gale: does the gust target use the
+            --stack-first layout (statics above the stack, as msgq shows) so
+            the down-shift is a uniform addend rewrite.
         (2) OPT-IN, NOT LOAD-BEARING — conservative auto-proof: where the
             reachable graph is ACYCLIC + direct-call-only + every reachable
             function matches the canonical single-`sub`-at-entry shadow-frame
