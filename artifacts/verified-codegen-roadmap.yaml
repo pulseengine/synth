@@ -821,8 +821,14 @@ artifacts:
       the VCR-RA-001 revisit-trigger cycle gap WITHOUT porting regalloc3's
       bundle model (the regalloc2 win came from split/remat sophistication,
       which scry sharpens directly). Depends on a scry-side annotation schema
-      + soundness statement (SCRY-001, to be filed in the scry repo; linked
-      here as text until that artifact exists).
+      + soundness statement (SCRY-001, being filed in the scry repo per scry#51,
+      2026-06-20; linked here as text until it has an ID). UPDATE (scry#51): scry
+      is at v1.11, NOT the stale v0.2 framing — the sound call graph incl.
+      call_indirect target sets (FEAT-006), recursion/SCC flag (FEAT-007), and
+      the longest-weighted-path stack bound (FEAT-021) ALL shipped, consumable as
+      the crates.io crate `scry-sai-core` (`use scry_analyze_core::analyze`).
+      First synth consumer is VCR-MEM-001 (gale #383), spike-confirmed on a real
+      module (max_stack_bytes = Bytes(32)).
     status: proposed
     tags: [codegen, register-allocation, scry, abstract-interpretation, do-333, track-a]
     links:
@@ -904,29 +910,50 @@ artifacts:
             open disambiguation posted to gale: does the gust target use the
             --stack-first layout (statics above the stack, as msgq shows) so
             the down-shift is a uniform addend rewrite.
-        (2) OPT-IN, NOT LOAD-BEARING — conservative auto-proof: where the
-            reachable graph is ACYCLIC + direct-call-only + every reachable
-            function matches the canonical single-`sub`-at-entry shadow-frame
-            idiom, synth PROVES max_depth = longest weighted path over the
-            reachable DAG (reachable_from_exports, main.rs:1671), weight = the
-            per-function __stack_pointer decrement held ACROSS calls (not merely
-            the entry decrement; multiple/conditional/variable SP adjustments or
-            SP-stored-elsewhere ⇒ REFUSE). This upgrades (1)'s "asserted" to
-            "proven" with no integrator input; on refuse it falls back to (1).
-            call_indirect MUST force refuse — reachable_from_exports
-            over-approximates indirect by pulling in ALL table funcs (sound for
-            reachability, but for longest-path the edge set explodes and can
-            fabricate cycles). DISCRIMINATING RISK (advisor): kernels usually
-            dispatch through tables, so if gale's gust kernel uses call_indirect
-            this auto-proof refuses and ONLY (1) unblocks it — do not bet the
-            unblock on (2). (This is the #383 ↔ #275 link.)
-        (3) SCRY TAIL (VCR-RA-010 / SCRY-001, scry#51): scry proves the
-            indirect/recursive tail (call_indirect target sets, recursion
-            bounds, reachability narrowing) that (2) refuses — the sound
-            abstract interpretation synth cannot do alone.
-      Build order: (1) now (this release), (2) immediately after, (3) as scry#51
-      matures. The proven-minimal path stays opt-in until silicon-validated (the
-      native-pointer #345/#354/#359 lesson — gale/jess confirms the final image).
+        (2) OPT-IN, NOT LOAD-BEARING — auto-PROOF of the budget. UPDATE
+            (2026-06-20, scry#51): synth does NOT hand-roll the shadow-frame
+            idiom extraction — scry ALREADY SHIPPED it. scry v1.11.0 (crates.io
+            `scry-sai-core`, `use scry_analyze_core::analyze`) returns, on a
+            single pre-meld Core module, `AnalysisResult.stack_usage.max_stack_bytes`
+            = longest-weighted-path shadow-stack bound (FEAT-021),
+            `call_graph: Vec<CallEdge>` with sound `resolved_targets` for
+            call_indirect (FEAT-006) + `soundness` tag, and
+            `function_summaries[].recursive` (FEAT-007, Tarjan SCC) — the exact
+            honest-fail gate. GROUNDED SPIKE on the real msgq_put_359.wasm:
+            stack_usage.max_stack_bytes = Bytes(32), 0 recursive, 0 indirect,
+            Sound — i.e. scry PROVES the true shadow-stack worst case is 32 bytes
+            where synth reserves 65536 (a 2048x over-reservation). So layer-2 is
+            "consume scry as a crate dep, use max_stack_bytes (cross-checked
+            against synth's own re-derived longest-path per the VCR-RA-010 trust
+            model) as the PROVEN budget; Unbounded/Unknown ⇒ fall back to (1)'s
+            integrator-asserted budget or honest-refuse". This SUBSUMES the old
+            hand-rolled idiom-extraction plan AND the call_indirect-refuse
+            limitation — scry's resolved_targets handle the indirect tail that
+            (the old) (2) had to refuse (#383 ↔ #275). Synth-side cost: a
+            MODULE.bazel crate pin alongside the Cargo dep (synth builds under
+            cargo + Bazel).
+        (3) was "scry tail" — now FOLDED INTO (2): the indirect/recursive cases
+            are not a separate synth track, they are fields on the same
+            scry AnalysisResult. SCRY-001 (scry filing it via PR #53) is the
+            soundness statement of resolved_targets (⊇ concrete) + recursive
+            (⇒ reachable cycle); synth VCR-MEM-001 / VCR-RA-010 `verifies`-link
+            it once it has an ID.
+      WIRING HOLDS FOR scry v1.12.0 (scry PR #53, MERGEABLE 2026-06-20): it
+      finalizes the API synth consumes — adds `AnalysisResult.reachable_from_exports`
+      as a DEDICATED call (instead of synth hand-deriving reachability from
+      call_graph, the v1.11 interim shape), confirms the integration is the
+      crates.io LIBRARY `scry-sai-core` (not the wasm component), and files
+      SCRY-001 with a Rocq `reach_superset` proof. So bind layer-2 against v1.12
+      in ONE shot (max_stack_bytes + reachable_from_exports + recursive + the
+      SCRY-001 verifies-link) rather than wiring the soon-superseded v1.11 shape
+      now — the spike already PROVED the capability (Bytes(32) on real msgq), so
+      nothing is lost by holding the binding for the final API.
+      Build order: (1) the ELF retarget — silicon-gated on gale's --stack-first
+      answer; (2) the scry-proven budget — capability confirmed (spike), BINDING
+      held for scry v1.12.0 (PR #53) to finalize the API. The two are independent:
+      (1) is the mechanics
+      (shrink the .bss), (2) is the proof (how big is safe). Stays opt-in until
+      silicon-validated (the #345/#354/#359 lesson — gale/jess confirms the image).
     status: proposed
     tags: [codegen, native-pointer-abi, memory-layout, abstract-interpretation, scry, stack-depth, gale-383, track-a]
     links:
