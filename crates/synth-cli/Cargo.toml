@@ -54,3 +54,9 @@ wast.workspace = true
 
 [dev-dependencies]
 object.workspace = true
+# VCR-MEM-001 (#383) layer-2 substrate: scry's sound shadow-stack-depth analysis,
+# verified in-tree against a real module. DEV-dependency only — the production
+# binary does not pull scry until the gated consumption step (the .bss shrink /
+# prologue elision) lands. Test-only ⇒ Bazel (which globs src/ only) never sees
+# it, so no MODULE.bazel pin is needed yet. See scry#51.
+scry-sai-core = "1.12"
