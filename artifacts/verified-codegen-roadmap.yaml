@@ -895,6 +895,36 @@ artifacts:
       the crates.io crate `scry-sai-core` (`use scry_analyze_core::analyze`).
       First synth consumer is VCR-MEM-001 (gale #383), spike-confirmed on a real
       module (max_stack_bytes = Bytes(32)).
+
+      API-FITNESS CHECK (2026-06-20, spike on real kernels, the v1.12
+      `AnalysisResult.invariants` InvariantBundle): the existing API IS
+      sufficient for both paths — NO scry change needed for the interval uses.
+      `InvariantBundle.points[].locals[]` gives per-`(func, pc, local_index)`
+      `AbstractValue::{I32Interval,I64Interval}(Interval{lo,hi})`: a SINGLETON
+      interval = known constant (path-A remat candidate); an `I64Interval` that
+      fits 32 bits = path-B narrowing candidate. Per-LOCAL granularity is the
+      RIGHT granularity — locals are the long-lived pressure (the #390 "sched
+      reloaded 10×" is a local). MEASURED known-constant locals: flight_seam_flat
+      44/70, control_step 6/24, controller_step 6/20 — exactly the
+      const-materialization waste gale measured (#390 pass-5 / #209). Path-B
+      (i64-narrowing) found 0 candidates on these i32-dominated kernels (real in
+      principle, not exercised here). TWO honest caveats: (1) precision is
+      OPPORTUNISTIC — msgq/filter_axis came back all-`top` (values flow from
+      memory/params with no constraining context), so scry-remat is a win on
+      constant-heavy kernels and SILENT elsewhere — fine for an untrusted oracle
+      (no signal ⇒ no hint ⇒ fall back to synth's own analysis, never wrong).
+      (2) The real integration cost is SYNTH-side, not a scry gap: scry keys by
+      WASM `(func,pc,local)`, synth's regalloc runs on post-selection ARM vregs;
+      consuming the signal needs a `(pc,local) → ARM-vreg` mapping
+      (`ArmInstruction.source_line` gives the thread — validate with a spike
+      before wiring, like the shadow-stack one). Forward-looking observations
+      that don't block synth filed to scry as a help-them-improve issue
+      (operand-stack abstract values not surfaced; interprocedural range
+      propagation via the call graph to sharpen param/memory-derived locals;
+      an eventual known-bits domain for alignment/strength-reduction). NOTE the
+      CORE regalloc (#390 pass-1 liveness/interference/colouring/spill) does NOT
+      need scry — synth's substrate computes it; scry is an opportunistic quality
+      oracle on top, never in the TCB.
     status: proposed
     tags: [codegen, register-allocation, scry, abstract-interpretation, do-333, track-a]
     links:
