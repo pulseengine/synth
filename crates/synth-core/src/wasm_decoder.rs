@@ -335,7 +335,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let (ops, unsupported) = decode_function_body(&body)?;
+                let (ops, op_offsets, unsupported) = decode_function_body(&body)?;
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
 
@@ -343,6 +343,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     index: actual_index,
                     export_name,
                     ops,
+                    op_offsets,
                     unsupported,
                 });
                 func_index += 1;
@@ -397,7 +398,7 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let (ops, unsupported) = decode_function_body(&body)?;
+                let (ops, op_offsets, unsupported) = decode_function_body(&body)?;
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
 
@@ -405,6 +406,7 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                     index: actual_index,
                     export_name,
                     ops,
+                    op_offsets,
                     unsupported,
                 });
                 func_index += 1;
@@ -425,6 +427,14 @@ pub struct FunctionOps {
     pub export_name: Option<String>,
     /// The WASM operations in this function body
     pub ops: Vec<WasmOp>,
+    /// VCR-DBG-001 step 1 (#394): module-relative wasm byte offset of each op in
+    /// `ops` (same index → same op). This is the address space DWARF-for-wasm
+    /// `.debug_line` keys on, so it is the bridge from synth's op-index
+    /// `source_line` to the input wasm's DWARF (wasm-offset → source). PURELY
+    /// ADDITIVE metadata: no codegen path reads it, so emitted `.text` is
+    /// unchanged and the frozen fixtures stay bit-identical. Empty until consumed
+    /// by the DWARF emitter (Tier 1).
+    pub op_offsets: Vec<u32>,
     /// `Some(reason)` when the body contained a value-affecting operator the
     /// decoder cannot lower (e.g. scalar f32/f64 — #369, bulk-memory
     /// memory.copy/fill). Such an op would otherwise be silently *dropped*
@@ -442,16 +452,24 @@ pub struct FunctionOps {
 /// Returns the ops plus `Some(reason)` if any operator was a value-affecting
 /// op the decoder cannot lower (so the function must be loud-skipped, #369 —
 /// not silently miscompiled by dropping the op).
-fn decode_function_body(body: &wasmparser::FunctionBody) -> Result<(Vec<WasmOp>, Option<String>)> {
+fn decode_function_body(
+    body: &wasmparser::FunctionBody,
+) -> Result<(Vec<WasmOp>, Vec<u32>, Option<String>)> {
     let mut ops = Vec::new();
+    // VCR-DBG-001 step 1: parallel to `ops` — the module-relative wasm byte
+    // offset of each emitted op (the DWARF-for-wasm address space). Captured via
+    // the offset-aware reader; pushed only when an op is pushed, so indices stay
+    // aligned with `ops`. Additive metadata, no codegen consumer ⇒ frozen-safe.
+    let mut op_offsets = Vec::new();
     let mut unsupported: Option<String> = None;
 
     let ops_reader = body.get_operators_reader()?;
-    for op_result in ops_reader {
-        let op = op_result.context("Failed to read operator")?;
+    for item in ops_reader.into_iter_with_offsets() {
+        let (op, offset) = item.context("Failed to read operator")?;
 
         if let Some(wasm_op) = convert_operator(&op) {
             ops.push(wasm_op);
+            op_offsets.push(offset as u32);
         } else if unsupported.is_none() && !is_intentionally_ignored(&op) {
             // The op was DROPPED by `convert_operator` (`_ => None`) and is not
             // an intentional no-op (Nop/Unreachable) — record it so the
@@ -460,7 +478,7 @@ fn decode_function_body(body: &wasmparser::FunctionBody) -> Result<(Vec<WasmOp>,
         }
     }
 
-    Ok((ops, unsupported))
+    Ok((ops, op_offsets, unsupported))
 }
 
 /// Operators that `convert_operator` returns `None` for *on purpose* — they
@@ -1502,6 +1520,47 @@ mod tests {
         let ops = &functions[0].ops;
         assert!(ops.contains(&WasmOp::I32x4Add));
         assert!(ops.contains(&WasmOp::I32x4Mul));
+    }
+
+    /// VCR-DBG-001 step 1 (#394): the decoder records a module-relative wasm byte
+    /// offset per emitted op — the DWARF-for-wasm address space that bridges
+    /// synth's op-index `source_line` to the input wasm's `.debug_line`. Purely
+    /// additive metadata (no codegen consumer ⇒ frozen fixtures byte-identical,
+    /// verified separately); this test pins the structural invariants.
+    #[test]
+    fn test_decode_records_aligned_increasing_op_offsets_dbg001() {
+        let wat = r#"
+            (module
+                (func (export "f") (param i32 i32) (result i32)
+                    local.get 0
+                    local.get 1
+                    i32.add
+                    i32.const 7
+                    i32.mul))
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse WAT");
+        let functions = decode_wasm_functions(&wasm).expect("decode");
+        let f = &functions[0];
+
+        // One offset per emitted op, index-aligned with `ops`.
+        assert_eq!(
+            f.op_offsets.len(),
+            f.ops.len(),
+            "op_offsets must be parallel to ops"
+        );
+        assert!(!f.op_offsets.is_empty());
+
+        // Byte offsets are strictly increasing through the body (each op consumes
+        // at least one byte) and module-relative (well past the header).
+        assert!(
+            f.op_offsets.windows(2).all(|w| w[1] > w[0]),
+            "wasm byte offsets must strictly increase: {:?}",
+            f.op_offsets
+        );
+        assert!(
+            f.op_offsets[0] >= 8,
+            "module-relative offset is past the 8-byte wasm header"
+        );
     }
 
     /// #237: the decoder captures a global's `i32.const` initializer + mutability,
