@@ -1117,6 +1117,69 @@ artifacts:
         B automatically (output "proven"); call_indirect / recursion / non-canonical
         frame ⇒ refuse → fall back to (1). LAYER (3): scry#51 proves the tail.
 
+  - id: VCR-MEM-002
+    type: sw-req
+    title: "Multi-memory structural isolation: lower N wasm memories to N distinct native bases (synth #406, meld #300, gale #86/#404)"
+    description: >
+      Cross-repo decision (meld #300, 2026-06-21): the committed dissolved-
+      library-OS inter-component isolation model is STRUCTURAL — meld preserves
+      each component's memory as a distinct region (`MemoryStrategy::MultiMemory`,
+      tested in meld-core/tests/multi_memory.rs: separate-memories, preserves-
+      isolation, cross-memory copy) so the MPU/PMP region boundary IS the
+      semantic boundary: a component cannot even FORM a pointer into a neighbour
+      (distinct native base), vs single-shared + embedder MPU-carve (model 1,
+      retained SECONDARY) where a miscomputed address lands in a neighbour's
+      sub-range and only the MPU catches it. meld emits the multi-memory
+      structure + cross-memory ops today ⇒ SYNTH IS THE REMAINING GATE.
+
+      Today synth is single-memory: the memory index is DROPPED at the IR level
+      (the load/store `WasmOp` variants carry no `memory_index` — wasm_op.rs),
+      cross-memory `memory.copy`/`memory.fill` (non-zero dst_mem/src_mem) are
+      loud-skipped in wasm_decoder.rs, and the linmem base is one hardcoded
+      register (R11 = 0x20000000 / 0x20000100). MPU is config-only
+      (mpu_allocator computes region base/size/perms + init code, nothing wired
+      to codegen — see VCR-MEM-001 / #377). Latent infra: `synth_memory::
+      MemoryTable` (MAX_MEMORIES=8), unwired.
+
+      WORK (staged, gated — byte-changing on the load/store path):
+        (1) Carry `memidx` through the IR — add `memory_index` to the
+            load/store/memory.* WasmOp variants; stop dropping it in the decoder.
+        (2) Per-memory native bases — place memory[k] at a distinct base; the
+            common case pins the function's home-memory base in R11 (≈ today's
+            cost), cross-memory access resolves via the per-memory base/size
+            table (synth_memory::MemoryTable). Steady-state cost ≈ 0; only
+            cross-memory access pays.
+        (3) Cross-memory ops — emit memory.copy/fill with distinct dst/src mem
+            explicitly instead of loud-skipping (#369-adjacent).
+        (4) Expose per-memory base/size so an embedder programs one MPU/PMP
+            region per memory (wire mpu_allocator from the per-memory layout —
+            ties to #377 MPU runtime wiring).
+      MPU/PMP region cap (~8 ARMv7-M, PMP similar) bounds practical N — fine for
+      a handful of mutually-distrusting components, NOT arbitrary scale; applies
+      to model 1 equally (not a differentiator). meld keeps MultiMemory output
+      stable as the lowering target; file against meld on an unconsumable shape.
+    status: proposed
+    tags: [codegen, memory, isolation, mpu, multi-memory, meld-coordination, byte-changing, track-c, synth-406]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: traces-to
+        target: VCR-MEM-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        Each of the 4 steps lands gated: WITHOUT multi-memory input every byte
+        is UNCHANGED ⇒ all frozen fixtures (control_step 0x00210A55, flat+inlined
+        flight_algo 0x07FDF307, divseam) byte-identical (single-memory modules
+        take the same path as today). A multi-memory module lowers to N regions
+        with per-memory bases; a differential oracle confirms cross-memory
+        copy/load/store are result-correct vs wasmtime, and a post-link check
+        asserts the N regions are disjoint and each carries the base/size an
+        embedder maps to one MPU/PMP region. Byte-changing steps gate on the
+        frozen-fixture re-freeze + differential + gale on-silicon (the
+        #193/#212/#215 latent-regalloc lesson) — never an idle-tick increment.
+
   # ---------------------------------------------------------------------------
   # Toolchain completeness — debuggability (not a VCR correctness item, but
   # Tier-2 depends on the VCR-RA value→location mapping)
