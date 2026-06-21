@@ -264,3 +264,132 @@ artifacts:
           compile_import_call_produces_relocatable_elf() in
           crates/synth-cli/tests/wast_compile.rs validates
           complete relocatable ELF structure
+
+  # ---------------------------------------------------------------------------
+  # VCR-* North-Star verification bindings (epic #242). Each closes the right
+  # side of the V for a VCR requirement whose implementation HAS a real,
+  # passing in-tree test — making the requirement→test link typed and
+  # mechanically checkable (rivet `swe1-has-verification`), not prose-only.
+  # Requirements still in design (VCR-ISA-001 Sail, VCR-WASM-001 WasmCert, the
+  # unimplemented VCR-SEL/RA/DEC items) are deliberately left UNcovered until
+  # their verification exists — an honest gap, not a fabricated link.
+  # ---------------------------------------------------------------------------
+
+  - id: SWVER-013
+    type: sw-verification
+    title: Native-pointer shadow-stack reservation shrink (#383)
+    description: >
+      Verifies the VCR-MEM-001 layer-1 `--shadow-stack-size` shrink: under
+      --native-pointer-abi the reservation re-bases sp_init to B and resizes the
+      NOBITS .bss to B + static-tail, refusing honestly for unsupported
+      geometry. Asserts the shrink (gust_kernel.wasm bss 1048720 to 4240 at
+      B=4096), the no-flag full reservation (opt-in / frozen-safe), and the
+      budget>sp_init honest refuse. The native-pointer differential
+      (native_pointer_shadow_stack, --shadow-stack-size 2048) confirms the
+      flag-on runtime: frame_roundtrip values correct = the store through the
+      re-based SP lands in-region. gale's on-silicon reflash is the final
+      runtime gate (held before release).
+    status: implemented
+    tags: [memory, native-pointer-abi, vcr-mem, gale-383]
+    links:
+      - type: verifies
+        target: VCR-MEM-001
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-cli --test shadow_stack_shrink_383"
+        coverage: >
+          crates/synth-cli/tests/shadow_stack_shrink_383.rs (shrink to 4240,
+          no-flag to 1048720, budget>sp_init refuse) + the
+          scripts/repro/native_pointer_shadow_stack_differential.py runtime oracle
+
+  - id: SWVER-014
+    type: sw-verification
+    title: SSA register-allocator substrate (liveness/interference/colouring/spill)
+    description: >
+      Verifies the VCR-RA-001 allocator substrate built side-by-side: CFG
+      liveness, the interference graph, Chaitin/Briggs colouring (plain,
+      precoloured, spill-cost-ranked), value-range allocation, the allocation
+      validator, and the reallocation/realloc-stats passes. The substrate is
+      the foundation the eventual spill-aware allocator wiring consumes.
+    status: implemented
+    tags: [register-allocation, vcr-ra, substrate]
+    links:
+      - type: verifies
+        target: VCR-RA-001
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-synthesis --lib liveness::"
+        coverage: >
+          crates/synth-synthesis/src/liveness.rs unit tests (interference_graph,
+          color_graph[_precolored[_costed]], range_interference, verify_allocation,
+          reallocate_function, allocate_function, function_peak_pressure)
+
+  - id: SWVER-015
+    type: sw-verification
+    title: scry const-rematerialization signal (VCR-RA-010 path-A substrate)
+    description: >
+      Verifies that scry's interval domain surfaces the constant-local signal
+      the VCR-RA-010 untrusted regalloc oracle consumes — singleton intervals =
+      provably-constant locals (rematerialization candidates) — on the hot
+      kernels (flight_seam_flat, control_step). DEV-dependency on scry-sai-core;
+      no production dep, no codegen change.
+    status: implemented
+    tags: [register-allocation, scry, vcr-ra, abstract-interpretation]
+    links:
+      - type: verifies
+        target: VCR-RA-010
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-cli --test scry_const_remat_signal"
+        coverage: >
+          crates/synth-cli/tests/scry_const_remat_signal.rs — asserts substantial
+          singleton-interval (known-constant) local signal on the hot kernels
+
+  - id: SWVER-016
+    type: sw-verification
+    title: DWARF Tier-1 source-provenance read path (steps 1-2)
+    description: >
+      Verifies the implemented portion of VCR-DBG-001: step 1 — the decoder
+      records the per-op wasm code BYTE OFFSET (op_offsets side-table); step 2 —
+      the input wasm's `.debug_line` parses into (wasm-byte-offset to file:line)
+      rows via gimli (DEV-dep). Together these are the read side of the
+      source-to-object provenance bridge. The COMPOSE (step 3) and EMIT (step 4)
+      remain open (see the VCR-DBG-001 PROGRESS notes), so this verifies the
+      read path only, not the full Tier-1 feature.
+    status: implemented
+    tags: [dwarf, debuggability, vcr-dbg, partial-steps-1-2]
+    links:
+      - type: verifies
+        target: VCR-DBG-001
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-core --test dwarf_line_read_spike && cargo test -p synth-core dbg001"
+        coverage: >
+          crates/synth-core/src/wasm_decoder.rs op_offsets test (step 1) +
+          crates/synth-core/tests/dwarf_line_read_spike.rs (.debug_line to file:line, step 2)
+
+  - id: SWVER-017
+    type: sw-verification
+    title: Cross-backend op-parity oracle (ARM vs RISC-V)
+    description: >
+      Verifies the VCR-SEL-005 op-parity oracle: the ledger of which WasmOps
+      each selector (ARM select_default, RISC-V selector) lowers, asserting the
+      tracked parity so a "selector missed an op" regression (the #223/#232
+      class) is caught mechanically rather than on silicon. Both selectors fail
+      honestly on an unlowered op; this oracle tracks the gap explicitly.
+    status: implemented
+    tags: [instruction-selection, cross-backend, vcr-sel, op-parity]
+    links:
+      - type: verifies
+        target: VCR-SEL-005
+    fields:
+      method: automated-test
+      steps:
+        run: "cargo test -p synth-backend-riscv --test cross_backend_op_parity"
+        coverage: >
+          crates/synth-backend-riscv/tests/cross_backend_op_parity.rs — the
+          ARM/RISC-V op-lowering parity ledger
