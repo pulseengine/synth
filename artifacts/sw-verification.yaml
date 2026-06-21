@@ -393,3 +393,60 @@ artifacts:
         coverage: >
           crates/synth-backend-riscv/tests/cross_backend_op_parity.rs — the
           ARM/RISC-V op-lowering parity ledger
+
+  # Native-pointer ABI verification cluster (#237/#354/#359/#383): completes the
+  # right side of the V for the native-pointer linear-memory family alongside
+  # SWVER-013 (VCR-MEM-001 / #383). The #354 split + #359 Abs32 sizing are
+  # verified by the same #359 oracles (a unicorn-on-.o oracle could not see the
+  # link-time retargeting — #368 — so the post-link oracle builds the real
+  # linked image; the differential checks runtime correctness).
+
+  - id: SWVER-018
+    type: sw-verification
+    title: Per-region .bss/.data split for high-offset init segments (#354)
+    description: >
+      Verifies GI-NPA-004: under --native-pointer-abi a high-offset initialized
+      (data) segment is packed into a small PROGBITS .data under its own
+      __synth_wasm_seg_K symbol (not dragged into a fat zero-gap PROGBITS), and
+      every __synth_wasm_data + C static reloc landing in segment K is retargeted
+      to __synth_wasm_seg_K + (C - seg_off). The post-link oracle builds the
+      actual linked image and asserts no __synth_wasm_* literal read lands past
+      __bss_end; the differential confirms the retargeted access reads the right
+      value at runtime.
+    status: implemented
+    tags: [native-pointer-abi, memory-layout, gale-354, native-pointer-cluster]
+    links:
+      - type: verifies
+        target: GI-NPA-004
+    fields:
+      method: automated-test
+      steps:
+        run: "/tmp/armv/bin/python scripts/repro/postlink_359_oracle.py && /tmp/armv/bin/python scripts/repro/dyn_table_359_differential.py /tmp/dt359.elf"
+        coverage: >
+          scripts/repro/postlink_359_oracle.py (linked-image #354-split invariant)
+          + scripts/repro/dyn_table_359_differential.py (mixed-split runtime)
+
+  - id: SWVER-019
+    type: sw-verification
+    title: Native-pointer .bss sized for Abs32 static accesses (#359)
+    description: >
+      Verifies GI-NPA-005: the native-pointer reservation extent covers the
+      Abs32 literal-pool static addends (read from the in-place .text word
+      pre-retarget), not just MovwAbs ones — so a legitimate high-offset access
+      (e.g. an action→ret table read at the tail of the init segment) lands
+      in-reservation and reads the right value instead of garbage past __bss_end
+      (the #354 × #368 interaction that took the queue-full branch on an empty
+      queue).
+    status: implemented
+    tags: [native-pointer-abi, memory-layout, gale-359, native-pointer-cluster]
+    links:
+      - type: verifies
+        target: GI-NPA-005
+    fields:
+      method: automated-test
+      steps:
+        run: "/tmp/armv/bin/python scripts/repro/dyn_table_359_differential.py /tmp/dt359.elf && /tmp/armv/bin/python scripts/repro/postlink_359_oracle.py"
+        coverage: >
+          scripts/repro/dyn_table_359_differential.py (lookup table read at the
+          init-segment tail) + scripts/repro/postlink_359_oracle.py (no literal
+          read past __bss_end)
