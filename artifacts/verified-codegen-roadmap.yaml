@@ -1085,6 +1085,30 @@ artifacts:
       (1) is the mechanics
       (shrink the .bss), (2) is the proof (how big is safe). Stays opt-in until
       silicon-validated (the #345/#354/#359 lesson — gale/jess confirms the image).
+
+      LAYER-1 INPUTS NOW IN HAND (2026-06-21, gale #383): the two preconditions
+      that gated the byte-changing ELF retarget are RESOLVED + verified against
+      the artifact (scripts/repro/gust_kernel.wasm, from gale #91, in-tree):
+        - LAYOUT = stack-first (the direct down-shift case, NOT the refuse
+          geometry). Verified: memory[0] = 17 pages declared; __stack_pointer
+          init sp_init = 1048576; the lone .rodata segment (143 B) sits AT 1048576
+          (__data_end 1048719 / __heap_base 1048720) — statics at/above sp_init,
+          NONE below. So every static addend >= sp_init shifts down by a uniform
+          (sp_init - B); no static-below-stack refuse case to handle for gust.
+        - FIXTURE: synth@main (no flag) reproduces gale's number exactly —
+          text 1370 / data 156 / bss 1048720 (~1 MiB over-reservation, all of it
+          the [0, sp_init) stack page); --shadow-stack-size errors honestly
+          (PR #388 scaffold). B = 4096 -> reserve B + 144 = ~4.2 KB, inside the
+          8 KiB STM32F100 part.
+      So layer-1 is unblocked and its geometry is the clean uniform-down-shift.
+      Remaining = the byte-changing retarget itself (re-base sp_init -> B; shift
+      every __synth_wasm_data static addend >= sp_init down by (sp_init - B),
+      across both MovwAbs pairs and Abs32 literal-pool words; resize the region
+      to B + static-extent; keep the refuse-on-collision guard) + the post-link
+      oracle (stack/static no-overlap; every relocated access in-reservation, the
+      #359 check), behind the opt-in flag so frozen fixtures stay bit-identical.
+      gale offered on-silicon reflash on this exact gust_kernel.wasm as the final
+      gate. A FOCUSED gated step, not an idle-tick increment.
     status: proposed
     tags: [codegen, native-pointer-abi, memory-layout, abstract-interpretation, scry, stack-depth, gale-383, track-a]
     links:
