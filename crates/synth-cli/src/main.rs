@@ -239,7 +239,12 @@ enum Commands {
         /// The footprint is ASSERTED (the budget is trusted), not proven —
         /// synth does not yet prove the program's max shadow-stack depth fits
         /// the budget (that is the layer-2 auto-proof / scry tail, VCR-MEM-001).
-        /// Only meaningful with `--native-pointer-abi`.
+        /// CONTRACT: the budget must cover EVERYTHING live in linear memory above
+        /// address 0 — the shadow stack AND any heap use — because static markers
+        /// (`__heap_base` etc.) keep their original high addresses; the shrink
+        /// re-bases only the stack top. Safe for no-grow / no-heap MCU images
+        /// (the dissolved library-OS case); a module that dynamically allocates
+        /// above B will mis-address. Only meaningful with `--native-pointer-abi`.
         #[arg(long, value_name = "BYTES")]
         shadow_stack_size: Option<u32>,
     },
@@ -2360,22 +2365,12 @@ fn build_relocatable_elf(
 ) -> Result<Vec<u8>> {
     use std::collections::HashMap;
 
-    // #383 (VCR-MEM-001): the integrator-declared shadow-stack budget shrinks the
-    // [0, sp_init) reservation by re-basing the stack top and shifting the high
-    // zero-init static relocs down. That is link-fragile native-pointer surgery on
-    // the path gale flies, so it is silicon-gated and not yet active. Fail HONESTLY
-    // (the #378/#381 contract) rather than accept the flag and silently ignore it.
-    if let Some(layout) = native_globals.as_ref()
-        && layout.shadow_stack_size.is_some()
-    {
-        anyhow::bail!(
-            "--shadow-stack-size is accepted but not yet active: the
-             native-pointer linear-memory shrink (re-base sp_init + retarget the
-             high zero-init static relocations down) is link-fragile and held for
-             on-silicon confirmation. Tracked as VCR-MEM-001 / gale #383. Omit the
-             flag to reserve the full declared page (current behaviour)."
-        );
-    }
+    // #383 (VCR-MEM-001 layer-1): the integrator-declared shadow-stack budget
+    // shrinks the [0, sp_init) reservation. The actual shrink is computed below
+    // (after the reloc analysis, which decides whether the geometry is safe to
+    // rewrite) — see `shrink_shadow_stack`. It refuses HONESTLY (typed Err, the
+    // #378/#381 contract) for any geometry it cannot prove safe, and is opt-in
+    // (default unset ⇒ full-page reservation ⇒ frozen fixtures bit-identical).
 
     let mut elf_builder = ElfBuilder::new_arm32()
         .with_entry(0)
@@ -2643,6 +2638,110 @@ fn build_relocatable_elf(
         }
     }
 
+    // #383 (VCR-MEM-001 layer-1): shrink the [0, sp_init) shadow-stack reservation
+    // to the integrator-declared budget B. Correct-by-construction for the verified
+    // gust geometry (stack-first: statics at/above sp_init are retargeted into the
+    // packed `.data`, so the only static relocs still pointing into the `.bss`
+    // reservation are addend-0 region-base pointers — stable because
+    // `__synth_wasm_data` stays at offset 0). The shrink re-bases the SP global slot
+    // sp_init -> B and resizes the `.bss` to B + (used_extent - sp_init). It REFUSES
+    // honestly (typed Err, the #359/#368 lesson) for any geometry it cannot prove
+    // safe; opt-in, so the default (unset) reserves the full page = byte-identical.
+    let (reserved_extent, rebased_globals): (u32, Option<Vec<(u32, i32)>>) = match native_layout
+        .as_ref()
+        .and_then(|ng| ng.shadow_stack_size.map(|b| (ng, b)))
+    {
+        None => (used_extent, None),
+        Some((ng, budget)) => {
+            let sp = ng.sp_init.max(0) as u32;
+            // Only the per-region split geometries separate statics from the stack
+            // reservation; the one-PROGBITS fallback inlines them and is not safe to
+            // shrink here.
+            if !(split_linmem_bss || do_mixed_split) {
+                anyhow::bail!(
+                    "--shadow-stack-size: this module's native-pointer layout keeps static \
+                     data inline in the reservation (one-PROGBITS fallback); the shadow-stack \
+                     shrink only supports the per-region-split geometry. Tracked VCR-MEM-001/#383."
+                );
+            }
+            if budget > sp {
+                anyhow::bail!(
+                    "--shadow-stack-size {budget} exceeds the declared shadow-stack top \
+                     sp_init={sp}; refusing (would enlarge, not shrink)."
+                );
+            }
+            // Every `__synth_wasm_data` reloc still pointing into the `.bss` reservation
+            // (i.e. NOT retargeted into `.data`) must be a region-base pointer (addend 0),
+            // which is stable under the shrink. A non-zero addend is a real static inside
+            // the reservation; down-shifting inline statics is the deferred general case ⇒
+            // refuse rather than mis-address. Only the Abs32 literal-pool form is inspected;
+            // any other static-reloc kind into the reservation is refused.
+            for (i, func) in funcs.iter().enumerate() {
+                for reloc in &func.relocations {
+                    if reloc.symbol != "__synth_wasm_data"
+                        || retarget.contains_key(&(i, reloc.offset))
+                    {
+                        continue;
+                    }
+                    let pos = (func_offsets[i] + reloc.offset) as usize;
+                    let c = match reloc.kind {
+                        synth_core::backend::RelocKind::Abs32 if pos + 4 <= all_code.len() => {
+                            u32::from_le_bytes([
+                                all_code[pos],
+                                all_code[pos + 1],
+                                all_code[pos + 2],
+                                all_code[pos + 3],
+                            ])
+                        }
+                        other => anyhow::bail!(
+                            "--shadow-stack-size: unhandled native-pointer static reloc {other:?} \
+                             into the reservation; refusing. VCR-MEM-001/#383."
+                        ),
+                    };
+                    if c != 0 {
+                        anyhow::bail!(
+                            "--shadow-stack-size: a native-pointer static access addends {c} into \
+                             the [0, sp_init) reservation (not the region base, not retargeted into \
+                             .data); down-shifting inline statics is the deferred general case. \
+                             Refusing rather than mis-addressing. VCR-MEM-001/#383."
+                        );
+                    }
+                }
+            }
+            // Re-base the SP global slot: the unique global whose init == sp_init.
+            let sp_matches: Vec<usize> = ng
+                .globals
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, v))| *v == ng.sp_init)
+                .map(|(i, _)| i)
+                .collect();
+            if sp_matches.len() != 1 {
+                anyhow::bail!(
+                    "--shadow-stack-size: could not uniquely identify the shadow-stack global to \
+                     re-base ({} globals have init == sp_init {}); refusing. VCR-MEM-001/#383.",
+                    sp_matches.len(),
+                    ng.sp_init
+                );
+            }
+            let mut rebased = ng.globals.clone();
+            rebased[sp_matches[0]].1 = budget as i32;
+            // Reservation now covers [0, B) stack + the preserved static tail that sat
+            // above sp_init (the retargeted statics are in `.data`, unaffected).
+            // saturating_sub: used_extent is `.min(linear_memory_bytes)`-clamped, so a
+            // pathological module could clamp it below sp_init — never underflow-panic.
+            let new_extent = budget
+                .saturating_add(used_extent.saturating_sub(sp))
+                .next_multiple_of(4);
+            info!(
+                "Native-pointer shadow-stack shrink (#383): sp_init {sp} -> {budget}, \
+                 reservation {used_extent} -> {new_extent} B (post-link oracle: stack/static \
+                 disjoint, all reservation accesses in-range)"
+            );
+            (new_extent, Some(rebased))
+        }
+    };
+
     // #354/#345: build + add `.text` (section index 4) now — after any in-place
     // addend patch and before the `.bss`/`.data` sections, so `.text` keeps its
     // index and the patched literal words are what ship.
@@ -2663,14 +2762,16 @@ fn build_relocatable_elf(
                 .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
                 .with_addr(0)
                 .with_align(4)
-                .with_size(used_extent);
+                .with_size(reserved_extent);
             elf_builder.add_section(bss);
             let mut blob = vec![0u8; *data_size as usize];
             for ((_off, d), &poff) in data_segments.iter().zip(packed.iter()) {
                 blob[poff as usize..poff as usize + d.len()].copy_from_slice(d);
             }
             if let Some(ng) = &native_layout {
-                for (idx, init) in &ng.globals {
+                // #383: re-based SP slot when the shadow-stack shrink fired.
+                let globals = rebased_globals.as_ref().unwrap_or(&ng.globals);
+                for (idx, init) in globals {
                     let at = (*globals_off + idx * 4) as usize;
                     blob[at..at + 4].copy_from_slice(&init.to_le_bytes());
                 }
@@ -2687,13 +2788,15 @@ fn build_relocatable_elf(
                 .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
                 .with_addr(0)
                 .with_align(4)
-                .with_size(used_extent);
+                .with_size(reserved_extent);
             elf_builder.add_section(bss);
             // #345: materialized global slots (non-zero inits) → small PROGBITS
             // `.data` (section 6). `__synth_globals` is value 0 in this section.
             if let Some(ng) = &native_layout {
                 let mut blob = vec![0u8; globals_bytes as usize];
-                for (idx, init) in &ng.globals {
+                // #383: re-based SP slot when the shadow-stack shrink fired.
+                let globals = rebased_globals.as_ref().unwrap_or(&ng.globals);
+                for (idx, init) in globals {
                     let at = (idx * 4) as usize;
                     blob[at..at + 4].copy_from_slice(&init.to_le_bytes());
                 }
