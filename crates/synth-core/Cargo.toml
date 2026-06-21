@@ -20,3 +20,9 @@ wasmparser.workspace = true
 
 [dev-dependencies]
 wat.workspace = true
+# VCR-DBG-001 Tier-1 step 2 (#394, #242) — gimli parses the input wasm's
+# `.debug_line` in the read-side spike ONLY. DEV-dep ⇒ frozen-safe: synth's Bazel
+# manual-spec crate_universe globs `src/` (never `tests/`), so this needs no
+# MODULE.bazel pin, and the production `synth` binary does not pull gimli. The
+# production gimli dep + MODULE.bazel pin land with the DWARF EMITTER (step 4).
+gimli = "0.31"
