@@ -832,6 +832,36 @@ artifacts:
           ~4 B/fn. OWNER: prologue minimization (save only clobbered).
       Passes 1+3 dominate. Estimated 1–3 alone bring gust_poll from 816 B toward
       ~300–350 B (≈1.5–1.7× vs LLVM), within the project's 10–20%-overhead thesis.
+
+      IN-TREE Pass-1 BASELINE (2026-06-21, frozen-safe, `scripts/repro/spill_baseline_measure.sh`):
+      gale measured Pass-1 on gust silicon; this reproduces the SAME mechanism on
+      synth's own frozen fixtures so the spill waste is regression-tracked in-tree
+      (zero codegen change — compiles the fixtures, reads emitted ARM via thumb
+      objdump + the existing SYNTH_SHADOW_ALLOC instrumentation). Per fixture:
+      `[sp,#]` spill loads/stores vs peak *value*-pressure (the allocator's
+      distinct-simultaneously-live-values count):
+        - flight_seam_flat: 56 spill ops / 356 insns, peak value-pressure 7 (≤9)
+        - flight_seam:      39 spill ops / 300 insns, peak value-pressure 7–8
+        - control_step:      6 spill ops / 113 insns, peak value-pressure 8
+      FINDING: the spills are SPURIOUS. synth keeps WASM locals frame-resident BY
+      MODEL (local.get→ldr [sp]; local.set→str [sp]), NOT from register pressure —
+      every live value fits the R0–R8 pool (peak ≤9). The value-based SSA allocator
+      (VCR-RA-001, today shadow-only behind SYNTH_SHADOW_ALLOC) promotes them into
+      registers and eliminates the traffic. PRECISION on "the substrate is built
+      side-by-side, UNWIRED": accurate for the spill-ELIMINATING value allocator
+      (`allocate_function` — shadow-logged only). The default-on range-realloc
+      (`reallocate_function`, v0.11.36) is a RENAMER — it never adds/removes
+      instructions, so it provably cannot capture Pass-1; and `apply_const_cse` is
+      flag-gated (SYNTH_CONST_CSE=1, off by default). So Pass-1 is genuinely
+      unrealized in default codegen — #390's headline holds.
+      FORK RESOLUTION (the const-CSE-vs-spill question): const/remat opportunities
+      are 0–2 on these kernels (synth already lowers consts as immediates), while
+      spill-elimination is 56/39/6 — the spill axis is where the bytes are, and it
+      is INDEPENDENT of the const-remat axis. Confirms the spill-elimination wiring
+      (not const-CSE) as the #390 headline lever. DE-RISK NOTE for the wiring step:
+      the frozen fixtures DO exhibit Pass-1 (56 ops on flight_seam_flat), so they
+      are a valid in-tree target — the byte-changing wiring still gates on a
+      deliberate re-freeze + differential + gale on-silicon (never an idle tick).
     status: proposed
     tags: [codegen, perf, regalloc, addressing-mode, size, gale-390, measurement, track-a, silicon]
     links:
