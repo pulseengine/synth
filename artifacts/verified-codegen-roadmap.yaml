@@ -1182,6 +1182,18 @@ artifacts:
             ARM address resolves to the correct source line; AND assert `.text`
             byte-identical to the no-DWARF build (the load-bearing safety
             property). Then cut v0.12.0.
+      PROGRESS:
+        - step (1) MERGED #399 (decoder `op_offsets` byte-offset side-table).
+        - step (2) READ side proven in-tree 2026-06-21 (frozen-safe spike,
+          crates/synth-core/tests/dwarf_line_read_spike.rs): gimli DEV-dep
+          extracts the `.debug_*` custom sections (wasmparser) and parses
+          `.debug_line` into (wasm-byte-offset → file:line) rows on the
+          DWARF-carrying fixture k_mutex_unlock.dissolved.wasm — e.g.
+          wasm+0x0094 → panicking.rs:80. DEV-dep ⇒ no production gimli dep, no
+          MODULE.bazel pin (Bazel globs src/ only), zero codegen change, frozen
+          fixtures bit-identical. The PRODUCTION gimli dep + MODULE.bazel pin
+          land with the EMITTER (step 4), as a feature-loop release step — not
+          an idle-tick increment. NEXT: step (3) compose op_offsets × line-rows.
     status: approved
     tags: [toolchain, dwarf, debuggability, elf, meld-coordination, feature-loop, release-v0.12.0, synth-394]
     links:
