@@ -1303,6 +1303,26 @@ artifacts:
           a meld-remapped dissolved module verified coherent. Until then the join
           is unbounded for an idle tick. Acquire/build a coherent-DWARF fixture
           as the first sub-step of the dedicated step-3 work.
+        - step (3) FIXTURE-ACQUISITION FINDING 2026-06-22: the obvious paths to a
+          small committable coherent-DWARF fixture are BOTH dead ends with the
+          local toolchains. (a) `rustc --target wasm32-unknown-unknown -C
+          debuginfo={1,2}` on a 2-function no_std cdylib produces COHERENT DWARF
+          (.debug_str carries axpy/clampi + the source path — the line table
+          describes its OWN code, unlike the dissolved fixtures), and synth
+          decodes it cleanly (6 funcs, op_offsets present, NO loud-skip — so the
+          synth-DECODE side of step 3 is validated on coherent input). BUT it is
+          ~550 KB: rustc emits line tables + .debug_str/.debug_info for the WHOLE
+          cdylib's std/core machinery (.debug_line alone 129 KB), not just the 2
+          functions — uncommittable next to the repo's <6 KB fixtures, and
+          stripping non-line sections doesn't shrink the 129 KB line table.
+          (b) Apple `/usr/bin/clang` has NO wasm32 target ("No available targets
+          compatible with triple wasm32"). CONCLUSION: a clean step-3 fixture
+          needs one of — a wasi-sdk clang+wasm-ld (not installed), a hand-crafted
+          minimal `.debug_line` over a tiny hand-written wasm, or a wasm-tools
+          pass that extracts just the 2 functions' line-program subset. The
+          address-normalizer can be validated against the big /tmp rustc fixture
+          in a scratch test before committing anything. Fixture acquisition (not
+          the compose logic) is the gating sub-step.
     status: approved
     tags: [toolchain, dwarf, debuggability, elf, meld-coordination, feature-loop, release-v0.12.0, synth-394]
     links:
