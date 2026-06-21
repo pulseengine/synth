@@ -1193,7 +1193,29 @@ artifacts:
           MODULE.bazel pin (Bazel globs src/ only), zero codegen change, frozen
           fixtures bit-identical. The PRODUCTION gimli dep + MODULE.bazel pin
           land with the EMITTER (step 4), as a feature-loop release step — not
-          an idle-tick increment. NEXT: step (3) compose op_offsets × line-rows.
+          an idle-tick increment.
+        - step (3) compose — DE-RISK FINDING 2026-06-21 (offset-space probe,
+          since removed): the two address spaces DO NOT trivially align, and
+          step 3 must reconcile them BEFORE any join is correct (a guessed join
+          yields silently-wrong source lines — worse than none for a debugger).
+          Measured on k_mutex_unlock.dissolved.wasm: synth's `op_offsets` are
+          MODULE-relative (fn0 0x137..0x13a, fn1 0x140..0x1bd, fn2 0x1c0..0x1c5,
+          fn3 0x1cb..0x288; code section at module 0x86), but the `.debug_line`
+          row addresses are 0x03 / 0x94 / 0x98 — far below ANY op_offset and not
+          reconcilable by the constant code-section base. Two compounding causes:
+          (a) DWARF-for-wasm addresses use a CODE-section-relative convention,
+          not module-relative — op_offsets need normalizing into it (subtract the
+          code-section content base, per-function body-offset aware); and
+          (b) this FIXTURE is meld-DISSOLVED and its `.debug_*` describe Rust
+          std/core glue (panicking.rs/int_macros.rs/macros.rs/traits.rs) against
+          what looks like the PRE-fusion layout — i.e. incoherent with the bytes
+          synth compiles. CONCLUSION: step 3 needs (i) the exact DWARF-for-wasm
+          address convention pinned + an op_offsets→DWARF-address normalizer, and
+          (ii) a COHERENCE-CHECKED fixture — ideally a direct rustc→wasm
+          (non-dissolved) module whose `.debug_line` describes its own code — or
+          a meld-remapped dissolved module verified coherent. Until then the join
+          is unbounded for an idle tick. Acquire/build a coherent-DWARF fixture
+          as the first sub-step of the dedicated step-3 work.
     status: approved
     tags: [toolchain, dwarf, debuggability, elf, meld-coordination, feature-loop, release-v0.12.0, synth-394]
     links:
