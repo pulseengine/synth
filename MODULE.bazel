@@ -31,53 +31,16 @@ rust.toolchain(
 use_repo(rust, "rust_toolchains")
 register_toolchains("@rust_toolchains//:all")
 
-# Rust crates repository
+# Rust crates repository — resolved from Cargo.lock via from_cargo rather than
+# hand-maintained crate.spec pins, so the Bazel crate set always matches the
+# cargo workspace and a new dep (e.g. scry-sai-core for VCR-MEM-001 layer-2,
+# #242) needs no manual MODULE.bazel entry. Replaces the prior 21 crate.spec
+# block (which had drifted: z3 pinned 0.12 here vs 0.19 in synth-verify).
 crate = use_extension("@rules_rust//crate_universe:extension.bzl", "crate")
-
-# Core dependencies from Cargo.toml
-crate.spec(package = "anyhow", version = "1.0")
-
-# WebAssembly tooling (matching workspace versions)
-crate.spec(package = "wasmparser", version = "0.248")
-crate.spec(package = "wasm-encoder", version = "0.219")
-crate.spec(package = "wit-parser", version = "0.219")
-crate.spec(package = "wit-component", version = "0.219")
-crate.spec(package = "wat", version = "1.219")
-crate.spec(package = "wast", version = "219.0")
-crate.spec(package = "wasmprinter", version = "0.2")
-
-# Serialization
-crate.spec(package = "serde", version = "1.0", features = ["derive"])
-crate.spec(package = "serde_json", version = "1.0")
-crate.spec(package = "toml", version = "0.8")
-
-# Hashing (CycloneDX SBOM component digests)
-crate.spec(package = "sha2", version = "0.10")
-
-# Error handling
-crate.spec(package = "thiserror", version = "1.0")
-
-# CLI
-crate.spec(package = "clap", version = "4.5", features = ["derive"])
-
-# Logging
-crate.spec(package = "tracing", version = "0.1")
-crate.spec(package = "tracing-subscriber", version = "0.3")
-
-# Verification dependencies
-crate.spec(package = "z3", version = "0.12", features = ["static-link-z3"])
-
-# Testing dependencies
-crate.spec(package = "proptest", version = "1.4")
-crate.spec(package = "quickcheck", version = "1.0")
-
-# Bitflags (for synth-memory)
-crate.spec(package = "bitflags", version = "2.4")
-
-# ELF parsing (for symbol table reading)
-crate.spec(package = "object", version = "0.36", default_features = False, features = ["read", "elf"])
-
-crate.from_specs()
+crate.from_cargo(
+    cargo_lockfile = "//:Cargo.lock",
+    manifests = ["//:Cargo.toml"],
+)
 use_repo(crate, "crates")
 
 # Verus formal verification (SMT/Z3 track)
