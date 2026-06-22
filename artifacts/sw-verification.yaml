@@ -350,27 +350,40 @@ artifacts:
 
   - id: SWVER-016
     type: sw-verification
-    title: DWARF Tier-1 source-provenance read path (steps 1-2)
+    title: DWARF Tier-1 source-provenance read→compose→emit logic (steps 1-4, frozen-safe)
     description: >
-      Verifies the implemented portion of VCR-DBG-001: step 1 — the decoder
-      records the per-op wasm code BYTE OFFSET (op_offsets side-table); step 2 —
-      the input wasm's `.debug_line` parses into (wasm-byte-offset to file:line)
-      rows via gimli (DEV-dep). Together these are the read side of the
-      source-to-object provenance bridge. The COMPOSE (step 3) and EMIT (step 4)
-      remain open (see the VCR-DBG-001 PROGRESS notes), so this verifies the
-      read path only, not the full Tier-1 feature.
+      Verifies the frozen-safe portion of VCR-DBG-001 — the full read→compose→emit
+      LOGIC, all proven in-tree without a production gimli dep or any output-ELF
+      change (the gated step-4 ELF wiring + host-link is the v0.12.0 release step,
+      verified separately when it lands):
+        step 1 — the decoder records the per-op wasm code BYTE OFFSET
+                 (op_offsets side-table);
+        step 2 — the input wasm's `.debug_line` parses into (wasm-byte-offset →
+                 file:line) rows via gimli (DEV-dep);
+        step 3 — synth_core::dwarf_line::op_offsets_to_source joins op-index →
+                 source line, normalizing module-relative op_offsets into the
+                 code-relative DWARF address space (single code-base subtraction);
+        step 4 (logic) — synth's composed table emits as a `.debug_line` via
+                 gimli::write and reads back faithfully (every address → the same
+                 source line).
+      A coherence-checked fixture (scripts/repro/dwarf_coherent.wasm) underpins
+      steps 2-4 (its `.debug_line` describes its OWN source, unlike the dissolved
+      fixtures). The gated EMIT wiring (production gimli dep + ELF builder + real
+      ARM offsets) remains open — see the VCR-DBG-001 PROGRESS notes.
     status: implemented
-    tags: [dwarf, debuggability, vcr-dbg, partial-steps-1-2]
+    tags: [dwarf, debuggability, vcr-dbg, steps-1-4-frozen-safe]
     links:
       - type: verifies
         target: VCR-DBG-001
     fields:
       method: automated-test
       steps:
-        run: "cargo test -p synth-core --test dwarf_line_read_spike && cargo test -p synth-core dbg001"
+        run: "cargo test -p synth-core dwarf_ dbg001 && cargo test -p synth-core --lib dwarf_line::"
         coverage: >
-          crates/synth-core/src/wasm_decoder.rs op_offsets test (step 1) +
-          crates/synth-core/tests/dwarf_line_read_spike.rs (.debug_line to file:line, step 2)
+          wasm_decoder.rs op_offsets test (step 1) + dwarf_line_read_spike.rs
+          (step 2) + dwarf_coherent_fixture.rs (coherent fixture) +
+          dwarf_compose_step3.rs & dwarf_line:: unit tests (step 3 compose) +
+          dwarf_emit_roundtrip_step4.rs (step-4 emit logic round-trip)
 
   - id: SWVER-017
     type: sw-verification
