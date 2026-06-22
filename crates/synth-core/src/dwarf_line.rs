@@ -71,6 +71,214 @@ pub fn op_offsets_to_source(
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// VCR-DBG-001 step 4 — PRODUCTION read + emit (the `--debug-line` feature).
+//
+// `read_input_dwarf_line` ports the read-side spike
+// (`tests/dwarf_line_read_spike.rs` + `dwarf_compose_step3.rs::code_base`):
+// pull the `.debug_*` custom sections out of the input wasm, parse `.debug_line`
+// with gimli, and also report the code-section payload start (`code_base`) the
+// compose normalizes against. `emit_debug_sections` ports the emit-side spike
+// (`tests/dwarf_emit_roundtrip_step4.rs::emit_dwarf`): take an address-ordered
+// (arm_addr → source line) table and produce a FULL debugger-readable DWARF unit
+// (`.debug_info`/`.debug_abbrev`/`.debug_str`/`.debug_line`) via gimli::write,
+// the CU's DW_AT_stmt_list pointing at the line table. Both are gated behind
+// `--debug-line`; when the input carries no DWARF, `read_input_dwarf_line`
+// returns empty rows (graceful no-op) and the emit is skipped, so the default
+// object stays bit-identical.
+
+use std::collections::HashMap;
+
+use gimli::{Dwarf, EndianSlice, LittleEndian, SectionId};
+use wasmparser::{Parser, Payload};
+
+/// Result of reading the input wasm's DWARF line table: the parsed rows plus the
+/// code-section payload start (`code_base`) the op-offset compose subtracts.
+#[derive(Debug, Default, Clone)]
+pub struct InputDwarfLine {
+    /// Code-section-relative `.debug_line` rows (`addr` is a wasm code byte
+    /// offset; for the synth bridge that equals the DWARF address space).
+    pub rows: Vec<LineRow>,
+    /// Module-relative byte offset of the code section payload start. Empty wasm
+    /// or a wasm with no code section reports 0.
+    pub code_base: u32,
+}
+
+/// Read the input wasm's `.debug_line` into code-section-relative
+/// `(addr → line)` rows and report `code_base`. Returns an empty table (rows
+/// empty, the feature a no-op) when the input carries no `.debug_*` sections or
+/// no parseable line program — never an error for a DWARF-free module.
+pub fn read_input_dwarf_line(wasm: &[u8]) -> InputDwarfLine {
+    // (a) extract every `.debug_*` custom section + find the code payload start.
+    let mut sections: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut code_base = 0u32;
+    for payload in Parser::new(0).parse_all(wasm) {
+        match payload {
+            Ok(Payload::CustomSection(c)) if c.name().starts_with(".debug_") => {
+                sections.insert(c.name().to_string(), c.data().to_vec());
+            }
+            Ok(Payload::CodeSectionStart { range, .. }) => {
+                code_base = range.start as u32;
+            }
+            _ => {}
+        }
+    }
+    if !sections.contains_key(".debug_line") {
+        return InputDwarfLine {
+            rows: Vec::new(),
+            code_base,
+        };
+    }
+
+    // (b) parse `.debug_line` with gimli. A malformed line program degrades to
+    // an empty table (the feature no-ops) rather than failing the compile.
+    let rows = parse_debug_line_rows(&sections).unwrap_or_default();
+    InputDwarfLine { rows, code_base }
+}
+
+/// gimli read of `.debug_line` → rows. `file` is recorded as the line program's
+/// file index (kept opaque per `LineRow`'s contract; the compose carries it but
+/// only `addr`/`line` are load-bearing for the wasm-offset bridge).
+fn parse_debug_line_rows(
+    sections: &HashMap<String, Vec<u8>>,
+) -> Result<Vec<LineRow>, gimli::Error> {
+    let empty: &[u8] = &[];
+    let load = |id: SectionId| -> Result<EndianSlice<'_, LittleEndian>, gimli::Error> {
+        let data = sections.get(id.name()).map_or(empty, |v| v.as_slice());
+        Ok(EndianSlice::new(data, LittleEndian))
+    };
+    let dwarf = Dwarf::load(load)?;
+
+    let mut rows = Vec::new();
+    let mut units = dwarf.units();
+    while let Some(header) = units.next()? {
+        let unit = dwarf.unit(header)?;
+        let Some(program) = unit.line_program.clone() else {
+            continue;
+        };
+        let mut state = program.rows();
+        while let Some((_, row)) = state.next_row()? {
+            if row.end_sequence() {
+                continue;
+            }
+            rows.push(LineRow {
+                addr: row.address() as u32,
+                line: row.line().map(|l| l.get() as u32).unwrap_or(0),
+                file: row.file_index() as u32,
+            });
+        }
+    }
+    Ok(rows)
+}
+
+/// Emit an address-ordered `(arm_addr, line)` table as a FULL minimal DWARF unit
+/// (gimli::write) and return EVERY non-empty `.debug_*` section it produces —
+/// `.debug_info`, `.debug_abbrev`, `.debug_str`, `.debug_line` (and
+/// `.debug_line_str`/`.debug_ranges` etc. when non-empty). The caller composes
+/// the table (one address-sorted, de-duped sequence covering every function);
+/// this produces the section bytes for non-ALLOC ELF `PROGBITS` sections.
+/// Returns an empty `Vec` for an empty table (nothing to map ⇒ no sections ⇒
+/// output stays byte-identical).
+///
+/// Crucially this emits a real root `DW_TAG_compile_unit` DIE with `DW_AT_name`,
+/// `DW_AT_low_pc`/`DW_AT_high_pc` spanning the emitted text, and the line program
+/// attached — so the CU's `DW_AT_stmt_list` points at `.debug_line`. That makes
+/// the line table reachable via the NORMAL debugger walk (`.debug_info` → CU →
+/// `DW_AT_stmt_list` → line program), not just a standalone `.debug_line` parse.
+///
+/// Ports `tests/dwarf_emit_roundtrip_step4.rs::emit_dwarf` (which emits the same
+/// full unit and round-trips through `Dwarf::units()`).
+pub fn emit_debug_sections(table: &[(u64, u32)]) -> Vec<(&'static str, Vec<u8>)> {
+    use gimli::write::{
+        Address, AttributeValue, DwarfUnit, EndianVec, LineProgram, LineString, Sections,
+    };
+
+    if table.is_empty() {
+        return Vec::new();
+    }
+
+    let encoding = gimli::Encoding {
+        format: gimli::Format::Dwarf32,
+        version: 4,
+        address_size: 4,
+    };
+    let mut dwarf = DwarfUnit::new(encoding);
+
+    // The span of emitted text the unit describes: low_pc=0 (text base), high_pc
+    // one past the last mapped address.
+    let high_pc = table.iter().map(|&(a, _)| a).max().unwrap_or(0) + 1;
+
+    let mut program = LineProgram::new(
+        encoding,
+        gimli::LineEncoding::default(),
+        LineString::String(b"/synth".to_vec()),
+        LineString::String(b"synth.wasm".to_vec()),
+        None,
+    );
+    let dir = program.default_directory();
+    let fid = program.add_file(LineString::String(b"synth.wasm".to_vec()), dir, None);
+
+    program.begin_sequence(Some(Address::Constant(0)));
+    for &(addr, line) in table {
+        let row = program.row();
+        row.address_offset = addr;
+        row.file = fid;
+        row.line = line as u64;
+        program.generate_row();
+    }
+    program.end_sequence(high_pc);
+    dwarf.unit.line_program = program;
+
+    // Populate the root DW_TAG_compile_unit DIE: a name, the text span, and (via
+    // gimli auto-wiring the attached line_program) DW_AT_stmt_list → .debug_line.
+    {
+        let name_id = dwarf.strings.add("synth.wasm");
+        let root = dwarf.unit.root();
+        let root_die = dwarf.unit.get_mut(root);
+        root_die.set(gimli::DW_AT_name, AttributeValue::StringRef(name_id));
+        root_die.set(
+            gimli::DW_AT_low_pc,
+            AttributeValue::Address(Address::Constant(0)),
+        );
+        root_die.set(gimli::DW_AT_high_pc, AttributeValue::Udata(high_pc));
+    }
+
+    let mut sections = Sections::new(EndianVec::new(LittleEndian));
+    if dwarf.write(&mut sections).is_err() {
+        return Vec::new();
+    }
+
+    let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
+    let _ = sections.for_each(|id, data| -> Result<(), ()> {
+        let bytes = data.slice();
+        if !bytes.is_empty()
+            && let Some(name) = section_name(id)
+        {
+            out.push((name, bytes.to_vec()));
+        }
+        Ok(())
+    });
+    out
+}
+
+/// `'static` ELF section name for the `.debug_*` sections the emitter can
+/// produce. Returns `None` for any section id we do not wire (none are expected
+/// for this minimal unit, but the match keeps the names `'static`).
+fn section_name(id: SectionId) -> Option<&'static str> {
+    Some(match id {
+        SectionId::DebugInfo => ".debug_info",
+        SectionId::DebugAbbrev => ".debug_abbrev",
+        SectionId::DebugStr => ".debug_str",
+        SectionId::DebugLine => ".debug_line",
+        SectionId::DebugLineStr => ".debug_line_str",
+        SectionId::DebugRanges => ".debug_ranges",
+        SectionId::DebugRngLists => ".debug_rnglists",
+        SectionId::DebugStrOffsets => ".debug_str_offsets",
+        SectionId::DebugAddr => ".debug_addr",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

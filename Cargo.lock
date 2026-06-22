@@ -2086,6 +2086,7 @@ version = "0.11.51"
 dependencies = [
  "anyhow",
  "clap",
+ "gimli",
  "object",
  "scry-sai-core",
  "serde_json",
