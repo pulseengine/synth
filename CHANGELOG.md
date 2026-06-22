@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-06-23
+
+**DWARF SOURCE-LINE DEBUGGING — `--debug-line` (VCR-DBG-001, #394, epic #242).**
+The first release of the north-star verified-codegen campaign. `synth compile
+--debug-line` now emits debugger-readable DWARF (`.debug_info` / `.debug_abbrev`
+/ `.debug_str` / `.debug_line`) mapping ARM `.text` addresses back to the input
+wasm's source lines, so a synth-compiled relocatable object can be debugged at
+source level in gdb/lldb (and on-silicon via Renode) after linking. Built in
+three behavior-frozen steps — the feature is **purely additive**: with the flag
+off (the default) `.text`/`.data`/`.bss` and every frozen differential fixture
+stay **bit-identical**.
+
+- **PR A (#427)** — capture a per-instruction `machine_offset → wasm_op_index`
+  source map (`CompiledFunction.line_map`) during ARM encoding. Additive: the map
+  is never serialized, so `.text` is byte-identical.
+- **PR B (#429)** — emit a full DWARF unit behind `--debug-line` (the CU's
+  `DW_AT_stmt_list` reaches the line table the normal `dwarf.units()` way).
+  Promotes `gimli` to a production dependency.
+- **PR C (#430)** — emit `.rel.debug_*` relocations against a `__synth_text_base`
+  symbol so a host linker fixes up the embedded `.text` addresses to the final
+  load address. Verified end-to-end with a real `arm-none-eabi-ld` link:
+  `readelf --debug-dump=decodedline` resolves the relocated addresses to the
+  correct source lines. Generalizes the ELF builder to per-section REL tables
+  (frozen-safe: `.rel.text` stays byte-identical).
+  - *Experimental caveat:* `__synth_text_base` is a global symbol, so linking
+    more than one `--debug-line` object into a single image collides (fails loud
+    with `multiple definition`); a local-section-symbol follow-up is tracked.
+  - On a self-contained (`ET_EXEC`) or RISC-V build, `--debug-line` is a no-op
+    and warns (DWARF is emitted only on the ARM relocatable-object path).
+
+**VCR-MEM-001 layer-2 (frozen-safe scaffolding, #383/#242).** Added the
+scry-proven shadow-stack budget decision logic (`budget_from_bound` over a
+synth-owned `StackDepthBound`) plus its end-to-end and honest-fail oracles. Pure
+analysis/test code — no production wiring, no output change. The byte-changing
+`--shadow-stack-size auto` step remains separately gated.
+
+### Internal
+
+- Adapted the DWARF emitter to gimli 0.33's 6-argument `LineProgram::new`
+  (dependabot #436; fix #439). Bumped `wast` to 252 (#438).
+
 ## [0.11.51] - 2026-06-22
 
 **NATIVE-POINTER SHADOW-STACK SHRINK — #383 (VCR-MEM-001 layer-1): the
