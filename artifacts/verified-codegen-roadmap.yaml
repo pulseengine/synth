@@ -1455,9 +1455,42 @@ artifacts:
           map is never serialized, so `.text` is byte-identical (the existing
           differential fixtures + `test_line_map_is_wellformed_dbg001` assert
           monotonic in-bounds offsets and deterministic, unperturbed code). ARM
-          only; RISC-V carries an empty map (follow-up). step (5b) = gimli prod-dep
-          + input `.debug_line` read + emit behind `--debug-line` + the additivity
-          byte-diff oracle.
+          only; RISC-V carries an empty map (follow-up).
+        - step (5b) EMIT landed (PR B #429, a89ef28, v0.12.0 in progress):
+          gimli is now a PRODUCTION dep of synth-core (Cargo.toml + the
+          hand-written `crates/BUILD.bazel` synth-core `deps` — from_cargo makes
+          `@crates//:gimli` available but the manual rust_library must list it;
+          cargo passed locally while Bazel reddened E0433 until fix 63c510f).
+          `--debug-line` (clap flag, EXPERIMENTAL caveat) gates emission: when set
+          AND the input wasm carries `.debug_line`, synth reads the input rows
+          (`read_input_dwarf_line`), composes addr→source via the captured
+          `line_map`, and emits a FULL DWARF unit (DW_TAG_compile_unit with
+          DW_AT_stmt_list → `.debug_line`, so a normal `dwarf.units()` walk reads
+          it — not just a bare `DebugLine` program). Three oracles
+          (dwarf_debug_line_emit_394.rs): additive-on-dwarf-input (byte-compares
+          .text/.data/.bss, asserts `.debug_*` flag-gated), no-op-on-nodwarf-input
+          (whole-.o identical), and resolves-arm-addr-to-source (walks the normal
+          unit path, 110 in-range rows → non-zero lines). Frozen fixtures
+          untouched. KNOWN GAP closed by step 5c: emitted `.debug_*` addresses are
+          `.text`-base-0 with NO relocations, so they are CORRECT in the object
+          but WRONG on a linked image — a `--debug-line` consumer (jess, actively
+          Renode/silicon-debugging gust, the plausible first consumer) would get
+          silently-wrong source lines after host-link. The v0.12.0 TAG is HELD for
+          step 5c (advisor-confirmed: PR B in main is default-off + frozen-safe, so
+          it banks the work at zero risk; the tag waits for relocations).
+        - step (5c) RELOCATIONS — PR C, REQUIRED before the v0.12.0 tag:
+          C1 = generalize elf_builder's `.rel.text`-ONLY relocation machinery to
+          PER-SECTION relocations, **REL form (not RELA)** — synth/ARM32 uses REL
+          with the addend stored in-place (`.rel.debug_*`, matching the existing
+          `.rel.text` convention); frozen-safe, gated on the existing `.rel.text`
+          fixtures (cabi_arena_realloc_linkability_418) staying byte-identical.
+          C2 = emit DWARF addresses via gimli `Address::Symbol{text_sym, addend}`,
+          extract the relocations, emit `.rel.debug_line` / `.rel.debug_info`
+          against the `.text` symbol. The C2 ORACLE must APPLY the relocations at a
+          NONZERO `.text` base and verify the address resolves to the CORRECT
+          source line (not merely that a reloc record exists). Advisor caution:
+          "do NOT rush the addend math into a debug-info path — careful (even next
+          session) beats fast."
     status: approved
     tags: [toolchain, dwarf, debuggability, elf, meld-coordination, feature-loop, release-v0.12.0, synth-394]
     links:

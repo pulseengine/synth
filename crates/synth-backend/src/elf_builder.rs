@@ -338,6 +338,16 @@ pub enum ArmRelocationType {
     MovtAbs = 44,
 }
 
+/// A built `.rel.<name>` section: its name offset in `.shstrtab`, the target
+/// section index it relocates (`sh_info`), its file offset, and the encoded
+/// REL entries. Internal to [`ElfBuilder::build`].
+struct ExtraRelSection {
+    name_offset: usize,
+    target_idx: u32,
+    offset: usize,
+    data: Vec<u8>,
+}
+
 /// ELF relocation entry (REL format, no addend)
 #[derive(Debug, Clone)]
 pub struct Relocation {
@@ -378,6 +388,12 @@ pub struct ElfBuilder {
     program_headers: Vec<ProgramHeader>,
     /// Relocations for .text section
     relocations: Vec<Relocation>,
+    /// Extra per-section relocation tables, keyed by the target section's name
+    /// (e.g. `.debug_line`). Each produces a `.rel.<name>` section. Kept separate
+    /// from `relocations` (the `.text` set) so the existing `.rel.text` byte
+    /// layout is untouched: when this is empty the build is byte-identical to the
+    /// pre-generalization output (VCR-DBG-001 PR C, #394).
+    extra_relocations: Vec<(String, Vec<Relocation>)>,
 }
 
 impl ElfBuilder {
@@ -394,6 +410,7 @@ impl ElfBuilder {
             symbols: Vec::new(),
             program_headers: Vec::new(),
             relocations: Vec::new(),
+            extra_relocations: Vec::new(),
         }
     }
 
@@ -431,6 +448,16 @@ impl ElfBuilder {
         self.symbols.push(symbol);
     }
 
+    /// Add a symbol and return its 1-based index in `.symtab` (index 0 is the
+    /// reserved null symbol). Use when a later relocation must reference this
+    /// symbol — e.g. the `.text` base symbol the DWARF `.rel.debug_*` records
+    /// resolve against (VCR-DBG-001).
+    pub fn add_symbol_indexed(&mut self, symbol: Symbol) -> u32 {
+        let index = self.symbols.len() as u32 + 1;
+        self.symbols.push(symbol);
+        index
+    }
+
     /// Add a program header (segment)
     pub fn add_program_header(&mut self, ph: ProgramHeader) {
         self.program_headers.push(ph);
@@ -439,6 +466,20 @@ impl ElfBuilder {
     /// Add a relocation entry for the .text section
     pub fn add_relocation(&mut self, reloc: Relocation) {
         self.relocations.push(reloc);
+    }
+
+    /// Add a relocation table targeting a non-`.text` section by name (e.g.
+    /// `.debug_line`). Produces a separate `.rel.<name>` section whose `sh_info`
+    /// points at the named section. The section must already have been added via
+    /// [`add_section`]; if no matching section exists at build time the table is
+    /// silently dropped. Used by VCR-DBG-001 to relocate the DWARF `.text`
+    /// references so a host linker fixes them up alongside `.text`.
+    pub fn add_section_relocations(&mut self, target_section: &str, relocs: Vec<Relocation>) {
+        if relocs.is_empty() {
+            return;
+        }
+        self.extra_relocations
+            .push((target_section.to_string(), relocs));
     }
 
     /// Add an undefined external symbol (e.g., __meld_dispatch_import)
@@ -471,7 +512,8 @@ impl ElfBuilder {
         output.resize(header_size + ph_table_size, 0);
 
         // Build string table for section names
-        let (shstrtab_data, section_name_offsets) = self.build_section_string_table();
+        let (shstrtab_data, section_name_offsets, extra_rel_name_offsets) =
+            self.build_section_string_table();
 
         // Build symbol string table
         let (strtab_data, symbol_name_offsets) = self.build_symbol_string_table();
@@ -504,6 +546,26 @@ impl ElfBuilder {
         let rel_offset = current_offset;
         current_offset += rel_data.len();
 
+        // Extra per-section relocation tables (.rel.<name>), laid out after
+        // .rel.text. Each entry resolves its target section index by name; a
+        // table whose target section is absent is dropped. Empty when no
+        // --debug-line ⇒ byte-identical to the pre-generalization layout.
+        let mut extra_rel: Vec<ExtraRelSection> = Vec::new();
+        for (i, (target, relocs)) in self.extra_relocations.iter().enumerate() {
+            let Some(target_idx) = self.section_index_by_name(target) else {
+                continue;
+            };
+            let data = Self::encode_rel_entries(relocs);
+            let name_offset = extra_rel_name_offsets.get(i).copied().unwrap_or(0);
+            extra_rel.push(ExtraRelSection {
+                name_offset,
+                target_idx,
+                offset: current_offset,
+                data,
+            });
+            current_offset += extra_rel.last().unwrap().data.len();
+        }
+
         // Section header table comes at the end
         let sh_offset = current_offset;
 
@@ -517,6 +579,9 @@ impl ElfBuilder {
 
         output.extend_from_slice(&symtab_data);
         output.extend_from_slice(&rel_data);
+        for er in &extra_rel {
+            output.extend_from_slice(&er.data);
+        }
 
         // Write section headers
         let section_headers = self.build_section_headers_with_rel(
@@ -530,6 +595,7 @@ impl ElfBuilder {
             &section_offsets,
             rel_offset,
             &rel_data,
+            &extra_rel,
         );
         output.extend_from_slice(&section_headers);
 
@@ -555,7 +621,7 @@ impl ElfBuilder {
 
         // Now write the actual ELF header at the beginning
         let has_rel = !self.relocations.is_empty();
-        let num_sections = 4 + self.sections.len() + if has_rel { 1 } else { 0 };
+        let num_sections = 4 + self.sections.len() + if has_rel { 1 } else { 0 } + extra_rel.len();
         let ph_offset = if ph_count > 0 { header_size as u32 } else { 0 };
         self.write_elf_header_with_phdrs(
             &mut output[0..header_size],
@@ -700,8 +766,12 @@ impl ElfBuilder {
         Ok(())
     }
 
-    /// Build section name string table
-    fn build_section_string_table(&self) -> (Vec<u8>, Vec<usize>) {
+    /// Build section name string table. Returns the bytes, the per-user-section
+    /// name offsets, and the per-extra-relocation `.rel.<name>` name offsets
+    /// (parallel to `self.extra_relocations`). The extra-rel names are appended
+    /// AFTER `.rel.text`, so when `extra_relocations` is empty the table is
+    /// byte-identical to the pre-generalization layout.
+    fn build_section_string_table(&self) -> (Vec<u8>, Vec<usize>, Vec<usize>) {
         let mut strtab = vec![0]; // null string at offset 0
         let mut offsets = Vec::new();
 
@@ -723,7 +793,15 @@ impl ElfBuilder {
             strtab.extend_from_slice(b".rel.text\0");
         }
 
-        (strtab, offsets)
+        // .rel.<name> for each extra per-section relocation table.
+        let mut extra_rel_offsets = Vec::new();
+        for (target, _) in &self.extra_relocations {
+            let offset = strtab.len();
+            extra_rel_offsets.push(offset);
+            strtab.extend_from_slice(format!(".rel{target}\0").as_bytes());
+        }
+
+        (strtab, offsets, extra_rel_offsets)
     }
 
     /// Build symbol name string table
@@ -743,12 +821,14 @@ impl ElfBuilder {
 
     /// Build relocation table (ELF32 REL entries: 8 bytes each)
     fn build_relocation_table(&self) -> Vec<u8> {
-        if self.relocations.is_empty() {
-            return Vec::new();
-        }
+        Self::encode_rel_entries(&self.relocations)
+    }
 
+    /// Encode a slice of relocations as ELF32 REL entries (8 bytes each). Shared
+    /// by `.rel.text` and the per-section `.rel.<name>` tables.
+    fn encode_rel_entries(relocs: &[Relocation]) -> Vec<u8> {
         let mut rel_data = Vec::new();
-        for reloc in &self.relocations {
+        for reloc in relocs {
             // r_offset (4 bytes)
             rel_data.extend_from_slice(&reloc.offset.to_le_bytes());
             // r_info (4 bytes) = (sym_index << 8) | type
@@ -756,6 +836,16 @@ impl ElfBuilder {
             rel_data.extend_from_slice(&r_info.to_le_bytes());
         }
         rel_data
+    }
+
+    /// Resolve a target section name to its ELF section index. User sections
+    /// begin at index 4 (null=0, shstrtab=1, strtab=2, symtab=3). Returns `None`
+    /// if no user section has that name.
+    fn section_index_by_name(&self, name: &str) -> Option<u32> {
+        self.sections
+            .iter()
+            .position(|s| s.name == name)
+            .map(|pos| 4 + pos as u32)
     }
 
     /// Build symbol table
@@ -817,6 +907,7 @@ impl ElfBuilder {
         section_offsets: &[usize],
         rel_offset: usize,
         rel_data: &[u8],
+        extra_rel: &[ExtraRelSection],
     ) -> Vec<u8> {
         let mut headers = Vec::new();
 
@@ -915,6 +1006,24 @@ impl ElfBuilder {
                 rel_data.len() as u32,
                 3,                // sh_link = .symtab section index
                 text_section_idx, // sh_info = section to which relocations apply
+                4,
+                8, // Each REL entry is 8 bytes
+            );
+        }
+
+        // Extra .rel.<name> sections (e.g. .rel.debug_line). Same shape as
+        // .rel.text but sh_info points at the named target section.
+        for er in extra_rel {
+            self.write_section_header(
+                &mut headers,
+                er.name_offset as u32,
+                SectionType::Rel as u32,
+                0,
+                0,
+                er.offset as u32,
+                er.data.len() as u32,
+                3,             // sh_link = .symtab section index
+                er.target_idx, // sh_info = relocated section
                 4,
                 8, // Each REL entry is 8 bytes
             );
@@ -1233,7 +1342,7 @@ mod tests {
         builder.add_section(Section::new(".text", SectionType::ProgBits));
         builder.add_section(Section::new(".data", SectionType::ProgBits));
 
-        let (strtab, offsets) = builder.build_section_string_table();
+        let (strtab, offsets, _extra_rel_offsets) = builder.build_section_string_table();
 
         // Should have null byte at start
         assert_eq!(strtab[0], 0);

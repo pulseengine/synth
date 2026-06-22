@@ -21,7 +21,7 @@ use synth_core::wasm_decoder::ImportEntry;
 use synth_synthesis::{
     FunctionOps, WasmGlobal, WasmMemory, WasmOp, decode_wasm_functions, decode_wasm_module,
 };
-use tracing::{Level, info};
+use tracing::{Level, info, warn};
 use wast::parser::{self, ParseBuffer};
 use wast::{Wast, WastDirective};
 
@@ -258,11 +258,15 @@ enum Commands {
         /// addresses back to the input wasm's source lines. Requires the input to
         /// carry DWARF (`.debug_line` custom section) and the ARM backend (RISC-V
         /// carries no line_map). Purely additive: `.text`/`.data`/`.bss` stay
-        /// byte-identical; off by default. Wired on the relocatable-object
-        /// (host-link) path. EXPERIMENTAL: addresses are object-relative (`.text`
-        /// base 0) and carry no relocations yet, so they are correct for the
-        /// unlinked object but shift by the load base once linked — linked-binary
-        /// debugging needs the `.rela.debug_*` follow-up (VCR-DBG-002).
+        /// byte-identical; off by default. Emitted only on the relocatable-object
+        /// (host-link) path — on a self-contained image or RISC-V it is a no-op
+        /// and warns. The `.text` addresses carry `.rel.debug_*` relocations
+        /// against a `__synth_text_base` symbol, so a host linker fixes them up to
+        /// the final load address (verified end-to-end with `arm-none-eabi-ld`).
+        /// EXPERIMENTAL: `__synth_text_base` is a global symbol, so linking more
+        /// than one synth `--debug-line` object into a single image collides
+        /// (`multiple definition`) — compile such modules as one object or link
+        /// separately until the local-section-symbol follow-up lands.
         #[arg(long)]
         debug_line: bool,
     },
@@ -2232,6 +2236,26 @@ fn compile_all_exports(
         None
     };
 
+    // VCR-DBG-001 PR C (#394): DWARF is emitted (with `.rel.debug_*` so a host
+    // linker fixes up the `.text` addresses) ONLY on the ARM relocatable-object
+    // path. On a self-contained ET_EXEC image or the RISC-V path there is no
+    // relocatable text symbol to anchor the addresses, so `--debug-line` would
+    // silently drop. Warn LOUDLY rather than mislead a consumer (jess) into
+    // expecting source lines that aren't there — the #383 honest-fail rule.
+    let dwarf_effective = !is_riscv && (has_external_relocations || relocatable);
+    if debug_line && !dwarf_effective {
+        warn!(
+            "--debug-line has no effect on this output: DWARF line tables are emitted only on \
+             the ARM relocatable-object path (link via --relocatable, then `ld`). \
+             {} produces no .debug_* sections.",
+            if is_riscv {
+                "The RISC-V backend"
+            } else {
+                "A self-contained executable image"
+            }
+        );
+    }
+
     let elf_data = if is_riscv {
         info!("Building RISC-V multi-function relocatable object (EM_RISCV)");
         build_multi_func_riscv_elf(&compiled_funcs)?
@@ -3166,20 +3190,53 @@ fn build_relocatable_elf(
         table.sort_by_key(|&(a, _)| a);
         table.dedup_by_key(|&mut (a, _)| a);
 
-        let dwarf_sections = synth_core::dwarf_line::emit_debug_sections(&table);
+        // A dedicated GLOBAL symbol at `.text + 0` that the DWARF `.rel.debug_*`
+        // records resolve against (R_ARM_ABS32, REL: S=`.text` base + in-place
+        // addend 0). Global + appended last so no existing symbol index shifts
+        // and `.symtab`'s `sh_info` is untouched; present only under
+        // `--debug-line`, so the no-DWARF symtab stays byte-identical. A local
+        // STT_SECTION symbol would have to precede all globals (ELF orders
+        // locals first) and bump `sh_info`, shifting every `.rel.text` index.
+        let text_base_sym = Symbol::new("__synth_text_base")
+            .with_value(0)
+            .with_binding(SymbolBinding::Global)
+            .with_type(SymbolType::NoType)
+            .with_section(4); // .text is section index 4
+        let text_sym_idx = elf_builder.add_symbol_indexed(text_base_sym);
+
+        let dwarf_sections =
+            synth_core::dwarf_line::emit_debug_sections(&table, text_sym_idx as usize);
         if !dwarf_sections.is_empty() {
-            let names: Vec<&str> = dwarf_sections.iter().map(|(n, _)| *n).collect();
-            for (name, bytes) in &dwarf_sections {
-                let dbg_section = Section::new(name, ElfSectionType::ProgBits)
+            let names: Vec<&str> = dwarf_sections.iter().map(|s| s.name).collect();
+            let mut total_relocs = 0usize;
+            for sec in &dwarf_sections {
+                let dbg_section = Section::new(sec.name, ElfSectionType::ProgBits)
                     .with_align(1)
-                    .with_data(bytes.clone());
+                    .with_data(sec.bytes.clone());
                 elf_builder.add_section(dbg_section);
+                // Register the section's `.text` relocations as `.rel.<name>`
+                // (R_ARM_ABS32 against the `.text` base symbol). REL form: the
+                // addend already sits in-place in the section bytes.
+                if !sec.text_relocs.is_empty() {
+                    let relocs: Vec<Relocation> = sec
+                        .text_relocs
+                        .iter()
+                        .map(|r| Relocation {
+                            offset: r.offset,
+                            symbol_index: text_sym_idx,
+                            reloc_type: ArmRelocationType::Abs32,
+                        })
+                        .collect();
+                    total_relocs += relocs.len();
+                    elf_builder.add_section_relocations(sec.name, relocs);
+                }
             }
             info!(
-                "DWARF: emitted {} sections {:?} ({} address rows, --debug-line)",
+                "DWARF: emitted {} sections {:?} ({} address rows, {} .text relocations, --debug-line)",
                 dwarf_sections.len(),
                 names,
-                table.len()
+                table.len(),
+                total_relocs
             );
         }
     }
