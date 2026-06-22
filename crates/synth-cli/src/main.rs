@@ -4153,6 +4153,67 @@ mod tests {
         }
     }
 
+    /// VCR-MEM-001 layer-2 END-TO-END (#242, #383): prove the full budget
+    /// pipeline on the REAL gust-family fixture — scry's proven shadow-stack
+    /// depth, mapped through the synth-owned bound, yields the `budget_from_bound`
+    /// decision (the #421 logic) that the gated `--shadow-stack-size auto` wiring
+    /// will consume. This is the join the #392 spike (which stops at scry's raw
+    /// output) and the `shadow_budget` unit suite (which tests the decision on
+    /// synthetic bounds) each cover only half of.
+    ///
+    /// Frozen-safe: `scry-sai-core` is a DEV-dependency exercised only under
+    /// `cfg(test)`, so the production binary pulls no scry and emits no different
+    /// bytes — the frozen fixtures stay bit-identical by construction. When step
+    /// 2b promotes scry to a (feature-gated) production dep, the inline 1:1
+    /// adapter below becomes an `impl From<scry::StackBound>` and this test is the
+    /// oracle that the wiring matches.
+    #[test]
+    fn layer2_budget_pipeline_msgq_end_to_end_383() {
+        use scry_analyze_core::{AnalysisConfig, StackBound, analyze};
+        use shadow_budget::{BudgetDecision, BudgetSource, StackDepthBound, budget_from_bound};
+
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/repro/msgq_put_359.wasm");
+        let bytes = std::fs::read(&fixture).expect("the #359/#383 gust-family fixture is in-tree");
+
+        let r = analyze(
+            bytes,
+            AnalysisConfig {
+                widening_threshold: None,
+                emit_diagnostics: false,
+                taint_policy: None,
+            },
+        )
+        .expect("scry analyzes a valid Core module");
+
+        // Adapter: scry's StackBound -> synth's dep-free StackDepthBound (1:1;
+        // becomes a `From` impl when scry graduates to a production dep in 2b).
+        let bound = match r.stack_usage.max_stack_bytes {
+            StackBound::Bytes(n) => StackDepthBound::Bytes(n),
+            StackBound::Unbounded => StackDepthBound::Unbounded,
+            StackBound::Unknown => StackDepthBound::Unknown,
+        };
+
+        // msgq_put reserves the full declared page (sp_init = 65536 = the
+        // .bss [0,65536) stack span the roadmap recorded); scry proves the true
+        // worst case is 32 B. The derived budget is sp_init-independent for any
+        // sp_init above the depth — what matters is the PROVEN 32 vs the page.
+        let sp_init = 65_536;
+        let decision = budget_from_bound(bound, sp_init, Some(4096));
+
+        // End-to-end: a 2048x over-reservation collapses to a PROVEN 32-byte
+        // budget — and, with a fallback available, the proven path is preferred
+        // over the asserted one (source is ProvenStackDepth, not AssertedFallback).
+        assert_eq!(
+            decision,
+            BudgetDecision::Use {
+                bytes: 32,
+                source: BudgetSource::ProvenStackDepth
+            },
+            "scry-proven 32 B depth -> proven 32 B budget, not the asserted 4096 fallback"
+        );
+    }
+
     /// #235: a dissolved export's non-exported callee must be pulled into the
     /// reachable set (so it lands in the relocatable object), while imports and
     /// unreachable functions stay out.
