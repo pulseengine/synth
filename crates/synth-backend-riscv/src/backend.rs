@@ -177,6 +177,9 @@ fn compile_function_with_opts(
         code: bytes,
         wasm_ops: ops.to_vec(),
         relocations: Vec::new(),
+        // RISC-V DWARF `.debug_line` emission is a VCR-DBG-001 follow-up; no
+        // source map produced yet (empty ⇒ the emitter skips this backend).
+        line_map: Vec::new(),
     })
 }
 
@@ -381,6 +384,7 @@ mod tests {
             code: Vec::new(),
             wasm_ops: ops.clone(),
             relocations: Vec::new(),
+            line_map: Vec::new(),
         };
         let cfg = CompileConfig {
             target: TargetSpec::riscv32imac(),

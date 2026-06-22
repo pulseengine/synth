@@ -6,7 +6,7 @@
 use crate::ArmEncoder;
 use synth_core::backend::{
     Backend, BackendCapabilities, BackendError, CodeRelocation, CompilationResult, CompileConfig,
-    CompiledFunction, SafetyBounds,
+    CompiledFunction, LineMap, SafetyBounds,
 };
 use synth_core::target::{IsaVariant, TargetSpec};
 use synth_core::wasm_decoder::DecodedModule;
@@ -105,7 +105,7 @@ impl Backend for ArmBackend {
         ops: &[WasmOp],
         config: &CompileConfig,
     ) -> Result<CompiledFunction, BackendError> {
-        let (code, relocations) =
+        let (code, relocations, line_map) =
             compile_wasm_to_arm(ops, config).map_err(BackendError::CompilationFailed)?;
 
         Ok(CompiledFunction {
@@ -113,6 +113,7 @@ impl Backend for ArmBackend {
             code,
             wasm_ops: ops.to_vec(),
             relocations,
+            line_map,
         })
     }
 
@@ -154,7 +155,7 @@ fn count_params(wasm_ops: &[WasmOp]) -> u32 {
 fn compile_wasm_to_arm(
     wasm_ops: &[WasmOp],
     config: &CompileConfig,
-) -> Result<(Vec<u8>, Vec<CodeRelocation>), String> {
+) -> Result<(Vec<u8>, Vec<CodeRelocation>, LineMap), String> {
     let num_params = count_params(wasm_ops);
 
     let bounds_config = match config.effective_safety_bounds() {
@@ -458,6 +459,14 @@ fn compile_wasm_to_arm(
     }
     let mut pending_literals: Vec<PendingLiteral> = Vec::new();
 
+    // VCR-DBG-001: per-instruction source map for DWARF `.debug_line`. Captured
+    // here because `code.len()` immediately before `encode()` is the final
+    // machine offset of the instruction within this function's `.text` — nothing
+    // after the loop shifts earlier instructions (the literal pool is appended at
+    // the end; the LDR patch below is in-place/length-preserving). Purely
+    // additive: it does not touch `code`, so `.text` is byte-identical.
+    let mut line_map: LineMap = Vec::new();
+
     for instr in &arm_instrs {
         // Record a relocation for every BL: the encoder emits `bl #0` and
         // relies on a relocation to patch the target. This covers BOTH import
@@ -498,6 +507,10 @@ fn compile_wasm_to_arm(
                 addend: *addend,
             });
         }
+
+        // The machine offset of this instruction is the current code length,
+        // captured before the bytes are appended.
+        line_map.push((code.len() as u32, instr.source_line));
 
         let encoded = encoder
             .encode(&instr.op)
@@ -557,7 +570,7 @@ fn compile_wasm_to_arm(
         }
     }
 
-    Ok((code, relocations))
+    Ok((code, relocations, line_map))
 }
 
 /// Resolve local label branches to byte-accurate offsets (#202).
@@ -690,6 +703,53 @@ mod tests {
         assert_eq!(func.name, "add");
         assert!(!func.code.is_empty());
         assert_eq!(func.wasm_ops, ops);
+    }
+
+    /// VCR-DBG-001: the per-instruction source map must cover the function with
+    /// monotonic, in-bounds machine offsets, and must not perturb the emitted
+    /// code (it is captured at encode time, never serialized here).
+    #[test]
+    fn test_line_map_is_wellformed_dbg001() {
+        let backend = ArmBackend::new();
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let config = CompileConfig::default();
+        let func = backend.compile_function("add", &ops, &config).unwrap();
+
+        // Non-empty, and the first instruction starts at machine offset 0.
+        assert!(
+            !func.line_map.is_empty(),
+            "a non-trivial function captures a source map"
+        );
+        assert_eq!(func.line_map[0].0, 0, "first instruction at offset 0");
+
+        // Offsets strictly increase by at least one ARM/Thumb instruction (>= 2
+        // bytes) and every mapped offset lies inside the emitted `.text`.
+        for w in func.line_map.windows(2) {
+            assert!(w[1].0 > w[0].0, "instruction offsets strictly increase");
+            assert!(
+                w[1].0 - w[0].0 >= 2,
+                "each ARM/Thumb instruction is >= 2 bytes"
+            );
+        }
+        let last = func.line_map.last().unwrap().0 as usize;
+        assert!(
+            last < func.code.len(),
+            "every mapped offset lies inside .text"
+        );
+
+        // The side-table is additive: recompiling is deterministic and the map is
+        // consistent with that exact code (capturing it does not alter output).
+        let again = backend.compile_function("add", &ops, &config).unwrap();
+        assert_eq!(
+            again.code, func.code,
+            "compilation deterministic; map is additive"
+        );
+        assert_eq!(again.line_map, func.line_map);
     }
 
     #[test]
