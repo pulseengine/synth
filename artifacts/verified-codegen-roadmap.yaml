@@ -1478,20 +1478,29 @@ artifacts:
           silently-wrong source lines after host-link. The v0.12.0 TAG is HELD for
           step 5c (advisor-confirmed: PR B in main is default-off + frozen-safe, so
           it banks the work at zero risk; the tag waits for relocations).
-        - step (5c) RELOCATIONS — PR C, REQUIRED before the v0.12.0 tag:
-          C1 = generalize elf_builder's `.rel.text`-ONLY relocation machinery to
-          PER-SECTION relocations, **REL form (not RELA)** — synth/ARM32 uses REL
-          with the addend stored in-place (`.rel.debug_*`, matching the existing
-          `.rel.text` convention); frozen-safe, gated on the existing `.rel.text`
-          fixtures (cabi_arena_realloc_linkability_418) staying byte-identical.
-          C2 = emit DWARF addresses via gimli `Address::Symbol{text_sym, addend}`,
-          extract the relocations, emit `.rel.debug_line` / `.rel.debug_info`
-          against the `.text` symbol. The C2 ORACLE must APPLY the relocations at a
-          NONZERO `.text` base and verify the address resolves to the CORRECT
-          source line (not merely that a reloc record exists). Advisor caution:
-          "do NOT rush the addend math into a debug-info path — careful (even next
-          session) beats fast."
-    status: approved
+        - step (5c) RELOCATIONS LANDED (PR C #430, merged 9a34c8d; SHIPS in
+          v0.12.0): C1 generalized elf_builder's `.rel.text`-ONLY machinery to
+          PER-SECTION REL tables (`extra_relocations` + `add_section_relocations`;
+          `.rel.debug_*`, REL in-place addend); byte-identical when off — the
+          frozen gust whole-`.o` no-op oracle is the end-to-end proof, and
+          cabi_arena_realloc_linkability_418 `.rel.text` stays byte-identical.
+          C2: a custom gimli `write::Writer` (`RelocWriter`) overrides ONLY
+          `write_address`, so just the two `.text` references (line program
+          `DW_LNE_set_address` + CU `DW_AT_low_pc`) become `R_ARM_ABS32` against a
+          global `__synth_text_base` (st_shndx=.text, value 0); internal DWARF
+          cross-refs stay concrete (do NOT use gimli's blanket `RelocateWriter`).
+          Addend 0 ⇒ `.debug_*` bytes byte-identical to PR B. Oracle
+          `rel_debug_relocations_shift_addresses_to_correct_line_394` applies the
+          reloc at a NONZERO base and asserts every row shifts by exactly the base
+          with its source line preserved; CONFIRMED end-to-end with a real
+          `arm-none-eabi-ld -Ttext=0x08000000` link (readelf decodedline → correct
+          lines). FAST-FOLLOW: `__synth_text_base` is global ⇒ linking >1
+          `--debug-line` object collides (fails LOUD); local-STT_SECTION fix is
+          blocked by the hardcoded `.symtab` sh_info=1 — jumps priority iff a
+          consumer links multiple synth objects. GOTCHA recorded: dependabot #436
+          (gimli 0.31→0.33, `LineProgram::new` 5→6 args) broke main after PR C
+          merged textually-clean on a stale base; fixed in #439.
+    status: implemented
     tags: [toolchain, dwarf, debuggability, elf, meld-coordination, feature-loop, release-v0.12.0, synth-394]
     links:
       - type: derives-from
