@@ -1446,6 +1446,18 @@ artifacts:
           and host-link survival — the deliberate v0.12.0 release step (step 5
           oracle then asserts .text byte-identical to the no-DWARF build). NOT an
           idle-tick increment.
+        - step (5a) MACHINE-OFFSET CAPTURE landed (PR A, v0.12.0 in progress):
+          the encoder gap is closed — `compile_wasm_to_arm` now captures a
+          `LineMap = Vec<(machine_offset, wasm_op_index)>` (synth-core backend.rs)
+          during the encode loop (`code.len()` immediately before each `encode()`;
+          the trailing literal pool and in-place LDR patch don't shift earlier
+          offsets), carried on `CompiledFunction.line_map`. Purely additive: the
+          map is never serialized, so `.text` is byte-identical (the existing
+          differential fixtures + `test_line_map_is_wellformed_dbg001` assert
+          monotonic in-bounds offsets and deterministic, unperturbed code). ARM
+          only; RISC-V carries an empty map (follow-up). step (5b) = gimli prod-dep
+          + input `.debug_line` read + emit behind `--debug-line` + the additivity
+          byte-diff oracle.
     status: approved
     tags: [toolchain, dwarf, debuggability, elf, meld-coordination, feature-loop, release-v0.12.0, synth-394]
     links:

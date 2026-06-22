@@ -226,6 +226,13 @@ pub struct CodeRelocation {
     pub kind: RelocKind,
 }
 
+/// VCR-DBG-001: a per-instruction source map — `(machine_offset_within_code,
+/// wasm_op_index)` pairs, one per emitted machine instruction. A `None` op-index
+/// marks an instruction with no originating wasm op (prologue/epilogue, literal
+/// pool). Consumed by the DWARF `.debug_line` emitter; empty when no source map
+/// was produced.
+pub type LineMap = Vec<(u32, Option<usize>)>;
+
 /// A single compiled function
 #[derive(Debug, Clone)]
 pub struct CompiledFunction {
@@ -237,6 +244,15 @@ pub struct CompiledFunction {
     pub wasm_ops: Vec<WasmOp>,
     /// Relocations for external symbol references (BL to bridge functions)
     pub relocations: Vec<CodeRelocation>,
+    /// VCR-DBG-001: per-instruction source map for DWARF `.debug_line` emission —
+    /// `(machine_offset_within_code, wasm_op_index)` captured at encode time, one
+    /// entry per emitted machine instruction. A `None` op-index marks an
+    /// instruction with no originating wasm op (prologue/epilogue, literal-pool
+    /// word). This is purely additive metadata: it is never serialized unless
+    /// `.debug_line` emission is requested, so the emitted `.text` is
+    /// byte-identical with or without it. Empty for backends/paths that do not
+    /// yet produce a source map (RISC-V, the optimized ARM path).
+    pub line_map: LineMap,
 }
 
 /// Result of compiling a full module
