@@ -206,10 +206,14 @@ pub fn emit_debug_sections(table: &[(u64, u32)], text_sym: usize) -> Vec<Emitted
     // high_pc one past the last mapped address.
     let high_pc = table.iter().map(|&(a, _)| a).max().unwrap_or(0) + 1;
 
+    // gimli 0.33 split the comp-dir/file args: (working_dir, source_dir,
+    // source_file, source_file_info). source_dir = None ⇒ the file sits in
+    // working_dir, matching the previous single-dir behaviour.
     let mut program = LineProgram::new(
         encoding,
         gimli::LineEncoding::default(),
         LineString::String(b"/synth".to_vec()),
+        None,
         LineString::String(b"synth.wasm".to_vec()),
         None,
     );

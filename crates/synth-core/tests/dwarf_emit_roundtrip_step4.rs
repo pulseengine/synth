@@ -88,10 +88,12 @@ fn emit_dwarf(table: &[(u64, u32)]) -> HashMap<String, Vec<u8>> {
         address_size: 4,
     };
     let mut dwarf = DwarfUnit::new(encoding);
+    // gimli 0.33: (working_dir, source_dir, source_file, source_file_info).
     let mut program = LineProgram::new(
         encoding,
         gimli::LineEncoding::default(),
         LineString::String(b"/synth".to_vec()),
+        None,
         LineString::String(b"dwarf_coherent.rs".to_vec()),
         None,
     );
