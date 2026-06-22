@@ -4291,6 +4291,81 @@ mod tests {
         );
     }
 
+    /// VCR-MEM-001 layer-2 HONEST-FAIL SAFETY ORACLE (#242, #383): the soundness
+    /// of the whole budget derivation rests on an upstream assumption — that scry
+    /// returns a NON-finite bound for a stack that can grow without bound, so the
+    /// derivation refuses rather than inventing a finite budget that would
+    /// silently under-reserve and overflow on silicon. The msgq/gust tests cover
+    /// the proven (finite) path; this covers the refusal path against REAL scry
+    /// output, guarding the assumption directly.
+    ///
+    /// `recursive_shadow_stack.wat` recurses through the shadow stack (each
+    /// activation decrements the SP global by a frame), so the depth is
+    /// unbounded. We assert scry detects that (recursive + Unbounded) AND that
+    /// `budget_from_bound` never yields a ProvenStackDepth for it — only the
+    /// asserted fallback (if given) or an honest refuse.
+    ///
+    /// Frozen-safe: scry + wat stay test-only here; production bytes unchanged.
+    #[test]
+    fn layer2_unbounded_recursion_refuses_proven_budget_242() {
+        use scry_analyze_core::{AnalysisConfig, StackBound, analyze};
+        use shadow_budget::{BudgetDecision, BudgetSource, StackDepthBound, budget_from_bound};
+
+        let wat_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/repro/recursive_shadow_stack.wat");
+        let wasm = wat::parse_file(&wat_path).expect("the honest-fail fixture .wat parses");
+
+        let r = analyze(
+            wasm,
+            AnalysisConfig {
+                widening_threshold: None,
+                emit_diagnostics: false,
+                taint_policy: None,
+            },
+        )
+        .expect("scry analyzes the recursive Core module");
+
+        // The upstream assumption the honest-fail gate depends on: recursion
+        // through the shadow stack is detected and has NO finite bound.
+        assert!(
+            r.function_summaries.iter().any(|s| s.recursive),
+            "scry detects the shadow-stack recursion"
+        );
+        assert_eq!(
+            r.stack_usage.max_stack_bytes,
+            StackBound::Unbounded,
+            "recursion through the shadow stack has no finite proven bound"
+        );
+
+        let bound = match r.stack_usage.max_stack_bytes {
+            StackBound::Bytes(n) => StackDepthBound::Bytes(n),
+            StackBound::Unbounded => StackDepthBound::Unbounded,
+            StackBound::Unknown => StackDepthBound::Unknown,
+        };
+
+        // SAFETY (1): with a fallback, the budget is the integrator-ASSERTED one —
+        // explicitly NOT ProvenStackDepth. An unbounded stack never gets a proven
+        // finite budget; the proof label is reserved for a real finite depth.
+        assert_eq!(
+            budget_from_bound(bound, 65_536, Some(4096)),
+            BudgetDecision::Use {
+                bytes: 4096,
+                source: BudgetSource::AssertedFallback
+            },
+            "unbounded depth -> asserted fallback, never ProvenStackDepth"
+        );
+
+        // SAFETY (2): with no fallback, an honest refuse — never an invented
+        // number for a stack the analyzer could not bound.
+        match budget_from_bound(bound, 65_536, None) {
+            BudgetDecision::Refuse(msg) => assert!(
+                msg.contains("unbounded"),
+                "refusal names the unbounded cause; got: {msg}"
+            ),
+            other => panic!("unbounded + no fallback must refuse, got {other:?}"),
+        }
+    }
+
     /// #235: a dissolved export's non-exported callee must be pulled into the
     /// reachable set (so it lands in the relocatable object), while imports and
     /// unreachable functions stay out.
