@@ -252,6 +252,19 @@ enum Commands {
         /// above B will mis-address. Only meaningful with `--native-pointer-abi`.
         #[arg(long, value_name = "BYTES")]
         shadow_stack_size: Option<u32>,
+
+        /// VCR-DBG-001 (#394): emit DWARF debug sections (`.debug_info`/
+        /// `.debug_abbrev`/`.debug_str`/`.debug_line`) mapping ARM `.text`
+        /// addresses back to the input wasm's source lines. Requires the input to
+        /// carry DWARF (`.debug_line` custom section) and the ARM backend (RISC-V
+        /// carries no line_map). Purely additive: `.text`/`.data`/`.bss` stay
+        /// byte-identical; off by default. Wired on the relocatable-object
+        /// (host-link) path. EXPERIMENTAL: addresses are object-relative (`.text`
+        /// base 0) and carry no relocations yet, so they are correct for the
+        /// unlinked object but shift by the load base once linked — linked-binary
+        /// debugging needs the `.rela.debug_*` follow-up (VCR-DBG-002).
+        #[arg(long)]
+        debug_line: bool,
     },
 
     /// Disassemble an ARM ELF file (e.g., synth disasm output.elf)
@@ -369,6 +382,7 @@ fn main() -> Result<()> {
             sbom,
             sign_output,
             shadow_stack_size,
+            debug_line,
         } => {
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
             let target_spec = resolve_target_spec(target.as_deref(), cortex_m, &backend)?;
@@ -409,6 +423,7 @@ fn main() -> Result<()> {
                 sbom_path,
                 sign_output,
                 shadow_stack_size,
+                debug_line,
             )?;
 
             // If --link requested, invoke the cross-linker
@@ -716,6 +731,15 @@ struct ElfFunction {
     code: Vec<u8>,
     /// Relocations targeting external symbols (from import dispatch stubs)
     relocations: Vec<synth_core::backend::CodeRelocation>,
+    /// VCR-DBG-001 step 4 (#394): per-op wasm code BYTE offsets (decoder side
+    /// table, `FunctionOps.op_offsets`) — module-relative, parallel to the wasm
+    /// ops. Threaded here so the `--debug-line` emitter can normalize against
+    /// `code_base` and compose with `line_map`. Empty unless DWARF emission is on.
+    op_offsets: Vec<u32>,
+    /// VCR-DBG-001 step 4 (#394): `(machine_offset_within_function → wasm_op_index)`
+    /// captured by the ARM backend (`CompiledFunction.line_map`). Empty for the
+    /// RISC-V backend. Composed with `op_offsets` to map ARM text address → source.
+    line_map: synth_core::backend::LineMap,
 }
 
 /// Resolve --target / --cortex-m into a TargetSpec
@@ -959,6 +983,8 @@ fn compile_command(
     sbom_path: Option<PathBuf>,
     sign_output: bool,
     shadow_stack_size: Option<u32>,
+    // VCR-DBG-001 step 4 (#394): `--debug-line` — emit `.debug_line` DWARF.
+    debug_line: bool,
 ) -> Result<()> {
     // Validate backend exists
     let registry = build_backend_registry();
@@ -1006,6 +1032,7 @@ fn compile_command(
             sbom_path,
             sign_output,
             shadow_stack_size,
+            debug_line,
         );
     }
 
@@ -1761,6 +1788,9 @@ fn compile_all_exports(
     sbom_path: Option<PathBuf>,
     sign_output: bool,
     shadow_stack_size: Option<u32>,
+    // VCR-DBG-001 step 4 (#394): emit a `.debug_line` section from the input
+    // wasm's DWARF + the ARM line_maps. Default off ⇒ output byte-identical.
+    debug_line: bool,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -2106,6 +2136,10 @@ fn compile_all_exports(
             wasm_index: func.index,
             code: compiled.code,
             relocations: compiled.relocations,
+            // VCR-DBG-001 step 4: carry the op-offset side table + the backend's
+            // line_map so `--debug-line` can compose ARM text addr → source.
+            op_offsets: func.op_offsets.clone(),
+            line_map: compiled.line_map,
         });
 
         // Run verification if requested
@@ -2184,6 +2218,20 @@ fn compile_all_exports(
     // Tracks whether we emitted an ET_REL object (needs linking) vs a standalone
     // executable, so the summary below reports the right type and link hint.
     let produced_relocatable = is_riscv || has_external_relocations || relocatable;
+
+    // VCR-DBG-001 step 4 (#394): when `--debug-line` is set, parse the input
+    // wasm's `.debug_line` from the bytes synth actually compiled
+    // (`sbom_wasm_bytes` = post-WAT/post-loom). A DWARF-free input yields empty
+    // rows ⇒ the emitter no-ops ⇒ the object stays byte-identical. Default
+    // (flag off) ⇒ `None` ⇒ zero new work, zero output change.
+    let input_dwarf = if debug_line {
+        sbom_wasm_bytes
+            .as_deref()
+            .map(synth_core::dwarf_line::read_input_dwarf_line)
+    } else {
+        None
+    };
+
     let elf_data = if is_riscv {
         info!("Building RISC-V multi-function relocatable object (EM_RISCV)");
         build_multi_func_riscv_elf(&compiled_funcs)?
@@ -2212,6 +2260,7 @@ fn compile_all_exports(
             } else {
                 None
             },
+            input_dwarf.as_ref(),
         )?
     } else if cortex_m {
         build_multi_func_cortex_m_elf(&compiled_funcs, &all_memories, target_spec)?
@@ -2367,6 +2416,10 @@ fn build_relocatable_elf(
     data_segments: &[(u32, Vec<u8>)],
     linear_memory_bytes: u32,
     native_globals: Option<NativeGlobalsLayout>,
+    // VCR-DBG-001 step 4 (#394): the input wasm's parsed `.debug_line` (rows +
+    // code_base). `None` ⇒ `--debug-line` off OR the input carried no DWARF ⇒
+    // no `.debug_line` section emitted ⇒ output byte-identical to the default.
+    dwarf_line: Option<&synth_core::dwarf_line::InputDwarfLine>,
 ) -> Result<Vec<u8>> {
     use std::collections::HashMap;
 
@@ -3073,6 +3126,61 @@ fn build_relocatable_elf(
                 .with_data(header);
 
             elf_builder.add_section(import_section);
+        }
+    }
+
+    // VCR-DBG-001 step 4 (#394): emit a FULL DWARF unit (`.debug_info`,
+    // `.debug_abbrev`, `.debug_str`, `.debug_line`, ...) as NON-ALLOC trailing
+    // PROGBITS sections. Each is structurally a clone of `.meld_import_table`: no
+    // symbol or relocation targets them, and `.rel.text`'s `sh_info` is hardcoded
+    // to `.text` (index 4) AFTER the user-section loop — so appending here gives
+    // each a fresh section index without disturbing the `with_section` (4/5/6)
+    // symbol indices, keeping the feature PURELY ADDITIVE. The unit carries a
+    // real `DW_TAG_compile_unit` whose `DW_AT_stmt_list` points at `.debug_line`,
+    // so a debugger reaches the line table via the NORMAL `.debug_info` → CU walk.
+    // Composed from `func_offsets[i] + machine_offset → op_offsets[op_idx] → src`.
+    if let Some(input_dwarf) = dwarf_line
+        && !input_dwarf.rows.is_empty()
+    {
+        use synth_core::dwarf_line::{SourceLoc, op_offsets_to_source};
+        let mut table: Vec<(u64, u32)> = Vec::new();
+        for (i, func) in funcs.iter().enumerate() {
+            if func.line_map.is_empty() || func.op_offsets.is_empty() {
+                continue; // RISC-V (empty line_map) or a func with no op offsets
+            }
+            // op-index → source for this function's ops (parallel to op_offsets).
+            let locs =
+                op_offsets_to_source(&func.op_offsets, input_dwarf.code_base, &input_dwarf.rows);
+            for &(machine_off, op_idx) in &func.line_map {
+                // None entries (prologue / literal pool) carry no source.
+                let Some(op_idx) = op_idx else { continue };
+                if let Some(Some(SourceLoc { line, .. })) = locs.get(op_idx)
+                    && *line != 0
+                {
+                    let arm_addr = (func_offsets[i] + machine_off) as u64;
+                    table.push((arm_addr, *line));
+                }
+            }
+        }
+        // One address-ordered, de-duped sequence covering every function.
+        table.sort_by_key(|&(a, _)| a);
+        table.dedup_by_key(|&mut (a, _)| a);
+
+        let dwarf_sections = synth_core::dwarf_line::emit_debug_sections(&table);
+        if !dwarf_sections.is_empty() {
+            let names: Vec<&str> = dwarf_sections.iter().map(|(n, _)| *n).collect();
+            for (name, bytes) in &dwarf_sections {
+                let dbg_section = Section::new(name, ElfSectionType::ProgBits)
+                    .with_align(1)
+                    .with_data(bytes.clone());
+                elf_builder.add_section(dbg_section);
+            }
+            info!(
+                "DWARF: emitted {} sections {:?} ({} address rows, --debug-line)",
+                dwarf_sections.len(),
+                names,
+                table.len()
+            );
         }
     }
 
@@ -4462,6 +4570,8 @@ mod tests {
                     kind: synth_core::backend::RelocKind::MovtAbs,
                 },
             ],
+            op_offsets: vec![],
+            line_map: vec![],
         };
         let linear_memory_bytes: u32 = 131_072; // 2 wasm pages
         // Native globals: SP-init = 65536 (the shadow-stack top) drives the
@@ -4472,7 +4582,7 @@ mod tests {
             shadow_stack_size: None,
         };
 
-        let elf = build_relocatable_elf(&[func], &[], &[], linear_memory_bytes, Some(native))
+        let elf = build_relocatable_elf(&[func], &[], &[], linear_memory_bytes, Some(native), None)
             .expect("#345: native-pointer zero-linmem object builds");
 
         // Parse the ELF and inspect sections by name + type.
@@ -4560,13 +4670,15 @@ mod tests {
                     kind: synth_core::backend::RelocKind::Abs32,
                 },
             ],
+            op_offsets: vec![],
+            line_map: vec![],
         };
         let native = NativeGlobalsLayout {
             globals: vec![(0, 65_536)],
             sp_init: 65_536,
             shadow_stack_size: None,
         };
-        let elf = build_relocatable_elf(&[func], &[], &[], 131_072, Some(native))
+        let elf = build_relocatable_elf(&[func], &[], &[], 131_072, Some(native), None)
             .expect("#345: native-pointer literal-pool object builds");
 
         let header = object::elf::FileHeader32::<Endianness>::parse(&*elf).expect("valid ELF32");
@@ -4638,6 +4750,8 @@ mod tests {
                 symbol: "__synth_wasm_data".to_string(),
                 kind: synth_core::backend::RelocKind::Abs32,
             }],
+            op_offsets: vec![],
+            line_map: vec![],
         };
         // 12-byte init segment at the high offset, above the shadow stack.
         let seg: Vec<u8> = vec![0, 0, 0, 0, 0, 0, 0, 0, 0xf4, 0xff, 0xff, 0xff];
@@ -4648,7 +4762,7 @@ mod tests {
             shadow_stack_size: None,
         };
 
-        let elf = build_relocatable_elf(&[func], &[], &data_segments, 131_072, Some(native))
+        let elf = build_relocatable_elf(&[func], &[], &data_segments, 131_072, Some(native), None)
             .expect("#354: mixed-case object builds");
 
         let header = object::elf::FileHeader32::<Endianness>::parse(&*elf).expect("valid ELF32");

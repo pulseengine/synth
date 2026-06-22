@@ -54,6 +54,11 @@ wast.workspace = true
 
 [dev-dependencies]
 object.workspace = true
+# VCR-DBG-001 step 4 (#394) — oracle B parses the EMITTED `.debug_line` back with
+# gimli::read to prove the section is real debugger-readable DWARF (addresses in
+# `.text` range, lines non-zero). Test-only; the production read+emit lives in
+# synth-core. Matches synth-core's gimli pin.
+gimli = { version = "0.31", default-features = false, features = ["read", "std"] }
 # VCR-MEM-001 (#383) layer-2 substrate: scry's sound shadow-stack-depth analysis,
 # verified in-tree against a real module. DEV-dependency only — the production
 # binary does not pull scry until the gated consumption step (the .bss shrink /
