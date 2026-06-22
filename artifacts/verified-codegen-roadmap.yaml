@@ -1355,6 +1355,20 @@ artifacts:
           (trivial once the backend stream is available); step 4 emits the
           composed table as non-ALLOC `.debug_line` (the byte-touching-but-DWARF-
           additive step, .text still bit-identical).
+        - step (4) EMIT-LOGIC DE-RISKED 2026-06-22 (frozen-safe spike): the
+          read→compose→EMIT→read loop closes faithfully. dwarf_emit_roundtrip_step4.rs
+          composes synth's op-index→line table on dwarf_coherent.wasm, emits it as
+          a full minimal DWARF via gimli::write (DEV-dep, default `write` feature
+          on), reads it back via gimli::read, and asserts every address resolves
+          to the same source line — i.e. synth's composed mapping survives emission
+          as debugger-readable DWARF. Test-only ⇒ zero production change, no output
+          ELF, frozen fixtures untouched. So the emit FORMAT is proven; the GATED
+          remainder of step 4 is: gimli as a PRODUCTION dep (+ MODULE.bazel pin),
+          wiring the section into the ELF builder with real ARM text offsets
+          (ArmInstruction.source_line → op-index → op_offset−code_base → line),
+          and host-link survival — the deliberate v0.12.0 release step (step 5
+          oracle then asserts .text byte-identical to the no-DWARF build). NOT an
+          idle-tick increment.
     status: approved
     tags: [toolchain, dwarf, debuggability, elf, meld-coordination, feature-loop, release-v0.12.0, synth-394]
     links:
