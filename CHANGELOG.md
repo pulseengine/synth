@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.51] - 2026-06-22
+
+**NATIVE-POINTER SHADOW-STACK SHRINK — #383 (VCR-MEM-001 layer-1): the
+`--shadow-stack-size B` flag is now ACTIVE.** Under `--native-pointer-abi` synth
+reserved the wasm linear memory up to the declared page top (the `__stack_pointer`
+global's init), so a module that declares a large memory but lives in a few KB
+(gale's `gust` kernel: `(memory 17)` ≈ 1 MiB) could not be placed on a small-RAM
+MCU. `--shadow-stack-size B` re-bases the shadow-stack top to `B` and shrinks the
+NOBITS `.bss` reservation accordingly, unblocking the 8 KiB STM32F100 gust boot.
+
+- **#383 — `--shadow-stack-size B` shrink** (was: honest-Err scaffold, #388).
+  Re-bases the `__stack_pointer` global slot `sp_init → B` and resizes the
+  reservation to `B + static-tail`. Measured on `gust_kernel.wasm`:
+  `--shadow-stack-size 4096` → `.bss` 1048720 → 4240 B, SP slot 1048576 → 4096,
+  `.text`/`.data` + all relocations unchanged.
+  - Correct-by-construction for the verified stack-first geometry (statics
+    at/above `sp_init` retargeted into the packed `.data` per #354, the only
+    `.bss` static relocs being addend-0 region-base pointers, stable under the
+    shrink). **Refuses honestly** (typed Err) for any geometry it cannot prove
+    safe: one-PROGBITS fallback, `B > sp_init`, a non-zero inline static addend,
+    a non-Abs32 reservation reloc, or an ambiguous SP global.
+  - **Opt-in**: default unset reserves the full page ⇒ frozen fixtures
+    bit-identical. The footprint is ASSERTED (the budget is trusted), not proven;
+    the budget must cover everything live in linear memory above address 0.
+  - Verification: flag-off byte-identical on `msgq_put_359` (the native-pointer
+    path); the native-pointer differential passes; flag-on runtime exercised on
+    `native_pointer_shadow_stack` (the store through the re-based SP lands
+    in-region). gale confirmed on-silicon (issue #383 closed COMPLETED).
+  - Tests `shadow_stack_shrink_383.rs`; tracked `VCR-MEM-001`.
+
+- **Cross-backend op-parity oracle** (#387, `VCR-SEL-005`): the ARM-vs-RISC-V
+  op-lowering parity ledger surfaces "selector missed an op" gaps (the #223/#232
+  class) as a gate rather than on silicon.
+- **Register-polymorphic i32 lowering pilot** (#386, `VCR-SEL-001`): first
+  discharge-under-generalization measurement toward the verified selector DSL.
+- **scry-for-regalloc + shadow-stack-depth substrate** (#392, #397, `VCR-RA-010`
+  / `VCR-MEM-001` layer-2): scry's const-remat signal and longest-path
+  shadow-stack bound (`scry-sai-core` v1.12) verified in-tree as DEV-dependency
+  substrate (no production dep).
+- **DWARF Tier-1 read→compose→emit logic** (#399, #403, #413, #414, #415,
+  `VCR-DBG-001`, toward v0.12.0): the decoder records per-op wasm byte offsets;
+  the input `.debug_line` parses to (offset → file:line); the op-index → source
+  composer normalizes and joins; and the emit round-trips faithfully — all
+  frozen-safe (no production gimli dep, no output-ELF change). The gated ELF
+  wiring is the v0.12.0 release step.
+- **Traceability + roadmap**: requirement→test `verifies` bindings for the
+  implemented VCR features (#410, #411), the VCR-MEM-002 multi-memory structural
+  isolation decision (#407, meld#300), and the VCR-PERF-001 silicon size-gap
+  attribution (#391, gale #390). Cross-repo scry traceability (#400).
+
 ## [0.11.50] - 2026-06-19
 
 **LARGE LOAD/STORE OFFSET — #382: a static memory `offset > 0xFFF` (4095) no
