@@ -1,0 +1,15 @@
+dwarf_coherent.wasm — a COHERENCE-CHECKED DWARF fixture for VCR-DBG-001 step 3.
+
+Unlike the meld-dissolved fixtures (msgq_put_359.wasm, k_mutex_unlock.dissolved.wasm)
+whose .debug_* only describe Rust std/core glue against a pre-fusion layout, this
+module's .debug_line describes ITS OWN source (scripts/repro/dwarf_coherent.rs:
+axpy/clampi) — the address→line table is coherent with the bytes synth compiles.
+
+Regenerate (rustc 1.95, wasm32-unknown-unknown target installed):
+  rustc --target wasm32-unknown-unknown \
+        -C debuginfo=1 -C panic=abort -C overflow-checks=off -C opt-level=1 \
+        --crate-type cdylib scripts/repro/dwarf_coherent.rs -o scripts/repro/dwarf_coherent.wasm
+
+panic=abort + overflow-checks=off + wrapping ops keep the linked module tiny
+(no panic/overflow/std-fmt machinery) ⇒ ~1.4 KB with a 249-byte .debug_line
+describing only the two functions (a full debug cdylib is ~550 KB of std DWARF).
