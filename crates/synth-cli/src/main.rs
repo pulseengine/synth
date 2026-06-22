@@ -4214,6 +4214,83 @@ mod tests {
         );
     }
 
+    /// VCR-MEM-001 layer-2 SILICON-BUDGET SANITY CHECK (#242, #383, gale#65):
+    /// jess is flashing `gust_kernel.wasm` with an integrator-ASSERTED
+    /// `--shadow-stack-size 4096` on the Renode-M3 / STM32F100 rung. This test is
+    /// the layer-2 cross-check on that live budget: scry PROVES gust_kernel's
+    /// worst-case shadow-stack depth, and we assert the proven depth sits at or
+    /// below the 4096 jess flashed — i.e. the asserted budget is sound, not an
+    /// under-reservation. (Measured 2026-06-22: proven depth is 16 B, a 256x
+    /// margin under 4096 and a 65536x cut from the 1 MiB declared-page default.)
+    ///
+    /// Frozen-safe: scry stays a DEV-dep under cfg(test); production bytes are
+    /// unchanged. Extends the msgq end-to-end test to the fixture jess actually
+    /// flies — so if a scry bump ever raised gust_kernel's proven depth above the
+    /// flashed budget, CI would surface it before silicon, not after.
+    #[test]
+    fn layer2_gust_kernel_proven_depth_clears_flashed_budget_383() {
+        use scry_analyze_core::{AnalysisConfig, StackBound, analyze};
+        use shadow_budget::{BudgetDecision, BudgetSource, StackDepthBound, budget_from_bound};
+
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../scripts/repro/gust_kernel.wasm");
+        let bytes = std::fs::read(&fixture).expect("the gale #91 gust_kernel fixture is in-tree");
+
+        let r = analyze(
+            bytes,
+            AnalysisConfig {
+                widening_threshold: None,
+                emit_diagnostics: false,
+                taint_policy: None,
+            },
+        )
+        .expect("scry analyzes the gust_kernel Core module");
+
+        // scry identifies a real shadow stack with a finite, non-recursive depth.
+        assert_eq!(
+            r.stack_usage.sp_global,
+            Some(0),
+            "gust_kernel's stack-pointer global is identified"
+        );
+        assert!(
+            !r.function_summaries.iter().any(|s| s.recursive),
+            "gust_kernel has no reachable recursion -> the depth is a finite proof"
+        );
+
+        // The proven worst-case depth, recorded as the layer-2 baseline for the
+        // fixture jess flashes (previously only the asserted 4096 was on record).
+        let proven = match r.stack_usage.max_stack_bytes {
+            StackBound::Bytes(n) => n,
+            other => panic!("expected a finite proven depth, got {other:?}"),
+        };
+        assert_eq!(proven, 16, "scry-proven gust_kernel shadow-stack depth (B)");
+
+        // THE LIVE-BUDGET SANITY CHECK: the proven depth must sit at or below the
+        // integrator-asserted budget jess flashed (`--shadow-stack-size 4096`),
+        // or that image under-reserves its stack on silicon.
+        const JESS_FLASHED_BUDGET: u64 = 4096;
+        assert!(
+            proven <= JESS_FLASHED_BUDGET,
+            "proven depth {proven} B must not exceed the flashed {JESS_FLASHED_BUDGET} B budget"
+        );
+
+        // And layer-2's own derivation ACCEPTS it (proven, not refused, not
+        // fallback): gust_kernel's sp_init is the 1 MiB declared-page top.
+        let decision = budget_from_bound(
+            StackDepthBound::Bytes(proven),
+            1_048_576,
+            Some(JESS_FLASHED_BUDGET as u32),
+        );
+        assert_eq!(
+            decision,
+            BudgetDecision::Use {
+                bytes: 16,
+                source: BudgetSource::ProvenStackDepth
+            },
+            "layer-2 derives a proven 16 B budget for gust_kernel (tighter than the asserted 4096)"
+        );
+    }
+
     /// #235: a dissolved export's non-exported callee must be pulled into the
     /// reachable set (so it lands in the relocatable object), while imports and
     /// unreachable functions stay out.

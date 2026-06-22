@@ -1100,6 +1100,16 @@ artifacts:
           the [0, sp_init) stack page); --shadow-stack-size errors honestly
           (PR #388 scaffold). B = 4096 -> reserve B + 144 = ~4.2 KB, inside the
           8 KiB STM32F100 part.
+        - SCRY-PROVEN DEPTH (measured 2026-06-22, dev-dep): scry proves
+          gust_kernel's worst-case shadow-stack depth is Bytes(16) (sp_global=0,
+          no recursion, 6 reachable) — so jess's flashed asserted B=4096 clears
+          the proven depth with a 256x margin (16 <= 4096): the live silicon-rung
+          budget is SOUND, not an under-reservation. layer-2 would auto-derive
+          16 B (ProvenStackDepth) — 256x tighter than the asserted 4096 and
+          65536x under the 1 MiB declared-page default. Locked by the dev-dep
+          test `layer2_gust_kernel_proven_depth_clears_flashed_budget_383`, so a
+          future scry bump raising the proven depth above the flashed budget
+          reddens CI before silicon, not after.
       So layer-1 is unblocked and its geometry is the clean uniform-down-shift.
       Remaining = the byte-changing retarget itself (re-base sp_init -> B; shift
       every __synth_wasm_data static addend >= sp_init down by (sp_init - B),
