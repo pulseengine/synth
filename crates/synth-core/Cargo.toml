@@ -23,7 +23,7 @@ wasmparser.workspace = true
 # crate_universe auto-resolves this from Cargo.lock (no MODULE.bazel pin needed).
 # `read` + `write` are gimli's defaults; named explicitly so the emitter cannot
 # silently lose the `write` half.
-gimli = { version = "0.31", default-features = false, features = ["read", "write", "std"] }
+gimli = { version = "0.33", default-features = false, features = ["read", "write", "std"] }
 
 [dev-dependencies]
 wat.workspace = true
