@@ -27,7 +27,7 @@ use std::process::Command;
 
 use gimli::{EndianSlice, LittleEndian, SectionId};
 use object::read::elf::ElfFile32;
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, ObjectSymbol};
 
 fn synth() -> &'static str {
     env!("CARGO_BIN_EXE_synth")
@@ -219,4 +219,149 @@ fn emitted_debug_line_resolves_arm_addr_to_source_394() {
     for (addr, line) in rows.iter().filter(|&&(a, l)| l > 0 && a < text_len).take(5) {
         eprintln!("  .text+0x{addr:04x} -> line {line}");
     }
+}
+
+/// R_ARM_ABS32 — the relocation type the DWARF `.text` references use.
+const R_ARM_ABS32: u32 = 2;
+
+/// Walk the NORMAL debugger path (`dwarf.units()` → CU `DW_AT_stmt_list` line
+/// program) over a section-name → bytes map, returning every `(address, line)`
+/// row. Shared by the un-relocated and relocated parses in Oracle C.
+fn line_rows(secs: &HashMap<String, Vec<u8>>) -> Vec<(u64, u64)> {
+    let empty: &[u8] = &[];
+    let load = |id: SectionId| -> Result<EndianSlice<'_, LittleEndian>, gimli::Error> {
+        let data = secs.get(id.name()).map_or(empty, |v| v.as_slice());
+        Ok(EndianSlice::new(data, LittleEndian))
+    };
+    let dwarf = gimli::Dwarf::load(load).expect("load .debug_* sections");
+    let mut rows = Vec::new();
+    let mut units = dwarf.units();
+    while let Some(header) = units.next().expect("unit header") {
+        let unit = dwarf.unit(header).expect("unit");
+        let Some(program) = unit.line_program.clone() else {
+            continue;
+        };
+        let mut state = program.rows();
+        while let Some((_, row)) = state.next_row().expect("row") {
+            if row.end_sequence() {
+                continue;
+            }
+            if let Some(line) = row.line() {
+                rows.push((row.address(), line.get()));
+            }
+        }
+    }
+    rows
+}
+
+/// ORACLE C — the `.rel.debug_*` relocations are real and CORRECT under linking
+/// (VCR-DBG-001 PR C). The emitted object's `.debug_*` addresses are `.text`-base
+/// 0; a host linker that places `.text` at a non-zero address must shift them via
+/// `.rel.debug_*`. This oracle proves the records do exactly that:
+///
+///   1. `.debug_line` carries EXACTLY ONE relocation — `R_ARM_ABS32` against
+///      `__synth_text_base` (the single `DW_LNE_set_address` anchor) — and
+///      `.debug_info` one (the CU `DW_AT_low_pc`). REL form ⇒ the in-place addend
+///      bytes are 0.
+///   2. APPLY the `.debug_line` relocation at a NON-ZERO base (`S + A`, A=0 ⇒
+///      the base itself), then re-walk the line program. EVERY row's address must
+///      shift by exactly the base and its source LINE must be preserved — i.e. on
+///      a linked image each `.text` address resolves to the SAME, CORRECT source
+///      line it did object-relative. A missing/wrong relocation would leave the
+///      addresses at base 0 (silently wrong on silicon — the #383 shape).
+#[test]
+fn rel_debug_relocations_shift_addresses_to_correct_line_394() {
+    const LINK_BASE: u64 = 0x0800_0000; // a realistic non-zero flash `.text` base
+
+    let wasm = repro("msgq_put_359.wasm");
+    let dbg = compile(&wasm, "/tmp/dbg394_msgq_oraclec.o", true);
+    let obj = ElfFile32::<object::Endianness>::parse(&*dbg).expect("parse ELF");
+
+    // (1) Inspect the `.rel.debug_line` / `.rel.debug_info` records. object maps
+    // each `.rel.<name>` (sh_info → target) onto the target section, so
+    // `section.relocations()` yields them.
+    let check_one_text_reloc = |sec_name: &str| -> u64 {
+        let sec = obj
+            .section_by_name(sec_name)
+            .expect("debug section present");
+        let relocs: Vec<_> = sec.relocations().collect();
+        assert_eq!(
+            relocs.len(),
+            1,
+            "{sec_name} must carry exactly one `.text` relocation (the single \
+             relocatable address anchor); got {}",
+            relocs.len()
+        );
+        let (offset, reloc) = &relocs[0];
+        let offset = *offset;
+        // R_ARM_ABS32 against __synth_text_base.
+        match reloc.flags() {
+            object::RelocationFlags::Elf { r_type } => assert_eq!(
+                r_type, R_ARM_ABS32,
+                "{sec_name} reloc must be R_ARM_ABS32, got r_type={r_type}"
+            ),
+            other => panic!("{sec_name} reloc has non-ELF flags: {other:?}"),
+        }
+        let object::RelocationTarget::Symbol(sym_idx) = reloc.target() else {
+            panic!("{sec_name} reloc target is not a symbol");
+        };
+        let sym = obj.symbol_by_index(sym_idx).expect("reloc symbol");
+        assert_eq!(
+            sym.name().expect("sym name"),
+            "__synth_text_base",
+            "{sec_name} reloc must resolve against the .text base symbol"
+        );
+        // REL form: the in-place addend at the reloc site is 0.
+        let data = sec.data().expect("section data");
+        let off = offset as usize;
+        let in_place = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
+        assert_eq!(
+            in_place, 0,
+            "{sec_name} REL addend must be 0 in-place (S + A, A=0)"
+        );
+        offset
+    };
+
+    let line_reloc_off = check_one_text_reloc(".debug_line") as usize;
+    let _ = check_one_text_reloc(".debug_info");
+
+    // (2) Un-relocated rows (object-relative, base 0) vs rows after applying the
+    // `.debug_line` relocation at a non-zero base.
+    let secs = section_data(&dbg);
+    let before = line_rows(&secs);
+    assert!(!before.is_empty(), "expected line rows object-relative");
+
+    let mut relocated = secs.clone();
+    {
+        let dl = relocated.get_mut(".debug_line").expect(".debug_line");
+        // S + A with A = the in-place value (0) ⇒ write the link base itself.
+        let patched = (LINK_BASE as u32).to_le_bytes();
+        dl[line_reloc_off..line_reloc_off + 4].copy_from_slice(&patched);
+    }
+    let after = line_rows(&relocated);
+
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "relocation changed the ROW COUNT — it must only shift addresses"
+    );
+    for ((a0, l0), (a1, l1)) in before.iter().zip(after.iter()) {
+        assert_eq!(
+            *l1, *l0,
+            "relocation changed a source LINE ({l0} -> {l1}); it must preserve the mapping"
+        );
+        assert_eq!(
+            *a1,
+            a0 + LINK_BASE,
+            "row at object-relative .text+0x{a0:x} did not shift to the linked \
+             base 0x{LINK_BASE:x}+0x{a0:x} (got 0x{a1:x}); the `.rel.debug_line` \
+             record is wrong"
+        );
+    }
+
+    eprintln!(
+        "[dbg394-oracleC] applied .rel.debug_line at base 0x{LINK_BASE:x}: {} rows \
+         shifted by exactly the base, all source lines preserved.",
+        after.len()
+    );
 }

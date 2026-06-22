@@ -188,10 +188,8 @@ fn parse_debug_line_rows(
 ///
 /// Ports `tests/dwarf_emit_roundtrip_step4.rs::emit_dwarf` (which emits the same
 /// full unit and round-trips through `Dwarf::units()`).
-pub fn emit_debug_sections(table: &[(u64, u32)]) -> Vec<(&'static str, Vec<u8>)> {
-    use gimli::write::{
-        Address, AttributeValue, DwarfUnit, EndianVec, LineProgram, LineString, Sections,
-    };
+pub fn emit_debug_sections(table: &[(u64, u32)], text_sym: usize) -> Vec<EmittedDwarfSection> {
+    use gimli::write::{Address, AttributeValue, DwarfUnit, LineProgram, LineString, Sections};
 
     if table.is_empty() {
         return Vec::new();
@@ -204,8 +202,8 @@ pub fn emit_debug_sections(table: &[(u64, u32)]) -> Vec<(&'static str, Vec<u8>)>
     };
     let mut dwarf = DwarfUnit::new(encoding);
 
-    // The span of emitted text the unit describes: low_pc=0 (text base), high_pc
-    // one past the last mapped address.
+    // The span of emitted text the unit describes: low_pc=`.text`+0 (text base),
+    // high_pc one past the last mapped address.
     let high_pc = table.iter().map(|&(a, _)| a).max().unwrap_or(0) + 1;
 
     let mut program = LineProgram::new(
@@ -218,7 +216,16 @@ pub fn emit_debug_sections(table: &[(u64, u32)]) -> Vec<(&'static str, Vec<u8>)>
     let dir = program.default_directory();
     let fid = program.add_file(LineString::String(b"synth.wasm".to_vec()), dir, None);
 
-    program.begin_sequence(Some(Address::Constant(0)));
+    // The sequence base is `.text + 0` as a RELOCATABLE address (one
+    // `DW_LNE_set_address` against the `.text` symbol, addend 0); each row's
+    // `address_offset` stays a text-relative DELTA, so only this single site
+    // needs a relocation per section. Addend 0 ⇒ the in-place bytes are
+    // byte-identical to the previous `Address::Constant(0)` form.
+    let text_base = Address::Symbol {
+        symbol: text_sym,
+        addend: 0,
+    };
+    program.begin_sequence(Some(text_base));
     for &(addr, line) in table {
         let row = program.row();
         row.address_offset = addr;
@@ -236,29 +243,119 @@ pub fn emit_debug_sections(table: &[(u64, u32)]) -> Vec<(&'static str, Vec<u8>)>
         let root = dwarf.unit.root();
         let root_die = dwarf.unit.get_mut(root);
         root_die.set(gimli::DW_AT_name, AttributeValue::StringRef(name_id));
-        root_die.set(
-            gimli::DW_AT_low_pc,
-            AttributeValue::Address(Address::Constant(0)),
-        );
+        root_die.set(gimli::DW_AT_low_pc, AttributeValue::Address(text_base));
         root_die.set(gimli::DW_AT_high_pc, AttributeValue::Udata(high_pc));
     }
 
-    let mut sections = Sections::new(EndianVec::new(LittleEndian));
+    let seed = RelocWriter {
+        inner: gimli::write::EndianVec::new(LittleEndian),
+        relocs: Vec::new(),
+    };
+    let mut sections = Sections::new(seed);
     if dwarf.write(&mut sections).is_err() {
         return Vec::new();
     }
 
-    let mut out: Vec<(&'static str, Vec<u8>)> = Vec::new();
-    let _ = sections.for_each(|id, data| -> Result<(), ()> {
-        let bytes = data.slice();
+    let mut out: Vec<EmittedDwarfSection> = Vec::new();
+    let _ = sections.for_each(|id, w: &RelocWriter| -> Result<(), ()> {
+        let bytes = w.inner.slice();
         if !bytes.is_empty()
             && let Some(name) = section_name(id)
         {
-            out.push((name, bytes.to_vec()));
+            let text_relocs = w
+                .relocs
+                .iter()
+                .map(|&(offset, _addend, size)| DwarfTextReloc {
+                    offset: offset as u32,
+                    size,
+                })
+                .collect();
+            out.push(EmittedDwarfSection {
+                name,
+                bytes: bytes.to_vec(),
+                text_relocs,
+            });
         }
         Ok(())
     });
     out
+}
+
+/// A relocation a `.debug_*` section needs against the `.text` symbol so a host
+/// linker fixes up the embedded `.text` address when `.text` is placed. REL
+/// form: the in-place bytes already hold the addend (always `0` for our
+/// text-base references), so only the site (`offset`) and `size` travel here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DwarfTextReloc {
+    /// Byte offset within the section where the relocated address word sits.
+    pub offset: u32,
+    /// Size of the relocated value (always 4 for DWARF32 addresses).
+    pub size: u8,
+}
+
+/// One emitted `.debug_*` section: its ELF name, bytes, and the `.text`-symbol
+/// relocations it needs (empty for address-free sections like `.debug_str`).
+#[derive(Debug, Clone)]
+pub struct EmittedDwarfSection {
+    /// `'static` ELF section name (e.g. `.debug_line`).
+    pub name: &'static str,
+    /// Section payload bytes.
+    pub bytes: Vec<u8>,
+    /// `.text`-symbol relocations within this section (REL, in-place addend 0).
+    pub text_relocs: Vec<DwarfTextReloc>,
+}
+
+/// A gimli `write::Writer` that delegates to an inner `EndianVec` but records
+/// every `Address::Symbol` write as a relocation. ONLY `write_address` is
+/// overridden — `write_offset` (gimli's internal section-to-section references,
+/// e.g. `.debug_info` → `.debug_str`/`.debug_abbrev` and `DW_AT_stmt_list` →
+/// `.debug_line`) keeps the default, so those stay CONCRETE intra-file offsets
+/// and need no section symbols. The only relocations captured are the two
+/// `.text` references (the line program's `DW_LNE_set_address` and the CU's
+/// `DW_AT_low_pc`). `Clone` so `Sections::new` can seed each section writer.
+#[derive(Clone)]
+struct RelocWriter {
+    inner: gimli::write::EndianVec<LittleEndian>,
+    /// (offset within section, addend, size) for each `Address::Symbol` write.
+    relocs: Vec<(usize, i64, u8)>,
+}
+
+impl gimli::write::Writer for RelocWriter {
+    type Endian = LittleEndian;
+
+    fn endian(&self) -> Self::Endian {
+        self.inner.endian()
+    }
+
+    fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> gimli::write::Result<()> {
+        self.inner.write(bytes)
+    }
+
+    fn write_at(&mut self, offset: usize, bytes: &[u8]) -> gimli::write::Result<()> {
+        self.inner.write_at(offset, bytes)
+    }
+
+    fn write_address(
+        &mut self,
+        address: gimli::write::Address,
+        size: u8,
+    ) -> gimli::write::Result<()> {
+        use gimli::write::Address;
+        match address {
+            Address::Constant(val) => self.inner.write_udata(val, size),
+            Address::Symbol { symbol: _, addend } => {
+                // REL: record the site and write the addend in place (0 ⇒ the
+                // bytes match the old `Address::Constant(0)` exactly).
+                let offset = self.inner.len();
+                self.relocs.push((offset, addend, size));
+                self.inner.write_udata(addend as u64, size)
+            }
+        }
+    }
 }
 
 /// `'static` ELF section name for the `.debug_*` sections the emitter can
