@@ -1183,6 +1183,17 @@ artifacts:
         passes with scry ABSENT from the build graph (dep-free synth-owned bound
         enum). The scry production-dep wiring (2a/2b above) is the separate gated
         step; default-off ⇒ frozen fixtures unaffected.
+        LAYER (2) END-TO-END criterion (LANDED 2026-06-22, frozen-safe): the
+        join the #392 spike (scry raw output only) and the decision-logic suite
+        (synthetic bounds only) each cover half of — `layer2_budget_pipeline_msgq
+        _end_to_end_383` (synth-cli main.rs cfg(test)) runs scry's `analyze()` on
+        the REAL msgq_put_359.wasm gust fixture, maps StackBound→StackDepthBound
+        (the 1:1 adapter that becomes `impl From` in 2b), feeds budget_from_bound,
+        and asserts the 2048x over-reservation (65536) collapses to a PROVEN 32 B
+        budget (source=ProvenStackDepth, preferred over the asserted 4096
+        fallback). scry stays a DEV-dep exercised only under cfg(test) ⇒ the
+        production binary pulls no scry and emits identical bytes. This test is
+        the oracle the gated 2b wiring must match.
 
   - id: VCR-MEM-002
     type: sw-req
