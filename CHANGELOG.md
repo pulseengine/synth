@@ -34,7 +34,11 @@ NOBITS `.bss` reservation accordingly, unblocking the 8 KiB STM32F100 gust boot.
   - Verification: flag-off byte-identical on `msgq_put_359` (the native-pointer
     path); the native-pointer differential passes; flag-on runtime exercised on
     `native_pointer_shadow_stack` (the store through the re-based SP lands
-    in-region). gale confirmed on-silicon (issue #383 closed COMPLETED).
+    in-region). **qemu + 8 KB-constrained-link confirmed** by gale (cortex-m3
+    `lm3s6965evb`): the gust kernel dissolves to `.bss` 4240, links into 8 KB
+    (~4.8 KB used, was un-linkable), boots and runs 5000 poll rounds with correct
+    values (`gust_mix(1024)=1500`, `pwm=1522`). Physical STM32F100 reflash is
+    pending hardware — NOT literal-silicon-confirmed (gale #383).
   - Tests `shadow_stack_shrink_383.rs`; tracked `VCR-MEM-001`.
 
 - **Cross-backend op-parity oracle** (#387, `VCR-SEL-005`): the ARM-vs-RISC-V
