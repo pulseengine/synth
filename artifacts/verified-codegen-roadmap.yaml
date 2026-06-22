@@ -1204,6 +1204,19 @@ artifacts:
         fallback). scry stays a DEV-dep exercised only under cfg(test) ⇒ the
         production binary pulls no scry and emits identical bytes. This test is
         the oracle the gated 2b wiring must match.
+        LAYER (2) PROVEN-DEPTH + HONEST-FAIL coverage (LANDED 2026-06-22,
+        frozen-safe): the proven path is now anchored on BOTH real shadow-stack
+        fixtures — msgq (Bytes(32)) and gust_kernel (Bytes(16), the fixture jess
+        flashes; proven ≤ flashed 4096, silicon budget sound, #424). The
+        soundness-critical REFUSAL path is anchored against real scry output via
+        `recursive_shadow_stack.wat` (recurses through the SP global ⇒ scry
+        returns recursive=true + Unbounded): `layer2_unbounded_recursion_refuses
+        _proven_budget_242` asserts an unbounded depth NEVER yields a
+        ProvenStackDepth — only the asserted fallback (if given) or an honest
+        refuse. This guards the upstream assumption the entire honest-fail gate
+        rests on (scry flags recursion-through-the-shadow-stack as non-finite), so
+        a scry regression that returned a finite bound for an unbounded stack —
+        the one failure that would silently under-reserve on silicon — reddens CI.
 
   - id: VCR-MEM-002
     type: sw-req
