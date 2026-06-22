@@ -1338,6 +1338,23 @@ artifacts:
           the remaining work is the join itself (ARM-text-offset → op-index via
           source_line → op_offset → minus code-base → DWARF row → file:line),
           frozen-safe as an analysis until step 4 emits.
+        - step (3) COMPOSE LANDED 2026-06-22: the wasm half of the join —
+          op-index → source line — is `synth_core::dwarf_line::op_offsets_to_source`
+          (pure, plain-data, no gimli/backend; unwired ⇒ frozen-safe). It
+          normalizes each op's MODULE-relative `op_offsets` byte into the
+          CODE-relative DWARF space (`op_offset - code_base`, code_base = the code
+          section payload start) and takes the covering line-table row.
+          EMPIRICALLY confirmed on dwarf_coherent.wasm: code_base = 0x70 (112),
+          and op_offset - 112 reproduces the DWARF addresses exactly (axpy op0
+          115→0x3, clampi op0 126→0xe). Unit tests (covering-row lookup, before
+          first-row, before code-base) + dwarf_compose_step3.rs join the real
+          fixture's op_offsets × parsed .debug_line and assert ops resolve to the
+          fixture's own source lines (axpy/clampi + inlined-intrinsic lines), with
+          the entry-op→entry-row normalization check. REMAINING for step 3→4: the
+          ARM-text-offset → op-index half is just `ArmInstruction.source_line`
+          (trivial once the backend stream is available); step 4 emits the
+          composed table as non-ALLOC `.debug_line` (the byte-touching-but-DWARF-
+          additive step, .text still bit-identical).
     status: approved
     tags: [toolchain, dwarf, debuggability, elf, meld-coordination, feature-loop, release-v0.12.0, synth-394]
     links:

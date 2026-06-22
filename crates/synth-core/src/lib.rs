@@ -6,6 +6,7 @@
 
 pub mod backend;
 pub mod component;
+pub mod dwarf_line;
 pub mod error;
 pub mod ir;
 pub mod safety_manifest;
