@@ -25,6 +25,11 @@ use tracing::{Level, info};
 use wast::parser::{self, ParseBuffer};
 use wast::{Wast, WastDirective};
 
+// Layer-2 budget-derivation logic, landed frozen-safe ahead of the gated call
+// site that runs scry's `analyze()` (the scry production-dep step is a separate,
+// user-gated decision). `allow(dead_code)` until that wiring lands.
+#[allow(dead_code)]
+mod shadow_budget;
 mod sign;
 
 /// Sentinel value clap substitutes when `--sbom` is given without a path.

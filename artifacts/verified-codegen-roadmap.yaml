@@ -1109,6 +1109,40 @@ artifacts:
       #359 check), behind the opt-in flag so frozen fixtures stay bit-identical.
       gale offered on-silicon reflash on this exact gust_kernel.wasm as the final
       gate. A FOCUSED gated step, not an idle-tick increment.
+
+      LAYER-2 DECISION LOGIC LANDED (2026-06-22, frozen-safe, no dep change):
+      `synth-cli/src/shadow_budget.rs` — a pure `budget_from_bound(bound,
+      sp_init, fallback) -> BudgetDecision` over a synth-OWNED `StackDepthBound`
+      enum (Bytes(u64)|Unbounded|Unknown), so the decision compiles and unit-
+      tests (9 cases) WITHOUT scry in the build graph. Primary-source-confirmed
+      scope (scry-sai-core-1.12 lib.rs:276-281: max_stack_bytes is "the deepest
+      weighted path … each function weighted by the frame its prologue subtracts
+      from the __stack_pointer global … guest shadow-stack only") ⇒ Bytes(n)
+      yields source=ProvenStackDepth labelled "proven stack DEPTH, asserted
+      no-heap" (NOT a bare "proven footprint" — the #383 overclaim shape is
+      explicitly guarded against). Refuses when proven depth > sp_init (names it
+      as the ORIGINAL image under-provisioning its stack, a latent source bug
+      surfaced for free). Unbounded/Unknown ⇒ AssertedFallback or honest-refuse;
+      Unknown NEVER yields ProvenStackDepth even with a fallback (unit-tested).
+      B is rounded up to 16-byte AAPCS/LLVM stack alignment (rounding up keeps
+      B >= proven depth ⇒ soundness preserved). `#[allow(dead_code)]` until the
+      gated call site lands.
+
+      TWO GATED STEPS REMAIN, the first a USER DECISION:
+        (2a) DEP ARCHITECTURE — promoting scry-sai-core from dev-dep to a
+             PRODUCTION dep of synth-cli pulls its full transitive closure into
+             the Bazel `rust_binary` compile (synth-cli IS in the Bazel graph:
+             crates/BUILD.bazel:230). MODULE.bazel uses `crate.from_specs()`
+             (21 manual `crate.spec`s, NOT `from_cargo`) — likely because z3
+             needs `features=["static-link-z3"]`. So the cascade is real and the
+             fix is one of {from_cargo migration, feature-gate the scry call out
+             of the Bazel build, ~28 manual specs}. NOT an idle-tick or a unilateral
+             call — taken to the user.
+        (2b) ADAPTER + WIRING — `scry_analyze_core::StackBound -> StackDepthBound`
+             adapter at a gated call site that runs `analyze()` on the pre-link
+             Core module, feeds `budget_from_bound`, and routes the result into
+             the layer-1 shrink. Opt-in (e.g. `--shadow-stack-size auto`); default
+             unchanged ⇒ frozen fixtures bit-identical. verifies-link scry SCRY-001.
     status: proposed
     tags: [codegen, native-pointer-abi, memory-layout, abstract-interpretation, scry, stack-depth, gale-383, track-a]
     links:
@@ -1140,6 +1174,15 @@ artifacts:
         LAYER (2), next: acyclic + direct-only + canonical-frame modules derive
         B automatically (output "proven"); call_indirect / recursion / non-canonical
         frame ⇒ refuse → fall back to (1). LAYER (3): scry#51 proves the tail.
+        LAYER (2) DECISION-LOGIC criterion (LANDED 2026-06-22, frozen-safe):
+        `budget_from_bound` unit suite (synth-cli src/shadow_budget.rs) asserts —
+        Bytes(n) ⇒ source=ProvenStackDepth with B=align16(n); Bytes(n>sp_init) ⇒
+        Refuse naming the original-image under-provision; Unbounded/Unknown+fallback
+        ⇒ source=AssertedFallback (NEVER ProvenStackDepth, even for Unknown);
+        Unbounded/Unknown+no-fallback ⇒ honest Refuse with the cause. Compiles +
+        passes with scry ABSENT from the build graph (dep-free synth-owned bound
+        enum). The scry production-dep wiring (2a/2b above) is the separate gated
+        step; default-off ⇒ frozen fixtures unaffected.
 
   - id: VCR-MEM-002
     type: sw-req
