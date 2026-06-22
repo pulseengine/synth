@@ -1323,6 +1323,21 @@ artifacts:
           address-normalizer can be validated against the big /tmp rustc fixture
           in a scratch test before committing anything. Fixture acquisition (not
           the compose logic) is the gating sub-step.
+        - step (3) FIXTURE ACQUIRED 2026-06-22 (RESOLVED the blocker): the
+          shrink IS achievable — `-C panic=abort -C overflow-checks=off
+          -C opt-level=1` with wrapping ops drops the panic/overflow/std-fmt
+          machinery that bloated the linked DWARF, yielding a 1.4 KB module with
+          a 249-byte `.debug_line` describing only axpy/clampi.
+          scripts/repro/dwarf_coherent.{wasm,rs,README} committed + locked by
+          crates/synth-core/tests/dwarf_coherent_fixture.rs, which asserts: synth
+          decodes it with parallel op_offsets (step 1), the `.debug_line` is
+          coherent (names dwarf_coherent.rs, not std glue), and the DWARF
+          addresses are CODE-section-relative (≤ code_size, confirmed 0x03..0x21
+          for a 33-byte code section) — i.e. the op_offset→DWARF normalization is
+          a single code-base subtraction. So step 3 (compose) is now UNBLOCKED:
+          the remaining work is the join itself (ARM-text-offset → op-index via
+          source_line → op_offset → minus code-base → DWARF row → file:line),
+          frozen-safe as an analysis until step 4 emits.
     status: approved
     tags: [toolchain, dwarf, debuggability, elf, meld-coordination, feature-loop, release-v0.12.0, synth-394]
     links:
