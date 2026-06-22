@@ -2126,7 +2126,7 @@ dependencies = [
  "synth-core",
  "thiserror",
  "tracing",
- "wasm-encoder 0.244.0",
+ "wasm-encoder 0.248.0",
  "wasmparser 0.248.0",
  "wit-component",
  "wit-parser",
