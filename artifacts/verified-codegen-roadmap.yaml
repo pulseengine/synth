@@ -1326,6 +1326,15 @@ artifacts:
       retained SECONDARY) where a miscomputed address lands in a neighbour's
       sub-range and only the MPU catches it. meld emits the multi-memory
       structure + cross-memory ops today ⇒ SYNTH IS THE REMAINING GATE.
+      SHIPPED UPSTREAM (meld v0.34.0, 2026-06-23): the #300 decision is now
+      formalized as meld ADR-4 (safety/adr/ADR-4-inter-component-isolation-model)
+      and released — model 2 is the committed structural-isolation path, meld
+      guarantees `MultiMemory` output STABLE as synth's lowering target (adjusts
+      only if synth hits an unconsumable shape), and ADR-4 names this synth-side
+      lowering (synth#404/#369) as the committed remaining work, anchored on
+      meld's gating tests (`test_multi_memory_result_copy_adapter`, SR-21/SR-23).
+      No synth build impact (no cargo dep on meld); the synth obligation is the
+      staged byte-changing track below, unchanged in scope.
 
       Today synth is single-memory: the memory index is DROPPED at the IR level
       (the load/store `WasmOp` variants carry no `memory_index` — wasm_op.rs),
