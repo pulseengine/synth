@@ -54,6 +54,11 @@ wast.workspace = true
 
 [dev-dependencies]
 object.workspace = true
+# VCR-ORACLE-001 (#242) — the frozen-codegen byte gate hashes each fixture's
+# `.text` to lock it against accidental drift (e.g. a dependabot parser bump
+# shifting lowering). Already in the lock tree; test-only ⇒ no production pull,
+# no MODULE.bazel pin (Bazel globs src/ only).
+sha2 = "0.11"
 # VCR-DBG-001 step 4 (#394) — oracle B parses the EMITTED `.debug_line` back with
 # gimli::read to prove the section is real debugger-readable DWARF (addresses in
 # `.text` range, lines non-zero). Test-only; the production read+emit lives in
