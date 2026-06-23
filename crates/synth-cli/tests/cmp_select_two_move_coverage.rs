@@ -1,23 +1,23 @@
-//! VCR-SEL-004 characterization (#428) — the two-move arm is unreachable today.
+//! VCR-SEL-004 (#428) — the two-move arm is now REACHABLE (#7 closed the gap).
 //!
 //! gale's `gust_codegen_bench` on `gust_mix` surfaced two observations: the
 //! cmp→select fusion fired one clamp and declined its sibling, and the two-move
 //! `moveq→mov{invert(c)}` arm never executed end-to-end. Investigation (objdump of
 //! a synthetic two-move fixture) showed a SINGLE root cause: `fuse_cmp_select`'s
-//! `reg_dead_by_redef` requires an explicit downstream *redefinition* of the
-//! boolean before it will delete the `SetCond`. The real selector ABANDONS the
-//! boolean temp after the select (used once, not live-out, never rewritten), so
-//! the guard conservatively declines — for BOTH the declined clamp and every
-//! two-move shape. The two-move arm is therefore effectively unreachable through
-//! the real selector under the current guard.
+//! `reg_dead_by_redef` only deleted the `SetCond` when the boolean was explicitly
+//! *redefined* downstream — but the real selector ABANDONS the boolean temp after
+//! the select (used once, not live-out, never rewritten), so the guard declined
+//! for BOTH the declined clamp and every two-move shape.
 //!
-//! This test LOCKS that finding: the synthetic two-move fixture (`val2` a live
-//! param ⇒ the selector emits `movne dst,v1; moveq dst,v2`) currently fuses ZERO
-//! sites, while an in-place fixture fuses several (so the harness is not vacuously
-//! seeing "0"). When the deadness guard is improved to treat "abandoned +
-//! not-live-out" as dead (the byte-changing VCR-SEL-004 follow-on that also closes
-//! gale's clamp #2), this assertion flips: update the expectation to `> 0` and
-//! re-freeze the differentials.
+//! #7 fixed it: `reg_dead_by_redef` now recognizes the function's RETURN terminator
+//! (`bx lr` / `pop {…,pc}`) — at which the only live-out registers are the ABI
+//! result regs {R0,R1} — so an abandoned boolean in `R2`..`R8` is proven dead and
+//! the two-move arm fuses end-to-end. This test LOCKS the reachability: the
+//! synthetic two-move fixture (`val2` a live param ⇒ `movne dst,v1; moveq dst,v2`)
+//! now fuses exactly 1 site, while an in-place fixture fuses several (non-vacuous).
+//! Frozen-safe: flag-off (default) is byte-identical (gates #445/#446 stay green);
+//! the default-on flip + gale's re-bench (which now exercises the two-move arm for
+//! the first time) remain the separate gated step.
 //!
 //! Measure-only: drives the shipped binary with `SYNTH_CMP_SELECT_FUSE=1`
 //! `SYNTH_FUSE_STATS=1` and parses the `[cmp-select-fuse] N select(s) fused` line.
@@ -81,27 +81,27 @@ fn fused_count(fix: &str) -> usize {
 }
 
 #[test]
-fn two_move_select_arm_currently_declines_428() {
+fn two_move_select_arm_is_reachable_428() {
     // Non-vacuity: an in-place fixture fuses several sites, so the harness
-    // genuinely observes fusion — a "0" on the two-move fixture is real, not a
+    // genuinely observes fusion — a count on the two-move fixture is real, not a
     // parsing/plumbing artifact.
     let in_place = fused_count("control_step.wasm");
     assert!(
         in_place >= 1,
-        "control_step should fuse its in-place clamps (got {in_place}) — if this \
-         is 0 the harness is broken, not the two-move finding"
+        "control_step should fuse its in-place clamps (got {in_place})"
     );
 
-    // The finding: the selector emits the two-move form for this fixture (val2 a
-    // live param), but reg_dead_by_redef declines it (boolean abandoned, not
-    // redefined before return). FLIP TO `>= 1` when the deadness guard recognizes
-    // "abandoned + not-live-out" as dead (VCR-SEL-004 follow-on; re-freeze then).
+    // #7 closed the gap: the selector emits the two-move form for this fixture
+    // (val2 a live param), and reg_dead_by_redef now recognizes the abandoned,
+    // not-live-out boolean as dead at the function's return terminator — so the
+    // two-move `mov{c} … mov{invert(c)}` arm fuses end-to-end. (Previously declined;
+    // see fuse_two_move_abandoned_boolean_before_pop_return in liveness.rs for the
+    // IR-level soundness, and the negatives that keep it sound: result-reg boolean,
+    // branch-in-tail, bx-to-non-LR all still decline.)
     let two_move = fused_count("cmp_select_two_move.wat");
     assert_eq!(
-        two_move, 0,
-        "two-move fixture fused {two_move} sites — the deadness guard now reaches \
-         the two-move arm. This is the EXPECTED future state: flip this assertion \
-         to `>= 1`, exercise the mov{{invert(c)}} arm under a differential, and \
-         re-freeze the frozen fixtures."
+        two_move, 1,
+        "the two-move arm must now be reachable (fused {two_move}, want 1) — if 0, \
+         the #7 deadness fix regressed; if >1 the fixture changed"
     );
 }
