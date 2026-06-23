@@ -862,6 +862,22 @@ artifacts:
       the frozen fixtures DO exhibit Pass-1 (56 ops on flight_seam_flat), so they
       are a valid in-tree target — the byte-changing wiring still gates on a
       deliberate re-freeze + differential + gale on-silicon (never an idle tick).
+      CI-GATED ORACLE (2026-06-23, frozen-safe, #242 idle-tick increment):
+      promoted the load-bearing claim from the shell script into a CI test
+      (`crates/synth-cli/tests/spill_baseline_pressure_390.rs`,
+      `pass1_spills_are_spurious_pressure_fits_r0_r8_390`) so the baseline can no
+      longer silently drift. It drives the real `synth` binary with
+      SYNTH_SHADOW_ALLOC=1 (zero-byte instrumentation — no selector-config
+      divergence, no external disassembler) and locks: every measured function on
+      the 3 frozen kernels has peak value-pressure ≤ 9 (the R0–R8 pool ⇒ the
+      `[sp,#]` spills are spurious), with loud-failure guards (non-empty output +
+      exact per-fixture line/peak counts so a log-format change fails rather than
+      passes vacuously) and an aggregate ≥1 spurious-spill demonstration (6
+      functions / 2 spurious measured). NOT change-detection (the frozen hashes
+      already do that) — it locks the INTERPRETATION + is the before-baseline the
+      value-based allocator (VCR-RA-001) wiring must beat. Sibling of
+      `scry_const_remat_signal.rs` (the const-remat axis); together they CI-gate
+      both #390 levers.
     status: proposed
     tags: [codegen, perf, regalloc, addressing-mode, size, gale-390, measurement, track-a, silicon]
     links:
