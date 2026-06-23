@@ -304,10 +304,27 @@ fn clobbers_flags(op: &ArmOp) -> bool {
 ///    boolean is consumed elsewhere (e.g. stored to a local, or returned in R0).
 /// 4. `dst != D`, keeping the dead-check unambiguous.
 pub fn fuse_cmp_select(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    let (out, total, _two_move) = fuse_cmp_select_with_stats(instrs);
+    (out, total)
+}
+
+/// Like [`fuse_cmp_select`] but additionally returns the number of *two-move*
+/// fusions — the predicated-pair form (`mov{c} dst,v1; mov{invert(c)} dst,v2`)
+/// whose `mov{invert(c)}` arm only became reachable through the real selector
+/// once `reg_dead_by_redef` learned the return terminator (#7). `in_place =
+/// total - two_move` is the single-move form (`mov{c} dst,v1`, dst already
+/// holds v2). Diagnostic only: the production path calls the 2-tuple
+/// [`fuse_cmp_select`] wrapper; this split feeds `SYNTH_FUSE_STATS` and the
+/// fusion census (the blast-radius datum for the default-on flip decision).
+/// The rewritten instruction stream is identical to [`fuse_cmp_select`]'s.
+pub fn fuse_cmp_select_with_stats(
+    instrs: &[ArmInstruction],
+) -> (Vec<ArmInstruction>, usize, usize) {
     let n = instrs.len();
     let mut out: Vec<ArmInstruction> = instrs.to_vec();
     let mut delete = vec![false; n];
     let mut fusions = 0usize;
+    let mut two_move = 0usize;
 
     for i in 0..n {
         // [i] must be `SetCond { rd: D, cond: c }`.
@@ -394,12 +411,14 @@ pub fn fuse_cmp_select(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
                 rm,
                 cond: c.invert(),
             };
+            // The optional `moveq` arm is present ⇒ this is the two-move form.
+            two_move += 1;
         }
         fusions += 1;
     }
 
     if fusions == 0 {
-        return (out, 0);
+        return (out, 0, 0);
     }
     let result: Vec<ArmInstruction> = out
         .into_iter()
@@ -407,7 +426,7 @@ pub fn fuse_cmp_select(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
         .filter(|(k, _)| !delete[*k])
         .map(|(_, x)| x)
         .collect();
-    (result, fusions)
+    (result, fusions, two_move)
 }
 
 /// True if `op` returns from the function: `Bx LR`, or a `Pop`/`Ldmia` that loads
@@ -3157,6 +3176,39 @@ mod tests {
         assert_eq!(
             fused, 1,
             "bx lr is a return ⇒ abandoned non-result boolean is dead"
+        );
+    }
+
+    #[test]
+    fn fuse_stats_splits_two_move_from_in_place() {
+        // The diagnostic split feeding SYNTH_FUSE_STATS + the fusion census. A
+        // two-move shape (both `movne`/`moveq` present) counts as two_move; an
+        // in-place shape (only `movne`, dst already holds v2) counts as in_place
+        // (= total − two_move). Locks the census's blast-radius arithmetic.
+        let two_move_seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+            ret_pop(),
+        ];
+        let (_o, total, two_move) = fuse_cmp_select_with_stats(&two_move_seq);
+        assert_eq!((total, two_move), (1, 1), "the moveq arm ⇒ two-move");
+
+        // In-place: no `moveq` — dst (r0) is left holding v2 on the false edge.
+        let in_place_seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            ret_pop(),
+        ];
+        let (_o2, total2, two_move2) = fuse_cmp_select_with_stats(&in_place_seq);
+        assert_eq!(
+            (total2, two_move2),
+            (1, 0),
+            "single move ⇒ in-place, not two-move"
         );
     }
 

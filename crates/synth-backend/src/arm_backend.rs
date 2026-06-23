@@ -439,9 +439,17 @@ fn compile_wasm_to_arm(
     // (control_step 0x00210A55 / flat+inlined flight_algo 0x07FDF307 / divseam).
     // The default-on flip is the held byte-changing step, gated on silicon.
     let arm_instrs = if std::env::var("SYNTH_CMP_SELECT_FUSE").is_ok() {
-        let (out, fused) = synth_synthesis::liveness::fuse_cmp_select(&arm_instrs);
+        // The rewritten stream is identical to `fuse_cmp_select`'s 2-tuple form;
+        // the extra `two_move` count is diagnostic only (the fusion census /
+        // blast-radius datum for the flip decision — #7 made that arm reachable).
+        let (out, fused, two_move) =
+            synth_synthesis::liveness::fuse_cmp_select_with_stats(&arm_instrs);
         if std::env::var("SYNTH_FUSE_STATS").is_ok() {
-            eprintln!("[cmp-select-fuse] {fused} select(s) fused to predicated moves");
+            let in_place = fused - two_move;
+            eprintln!(
+                "[cmp-select-fuse] {fused} select(s) fused to predicated moves \
+                 ({two_move} two-move, {in_place} in-place)"
+            );
         }
         out
     } else {
