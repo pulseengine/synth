@@ -681,8 +681,46 @@ artifacts:
       (no gust_mix.wasm) — gale's bench confirms which clamps now fuse. The flip
       still gates on both preconditions above (now (1) is unblocked pending that
       gale bench, which the census confirms is the only possible exerciser).
+      GALE CORRECTION + EXECUTION ORACLE (#428, 2026-06-23): gale ran flag-on
+      gust_mix on gust_codegen_bench and the census CONSEQUENCE above was WRONG on
+      one point — gust_mix does NOT exercise the two-move arm either. Both its
+      clamps (incl the now-fusing clamp #2) lower to the IN-PLACE single-move form
+      (`it; movlt`, dst preloaded with the false-case value); there is no
+      `mov{invert(c)}` anywhere in flag-on gust_mix. So the two-move arm is exercised
+      by NOTHING real — gale's bench included — and the SOLE exerciser is the
+      synthetic cmp_select_two_move.wat. (#449 win still confirmed: 2.375x -> 2.125x
+      LLVM, correctness-identical [0,2047], .text 132 -> 116 B.) RESOLUTION of precond
+      (1): rather than the empirically-unsatisfiable "a real fixture exercises it",
+      the synthetic is now EXECUTED, not just disassembled — scripts/repro/
+      cmp_select_two_move_differential.py runs two_move_sel under unicorn (faithful
+      Thumb-2 IT predication) flag-off vs flag-on vs wasmtime across a sweep that
+      straddles the compare (both movlt and the movge=mov{invert(c)} arm fire; 7/11
+      vectors hit movge incl signed-compare + i32-wrap edges). Result: 11/11
+      off==on==wasmtime, the mov{invert(c)} arm runtime-validated for the FIRST time.
+      CI-gated as an isolated job (cmp-select-oracle, unicorn pip-installed there
+      only so cargo test --workspace is untaxed) = VCR-ORACLE-001 first deliverable.
+      Non-vacuity guards: aborts unless flag-on has >=1 two-move fusion AND the sweep
+      hits both arms. GALE EXHAUSTIVE SWEEP (#428, 2026-06-23, gale PR #102
+      gale_decider_diff): independently covers precond (1) from the OTHER angle —
+      behavioral equivalence on the WHOLE real primitive set. All 8 verified gale
+      deciders (sem give/take, msgq put/get, mutex lock/unlock, event post/wait)
+      dissolved loom->synth, every decision over each decider's full input domain
+      folded into one FNV-1a checksum, 10,596 cases three-way: native-gale-wasm-ref
+      == dissolved-0.12.0-flag-off == dissolved-flag-ON = 0x88e73178d232bcf5 (ALL
+      identical). Proves (a) native==dissolved (no 0.12.0/loom-1.1.16 codegen
+      regression) and (b) flag-off==flag-on changes ZERO decisions across the real
+      primitive set (not just gust_mix); fusion fired widely (dissolved .text
+      2574->2502 B). These deciders, like gust_mix, mostly lower single-move in-place
+      — so the sweep is broad BEHAVIORAL coverage but does NOT exercise the two-move
+      opcode; that unique runtime coverage stays the synthetic oracle above. TOGETHER
+      they cover precond (1) both ways: exhaustive real-workload equivalence (gale)
+      + the two-move opcode executed (synthetic). gale's harness is a reusable gate,
+      re-run on each synth bump. Precond (1) now MET (synthetic execution + gale
+      exhaustive sweep); precond (2) (G474RE silicon no-regression) still OWED —
+      gale's bench is thumbv7m/qemu today — flip stays held on it (user call
+      2026-06-23: keep the silicon gate; close the exec gap first).
     status: approved
-    tags: [codegen, selector, peephole, compare-select, flag-fusion, gale-209, perf, track-b]
+    tags: [codegen, selector, peephole, compare-select, flag-fusion, gale-209, perf, track-b, vcr-oracle-001]
     links:
       - type: derives-from
         target: VCR-001
