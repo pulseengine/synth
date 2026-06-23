@@ -648,6 +648,24 @@ artifacts:
       PRECONDITIONS (both, per gale exchange): (1) the two-move arm exercised
       end-to-end [blocked on this deadness follow-on], (2) gale's G474RE DWT-cycle
       run shows no M4-specific regression vs the qemu proxy (gale wiring it).
+      DEADNESS FOLLOW-ON LANDED (#7, 2026-06-23, flag-off / frozen-safe):
+      reg_dead_by_redef now recognizes the function RETURN terminator (`bx lr` /
+      `pop {…,pc}`) — where live-out ⊆ ABI result regs {R0,R1} — so an ABANDONED
+      boolean in R2..R8 (the shape the real selector emits) is proven dead and the
+      two-move arm fuses end-to-end. Verified: the synthetic fixture now lowers to
+      `cmp r0,r1; movlt r4,r0; movge r4,r2` — the `mov{invert(c)}` (movge) arm
+      firing for the FIRST time, semantically identical to the select. Soundness
+      locked by IR unit tests: positive (abandoned boolean + return ⇒ fuse) and the
+      load-bearing negatives that keep it sound — result-reg boolean (d∈{R0,R1}),
+      branch-in-tail, and bx-to-non-LR all still DECLINE (the scan bails on every
+      Label/branch via reg_effect→None, never walking past a join point). Frozen
+      byte gates #445/#446 stay GREEN flag-off (default path byte-identical).
+      STILL OWED / NOT claimed: (a) the two-move arm is reachable + objdump- and
+      IR-correct but NOT yet execution-validated — gale's NEXT gust_codegen_bench
+      (flag-on) exercises it for the first time; watch correctness there. (b) "closes
+      clamp #2" is by the same mechanism but UNVERIFIED locally (no gust_mix.wasm) —
+      gale's bench confirms which clamps now fuse. The flip still gates on both
+      preconditions above (now (1) is unblocked pending that gale bench).
     status: approved
     tags: [codegen, selector, peephole, compare-select, flag-fusion, gale-209, perf, track-b]
     links:

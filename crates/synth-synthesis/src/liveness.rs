@@ -410,14 +410,55 @@ pub fn fuse_cmp_select(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
     (result, fusions)
 }
 
-/// True if `d` is provably dead at the start of `rest`: scanning forward, it is
-/// *redefined* (written without first being read) before any read, any
-/// unmodeled-effect op, or the end of the slice. Conservative — anything it
-/// cannot model (a call, a branch, an i64/FP op, running off the end) yields
-/// `false` ("can't prove dead"), so a live-out value (e.g. a result left in R0
-/// and returned) is never mistaken for dead.
+/// True if `op` returns from the function: `Bx LR`, or a `Pop`/`Ldmia` that loads
+/// `PC` (the `pop {…, pc}` epilogue). At such a point the only registers live out
+/// of the function are the ABI result registers — see [`RETURN_VALUE_REGS`].
+///
+/// SOUNDNESS ASSUMPTION: `Bx`/`Pop` are *unconditional* — neither struct carries a
+/// condition field, so the scan reaching one means the return is taken on every
+/// path. A future *predicated* return (`bxne lr`) would break this: the fall-through
+/// edge could still read `d`, yet we'd conclude dead. If such an op is ever added,
+/// it must NOT be treated as a return terminator here.
+fn is_return_terminator(op: &ArmOp) -> bool {
+    match op {
+        ArmOp::Bx { rm } => *rm == Reg::LR,
+        ArmOp::Pop { regs } => regs.contains(&Reg::PC),
+        _ => false,
+    }
+}
+
+/// The registers that may carry a wasm function's result, hence be live at the
+/// return: `R0` (an `i32`/`f32`-in-core result) and `R1` (the high half of an
+/// `i64`/`f64`-in-core result — selector convention "result in (R0,R1)",
+/// instruction_selector.rs). `R2`/`R3` are i64 *operand* inputs, never results,
+/// so a boolean parked in `R2`..`R8` is never live out of a return.
+const RETURN_VALUE_REGS: [Reg; 2] = [Reg::R0, Reg::R1];
+
+/// True if `d` is provably dead at the start of `rest`. Scanning forward through
+/// fully-modeled, straight-line instructions:
+///   - a **read** of `d` ⇒ live (`false`);
+///   - a **redefinition** of `d` (written, not first read) ⇒ dead (`true`);
+///   - a **return terminator** (`Bx LR` / `pop {…,pc}`) reached with `d` not yet
+///     read ⇒ dead iff `d` is not a result register (`d ∉ RETURN_VALUE_REGS`),
+///     because the only live-out at a return is the result reg(s);
+///   - any **unmodeled** op — a call, a *non-return* branch, a `Label` (join
+///     point), an i64/FP op — ⇒ `false` ("can't prove"). This bail is the
+///     soundness lynchpin: the scan never walks past control flow it cannot
+///     reason about, so a value live on some other edge is never mistaken dead.
+///
+/// This is the deadness oracle for [`fuse_cmp_select`]: the original cmp→select
+/// lowering leaves the materialized boolean **abandoned** after the select (used
+/// once, not redefined, not live-out), which the redef-only rule declined — the
+/// return-terminator case recovers exactly that, soundly.
 fn reg_dead_by_redef(d: Reg, rest: &[ArmInstruction]) -> bool {
+    let is_result_reg = RETURN_VALUE_REGS.contains(&d);
     for instr in rest {
+        // Recognize the return BEFORE reg_effect: `pop {…,pc}` is modeled (would
+        // pass through as a plain Pop) and `Bx LR` is unmodeled (would bail) —
+        // either way the function exits here and live-out ⊆ result regs.
+        if is_return_terminator(&instr.op) {
+            return !is_result_reg;
+        }
         match reg_effect(&instr.op) {
             Some(eff) => {
                 if eff.uses.contains(&d) {
@@ -427,10 +468,12 @@ fn reg_dead_by_redef(d: Reg, rest: &[ArmInstruction]) -> bool {
                     return true; // redefined unused ⇒ dead from here back
                 }
             }
-            None => return false, // unmodeled (call/branch/i64/fp) ⇒ can't prove
+            None => return false, // unmodeled (call / non-return branch / label) ⇒ can't prove
         }
     }
-    false // ran off the end without a redef ⇒ possibly live-out
+    // Ran off the end without seeing a return terminator — a malformed/partial
+    // stream; stay conservative.
+    false
 }
 
 /// A constant materialization whose value is **already available** in a live
@@ -3039,8 +3082,11 @@ mod tests {
     }
 
     #[test]
-    fn no_fuse_when_boolean_not_redefined() {
-        // No downstream redefinition of r3 ⇒ cannot prove it dead ⇒ decline.
+    fn no_fuse_when_boolean_not_redefined_and_no_return() {
+        // r3 is neither redefined NOR followed by a recognized return terminator —
+        // the scan runs off the end of the slice, which stays conservative
+        // (`false`): without seeing the function exit we cannot prove r3 not
+        // live-out. (Add a `pop {…,pc}` / `bx lr` and it fuses — see below.)
         let seq = vec![
             cmp(Reg::R1, Reg::R2),
             setcond(Reg::R3, Condition::LT),
@@ -3049,7 +3095,154 @@ mod tests {
             selmov(Reg::R0, Reg::R5, Condition::EQ),
         ];
         let (_out, fused) = fuse_cmp_select(&seq);
-        assert_eq!(fused, 0, "must decline — r3 may be live-out");
+        assert_eq!(fused, 0, "must decline — no redef and no return terminator");
+    }
+
+    // ---- #7: return-terminator deadness (the two-move arm becomes reachable) ----
+
+    /// `pop {regs}` epilogue containing PC — a function return.
+    fn ret_pop() -> ArmInstruction {
+        ins(ArmOp::Pop {
+            regs: vec![Reg::R4, Reg::R5, Reg::PC],
+        })
+    }
+
+    #[test]
+    fn fuse_two_move_abandoned_boolean_before_pop_return() {
+        // The shape the real selector emits: a two-move select whose boolean (r3)
+        // is ABANDONED — never redefined — then a `pop {…,pc}` return. r3 ∉ {R0,R1}
+        // ⇒ not live-out ⇒ dead ⇒ fuse. This is the case #444's redef-only guard
+        // declined; it makes the two-move `mov{invert(c)}` arm reachable.
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+            ret_pop(),
+        ];
+        let (out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 1, "abandoned boolean before a return is dead ⇒ fuse");
+        // movne→movlt (c), moveq→movge (invert c) — the two-move arm exercised.
+        assert!(matches!(
+            out[1].op,
+            ArmOp::SelectMove {
+                cond: Condition::LT,
+                ..
+            }
+        ));
+        assert!(matches!(
+            out[2].op,
+            ArmOp::SelectMove {
+                cond: Condition::GE,
+                ..
+            }
+        ));
+        assert!(!out.iter().any(|i| matches!(i.op, ArmOp::SetCond { .. })));
+    }
+
+    #[test]
+    fn fuse_two_move_abandoned_boolean_before_bx_lr() {
+        // Leaf return via `bx lr` — also a return terminator (reg_effect bails on
+        // Bx, so this only fuses because is_return_terminator recognizes it).
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        let (_out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(
+            fused, 1,
+            "bx lr is a return ⇒ abandoned non-result boolean is dead"
+        );
+    }
+
+    #[test]
+    fn no_fuse_two_move_boolean_in_result_reg() {
+        // The boolean is in R0 — a result register, so it COULD be the value the
+        // caller reads at the return. Cannot prove dead ⇒ decline. (This is the
+        // load-bearing `d ∉ {R0,R1}` guard.)
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R0, Condition::LT),
+            cmp0(Reg::R0),
+            selmov(Reg::R3, Reg::R4, Condition::NE),
+            selmov(Reg::R3, Reg::R5, Condition::EQ),
+            ret_pop(),
+        ];
+        let (_out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(
+            fused, 0,
+            "boolean in a result reg may be live-out ⇒ decline"
+        );
+    }
+
+    #[test]
+    fn no_fuse_two_move_branch_in_tail_before_return() {
+        // A branch sits between the select and the return — the forward scan bails
+        // (reg_effect None) rather than walk past a control-flow split where the
+        // boolean could be live on another edge.
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+            ins(ArmOp::B {
+                label: "L".to_string(),
+            }),
+            ret_pop(),
+        ];
+        let (_out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(
+            fused, 0,
+            "a branch in the tail ⇒ can't prove dead ⇒ decline"
+        );
+    }
+
+    #[test]
+    fn no_fuse_two_move_bx_to_non_lr_is_not_a_return() {
+        // `bx rN` (rN≠LR) is a computed jump / tail call, NOT a plain return — its
+        // live-out is not {R0,R1}, so it must stay conservative.
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+            ins(ArmOp::Bx { rm: Reg::R7 }),
+        ];
+        let (_out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 0, "bx to a non-LR reg is not a return ⇒ decline");
+    }
+
+    #[test]
+    fn no_fuse_two_move_label_in_tail_is_a_join_point() {
+        // A Label (a potential branch target / join point) sits between the select
+        // and the return. The forward scan must bail (reg_effect returns None for a
+        // Label) rather than assume the boolean is not live on some incoming edge we
+        // can't see by scanning forward. This LOCKS the soundness lynchpin: if anyone
+        // ever teaches reg_effect a `Label => Some(empty)` arm, the scan would walk
+        // through the join point and this test fails loudly.
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+            ins(ArmOp::Label {
+                name: "L".to_string(),
+            }),
+            ret_pop(),
+        ];
+        let (_out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(
+            fused, 0,
+            "a Label (join point) in the tail ⇒ can't prove dead ⇒ decline"
+        );
     }
 
     #[test]
