@@ -18,7 +18,7 @@
 //! codegen yet: it is pure analysis, so it cannot change emitted bytes.
 
 use crate::instruction_selector::ArmInstruction;
-use crate::rules::{ArmOp, MemAddr, Operand2, Reg};
+use crate::rules::{ArmOp, Condition, MemAddr, Operand2, Reg};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The register read/write effect of a single instruction.
@@ -239,6 +239,198 @@ pub fn local_dead_defs(instrs: &[ArmInstruction]) -> Option<Vec<usize>> {
         }
     }
     Some(dead)
+}
+
+/// Conservative NZCV-clobber predicate: `true` if `op` *might* write the
+/// condition flags. Used by [`fuse_cmp_select`] to prove the flags set by a
+/// comparison survive to the predicated moves once the intervening `SetCond` +
+/// `cmp rd,#0` are deleted.
+///
+/// `reg_effect` deliberately does NOT model the flag side-effect (it tracks only
+/// GP registers), so this is a separate, intentionally tight allowlist: only the
+/// instructions we are *certain* leave NZCV untouched return `false`. Everything
+/// else — flag-setting compares (`Cmp`/`Cmn`/`Tst`), the S-form arithmetic, every
+/// unmodeled / pseudo / control-flow op — is treated as a clobber. The only ops
+/// that legitimately appear between a `SetCond` and its select's `cmp` are
+/// register-resident-operand reloads (loads/stores), which this admits.
+fn clobbers_flags(op: &ArmOp) -> bool {
+    use ArmOp::*;
+    // Allowlist of definitely-flag-preserving ops. NOT included: `Mov` (a low-reg
+    // `MOV #imm` is `MOVS` and sets flags), `SelectMove` (only ever appears AFTER
+    // the select's cmp, never inside the window), arithmetic of any kind.
+    !matches!(
+        op,
+        Ldr { .. }
+            | Ldrb { .. }
+            | Ldrsb { .. }
+            | Ldrh { .. }
+            | Ldrsh { .. }
+            | Str { .. }
+            | Strb { .. }
+            | Strh { .. }
+            | Push { .. }
+            | Pop { .. }
+            | Nop
+    )
+}
+
+/// VCR-SEL-004 — cmp→select → IT-block predication fusion.
+///
+/// The selector lowers `(select v1 v2 (i32.lt_s a b))` to a *materialize then
+/// re-test* sequence: the comparison emits `cmp a,b; SetCond D,LT` (D ← 0/1), and
+/// the select then emits `cmp D,#0; movne dst,v1; moveq dst,v2`. The `SetCond`
+/// and the select's `cmp D,#0` are pure overhead — the original comparison
+/// already set NZCV, and each `SelectMove` is an independent flag-preserving
+/// `IT;MOV` (arm_encoder.rs:4231). This pass collapses the pair: it deletes the
+/// `SetCond D,c` and the `cmp D,#0`, and retargets the predicated moves onto the
+/// comparison's own flags — `movne→mov{c}` (fires iff `c` held → v1) and
+/// `moveq→mov{invert(c)}` (fires iff `c` did not → v2). Net: −2 instructions and
+/// the redundant flag round-trip removed, per select.
+///
+/// Returns the rewritten stream and the number of fusions applied (0 ⇒
+/// bit-identical to the input). Removal-only + rename-only, so it is run LATE,
+/// after register re-allocation (final register identities) and before encode.
+///
+/// **Soundness** — a fusion fires only when all hold (else that site is skipped):
+/// 1. `[i-1]` is a flag-setting `Cmp`/`Cmn` (the comparison whose flags we reuse;
+///    `SetCond` is always emitted immediately after its compare, so this is the
+///    comparison that produced `c`).
+/// 2. No flag-clobbering op (per [`clobbers_flags`]) and no read/write of `D` sits
+///    between the `SetCond` and the select's `cmp D,#0` — so the reused flags and
+///    the value of `D` both survive the window (only operand reloads may appear).
+/// 3. `D` is provably **dead** after the select: scanning forward, it is
+///    *redefined* (written without being read) before any use, any unmodeled op,
+///    or any branch/end-of-block. This refuses to delete a `SetCond` whose 0/1
+///    boolean is consumed elsewhere (e.g. stored to a local, or returned in R0).
+/// 4. `dst != D`, keeping the dead-check unambiguous.
+pub fn fuse_cmp_select(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    let n = instrs.len();
+    let mut out: Vec<ArmInstruction> = instrs.to_vec();
+    let mut delete = vec![false; n];
+    let mut fusions = 0usize;
+
+    for i in 0..n {
+        // [i] must be `SetCond { rd: D, cond: c }`.
+        let (d, c) = match instrs[i].op {
+            ArmOp::SetCond { rd, cond } => (rd, cond),
+            _ => continue,
+        };
+        // (1) the immediately-preceding op set the flags we will reuse.
+        if i == 0 || !matches!(instrs[i - 1].op, ArmOp::Cmp { .. } | ArmOp::Cmn { .. }) {
+            continue;
+        }
+        // (2) walk to the select's `cmp D,#0`, allowing only flag-safe ops that
+        // neither read nor write D in between.
+        let mut j = i + 1;
+        let mut window_ok = true;
+        let cmp_idx = loop {
+            if j >= n {
+                window_ok = false;
+                break j;
+            }
+            if matches!(&instrs[j].op,
+                ArmOp::Cmp { rn, op2: Operand2::Imm(0) } if *rn == d)
+            {
+                break j;
+            }
+            if clobbers_flags(&instrs[j].op) {
+                window_ok = false;
+                break j;
+            }
+            match reg_effect(&instrs[j].op) {
+                Some(eff) if !eff.uses.contains(&d) && !eff.defs.contains(&d) => {}
+                _ => {
+                    window_ok = false;
+                    break j;
+                }
+            }
+            j += 1;
+        };
+        if !window_ok {
+            continue;
+        }
+        // (next) `movne dst,v1`.
+        let ne_idx = cmp_idx + 1;
+        let (dst, v1) = match instrs.get(ne_idx).map(|x| &x.op) {
+            Some(ArmOp::SelectMove {
+                rd,
+                rm,
+                cond: Condition::NE,
+            }) => (*rd, *rm),
+            _ => continue,
+        };
+        if dst == d {
+            continue;
+        }
+        // optional `moveq dst,v2` (the in-place select omits it).
+        let eq_idx = match instrs.get(ne_idx + 1).map(|x| &x.op) {
+            Some(ArmOp::SelectMove {
+                rd,
+                cond: Condition::EQ,
+                ..
+            }) if *rd == dst => Some(ne_idx + 1),
+            _ => None,
+        };
+        // (3) D must be dead after the select block: a redefinition (def, no use)
+        // strictly before any use / unmodeled op / branch / end.
+        let after = eq_idx.unwrap_or(ne_idx) + 1;
+        if !reg_dead_by_redef(d, &instrs[after..]) {
+            continue;
+        }
+
+        // Commit: delete SetCond and the select's cmp; retarget the moves.
+        delete[i] = true;
+        delete[cmp_idx] = true;
+        out[ne_idx].op = ArmOp::SelectMove {
+            rd: dst,
+            rm: v1,
+            cond: c,
+        };
+        if let Some(eq) = eq_idx
+            && let ArmOp::SelectMove { rd, rm, .. } = out[eq].op
+        {
+            out[eq].op = ArmOp::SelectMove {
+                rd,
+                rm,
+                cond: c.invert(),
+            };
+        }
+        fusions += 1;
+    }
+
+    if fusions == 0 {
+        return (out, 0);
+    }
+    let result: Vec<ArmInstruction> = out
+        .into_iter()
+        .enumerate()
+        .filter(|(k, _)| !delete[*k])
+        .map(|(_, x)| x)
+        .collect();
+    (result, fusions)
+}
+
+/// True if `d` is provably dead at the start of `rest`: scanning forward, it is
+/// *redefined* (written without first being read) before any read, any
+/// unmodeled-effect op, or the end of the slice. Conservative — anything it
+/// cannot model (a call, a branch, an i64/FP op, running off the end) yields
+/// `false` ("can't prove dead"), so a live-out value (e.g. a result left in R0
+/// and returned) is never mistaken for dead.
+fn reg_dead_by_redef(d: Reg, rest: &[ArmInstruction]) -> bool {
+    for instr in rest {
+        match reg_effect(&instr.op) {
+            Some(eff) => {
+                if eff.uses.contains(&d) {
+                    return false; // read before redef ⇒ live
+                }
+                if eff.defs.contains(&d) {
+                    return true; // redefined unused ⇒ dead from here back
+                }
+            }
+            None => return false, // unmodeled (call/branch/i64/fp) ⇒ can't prove
+        }
+    }
+    false // ran off the end without a redef ⇒ possibly live-out
 }
 
 /// A constant materialization whose value is **already available** in a live
@@ -2616,6 +2808,248 @@ mod tests {
             op,
             source_line: None,
         }
+    }
+
+    // ---- VCR-SEL-004 cmp→select → IT-block predication ---------------------
+
+    fn cmp(rn: Reg, rm: Reg) -> ArmInstruction {
+        ins(ArmOp::Cmp {
+            rn,
+            op2: Operand2::Reg(rm),
+        })
+    }
+    fn cmp0(rn: Reg) -> ArmInstruction {
+        ins(ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(0),
+        })
+    }
+    fn setcond(rd: Reg, cond: Condition) -> ArmInstruction {
+        ins(ArmOp::SetCond { rd, cond })
+    }
+    fn selmov(rd: Reg, rm: Reg, cond: Condition) -> ArmInstruction {
+        ins(ArmOp::SelectMove { rd, rm, cond })
+    }
+    /// A pure redefinition of `rd` (def, no use) — makes a prior value provably
+    /// dead, standing in for the register reuse that follows a consumed temp.
+    fn redef(rd: Reg) -> ArmInstruction {
+        ins(ArmOp::Movw { rd, imm16: 0 })
+    }
+
+    #[test]
+    fn invert_is_exhaustive_and_involutive() {
+        use Condition::*;
+        let pairs = [(EQ, NE), (LT, GE), (GT, LE), (LO, HS), (HI, LS)];
+        for (a, b) in pairs {
+            assert_eq!(a.invert(), b, "{a:?}.invert()");
+            assert_eq!(b.invert(), a, "{b:?}.invert()");
+        }
+        // Involution over every variant.
+        for c in [EQ, NE, LT, LE, GT, GE, LO, LS, HI, HS] {
+            assert_eq!(c.invert().invert(), c, "invert∘invert on {c:?}");
+            assert_ne!(c.invert(), c, "a condition is never its own inverse");
+        }
+    }
+
+    #[test]
+    fn fuse_cmp_select_signed_two_move_form() {
+        // cmp r1,r2 ; SetCond r3,LT ; cmp r3,#0 ; movne r0,r4 ; moveq r0,r5 ; <redef r3>
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+            redef(Reg::R3),
+        ];
+        let (out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 1);
+        // SetCond + cmp r3,#0 deleted ⇒ 6 → 4.
+        assert_eq!(out.len(), 4);
+        assert!(matches!(out[0].op, ArmOp::Cmp { rn: Reg::R1, .. }));
+        // movne→movlt (c), moveq→movge (invert c).
+        assert!(matches!(
+            out[1].op,
+            ArmOp::SelectMove {
+                rd: Reg::R0,
+                rm: Reg::R4,
+                cond: Condition::LT
+            }
+        ));
+        assert!(matches!(
+            out[2].op,
+            ArmOp::SelectMove {
+                rd: Reg::R0,
+                rm: Reg::R5,
+                cond: Condition::GE
+            }
+        ));
+        // no SetCond and no `cmp _,#0` survive.
+        assert!(!out.iter().any(|i| matches!(i.op, ArmOp::SetCond { .. })));
+        assert!(!out.iter().any(|i| matches!(
+            &i.op,
+            ArmOp::Cmp {
+                op2: Operand2::Imm(0),
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn fuse_cmp_select_unsigned_condition() {
+        // unsigned `<` lowers to LO; inverse is HS.
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LO),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+            redef(Reg::R3),
+        ];
+        let (out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 1);
+        assert!(matches!(
+            out[1].op,
+            ArmOp::SelectMove {
+                cond: Condition::LO,
+                ..
+            }
+        ));
+        assert!(matches!(
+            out[2].op,
+            ArmOp::SelectMove {
+                cond: Condition::HS,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn fuse_cmp_select_gust_mix_back_to_back_inplace_clamps() {
+        // The literal gust_mix shape: clamp r4 to [r6, r5] via two in-place
+        // selects (single predicated move each, no `moveq`):
+        //   cmp r4,r5 ; SetCond r3,GT ; cmp r3,#0 ; movne r4,r5   (upper clamp)
+        //   cmp r4,r6 ; SetCond r3,LT ; cmp r3,#0 ; movne r4,r6   (lower clamp)
+        // r3 is dead between (clamp 2's SetCond redefines it) and after (redef).
+        let seq = vec![
+            cmp(Reg::R4, Reg::R5),
+            setcond(Reg::R3, Condition::GT),
+            cmp0(Reg::R3),
+            selmov(Reg::R4, Reg::R5, Condition::NE),
+            cmp(Reg::R4, Reg::R6),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R4, Reg::R6, Condition::NE),
+            redef(Reg::R3),
+        ];
+        let (out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 2, "both clamps fuse");
+        // 9 → 5 (two SetCond + two cmp,#0 removed).
+        assert_eq!(out.len(), 5);
+        // The textbook predicated clamps: movgt r4,r5 and movlt r4,r6.
+        assert!(matches!(
+            out[1].op,
+            ArmOp::SelectMove {
+                rm: Reg::R5,
+                cond: Condition::GT,
+                ..
+            }
+        ));
+        assert!(matches!(
+            out[3].op,
+            ArmOp::SelectMove {
+                rm: Reg::R6,
+                cond: Condition::LT,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn no_fuse_when_d_is_live_downstream() {
+        // r3 (the boolean) is READ after the select ⇒ SetCond cannot be deleted.
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+            ins(ArmOp::Add {
+                rd: Reg::R7,
+                rn: Reg::R3, // reads the boolean
+                op2: Operand2::Imm(1),
+            }),
+        ];
+        let (out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 0, "must decline — boolean is consumed");
+        assert_eq!(out.len(), seq.len());
+    }
+
+    #[test]
+    fn no_fuse_when_flags_clobbered_in_window() {
+        // A flag-setting op sits between SetCond and the select's cmp ⇒ the
+        // comparison's flags would not survive ⇒ decline.
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            ins(ArmOp::Subs {
+                rd: Reg::R6,
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R7),
+            }),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+            redef(Reg::R3),
+        ];
+        let (_out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 0, "must decline — flags clobbered in the window");
+    }
+
+    #[test]
+    fn no_fuse_when_predecessor_not_a_compare() {
+        // SetCond not preceded by a flag-setting compare ⇒ no flags to reuse.
+        let seq = vec![
+            ins(ArmOp::Mov {
+                rd: Reg::R1,
+                op2: Operand2::Imm(5),
+            }),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+            redef(Reg::R3),
+        ];
+        let (_out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 0, "must decline — predecessor is not Cmp/Cmn");
+    }
+
+    #[test]
+    fn no_fuse_when_dst_aliases_boolean() {
+        // dst == D: refuse (keeps the dead-check unambiguous).
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R3, Reg::R4, Condition::NE),
+            redef(Reg::R3),
+        ];
+        let (_out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 0, "must decline — dst aliases the boolean register");
+    }
+
+    #[test]
+    fn no_fuse_when_boolean_not_redefined() {
+        // No downstream redefinition of r3 ⇒ cannot prove it dead ⇒ decline.
+        let seq = vec![
+            cmp(Reg::R1, Reg::R2),
+            setcond(Reg::R3, Condition::LT),
+            cmp0(Reg::R3),
+            selmov(Reg::R0, Reg::R4, Condition::NE),
+            selmov(Reg::R0, Reg::R5, Condition::EQ),
+        ];
+        let (_out, fused) = fuse_cmp_select(&seq);
+        assert_eq!(fused, 0, "must decline — r3 may be live-out");
     }
 
     #[test]

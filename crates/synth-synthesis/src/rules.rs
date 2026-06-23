@@ -1666,6 +1666,32 @@ pub enum Condition {
     HS, // Greater than or equal unsigned (C == 1)
 }
 
+impl Condition {
+    /// The logical negation of this condition over the SAME NZCV flags: the
+    /// condition that holds exactly when `self` does not. Used by the cmp→select
+    /// fusion (VCR-SEL-004) — when a `SetCond rd, c; cmp rd,#0; movne v1; moveq
+    /// v2` is collapsed onto the comparison's own flags, the `moveq` (which fired
+    /// when the boolean was 0, i.e. `c` was false) must become `mov{invert(c)}`.
+    ///
+    /// Exhaustive over all 10 conditions (5 complementary pairs); the inverses
+    /// follow directly from the NZCV predicates on the enum:
+    /// EQ↔NE, LT↔GE, GT↔LE, LO↔HS, HI↔LS.
+    pub fn invert(self) -> Condition {
+        match self {
+            Condition::EQ => Condition::NE,
+            Condition::NE => Condition::EQ,
+            Condition::LT => Condition::GE,
+            Condition::GE => Condition::LT,
+            Condition::GT => Condition::LE,
+            Condition::LE => Condition::GT,
+            Condition::LO => Condition::HS,
+            Condition::HS => Condition::LO,
+            Condition::HI => Condition::LS,
+            Condition::LS => Condition::HI,
+        }
+    }
+}
+
 /// ARM register
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum Reg {

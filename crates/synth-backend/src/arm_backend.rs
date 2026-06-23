@@ -418,6 +418,36 @@ fn compile_wasm_to_arm(
         }
     }
 
+    // VCR-SEL-004 cmp→select → IT-block predication fusion (#242). The selector
+    // lowers a `select` whose condition is a comparison to a *materialize then
+    // re-test* sequence (`cmp a,b; SetCond D,c; cmp D,#0; movne dst,v1; moveq
+    // dst,v2`); this collapses it onto the comparison's own flags — deleting the
+    // `SetCond` and the `cmp D,#0` and retargeting the predicated moves to `c` /
+    // `invert(c)` — yielding the textbook predicated clamp (`cmp a,b; movc dst,v1;
+    // mov{!c} dst,v2`). −2 instructions per fused select. gale #428 measured this
+    // as the #1 hot-path size/cycle lever on the gust_mix clamp chain.
+    //
+    // Run LATE: after range re-allocation (so the dead-D proof sees final register
+    // identities) and before encode. Removal-only + rename-only ⇒ no spill
+    // regression and labels/branch offsets are unaffected. Each fusion is proven
+    // sound (flags reused only when nothing clobbers them in the window; the
+    // boolean deleted only when provably dead) — see `fuse_cmp_select`.
+    //
+    // BEHIND `SYNTH_CMP_SELECT_FUSE=1` while it is validated against the
+    // differential oracle + gale's on-target gust_codegen_bench (G474RE). Off by
+    // default ⇒ a literal no-op ⇒ every fixture stays bit-identical
+    // (control_step 0x00210A55 / flat+inlined flight_algo 0x07FDF307 / divseam).
+    // The default-on flip is the held byte-changing step, gated on silicon.
+    let arm_instrs = if std::env::var("SYNTH_CMP_SELECT_FUSE").is_ok() {
+        let (out, fused) = synth_synthesis::liveness::fuse_cmp_select(&arm_instrs);
+        if std::env::var("SYNTH_FUSE_STATS").is_ok() {
+            eprintln!("[cmp-select-fuse] {fused} select(s) fused to predicated moves");
+        }
+        out
+    } else {
+        arm_instrs
+    };
+
     // ISA feature gate: validate that all generated instructions are supported
     // by the target. This catches FPU instructions on no-FPU targets, double-precision
     // instructions on single-precision targets, etc.
