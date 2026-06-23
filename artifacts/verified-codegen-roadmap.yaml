@@ -660,12 +660,27 @@ artifacts:
       branch-in-tail, and bx-to-non-LR all still DECLINE (the scan bails on every
       Label/branch via reg_effect→None, never walking past a join point). Frozen
       byte gates #445/#446 stay GREEN flag-off (default path byte-identical).
-      STILL OWED / NOT claimed: (a) the two-move arm is reachable + objdump- and
-      IR-correct but NOT yet execution-validated — gale's NEXT gust_codegen_bench
-      (flag-on) exercises it for the first time; watch correctness there. (b) "closes
-      clamp #2" is by the same mechanism but UNVERIFIED locally (no gust_mix.wasm) —
-      gale's bench confirms which clamps now fuse. The flip still gates on both
-      preconditions above (now (1) is unblocked pending that gale bench).
+      CENSUS LANDED (#450, 2026-06-23, flag-off / frozen-safe): a CI-gated fusion
+      census (cmp_select_fusion_census.rs, via additive fuse_cmp_select_with_stats
+      + SYNTH_FUSE_STATS in-place/two-move split) measured the blast radius across
+      the frozen fixtures — 27 fused sites (control_step 3, flight_seam 12,
+      flight_seam_flat 12, signed_div_const 0), ALL in-place. FINDING: the two-move
+      count is ZERO on EVERY real frozen fixture — #7's `mov{invert(c)}` arm fires
+      on no shipped fixture; its only exercisers are gale's gust_mix bench and the
+      synthetic cmp_select_two_move.wat. CONSEQUENCE for the flip criteria: precond
+      (1) "two-move arm exercised end-to-end" can ONLY ever be satisfied by gale's
+      bench — there is no frozen-fixture path to regression-cover this arm, so
+      gale's gust_codegen_bench is the SOLE runtime exerciser (load-bearing, not
+      redundant), and the flip will ship without frozen-differential coverage of its
+      novel path by construction. The census baseline asserts two_move==0 and fires
+      loudly if a future selector change ever gives a real fixture coverage (a
+      deliberate-bump + notify-gale event). STILL OWED / NOT claimed: (a) the
+      two-move arm is reachable + objdump- and IR-correct but NOT execution-validated
+      anywhere except via gale's bench (see census consequence) — watch correctness
+      there. (b) "closes clamp #2" is by the same mechanism but UNVERIFIED locally
+      (no gust_mix.wasm) — gale's bench confirms which clamps now fuse. The flip
+      still gates on both preconditions above (now (1) is unblocked pending that
+      gale bench, which the census confirms is the only possible exerciser).
     status: approved
     tags: [codegen, selector, peephole, compare-select, flag-fusion, gale-209, perf, track-b]
     links:
