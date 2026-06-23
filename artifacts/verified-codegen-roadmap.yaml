@@ -555,6 +555,23 @@ artifacts:
       flag-liveness rework. Byte-changing → deliberate fixture re-freeze. The
       companion finding (21% [sp] spill density on the sem path) is the VCR-RA
       allocator track, not this item.
+      RE-CONFIRMED on v0.12.0 (gale #428, 2026-06-23): with loom v1.1.16's
+      inline+DCE merging the gust_mix export wrapper (loom#228), gale isolated the
+      gap to synth — gust_mix 2.81× → 2.63× LLVM (fn-only 1.125 → 1.05 ticks/call),
+      frame 24 B → 8 B; "synth is now the SOLE remaining factor." The merged
+      gust_mix lowered by synth 0.12.0 still shows the materialized-bool clamps
+      (`cmp r4,r5; ite lt; movlt #1; movge #0; cmp #0; it ne; movne` ×2). gale
+      re-ranks THIS (#4 cmp→select → IT-block predication) as the HIGHEST single
+      win (~7 insns → 2-3, ×2 here), ahead of (3) immediate folding (`lsl #8` /
+      `uxth` for the `movw r5,#8; lsl` and `movw r3,#0xffff; and` it also flagged)
+      and (1) wiring the now-CI-gated allocator (#441) to drop the 6-reg leaf
+      prologue. v0.12.0 shipped the DWARF (#440) + spill-pressure CI-gate (#441,
+      regalloc GROUNDWORK/measurement — NOT a lowering fix) but not this. This is
+      the NEXT DEDICATED GATED RELEASE (not an idle-tick increment): implement the
+      late peephole, re-freeze the three frozen differentials (0x00210A55 /
+      0x07FDF307 / divseam) result-identical, differential oracle, then gale's
+      `benches/gust/src/bin/gust_codegen_bench.rs` (≤1.3× fn-only) is the agreed
+      on-silicon kill-criterion.
     status: proposed
     tags: [codegen, selector, peephole, compare-select, flag-fusion, gale-209, perf, track-b]
     links:
@@ -878,6 +895,13 @@ artifacts:
       value-based allocator (VCR-RA-001) wiring must beat. Sibling of
       `scry_const_remat_signal.rs` (the const-remat axis); together they CI-gate
       both #390 levers.
+      GAP RE-MEASURED on v0.12.0 (gale #428, 2026-06-23): loom v1.1.16 inline+DCE
+      (loom#228) merged the gust_mix wrapper → gap 2.81× → 2.63× LLVM, "synth is
+      the SOLE remaining factor." gale re-ranks the levers (cmp→select predication
+      #1, then immediate folding, then allocator wiring) — detail + the
+      `gust_codegen_bench` kill-criterion recorded under VCR-SEL-004. The
+      byte-changing wiring of these levers stays the next DEDICATED gated release,
+      not an idle tick.
     status: proposed
     tags: [codegen, perf, regalloc, addressing-mode, size, gale-390, measurement, track-a, silicon]
     links:
