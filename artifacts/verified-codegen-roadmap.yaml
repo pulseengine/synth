@@ -626,6 +626,28 @@ artifacts:
       fusable NON-in-place select (e.g. `val2` a live param), or the `mov{!c}` path
       reaches silicon never having run (the #204/#206 IR-right/composition-wrong
       lesson). The `br_if`→predicated-branch half is separate deferred work.
+      GALE BENCH + INVESTIGATION (#428, 2026-06-23): gale ran gust_codegen_bench
+      (qemu -icount, M3 proxy): flag-off vs SYNTH_CMP_SELECT_FUSE=1 is CORRECTNESS-
+      IDENTICAL over [0,2047], fn-only 1.05→0.95 ticks, 2.63×→2.375× LLVM, .text
+      132→124 B — a monotonic correctness-preserving win. Two findings: (a) ≤1.3×
+      is the COMBINED program target (VCR-VER-001), NOT this lever's gate — #1's
+      gate is correct+not-slower+smaller, met on qemu; (b) gale's gust_mix clamp #2
+      DECLINED while clamp #1 fused. ROOT CAUSE (verified via objdump of the
+      synthetic two-move fixture scripts/repro/cmp_select_two_move.wat — NOT gale's
+      "narrow dst-match" guess): `reg_dead_by_redef` requires an explicit downstream
+      REDEFINITION of the boolean; the real selector ABANDONS the boolean temp after
+      the select (used once, not live-out, never rewritten), so the guard
+      conservatively declines. This is ONE mechanism unifying BOTH the clamp-#2
+      decline AND the two-move-arm-never-fires gap: the two-move arm is effectively
+      UNREACHABLE through the real selector today. Characterization test
+      (cmp_select_two_move_coverage.rs) locks it (two-move fixture fuses 0,
+      in-place control_step fuses >0). FOLLOW-ON (byte-changing, separate gated
+      step): teach reg_dead_by_redef that "abandoned + not-live-out" is dead — this
+      both closes gale's clamp-#2 coverage AND makes the two-move arm reachable, so
+      the flip's owed two-move differential can finally run end-to-end. FLIP
+      PRECONDITIONS (both, per gale exchange): (1) the two-move arm exercised
+      end-to-end [blocked on this deadness follow-on], (2) gale's G474RE DWT-cycle
+      run shows no M4-specific regression vs the qemu proxy (gale wiring it).
     status: approved
     tags: [codegen, selector, peephole, compare-select, flag-fusion, gale-209, perf, track-b]
     links:
