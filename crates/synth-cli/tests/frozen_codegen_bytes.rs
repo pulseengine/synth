@@ -53,13 +53,15 @@ fn fixture(name: &str) -> std::path::PathBuf {
         .join(name)
 }
 
-/// Compile a frozen fixture with the exact config the `.py` differentials use
-/// (`--target cortex-m4 --all-exports --relocatable`), return the SHA-256 hex of
-/// its `.text` and the section length. `SYNTH_CMP_SELECT_FUSE` is explicitly
-/// removed so an enabled-in-the-environment flag can never silently re-freeze the
-/// gate — it locks the SHIPPED, flag-off lowering.
-fn text_sha256(wasm: &str) -> (String, usize) {
+/// Compile a frozen fixture for `(backend, target)` with the exact `--all-exports
+/// --relocatable` config the `.py` differentials use, and return the SHA-256 hex
+/// of its `.text` and the section length. `SYNTH_CMP_SELECT_FUSE` / `SYNTH_CONST_CSE`
+/// are explicitly removed so an enabled-in-the-environment flag can never silently
+/// re-freeze the gate — it locks the SHIPPED, flag-off lowering. The `object`
+/// crate reads `.text` arch-agnostically (ARM Thumb-2 and RV32 alike).
+fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
     let path = fixture(wasm);
+    let elf = format!("/tmp/frozenbytes_{backend}_{wasm}.elf");
     let out = Command::new(synth())
         .env_remove("SYNTH_CMP_SELECT_FUSE")
         .env_remove("SYNTH_CONST_CSE")
@@ -67,9 +69,11 @@ fn text_sha256(wasm: &str) -> (String, usize) {
             "compile",
             path.to_str().unwrap(),
             "-o",
-            &format!("/tmp/frozenbytes_{wasm}.elf"),
+            &elf,
+            "-b",
+            backend,
             "--target",
-            "cortex-m4",
+            target,
             "--all-exports",
             "--relocatable",
         ])
@@ -77,10 +81,10 @@ fn text_sha256(wasm: &str) -> (String, usize) {
         .expect("run synth");
     assert!(
         out.status.success(),
-        "synth compile failed for {wasm}: {}",
+        "synth compile failed for {wasm} ({backend}/{target}): {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let bytes = std::fs::read(format!("/tmp/frozenbytes_{wasm}.elf")).expect("read elf");
+    let bytes = std::fs::read(&elf).expect("read elf");
     let obj = object::File::parse(&*bytes).expect("parse elf");
     let text = obj
         .section_by_name(".text")
@@ -93,17 +97,37 @@ fn text_sha256(wasm: &str) -> (String, usize) {
     (hex, data.len())
 }
 
-/// THE GATE. Each frozen fixture's `.text` must hash to its locked golden. The
-/// length is asserted too, so a re-freeze prints the size delta (a quick read on
-/// "how much codegen moved") and a hash collision can't pass on a wrong length.
+/// Assert each `(fixture, golden sha256, golden len)` for `(backend, target)`.
+/// The length is asserted too, so a re-freeze prints the size delta (a quick read
+/// on "how much codegen moved") and a hash collision can't pass on a wrong length.
+fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
+    for &(wasm, golden, golden_len) in cases {
+        let (got, len) = text_sha256(wasm, backend, target);
+        assert_eq!(
+            len, golden_len,
+            "{wasm} ({backend}): .text length changed ({len} vs locked {golden_len}) \
+             — codegen moved. If intentional, re-freeze the golden HERE and re-run \
+             scripts/repro/*_differential.py on this commit (they move together)."
+        );
+        assert_eq!(
+            got, golden,
+            "{wasm} ({backend}): .text SHA-256 changed — a frozen fixture's machine \
+             code drifted with no deliberate re-freeze. This is the gate working: \
+             either a codegen change leaked in (investigate — dep bump? flag? \
+             selector?), or it is intentional, in which case update the golden HERE \
+             and re-run the scripts/repro/*_differential.py result checks on the \
+             SAME commit."
+        );
+    }
+}
+
+/// THE ARM GATE. The canonical frozen perf fixtures (the ones spill_baseline_390 +
+/// the `.py` differentials cover): control_step ↔ 0x00210A55, flight_seam_flat ↔
+/// flat+inlined flight_algo 0x07FDF307, plus flight_seam and the div seam.
 ///
 /// Goldens derived on main @ ef97f86 (post-#444 cmp→select, flag-off), 2026-06-23.
 #[test]
 fn frozen_fixtures_text_is_bit_identical_oracle_001() {
-    // (fixture, golden sha256 of .text, golden .text length). These are the
-    // canonical frozen perf fixtures (the ones spill_baseline_390 + the .py
-    // differentials cover): control_step ↔ 0x00210A55, flight_seam_flat ↔
-    // flat+inlined flight_algo 0x07FDF307, plus flight_seam and the div seam.
     let cases = [
         (
             "control_step.wasm",
@@ -126,23 +150,33 @@ fn frozen_fixtures_text_is_bit_identical_oracle_001() {
             34,
         ),
     ];
+    assert_frozen(&cases, "arm", "cortex-m4");
+}
 
-    for (wasm, golden, golden_len) in cases {
-        let (got, len) = text_sha256(wasm);
-        assert_eq!(
-            len, golden_len,
-            "{wasm}: .text length changed ({len} vs locked {golden_len}) — codegen \
-             moved. If intentional, re-freeze the golden HERE and re-run \
-             scripts/repro/*_differential.py on this commit (they move together)."
-        );
-        assert_eq!(
-            got, golden,
-            "{wasm}: .text SHA-256 changed — a frozen fixture's machine code drifted \
-             with no deliberate re-freeze. This is the gate working: either a \
-             codegen change leaked in (investigate — dep bump? flag? selector?), or \
-             it is intentional, in which case update the golden HERE and re-run the \
-             scripts/repro/*_differential.py result checks (control_step 0x00210A55 \
-             / flight_algo 0x07FDF307) on the SAME commit."
-        );
-    }
+/// THE RV32 GATE. The RISC-V backend (`synth-backend-riscv`) is an INDEPENDENT
+/// codegen path with its own miscompile history (#220/#223/#226) — the ARM gate
+/// gives it zero protection, and its frozen RV32 result-identity invariants
+/// (control_step RV32 = 0x00210A55, matching ARM + wasmtime) live ONLY in the
+/// out-of-CI `scripts/repro/*_riscv_differential.py`. Same hole, same live trigger
+/// (the open dependabot wasmparser/wat bumps feed BOTH backends' decode). Scoped to
+/// the frozen fixtures that compile on the rv32imac skeleton AND have a dedicated
+/// `_riscv_differential.py` — control_step + signed_div_const. (flight_seam needs an
+/// import-call relocation the RV32 skeleton does not yet emit.)
+///
+/// Goldens derived on main @ 57206a1 (post-#445), 2026-06-23.
+#[test]
+fn frozen_fixtures_rv32_text_is_bit_identical_oracle_001() {
+    let cases = [
+        (
+            "control_step.wasm",
+            "6e734c4c67b651067a56ff2a7593015f48ea24fe068a7a20c17f1c08a4e48e83",
+            504usize,
+        ),
+        (
+            "signed_div_const.wasm",
+            "15fa429d5ef5474f8b65fdd9c81b3da4c70176fb077df25131e2ec3988eb999e",
+            88,
+        ),
+    ];
+    assert_frozen(&cases, "riscv", "rv32imac");
 }

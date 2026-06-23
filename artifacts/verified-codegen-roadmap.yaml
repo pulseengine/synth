@@ -410,8 +410,13 @@ artifacts:
       track.
       FIRST SLICE LANDED (2026-06-23): the frozen-fixture BYTE gate
       (`crates/synth-cli/tests/frozen_codegen_bytes.rs`) — compiles each frozen
-      fixture (control_step / flight_seam / flight_seam_flat / signed_div_const)
-      flag-off and asserts a locked SHA-256 of its `.text`, promoting the
+      fixture flag-off and asserts a locked SHA-256 of its `.text`, on BOTH
+      backends: ARM (control_step / flight_seam / flight_seam_flat /
+      signed_div_const) and RV32 (control_step / signed_div_const — the rv32imac
+      skeleton's import-call gap excludes flight_seam; scoped to fixtures with a
+      `_riscv_differential.py`). The RISC-V backend is an INDEPENDENT codegen path
+      with its own miscompile history (#220/#223/#226), so the ARM gate gave it
+      zero protection. Promotes the
       previously OUT-OF-CI "stay bit-identical" invariant (asserted only by the
       `scripts/repro/*_differential.py` unicorn scripts, never run by cargo CI nor
       the Renode bazel suite) into a cargo-CI gate. It is the LOCALLY-VERIFIABLE
