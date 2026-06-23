@@ -572,7 +572,39 @@ artifacts:
       0x07FDF307 / divseam) result-identical, differential oracle, then gale's
       `benches/gust/src/bin/gust_codegen_bench.rs` (≤1.3× fn-only) is the agreed
       on-silicon kill-criterion.
-    status: proposed
+      IMPLEMENTATION LANDED — SELECT HALF ONLY (2026-06-23, flag-off /
+      frozen-safe). SCOPE: this PR lands the `select`→`movCC` half of the
+      title's "select/br_if" fusion. The `br_if`→predicated-BRANCH half (a
+      comparison sole-consumed by a conditional branch → keep NZCV, emit a single
+      `bCC`) is NOT done — `fuse_cmp_select` matches only `SelectMove` consumers;
+      branch consumers are unmodeled by `reg_effect` and never match. That half
+      is a deferred follow-up (split candidate). The late peephole is
+      `synth_synthesis::liveness::fuse_cmp_select` — deletes the
+      `SetCond D,c` + select's `cmp D,#0` and retargets the predicated moves to
+      `c` / `invert(c)` (the textbook predicated clamp). Wired into arm_backend.rs
+      AFTER range-realloc, BEHIND `SYNTH_CMP_SELECT_FUSE=1` (default-off => a literal
+      no-op => the three frozen differentials stay bit-identical, un-rerun). Proven
+      sound by construction: flags reused only when nothing clobbers them in the
+      `SetCond`->`cmp` window (`clobbers_flags` allowlist), and the bool deleted
+      only when provably dead (`reg_dead_by_redef`, R0-live-out safe). Validation
+      this step: 8 liveness unit tests (positive incl. the gust_mix x2 in-place
+      clamp, 5 negative guards), 3 encoder byte-tests (all 10 IT conditions),
+      rewrite-count>0 on real fixtures (control_step 3, flight_algo/controller 5-6),
+      and an arm-none-eabi-objdump diff confirming `cmp r0,#19; movcc r5,r6` is
+      emitted in place of the 5-insn materialize+re-test, with the unsafe sites
+      (bool reused) correctly DECLINED. STILL OWED by the default-on flip step
+      (NOT done here, deliberately deferred): execution-level differential under the
+      flag (VCR-ORACLE-001 Rust unicorn harness) + gale's `gust_codegen_bench` on
+      G474RE; only then does the flag flip default-on and the tag cut. EMPIRICAL
+      GAP the flip differential MUST close: every fused site on the real fixtures
+      was the IN-PLACE single-move form (`movCC`), so the two-move
+      `moveq→mov{invert(c)}` path — the only place `invert()` matters at RUNTIME —
+      has executed in unit/encoder tests but NEVER selector→fusion→encoder→exec on
+      a real function. The flip's differential must include a fixture that forces a
+      fusable NON-in-place select (e.g. `val2` a live param), or the `mov{!c}` path
+      reaches silicon never having run (the #204/#206 IR-right/composition-wrong
+      lesson). The `br_if`→predicated-branch half is separate deferred work.
+    status: approved
     tags: [codegen, selector, peephole, compare-select, flag-fusion, gale-209, perf, track-b]
     links:
       - type: derives-from
