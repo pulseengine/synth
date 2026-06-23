@@ -228,3 +228,35 @@ jobs:
       - name: Run Renode emulation tests
         run: bazel test //tests/renode/... --test_tag_filters=wast || [ $? -eq 4 ]
         timeout-minutes: 10
+
+  cmp-select-oracle:
+    name: cmp-select two-move execution oracle
+    # VCR-ORACLE-001 (#242, #428): EXECUTE the cmp->select two-move arm under
+    # unicorn (faithful Thumb-2 IT-block predication) and diff flag-off vs flag-on
+    # vs wasmtime. This is the runtime validation gale's #428 measurement showed no
+    # real fixture provides (the two-move arm is reachable but runtime-dead on real
+    # code). Isolated job: unicorn/wasmtime are pip-installed here ONLY, so the main
+    # `cargo test --workspace` gate is NOT taxed with a C-library build graph.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run two-move execution oracle
+        run: python scripts/repro/cmp_select_two_move_differential.py
