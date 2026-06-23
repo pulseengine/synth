@@ -68,6 +68,76 @@ fn compile(wasm: &Path, out: &str, debug_line: bool) -> Vec<u8> {
     std::fs::read(out).expect("read .o")
 }
 
+/// ORACLE D — the `--debug-line` HONEST-FAIL contract (#383 / VCR-DBG-001 PR C).
+/// DWARF is emitted ONLY on the ARM relocatable-object path. On a SELF-CONTAINED
+/// build (no imports, no `--relocatable` ⇒ a standalone executable image) there
+/// is no relocatable `.text` symbol to anchor the addresses, so `--debug-line`
+/// MUST loudly no-op — warn, emit no `.debug_*`, and still compile — rather than
+/// silently mislead a consumer (jess) into expecting source lines that aren't
+/// there (the #383 overclaim shape). v0.12.0 ships this behavior; this locks it.
+///
+/// (The relocatable path's positive behavior — `.debug_*` present and resolving
+/// — is the additivity / resolves-to-source oracles above; this is its honest
+/// negative complement, the previously-untested half of the contract.)
+#[test]
+fn debug_line_is_a_loud_noop_on_self_contained_build_394() {
+    // gust_kernel imports nothing, so WITHOUT `--relocatable` synth emits a
+    // self-contained executable image (not an ET_REL object).
+    let wasm = repro("gust_kernel.wasm");
+    let out = "/tmp/dbg394_selfcontained.elf";
+    let r = Command::new(synth())
+        .args([
+            "compile",
+            wasm.to_str().unwrap(),
+            "--target",
+            "cortex-m4",
+            "--all-exports",
+            "--debug-line",
+            "-o",
+            out,
+        ])
+        .output()
+        .expect("run synth");
+
+    // (1) it still compiles — the flag is a no-op, not an error.
+    assert!(
+        r.status.success(),
+        "self-contained --debug-line must still compile: {}",
+        String::from_utf8_lossy(&r.stderr)
+    );
+
+    // (2) it WARNS loudly (honest-fail), naming the relocatable-object path as
+    // the way to actually get DWARF — never silent. The CLI's tracing subscriber
+    // writes to stdout, so search the combined output rather than assuming a
+    // stream.
+    let mut output = String::from_utf8_lossy(&r.stdout).into_owned();
+    output.push_str(&String::from_utf8_lossy(&r.stderr));
+    assert!(
+        output.contains("--debug-line has no effect") && output.contains("relocatable"),
+        "expected a loud no-effect warning naming the relocatable path; output:\n{output}"
+    );
+
+    // (3) the emitted image is a standalone EXECUTABLE (confirms we exercised the
+    // self-contained path, not ET_REL) and carries ZERO `.debug_*` sections.
+    let elf = std::fs::read(out).expect("read elf");
+    let obj = ElfFile32::<object::Endianness>::parse(&*elf).expect("parse ELF");
+    assert_eq!(
+        obj.kind(),
+        object::ObjectKind::Executable,
+        "self-contained build must be an executable image (ET_EXEC), not ET_REL"
+    );
+    let debug_sections: Vec<String> = obj
+        .sections()
+        .filter_map(|s| s.name().ok().map(str::to_string))
+        .filter(|n| n.starts_with(".debug_"))
+        .collect();
+    assert!(
+        debug_sections.is_empty(),
+        "self-contained --debug-line must emit NO .debug_* sections (would be \
+         unrelocated, silently-wrong addresses); found {debug_sections:?}"
+    );
+}
+
 /// Map section-name → section data bytes (skip the null/empty-named section).
 fn section_data(elf: &[u8]) -> HashMap<String, Vec<u8>> {
     let obj = ElfFile32::<object::Endianness>::parse(elf).expect("parse ELF");
