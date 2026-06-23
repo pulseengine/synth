@@ -408,6 +408,23 @@ artifacts:
       witness that the hand-written ARM/RISC-V model matches silicon (validating
       the proof's assumptions). Can start immediately and feeds every other
       track.
+      FIRST SLICE LANDED (2026-06-23): the frozen-fixture BYTE gate
+      (`crates/synth-cli/tests/frozen_codegen_bytes.rs`) — compiles each frozen
+      fixture (control_step / flight_seam / flight_seam_flat / signed_div_const)
+      flag-off and asserts a locked SHA-256 of its `.text`, promoting the
+      previously OUT-OF-CI "stay bit-identical" invariant (asserted only by the
+      `scripts/repro/*_differential.py` unicorn scripts, never run by cargo CI nor
+      the Renode bazel suite) into a cargo-CI gate. It is the LOCALLY-VERIFIABLE
+      complement to the python differentials (derivable + checkable with `cargo
+      test`, no emulator) — guards against ACCIDENTAL drift (e.g. the open
+      dependabot wasmparser 0.248->0.252 / wat bumps shifting decode). SCOPE BOUND:
+      this proves byte-IDENTITY, NOT result-identity — it is NOT the execution
+      differential the VCR-SEL-004 default-on flip owes (that flip deliberately
+      changes these bytes and must prove the RESULT survives; this gate will
+      correctly FAIL it and demand a deliberate re-freeze). STILL PROPOSED (the
+      bulk): coverage-guided fixture generation, MC/DC rule coverage, the
+      theorem-linked result-identity differential, and the execution harness
+      (unicorn/qemu — synth-qemu shells to a qemu-system binary CI lacks).
     status: proposed
     tags: [oracle, differential, coverage, mcdc, validation, track-c]
     links:
