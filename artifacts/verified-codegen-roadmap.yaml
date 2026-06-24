@@ -373,6 +373,22 @@ artifacts:
       lowerings, each differential-validated against wasmtime per the established
       bug-loop discipline; landing each one retires its ledger entry via the
       stale-entry check.
+
+      COVERAGE WIDENING (2026-06-24, frozen-safe test-only increment): the curated
+      set grew from ~50 to 76 probes — now NEAR-EXHAUSTIVE over the integer core:
+      the i32 compare set completed (gt_u/le_s/le_u/ge_s), the FULL i64 compare set
+      added (ne + signed+unsigned lt/gt/le/ge), i64 shr_s/rotl/rotr/ctz, all four
+      i64 div/rem, the sub-word i64.extend{8,16,32}_s, and i64.load/i64.store. ALL
+      26 new probes came back at PARITY (verified both-Ok, not vacuous both-Err) —
+      ZERO new divergences; the ledger stays exactly the five i32 Zbb deferrals.
+      Floor raised 30→65. This widens the net for the #223-class cross-backend gap
+      (gale would otherwise hit it on qemu) over div/rem, the full compare lattice,
+      and i64 memory — none of which were previously probed. ASYMMETRY FOUND:
+      i64.rotl/i64.rotr LOWER on RV32 (sequence-composed in the i64 path) while
+      i32.rotl/i32.rotr are ledgered RV32-declines — evidence the i32 Zbb rotate
+      deferral is closable by routing i32 rotate through the same shift+or sequence
+      the i64 path already uses (sharpens the FOLLOW-UP's first target; byte-changing
+      codegen, gated — NOT in this test-only increment).
     status: implemented
     tags: [codegen, selector, riscv, parity, oracle, track-a, release-v0.11.51]
     links:
