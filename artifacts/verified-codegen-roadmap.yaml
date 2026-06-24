@@ -144,10 +144,26 @@ artifacts:
       architecture (R9 globals / R11 mem-base / R12 IP-scratch) and the
       bounds-mode R10 invariant.
 
-      LOCAL-PROMOTION v1 (2026-06-24, #390): the first step toward NATIVE PARITY
-      on the existing allocator — keep eligible non-param i32 locals in
-      callee-saved registers (r4..r8) instead of frame slots, eliminating their
-      ldr/str [sp] traffic. Behind SYNTH_LOCAL_PROMOTE (default off ⇒ frame path
+      LOCAL-PROMOTION SCOPING SPIKE (2026-06-24, #390, scripts/repro/
+      local_promotion_headroom.py): the structural gap to native parity is that the
+      SELECTOR lowers every wasm local to a frame slot (`compute_local_layout` →
+      LocalGet/Set/Tee emit `ldr/str [sp,#off]`), so locals never reach this
+      allocator. Measured cost+pressure on the frozen fixtures: flight_algo 22% of
+      instructions are local sp-traffic (25/109) from just 4 DISTINCT slots;
+      control_step 2 slots, filter_step 3, controller_step 1. Distinct slots (1–4)
+      are far below the allocatable pool (R0–R8 minus result/scratch ≈ 6–7), so on
+      these fixtures EVERY local fits in a register with NO SPILLING — the spill
+      path (the historically bug-prone part, #193→#226) is never exercised; the
+      built `color_graph`/`color_ranges` colour a ≤4-node graph trivially. CONCLUSION:
+      selector-side local promotion is HIGH headroom (≈22% removable on the hot fn)
+      + LOW risk (no-spill at this pressure), and is the right next parity lever —
+      more tractable than a general allocator rewrite. The spike script asserts the
+      no-spill scope and fails loudly if a fixture ever exceeds the pool (then the
+      spill path + its risk return).
+
+      LOCAL-PROMOTION v1 (2026-06-24, #390, PR #458): the spike's lever, LANDED.
+      Keep eligible non-param i32 locals in callee-saved registers (r4..r8) instead
+      of frame slots. Behind SYNTH_LOCAL_PROMOTE (default off ⇒ frame path
       bit-identical, frozen gates green). Reuses the #193 param-reservation
       machinery (seed local_to_reg before the param_regs snapshot) rather than a
       new allocator. Scope v1: i32 only, write-before-read only (read-before-write
