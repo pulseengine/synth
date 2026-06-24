@@ -143,6 +143,23 @@ artifacts:
       shortcuts be reverted toward the clean form. Must keep the reserved-reg
       architecture (R9 globals / R11 mem-base / R12 IP-scratch) and the
       bounds-mode R10 invariant.
+
+      LOCAL-PROMOTION v1 (2026-06-24, #390): the first step toward NATIVE PARITY
+      on the existing allocator — keep eligible non-param i32 locals in
+      callee-saved registers (r4..r8) instead of frame slots, eliminating their
+      ldr/str [sp] traffic. Behind SYNTH_LOCAL_PROMOTE (default off ⇒ frame path
+      bit-identical, frozen gates green). Reuses the #193 param-reservation
+      machinery (seed local_to_reg before the param_regs snapshot) rather than a
+      new allocator. Scope v1: i32 only, write-before-read only (read-before-write
+      = #457), dominance via control-flow depth-0, cost-gated, budget r4..r8 with
+      frame overflow, and LEAF-ONLY (declines functions with calls — the
+      post-selection range-reallocator can remap a callee-saved home to a
+      caller-saved reg that a bl would clobber; lift once VCR-RA-003 is shown to
+      reject that remap). Validated: flag-on local_promote_i32 fixture (7 live
+      locals → 2 overflow, dirty r4..r8/frame sentinels) clean==dirty==wasmtime;
+      control_step 0x00210A55 + flight_seam 0x07FDF307 preserved; flight_seam
+      sp-traffic 39→5, .text 902→798 B. ARM-only (RV32 untouched). The default-on
+      flip is a separate gated step (re-freeze + G474RE silicon), like cmp→select.
     status: implemented
     tags: [codegen, register-allocation, ssa, regalloc2, track-a, release-v0.11.40]
     links:
