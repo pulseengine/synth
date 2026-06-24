@@ -1013,6 +1013,92 @@ fn compute_local_layout(
     }
 }
 
+/// VCR-RA local promotion (#390, epic #242): choose which non-param i32 locals to
+/// keep in callee-saved registers (r4..r8) instead of frame slots, returning a
+/// `local_idx -> Reg` map. The selector seeds these into `local_to_reg` (so
+/// `LocalGet` reads the register directly and the #193 param-reservation machinery
+/// protects it) and lowers `LocalSet`/`LocalTee` to a `mov` into the register.
+/// This removes the local's `ldr/str [sp,#off]` traffic — the structural lever
+/// toward native parity (the frozen fixtures spend up to 22% of instructions on
+/// such traffic, gale #209).
+///
+/// SOUNDNESS (v1 — conservative, never under-reserves):
+/// - **i32 only.** An i64 local needs a register PAIR; it falls back to the frame.
+/// - **Write-before-read.** The local's FIRST access must be a write — a
+///   read-before-write local relies on wasm zero-init, which the frame path itself
+///   currently mishandles (#457). Such locals are declined, not promoted.
+/// - **Dominance via depth-0.** Every access must be at control-flow depth 0
+///   (outside any block/loop/if). At depth 0 the op sequence is straight-line, so a
+///   `local.set` at index i executes before any `local.get` at j>i (a `br_if` only
+///   skips FORWARD past the read, never backward before the write, and there is no
+///   loop header at depth 0) — the defining set dominates every read without a full
+///   dominator analysis. A local touched inside any control-flow region is declined.
+/// - **Cost gate.** A local accessed only once cannot repay the callee-saved
+///   reservation; require >= 2 accesses.
+///
+/// Budget: the 5 callee-saved regs r4..r8, assigned in ascending local-index order.
+/// Eligible locals past the budget overflow to the frame (unchanged path). The
+/// prologue already pushes r4..r8 and `shrink_callee_saved_saves` prunes the unused
+/// ones, so a promoted reg is saved/restored iff the body touches it — no separate
+/// prologue change is needed.
+fn compute_local_promotion(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    i64_set: &std::collections::HashSet<u32>,
+) -> std::collections::HashMap<u32, Reg> {
+    use std::collections::HashMap;
+    /// Per-local accumulator while walking the op stream once.
+    struct Info {
+        count: u32,
+        all_depth0: bool,
+        first_is_write: bool,
+        seen: bool,
+    }
+    let mut info: HashMap<u32, Info> = HashMap::new();
+    // Control-flow depth: Block/Loop/If open a region (+1), End closes one (-1);
+    // Else does not change depth (both arms sit at the If's depth). The function's
+    // own trailing End may drive this to -1 after the last access — harmless, since
+    // no local access follows it.
+    let mut depth: i32 = 0;
+    for op in wasm_ops {
+        match op {
+            WasmOp::Block | WasmOp::Loop | WasmOp::If => depth += 1,
+            WasmOp::End => depth -= 1,
+            WasmOp::LocalGet(idx) | WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx)
+                if *idx >= num_params =>
+            {
+                let is_write = matches!(op, WasmOp::LocalSet(_) | WasmOp::LocalTee(_));
+                let e = info.entry(*idx).or_insert(Info {
+                    count: 0,
+                    all_depth0: true,
+                    first_is_write: false,
+                    seen: false,
+                });
+                if !e.seen {
+                    e.first_is_write = is_write;
+                    e.seen = true;
+                }
+                e.count += 1;
+                if depth != 0 {
+                    e.all_depth0 = false;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    const PROMO_REGS: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    let mut eligible: Vec<u32> = info
+        .iter()
+        .filter(|(idx, e)| {
+            e.all_depth0 && e.first_is_write && e.count >= 2 && !i64_set.contains(idx)
+        })
+        .map(|(&idx, _)| idx)
+        .collect();
+    eligible.sort_unstable();
+    eligible.into_iter().zip(PROMO_REGS).collect()
+}
+
 /// Infer which non-parameter wasm locals are i64 (8-byte) values.
 ///
 /// The wasm decoder discards local-declaration type info, so we re-derive
@@ -1479,6 +1565,16 @@ pub struct InstructionSelector {
     /// `spill_on_exhaustion`, bit-identity is structural: only functions that
     /// failed BOTH earlier passes ever compile with this set.
     param_backing_on_exhaustion: bool,
+    /// VCR-RA local promotion (#390, #242): keep eligible non-param i32 locals
+    /// in callee-saved registers (r4..r8) instead of frame slots, eliminating
+    /// their `ldr/str [sp,#off]` traffic — the structural step toward native
+    /// parity. Default OFF ⇒ every function keeps the frame-slot path
+    /// bit-identical (frozen gates green). Set from `SYNTH_LOCAL_PROMOTE` in the
+    /// backend. Only locals whose defining set dominates every read (v1: all
+    /// accesses at control-flow depth 0, first access a write) and that are i32
+    /// are promoted; read-before-write (#457), control-flow, and i64 locals fall
+    /// back to the frame unchanged. See [`compute_local_promotion`].
+    local_promote: bool,
 }
 
 impl InstructionSelector {
@@ -1508,6 +1604,7 @@ impl InstructionSelector {
             next_qreg: 0,
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
+            local_promote: false,
         }
     }
 
@@ -1537,6 +1634,7 @@ impl InstructionSelector {
             next_qreg: 0,
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
+            local_promote: false,
         }
     }
 
@@ -1564,6 +1662,13 @@ impl InstructionSelector {
     /// would change its bytes.
     pub fn set_param_backing_on_exhaustion(&mut self, enabled: bool) {
         self.param_backing_on_exhaustion = enabled;
+    }
+
+    /// VCR-RA local promotion (#390, #242): keep eligible non-param i32 locals in
+    /// callee-saved registers instead of frame slots. Off ⇒ frame-slot path,
+    /// bit-identical. See the `local_promote` field and [`compute_local_promotion`].
+    pub fn set_local_promote(&mut self, enabled: bool) {
+        self.local_promote = enabled;
     }
 
     /// Enable relocatable host-link mode (#197): import calls emit a direct
@@ -5414,6 +5519,24 @@ impl InstructionSelector {
 
         let i64_locals = infer_i64_locals(wasm_ops, &self.func_ret_i64, &self.type_ret_i64);
 
+        // VCR-RA local promotion (#390, #242): choose non-param i32 locals to keep
+        // in callee-saved registers (r4..r8) instead of frame slots, and seed them
+        // into `local_to_reg` BEFORE the `param_regs` snapshot below. That makes the
+        // existing machinery do the work: `LocalGet` reads the register via the
+        // `local_to_reg.get` branch; the #193 param-reservation (param_last_read)
+        // protects the promoted register from temp/pair/reload allocation until its
+        // last read; and `free_callee_saved` won't hand it out as call scratch. The
+        // only new lowering is the `LocalSet`/`LocalTee` promotion arm (mov reg,val).
+        // Off ⇒ empty map ⇒ frame-slot path unchanged (frozen gates green).
+        let promoted = if self.local_promote {
+            compute_local_promotion(wasm_ops, num_params, &i64_locals)
+        } else {
+            std::collections::HashMap::new()
+        };
+        for (&local_idx, &reg) in &promoted {
+            local_to_reg.insert(local_idx, reg);
+        }
+
         // #193/#210: a register-backed param (call-free function — call functions
         // frame-back via param_slots) lives in r0..r3 and is NOT on the operand
         // stack, so the temp/pair allocators (which avoid only `stack_live_regs`)
@@ -8042,6 +8165,24 @@ impl InstructionSelector {
                             cf.add_instruction();
                         }
                         local_to_reg.insert(*local_idx, target);
+                    } else if let Some(&target) = promoted.get(local_idx) {
+                        // VCR-RA local promotion (#390, #242): store into the
+                        // promoted callee-saved register (r4..r8) instead of a frame
+                        // slot. The register is reserved from temp/pair/reload
+                        // allocation (seeded into local_to_reg → param_last_read), so
+                        // `val` is never the target itself; the `val != target` guard
+                        // only elides a redundant self-move. Checked before
+                        // `layout.locals` so the dead frame slot is never written.
+                        if val != target {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Mov {
+                                    rd: target,
+                                    op2: Operand2::Reg(val),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                     } else if let Some(&(off, true)) = layout.locals.get(local_idx) {
                         // i64 spilled local: store BOTH 32-bit halves
                         // (lower at offset N, upper at N+4) via the I64Str
@@ -8134,6 +8275,22 @@ impl InstructionSelector {
                             cf.add_instruction();
                         }
                         local_to_reg.insert(*local_idx, target);
+                    } else if let Some(&target) = promoted.get(local_idx) {
+                        // VCR-RA local promotion (#390, #242): copy into the promoted
+                        // callee-saved register; the value STAYS on the operand stack
+                        // (peek kept it), so a later consumer of the tee'd value and a
+                        // later `local.get` both see the same value from independent
+                        // homes. Reserved like LocalSet, so `val != target`.
+                        if val != target {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Mov {
+                                    rd: target,
+                                    op2: Operand2::Reg(val),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                     } else if let Some(&(off, true)) = layout.locals.get(local_idx) {
                         // i64 spilled local: store both halves like LocalSet.
                         let val_hi = i64_pair_hi(val)?;
@@ -16203,6 +16360,117 @@ mod tests {
         ];
         let i64_locals = infer_i64_locals(&ops, &[], &[]);
         assert!(i64_locals.contains(&5));
+    }
+
+    // VCR-RA local promotion (#390, #242) — candidate-filter soundness. Each test
+    // pins one decline/accept rule of `compute_local_promotion`.
+    fn no_i64() -> std::collections::HashSet<u32> {
+        std::collections::HashSet::new()
+    }
+
+    #[test]
+    fn promote_accepts_straightline_write_before_read() {
+        // local 2 (non-param, num_params=2): set then get twice → eligible, gets r4.
+        let ops = vec![
+            WasmOp::I32Const(7),
+            WasmOp::LocalSet(2),
+            WasmOp::LocalGet(2),
+            WasmOp::LocalGet(2),
+            WasmOp::I32Add,
+        ];
+        let p = compute_local_promotion(&ops, 2, &no_i64());
+        assert_eq!(p.get(&2), Some(&Reg::R4));
+    }
+
+    #[test]
+    fn promote_declines_read_before_write() {
+        // local 2 read before any write — relies on zero-init (#457); declined.
+        let ops = vec![
+            WasmOp::LocalGet(2),
+            WasmOp::I32Const(1),
+            WasmOp::LocalSet(2),
+            WasmOp::LocalGet(2),
+        ];
+        let p = compute_local_promotion(&ops, 2, &no_i64());
+        assert!(!p.contains_key(&2));
+    }
+
+    #[test]
+    fn promote_declines_local_touched_under_control_flow() {
+        // local 2 is written at depth 0 but read inside a block (depth 1) — the
+        // defining set does not provably dominate the read; declined for v1.
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::LocalSet(2),
+            WasmOp::Block,
+            WasmOp::LocalGet(2),
+            WasmOp::Drop,
+            WasmOp::End,
+            WasmOp::LocalGet(2),
+        ];
+        let p = compute_local_promotion(&ops, 2, &no_i64());
+        assert!(!p.contains_key(&2));
+    }
+
+    #[test]
+    fn promote_declines_i64_local() {
+        // i64 local needs a register pair; promotion is i32-only → frame fallback.
+        let ops = vec![
+            WasmOp::I64Const(1),
+            WasmOp::LocalSet(2),
+            WasmOp::LocalGet(2),
+            WasmOp::LocalGet(2),
+            WasmOp::I64Add,
+        ];
+        let mut i64 = std::collections::HashSet::new();
+        i64.insert(2u32);
+        let p = compute_local_promotion(&ops, 2, &i64);
+        assert!(!p.contains_key(&2));
+    }
+
+    #[test]
+    fn promote_declines_single_use_cost_gate() {
+        // local 2 set once and never read again (count == 1 after the set is the
+        // only access) — promotion cannot repay the reservation; declined.
+        let ops = vec![WasmOp::I32Const(1), WasmOp::LocalSet(2)];
+        let p = compute_local_promotion(&ops, 2, &no_i64());
+        assert!(!p.contains_key(&2));
+    }
+
+    #[test]
+    fn promote_budget_overflows_past_five_to_frame() {
+        // Seven eligible write-first locals (idx 2..9): only r4..r8 (5) promote, in
+        // ascending index order; locals 7 and 8 overflow to the frame.
+        let mut ops = Vec::new();
+        for i in 2..=8u32 {
+            ops.push(WasmOp::I32Const(1));
+            ops.push(WasmOp::LocalSet(i));
+            ops.push(WasmOp::LocalGet(i));
+            ops.push(WasmOp::Drop);
+        }
+        let p = compute_local_promotion(&ops, 2, &no_i64());
+        assert_eq!(p.get(&2), Some(&Reg::R4));
+        assert_eq!(p.get(&3), Some(&Reg::R5));
+        assert_eq!(p.get(&4), Some(&Reg::R6));
+        assert_eq!(p.get(&5), Some(&Reg::R7));
+        assert_eq!(p.get(&6), Some(&Reg::R8));
+        assert!(!p.contains_key(&7), "local 7 overflows the 5-reg pool");
+        assert!(!p.contains_key(&8), "local 8 overflows the 5-reg pool");
+    }
+
+    #[test]
+    fn promote_ignores_params() {
+        // Params (idx < num_params) are never promotion candidates — they have
+        // their own register/frame-backing path.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::LocalSet(0),
+            WasmOp::LocalGet(0),
+        ];
+        let p = compute_local_promotion(&ops, 2, &no_i64());
+        assert!(p.is_empty());
     }
 
     #[test]
