@@ -211,6 +211,11 @@ fn compile_wasm_to_arm(
         }
         selector.set_spill_on_exhaustion(spill_on_exhaustion);
         selector.set_param_backing_on_exhaustion(param_backing_on_exhaustion);
+        // VCR-RA local promotion (#390, #242): keep eligible non-param i32 locals
+        // in callee-saved registers instead of frame slots — the structural lever
+        // toward native parity. Behind SYNTH_LOCAL_PROMOTE while it earns the
+        // frozen-byte + silicon gates; default off ⇒ frame-slot path bit-identical.
+        selector.set_local_promote(std::env::var("SYNTH_LOCAL_PROMOTE").is_ok());
         selector.select_with_stack(wasm_ops, num_params)
     };
     let select_direct = || -> Result<Vec<ArmInstruction>, String> {
