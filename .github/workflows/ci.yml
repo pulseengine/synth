@@ -171,19 +171,27 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
-      - name: Cache Cargo dependencies
+      # Cache the rivet-cli BINARY keyed on its pinned version, NOT on Cargo.lock.
+      # The old key (hashFiles Cargo.lock) invalidated on every release version
+      # bump, forcing a full rebuild of rivet-cli's HiGHS C++ dependency — which
+      # filled a self-hosted runner's disk and red-failed the v0.14.0 release
+      # (No space left on device). Version-keying means a Cargo.lock change no
+      # longer triggers the rebuild; the cached binary is reused.
+      - name: Cache rivet-cli binary
         uses: actions/cache@v5
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            ~/.cargo/bin
-            target/
-          key: ${{ runner.os }}-rivet-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-rivet-
-      - name: Install rivet
-        run: cargo install --force --git https://github.com/pulseengine/rivet --branch main rivet-cli
+          path: ~/.cargo/bin/rivet
+          key: ${{ runner.os }}-rivet-cli-v0.19.0
+      # PIN rivet to a release tag (was `--branch main`, unpinned). Unpinned, an
+      # upstream schema/behaviour bump silently reddened the gate on unchanged
+      # artifacts (rivet 0.15.0 promoted a WARN→ERROR, #229). v0.19.0 is validated
+      # clean on this repo's artifacts (non-xref ERROR 0, coverage exit 0). Skip
+      # the (expensive) build entirely on a cache hit.
+      - name: Install rivet (pinned v0.19.0)
+        run: |
+          if ! rivet --version 2>/dev/null | grep -q "0.19.0"; then
+            cargo install --force --git https://github.com/pulseengine/rivet --tag v0.19.0 rivet-cli
+          fi
       - name: Validate artifacts
         run: |
           sed -i '/^externals:/,$d' rivet.yaml
