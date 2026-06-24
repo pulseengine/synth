@@ -175,7 +175,8 @@ fn compile_wasm_to_arm(
     // exactly the code that compiled it yesterday (bit-identity is structural,
     // not behavioural).
     let select_direct_attempt = |spill_on_exhaustion: bool,
-                                 param_backing_on_exhaustion: bool|
+                                 param_backing_on_exhaustion: bool,
+                                 local_promote: bool|
      -> Result<Vec<ArmInstruction>, synth_core::Error> {
         let db = RuleDatabase::with_standard_rules();
         let mut selector =
@@ -219,37 +220,60 @@ fn compile_wasm_to_arm(
         // 2.00×→1.72× vs LLVM). Escape hatch: `SYNTH_NO_LOCAL_PROMOTE=1` restores
         // the frame-slot path. Leaf-only / i32-only / ARM-only (see
         // compute_local_promotion); the leaf-only lift + i64 locals are follow-ons.
-        selector.set_local_promote(std::env::var("SYNTH_NO_LOCAL_PROMOTE").is_err());
+        // #474: `local_promote` is now a per-attempt parameter so the retry ladder
+        // can drop promotion as an exhaustion-recovery rung (promotion pins r4-r8,
+        // which on a dense function leaves the spill allocator with nothing to
+        // free → the frame-slot path is the escape that restores compilability).
+        selector.set_local_promote(local_promote);
         selector.select_with_stack(wasm_ops, num_params)
     };
     let select_direct = || -> Result<Vec<ArmInstruction>, String> {
-        // The two recoverable exhaustion classes. NOT retried: the i64
-        // spill-slot-pool Err ("spill-slot pool exhausted") — the honest
-        // remaining bound of the 3b-lite allocator.
         const SINGLE_EXHAUSTION: &str = "all allocatable registers are live on the stack";
         const PAIR_EXHAUSTION: &str = "no consecutive pair of free registers for i64";
-        let mut attempt = select_direct_attempt(false, false);
-        // VCR-RA-001 step 3b-lite (#242): the i32 register-exhaustion
-        // hard-fail is recoverable — retry with spill-on-exhaustion, which
-        // reserves the spill area and spills the deepest stack value when the
-        // pool is full. Only functions that FAILED the first pass ever reach
-        // this, so existing output is untouched by construction.
-        if let Err(e) = &attempt
-            && e.to_string().contains(SINGLE_EXHAUSTION)
+        // The full exhaustion-recovery ladder, parameterized on whether local
+        // promotion is enabled. Each rung is reached only when the previous one
+        // returned a recoverable register-exhaustion Err, so a function that
+        // compiles on the first attempt is untouched by the later rungs.
+        let recovery_ladder = |promote: bool| -> Result<Vec<ArmInstruction>, synth_core::Error> {
+            let mut attempt = select_direct_attempt(false, false, promote);
+            // VCR-RA-001 step 3b-lite (#242): the i32 register-exhaustion
+            // hard-fail is recoverable — retry with spill-on-exhaustion, which
+            // reserves the spill area and spills the deepest stack value when the
+            // pool is full.
+            if let Err(e) = &attempt
+                && e.to_string().contains(SINGLE_EXHAUSTION)
+            {
+                attempt = select_direct_attempt(true, false, promote);
+            }
+            // VCR-RA-001 acceptance increment (#242): the i64 consecutive-PAIR
+            // exhaustion is recoverable too — not by stack spilling (the pair
+            // allocator already spills stack values, #171) but by frame-backing
+            // the params (#204) so they stop pinning R0-R3, with spill kept on.
+            if let Err(e) = &attempt
+                && e.to_string().contains(PAIR_EXHAUSTION)
+            {
+                attempt = select_direct_attempt(true, true, promote);
+            }
+            attempt
+        };
+        // #474: local promotion (default-on since v0.14.0) is an OPTIMIZATION — it
+        // must never be the reason a function fails to compile. Run the full ladder
+        // with promotion first (so every function that compiles today is
+        // bit-identical), and if it still ends in register exhaustion, fall back to
+        // the promotion-off ladder (the v0.12.0 frame-slot lowering — exactly what
+        // the `SYNTH_NO_LOCAL_PROMOTE=1` workaround does, now automatic). Promotion
+        // pins r4-r8 for the locals; on a dense function that leaves the allocator
+        // with nothing to free, so dropping it restores compilability. The fallback
+        // is reached ONLY by functions that exhaust WITH promotion, so promotion-on
+        // output is untouched by construction (frozen byte gate stays green).
+        let promote = std::env::var("SYNTH_NO_LOCAL_PROMOTE").is_err();
+        let mut attempt = recovery_ladder(promote);
+        if promote
+            && let Err(e) = &attempt
+            && e.to_string().contains("register exhaustion")
+            && let Ok(rescued) = recovery_ladder(false)
         {
-            attempt = select_direct_attempt(true, false);
-        }
-        // VCR-RA-001 acceptance increment (#242): the i64 consecutive-PAIR
-        // exhaustion is recoverable too — but not by stack spilling (the pair
-        // allocator already spills stack values, #171): the blockers are the
-        // pinned param home registers. The final retry frame-backs the params
-        // (#204 machinery) so they stop pinning R0-R3, with spill-on-exhaustion
-        // kept on for the single-register pressure the reloads add. Reached
-        // only by functions that failed every earlier pass.
-        if let Err(e) = &attempt
-            && e.to_string().contains(PAIR_EXHAUSTION)
-        {
-            attempt = select_direct_attempt(true, true);
+            attempt = Ok(rescued);
         }
         attempt.map_err(|e| format!("instruction selection failed: {}", e))
     };
