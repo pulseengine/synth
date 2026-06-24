@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-06-24
+
+**i32 local promotion is now DEFAULT-ON (VCR-RA-001, #390, epic #242).** The ARM
+backend no longer lowers every wasm local to a frame slot (`ldr/str [sp,#off]`);
+eligible non-param i32 locals now live in callee-saved registers (r4–r8) instead,
+reusing the #193 param-reservation machinery. This is a **byte-changing** release
+on top of v0.13.0 cmp→select: stack spill/reload traffic is eliminated on
+local-heavy leaf functions — `.text` shrinks (control_step 324→316 B, flight_seam
+902→866, flight_seam_flat 1122→1006; −154 B across the frozen fixtures).
+
+Execution results are unchanged: control_step `0x00210A55` (differential 13/13)
+and flat+inlined flight_algo `0x07FDF307` are preserved; the
+`local_promote_i32` execution oracle (7 concurrent-live locals, r4–r8 + frame
+pre-dirtied with sentinels) is clean==dirty==wasmtime.
+
+gale's G474RE silicon (DWT CYCCNT, `gust_mix` leaf fixture) cleared the flip as a
+net win: dissolved **58.0 → 50.0 cyc/call (−14%)**, all 5 stack spill/reloads
+eliminated, correctness bit-identical over [0,2047], **2.00× → 1.72× vs LLVM**.
+Cumulative on real M4: 64.0 → 58.0 (cmp→select) → 50.0 cyc/call.
+
+Scope: i32 locals only (i64 → frame), leaf functions only (call-containing
+functions decline; the lift is de-risked but a separate follow-on), ARM only
+(RV32 untouched). Escape hatch: `SYNTH_NO_LOCAL_PROMOTE=1` restores the
+frame-slot path.
+
 ## [0.13.0] - 2026-06-24
 
 **cmp→select fusion is now DEFAULT-ON (VCR-SEL-004, #428, epic #242).** The ARM

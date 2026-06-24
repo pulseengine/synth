@@ -55,16 +55,19 @@ fn fixture(name: &str) -> std::path::PathBuf {
 
 /// Compile a frozen fixture for `(backend, target)` with the exact `--all-exports
 /// --relocatable` config the `.py` differentials use, and return the SHA-256 hex
-/// of its `.text` and the section length. `SYNTH_NO_CMP_SELECT_FUSE` (the v0.13.0
-/// cmp→select opt-out) / `SYNTH_CONST_CSE` are explicitly removed so a flag set in
-/// the environment can never silently re-freeze the gate — it locks the SHIPPED
-/// lowering, which since v0.13.0 INCLUDES cmp→select fusion (default-on). The
-/// `object` crate reads `.text` arch-agnostically (ARM Thumb-2 and RV32 alike).
+/// of its `.text` and the section length. The default-changing opt-out flags
+/// (`SYNTH_NO_CMP_SELECT_FUSE` — v0.13.0 cmp→select; `SYNTH_NO_LOCAL_PROMOTE` —
+/// v0.14.0 local promotion) and `SYNTH_CONST_CSE` are explicitly removed so a flag
+/// set in the environment can never silently re-freeze the gate — it locks the
+/// SHIPPED lowering, which since v0.14.0 INCLUDES cmp→select fusion AND local
+/// promotion (both default-on). The `object` crate reads `.text` arch-agnostically
+/// (ARM Thumb-2 and RV32 alike).
 fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
     let path = fixture(wasm);
     let elf = format!("/tmp/frozenbytes_{backend}_{wasm}.elf");
     let out = Command::new(synth())
         .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
+        .env_remove("SYNTH_NO_LOCAL_PROMOTE")
         .env_remove("SYNTH_CONST_CSE")
         .args([
             "compile",
@@ -126,30 +129,33 @@ fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
 /// the `.py` differentials cover): control_step ↔ 0x00210A55, flight_seam_flat ↔
 /// flat+inlined flight_algo 0x07FDF307, plus flight_seam and the div seam.
 ///
-/// Goldens RE-FROZEN for v0.13.0 (#428): cmp→select fusion is now default-on, so
-/// these lock the FUSED .text. The execution RESULTS are preserved — re-verified on
-/// this commit with fusion on: control_step still 0x00210A55 (control_step_differential
-/// .py 13/13), flat+inlined flight_algo still 0x07FDF307 (flight_seam_differential.py
-/// MATCH). .text shrank: control_step 354→324, flight_seam 1016→902, flight_seam_flat
-/// 1240→1122 (−262 B total); signed_div_const (0 fusion sites) unchanged. Prior
-/// flag-off goldens were on main @ ef97f86 (post-#444), 2026-06-23.
+/// Goldens RE-FROZEN for v0.14.0 (#390): local promotion is now default-on (on top
+/// of v0.13.0 cmp→select), so these lock the PROMOTED+FUSED .text. The execution
+/// RESULTS are preserved — re-verified on this commit with both default-on:
+/// control_step still 0x00210A55 (control_step_differential.py 13/13), flat+inlined
+/// flight_algo still 0x07FDF307 (flight_seam_differential.py MATCH). .text shrank
+/// again (stack spill/reloads eliminated): control_step 324→316, flight_seam
+/// 902→866, flight_seam_flat 1122→1006 (−154 B total); signed_div_const (no
+/// promotable i32 locals) unchanged. gale G474RE DWT: gust_mix 58→50 cyc/call
+/// (−14%), 5→0 [sp] traffic. Prior cmp→select-only goldens were on main @ 377b93e
+/// (v0.13.0), 2026-06-24.
 #[test]
 fn frozen_fixtures_text_is_bit_identical_oracle_001() {
     let cases = [
         (
             "control_step.wasm",
-            "b4c4c290be2c8a83055d4c9696ae4ebb16486a8fd3fc268531607eeef35325e5",
-            324usize,
+            "cd929e7d91a8f7aad93f0e1cf0c93ecf3ccc6584ee94fb32e68d591134ed1410",
+            316usize,
         ),
         (
             "flight_seam.wasm",
-            "300fdf3b92a0941da63b3215441a799d9b32ef942fd404b4803a83a6efb1bb60",
-            902,
+            "52b19365e32bcd9d5a4be74565d0fa467517eb3a07648a3e1ccd0a67556c1948",
+            866,
         ),
         (
             "flight_seam_flat.wasm",
-            "23d0b6829414a855f365d84c7c3301c256f1843fe46b2cc9b369fec30610913d",
-            1122,
+            "fa019f18cbc93869fff51630c6ab9cff6c4e052e22d783fe741b663ece49fa1e",
+            1006,
         ),
         (
             "signed_div_const.wasm",
