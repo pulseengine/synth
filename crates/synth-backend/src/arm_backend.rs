@@ -213,9 +213,13 @@ fn compile_wasm_to_arm(
         selector.set_param_backing_on_exhaustion(param_backing_on_exhaustion);
         // VCR-RA local promotion (#390, #242): keep eligible non-param i32 locals
         // in callee-saved registers instead of frame slots — the structural lever
-        // toward native parity. Behind SYNTH_LOCAL_PROMOTE while it earns the
-        // frozen-byte + silicon gates; default off ⇒ frame-slot path bit-identical.
-        selector.set_local_promote(std::env::var("SYNTH_LOCAL_PROMOTE").is_ok());
+        // toward native parity. DEFAULT-ON as of v0.14.0: gale's G474RE DWT gate
+        // cleared it as a net win (gust_mix dissolved 58→50 cyc/call −14%, all 5
+        // stack spill/reloads eliminated, correctness bit-identical over [0,2047],
+        // 2.00×→1.72× vs LLVM). Escape hatch: `SYNTH_NO_LOCAL_PROMOTE=1` restores
+        // the frame-slot path. Leaf-only / i32-only / ARM-only (see
+        // compute_local_promotion); the leaf-only lift + i64 locals are follow-ons.
+        selector.set_local_promote(std::env::var("SYNTH_NO_LOCAL_PROMOTE").is_err());
         selector.select_with_stack(wasm_ops, num_params)
     };
     let select_direct = || -> Result<Vec<ArmInstruction>, String> {
