@@ -426,11 +426,29 @@ artifacts:
       this proves byte-IDENTITY, NOT result-identity — it is NOT the execution
       differential the VCR-SEL-004 default-on flip owes (that flip deliberately
       changes these bytes and must prove the RESULT survives; this gate will
-      correctly FAIL it and demand a deliberate re-freeze). STILL PROPOSED (the
-      bulk): coverage-guided fixture generation, MC/DC rule coverage, the
-      theorem-linked result-identity differential, and the execution harness
-      (unicorn/qemu — synth-qemu shells to a qemu-system binary CI lacks).
-    status: proposed
+      correctly FAIL it and demand a deliberate re-freeze).
+      EXECUTION SLICE LANDED (2026-06-23, #452): the first RESULT-identity
+      execution differential now runs in cargo CI — `scripts/repro/
+      cmp_select_two_move_differential.py` executes the two-move select fixture
+      under unicorn (ARM Thumb, faithful IT-block predication) flag-off vs flag-on
+      vs wasmtime, 11/11 result-identical, gated as an ISOLATED `cmp-select-oracle`
+      job. This CORRECTS an assumption above: the execution harness does NOT need
+      "a qemu-system binary CI lacks" — unicorn is a CPU emulator pip-installable
+      in an isolated job (unicorn/wasmtime there only, so `cargo test --workspace`
+      is untaxed by the C-lib build graph); synth-qemu's full-system shell-out is
+      NOT the path. CI GOTCHA worth carrying: `synth disasm`'s symbol-table text
+      output formats differently ubuntu-vs-macOS, so symbol-parse-based fixture
+      lookup is fragile — read the function entry from the ELF directly (`.text`
+      offset 0 for single-function fixtures, or pyelftools `.symtab` for
+      multi-function) instead. STILL PROPOSED (the bulk): coverage-guided fixture
+      generation, MC/DC rule coverage, the theorem-LINKED result-identity
+      differential (the #452 slice is result-identity but not yet theorem-linked),
+      and generalizing the execution harness beyond the single cmp-select fixture
+      (the existing `*_differential.py` already validate control_step 0x00210A55 /
+      flight_seam etc. locally but are not yet CI-wired — though for FROZEN fixtures
+      that is redundant with the byte gate, so the value is in NON-frozen / flag-on
+      paths the byte gate cannot cover).
+    status: approved
     tags: [oracle, differential, coverage, mcdc, validation, track-c]
     links:
       - type: derives-from
