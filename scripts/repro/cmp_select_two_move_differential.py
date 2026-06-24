@@ -74,10 +74,14 @@ def arm_branch(a, b):
 
 
 def compile_elf(out, fused):
+    # As of v0.13.0 cmp→select fusion is DEFAULT-ON, so the unfused baseline must
+    # opt OUT (SYNTH_NO_CMP_SELECT_FUSE); the fused build is just the default plus
+    # stats. (Pre-v0.13.0 this was inverted: fused opted IN via SYNTH_CMP_SELECT_FUSE.)
     env = {"PATH": "/usr/bin:/bin"}
     if fused:
-        env["SYNTH_CMP_SELECT_FUSE"] = "1"
         env["SYNTH_FUSE_STATS"] = "1"
+    else:
+        env["SYNTH_NO_CMP_SELECT_FUSE"] = "1"
     r = subprocess.run(
         [SYNTH, "compile", WASM, "-o", out, "--target", "cortex-m4",
          "--all-exports", "--relocatable"],
