@@ -36,20 +36,30 @@ need it: it would either color the function with the locals in registers, or spi
 them — never fail. Rung 4 existing at all is a direct symptom of the single-pass
 allocator the north star replaces.
 
-## Which fixtures exercise which rung
+## Which fixtures exercise which rung — MEASURED
 
-Only rung 4 is **confirmed load-bearing** here (the `promotion_exhaustion_fallback`
-fixture fails to compile without its rung and compiles with it — verified in the
-#475 regression test). The rest are by *design intent* (the fixture/name + the
-issue that introduced the rung); attributing a rung precisely needs the per-rung
-counter noted below — this table is the hypothesis that counter would confirm.
+`SYNTH_RECOVERY_STATS=1` makes `select_direct` log the rung that produced each
+function's code (`[recovery-stats] rung=… result=…`). Logging only — emitted bytes
+are unchanged (frozen gate green). Measured across the whole `scripts/repro/*.wat`
+corpus (`--target cortex-m4 --relocatable --all-exports`):
 
-| fixture | rung (status) |
+| fixture (function) | rung (measured) |
 |---|---|
-| `control_step`, `flight_seam*`, most repros | 0 base (compile cleanly) |
-| `high_pressure_i32` | 2 spill — *by design, unconfirmed* |
-| `high_pressure_i64` | 3 param frame-backing — *by design, unconfirmed* |
-| `promotion_exhaustion_fallback` (#475) | 4 promotion-off — **confirmed** |
+| most of the ~49-fixture corpus | **base** — compile on the first attempt |
+| `high_pressure_i32` | **spill** (rung 2) |
+| `control_step.wasm` (the 0x00210A55 frozen fixture) | **spill** (rung 2) |
+| `msgq_put_359.wasm` (1 of its 5 functions) | **spill** (rung 2) |
+| `high_pressure_i64` | **param-backing** (rung 3) |
+| `promotion_exhaustion_fallback` (#475) | **promotion-off** then spill (rung 4 → 2) |
+
+So across the corpus the recovery ladder fires for **~5 functions** — that is the
+entire local failure surface. The notable one is `control_step`: the canonical
+frozen fixture is itself produced via the **spill** rung, i.e. it sits right at the
+register-pressure edge (a base-attempt allocator would have *failed* it — the spill
+rung is load-bearing for a shipped fixture, not just stress tests). `local_promote_*`,
+`mutex_pressure`, the `flight_seam*` / `native_pointer_*` families, etc. all compile
+on the base attempt. The classification is asserted by the CI test
+`recovery_stats_rung_classification_242`.
 
 ## North-star implication
 
@@ -59,10 +69,10 @@ Rung 1 (decline on unlowerable IR) is a *coverage* gap, not an allocation failur
 and stays until the selector DSL (`VCR-SEL-001`) covers those constructs. So the
 VCR-RA acceptance bar includes: **every function in this corpus that today needs
 rungs 2-4 must allocate on the first pass under the verified allocator**, with the
-ladder retained only as a defense-in-depth assertion that should never fire.
-`SYNTH_REALLOC_STATS` already reports per-function counters for the *range-realloc*
-pass (segments / reallocated / declined / needs-spill) on the optimized path;
-the analogous next measurement is a per-rung counter on **this** `select_direct`
-ladder (how often each rung fires across a real dissolved corpus = the size of the
-surface VCR-RA must absorb). That instrumentation is env-gated logging only
-(byte-identical output), so it stays frozen-safe.
+ladder retained only as a defense-in-depth assertion that should never fire. The
+per-rung counter that quantifies this surface is now wired (`SYNTH_RECOVERY_STATS`,
+above) — env-gated logging only (byte-identical, frozen-safe). On the local corpus
+the surface is ~5 functions (incl. the shipped `control_step` fixture); the same
+counter run over a real dissolved workload measures the production surface VCR-RA
+must absorb. (`SYNTH_REALLOC_STATS` is the analogous counter for the separate
+range-realloc pass on the optimized path.)
