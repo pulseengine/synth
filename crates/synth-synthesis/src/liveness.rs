@@ -4867,6 +4867,75 @@ mod tests {
     }
 
     #[test]
+    fn reallocate_function_preserves_callee_saved_value_across_call() {
+        // VCR-RA local-promotion fast-follow (#390, #242): the empirical question
+        // the leaf-only v1 gate (PR #458) was set on — can the range-reallocator
+        // move a promoted local's callee-saved home to a CALLER-saved register
+        // that an intervening `bl` would clobber? This probes the reallocator
+        // directly with the exact shape promotion+call produces.
+        //
+        // r5 carries a value DEFINED before a `Bl` and READ after it (a promoted
+        // local live across a call). Segment A also has interior pressure (r6/r7)
+        // to tempt the lowest-free colourer. The `Bl` is non-straight-line, so it
+        // FLUSHES the segment (reallocate_function:2341) — segment A and segment B
+        // are coloured independently, and r5's range in A is the last-opened range
+        // for r5 ⇒ pinned as a live-out to its ORIGINAL register. So r5 must stay
+        // r5 (callee-saved, survives the bl by AAPCS) across the boundary.
+        use crate::rules::Reg::*;
+        let seq = vec![
+            ins(ArmOp::Movw { rd: R5, imm16: 42 }), // promoted local -> r5 (callee-saved)
+            ins(ArmOp::Movw { rd: R6, imm16: 1 }),  // interior pressure
+            ins(ArmOp::Add {
+                rd: R6,
+                rn: R6,
+                op2: Operand2::Reg(R6),
+            }), // r6 dies here
+            ins(ArmOp::Bl {
+                label: "helper".into(),
+            }), // clobbers r0-r3,r12 — SPLITS segments
+            ins(ArmOp::Add {
+                rd: R0,
+                rn: R5,
+                op2: Operand2::Imm(7),
+            }), // read r5 AFTER the call
+        ];
+        let pool = [R0, R1, R2, R3, R4, R5, R6, R7, R8];
+        let (out, stats) = reallocate_function(&seq, &pool);
+
+        // Structure preserved; the Bl passed through untouched at the boundary.
+        assert_eq!(out.len(), seq.len());
+        assert_eq!(
+            stats.segments, 2,
+            "the Bl splits the function into two segments"
+        );
+        assert!(matches!(&out[3].op, ArmOp::Bl { label } if label == "helper"));
+
+        // The cross-call value's definition stays in a CALLEE-saved register
+        // (r4..r8) — NOT remapped to a caller-saved reg the bl clobbers.
+        let def_reg = match &out[0].op {
+            ArmOp::Movw { rd, .. } => *rd,
+            other => panic!("unexpected def op {other:?}"),
+        };
+        assert!(
+            matches!(def_reg, R4 | R5 | R6 | R7 | R8),
+            "cross-call value must stay callee-saved, got {def_reg:?}"
+        );
+        // And the post-call read reads that SAME register (the value survived).
+        match &out[4].op {
+            ArmOp::Add { rn, .. } => assert_eq!(
+                *rn, def_reg,
+                "post-call read must read the preserved register"
+            ),
+            other => panic!("unexpected read op {other:?}"),
+        }
+        // Specifically r5 (the live-out pin keeps the original register).
+        assert_eq!(
+            def_reg, R5,
+            "live-out pinned to its original callee-saved reg"
+        );
+    }
+
+    #[test]
     fn reallocate_function_keeps_reserved_registers_identity() {
         // A load through R11 (memory base, outside the pool): R11 must stay
         // R11 even though everything else is fair game.
