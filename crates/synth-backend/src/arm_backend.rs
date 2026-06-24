@@ -488,6 +488,26 @@ fn compile_wasm_to_arm(
         arm_instrs
     };
 
+    // VCR-RA immediate-shift folding (#390, #242): a constant shift amount the
+    // stack selector materialized into a scratch register (`movw rM,#C; lsl rD,rN,rM`)
+    // folds to the immediate form (`lsl rD,rN,#C`), removing the dead `movw` — −1
+    // instruction, −1 live register. Removal-only (offset-neutral before branch
+    // resolution, like the dead-store pass). BEHIND `SYNTH_IMM_SHIFT_FOLD=1`
+    // (opt-in, off by default ⇒ bit-identical) while it earns the execution
+    // differential + gale's G474RE DWT gate — the same gated path local promotion
+    // and cmp→select took before shipping default-on. gale-named lever toward ≤1.3×.
+    let arm_instrs = if std::env::var("SYNTH_IMM_SHIFT_FOLD").is_ok() {
+        let (out, folds) = synth_synthesis::liveness::fold_immediate_shifts(&arm_instrs);
+        if std::env::var("SYNTH_FUSE_STATS").is_ok() {
+            eprintln!(
+                "[imm-shift-fold] {folds} register shift(s) folded to immediate, movw dropped"
+            );
+        }
+        out
+    } else {
+        arm_instrs
+    };
+
     // ISA feature gate: validate that all generated instructions are supported
     // by the target. This catches FPU instructions on no-FPU targets, double-precision
     // instructions on single-precision targets, etc.
