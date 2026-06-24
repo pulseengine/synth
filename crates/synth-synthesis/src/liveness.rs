@@ -429,6 +429,71 @@ pub fn fuse_cmp_select_with_stats(
     (result, fusions, two_move)
 }
 
+/// Redundant stack-reload elimination — perf lever 1 toward native parity (#390,
+/// #209, epic #242). synth lowers every wasm local to a frame slot, so a
+/// `local.set` then `local.get` of the same local emits `str rX,[sp,#N]; … ;
+/// ldr rY,[sp,#N]` — a memory store-then-reload of one slot (≈18 % of the hot
+/// fixture's instructions are sp traffic; an M4 stack load is ~2 cycles). When the
+/// stored register `rX` still holds the value at the `ldr` — nothing rewrites `rX`,
+/// nothing rewrites slot `N`, `sp` does not move, and there is no call / branch /
+/// label between (the forward scan bails via `reg_effect → None` on any of those,
+/// the same soundness lynchpin as [`fuse_cmp_select`]) — the `ldr` is replaced by
+/// `mov rY, rX` (~1 cycle). The `str` is KEPT: the slot may still be read past a
+/// boundary the scan bailed at. Removal-of-a-load + rename only ⇒ NO new instruction
+/// form (no validator change) and labels/branch offsets are untouched. Returns the
+/// rewritten stream and the number of reloads forwarded (0 ⇒ input unchanged).
+pub fn forward_stack_reloads(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    let n = instrs.len();
+    let mut out = instrs.to_vec();
+    let mut rewrites = 0usize;
+
+    for i in 0..n {
+        // [i] must be `str rX, [sp, #N]` (immediate slot, no register offset).
+        let (rx, slot) = match &instrs[i].op {
+            ArmOp::Str { rd, addr } if addr.base == Reg::SP && addr.offset_reg.is_none() => {
+                (*rd, addr.offset)
+            }
+            _ => continue,
+        };
+        // Forward `rX` into same-slot loads until it (or the slot, or sp) changes
+        // or the scan reaches an op it cannot reason past.
+        for j in (i + 1)..n {
+            // A reload of the same slot ⇒ rewrite to `mov rY, rX`. `rX` is still
+            // the live source, so keep scanning — a later same-slot load forwards too.
+            if let ArmOp::Ldr { rd: ry, addr } = &out[j].op
+                && addr.base == Reg::SP
+                && addr.offset_reg.is_none()
+                && addr.offset == slot
+            {
+                let ry = *ry;
+                out[j].op = ArmOp::Mov {
+                    rd: ry,
+                    op2: Operand2::Reg(rx),
+                };
+                rewrites += 1;
+                continue;
+            }
+            // A store that could land in slot N (same immediate, or any register
+            // offset we cannot resolve) ⇒ the slot's value may change; stop.
+            if let ArmOp::Str { addr, .. } = &instrs[j].op
+                && addr.base == Reg::SP
+                && (addr.offset_reg.is_some() || addr.offset == slot)
+            {
+                break;
+            }
+            match reg_effect(&instrs[j].op) {
+                // `rX` clobbered or the frame pointer moved ⇒ value no longer valid.
+                Some(eff) if eff.defs.contains(&rx) || eff.defs.contains(&Reg::SP) => break,
+                Some(_) => {}
+                // call / branch / label / unmodeled op ⇒ cannot reason past it.
+                None => break,
+            }
+        }
+    }
+
+    (out, rewrites)
+}
+
 /// True if `op` returns from the function: `Bx LR`, or a `Pop`/`Ldmia` that loads
 /// `PC` (the `pop {…, pc}` epilogue). At such a point the only registers live out
 /// of the function are the ABI result registers — see [`RETURN_VALUE_REGS`].
@@ -3210,6 +3275,115 @@ mod tests {
             (1, 0),
             "single move ⇒ in-place, not two-move"
         );
+    }
+
+    // ---- perf lever 1: redundant stack-reload elimination (#390) ----
+
+    fn str_sp(rd: Reg, slot: i32) -> ArmInstruction {
+        ins(ArmOp::Str {
+            rd,
+            addr: MemAddr::imm(Reg::SP, slot),
+        })
+    }
+    fn ldr_sp(rd: Reg, slot: i32) -> ArmInstruction {
+        ins(ArmOp::Ldr {
+            rd,
+            addr: MemAddr::imm(Reg::SP, slot),
+        })
+    }
+    fn movi(rd: Reg, imm: i32) -> ArmInstruction {
+        ins(ArmOp::Mov {
+            rd,
+            op2: Operand2::Imm(imm),
+        })
+    }
+
+    #[test]
+    fn forward_reload_basic_becomes_mov() {
+        // str r0,[sp,4] ; <neutral> ; ldr r1,[sp,4]  ⇒  the ldr becomes mov r1,r0.
+        let seq = vec![
+            str_sp(Reg::R0, 4),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R3,
+                op2: Operand2::Imm(1),
+            }),
+            ldr_sp(Reg::R1, 4),
+        ];
+        let (out, n) = forward_stack_reloads(&seq);
+        assert_eq!(n, 1);
+        assert!(matches!(
+            out[2].op,
+            ArmOp::Mov {
+                rd: Reg::R1,
+                op2: Operand2::Reg(Reg::R0)
+            }
+        ));
+        // The store is kept (slot may be read past a later bail point).
+        assert!(matches!(out[0].op, ArmOp::Str { .. }));
+    }
+
+    #[test]
+    fn forward_reload_multi_same_slot() {
+        // One store feeds two reloads ⇒ both forward to mov.
+        let seq = vec![str_sp(Reg::R0, 8), ldr_sp(Reg::R1, 8), ldr_sp(Reg::R2, 8)];
+        let (out, n) = forward_stack_reloads(&seq);
+        assert_eq!(n, 2);
+        assert!(matches!(out[1].op, ArmOp::Mov { rd: Reg::R1, .. }));
+        assert!(matches!(out[2].op, ArmOp::Mov { rd: Reg::R2, .. }));
+    }
+
+    #[test]
+    fn forward_reload_stops_when_rx_clobbered() {
+        // r0 is overwritten before the reload ⇒ the slot's value is stale in r0; decline.
+        let seq = vec![str_sp(Reg::R0, 4), movi(Reg::R0, 99), ldr_sp(Reg::R1, 4)];
+        let (out, n) = forward_stack_reloads(&seq);
+        assert_eq!(n, 0);
+        assert!(matches!(out[2].op, ArmOp::Ldr { .. }));
+    }
+
+    #[test]
+    fn forward_reload_tracks_latest_store_after_slot_rewrite() {
+        // The slot is rewritten (str r2,[sp,4]) before the reload. The FIRST store
+        // (r0) must NOT forward across the rewrite; the reload forwards from the LIVE
+        // store (r2) ⇒ exactly one rewrite, and it is `mov r1,r2` (not the stale r0).
+        let seq = vec![str_sp(Reg::R0, 4), str_sp(Reg::R2, 4), ldr_sp(Reg::R1, 4)];
+        let (out, n) = forward_stack_reloads(&seq);
+        assert_eq!(n, 1);
+        assert!(
+            matches!(
+                out[2].op,
+                ArmOp::Mov {
+                    rd: Reg::R1,
+                    op2: Operand2::Reg(Reg::R2)
+                }
+            ),
+            "reload must forward the LATEST store's value (r2), not the stale r0"
+        );
+    }
+
+    #[test]
+    fn forward_reload_bails_across_branch() {
+        // A branch (reg_effect None) sits between ⇒ cannot prove the slot/reg survive
+        // the other edge; decline. Same lynchpin as fuse_cmp_select.
+        let seq = vec![
+            str_sp(Reg::R0, 4),
+            ins(ArmOp::B {
+                label: "L".to_string(),
+            }),
+            ldr_sp(Reg::R1, 4),
+        ];
+        let (out, n) = forward_stack_reloads(&seq);
+        assert_eq!(n, 0);
+        assert!(matches!(out[2].op, ArmOp::Ldr { .. }));
+    }
+
+    #[test]
+    fn forward_reload_different_slot_untouched() {
+        // A reload of a DIFFERENT slot is not forwarded from this store.
+        let seq = vec![str_sp(Reg::R0, 4), ldr_sp(Reg::R1, 8)];
+        let (_out, n) = forward_stack_reloads(&seq);
+        assert_eq!(n, 0);
     }
 
     #[test]

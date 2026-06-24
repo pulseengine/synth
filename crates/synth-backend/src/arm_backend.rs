@@ -461,6 +461,24 @@ fn compile_wasm_to_arm(
         arm_instrs
     };
 
+    // Perf lever 1 toward native parity (#390): redundant stack-reload elimination.
+    // synth lowers every wasm local to a frame slot, so `local.set; local.get` emits
+    // `str rX,[sp,#N]; … ; ldr rY,[sp,#N]`; when rX still holds the value the reload
+    // (a ~2-cycle M4 load) becomes `mov rY,rX`. Removal-of-a-load + rename only ⇒ no
+    // new instruction form and no label/offset change. BEHIND `SYNTH_STACK_FWD=1`
+    // (opt-in, off by default ⇒ bit-identical) while it is validated against the
+    // execution differential + gale's G474RE bench — the same gated path the
+    // cmp→select flip took before shipping default-on in v0.13.0.
+    let arm_instrs = if std::env::var("SYNTH_STACK_FWD").is_ok() {
+        let (out, fwd) = synth_synthesis::liveness::forward_stack_reloads(&arm_instrs);
+        if std::env::var("SYNTH_FUSE_STATS").is_ok() {
+            eprintln!("[stack-fwd] {fwd} stack reload(s) forwarded to register moves");
+        }
+        out
+    } else {
+        arm_instrs
+    };
+
     // ISA feature gate: validate that all generated instructions are supported
     // by the target. This catches FPU instructions on no-FPU targets, double-precision
     // instructions on single-precision targets, etc.
