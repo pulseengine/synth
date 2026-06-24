@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-06-24
+
+**Immediate-shift folding is now DEFAULT-ON (VCR-RA, #390, epic #242).** The stack
+selector lowers `i32.shl/shr_s/shr_u` to register-shift forms, materializing a
+constant shift amount into a scratch register (`movw rM,#C; lsl rD,rN,rM`); the
+peephole now folds that to the immediate form (`lsl rD,rN,#C`) and removes the dead
+`movw` — −1 instruction and −1 live register per folded shift. This is a
+**byte-changing** release on top of v0.14.0: `.text` shrinks on shift-heavy
+functions — control_step 316→304 B, flight_seam 866→774, flight_seam_flat 1006→910
+(−200 B across the frozen fixtures); signed_div_const (no register-shift folds)
+unchanged.
+
+Execution results are unchanged: control_step `0x00210A55` (differential 13/13) and
+flat+inlined flight_algo `0x07FDF307` are preserved. Validated bit-identical and a
+net cycle win on the dissolved hot path (−2 cyc/call, `.text` 100→90 B on gust_mix).
+Cumulative dissolved hot-path improvement across the codegen levers:
+64.0 → 58.0 (cmp→select) → 50.0 (local promotion) → 48.0 cyc/call.
+
+Soundness: only folds shift amounts in [1,31] (where register- and immediate-shift
+forms provably agree), the shift-amount register must be dead after the shift, and
+the rewrite is removal-only (offset-neutral before branch resolution). Escape hatch:
+`SYNTH_NO_IMM_SHIFT_FOLD=1` restores the register-shift form.
+
 ## [0.14.0] - 2026-06-24
 
 **i32 local promotion is now DEFAULT-ON (VCR-RA-001, #390, epic #242).** The ARM

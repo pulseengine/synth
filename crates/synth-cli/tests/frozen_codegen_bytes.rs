@@ -68,6 +68,7 @@ fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
     let out = Command::new(synth())
         .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
         .env_remove("SYNTH_NO_LOCAL_PROMOTE")
+        .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
         .env_remove("SYNTH_CONST_CSE")
         .args([
             "compile",
@@ -129,33 +130,33 @@ fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
 /// the `.py` differentials cover): control_step ↔ 0x00210A55, flight_seam_flat ↔
 /// flat+inlined flight_algo 0x07FDF307, plus flight_seam and the div seam.
 ///
-/// Goldens RE-FROZEN for v0.14.0 (#390): local promotion is now default-on (on top
-/// of v0.13.0 cmp→select), so these lock the PROMOTED+FUSED .text. The execution
-/// RESULTS are preserved — re-verified on this commit with both default-on:
-/// control_step still 0x00210A55 (control_step_differential.py 13/13), flat+inlined
-/// flight_algo still 0x07FDF307 (flight_seam_differential.py MATCH). .text shrank
-/// again (stack spill/reloads eliminated): control_step 324→316, flight_seam
-/// 902→866, flight_seam_flat 1122→1006 (−154 B total); signed_div_const (no
-/// promotable i32 locals) unchanged. gale G474RE DWT: gust_mix 58→50 cyc/call
-/// (−14%), 5→0 [sp] traffic. Prior cmp→select-only goldens were on main @ 377b93e
-/// (v0.13.0), 2026-06-24.
+/// Goldens RE-FROZEN for v0.15.0 (#390): immediate-shift folding is now default-on
+/// (on top of v0.13.0 cmp→select + v0.14.0 local promotion), so these lock the
+/// folded+promoted+fused .text. The execution RESULTS are preserved — re-verified
+/// on this commit: control_step still 0x00210A55 (control_step_differential.py
+/// 13/13), flat+inlined flight_algo still 0x07FDF307 (flight_seam_differential.py
+/// MATCH). .text shrank again (constant shift-amount `movw`s removed): control_step
+/// 316→304, flight_seam 866→774, flight_seam_flat 1006→910 (−200 B total);
+/// signed_div_const (no register-shift folds) unchanged. Measured −2 cyc/call on the
+/// dissolved hot path (.text 100→90 B on gust_mix). Prior promotion goldens were on
+/// main @ 6b46f09 (v0.14.0), 2026-06-24.
 #[test]
 fn frozen_fixtures_text_is_bit_identical_oracle_001() {
     let cases = [
         (
             "control_step.wasm",
-            "cd929e7d91a8f7aad93f0e1cf0c93ecf3ccc6584ee94fb32e68d591134ed1410",
-            316usize,
+            "1a97711cfb4754794a8577814388f08b81eff444edcba3de7d3e3d18ff435183",
+            304usize,
         ),
         (
             "flight_seam.wasm",
-            "52b19365e32bcd9d5a4be74565d0fa467517eb3a07648a3e1ccd0a67556c1948",
-            866,
+            "9e73eea3867ba085820329951e84a7d650c38a7fc78d9d03a6a83d02963f9670",
+            774,
         ),
         (
             "flight_seam_flat.wasm",
-            "fa019f18cbc93869fff51630c6ab9cff6c4e052e22d783fe741b663ece49fa1e",
-            1006,
+            "887ea546429a4569112147fdc94b0ba90f02a6ccd2b511aa2ca48dab017dbc2c",
+            910,
         ),
         (
             "signed_div_const.wasm",

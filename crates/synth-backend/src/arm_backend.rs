@@ -492,11 +492,10 @@ fn compile_wasm_to_arm(
     // stack selector materialized into a scratch register (`movw rM,#C; lsl rD,rN,rM`)
     // folds to the immediate form (`lsl rD,rN,#C`), removing the dead `movw` — −1
     // instruction, −1 live register. Removal-only (offset-neutral before branch
-    // resolution, like the dead-store pass). BEHIND `SYNTH_IMM_SHIFT_FOLD=1`
-    // (opt-in, off by default ⇒ bit-identical) while it earns the execution
-    // differential + gale's G474RE DWT gate — the same gated path local promotion
-    // and cmp→select took before shipping default-on. gale-named lever toward ≤1.3×.
-    let arm_instrs = if std::env::var("SYNTH_IMM_SHIFT_FOLD").is_ok() {
+    // resolution, like the dead-store pass). DEFAULT-ON as of v0.15.0: validated
+    // bit-identical results + a net cycle win on the dissolved hot path (−2
+    // cyc/call, .text 100→90 B on gust_mix). Escape hatch: `SYNTH_NO_IMM_SHIFT_FOLD=1`.
+    let arm_instrs = if std::env::var("SYNTH_NO_IMM_SHIFT_FOLD").is_err() {
         let (out, folds) = synth_synthesis::liveness::fold_immediate_shifts(&arm_instrs);
         if std::env::var("SYNTH_FUSE_STATS").is_ok() {
             eprintln!(
