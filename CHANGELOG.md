@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-06-24
+
+**Bug-fix: local promotion must never CAUSE a compile failure (#474).** v0.14.0
+made i32 local promotion default-on; it pins eligible locals into callee-saved
+r4-r8, which halves the operand-stack temp pool. On a dense function that tips
+register allocation past what it can recover, turning a working compile into a hard
+`register exhaustion` skip — a regression from v0.12.0.
+
+The exhaustion-recovery ladder in `arm_backend.rs` is now parameterized on
+promotion: it runs **with promotion first** — so every function that compiles today
+is **bit-identical** (the frozen byte gate is unchanged: control_step `0x00210A55`,
+flat+inlined flight_algo `0x07FDF307`, the div seam all preserved) — and, only if it
+still ends in register exhaustion, falls back to the **promotion-off ladder**
+automatically (the v0.12.0 frame-slot lowering, exactly what `SYNTH_NO_LOCAL_PROMOTE=1`
+does by hand). Promotion is an optimization; it must never be the *reason* a
+function fails to compile. The fallback keys on `register exhaustion` generally, so
+it covers both the single-register and i64-spill-pool exhaustion classes promotion
+can trigger.
+
+Verified: a generic repro (`scripts/repro/promotion_exhaustion_fallback.wat`) fails
+to compile without the fix and compiles with it, `.text` byte-identical to the
+promotion-off build; new CI regression test `promotion_never_causes_compile_failure_474`.
+Also adds an analysis-only map of the full register-exhaustion recovery ladder
+(`scripts/repro/register_exhaustion_recovery_ladder.md`) — the patch surface the
+VCR-RA verified allocator (#242) must subsume — and the optimized-path ABI-model note
+(#470, by-design non-AAPCS self-contained path).
+
 ## [0.15.0] - 2026-06-24
 
 **Immediate-shift folding is now DEFAULT-ON (VCR-RA, #390, epic #242).** The stack
