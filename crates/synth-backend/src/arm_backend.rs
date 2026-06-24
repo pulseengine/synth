@@ -233,29 +233,34 @@ fn compile_wasm_to_arm(
         // The full exhaustion-recovery ladder, parameterized on whether local
         // promotion is enabled. Each rung is reached only when the previous one
         // returned a recoverable register-exhaustion Err, so a function that
-        // compiles on the first attempt is untouched by the later rungs.
-        let recovery_ladder = |promote: bool| -> Result<Vec<ArmInstruction>, synth_core::Error> {
-            let mut attempt = select_direct_attempt(false, false, promote);
-            // VCR-RA-001 step 3b-lite (#242): the i32 register-exhaustion
-            // hard-fail is recoverable — retry with spill-on-exhaustion, which
-            // reserves the spill area and spills the deepest stack value when the
-            // pool is full.
-            if let Err(e) = &attempt
-                && e.to_string().contains(SINGLE_EXHAUSTION)
-            {
-                attempt = select_direct_attempt(true, false, promote);
-            }
-            // VCR-RA-001 acceptance increment (#242): the i64 consecutive-PAIR
-            // exhaustion is recoverable too — not by stack spilling (the pair
-            // allocator already spills stack values, #171) but by frame-backing
-            // the params (#204) so they stop pinning R0-R3, with spill kept on.
-            if let Err(e) = &attempt
-                && e.to_string().contains(PAIR_EXHAUSTION)
-            {
-                attempt = select_direct_attempt(true, true, promote);
-            }
-            attempt
-        };
+        // compiles on the first attempt is untouched by the later rungs. Returns
+        // the result AND which rung produced it (for the #242 measurement below).
+        let recovery_ladder =
+            |promote: bool| -> (Result<Vec<ArmInstruction>, synth_core::Error>, &'static str) {
+                let mut attempt = select_direct_attempt(false, false, promote);
+                let mut rung = "base";
+                // VCR-RA-001 step 3b-lite (#242): the i32 register-exhaustion
+                // hard-fail is recoverable — retry with spill-on-exhaustion, which
+                // reserves the spill area and spills the deepest stack value when
+                // the pool is full.
+                if let Err(e) = &attempt
+                    && e.to_string().contains(SINGLE_EXHAUSTION)
+                {
+                    attempt = select_direct_attempt(true, false, promote);
+                    rung = "spill";
+                }
+                // VCR-RA-001 acceptance increment (#242): the i64 consecutive-PAIR
+                // exhaustion is recoverable too — not by stack spilling (the pair
+                // allocator already spills stack values, #171) but by frame-backing
+                // the params (#204) so they stop pinning R0-R3, with spill kept on.
+                if let Err(e) = &attempt
+                    && e.to_string().contains(PAIR_EXHAUSTION)
+                {
+                    attempt = select_direct_attempt(true, true, promote);
+                    rung = "param-backing";
+                }
+                (attempt, rung)
+            };
         // #474: local promotion (default-on since v0.14.0) is an OPTIMIZATION — it
         // must never be the reason a function fails to compile. Run the full ladder
         // with promotion first (so every function that compiles today is
@@ -267,13 +272,36 @@ fn compile_wasm_to_arm(
         // is reached ONLY by functions that exhaust WITH promotion, so promotion-on
         // output is untouched by construction (frozen byte gate stays green).
         let promote = std::env::var("SYNTH_NO_LOCAL_PROMOTE").is_err();
-        let mut attempt = recovery_ladder(promote);
+        let (mut attempt, mut rung) = recovery_ladder(promote);
+        let mut promotion_dropped = false;
         if promote
-            && let Err(e) = &attempt
-            && e.to_string().contains("register exhaustion")
-            && let Ok(rescued) = recovery_ladder(false)
+            && attempt
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.to_string().contains("register exhaustion"))
         {
-            attempt = Ok(rescued);
+            let (rescued, off_rung) = recovery_ladder(false);
+            if rescued.is_ok() {
+                attempt = rescued;
+                rung = off_rung;
+                promotion_dropped = true;
+            }
+        }
+        // VCR-RA measurement (#242): log which recovery rung produced the result,
+        // so the per-rung distribution across a corpus can be measured — the size
+        // of the failure surface a verified allocator must subsume (see
+        // scripts/repro/register_exhaustion_recovery_ladder.md). Logging only:
+        // emitted bytes are unchanged, so the frozen byte gate is unaffected.
+        if std::env::var("SYNTH_RECOVERY_STATS").is_ok() {
+            eprintln!(
+                "[recovery-stats] rung={rung}{} result={}",
+                if promotion_dropped {
+                    " promotion-off"
+                } else {
+                    ""
+                },
+                if attempt.is_ok() { "ok" } else { "exhausted" },
+            );
         }
         attempt.map_err(|e| format!("instruction selection failed: {}", e))
     };
