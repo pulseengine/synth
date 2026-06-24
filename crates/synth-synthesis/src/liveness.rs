@@ -494,6 +494,99 @@ pub fn forward_stack_reloads(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
     (out, rewrites)
 }
 
+/// VCR-RA immediate-shift folding (#390, epic #242): fold a register-materialized
+/// constant shift amount into an immediate shift, dropping the `movw`.
+///
+/// The stack selector lowers `i32.shl`/`shr_s`/`shr_u` to the REGISTER shift forms
+/// (`LslReg`/`AsrReg`/`LsrReg`), so a constant shift amount on the operand stack is
+/// first materialized into a scratch register (`movw rM, #C`) and then consumed
+/// (`lsl rD, rN, rM`). This rewrites the pair to the IMMEDIATE form
+/// (`lsl rD, rN, #C`) and removes the now-dead `movw` — −1 instruction and −1 live
+/// register. Real on the hot path: flight_seam `movw r7,#24; lsl r8,r6,r7` and
+/// flight_seam_flat `movw r2,#24; lsl r3,r1,r2`.
+///
+/// SOUNDNESS:
+/// - **Shift range `C ∈ [1,31]`.** Only there do the register- and immediate-shift
+///   forms provably agree: the register shift uses `rM mod 256` capped (≥32 ⇒ 0 for
+///   LSL/LSR), which the 5-bit immediate cannot encode; and immediate `lsr/asr #0`
+///   means shift-by-32 (≠ register shift by 0). `C ∈ [1,31]` sidesteps both — and
+///   `movw` materializes the exact value, so the register really held `C`.
+/// - **`rM` is the shift AMOUNT, not the value** (`rm == M`, `rn != M`): if `rn==M`
+///   the shift also reads `M` as its input, so the `movw` can't be dropped.
+/// - **`M` untouched between** the `movw` and the shift (not read — else its value
+///   is used elsewhere; not redefined — else it isn't `C` at the shift), and the
+///   scan bails on any unmodeled op (`reg_effect → None`: call/branch/label).
+/// - **`M` dead after the shift** ([`reg_dead_by_redef`]: redefined-before-read, or
+///   a return terminator where `M` is not an ABI result reg). Then the `movw` is a
+///   dead store and is removed.
+///
+/// **Branch-offset safety:** like [`eliminate_dead_stores`], intended to run on the
+/// `select_with_stack` output BEFORE `resolve_label_branches`, where branches are
+/// symbolic labels — removing a non-branch interior instruction is offset-neutral.
+/// Pure function; callers opt in (flag-gated wiring is a separate, oracle-gated step).
+pub fn fold_immediate_shifts(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    let n = instrs.len();
+    let mut out = instrs.to_vec();
+    let mut drop_movw: Vec<bool> = vec![false; n];
+    let mut folds = 0usize;
+
+    for i in 0..n {
+        // [i] must be `movw rM, #C` with C a foldable shift amount.
+        let (m, c) = match &instrs[i].op {
+            ArmOp::Movw { rd, imm16 } if (1..=31).contains(imm16) => (*rd, *imm16 as u32),
+            _ => continue,
+        };
+        // Find the first op that touches M; it must be the consuming Reg-shift.
+        for j in (i + 1)..n {
+            // The shift consuming M as its amount.
+            let shifted = match &out[j].op {
+                ArmOp::LslReg { rd, rn, rm } if *rm == m && *rn != m => Some(ArmOp::Lsl {
+                    rd: *rd,
+                    rn: *rn,
+                    shift: c,
+                }),
+                ArmOp::LsrReg { rd, rn, rm } if *rm == m && *rn != m => Some(ArmOp::Lsr {
+                    rd: *rd,
+                    rn: *rn,
+                    shift: c,
+                }),
+                ArmOp::AsrReg { rd, rn, rm } if *rm == m && *rn != m => Some(ArmOp::Asr {
+                    rd: *rd,
+                    rn: *rn,
+                    shift: c,
+                }),
+                _ => None,
+            };
+            if let Some(imm_shift) = shifted {
+                // M must be dead after the shift for the movw to be a dead store.
+                if reg_dead_by_redef(m, &instrs[j + 1..]) {
+                    out[j].op = imm_shift;
+                    drop_movw[i] = true;
+                    folds += 1;
+                }
+                break; // M consumed (folded or declined) — done with this movw.
+            }
+            // Any other read/redef of M, or an unmodeled op, ends this movw's window.
+            match reg_effect(&instrs[j].op) {
+                Some(eff) if eff.uses.contains(&m) || eff.defs.contains(&m) => break,
+                Some(_) => {}
+                None => break,
+            }
+        }
+    }
+
+    if folds == 0 {
+        return (out, 0);
+    }
+    let folded: Vec<ArmInstruction> = out
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !drop_movw[*i])
+        .map(|(_, ins)| ins)
+        .collect();
+    (folded, folds)
+}
+
 /// True if `op` returns from the function: `Bx LR`, or a `Pop`/`Ldmia` that loads
 /// `PC` (the `pop {…, pc}` epilogue). At such a point the only registers live out
 /// of the function are the ABI result registers — see [`RETURN_VALUE_REGS`].
@@ -3296,6 +3389,188 @@ mod tests {
             rd,
             op2: Operand2::Imm(imm),
         })
+    }
+
+    #[test]
+    fn fold_imm_shift_basic_folds_movw_into_lsl() {
+        // movw r7,#24 ; <neutral> ; lsl r8,r6,r7 ; movw r7,#0 (redef ⇒ r7 dead)
+        // ⇒ lsl r8,r6,#24 and the movw is removed (−1 instruction).
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 24,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R1,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::LslReg {
+                rd: Reg::R8,
+                rn: Reg::R6,
+                rm: Reg::R7,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 0,
+            }), // redef ⇒ r7 dead after the shift
+        ];
+        let (out, n) = fold_immediate_shifts(&seq);
+        assert_eq!(n, 1);
+        assert_eq!(out.len(), seq.len() - 1, "the folded movw is removed");
+        assert!(
+            out.iter().any(|i| matches!(
+                i.op,
+                ArmOp::Lsl {
+                    rd: Reg::R8,
+                    rn: Reg::R6,
+                    shift: 24
+                }
+            )),
+            "register shift folded to immediate lsl #24"
+        );
+        assert!(
+            !out.iter().any(|i| matches!(i.op, ArmOp::LslReg { .. })),
+            "no register-form shift remains"
+        );
+    }
+
+    #[test]
+    fn fold_imm_shift_lsr_and_asr() {
+        for (reg_op, is_asr) in [
+            (
+                ArmOp::LsrReg {
+                    rd: Reg::R2,
+                    rn: Reg::R3,
+                    rm: Reg::R4,
+                },
+                false,
+            ),
+            (
+                ArmOp::AsrReg {
+                    rd: Reg::R2,
+                    rn: Reg::R3,
+                    rm: Reg::R4,
+                },
+                true,
+            ),
+        ] {
+            let seq = vec![
+                ins(ArmOp::Movw {
+                    rd: Reg::R4,
+                    imm16: 5,
+                }),
+                ins(reg_op),
+                ins(ArmOp::Movw {
+                    rd: Reg::R4,
+                    imm16: 0,
+                }),
+            ];
+            let (out, n) = fold_immediate_shifts(&seq);
+            assert_eq!(n, 1);
+            let folded_asr = out
+                .iter()
+                .any(|i| matches!(i.op, ArmOp::Asr { shift: 5, .. }));
+            let folded_lsr = out
+                .iter()
+                .any(|i| matches!(i.op, ArmOp::Lsr { shift: 5, .. }));
+            assert_eq!(folded_asr, is_asr);
+            assert_eq!(folded_lsr, !is_asr);
+        }
+    }
+
+    #[test]
+    fn fold_imm_shift_declines_amount_out_of_range() {
+        // shift amount 40 (> 31) is not encodable as an immediate ⇒ no fold.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 40,
+            }),
+            ins(ArmOp::LslReg {
+                rd: Reg::R8,
+                rn: Reg::R6,
+                rm: Reg::R7,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 0,
+            }),
+        ];
+        let (out, n) = fold_immediate_shifts(&seq);
+        assert_eq!(n, 0);
+        assert_eq!(out.len(), seq.len());
+    }
+
+    #[test]
+    fn fold_imm_shift_declines_when_amount_reg_is_also_the_value() {
+        // lsl r8,r7,r7 — r7 is both value (rn) and amount (rm); dropping the movw
+        // would lose the value, so decline.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 5,
+            }),
+            ins(ArmOp::LslReg {
+                rd: Reg::R8,
+                rn: Reg::R7,
+                rm: Reg::R7,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 0,
+            }),
+        ];
+        let (_, n) = fold_immediate_shifts(&seq);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn fold_imm_shift_declines_when_amount_live_after_shift() {
+        // r7 is read AFTER the shift (not dead) ⇒ the movw can't be dropped.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 8,
+            }),
+            ins(ArmOp::LslReg {
+                rd: Reg::R8,
+                rn: Reg::R6,
+                rm: Reg::R7,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R7,
+                op2: Operand2::Imm(1),
+            }), // reads r7
+        ];
+        let (_, n) = fold_immediate_shifts(&seq);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn fold_imm_shift_declines_across_unmodeled_op() {
+        // an unmodeled op (label/branch) between the movw and the shift ⇒ bail.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 8,
+            }),
+            ins(ArmOp::Label {
+                name: "L".to_string(),
+            }),
+            ins(ArmOp::LslReg {
+                rd: Reg::R8,
+                rn: Reg::R6,
+                rm: Reg::R7,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 0,
+            }),
+        ];
+        let (_, n) = fold_immediate_shifts(&seq);
+        assert_eq!(n, 0);
     }
 
     #[test]
