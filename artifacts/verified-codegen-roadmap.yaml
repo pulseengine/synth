@@ -196,6 +196,24 @@ artifacts:
       gate comes off — flag-off stays bit-identical, but flag-on for call-containing
       functions is new codegen wiring = a SEPARATE gated step, not an idle-tick
       change. This pass landed only the frozen-safe probe + finding.
+
+      LEAF-ONLY LIFT — END-TO-END GAP CLOSED EMPIRICALLY (2026-06-24, #390,
+      fast-follow #1 cont.): the with-call fixture scripts/repro/
+      local_promote_cross_call.wat (exported `cross_call` holds an i32 local `acc`
+      live across a `bl` to `$helper`; acc satisfies every v1 promotion predicate
+      except leaf-only). With leaf-only ON it compiles byte-IDENTICAL flag-on vs
+      flag-off (promotion declines — the gate holds end-to-end, frozen-safe). Under
+      a THROWAWAY leaf-only lift (experiment reverted, NOT committed), promotion
+      runs on the call fn and objdump confirms the FULL pipeline is correct: acc is
+      promoted to r4 (`mov r4,r3`), survives the `bl func_0` by AAPCS, and is read
+      back from r4 AFTER the call (`adds r6,r4,r0`) — NOT remapped to a caller-saved
+      reg, exactly as the #459 reallocator-isolation proof predicted. So the
+      end-to-end with-call promotion is correctness-ready. REMAINING to lift the
+      gate (the byte-changing gated step, NOT this tick): make the committed lift PR
+      (a) remove the leaf-only early-return, (b) add a with-call EXECUTION
+      differential (resolve the internal BL, run flag-on vs wasmtime) as the gate,
+      (c) re-freeze + G474RE silicon. This pass landed the frozen-safe fixture +
+      finding; flag-off bit-identical, no codegen change.
     status: implemented
     tags: [codegen, register-allocation, ssa, regalloc2, track-a, release-v0.11.40]
     links:
