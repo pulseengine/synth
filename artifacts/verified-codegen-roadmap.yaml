@@ -176,6 +176,26 @@ artifacts:
       control_step 0x00210A55 + flight_seam 0x07FDF307 preserved; flight_seam
       sp-traffic 39→5, .text 902→798 B. ARM-only (RV32 untouched). The default-on
       flip is a separate gated step (re-freeze + G474RE silicon), like cmp→select.
+
+      LEAF-ONLY LIFT — REALLOCATOR-SAFETY PROBE (2026-06-24, #390, fast-follow #1):
+      the empirical question the leaf-only gate was set on — can the post-selection
+      range-reallocator move a promoted local's callee-saved home to a CALLER-saved
+      register that an intervening `bl` would clobber? RESOLVED: NO, by construction.
+      reallocate_function FLUSHES its segment at every non-straight-line op
+      (liveness.rs:2341), and `Bl` has reg_effect→None, so a call SPLITS segments;
+      the pre-call segment's live-out (the cross-call value) is its last-opened
+      range per register ⇒ PINNED to its original register (liveness.rs:2371). The
+      reallocator never renames across a call. Pinned by the unit test
+      `reallocate_function_preserves_callee_saved_value_across_call` (constructs the
+      exact promotion+call shape under interior pressure; r5 stays r5, not remapped
+      to a caller-saved reg). This is the specific mechanism the v1 advisor flagged;
+      it is safe. HONEST REMAINING GAP before lifting the gate: this validates the
+      reallocator pass in isolation; the LIFT still needs an end-to-end WITH-CALL
+      differential (flag-on execution oracle over the full selector-seed +
+      preserve_caller_saved + realloc pipeline, like local_promote_i32) before the
+      gate comes off — flag-off stays bit-identical, but flag-on for call-containing
+      functions is new codegen wiring = a SEPARATE gated step, not an idle-tick
+      change. This pass landed only the frozen-safe probe + finding.
     status: implemented
     tags: [codegen, register-allocation, ssa, regalloc2, track-a, release-v0.11.40]
     links:
