@@ -55,15 +55,16 @@ fn fixture(name: &str) -> std::path::PathBuf {
 
 /// Compile a frozen fixture for `(backend, target)` with the exact `--all-exports
 /// --relocatable` config the `.py` differentials use, and return the SHA-256 hex
-/// of its `.text` and the section length. `SYNTH_CMP_SELECT_FUSE` / `SYNTH_CONST_CSE`
-/// are explicitly removed so an enabled-in-the-environment flag can never silently
-/// re-freeze the gate — it locks the SHIPPED, flag-off lowering. The `object`
-/// crate reads `.text` arch-agnostically (ARM Thumb-2 and RV32 alike).
+/// of its `.text` and the section length. `SYNTH_NO_CMP_SELECT_FUSE` (the v0.13.0
+/// cmp→select opt-out) / `SYNTH_CONST_CSE` are explicitly removed so a flag set in
+/// the environment can never silently re-freeze the gate — it locks the SHIPPED
+/// lowering, which since v0.13.0 INCLUDES cmp→select fusion (default-on). The
+/// `object` crate reads `.text` arch-agnostically (ARM Thumb-2 and RV32 alike).
 fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
     let path = fixture(wasm);
     let elf = format!("/tmp/frozenbytes_{backend}_{wasm}.elf");
     let out = Command::new(synth())
-        .env_remove("SYNTH_CMP_SELECT_FUSE")
+        .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
         .env_remove("SYNTH_CONST_CSE")
         .args([
             "compile",
@@ -125,24 +126,30 @@ fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
 /// the `.py` differentials cover): control_step ↔ 0x00210A55, flight_seam_flat ↔
 /// flat+inlined flight_algo 0x07FDF307, plus flight_seam and the div seam.
 ///
-/// Goldens derived on main @ ef97f86 (post-#444 cmp→select, flag-off), 2026-06-23.
+/// Goldens RE-FROZEN for v0.13.0 (#428): cmp→select fusion is now default-on, so
+/// these lock the FUSED .text. The execution RESULTS are preserved — re-verified on
+/// this commit with fusion on: control_step still 0x00210A55 (control_step_differential
+/// .py 13/13), flat+inlined flight_algo still 0x07FDF307 (flight_seam_differential.py
+/// MATCH). .text shrank: control_step 354→324, flight_seam 1016→902, flight_seam_flat
+/// 1240→1122 (−262 B total); signed_div_const (0 fusion sites) unchanged. Prior
+/// flag-off goldens were on main @ ef97f86 (post-#444), 2026-06-23.
 #[test]
 fn frozen_fixtures_text_is_bit_identical_oracle_001() {
     let cases = [
         (
             "control_step.wasm",
-            "5efa58ca2667fb2f910b5ebf0ef8020a7fc1b9224f3ec070e9e0028de9d83a57",
-            354usize,
+            "b4c4c290be2c8a83055d4c9696ae4ebb16486a8fd3fc268531607eeef35325e5",
+            324usize,
         ),
         (
             "flight_seam.wasm",
-            "1f39b77b65f0695693deda9ee56e3a7fb3af4127858a8ac6c3ce0fd3398de516",
-            1016,
+            "300fdf3b92a0941da63b3215441a799d9b32ef942fd404b4803a83a6efb1bb60",
+            902,
         ),
         (
             "flight_seam_flat.wasm",
-            "f6244f35f932aac7661b9ed1cbf70dc1b5353a9f5c03178ebad3a38a891d7b8f",
-            1240,
+            "23d0b6829414a855f365d84c7c3301c256f1843fe46b2cc9b369fec30610913d",
+            1122,
         ),
         (
             "signed_div_const.wasm",

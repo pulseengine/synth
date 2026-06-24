@@ -737,7 +737,16 @@ artifacts:
       exhaustive sweep); precond (2) (G474RE silicon no-regression) still OWED —
       gale's bench is thumbv7m/qemu today — flip stays held on it (user call
       2026-06-23: keep the silicon gate; close the exec gap first).
-    status: approved
+      FLIP SHIPPED v0.13.0 (2026-06-24, #428): default-on landed. User authorized
+      shipping on the qemu+sweep+oracle evidence and WAIVING precond (2) for the
+      release (gale takes the on-silicon G474RE DWT no-regression as a tracked
+      post-ship follow-up). Re-froze the fused .text on the same commit the
+      named-anchor differentials were re-run on (control_step preserved 0x00210A55,
+      flat+inlined flight_algo preserved 0x07FDF307; .text −262 B across the frozen
+      fixtures). Escape hatch SYNTH_NO_CMP_SELECT_FUSE=1 reverts the lowering.
+      SCOPE: the select half shipped; the br_if→predicated-branch half remains a
+      separate follow-up (branch consumers unmodeled by reg_effect).
+    status: implemented
     tags: [codegen, selector, peephole, compare-select, flag-fusion, gale-209, perf, track-b, vcr-oracle-001]
     links:
       - type: derives-from

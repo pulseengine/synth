@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-06-24
+
+**cmp→select fusion is now DEFAULT-ON (VCR-SEL-004, #428, epic #242).** The ARM
+backend's compare→select lowering no longer materializes a boolean and re-tests
+it (`cmp; SetCond; cmp #0; movne; moveq`); it predicates the moves directly on
+the compare's own flags (`cmp; mov{c}; mov{invert(c)}`), −2 instructions per
+select. This is a **byte-changing** release: `.text` shrinks on every function
+with a select (control_step 354→324 B, flight_seam 1016→902, flight_seam_flat
+1240→1122; −262 B across the frozen fixtures), and gale's `gust_mix` measured
+2.375×→2.125× vs LLVM with a 132→116 B function.
+
+Execution **results are preserved** — validated three ways before shipping: (1)
+the named-anchor differentials re-run with fusion on (control_step still
+`0x00210A55`, flat+inlined flight_algo still `0x07FDF307`); (2) a unicorn
+execution oracle that runs the two-move `mov{invert(c)}` arm (`cmp-select-oracle`
+CI job, 11/11 result-identical); (3) gale's `gale_decider_diff` sweep across all
+8 verified primitives (10,596 cases, native ≡ unfused ≡ fused). The byte gates
+were re-frozen to the fused `.text` on this commit.
+
+**Escape hatch:** `SYNTH_NO_CMP_SELECT_FUSE=1` reverts to the pre-fusion lowering.
+**Pending follow-up:** the on-silicon G474RE DWT cycle no-regression check is
+tracked post-ship (gale); the qemu `-icount` proxy showed a monotonic win.
+
 ## [0.12.0] - 2026-06-23
 
 **DWARF SOURCE-LINE DEBUGGING — `--debug-line` (VCR-DBG-001, #394, epic #242).**

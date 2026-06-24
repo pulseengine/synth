@@ -433,15 +433,20 @@ fn compile_wasm_to_arm(
     // sound (flags reused only when nothing clobbers them in the window; the
     // boolean deleted only when provably dead) — see `fuse_cmp_select`.
     //
-    // BEHIND `SYNTH_CMP_SELECT_FUSE=1` while it is validated against the
-    // differential oracle + gale's on-target gust_codegen_bench (G474RE). Off by
-    // default ⇒ a literal no-op ⇒ every fixture stays bit-identical
-    // (control_step 0x00210A55 / flat+inlined flight_algo 0x07FDF307 / divseam).
-    // The default-on flip is the held byte-changing step, gated on silicon.
-    let arm_instrs = if std::env::var("SYNTH_CMP_SELECT_FUSE").is_ok() {
+    // DEFAULT-ON as of v0.13.0 (#428): cmp→select fusion ships by default. The
+    // byte-changing flip is validated by (a) the unicorn execution oracle that runs
+    // the two-move `mov{invert(c)}` arm (cmp_select_two_move_differential.py), (b)
+    // gale's gale_decider_diff 10,596-case sweep across all 8 verified primitives
+    // (native ≡ flag-off ≡ flag-on = 0x88e73178d232bcf5), and (c) the named-anchor
+    // differentials re-run with fusion ON — control_step still 0x00210A55, flat+
+    // inlined flight_algo still 0x07FDF307 (results preserved; bytes deliberately
+    // changed, re-frozen on this commit). Escape hatch: `SYNTH_NO_CMP_SELECT_FUSE=1`
+    // reverts to the pre-fusion lowering. The on-silicon G474RE DWT no-regression
+    // check is a tracked post-ship follow-up (gale owns it).
+    let arm_instrs = if std::env::var("SYNTH_NO_CMP_SELECT_FUSE").is_err() {
         // The rewritten stream is identical to `fuse_cmp_select`'s 2-tuple form;
         // the extra `two_move` count is diagnostic only (the fusion census /
-        // blast-radius datum for the flip decision — #7 made that arm reachable).
+        // blast-radius datum — #7 made that arm reachable).
         let (out, fused, two_move) =
             synth_synthesis::liveness::fuse_cmp_select_with_stats(&arm_instrs);
         if std::env::var("SYNTH_FUSE_STATS").is_ok() {
