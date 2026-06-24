@@ -1047,6 +1047,21 @@ fn compute_local_promotion(
     i64_set: &std::collections::HashSet<u32>,
 ) -> std::collections::HashMap<u32, Reg> {
     use std::collections::HashMap;
+    // v1 is LEAF-ONLY. The selector assigns a promoted local a callee-saved reg
+    // (survives a `bl` by AAPCS) and `preserve_caller_saved` correctly emits no
+    // spill for it. But the post-selection range-reallocator (arm_backend.rs, over
+    // pool r0..r8) can remap that callee-saved reg to a CALLER-saved one — observed
+    // r5→r3 — and the no-spill decision was already made for the callee-saved home,
+    // so a remapped local would live across a clobbering call unspilled. Until a
+    // with-call fixture proves the VCR-RA-003 validator rejects such a remap,
+    // decline any function with a call (frame-slot path, unchanged). Same leaf-only
+    // precedent as RISC-V #220 and the cmp→select select-half. Fast-follow: #390.
+    if wasm_ops
+        .iter()
+        .any(|op| matches!(op, WasmOp::Call(_) | WasmOp::CallIndirect { .. }))
+    {
+        return HashMap::new();
+    }
     /// Per-local accumulator while walking the op stream once.
     struct Info {
         count: u32,
@@ -16456,6 +16471,26 @@ mod tests {
         assert_eq!(p.get(&6), Some(&Reg::R8));
         assert!(!p.contains_key(&7), "local 7 overflows the 5-reg pool");
         assert!(!p.contains_key(&8), "local 8 overflows the 5-reg pool");
+    }
+
+    #[test]
+    fn promote_declines_functions_with_calls_leaf_only_v1() {
+        // A would-be-eligible local in a function containing a Call is declined:
+        // the post-selection range-reallocator can move its callee-saved home to a
+        // caller-saved reg, which a bl would clobber unspilled. Leaf-only for v1.
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::LocalSet(1),
+            WasmOp::Call(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+        ];
+        let p = compute_local_promotion(&ops, 1, &no_i64());
+        assert!(
+            p.is_empty(),
+            "promotion must decline functions with calls in v1"
+        );
     }
 
     #[test]
