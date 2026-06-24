@@ -22,12 +22,21 @@
 //!     ledger honest — a parity claim must not outlive the gap it documents).
 //!
 //! SCOPE (no silent cap — the divergence is recorded, not hidden). This oracle
-//! covers the INTEGER core where the #223/#232 op-gaps lived: i32/i64
-//! arithmetic, bitwise, shift/rotate, compare, sign-extend, Select, the
-//! width conversions, locals, and integer memory. Float (f32/f64) and SIMD
+//! covers the INTEGER core where the #223/#232 op-gaps lived, now NEAR-EXHAUSTIVE
+//! over it: i32 and i64 arithmetic, bitwise, shift/rotate, the FULL compare set
+//! (eq/ne + signed+unsigned lt/gt/le/ge + eqz), div/rem, sign-extend (incl. the
+//! sub-word i64.extend{8,16,32}_s), Select, width conversions, locals, and i32+i64
+//! integer memory — 71 ops at cross-backend parity. Float (f32/f64) and SIMD
 //! (v128) parity is a separate, large, known gap (ARM has VFP/Helium lowerings
-//! RV32 does not); it is intentionally out of this first oracle's scope and is
-//! tracked separately, NOT asserted here.
+//! RV32 does not); it is intentionally out of this oracle's scope and is tracked
+//! separately, NOT asserted here.
+//!
+//! ASYMMETRY NOTE (measured 2026-06-24, the coverage-widening run): i64.rotl /
+//! i64.rotr lower on RV32 (sequence-composed in the i64 path) while i32.rotl /
+//! i32.rotr are ledgered as RV32 declines (Zbb absent). That the i64 rotate
+//! already sequence-lowers on RV32 is evidence the i32 Zbb deferral is closable by
+//! routing i32 rotate through the same shift+or sequence — the concrete next
+//! VCR-SEL-005 codegen step (byte-changing, gated; not asserted here).
 
 use synth_backend_riscv::selector::select as riscv_select;
 use synth_synthesis::{BoundsCheckConfig, InstructionSelector, RuleDatabase, WasmOp, WasmOp::*};
@@ -149,6 +158,10 @@ fn cases() -> Vec<Case> {
         c("i32.lt_s", 0, vec![I32Const(-1), I32Const(1), I32LtS]),
         c("i32.lt_u", 0, vec![I32Const(1), I32Const(2), I32LtU]),
         c("i32.gt_s", 0, vec![I32Const(2), I32Const(1), I32GtS]),
+        c("i32.gt_u", 0, vec![I32Const(2), I32Const(1), I32GtU]),
+        c("i32.le_s", 0, vec![I32Const(-1), I32Const(1), I32LeS]),
+        c("i32.le_u", 0, vec![I32Const(1), I32Const(2), I32LeU]),
+        c("i32.ge_s", 0, vec![I32Const(2), I32Const(1), I32GeS]),
         c("i32.ge_u", 0, vec![I32Const(2), I32Const(2), I32GeU]),
         // ---- Select (the #223 class) ----
         c(
@@ -218,15 +231,65 @@ fn cases() -> Vec<Case> {
         c("i64.and", 0, vec![I64Const(6), I64Const(3), I64And]),
         c("i64.or", 0, vec![I64Const(6), I64Const(3), I64Or]),
         c("i64.xor", 0, vec![I64Const(6), I64Const(3), I64Xor]),
-        // ---- i64 shift ----
+        // ---- i64 shift / rotate ----
         c("i64.shl", 0, vec![I64Const(1), I64Const(4), I64Shl]),
+        c("i64.shr_s", 0, vec![I64Const(-16), I64Const(2), I64ShrS]),
         c("i64.shr_u", 0, vec![I64Const(16), I64Const(2), I64ShrU]),
-        // ---- i64 unary / compare ----
+        c("i64.rotl", 0, vec![I64Const(1), I64Const(3), I64Rotl]),
+        c("i64.rotr", 0, vec![I64Const(1), I64Const(3), I64Rotr]),
+        // ---- i64 unary ----
         c("i64.clz", 0, vec![I64Const(1), I64Clz]),
+        c("i64.ctz", 0, vec![I64Const(8), I64Ctz]),
         c("i64.popcnt", 0, vec![I64Const(7), I64Popcnt]),
+        // ---- i64 div / rem (trap-guarded; i64 div is the #317 RV32 class) ----
+        c("i64.div_s", 0, vec![I64Const(-9), I64Const(2), I64DivS]),
+        c("i64.div_u", 0, vec![I64Const(9), I64Const(2), I64DivU]),
+        c("i64.rem_s", 0, vec![I64Const(-9), I64Const(2), I64RemS]),
+        c("i64.rem_u", 0, vec![I64Const(9), I64Const(2), I64RemU]),
+        // ---- i64 comparison ----
         c("i64.eqz", 0, vec![I64Const(0), I64Eqz]),
         c("i64.eq", 0, vec![I64Const(3), I64Const(3), I64Eq]),
+        c("i64.ne", 0, vec![I64Const(3), I64Const(4), I64Ne]),
         c("i64.lt_s", 0, vec![I64Const(-1), I64Const(1), I64LtS]),
+        c("i64.lt_u", 0, vec![I64Const(1), I64Const(2), I64LtU]),
+        c("i64.gt_s", 0, vec![I64Const(2), I64Const(1), I64GtS]),
+        c("i64.gt_u", 0, vec![I64Const(2), I64Const(1), I64GtU]),
+        c("i64.le_s", 0, vec![I64Const(-1), I64Const(1), I64LeS]),
+        c("i64.le_u", 0, vec![I64Const(1), I64Const(2), I64LeU]),
+        c("i64.ge_s", 0, vec![I64Const(2), I64Const(1), I64GeS]),
+        c("i64.ge_u", 0, vec![I64Const(2), I64Const(2), I64GeU]),
+        // ---- i64 sign-extend (sub-word → i64) ----
+        c("i64.extend8_s", 0, vec![I64Const(200), I64Extend8S]),
+        c("i64.extend16_s", 0, vec![I64Const(40000), I64Extend16S]),
+        c(
+            "i64.extend32_s",
+            0,
+            vec![I64Const(0x1_0000_0001), I64Extend32S],
+        ),
+        // ---- i64 memory ----
+        c(
+            "i64.load",
+            0,
+            vec![
+                I32Const(0),
+                I64Load {
+                    offset: 0,
+                    align: 3,
+                },
+            ],
+        ),
+        c(
+            "i64.store",
+            0,
+            vec![
+                I32Const(0),
+                I64Const(42),
+                I64Store {
+                    offset: 0,
+                    align: 3,
+                },
+            ],
+        ),
         // ---- width conversions (i32<->i64) ----
         c("i64.extend_i32_s", 0, vec![I32Const(-1), I64ExtendI32S]),
         c("i64.extend_i32_u", 0, vec![I32Const(-1), I64ExtendI32U]),
@@ -269,7 +332,7 @@ fn cross_backend_integer_op_parity_242() {
     // construction regression (e.g. every case erroring on a stack-underflow
     // artifact) can't masquerade as "all at parity".
     assert!(
-        at_parity >= 30,
+        at_parity >= 65,
         "parity oracle exercised too few common-core ops ({at_parity}); the \
          curated set or the selector construction regressed"
     );
