@@ -39,7 +39,9 @@ from unicorn.riscv_const import (
 )
 
 WAT = "scripts/repro/shift_fold.wat"
-SYNTH = "./target/release/synth"
+# Default to the release binary for local dev; CI sets SYNTH=./target/debug/synth
+# (it builds `cargo build -p synth-cli`, debug) so the isolated oracle job stays fast.
+SYNTH = os.environ.get("SYNTH", "./target/release/synth")
 CODE, LIN, STK, RET = 0x100000, 0x40000, 0x90000, 0x200000
 
 # (export name, list of argument tuples). Each function returns its result in a0.

@@ -268,3 +268,38 @@ jobs:
         run: pip install wasmtime unicorn pyelftools
       - name: Run two-move execution oracle
         run: python scripts/repro/cmp_select_two_move_differential.py
+
+  rv32-shift-fold-oracle:
+    name: rv32 immediate-shift-fold execution oracle
+    # VCR-ORACLE-001 (#242, #472): EXECUTE the RV32 immediate-shift-fold lever
+    # under unicorn (UC_ARCH_RISCV) in BOTH flag states and diff vs wasmtime. The
+    # lever ships flag-off (SYNTH_RV_SHIFT_FOLD) awaiting the on-silicon flip, so
+    # nothing else exercises the flag-on path; this continuously validates it
+    # (slli/srli/srai folds incl. the &31 mask on >=32 and negative amounts, and
+    # the variable-shift non-fold) against regression — the RV32 analogue of the
+    # cmp-select oracle above. Isolated job: emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run RV32 shift-fold execution oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/shift_fold_riscv_differential.py
