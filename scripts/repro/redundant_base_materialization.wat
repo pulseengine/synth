@@ -12,6 +12,7 @@
 ;; Generic addresses/values — exhibits the pattern, tied to nothing real.
 (module
   (memory 1)
+  (export "memory" (memory 0))
   (func (export "init_fields")
     (i32.store   (i32.const 0)  (i32.const 11))
     (i32.store   (i32.const 4)  (i32.const 22))
