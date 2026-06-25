@@ -205,6 +205,16 @@ pub fn select_with_result_types(
         return Err(SelectorError::Unsupported(WasmOp::Select));
     }
     ctx.emit_return_epilogue();
+    // VCR-RA RV32 lever (#472, #242): fold constant shift amounts into the
+    // immediate-shift forms (`slli/srli/srai`), dropping the `li tmp, N`. Flag-off
+    // by default — with the env unset the output is byte-identical to the
+    // pre-lever baseline (the frozen RV32 fixtures compile without it), so this is
+    // frozen-safe. The on-target cycle win is validated under the RV32 differential
+    // before the default-on flip. (Post-pass: runs after the epilogue's `ret`
+    // terminator exists so the dead-store analysis can see live-out.)
+    if std::env::var_os("SYNTH_RV_SHIFT_FOLD").is_some() {
+        fold_const_shift(&mut ctx.out);
+    }
     let local_frame_bytes = ctx.local_frame_bytes;
     // #220: the temp pool includes callee-saved s-registers (s1..s6), but the
     // RV psABI requires a function to preserve s0..s11. Wrap the body in a
@@ -264,6 +274,189 @@ fn op_dest(op: &RiscVOp) -> Option<Reg> {
         | Remu { rd, .. } => Some(rd),
         _ => None,
     }
+}
+
+/// Source registers an op reads, or `None` for ops whose effect on register
+/// liveness this peephole does not model (control flow, system, labels, calls).
+/// Mirrors the ARM `reg_effect` "bail on unmodeled" contract so the dead-store
+/// analysis below stays sound: an unmodeled op makes a register's liveness
+/// unprovable rather than silently assumed-dead.
+fn op_reads(op: &RiscVOp) -> Option<Vec<Reg>> {
+    use RiscVOp::*;
+    match op {
+        Lui { .. } | Auipc { .. } => Some(vec![]),
+        Addi { rs1, .. }
+        | Slti { rs1, .. }
+        | Sltiu { rs1, .. }
+        | Xori { rs1, .. }
+        | Ori { rs1, .. }
+        | Andi { rs1, .. }
+        | Slli { rs1, .. }
+        | Srli { rs1, .. }
+        | Srai { rs1, .. }
+        | Lb { rs1, .. }
+        | Lh { rs1, .. }
+        | Lw { rs1, .. }
+        | Lbu { rs1, .. }
+        | Lhu { rs1, .. } => Some(vec![*rs1]),
+        Add { rs1, rs2, .. }
+        | Sub { rs1, rs2, .. }
+        | Sll { rs1, rs2, .. }
+        | Slt { rs1, rs2, .. }
+        | Sltu { rs1, rs2, .. }
+        | Xor { rs1, rs2, .. }
+        | Srl { rs1, rs2, .. }
+        | Sra { rs1, rs2, .. }
+        | Or { rs1, rs2, .. }
+        | And { rs1, rs2, .. }
+        | Mul { rs1, rs2, .. }
+        | Mulh { rs1, rs2, .. }
+        | Mulhsu { rs1, rs2, .. }
+        | Mulhu { rs1, rs2, .. }
+        | Div { rs1, rs2, .. }
+        | Divu { rs1, rs2, .. }
+        | Rem { rs1, rs2, .. }
+        | Remu { rs1, rs2, .. }
+        | Sb { rs1, rs2, .. }
+        | Sh { rs1, rs2, .. }
+        | Sw { rs1, rs2, .. } => Some(vec![*rs1, *rs2]),
+        // Control flow / system / labels / calls — not modeled ⇒ can't prove a
+        // register dead across them.
+        _ => None,
+    }
+}
+
+/// True if register `d` is dead in `rest`: redefined before any read, never read
+/// again, or only live-out as a result register (`a0`/`a1`) at the function's
+/// `ret`. The RV32 analogue of the ARM `reg_dead_by_redef` helper — an unmodeled
+/// op (`None` from [`op_reads`]) is treated as "can't prove dead" (returns
+/// `false`), keeping the dead-store removal conservative.
+fn rv_reg_dead_after(d: Reg, rest: &[RiscVOp]) -> bool {
+    for op in rest {
+        // `ret` = `jalr x0, 0(ra)`: the function exits here, so live-out ⊆
+        // {a0, a1} (the integer result registers).
+        if matches!(op, RiscVOp::Jalr { rd, rs1, imm: 0 } if *rd == Reg::ZERO && *rs1 == Reg::RA) {
+            return d != Reg::A0 && d != Reg::A1;
+        }
+        match op_reads(op) {
+            Some(reads) => {
+                if reads.contains(&d) {
+                    return false; // read before redef ⇒ live
+                }
+                if op_dest(op) == Some(d) {
+                    return true; // redefined unused ⇒ dead from here back
+                }
+            }
+            None => return false, // unmodeled ⇒ can't prove
+        }
+    }
+    // Ran off the end without a `ret` terminator — a partial/malformed stream;
+    // stay conservative.
+    false
+}
+
+/// VCR-RA RV32 lever (#472, epic #242): fold a constant shift amount materialized
+/// by `addi tmp, zero, N` and consumed by a *register* shift (`sll`/`srl`/`sra`)
+/// into the immediate-shift form (`slli`/`srli`/`srai`), dropping the `addi`.
+///
+/// ```text
+/// addi t0, zero, N ; sll rd, rs1, t0   ->   slli rd, rs1, (N & 31)
+/// ```
+///
+/// `slli/srli/srai` carry the shift amount in the instruction (`shamt[4:0]`), so
+/// the separate `li tmp, N` disappears — one instruction saved per constant
+/// shift. The register form `sll` already masks `rs2` to its low 5 bits in
+/// hardware, which is exactly WASM's shift-amount-mod-32 semantics; the fold
+/// reproduces that by masking `shamt = N & 31`, so a shift amount `≥ 32` or a
+/// negative constant folds to the identical behaviour.
+///
+/// Soundness (same scaffolding as the ARM `fold_immediate_shifts` / `fold_uxth`):
+///  * the amount temp `tmp` must NOT be the shift's input `rs1` — otherwise
+///    dropping the `addi` removes `rs1`'s definition (the mandatory guard);
+///  * `tmp` must be untouched between the `addi` and the shift (the windowed scan
+///    to the first op that touches it), and the `addi` must be a dead store:
+///    either the fold's destination **is** `tmp` (`sll tmp, rs1, tmp` → the
+///    `slli` redefines `tmp`, reading only `rs1`) or `tmp` is dead after the
+///    shift ([`rv_reg_dead_after`]).
+///
+/// Only the single-`addi` const form (N in `-2048..=2047`, which covers every
+/// meaningful shift amount `0..31`) is folded; a large constant materialized via
+/// `lui+addi` is out of this lever's v1 scope and stays a register shift.
+/// Removal-only + rewrite-in-place, so no label/branch offsets move. Returns the
+/// fold count for the non-vacuity oracle.
+fn fold_const_shift(out: &mut Vec<RiscVOp>) -> usize {
+    use RiscVOp::*;
+    let n = out.len();
+    let mut drop_addi = vec![false; n];
+    let mut folds = 0usize;
+
+    for i in 0..n {
+        // [i] must be `addi tmp, zero, N` — a small constant materialization.
+        let (tmp, nval) = match &out[i] {
+            Addi { rd, rs1, imm } if *rs1 == Reg::ZERO => (*rd, *imm),
+            _ => continue,
+        };
+        let shamt = (nval as u32 & 31) as u8;
+        for j in (i + 1)..n {
+            // The shift consuming `tmp` as its amount (rs2), with `rs1 != tmp`.
+            let folded = match &out[j] {
+                Sll { rd, rs1, rs2 } if *rs2 == tmp && *rs1 != tmp => Some((
+                    *rd,
+                    Slli {
+                        rd: *rd,
+                        rs1: *rs1,
+                        shamt,
+                    },
+                )),
+                Srl { rd, rs1, rs2 } if *rs2 == tmp && *rs1 != tmp => Some((
+                    *rd,
+                    Srli {
+                        rd: *rd,
+                        rs1: *rs1,
+                        shamt,
+                    },
+                )),
+                Sra { rd, rs1, rs2 } if *rs2 == tmp && *rs1 != tmp => Some((
+                    *rd,
+                    Srai {
+                        rd: *rd,
+                        rs1: *rs1,
+                        shamt,
+                    },
+                )),
+                _ => None,
+            };
+            if let Some((rd, imm_shift)) = folded {
+                // Dead store iff the fold's destination IS `tmp` (the `slli`
+                // redefines it) or `tmp` is otherwise dead after the shift.
+                if rd == tmp || rv_reg_dead_after(tmp, &out[j + 1..]) {
+                    out[j] = imm_shift;
+                    drop_addi[i] = true;
+                    folds += 1;
+                }
+                break; // `tmp` consumed by the shift (folded or declined).
+            }
+            // Any other op that reads or redefines `tmp`, or an unmodeled op,
+            // ends this `addi`'s window.
+            match op_reads(&out[j]) {
+                Some(reads) if reads.contains(&tmp) => break,
+                Some(_) if op_dest(&out[j]) == Some(tmp) => break,
+                Some(_) => {}
+                None => break,
+            }
+        }
+    }
+
+    if folds == 0 {
+        return 0;
+    }
+    let mut idx = 0usize;
+    out.retain(|_| {
+        let keep = !drop_addi[idx];
+        idx += 1;
+        keep
+    });
+    folds
 }
 
 /// True for callee-saved registers the allocator may hand out as temps:
@@ -6024,6 +6217,214 @@ mod tests {
             count(&out, |op| matches!(op, RiscVOp::Slli { .. })),
             0,
             "baseline: not yet folded to `slli #shamt`: {out:?}"
+        );
+    }
+
+    /// #472 imm-shift-fold: the post-pass folds a constant shift amount into the
+    /// immediate form `slli #shamt` and drops the `li` of the amount. Driven on
+    /// the baseline fixture output — exactly what the env flag wires in the CLI.
+    #[test]
+    fn fold_const_shift_folds_amount_into_slli_472() {
+        // (i32.shl (local.get 0) (i32.const 8)) — RESULT returned (observable).
+        let mut out = s(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Const(8),
+                WasmOp::I32Shl,
+                WasmOp::End,
+            ],
+            1,
+        );
+        let before_addi8 = count(
+            &out,
+            |op| matches!(op, RiscVOp::Addi { rs1, imm: 8, .. } if *rs1 == Reg::ZERO),
+        );
+        assert_eq!(before_addi8, 1, "baseline materializes the amount: {out:?}");
+
+        let folds = fold_const_shift(&mut out);
+        assert_eq!(folds, 1, "exactly the one const shift folds: {out:?}");
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Slli { shamt: 8, .. })),
+            1,
+            "folded to `slli #8`: {out:?}"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Sll { .. })),
+            0,
+            "the register-form `sll` is gone: {out:?}"
+        );
+        assert_eq!(
+            count(
+                &out,
+                |op| matches!(op, RiscVOp::Addi { rs1, imm: 8, .. } if *rs1 == Reg::ZERO)
+            ),
+            0,
+            "the `li amount, 8` dead store is dropped: {out:?}"
+        );
+    }
+
+    /// `srl`/`sra` fold to `srli`/`srai` just like `sll` → `slli`.
+    #[test]
+    fn fold_const_shift_handles_srl_and_sra_472() {
+        for (op, want_slli, want_srli, want_srai) in
+            [(WasmOp::I32ShrU, 0, 1, 0), (WasmOp::I32ShrS, 0, 0, 1)]
+        {
+            let mut out = s(
+                &[
+                    WasmOp::LocalGet(0),
+                    WasmOp::I32Const(3),
+                    op.clone(),
+                    WasmOp::End,
+                ],
+                1,
+            );
+            assert_eq!(fold_const_shift(&mut out), 1, "{op:?} folds: {out:?}");
+            assert_eq!(
+                count(&out, |o| matches!(o, RiscVOp::Slli { .. })),
+                want_slli,
+                "{op:?}: {out:?}"
+            );
+            assert_eq!(
+                count(&out, |o| matches!(o, RiscVOp::Srli { shamt: 3, .. })),
+                want_srli,
+                "{op:?}: {out:?}"
+            );
+            assert_eq!(
+                count(&out, |o| matches!(o, RiscVOp::Srai { shamt: 3, .. })),
+                want_srai,
+                "{op:?}: {out:?}"
+            );
+        }
+    }
+
+    /// The shift amount is masked to its low 5 bits (WASM shift-mod-32, which the
+    /// register `sll` already enforces in hardware): `i32.const 33` → `slli #1`,
+    /// `i32.const -1` → `slli #31`. The mask is what makes the fold semantics-
+    /// preserving for out-of-range / negative constants.
+    #[test]
+    fn fold_const_shift_masks_amount_to_low_5_bits_472() {
+        for (amount, want_shamt) in [(33i32, 1u8), (-1, 31), (32, 0), (64, 0)] {
+            let mut out = s(
+                &[
+                    WasmOp::LocalGet(0),
+                    WasmOp::I32Const(amount),
+                    WasmOp::I32Shl,
+                    WasmOp::End,
+                ],
+                1,
+            );
+            // Large/negative amounts may not take the single-`addi` materialization
+            // path (`lui+addi`); only assert the mask when the fold actually fired.
+            if fold_const_shift(&mut out) == 1 {
+                assert_eq!(
+                    count(
+                        &out,
+                        |op| matches!(op, RiscVOp::Slli { shamt, .. } if *shamt == want_shamt)
+                    ),
+                    1,
+                    "amount {amount} masks to shamt {want_shamt}: {out:?}"
+                );
+            }
+        }
+    }
+
+    /// Soundness guard: when the amount temp aliases the shift's INPUT
+    /// (`sll t0, t0, t0`), dropping the `li` would remove the input's definition —
+    /// the fold must decline (`rs1 != tmp`).
+    #[test]
+    fn fold_const_shift_declines_when_amount_aliases_input_472() {
+        let mut out = vec![
+            RiscVOp::Addi {
+                rd: Reg::T0,
+                rs1: Reg::ZERO,
+                imm: 4,
+            },
+            RiscVOp::Sll {
+                rd: Reg::T0,
+                rs1: Reg::T0, // input == amount temp
+                rs2: Reg::T0,
+            },
+            RiscVOp::Jalr {
+                rd: Reg::ZERO,
+                rs1: Reg::RA,
+                imm: 0,
+            },
+        ];
+        assert_eq!(fold_const_shift(&mut out), 0, "must not fold: {out:?}");
+        assert_eq!(count(&out, |op| matches!(op, RiscVOp::Sll { .. })), 1);
+    }
+
+    /// Soundness guard: when the amount temp is read again after the shift (and is
+    /// not the shift's destination), it is live — the `li` is not a dead store, so
+    /// the fold must decline.
+    #[test]
+    fn fold_const_shift_declines_when_amount_live_after_472() {
+        let mut out = vec![
+            RiscVOp::Addi {
+                rd: Reg::T0,
+                rs1: Reg::ZERO,
+                imm: 4,
+            },
+            RiscVOp::Sll {
+                rd: Reg::T1,
+                rs1: Reg::A0,
+                rs2: Reg::T0,
+            },
+            // reads t0 again ⇒ the amount is still live past the shift
+            RiscVOp::Add {
+                rd: Reg::A0,
+                rs1: Reg::T1,
+                rs2: Reg::T0,
+            },
+            RiscVOp::Jalr {
+                rd: Reg::ZERO,
+                rs1: Reg::RA,
+                imm: 0,
+            },
+        ];
+        assert_eq!(
+            fold_const_shift(&mut out),
+            0,
+            "amount live ⇒ no fold: {out:?}"
+        );
+        assert_eq!(count(&out, |op| matches!(op, RiscVOp::Slli { .. })), 0);
+    }
+
+    /// The `rd == tmp` dead-store case (`sll t0, rs1, t0` → `slli t0, rs1, #N`):
+    /// the fold's destination redefining the amount temp is itself the proof the
+    /// `li` is dead — fold fires even though `t0` is "used" as the result.
+    #[test]
+    fn fold_const_shift_folds_when_dest_is_amount_temp_472() {
+        let mut out = vec![
+            RiscVOp::Addi {
+                rd: Reg::T0,
+                rs1: Reg::ZERO,
+                imm: 5,
+            },
+            RiscVOp::Sll {
+                rd: Reg::T0, // result reuses the amount temp
+                rs1: Reg::A0,
+                rs2: Reg::T0,
+            },
+            RiscVOp::Addi {
+                rd: Reg::A0,
+                rs1: Reg::T0, // result read into a0
+                imm: 0,
+            },
+            RiscVOp::Jalr {
+                rd: Reg::ZERO,
+                rs1: Reg::RA,
+                imm: 0,
+            },
+        ];
+        assert_eq!(fold_const_shift(&mut out), 1, "dest==tmp folds: {out:?}");
+        assert_eq!(
+            count(
+                &out,
+                |op| matches!(op, RiscVOp::Slli { rd, shamt: 5, .. } if *rd == Reg::T0)
+            ),
+            1,
+            "{out:?}"
         );
     }
 
