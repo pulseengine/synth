@@ -429,6 +429,18 @@ fn compile_wasm_to_arm(
                 stats.needs_spill
             );
         }
+        // VCR-RA-002 (#390, epic #242): eliminate a provably-dead stack frame
+        // (`sub sp,#N`/`add sp,#N` reserved by `compute_local_layout` for locals
+        // that promotion homed in registers, never accessed). Removing it saves
+        // the two instructions AND restores the SP-untouched precondition that
+        // `shrink_callee_saved_saves` requires — so it must run FIRST. Flag-off
+        // (opt-in `SYNTH_DEAD_FRAME_ELIM=1`); off ⇒ byte-identical. Default-on
+        // flip held for on-silicon validation, like the realloc/shrink levers.
+        let out = if std::env::var("SYNTH_DEAD_FRAME_ELIM").is_ok() {
+            synth_synthesis::liveness::elide_dead_frame(&out).unwrap_or(out)
+        } else {
+            out
+        };
         synth_synthesis::liveness::shrink_callee_saved_saves(&out).unwrap_or(out)
     } else {
         arm_instrs

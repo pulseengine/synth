@@ -2487,6 +2487,141 @@ pub fn shrink_callee_saved_saves(instrs: &[ArmInstruction]) -> Option<Vec<ArmIns
     Some(out)
 }
 
+/// VCR-RA-002 (#390, epic #242): eliminate a provably-dead stack frame.
+///
+/// `compute_local_layout` reserves a frame slot — materialized as
+/// `sub sp,#N` (prologue) / `add sp,#N` (epilogue) — for every non-param wasm
+/// local it sees. Local promotion (v0.14.0) then homes eligible i32 locals in a
+/// register instead. When promotion homes ALL of a function's locals and the
+/// function neither spills, calls, nor touches i64 / stack-passed params, those
+/// reserved frame bytes are never accessed: the `sub`/`add sp` pair is pure
+/// overhead (~2-3 cyc on a small leaf), AND — because it writes SP —
+/// [`shrink_callee_saved_saves`] declines on it (that pass bails on any SP
+/// def/use, since a shrunk push would shift SP-relative offsets). Removing the
+/// dead frame both saves the two instructions and restores the SP-untouched
+/// precondition the shrink pass needs, so the two passes compose.
+///
+/// SOUNDNESS (safe-by-construction): fire ONLY when NO instruction in the body
+/// reads or writes SP except the matched frame `sub`/`add` and the prologue
+/// `Push` / epilogue `Pop` (which adjust SP symmetrically but never index the
+/// frame region). For wasm locals that guard IS exact deadness — locals are not
+/// addressable, so only `LocalGet/Set/Tee` (lowered to a promoted register or
+/// `[sp,#off]`) touch them, and every OTHER SP consumer — register spills, #204
+/// param-backing, the i64 pair-spill area, the #359 outgoing-arg region, and
+/// incoming stack-passed params — manifests as an `[sp,#off]` access this guard
+/// sees. Any such access (or any unmodeled op whose SP effect `reg_effect` can't
+/// confirm absent) returns `None` and the bytes are unchanged. When it fires,
+/// the removed region was provably unreferenced: SP stays balanced and no
+/// surviving offset shifts. Removal-only — no instruction is added, rewritten,
+/// or reordered, so the only count change is the dropped `sub`/`add` pair.
+///
+/// Bounded v1 scope (mirrors [`shrink_callee_saved_saves`]) — `None` unless:
+///   - exactly one frame `sub sp,sp,#N`; every `add sp,sp,#M` restores the same
+///     `N` (balanced epilogues; a mismatched `add sp` is some other SP
+///     arithmetic → decline);
+///   - no other SP def/use or `[sp]`-relative addressing anywhere in the body;
+///   - every instruction is register-modeled (`reg_effect`) or pure label
+///     control flow (`Label`/`B*`/`Bx {LR}`).
+pub fn elide_dead_frame(instrs: &[ArmInstruction]) -> Option<Vec<ArmInstruction>> {
+    use ArmOp::*;
+
+    // Pass 1: locate the single frame allocation and its matching deallocs, and
+    // verify nothing else touches SP.
+    let mut frame_sub: Option<(usize, i32)> = None;
+    let mut frame_adds: Vec<usize> = Vec::new();
+    for (i, ins) in instrs.iter().enumerate() {
+        match &ins.op {
+            Sub {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(n),
+            } => {
+                if frame_sub.is_some() {
+                    return None; // more than one frame allocation — unmodeled
+                }
+                frame_sub = Some((i, *n));
+            }
+            Add {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(_),
+            } => frame_adds.push(i),
+            _ => {}
+        }
+    }
+    let (sub_idx, frame_n) = frame_sub?;
+    if frame_adds.is_empty() {
+        return None;
+    }
+    // Every frame dealloc must restore exactly `frame_n` (balanced); a different
+    // immediate means this `add sp` is not the frame's counterpart → decline.
+    for &ai in &frame_adds {
+        if let Add {
+            op2: Operand2::Imm(n),
+            ..
+        } = &instrs[ai].op
+            && *n != frame_n
+        {
+            return None;
+        }
+    }
+
+    // Pass 2: prove the frame is dead — no SP access outside the frame sub/adds
+    // and the push/pop.
+    for (i, ins) in instrs.iter().enumerate() {
+        if i == sub_idx || frame_adds.contains(&i) {
+            continue;
+        }
+        match &ins.op {
+            // Push/Pop move SP but never index the frame region — allowed.
+            // Pure label control flow has no register operands.
+            Push { .. }
+            | Pop { .. }
+            | Label { .. }
+            | B { .. }
+            | BOffset { .. }
+            | BCondOffset { .. }
+            | Bhs { .. }
+            | Blo { .. }
+            | Bcc { .. } => {}
+            Bx { rm } if *rm == Reg::LR => {}
+            op => {
+                // Unmodeled op (call/BrTable/i64-pair/...): cannot prove SP-free.
+                let e = reg_effect(op)?;
+                if e.defs.iter().chain(e.uses.iter()).any(|r| *r == Reg::SP) {
+                    return None;
+                }
+                // SP hides inside addressing modes too.
+                if let Ldr { addr, .. }
+                | Ldrb { addr, .. }
+                | Ldrsb { addr, .. }
+                | Ldrh { addr, .. }
+                | Ldrsh { addr, .. }
+                | Str { addr, .. }
+                | Strb { addr, .. }
+                | Strh { addr, .. } = op
+                    && (addr.base == Reg::SP || addr.offset_reg == Some(Reg::SP))
+                {
+                    return None;
+                }
+            }
+        }
+    }
+
+    // Dead frame confirmed: drop the `sub sp` and every matching `add sp`.
+    let drop: BTreeSet<usize> = std::iter::once(sub_idx)
+        .chain(frame_adds.iter().copied())
+        .collect();
+    Some(
+        instrs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !drop.contains(i))
+            .map(|(_, ins)| ins.clone())
+            .collect(),
+    )
+}
+
 /// Defense-in-depth: before accepting a segment's rewrite, every interference
 /// edge is re-checked against the final assignment (independent of the
 /// colourer), mirroring `verify_allocation`.
@@ -5748,6 +5883,156 @@ mod tests {
         }
         assert_eq!(out[2], seq[2]);
         assert_eq!(out[4], seq[4]);
+    }
+
+    // ---- elide_dead_frame (VCR-RA-002, #390) ----
+
+    fn frame_sub(n: i32) -> ArmInstruction {
+        ins(ArmOp::Sub {
+            rd: Reg::SP,
+            rn: Reg::SP,
+            op2: Operand2::Imm(n),
+        })
+    }
+    fn frame_add(n: i32) -> ArmInstruction {
+        ins(ArmOp::Add {
+            rd: Reg::SP,
+            rn: Reg::SP,
+            op2: Operand2::Imm(n),
+        })
+    }
+
+    #[test]
+    fn elide_dead_frame_removes_unreferenced_frame() {
+        // Promoted-leaf shape: a `sub sp,#16` reserves slots for locals that all
+        // live in registers; the body never touches SP. The frame is dead.
+        let body_a = ins(ArmOp::Add {
+            rd: Reg::R4,
+            rn: Reg::R0,
+            op2: Operand2::Imm(1),
+        });
+        let body_b = ins(ArmOp::Mov {
+            rd: Reg::R0,
+            op2: Operand2::Reg(Reg::R4),
+        });
+        let seq = vec![
+            prologue(),
+            frame_sub(16),
+            body_a.clone(),
+            body_b.clone(),
+            frame_add(16),
+            epilogue(),
+        ];
+        let out = elide_dead_frame(&seq).expect("dead frame elided");
+        // sub/add sp gone; everything else verbatim and in order.
+        assert_eq!(
+            out,
+            vec![prologue(), body_a, body_b, epilogue()],
+            "only the sub/add sp pair is removed"
+        );
+    }
+
+    #[test]
+    fn elide_dead_frame_declines_on_sp_relative_access() {
+        use crate::rules::MemAddr;
+        // A spill/local lives in the frame → `[sp,#off]` access → frame is LIVE.
+        let seq = vec![
+            prologue(),
+            frame_sub(16),
+            ins(ArmOp::Str {
+                rd: Reg::R0,
+                addr: MemAddr {
+                    base: Reg::SP,
+                    offset: 4,
+                    offset_reg: None,
+                },
+            }),
+            frame_add(16),
+            epilogue(),
+        ];
+        assert_eq!(elide_dead_frame(&seq), None);
+    }
+
+    #[test]
+    fn elide_dead_frame_declines_on_unbalanced_add_sp() {
+        // An `add sp,#8` that does not match the `sub sp,#16` is some other SP
+        // arithmetic, not the frame's counterpart → decline conservatively.
+        let seq = vec![
+            prologue(),
+            frame_sub(16),
+            ins(ArmOp::Mov {
+                rd: Reg::R4,
+                op2: Operand2::Imm(0),
+            }),
+            frame_add(8),
+            epilogue(),
+        ];
+        assert_eq!(elide_dead_frame(&seq), None);
+    }
+
+    #[test]
+    fn elide_dead_frame_declines_on_unmodeled_sp_effect() {
+        // A call sits inside the frame: `reg_effect` declines `Bl` (its SP/clobber
+        // effect is not modeled), so we cannot prove the frame dead → decline.
+        let seq = vec![
+            prologue(),
+            frame_sub(16),
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            frame_add(16),
+            epilogue(),
+        ];
+        assert_eq!(elide_dead_frame(&seq), None);
+    }
+
+    #[test]
+    fn elide_dead_frame_noop_when_no_frame() {
+        // No `sub sp` at all (frame_size == 0) → nothing to elide.
+        let seq = vec![
+            prologue(),
+            ins(ArmOp::Add {
+                rd: Reg::R4,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            epilogue(),
+        ];
+        assert_eq!(elide_dead_frame(&seq), None);
+    }
+
+    #[test]
+    fn elide_dead_frame_removes_across_multiple_epilogues() {
+        // Two return paths each restore the frame; both `add sp` are removed.
+        let seq = vec![
+            prologue(),
+            frame_sub(8),
+            ins(ArmOp::B {
+                label: "L_end".to_string(),
+            }),
+            frame_add(8),
+            epilogue(),
+            ins(ArmOp::Label {
+                name: "L_end".to_string(),
+            }),
+            frame_add(8),
+            epilogue(),
+        ];
+        let out = elide_dead_frame(&seq).expect("dead frame elided");
+        assert_eq!(
+            out,
+            vec![
+                prologue(),
+                ins(ArmOp::B {
+                    label: "L_end".to_string(),
+                }),
+                epilogue(),
+                ins(ArmOp::Label {
+                    name: "L_end".to_string(),
+                }),
+                epilogue(),
+            ],
+        );
     }
 
     #[test]
