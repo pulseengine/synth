@@ -380,3 +380,41 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/callee_saved_490_differential.py
+
+  block-brif-483-oracle:
+    name: optimized-path block/br_if lowering oracle
+    # VCR-ORACLE-001 (#242, #483): EXECUTE optimized-path functions with forward
+    # `block`/`br_if` and nested `block`+`br` under unicorn (UC_ARCH_ARM / Thumb)
+    # and diff the resulting linear MEMORY vs wasmtime across both branch
+    # directions. Guards the #483 fix (End labels with the closed block's id, and
+    # the half/byte memory-op byte-size estimate) — before it, a forward br_if
+    # resolved against an id no label held and landed mid-instruction, silently
+    # miscompiling any non-relocatable function with that control flow. The frozen
+    # byte gate only covers the `--relocatable` direct path, so nothing else
+    # exercises the optimized path's branch resolution. Isolated job: emulation
+    # deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run block/br_if lowering oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/block_brif_483_differential.py

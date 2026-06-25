@@ -1793,10 +1793,22 @@ impl OptimizerBridge {
                 }
 
                 // End: marks the end of a block/loop/function. No stack effect.
-                WasmOp::End => {
-                    block_stack.pop();
-                    Opcode::Label { id: inst_id }
-                }
+                //
+                // #483: a forward `block` is the branch target of any `br`/`br_if`
+                // that exits it — and those branches target the id pushed when the
+                // `Block` was opened (block_stack stores the Block's inst_id, and
+                // the `Block` arm emits only a `Nop`, no label). So the End that
+                // closes a block must emit its label with the BLOCK's id, not its
+                // own, or the branch resolves against an id no label carries and is
+                // left as the unpatched placeholder (offset 0 → a mid-instruction
+                // landing — the #483 miscompile). Loop ends and the function-end
+                // keep their own id: a loop's target label is already at its start
+                // (backward branch), and the function end is just the structural
+                // trailing label.
+                WasmOp::End => match block_stack.pop() {
+                    Some((0, block_id)) => Opcode::Label { id: block_id },
+                    _ => Opcode::Label { id: inst_id },
+                },
 
                 // Br: unconditional branch to label. No stack effect at IR
                 // level (the wasm validator handles unreachable stack after Br).
@@ -5342,6 +5354,20 @@ impl OptimizerBridge {
                         4
                     }
                 }
+                // #483: half/byte loads and stores. The optimized path always
+                // materializes a memory access against a HIGH base register
+                // (`ip`/r12 for a const address, r11 for the base-CSE linmem
+                // anchor), so the encoder always emits the 32-bit `.w` form — the
+                // 16-bit Thumb T1 encoding (low base + small aligned offset) is
+                // never produced here. Sizing these as the default 2 (the bug)
+                // drifts `byte_offsets` and miscompiles any branch that spans the
+                // access (the i32.store16 in the #483 `block`/`br_if` repro).
+                ArmOp::Strh { .. }
+                | ArmOp::Strb { .. }
+                | ArmOp::Ldrh { .. }
+                | ArmOp::Ldrsh { .. }
+                | ArmOp::Ldrb { .. }
+                | ArmOp::Ldrsb { .. } => 4,
                 // BL is always 32-bit
                 ArmOp::Bl { .. } => 4,
                 // MOV with high register (R8-R15) or large immediate needs MOVW (4 bytes)
