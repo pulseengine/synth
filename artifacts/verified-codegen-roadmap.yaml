@@ -555,6 +555,26 @@ artifacts:
       does not exist on RV32), NOT a 1:1 port of the three ARM levers. The
       byte-changing lever implementations remain SEPARATE gated steps (each flag-off
       -> RV32 execution differential -> qemu_riscv32/ESP32-C3 cycle gate -> flip).
+      DRIVER-CLASS FRONTIER — NON-LEAF THIN-FORWARDER PROLOGUE (2026-06-25, #428):
+      a measurement pass on thin-seam driver primitives (a leaf that forwards
+      through a single imported call) surfaced a gap the arithmetic levers do not
+      reach: such a forwarder still emits the full `push {r4-r8,lr}` + frame even
+      though it touches no callee-saved register. ROOT CAUSE (verified in source):
+      the prologue-shrink levers `shrink_callee_saved_saves` (default-on) and
+      `elide_dead_frame` (VCR-RA-002 dead-frame, flag-off) both DECLINE on any
+      function containing a call — `reg_effect` returns None on `Bl`, and the pass
+      bails rather than reason past the clobber boundary, so they are effectively
+      leaf-only. A distinct lever — non-leaf thin-forwarder prologue minimization
+      (a function that calls but writes no callee-saved register and reserves no
+      live frame collapses its save-set/frame to `{lr}`, or tail-calls) — is the
+      piece that reaches I/O-bound driver code; it does not exist yet. The two
+      companion driver-class residuals are already tracked: redundant adjacent
+      `str [sp,#N]; ldr [sp,#N]` is `forward_stack_reloads` (#455, built, flag-off
+      behind `SYNTH_STACK_FWD`, awaiting the on-silicon flip), and the
+      materialized-boolean-then-branch (`setcc; cmp #0; bCC`) is the already-deferred
+      `br_if`->predicated-branch half of the cmp->select item (split candidate).
+      All three are SEPARATE gated steps (flag-off -> differential -> silicon),
+      never an idle-tick increment.
     status: approved
     tags: [oracle, differential, coverage, mcdc, validation, track-c, riscv]
     links:
