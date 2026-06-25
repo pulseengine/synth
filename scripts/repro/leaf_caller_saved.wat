@@ -1,17 +1,25 @@
-;; perf repro (VCR-RA-002, #428, epic #242): leaf-function prologue shrink.
+;; perf repro (VCR-RA-002, #390, epic #242): leaf-function prologue shrink —
+;; dead-frame elimination.
 ;;
-;; Local promotion (v0.14.0) homes eligible i32 locals in callee-saved r4..r8.
-;; For a LEAF function that is the wrong pool: callee-saved regs must be
-;; saved/restored (`push {r4-r8,lr}` / `pop {…,pc}` ~12 cyc of pure overhead),
-;; whereas a leaf never calls, so caller-saved r1..r3 (minus params, minus r0
-;; for the return value) are free homes that need NO prologue save. Promoting
-;; into caller-saved first lets `shrink_callee_saved_saves` drop the callee-saved
-;; push entirely.
+;; `compute_local_layout` reserves a frame slot (`sub sp,#N` / `add sp,#N`) for
+;; every non-param wasm local it sees. Local promotion (v0.14.0) then homes the
+;; eligible i32 locals in registers, so those frame bytes are NEVER accessed: a
+;; dead `sub`/`add sp` pair (~2-3 cyc on a small leaf) that also touches SP and
+;; thereby blocks `shrink_callee_saved_saves` (which declines on any SP def/use).
+;; `elide_dead_frame` (SYNTH_DEAD_FRAME_ELIM=1) removes it when the body provably
+;; never touches SP — saving the two instructions and restoring the SP-untouched
+;; precondition the shrink pass needs.
 ;;
 ;; This fixture: 1 param + 3 promotable i32 locals (each written-before-read,
-;; depth-0, >=2 reads), minimal operand-stack temp pressure. Flag-off homes
-;; a,b,c -> r4,r5,r6 (push {r4-r6,lr}); flag-on (SYNTH_LEAF_CALLER_SAVED=1) homes
-;; them -> r1,r2,r3 (no callee-saved push). Same result either way.
+;; depth-0, >=2 reads), minimal operand-stack temp pressure. Promotion homes
+;; a,b,c -> r4,r5,r6 and the layout reserves a dead 16-byte frame. Flag-off keeps
+;; it (`sub sp,#16` ... `add sp,#16`, 36 B); flag-on elides it (28 B, -8 B = the
+;; two 4-byte wide insns), byte-identical otherwise. leaf3(p) = 4*p + 10.
+;;
+;; NOTE: the push stays `{r4-r8,lr}` either way here — a,b,c are in callee-saved
+;; r4,r5,r6 + scratch r7 = 4 saved regs, which `shrink_callee_saved_saves` pads
+;; back up to the even-count `{r4-r8,lr}`. Trimming the push needs the locals OUT
+;; of callee-saved (caller-saved leaf homing), tracked separately as #390.
 ;;
 ;; Generic — neutral values, tied to nothing real.
 (module
