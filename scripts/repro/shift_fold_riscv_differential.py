@@ -23,7 +23,6 @@ Run (needs wasmtime + unicorn + pyelftools):
 Exits nonzero on any mismatch or vacuity failure.
 """
 import os
-import re
 import subprocess
 import sys
 
@@ -69,11 +68,25 @@ def compile_elf(out, fold):
 
 
 def syms_and_code(elf):
-    dis = subprocess.run([SYNTH, "disasm", elf], capture_output=True, text=True).stdout
-    syms = {m.group(2): int(m.group(1), 16)
-            for m in re.finditer(r'^([0-9a-f]{8}) <(\w+)>:', dis, re.M)}
-    code = ELFFile(open(elf, "rb")).get_section_by_name(".text").data()
-    return syms, code
+    """Return ({export_name: text_relative_offset}, text_bytes).
+
+    Read function addresses straight from the ELF symbol table, NOT by scraping
+    `synth disasm` text — the disasm backend/format is host-dependent (on a bare
+    CI runner it decodes RISC-V bytes with the wrong decoder and the symbol-line
+    regex matches nothing). synth emits the symtab with an EMPTY section name, so
+    find it by sh_type, and make addresses .text-relative by subtracting the
+    section's sh_addr (0 for a relocatable object, but subtract defensively).
+    """
+    f = ELFFile(open(elf, "rb"))
+    text = f.get_section_by_name(".text")
+    base = text["sh_addr"]
+    syms = {}
+    for s in f.iter_sections():
+        if s.header.sh_type == "SHT_SYMTAB":
+            for sym in s.iter_symbols():
+                if sym.name:
+                    syms[sym.name] = sym["st_value"] - base
+    return syms, text.data()
 
 
 def text_len(elf):
