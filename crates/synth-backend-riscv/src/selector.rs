@@ -215,6 +215,13 @@ pub fn select_with_result_types(
     if std::env::var_os("SYNTH_RV_SHIFT_FOLD").is_some() {
         fold_const_shift(&mut ctx.out);
     }
+    // VCR-RA RV32 lever (#472 step 2): fold a constant memory address into the
+    // access immediate off s11, dropping the `addi addr,zero,ADDR; add tmp,s11,addr`
+    // pair. Flag-off by default (frozen-safe, like the shift fold); the on-target
+    // cycle win is validated under the RV32 differential before the default-on flip.
+    if std::env::var_os("SYNTH_RV_ADDR_FOLD").is_some() {
+        fold_const_addr(&mut ctx.out);
+    }
     let local_frame_bytes = ctx.local_frame_bytes;
     // #220: the temp pool includes callee-saved s-registers (s1..s6), but the
     // RV psABI requires a function to preserve s0..s11. Wrap the body in a
@@ -453,6 +460,147 @@ fn fold_const_shift(out: &mut Vec<RiscVOp>) -> usize {
     let mut idx = 0usize;
     out.retain(|_| {
         let keep = !drop_addi[idx];
+        idx += 1;
+        keep
+    });
+    folds
+}
+
+/// VCR-RA RV32 lever (#472 step 2, epic #242): fold a CONSTANT memory address into
+/// the access immediate off the linear-memory base `s11`, the RISC-V analogue of
+/// the ARM base-CSE address half (#468). A `i32.load/store (i32.const ADDR) …`
+/// lowers as `addi a,zero,ADDR; add tmp,s11,a; lw/sw _,off(tmp)`; when `ADDR+off`
+/// fits the signed-12-bit `lw/sw` immediate, that collapses to a single
+/// `lw/sw _,(ADDR+off)(s11)`, dropping BOTH the `add tmp,s11,a` and the
+/// `addi a,zero,ADDR` (2 instructions per constant-address access).
+///
+/// Soundness:
+///   * `ADDR+off` is range-checked as a SUM against [-2048, 2047] (each term is
+///     already ≤12 bits, so two in-range values can sum out of range);
+///   * the base of the `add` must be `s11` and its address operand `a` must be a
+///     `addi a,zero,ADDR` (a single-`addi` small constant; a `lui+addi` large
+///     address is out of v1 scope and stays the `add` form);
+///   * the fold is a 3→1 rewrite, so BOTH dropped temps must be dead: `tmp` (the
+///     add result) read only by the access, and `a` (the address constant) read
+///     only by the `add` — verified with [`rv_reg_dead_after`] plus a check that
+///     `a` is untouched between its def and the `add`.
+///
+/// Only the contiguous `add tmp,s11,a` immediately followed by its access is
+/// matched (the no-bounds-check lowering shape); a bounds check between them reads
+/// `a`, which disqualifies the fold. Returns the fold count.
+fn fold_const_addr(out: &mut Vec<RiscVOp>) -> usize {
+    use RiscVOp::*;
+    let n = out.len();
+    let mut drop = vec![false; n];
+    let mut folds = 0usize;
+
+    for i in 0..n {
+        // [i] must be `add tmp, s11, a`.
+        let (tmp, a) = match &out[i] {
+            Add { rd, rs1, rs2 } if *rs1 == Reg::S11 => (*rd, *rs2),
+            _ => continue,
+        };
+        if i + 1 >= n {
+            continue;
+        }
+        // The access at i+1 must use `tmp` as its base register; capture its imm.
+        let off = match &out[i + 1] {
+            Lw { rs1, imm, .. }
+            | Lh { rs1, imm, .. }
+            | Lhu { rs1, imm, .. }
+            | Lb { rs1, imm, .. }
+            | Lbu { rs1, imm, .. }
+            | Sw { rs1, imm, .. }
+            | Sh { rs1, imm, .. }
+            | Sb { rs1, imm, .. }
+                if *rs1 == tmp =>
+            {
+                *imm
+            }
+            _ => continue,
+        };
+        // `a` must be defined by the nearest prior `addi a, zero, ADDR`.
+        let addr_def = (0..i).rev().find(|&j| op_dest(&out[j]) == Some(a));
+        let (def_idx, addr_const) = match addr_def {
+            Some(j) => match &out[j] {
+                Addi { rs1, imm, .. } if *rs1 == Reg::ZERO => (j, *imm),
+                _ => continue,
+            },
+            None => continue,
+        };
+        // The folded immediate is the SUM; it must fit the signed 12-bit window.
+        let total = addr_const.wrapping_add(off);
+        if !(-2048..=2047).contains(&total) {
+            continue;
+        }
+        // `tmp` must be dead after the access (its only consumer).
+        if !rv_reg_dead_after(tmp, &out[i + 2..]) {
+            continue;
+        }
+        // `a` must be read ONLY by the `add` at i: untouched between its def and
+        // the add, and dead after.
+        let a_read_between = (def_idx + 1..i).any(|k| match op_reads(&out[k]) {
+            Some(rs) => rs.contains(&a),
+            None => true, // unmodeled op between ⇒ cannot prove `a` unread
+        });
+        if a_read_between || !rv_reg_dead_after(a, &out[i + 1..]) {
+            continue;
+        }
+        // Rewrite the access to address off s11 with the folded immediate.
+        out[i + 1] = match out[i + 1].clone() {
+            Lw { rd, .. } => Lw {
+                rd,
+                rs1: Reg::S11,
+                imm: total,
+            },
+            Lh { rd, .. } => Lh {
+                rd,
+                rs1: Reg::S11,
+                imm: total,
+            },
+            Lhu { rd, .. } => Lhu {
+                rd,
+                rs1: Reg::S11,
+                imm: total,
+            },
+            Lb { rd, .. } => Lb {
+                rd,
+                rs1: Reg::S11,
+                imm: total,
+            },
+            Lbu { rd, .. } => Lbu {
+                rd,
+                rs1: Reg::S11,
+                imm: total,
+            },
+            Sw { rs2, .. } => Sw {
+                rs1: Reg::S11,
+                rs2,
+                imm: total,
+            },
+            Sh { rs2, .. } => Sh {
+                rs1: Reg::S11,
+                rs2,
+                imm: total,
+            },
+            Sb { rs2, .. } => Sb {
+                rs1: Reg::S11,
+                rs2,
+                imm: total,
+            },
+            other => other, // unreachable (matched above)
+        };
+        drop[i] = true;
+        drop[def_idx] = true;
+        folds += 1;
+    }
+
+    if folds == 0 {
+        return 0;
+    }
+    let mut idx = 0usize;
+    out.retain(|_| {
+        let keep = !drop[idx];
         idx += 1;
         keep
     });
@@ -6425,6 +6573,187 @@ mod tests {
             ),
             1,
             "{out:?}"
+        );
+    }
+
+    // ---- #472 step 2: const-address fold ----
+
+    /// Folds `addi a,zero,ADDR; add tmp,s11,a; sw v,off(tmp)` to `sw v,(ADDR)(s11)`,
+    /// dropping the address `addi` and the `add`. Driven on the baseline fixture
+    /// output (what the CLI flag wires in).
+    #[test]
+    fn fold_const_addr_folds_store_off_s11_472() {
+        // (i32.store (i32.const 8) (i32.const 33))
+        let mut out = s(
+            &[
+                WasmOp::I32Const(8),
+                WasmOp::I32Const(33),
+                WasmOp::I32Store {
+                    offset: 0,
+                    align: 2,
+                },
+                WasmOp::End,
+            ],
+            0,
+        );
+        let before_adds = count(&out, |op| matches!(op, RiscVOp::Add { rs1: Reg::S11, .. }));
+        assert_eq!(before_adds, 1, "baseline computes base+addr: {out:?}");
+        let folds = fold_const_addr(&mut out);
+        assert_eq!(folds, 1, "the const-addr store folds: {out:?}");
+        assert_eq!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Sw {
+                    rs1: Reg::S11,
+                    imm: 8,
+                    ..
+                }
+            )),
+            1,
+            "store folded to `sw v, 8(s11)`: {out:?}"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Add { rs1: Reg::S11, .. })),
+            0,
+            "the `add _,s11,_` is gone: {out:?}"
+        );
+    }
+
+    /// The folded immediate is `ADDR + access-offset`; both terms must sum within
+    /// the signed 12-bit window. `i32.store offset=4 (i32.const 8)` → `sw v,12(s11)`.
+    #[test]
+    fn fold_const_addr_adds_access_offset_472() {
+        let mut out = s(
+            &[
+                WasmOp::I32Const(8),
+                WasmOp::I32Const(33),
+                WasmOp::I32Store {
+                    offset: 4,
+                    align: 2,
+                },
+                WasmOp::End,
+            ],
+            0,
+        );
+        assert_eq!(fold_const_addr(&mut out), 1, "{out:?}");
+        assert_eq!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Sw {
+                    rs1: Reg::S11,
+                    imm: 12,
+                    ..
+                }
+            )),
+            1,
+            "ADDR(8)+off(4) = 12: {out:?}"
+        );
+    }
+
+    /// A load folds the same way: `lw dst, (ADDR)(s11)`.
+    #[test]
+    fn fold_const_addr_folds_load_472() {
+        let mut out = s(
+            &[
+                WasmOp::I32Const(16),
+                WasmOp::I32Load {
+                    offset: 0,
+                    align: 2,
+                },
+                WasmOp::Drop,
+                WasmOp::End,
+            ],
+            0,
+        );
+        assert_eq!(fold_const_addr(&mut out), 1, "{out:?}");
+        assert_eq!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Lw {
+                    rs1: Reg::S11,
+                    imm: 16,
+                    ..
+                }
+            )),
+            1,
+            "load folded to `lw dst, 16(s11)`: {out:?}"
+        );
+    }
+
+    /// Range guard: when `ADDR + off` exceeds the signed 12-bit window the fold
+    /// must decline (the access stays `lw/sw _,off(tmp)` off the computed base).
+    #[test]
+    fn fold_const_addr_declines_when_sum_out_of_12bit_472() {
+        // ADDR = 2044, off = 8 → 2052 > 2047 → out of range.
+        let mut out = vec![
+            RiscVOp::Addi {
+                rd: Reg::T0,
+                rs1: Reg::ZERO,
+                imm: 2044,
+            },
+            RiscVOp::Add {
+                rd: Reg::T1,
+                rs1: Reg::S11,
+                rs2: Reg::T0,
+            },
+            RiscVOp::Sw {
+                rs1: Reg::T1,
+                rs2: Reg::T2,
+                imm: 8,
+            },
+            RiscVOp::Jalr {
+                rd: Reg::ZERO,
+                rs1: Reg::RA,
+                imm: 0,
+            },
+        ];
+        assert_eq!(
+            fold_const_addr(&mut out),
+            0,
+            "out-of-range sum: no fold: {out:?}"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Add { rs1: Reg::S11, .. })),
+            1
+        );
+    }
+
+    /// Soundness: when the address temp `a` is read by another op (not single-use),
+    /// the fold must NOT drop its `addi` — decline.
+    #[test]
+    fn fold_const_addr_declines_when_addr_reused_472() {
+        let mut out = vec![
+            RiscVOp::Addi {
+                rd: Reg::T0,
+                rs1: Reg::ZERO,
+                imm: 16,
+            },
+            RiscVOp::Add {
+                rd: Reg::T1,
+                rs1: Reg::S11,
+                rs2: Reg::T0,
+            },
+            RiscVOp::Sw {
+                rs1: Reg::T1,
+                rs2: Reg::T2,
+                imm: 0,
+            },
+            // a second use of the address constant t0 ⇒ not single-use
+            RiscVOp::Add {
+                rd: Reg::T3,
+                rs1: Reg::A0,
+                rs2: Reg::T0,
+            },
+            RiscVOp::Jalr {
+                rd: Reg::ZERO,
+                rs1: Reg::RA,
+                imm: 0,
+            },
+        ];
+        assert_eq!(
+            fold_const_addr(&mut out),
+            0,
+            "addr reused ⇒ no fold: {out:?}"
         );
     }
 

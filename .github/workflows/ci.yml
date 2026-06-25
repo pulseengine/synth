@@ -303,3 +303,37 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/shift_fold_riscv_differential.py
+
+  rv32-const-addr-fold-oracle:
+    name: rv32 const-address-fold execution oracle
+    # VCR-ORACLE-001 (#242, #472 step 2): EXECUTE the RV32 const-address-fold lever
+    # under unicorn (UC_ARCH_RISCV) in BOTH flag states and diff the resulting
+    # linear MEMORY vs wasmtime. Ships flag-off (SYNTH_RV_ADDR_FOLD) awaiting the
+    # on-silicon flip, so this continuously validates the flag-on path (folding a
+    # constant address into the access immediate off s11) against regression.
+    # Isolated job: emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run RV32 const-address-fold execution oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/const_addr_fold_riscv_differential.py
