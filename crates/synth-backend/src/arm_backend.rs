@@ -559,6 +559,24 @@ fn compile_wasm_to_arm(
         arm_instrs
     };
 
+    // VCR-RA uxth/uxtb fold (#428, #242): `movw rM,#0xffff; and rD,rN,rM` →
+    // `uxth rD,rN` (and the 0xff/uxtb form), removing the dead `movw` — −1
+    // instruction, −1 live register per 16/8-bit mask. 0xffff/0xff are not Thumb-2
+    // modified immediates so the selector materializes them into a register; the
+    // dedicated zero-extend expresses the same masking inline. Removal-only +
+    // rewrite-in-place (offset-neutral). FLAG-OFF by default (opt-in
+    // `SYNTH_UXTH_FOLD=1`) ⇒ bit-identical (frozen gate green); the byte-changing
+    // default-on flip is the separate on-target-gated step, like the prior levers.
+    let arm_instrs = if std::env::var("SYNTH_UXTH_FOLD").is_ok() {
+        let (out, folds) = synth_synthesis::liveness::fold_uxth(&arm_instrs);
+        if std::env::var("SYNTH_FUSE_STATS").is_ok() {
+            eprintln!("[uxth-fold] {folds} mask-and folded to uxth/uxtb, movw dropped");
+        }
+        out
+    } else {
+        arm_instrs
+    };
+
     // ISA feature gate: validate that all generated instructions are supported
     // by the target. This catches FPU instructions on no-FPU targets, double-precision
     // instructions on single-precision targets, etc.

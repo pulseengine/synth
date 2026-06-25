@@ -391,6 +391,20 @@ impl ArmEncoder {
                 0xE6BF0070 | (rd_bits << 12) | rm_bits
             }
 
+            ArmOp::Uxtb { rd, rm } => {
+                let rd_bits = reg_to_bits(rd);
+                let rm_bits = reg_to_bits(rm);
+                // UXTB encoding: cond | 01101110 1111 Rd rotate 00 0111 Rm (rotate=00)
+                0xE6EF0070 | (rd_bits << 12) | rm_bits
+            }
+
+            ArmOp::Uxth { rd, rm } => {
+                let rd_bits = reg_to_bits(rd);
+                let rm_bits = reg_to_bits(rm);
+                // UXTH encoding: cond | 01101111 1111 Rd rotate 00 0111 Rm (rotate=00)
+                0xE6FF0070 | (rd_bits << 12) | rm_bits
+            }
+
             // Move instructions
             ArmOp::Mov { rd, op2 } => {
                 let rd_bits = reg_to_bits(rd);
@@ -2172,6 +2186,42 @@ impl ArmEncoder {
                     let rm_bits32 = rm_bits as u32;
                     let hw1: u16 = 0xFA0F;
                     let hw2: u16 = (0xF080 | (rd_bits32 << 8) | rm_bits32) as u16;
+                    let mut bytes = hw1.to_le_bytes().to_vec();
+                    bytes.extend_from_slice(&hw2.to_le_bytes());
+                    Ok(bytes)
+                }
+            }
+
+            // UXTB Rd,Rm — zero-extend byte (rd = rm & 0xff)
+            ArmOp::Uxtb { rd, rm } => {
+                let rd_bits = reg_to_bits(rd) as u16;
+                let rm_bits = reg_to_bits(rm) as u16;
+                if rd_bits < 8 && rm_bits < 8 {
+                    // UXTB Rd, Rm (16-bit): 1011 0010 11 Rm Rd
+                    let instr: u16 = 0xB2C0 | (rm_bits << 3) | rd_bits;
+                    Ok(instr.to_le_bytes().to_vec())
+                } else {
+                    // Thumb-2 UXTB.W: FA5F F(rd)80 (rm)
+                    let hw1: u16 = 0xFA5F;
+                    let hw2: u16 = (0xF080 | ((rd_bits as u32) << 8) | rm_bits as u32) as u16;
+                    let mut bytes = hw1.to_le_bytes().to_vec();
+                    bytes.extend_from_slice(&hw2.to_le_bytes());
+                    Ok(bytes)
+                }
+            }
+
+            // UXTH Rd,Rm — zero-extend halfword (rd = rm & 0xffff)
+            ArmOp::Uxth { rd, rm } => {
+                let rd_bits = reg_to_bits(rd) as u16;
+                let rm_bits = reg_to_bits(rm) as u16;
+                if rd_bits < 8 && rm_bits < 8 {
+                    // UXTH Rd, Rm (16-bit): 1011 0010 10 Rm Rd
+                    let instr: u16 = 0xB280 | (rm_bits << 3) | rd_bits;
+                    Ok(instr.to_le_bytes().to_vec())
+                } else {
+                    // Thumb-2 UXTH.W: FA1F F(rd)80 (rm)
+                    let hw1: u16 = 0xFA1F;
+                    let hw2: u16 = (0xF080 | ((rd_bits as u32) << 8) | rm_bits as u32) as u16;
                     let mut bytes = hw1.to_le_bytes().to_vec();
                     bytes.extend_from_slice(&hw2.to_le_bytes());
                     Ok(bytes)
