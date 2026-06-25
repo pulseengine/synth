@@ -35,7 +35,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       - name: Run tests
-        run: cargo test --workspace
+        # Exclude synth-verify: it is the only crate that pulls in z3-sys, which
+        # compiles all of Z3 from source and intermittently exhausts the runner's
+        # disk ("No space left on device" building libz3.a) — the recurring #306
+        # instability. Z3/synth-verify is already covered by the dedicated `Z3
+        # Verification` job, and the sibling jobs already exclude it, so this drops
+        # a redundant heavyweight build without losing coverage.
+        run: cargo test --workspace --exclude synth-verify
 
   clippy:
     name: Clippy
