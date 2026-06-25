@@ -441,9 +441,22 @@ fn compile_wasm_to_arm(
         } else {
             out
         };
+        // #490 (epic #242): the optimized selector uses r4-r8 as scratch /
+        // promoted locals but emits no prologue, silently clobbering a caller's
+        // callee-saved registers. Add the missing `push {r4-r8,lr}` /
+        // `pop {r4-r8,pc}` HERE — on the post-realloc body, where realloc has
+        // lowered low-pressure r4-r8 scratch back to r0-r3, so a save is added
+        // only for registers genuinely clobbered. `shrink_callee_saved_saves`
+        // (next) then trims it to the used set. No-op on the direct path (it
+        // already has its own prologue) and on callee-saved-free leaves.
+        let out = synth_synthesis::liveness::ensure_callee_saved_prologue(&out);
         synth_synthesis::liveness::shrink_callee_saved_saves(&out).unwrap_or(out)
     } else {
-        arm_instrs
+        // Range-realloc off (`SYNTH_RANGE_REALLOC=0`): the optimized path still
+        // must preserve the callee-saved registers it clobbers (#490). No shrink
+        // (it is coupled to the realloc lever), so the conservative full save
+        // stays — correct, just not minimised in this debug configuration.
+        synth_synthesis::liveness::ensure_callee_saved_prologue(&arm_instrs)
     };
 
     // VCR-RA-001 SHADOW ALLOCATION (#209/#242): run the register allocator on

@@ -343,3 +343,40 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/const_addr_fold_riscv_differential.py
+
+  callee-saved-490-oracle:
+    name: optimized-path callee-saved preservation oracle
+    # VCR-ORACLE-001 (#242, #490): EXECUTE optimized-path functions that use
+    # r4-r8 under unicorn (UC_ARCH_ARM / Thumb) with r4-r8 set to sentinels, and
+    # assert both the result matches wasmtime AND every callee-saved register is
+    # restored at return. This is the runtime gate for the #490 fix (the
+    # optimized path now emits the `push {r4-r8,lr}` / `pop {r4-r8,pc}` it was
+    # missing); the frozen byte gate only covers the `--relocatable` direct path,
+    # so nothing else exercises the optimized path's AAPCS compliance. Covers the
+    # 16-bit push and the 32-bit PUSH.W (high-register) forms. Isolated job:
+    # emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run callee-saved preservation oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/callee_saved_490_differential.py

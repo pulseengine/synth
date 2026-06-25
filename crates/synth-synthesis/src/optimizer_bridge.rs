@@ -5516,6 +5516,13 @@ impl OptimizerBridge {
             arm_instrs.push(ArmOp::Bx { rm: Reg::LR });
         }
 
+        // #490: the callee-saved prologue/epilogue the optimized path needs to
+        // honour AAPCS is added AFTER range-realloc (in `arm_backend`), where the
+        // re-allocated body shows which callee-saved registers are *genuinely*
+        // live — realloc lowers low-pressure r4-r8 scratch back to r0-r3, so a
+        // decision here (pre-realloc) would over-save. See
+        // `liveness::ensure_callee_saved_prologue`.
+
         Ok(arm_instrs)
     }
 }

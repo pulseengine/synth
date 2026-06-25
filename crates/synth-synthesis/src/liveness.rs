@@ -2487,6 +2487,112 @@ pub fn shrink_callee_saved_saves(instrs: &[ArmInstruction]) -> Option<Vec<ArmIns
     Some(out)
 }
 
+/// #490 (epic #242): does this body clobber/read any callee-saved register, so
+/// the optimized path must wrap it in a `push {r4-r8,lr}` / `pop {r4-r8,pc}`
+/// prologue/epilogue to honour AAPCS?
+///
+/// This is the **emit-side twin** of [`shrink_callee_saved_saves`]: it reads the
+/// exact same per-op classification (the control-flow allowlist + `reg_effect`)
+/// as *push-conditions* rather than *decline-conditions*, so the two passes
+/// always agree. [`ensure_callee_saved_prologue`] emits a conservative full
+/// `push {r4-r8,lr}` when this returns `true`; `shrink_callee_saved_saves` then
+/// trims that push to the registers actually touched (or declines, leaving the
+/// full push, on frame/call/unmodeled bodies it cannot prove safe).
+///
+/// **Conservative on `None` (fail-safe).** An op `reg_effect` cannot model
+/// (i64-pair pseudo-ops, calls, anything outside the modeled scope) *might* write
+/// a callee-saved register, so it forces the push. Under-saving is the exact
+/// AAPCS violation #490 fixes; over-saving an unused register is harmless (shrink
+/// pads it down, or — on a body shrink declines — it is a few dead bytes). The
+/// only load-bearing answer is `false`: a spurious push on a callee-saved-free
+/// leaf is permanent (shrink never *removes* a push), so the control-flow
+/// allowlist and the cs-intersection test must be exact, mirroring shrink. The
+/// decision runs on the **post-range-realloc** body, where low-pressure r4-r8
+/// scratch has already been lowered to r0-r3, so only genuine clobbers remain.
+pub fn body_uses_callee_saved(instrs: &[ArmInstruction]) -> bool {
+    use ArmOp::*;
+    const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
+    for ins in instrs {
+        match &ins.op {
+            // Function-boundary markers and pure label control flow carry no
+            // callee-saved data effect (mirrors shrink's allowlist exactly).
+            Push { .. }
+            | Pop { .. }
+            | Label { .. }
+            | B { .. }
+            | BOffset { .. }
+            | BCondOffset { .. }
+            | Bhs { .. }
+            | Blo { .. }
+            | Bcc { .. } => {}
+            Bx { rm } if *rm == Reg::LR => {}
+            op => match reg_effect(op) {
+                Some(e) => {
+                    if e.defs
+                        .iter()
+                        .chain(e.uses.iter())
+                        .any(|r| CALLEE_SAVED.contains(r))
+                    {
+                        return true;
+                    }
+                }
+                // Unmodeled op → assume it may touch a callee-saved register.
+                None => return true,
+            },
+        }
+    }
+    false
+}
+
+/// #490 (epic #242): give the optimized path the callee-saved prologue/epilogue
+/// it is missing. The optimized selector uses r4-r8 as scratch / promoted locals
+/// but emits no `push`/`pop`, so a caller's r4-r8 are silently clobbered — a
+/// systemic AAPCS violation. When the (post-realloc) body genuinely touches a
+/// callee-saved register, wrap it in a conservative full `push {r4-r8,lr}` /
+/// `pop {r4-r8,pc}`; [`shrink_callee_saved_saves`] (run next) trims that to the
+/// registers actually used, or declines and leaves the full save on a
+/// frame/call/unmodeled body it cannot prove safe.
+///
+/// No-op when a prologue already exists (the direct selector emits its own
+/// `push {…,lr}`) or the body is callee-saved-free (e.g. a pure-r0-r3 leaf —
+/// left byte-identical, which is load-bearing: an added push could never be
+/// removed later). The push is inserted at index 0, landing before any
+/// `sub sp,#frame` the optimized path reserved; each `bx lr` becomes
+/// `pop {…,pc}`, landing after the matching `add sp,#frame`.
+pub fn ensure_callee_saved_prologue(instrs: &[ArmInstruction]) -> Vec<ArmInstruction> {
+    use ArmOp::*;
+    // Already has a prologue (direct path) → leave it for shrink to size.
+    if instrs
+        .iter()
+        .any(|i| matches!(&i.op, Push { regs } if regs.contains(&Reg::LR)))
+    {
+        return instrs.to_vec();
+    }
+    if !body_uses_callee_saved(instrs) {
+        return instrs.to_vec();
+    }
+    let mut out = Vec::with_capacity(instrs.len() + 1);
+    out.push(ArmInstruction {
+        op: Push {
+            regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR],
+        },
+        source_line: None,
+    });
+    for ins in instrs {
+        if matches!(&ins.op, Bx { rm } if *rm == Reg::LR) {
+            out.push(ArmInstruction {
+                op: Pop {
+                    regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC],
+                },
+                source_line: ins.source_line,
+            });
+        } else {
+            out.push(ins.clone());
+        }
+    }
+    out
+}
+
 /// VCR-RA-002 (#390, epic #242): eliminate a provably-dead stack frame.
 ///
 /// `compute_local_layout` reserves a frame slot — materialized as
@@ -5883,6 +5989,101 @@ mod tests {
         }
         assert_eq!(out[2], seq[2]);
         assert_eq!(out[4], seq[4]);
+    }
+
+    // ---- ensure_callee_saved_prologue (#490) ----
+
+    #[test]
+    fn ensure_prologue_wraps_body_that_touches_callee_saved() {
+        // Optimized-path shape: no prologue, body writes r4/r5, returns via bx lr.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 100,
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R5,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R4),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        let out = ensure_callee_saved_prologue(&seq);
+        assert_eq!(
+            out[0].op,
+            ArmOp::Push {
+                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::LR]
+            }
+        );
+        assert_eq!(
+            out.last().unwrap().op,
+            ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8, Reg::PC]
+            }
+        );
+        // Body untouched between the new prologue and epilogue.
+        assert_eq!(out[1..=3], seq[0..=2]);
+        // And shrink then sizes it to the registers actually used ({r4,r5} → pad).
+        let shrunk = shrink_callee_saved_saves(&out).expect("shrinks");
+        assert_eq!(
+            shrunk[0].op,
+            ArmOp::Push {
+                regs: vec![Reg::R4, Reg::R5, Reg::R6, Reg::LR]
+            }
+        );
+    }
+
+    #[test]
+    fn ensure_prologue_leaves_callee_saved_free_leaf_untouched() {
+        // Pure r0-r3 leaf: no callee-saved register touched → no push added
+        // (a spurious push would be permanent — shrink never removes one).
+        let seq = vec![
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        assert_eq!(ensure_callee_saved_prologue(&seq), seq);
+        assert!(!body_uses_callee_saved(&seq));
+    }
+
+    #[test]
+    fn ensure_prologue_is_conservative_on_unmodeled_ops() {
+        // An op reg_effect cannot model (here a Bl call) might clobber a
+        // callee-saved register → force the push (fail-safe). shrink then
+        // declines on the call and leaves the full save.
+        let seq = vec![
+            ins(ArmOp::Bl {
+                label: "func_1".to_string(),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        assert!(body_uses_callee_saved(&seq));
+        let out = ensure_callee_saved_prologue(&seq);
+        assert!(matches!(&out[0].op, ArmOp::Push { regs } if regs.contains(&Reg::LR)));
+        assert_eq!(shrink_callee_saved_saves(&out), None);
+    }
+
+    #[test]
+    fn ensure_prologue_skips_body_that_already_has_one() {
+        // Direct-path output already carries its own `push {…,lr}` → no-op
+        // (shrink owns sizing it; double-wrapping would corrupt the frame).
+        let seq = vec![
+            prologue(),
+            ins(ArmOp::Add {
+                rd: Reg::R5,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            epilogue(),
+        ];
+        assert_eq!(ensure_callee_saved_prologue(&seq), seq);
     }
 
     // ---- elide_dead_frame (VCR-RA-002, #390) ----
