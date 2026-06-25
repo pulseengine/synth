@@ -46,6 +46,147 @@ fn fold_mem_offset(base: u32, offset: u32) -> (u32, i32) {
     }
 }
 
+/// The linear-memory base the optimized (absolute) path materializes.
+const BASE_CSE_LINMEM_BASE: u32 = 0x2000_0100;
+/// VCR-RA lever 3 base register: R11 is OUTSIDE the `reallocate_function` pool
+/// (R0–R8), so the range-reallocator identity-preserves it — the hoisted base
+/// survives across every straight-line segment untouched, letting us materialize
+/// it ONCE at entry rather than per-segment. R11 is also outside local
+/// promotion's pool (R4–R8) and is not the encoder scratch (R12). The optimized
+/// path's only other uses of R11 — synthetic-local-255 (`Select` nesting) and the
+/// `(R10,R11)` i64 pair — are excluded by the planner's disqualification set.
+const BASE_CSE_REG: crate::rules::Reg = crate::rules::Reg::R11;
+
+/// VCR-RA lever 3 (#468, epic #242): plan for hoisting the loop-invariant
+/// linear-memory base out of a run of constant-address memory accesses.
+#[derive(Debug, Default, PartialEq)]
+struct BaseCsePlan {
+    /// Address vreg → folded immediate (`const_addr + access_offset`, ≤ imm12).
+    /// The access is rewritten to `[R11, #imm]`, dropping its per-access
+    /// `movw/movt` base + `add`.
+    fold: std::collections::HashMap<u32, i32>,
+    /// Const vregs whose ONLY use is a folded address — their materialization is
+    /// dropped (this is what makes the reserved base a net register-pressure win
+    /// rather than a wash).
+    skip_const: std::collections::HashSet<u32>,
+}
+
+/// Source (read) vregs of an opcode, or `None` if the opcode is outside the
+/// base-CSE-safe set — any global/memory-size/select/call/i64/unknown op needs a
+/// high register (R9 globals / R10 memsize / R11 select-temp+i64-pair) or a
+/// behaviour v1 does not model, so its presence declines base-CSE for the whole
+/// function (returns `None` → planner bails → byte-identical per-access path).
+/// `_ => None` is the safety backstop: an unenumerated opcode disqualifies rather
+/// than risk a missed clobber of the reserved R11 on this un-byte-gated path.
+fn base_cse_sources(op: &Opcode) -> Option<Vec<u32>> {
+    use Opcode::*;
+    let two = |a: &OptReg, b: &OptReg| Some(vec![a.0, b.0]);
+    let one = |a: &OptReg| Some(vec![a.0]);
+    match op {
+        // i32 binops: read src1, src2.
+        Add { src1, src2, .. }
+        | Sub { src1, src2, .. }
+        | Mul { src1, src2, .. }
+        | DivS { src1, src2, .. }
+        | DivU { src1, src2, .. }
+        | RemS { src1, src2, .. }
+        | RemU { src1, src2, .. }
+        | And { src1, src2, .. }
+        | Or { src1, src2, .. }
+        | Xor { src1, src2, .. }
+        | Shl { src1, src2, .. }
+        | ShrS { src1, src2, .. }
+        | ShrU { src1, src2, .. }
+        | Rotl { src1, src2, .. }
+        | Rotr { src1, src2, .. }
+        | Eq { src1, src2, .. }
+        | Ne { src1, src2, .. }
+        | LtS { src1, src2, .. }
+        | LtU { src1, src2, .. }
+        | LeS { src1, src2, .. }
+        | LeU { src1, src2, .. }
+        | GtS { src1, src2, .. }
+        | GtU { src1, src2, .. }
+        | GeS { src1, src2, .. }
+        | GeU { src1, src2, .. } => two(src1, src2),
+        // i32 unops.
+        Clz { src, .. }
+        | Ctz { src, .. }
+        | Popcnt { src, .. }
+        | Extend8S { src, .. }
+        | Extend16S { src, .. }
+        | Eqz { src, .. }
+        | Copy { src, .. }
+        | Store { src, .. }
+        | TeeStore { src, .. } => one(src),
+        // Memory accesses: the address vreg is a read (this is the use that the
+        // planner pairs with a const def); stores additionally read `src`.
+        MemStore { src, addr, .. } | MemStoreSubword { src, addr, .. } => two(src, addr),
+        MemLoad { addr, .. } | MemLoadSubword { addr, .. } => one(addr),
+        Return { value } => Some(value.iter().map(|r| r.0).collect()),
+        // No register reads. `Label` is allowed: a function body carries a trailing
+        // structural end-label even with no real branching, and a label with
+        // nothing branching to it does not split control flow. `Branch` /
+        // `CondBranch` (below) are what indicate a genuine multi-block function.
+        Const { .. } | Load { .. } | Nop | Label { .. } => Some(vec![]),
+        // Everything else → disqualify the function. This INCLUDES `Branch` /
+        // `CondBranch`: v1 confines base-CSE to functions with no control-flow
+        // divergence — #468's straight-line field-initializer target — keeping it
+        // clear of the optimized path's (separately-tracked) multi-block lowering.
+        // R11 is realloc-immune (out of the R0–R8 pool) so a hoisted base WOULD
+        // survive branches; restricting to single-block is the conservative choice.
+        // Also covers Select / Global* / MemorySize-Grow / Call / all i64 (high-reg
+        // users) and any unenumerated opcode (safety backstop).
+        _ => None,
+    }
+}
+
+/// Decide whether base-CSE activates for this function and, if so, which const
+/// addresses fold. Returns `None` (decline → unchanged per-access codegen) unless
+/// ≥2 constant-address accesses fold and every opcode is base-CSE-safe.
+fn plan_base_cse(instructions: &[Instruction]) -> Option<BaseCsePlan> {
+    use std::collections::HashMap;
+    let mut const_val: HashMap<u32, i32> = HashMap::new();
+    let mut uses: HashMap<u32, u32> = HashMap::new();
+    // (addr vreg, static access offset) for every linear-memory access.
+    let mut accesses: Vec<(u32, u32)> = Vec::new();
+    for inst in instructions {
+        match &inst.opcode {
+            Opcode::Const { dest, value } => {
+                const_val.insert(dest.0, *value);
+            }
+            Opcode::MemStore { addr, offset, .. }
+            | Opcode::MemLoad { addr, offset, .. }
+            | Opcode::MemStoreSubword { addr, offset, .. }
+            | Opcode::MemLoadSubword { addr, offset, .. } => {
+                accesses.push((addr.0, *offset));
+            }
+            _ => {}
+        }
+        // A single unenumerated/disqualifying opcode declines the whole function.
+        let srcs = base_cse_sources(&inst.opcode)?;
+        for v in srcs {
+            *uses.entry(v).or_insert(0) += 1;
+        }
+    }
+    let mut plan = BaseCsePlan::default();
+    for (addr_vreg, off) in accesses {
+        // Foldable iff the address is a compile-time constant whose ONLY use is
+        // this access, and base+addr+offset stays in the imm12 window so the
+        // access immediate `[R11, #imm]` encodes directly.
+        if let Some(&aval) = const_val.get(&addr_vreg)
+            && uses.get(&addr_vreg) == Some(&1)
+        {
+            let folded = (aval as i64) + (off as i64);
+            if (0..=0xFFF).contains(&folded) {
+                plan.fold.insert(addr_vreg, folded as i32);
+                plan.skip_const.insert(addr_vreg);
+            }
+        }
+    }
+    (plan.fold.len() >= 2).then_some(plan)
+}
+
 /// Optimization configuration
 #[derive(Debug, Clone)]
 pub struct OptimizationConfig {
@@ -2315,7 +2456,28 @@ impl OptimizerBridge {
         // AAPCS arguments that must NOT be clobbered by i64 op handlers — at least
         // until the user's WASM has done a `local.get` of each. Using Vec because
         // `Reg` does not derive Hash (matches `instruction_selector::alloc_consecutive_pair`).
-        let param_reserved_regs: Vec<Reg> = param_regs[..num_params.min(4)].to_vec();
+        let mut param_reserved_regs: Vec<Reg> = param_regs[..num_params.min(4)].to_vec();
+
+        // VCR-RA lever 3 base-CSE (#468, epic #242): if the function is a run of
+        // constant-address memory accesses, reserve R11 as a persistent base
+        // register (excluded from every allocator via `param_reserved_regs`),
+        // materialize the linear-memory base into it ONCE at entry, and fold each
+        // const address into the access immediate (`str V,[R11,#ADDR]`) — dropping
+        // the per-access `movw/movt` base re-materialization (#468's complaint)
+        // AND the now-dead address materialization (the pressure relief that keeps
+        // the reserved base a net win). R11 is realloc-immune (outside the R0–R8
+        // pool), so the single entry materialization survives every segment.
+        // Opt-in (`SYNTH_BASE_CSE=1`) → off ⇒ byte-identical. The optimized path
+        // is the ONLY caller of `ir_to_arm`, so this never reaches the relocatable
+        // lowering (which already pins the base in `fp`).
+        let base_cse: Option<BaseCsePlan> = if std::env::var("SYNTH_BASE_CSE").is_ok() {
+            plan_base_cse(instructions)
+        } else {
+            None
+        };
+        if base_cse.is_some() {
+            param_reserved_regs.push(BASE_CSE_REG);
+        }
 
         // Track which ARM register currently holds each local variable
         // This avoids stack spills for simple cases
@@ -2617,6 +2779,22 @@ impl OptimizerBridge {
             }
         }
 
+        // VCR-RA lever 3 base-CSE: materialize the linear-memory base into the
+        // reserved R11 ONCE, before any access. Placed before the second pass so
+        // it precedes every folded `[R11,#ADDR]` and so `ir_to_arm_idx` (recorded
+        // during the loop) accounts for these two leading instructions. R11 is
+        // realloc-immune, so this single def reaches every later use unremapped.
+        if base_cse.is_some() {
+            arm_instrs.push(ArmOp::Movw {
+                rd: BASE_CSE_REG,
+                imm16: (BASE_CSE_LINMEM_BASE & 0xFFFF) as u16,
+            });
+            arm_instrs.push(ArmOp::Movt {
+                rd: BASE_CSE_REG,
+                imm16: ((BASE_CSE_LINMEM_BASE >> 16) & 0xFFFF) as u16,
+            });
+        }
+
         // Second pass: generate ARM instructions
         for inst in instructions {
             match &inst.opcode {
@@ -2698,17 +2876,29 @@ impl OptimizerBridge {
 
                 // Constant: mov immediate to register
                 Opcode::Const { dest, value } => {
+                    // VCR-RA lever 3 base-CSE: this const is a folded address — its
+                    // ONLY use is a `[R11,#ADDR]` access (planner-verified single
+                    // use), so do not materialize it at all. Dropping it is the
+                    // register-pressure relief that makes the reserved base a win.
+                    if let Some(plan) = &base_cse
+                        && plan.skip_const.contains(&dest.0)
+                    {
+                        continue;
+                    }
                     // Allocate a register for this constant
                     let rd = if let Some(&r) = vreg_to_arm.get(&dest.0) {
                         r
                     } else {
                         // Find next available temp register
-                        // Exclude live vregs (not dead) and local_to_reg to avoid clobbering
+                        // Exclude live vregs (not dead) and local_to_reg to avoid clobbering.
+                        // Base-CSE reserves R11 (in `param_reserved_regs`); fold it in
+                        // so the const pool never hands out the live base register.
                         let used: Vec<_> = vreg_to_arm
                             .iter()
                             .filter(|(k, _)| !dead_vregs.contains(k))
                             .map(|(_, v)| *v)
                             .chain(local_to_reg.values().copied())
+                            .chain(param_reserved_regs.iter().copied())
                             .collect();
                         // Expanded temp register pool: R4-R11 (callee-saved) plus R3
                         // Note: R0-R2 are reserved for params/return, R12 is IP, R13 is SP, R14 is LR, R15 is PC
@@ -4636,78 +4826,111 @@ impl OptimizerBridge {
                 // argument on every `i32.load`. Use the scratch helper so
                 // the destination is picked from the callee-saved bank.
                 Opcode::MemLoad { dest, addr, offset } => {
-                    let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
-                    let rd = alloc_i32_scratch(
-                        &vreg_to_arm,
-                        &local_to_reg,
-                        &param_reserved_regs,
-                        &[r_addr],
-                    );
-                    vreg_to_arm.insert(dest.0, rd);
+                    // VCR-RA lever 3 base-CSE: const address → load directly off the
+                    // once-materialized base in R11 (no per-access base / add / addr).
+                    if let Some(plan) = &base_cse
+                        && let Some(&folded) = plan.fold.get(&addr.0)
+                    {
+                        let rd = alloc_i32_scratch(
+                            &vreg_to_arm,
+                            &local_to_reg,
+                            &param_reserved_regs,
+                            &[],
+                        );
+                        vreg_to_arm.insert(dest.0, rd);
+                        arm_instrs.push(ArmOp::Ldr {
+                            rd,
+                            addr: crate::rules::MemAddr::imm(BASE_CSE_REG, folded),
+                        });
+                        last_result_vreg = Some(dest.0);
+                    } else {
+                        let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
+                        let rd = alloc_i32_scratch(
+                            &vreg_to_arm,
+                            &local_to_reg,
+                            &param_reserved_regs,
+                            &[r_addr],
+                        );
+                        vreg_to_arm.insert(dest.0, rd);
 
-                    // Linear memory base 0x20000100 (SRAM, above stack area).
-                    // #382: fold a large static offset (> imm12) into the
-                    // compile-time-constant base so the access immediate is 0.
-                    let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
-                    let base_lo = (base & 0xFFFF) as u16;
-                    let base_hi = ((base >> 16) & 0xFFFF) as u16;
+                        // Linear memory base 0x20000100 (SRAM, above stack area).
+                        // #382: fold a large static offset (> imm12) into the
+                        // compile-time-constant base so the access immediate is 0.
+                        let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
+                        let base_lo = (base & 0xFFFF) as u16;
+                        let base_hi = ((base >> 16) & 0xFFFF) as u16;
 
-                    // Load base address into R12 (scratch register)
-                    arm_instrs.push(ArmOp::Movw {
-                        rd: Reg::R12,
-                        imm16: base_lo,
-                    });
-                    arm_instrs.push(ArmOp::Movt {
-                        rd: Reg::R12,
-                        imm16: base_hi,
-                    });
-                    // Add WASM address offset
-                    arm_instrs.push(ArmOp::Add {
-                        rd: Reg::R12,
-                        rn: Reg::R12,
-                        op2: Operand2::Reg(r_addr),
-                    });
-                    // Load from [base + wasm_addr + static_offset]
-                    arm_instrs.push(ArmOp::Ldr {
-                        rd,
-                        addr: crate::rules::MemAddr::imm(Reg::R12, mem_off),
-                    });
-                    last_result_vreg = Some(dest.0);
+                        // Load base address into R12 (scratch register)
+                        arm_instrs.push(ArmOp::Movw {
+                            rd: Reg::R12,
+                            imm16: base_lo,
+                        });
+                        arm_instrs.push(ArmOp::Movt {
+                            rd: Reg::R12,
+                            imm16: base_hi,
+                        });
+                        // Add WASM address offset
+                        arm_instrs.push(ArmOp::Add {
+                            rd: Reg::R12,
+                            rn: Reg::R12,
+                            op2: Operand2::Reg(r_addr),
+                        });
+                        // Load from [base + wasm_addr + static_offset]
+                        arm_instrs.push(ArmOp::Ldr {
+                            rd,
+                            addr: crate::rules::MemAddr::imm(Reg::R12, mem_off),
+                        });
+                        last_result_vreg = Some(dest.0);
+                    }
                 }
 
                 // MemStore: store 32-bit value to linear memory
                 // Generates: MOVW R12, #base_lo; MOVT R12, #base_hi; ADD R12, R12, Raddr; STR Rsrc, [R12, #offset]
                 Opcode::MemStore { src, addr, offset } => {
-                    let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
-                    let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs)?;
+                    // VCR-RA lever 3 base-CSE: the address is a folded compile-time
+                    // constant — store directly off the once-materialized base in
+                    // R11, dropping the per-access `movw/movt` + `add` and the
+                    // address materialization (skipped at its `Const`).
+                    if let Some(plan) = &base_cse
+                        && let Some(&folded) = plan.fold.get(&addr.0)
+                    {
+                        let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs)?;
+                        arm_instrs.push(ArmOp::Str {
+                            rd: r_src,
+                            addr: crate::rules::MemAddr::imm(BASE_CSE_REG, folded),
+                        });
+                    } else {
+                        let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
+                        let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs)?;
 
-                    // Linear memory base 0x20000100 (SRAM, above stack area).
-                    // #382: fold a large static offset (> imm12) into the
-                    // compile-time-constant base so the access immediate is 0.
-                    let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
-                    let base_lo = (base & 0xFFFF) as u16;
-                    let base_hi = ((base >> 16) & 0xFFFF) as u16;
+                        // Linear memory base 0x20000100 (SRAM, above stack area).
+                        // #382: fold a large static offset (> imm12) into the
+                        // compile-time-constant base so the access immediate is 0.
+                        let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
+                        let base_lo = (base & 0xFFFF) as u16;
+                        let base_hi = ((base >> 16) & 0xFFFF) as u16;
 
-                    // Load base address into R12 (scratch register)
-                    arm_instrs.push(ArmOp::Movw {
-                        rd: Reg::R12,
-                        imm16: base_lo,
-                    });
-                    arm_instrs.push(ArmOp::Movt {
-                        rd: Reg::R12,
-                        imm16: base_hi,
-                    });
-                    // Add WASM address offset
-                    arm_instrs.push(ArmOp::Add {
-                        rd: Reg::R12,
-                        rn: Reg::R12,
-                        op2: Operand2::Reg(r_addr),
-                    });
-                    // Store to [base + wasm_addr + static_offset]
-                    arm_instrs.push(ArmOp::Str {
-                        rd: r_src,
-                        addr: crate::rules::MemAddr::imm(Reg::R12, mem_off),
-                    });
+                        // Load base address into R12 (scratch register)
+                        arm_instrs.push(ArmOp::Movw {
+                            rd: Reg::R12,
+                            imm16: base_lo,
+                        });
+                        arm_instrs.push(ArmOp::Movt {
+                            rd: Reg::R12,
+                            imm16: base_hi,
+                        });
+                        // Add WASM address offset
+                        arm_instrs.push(ArmOp::Add {
+                            rd: Reg::R12,
+                            rn: Reg::R12,
+                            op2: Operand2::Reg(r_addr),
+                        });
+                        // Store to [base + wasm_addr + static_offset]
+                        arm_instrs.push(ArmOp::Str {
+                            rd: r_src,
+                            addr: crate::rules::MemAddr::imm(Reg::R12, mem_off),
+                        });
+                    }
                     // MemStore does not produce a value
                 }
 
@@ -4726,34 +4949,48 @@ impl OptimizerBridge {
                     width,
                     signed,
                 } => {
-                    let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
-                    let rd = alloc_i32_scratch(
-                        &vreg_to_arm,
-                        &local_to_reg,
-                        &param_reserved_regs,
-                        &[r_addr],
-                    );
-                    vreg_to_arm.insert(dest.0, rd);
+                    // VCR-RA lever 3 base-CSE: const address → subword load off R11.
+                    let (rd, addr_mem) = if let Some(plan) = &base_cse
+                        && let Some(&folded) = plan.fold.get(&addr.0)
+                    {
+                        let rd = alloc_i32_scratch(
+                            &vreg_to_arm,
+                            &local_to_reg,
+                            &param_reserved_regs,
+                            &[],
+                        );
+                        vreg_to_arm.insert(dest.0, rd);
+                        (rd, crate::rules::MemAddr::imm(BASE_CSE_REG, folded))
+                    } else {
+                        let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
+                        let rd = alloc_i32_scratch(
+                            &vreg_to_arm,
+                            &local_to_reg,
+                            &param_reserved_regs,
+                            &[r_addr],
+                        );
+                        vreg_to_arm.insert(dest.0, rd);
 
-                    // #382: fold a large static offset (> imm12) into the
-                    // compile-time-constant base so the access immediate is 0.
-                    let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
-                    let base_lo = (base & 0xFFFF) as u16;
-                    let base_hi = ((base >> 16) & 0xFFFF) as u16;
-                    arm_instrs.push(ArmOp::Movw {
-                        rd: Reg::R12,
-                        imm16: base_lo,
-                    });
-                    arm_instrs.push(ArmOp::Movt {
-                        rd: Reg::R12,
-                        imm16: base_hi,
-                    });
-                    arm_instrs.push(ArmOp::Add {
-                        rd: Reg::R12,
-                        rn: Reg::R12,
-                        op2: Operand2::Reg(r_addr),
-                    });
-                    let addr_mem = crate::rules::MemAddr::imm(Reg::R12, mem_off);
+                        // #382: fold a large static offset (> imm12) into the
+                        // compile-time-constant base so the access immediate is 0.
+                        let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
+                        let base_lo = (base & 0xFFFF) as u16;
+                        let base_hi = ((base >> 16) & 0xFFFF) as u16;
+                        arm_instrs.push(ArmOp::Movw {
+                            rd: Reg::R12,
+                            imm16: base_lo,
+                        });
+                        arm_instrs.push(ArmOp::Movt {
+                            rd: Reg::R12,
+                            imm16: base_hi,
+                        });
+                        arm_instrs.push(ArmOp::Add {
+                            rd: Reg::R12,
+                            rn: Reg::R12,
+                            op2: Operand2::Reg(r_addr),
+                        });
+                        (rd, crate::rules::MemAddr::imm(Reg::R12, mem_off))
+                    };
                     let sub_op = match (*width, *signed) {
                         (1, false) => ArmOp::Ldrb { rd, addr: addr_mem },
                         (1, true) => ArmOp::Ldrsb { rd, addr: addr_mem },
@@ -4777,28 +5014,36 @@ impl OptimizerBridge {
                     offset,
                     width,
                 } => {
-                    let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
-                    let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs)?;
+                    // VCR-RA lever 3 base-CSE: const address → subword store off R11.
+                    let (r_src, addr_mem) = if let Some(plan) = &base_cse
+                        && let Some(&folded) = plan.fold.get(&addr.0)
+                    {
+                        let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs)?;
+                        (r_src, crate::rules::MemAddr::imm(BASE_CSE_REG, folded))
+                    } else {
+                        let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
+                        let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs)?;
 
-                    // #382: fold a large static offset (> imm12) into the
-                    // compile-time-constant base so the access immediate is 0.
-                    let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
-                    let base_lo = (base & 0xFFFF) as u16;
-                    let base_hi = ((base >> 16) & 0xFFFF) as u16;
-                    arm_instrs.push(ArmOp::Movw {
-                        rd: Reg::R12,
-                        imm16: base_lo,
-                    });
-                    arm_instrs.push(ArmOp::Movt {
-                        rd: Reg::R12,
-                        imm16: base_hi,
-                    });
-                    arm_instrs.push(ArmOp::Add {
-                        rd: Reg::R12,
-                        rn: Reg::R12,
-                        op2: Operand2::Reg(r_addr),
-                    });
-                    let addr_mem = crate::rules::MemAddr::imm(Reg::R12, mem_off);
+                        // #382: fold a large static offset (> imm12) into the
+                        // compile-time-constant base so the access immediate is 0.
+                        let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
+                        let base_lo = (base & 0xFFFF) as u16;
+                        let base_hi = ((base >> 16) & 0xFFFF) as u16;
+                        arm_instrs.push(ArmOp::Movw {
+                            rd: Reg::R12,
+                            imm16: base_lo,
+                        });
+                        arm_instrs.push(ArmOp::Movt {
+                            rd: Reg::R12,
+                            imm16: base_hi,
+                        });
+                        arm_instrs.push(ArmOp::Add {
+                            rd: Reg::R12,
+                            rn: Reg::R12,
+                            op2: Operand2::Reg(r_addr),
+                        });
+                        (r_src, crate::rules::MemAddr::imm(Reg::R12, mem_off))
+                    };
                     let sub_op = match *width {
                         1 => ArmOp::Strb {
                             rd: r_src,
@@ -5284,6 +5529,174 @@ impl Default for OptimizerBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- base-CSE planner (VCR-RA lever 3, #468) ----
+
+    fn inst(op: Opcode) -> Instruction {
+        Instruction {
+            id: 0,
+            opcode: op,
+            block_id: 0,
+            is_dead: false,
+        }
+    }
+    fn vr(n: u32) -> OptReg {
+        OptReg(n)
+    }
+    /// `[Const addr, Const val, MemStore]` triples for `(addr, val)` pairs, using
+    /// fresh vregs per pair (single-use addresses, the foldable shape).
+    fn const_addr_stores(pairs: &[(i32, i32)]) -> Vec<Instruction> {
+        let mut out = Vec::new();
+        for (i, (addr, val)) in pairs.iter().enumerate() {
+            let av = (i as u32) * 2;
+            let vv = av + 1;
+            out.push(inst(Opcode::Const {
+                dest: vr(av),
+                value: *addr,
+            }));
+            out.push(inst(Opcode::Const {
+                dest: vr(vv),
+                value: *val,
+            }));
+            out.push(inst(Opcode::MemStore {
+                src: vr(vv),
+                addr: vr(av),
+                offset: 0,
+            }));
+        }
+        out
+    }
+
+    #[test]
+    fn plan_base_cse_folds_two_or_more_const_addr_stores() {
+        let ir = const_addr_stores(&[(0, 11), (4, 22), (8, 33)]);
+        let plan = plan_base_cse(&ir).expect("activates with 3 foldable stores");
+        assert_eq!(plan.fold.len(), 3);
+        assert_eq!(plan.skip_const.len(), 3);
+        // addr vreg 0 → folded immediate 0; vreg 2 → 4; vreg 4 → 8.
+        assert_eq!(plan.fold.get(&0), Some(&0));
+        assert_eq!(plan.fold.get(&2), Some(&4));
+        assert_eq!(plan.fold.get(&4), Some(&8));
+    }
+
+    #[test]
+    fn plan_base_cse_declines_below_two_folds() {
+        let ir = const_addr_stores(&[(0, 11)]);
+        assert_eq!(plan_base_cse(&ir), None);
+    }
+
+    #[test]
+    fn plan_base_cse_declines_on_disqualifying_op() {
+        // A Select anywhere needs R11 for the synthetic-select temp → decline.
+        let mut ir = const_addr_stores(&[(0, 11), (4, 22)]);
+        ir.push(inst(Opcode::Select {
+            dest: vr(100),
+            val_true: vr(101),
+            val_false: vr(102),
+            cond: vr(103),
+        }));
+        assert_eq!(plan_base_cse(&ir), None);
+    }
+
+    #[test]
+    fn plan_base_cse_declines_on_control_flow() {
+        // A `CondBranch` (br_if) makes the function multi-block — outside v1 scope
+        // (and clear of the optimized path's separately-tracked multi-block bug).
+        let mut ir = const_addr_stores(&[(0, 11), (4, 22)]);
+        ir.push(inst(Opcode::CondBranch {
+            cond: vr(100),
+            target: 0,
+        }));
+        assert_eq!(plan_base_cse(&ir), None);
+    }
+
+    #[test]
+    fn plan_base_cse_allows_trailing_structural_label() {
+        // A bare `Label` (the function-end marker with nothing branching to it)
+        // does NOT split control flow, so base-CSE still activates.
+        let mut ir = const_addr_stores(&[(0, 11), (4, 22)]);
+        ir.push(inst(Opcode::Label { id: 99 }));
+        let plan = plan_base_cse(&ir).expect("activates despite a structural label");
+        assert_eq!(plan.fold.len(), 2);
+    }
+
+    #[test]
+    fn plan_base_cse_declines_imm12_overflow_addr() {
+        // 0x1000 + 0 exceeds the imm12 window → that access does not fold; with
+        // only one other foldable store the function falls below threshold.
+        let ir = const_addr_stores(&[(0x1000, 11), (4, 22)]);
+        let plan = plan_base_cse(&ir);
+        // Only the (4,22) store folds → 1 fold → below the ≥2 threshold → None.
+        assert_eq!(plan, None);
+    }
+
+    #[test]
+    fn plan_base_cse_declines_multi_use_addr() {
+        // An address vreg used by TWO stores is not single-use → not folded.
+        // (Both stores reuse addr vreg 0; the second's value is vreg 2.)
+        let ir = vec![
+            inst(Opcode::Const {
+                dest: vr(0),
+                value: 4,
+            }),
+            inst(Opcode::Const {
+                dest: vr(1),
+                value: 11,
+            }),
+            inst(Opcode::MemStore {
+                src: vr(1),
+                addr: vr(0),
+                offset: 0,
+            }),
+            inst(Opcode::Const {
+                dest: vr(2),
+                value: 22,
+            }),
+            inst(Opcode::MemStore {
+                src: vr(2),
+                addr: vr(0),
+                offset: 0,
+            }),
+        ];
+        // addr vreg 0 has use_count 2 → neither store folds → None.
+        assert_eq!(plan_base_cse(&ir), None);
+    }
+
+    #[test]
+    fn plan_base_cse_folds_static_offset_into_immediate() {
+        // A non-zero static access offset folds into the immediate (ADDR + off).
+        let ir = vec![
+            inst(Opcode::Const {
+                dest: vr(0),
+                value: 0,
+            }),
+            inst(Opcode::Const {
+                dest: vr(1),
+                value: 11,
+            }),
+            inst(Opcode::MemStore {
+                src: vr(1),
+                addr: vr(0),
+                offset: 16,
+            }),
+            inst(Opcode::Const {
+                dest: vr(2),
+                value: 0,
+            }),
+            inst(Opcode::Const {
+                dest: vr(3),
+                value: 22,
+            }),
+            inst(Opcode::MemStore {
+                src: vr(3),
+                addr: vr(2),
+                offset: 32,
+            }),
+        ];
+        let plan = plan_base_cse(&ir).expect("activates");
+        assert_eq!(plan.fold.get(&0), Some(&16)); // 0 + 16
+        assert_eq!(plan.fold.get(&2), Some(&32)); // 0 + 32
+    }
 
     #[test]
     fn test_optimizer_bridge_basic() {

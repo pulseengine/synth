@@ -1,10 +1,9 @@
 # #468 scoping spike — redundant linear-memory-base materialization
 
 **Issue:** synth#468 · **Epic:** #242 (VCR-*) · north-star #390
-**Status:** SCOPING SPIKE (no codegen change — frozen-safe by construction).
-The byte-changing CSE is the explicitly-separate next gated step (flag-off →
-on-target cycle gate → default-on flip), exactly like the cmp→select /
-local-promotion / immediate-shift levers.
+**Status:** IMPLEMENTED flag-off (`SYNTH_BASE_CSE`) — see "Implemented" below.
+Default-on flip held for the on-target cycle gate, exactly like the cmp→select /
+local-promotion / immediate-shift / dead-frame levers.
 
 ## The pattern
 
@@ -90,14 +89,52 @@ only result checks are the out-of-CI unicorn differential + the on-target gate. 
 relocatable lowering), not a free property — and the optimized-path result evidence
 is the differential, not a cargo test.
 
-## Next gated step (separate PR)
+## Implemented — `SYNTH_BASE_CSE` (flag-off)
 
-1. Flag-off CSE in `optimizer_bridge.rs` (`SYNTH_BASE_CSE`, default off ⇒
-   bit-identical optimized path) — reserve a callee-saved base reg, hoist
-   `movw/movt` once per const-base store-run, rewrite stores to `[base,#off]`.
-   Soundness: only runs of stores whose base is the same compile-time constant
-   with no intervening base clobber; base reg dead-after / restored in epilogue.
-2. Differential (unicorn): optimized-path ELF, flag-off == flag-on == wasmtime;
-   the 7-store fixture is the non-vacuity case.
-3. On-target cycle gate (same protocol as the prior levers), then default-on flip
-   + re-freeze any optimized-path goldens it touches.
+The scoping spike above anticipated "reserve a callee-saved base reg, hoist
+`movw/movt` once per straight-line run." The implementation found a cleaner,
+stronger invariant and is **simpler** than the per-run plan:
+
+* **R11 is realloc-immune.** `reallocate_function`'s pool is `R0–R8`; it
+  identity-preserves everything outside it. So the base lives in **R11**,
+  materialized **once at function entry**, and survives every later segment
+  untouched — no per-run re-materialization, no cross-segment remap hazard. R11
+  is also outside local promotion's `R4–R8` pool and is not the encoder scratch
+  (R12). It is reserved from every optimized-path allocator via
+  `param_reserved_regs` + the const pool.
+* **Const addresses fold into the access immediate.** `i32.store (i32.const ADDR)
+  V` → `str V,[R11,#ADDR+off]` (planner-verified single-use const address,
+  `ADDR+off ≤ imm12`), dropping the per-access `movw/movt` base **and** the now-
+  dead address materialization — the latter is the register-pressure relief that
+  makes the reserved base a net win, not a wash.
+* **A standalone planner** (`plan_base_cse`, unit-tested) decides activation:
+  ≥2 foldable const-address accesses AND every opcode in the base-CSE-safe set.
+  Any `Branch`/`CondBranch` (multi-block), `Select`, `Global*`, `MemorySize/Grow`,
+  `Call`, i64, or unenumerated op declines the whole function (`None` → unchanged
+  per-access codegen). v1 is therefore confined to single-basic-block field
+  initializers — #468's exact target — keeping it clear of the optimized path's
+  separately-tracked multi-block lowering.
+
+Result on `init_fields`: **.text 336 B → 218 B (−118 B, −35 %)**, base
+materialized once, all 7 addresses folded, matching the relocatable path's
+`str [fp,#off]` shape.
+
+### Oracle (this path has NO cargo byte-gate — frozen gate compiles `--relocatable`)
+
+1. **Flag-off bit-identical** — verified by an explicit `.text` diff of a fixture
+   corpus against a pre-change baseline binary (4/4 identical), plus the full
+   optimized-path test suite (`wast_compile` et al.) green. base-CSE is `None`
+   when the flag is unset, so off ⇒ byte-identical by construction.
+2. **Differential** (`base_cse_differential.py`, unicorn): `init_fields`
+   flag-off == flag-on == wasmtime by comparing **linear memory** (the fixture
+   returns nothing); `init_branch` asserts flag-on `.text` byte-identical to
+   flag-off (base-CSE correctly **declines** on control flow).
+3. **On-target cycle gate** (same protocol as the prior levers), then default-on
+   flip via a `SYNTH_NO_BASE_CSE` opt-out — **held for silicon**.
+
+### Follow-ups
+* Multi-block support (needs the optimized path's `block`/`br_if` lowering fixed
+  first — `init_branch` flag-off already miscompiles, independent of base-CSE; a
+  separate optimized-path control-flow bug worth its own issue).
+* Dynamic (non-const) addresses in an active function could still source the base
+  from R11 (`add R12,R11,r_addr`) instead of re-materializing — deferred.
