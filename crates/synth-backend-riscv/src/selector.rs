@@ -5963,6 +5963,94 @@ mod tests {
         )
     }
 
+    // ─── VCR-RA #472 lever baselines (epic #242) ───────────────────────────
+    // These pin the CURRENT (pre-lever) RV32 codegen for the three patterns the
+    // RISC-V lever port targets (see scripts/repro/riscv_lever_parity_472.md).
+    // They are oracle-first: frozen-safe today (assert what the selector emits
+    // now), and each flips when its lever lands default-on — so CI surfaces the
+    // codegen change as a deliberate, reviewed assertion update rather than a
+    // silent drift on the un-byte-gated RV32 path. They also validate the scoping
+    // doc's source-read claims with executable evidence.
+
+    /// #472 const-address-fold baseline: a constant-address store is NOT folded.
+    /// Today it materializes `add t, s11, addr; sw v, 0(t)`; the lever will rewrite
+    /// that to a single `sw v, ADDR(s11)`. Pins the current unfolded shape.
+    #[test]
+    fn const_addr_store_not_folded_baseline_472() {
+        // (i32.store (i32.const 8) (i32.const 33))  — address 8, value 33.
+        let out = s(
+            &[
+                WasmOp::I32Const(8),
+                WasmOp::I32Const(33),
+                WasmOp::I32Store {
+                    offset: 0,
+                    align: 2,
+                },
+                WasmOp::End,
+            ],
+            0,
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Add { rs1: Reg::S11, .. })) >= 1,
+            "baseline: const-addr store computes base+addr via `add _,s11,_`: {out:?}"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Sw { rs1: Reg::S11, .. })),
+            0,
+            "baseline: the store is NOT yet folded directly off s11: {out:?}"
+        );
+    }
+
+    /// #472 immediate-shift-fold baseline: a constant shift amount uses the
+    /// REGISTER form `sll` (preceded by an `li` of the amount), not `slli #shamt`.
+    #[test]
+    fn const_shift_uses_register_form_baseline_472() {
+        // (i32.shl (local.get 0) (i32.const 8))
+        let out = s(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Const(8),
+                WasmOp::I32Shl,
+                WasmOp::Drop,
+                WasmOp::End,
+            ],
+            1,
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Sll { .. })) >= 1,
+            "baseline: const shift uses the register form `sll`: {out:?}"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Slli { .. })),
+            0,
+            "baseline: not yet folded to `slli #shamt`: {out:?}"
+        );
+    }
+
+    /// #472 local-promotion baseline: a non-param i32 local is frame-spilled
+    /// (`sw _,off(sp)` / `lw`), not register-homed. The lever will keep eligible
+    /// leaf locals in s-registers (the #390 analogue, carrying the #474 fallback).
+    #[test]
+    fn nonparam_local_frame_spilled_baseline_472() {
+        // local 1 is non-param (num_params = 1); set from a const, then read.
+        let out = s(
+            &[
+                WasmOp::I32Const(5),
+                WasmOp::LocalSet(1),
+                WasmOp::LocalGet(1),
+                WasmOp::Drop,
+                WasmOp::End,
+            ],
+            1,
+        );
+        // No s-register is written by this tiny body, so the only sp-relative
+        // store is the local's frame slot (the #220 callee-saved spills don't fire).
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Sw { rs1: Reg::SP, .. })) >= 1,
+            "baseline: non-param local is frame-spilled (`sw _,off(sp)`): {out:?}"
+        );
+    }
+
     /// #312: `local.set` + `local.get` of an i64 local round-trips through a
     /// two-word frame slot — sw/lw at `off` (lo) and `off+4` (hi).
     #[test]
