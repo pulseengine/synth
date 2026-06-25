@@ -535,8 +535,28 @@ artifacts:
       flight_seam etc. locally but are not yet CI-wired — though for FROZEN fixtures
       that is redundant with the byte gate, so the value is in NON-frozen / flag-on
       paths the byte gate cannot cover).
+      RV32 LEVER-BASELINE SLICE LANDED (2026-06-25, #472/#484/#485): the RISC-V
+      lever port (porting the ARM perf levers to `synth-backend-riscv`) is the next
+      perf track, scoped frozen-safe in `scripts/repro/riscv_lever_parity_472.md`
+      (#484) and given its oracle in `crates/synth-backend-riscv/src/selector.rs`
+      (#485). The RV32 path has NO cargo byte-gate beyond the frozen-fixture SHA
+      (control_step / signed_div_const only) and no local RISC-V disassembler, so
+      three `*_baseline_472` selector tests PIN the current pre-lever RV32 codegen
+      at the RiscVOp-stream level: const-address store NOT folded (`add _,s11,addr;
+      sw v,0(t)`), constant shift uses register `sll` not `slli #shamt`, non-param
+      i32 local frame-spilled not register-homed. Each is green today (frozen-safe,
+      asserts what the selector emits now) and FLIPS when its lever lands default-on,
+      so a codegen change on the un-byte-gated RV32 path surfaces as a deliberate,
+      reviewed assertion update rather than silent drift. Scoping finding that
+      reshaped the port: cmp->select is N/A for RV32IMAC (no conditional-move / no
+      IT-predication; `lower_select` is already the minimal branchy form), so the
+      port is local-promotion + immediate-shift-fold + a RISC-V-specific
+      const-address-fold (the base is already pinned in s11 — #468's base-hoist half
+      does not exist on RV32), NOT a 1:1 port of the three ARM levers. The
+      byte-changing lever implementations remain SEPARATE gated steps (each flag-off
+      -> RV32 execution differential -> qemu_riscv32/ESP32-C3 cycle gate -> flip).
     status: approved
-    tags: [oracle, differential, coverage, mcdc, validation, track-c]
+    tags: [oracle, differential, coverage, mcdc, validation, track-c, riscv]
     links:
       - type: derives-from
         target: VCR-001
