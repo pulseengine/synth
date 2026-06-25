@@ -220,6 +220,14 @@ pub enum ArmOp {
         rd: Reg,
         rm: Reg,
     }, // Sign-extend halfword (16-bit to 32-bit)
+    Uxtb {
+        rd: Reg,
+        rm: Reg,
+    }, // Zero-extend byte (rd = rm & 0xff) — the fold target for `movw #0xff; and`
+    Uxth {
+        rd: Reg,
+        rm: Reg,
+    }, // Zero-extend halfword (rd = rm & 0xffff) — fold target for `movw #0xffff; and`
 
     // Move
     Mov {

@@ -5035,8 +5035,11 @@ impl OptimizerBridge {
                 ArmOp::Adc { .. } | ArmOp::Sbc { .. } => 4,
                 // CLZ, RBIT are always 32-bit Thumb-2
                 ArmOp::Clz { .. } | ArmOp::Rbit { .. } => 4,
-                // SXTB, SXTH can be 16-bit for low registers
-                ArmOp::Sxtb { rd, rm } | ArmOp::Sxth { rd, rm } => {
+                // SXTB, SXTH, UXTB, UXTH can be 16-bit for low registers
+                ArmOp::Sxtb { rd, rm }
+                | ArmOp::Sxth { rd, rm }
+                | ArmOp::Uxtb { rd, rm }
+                | ArmOp::Uxth { rd, rm } => {
                     let rd_bits = reg_num(rd);
                     let rm_bits = reg_num(rm);
                     if rd_bits < 8 && rm_bits < 8 { 2 } else { 4 }

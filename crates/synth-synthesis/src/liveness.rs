@@ -111,7 +111,9 @@ pub fn reg_effect(op: &ArmOp) -> Option<RegEffect> {
         | Rbit { rd, rm }
         | Popcnt { rd, rm }
         | Sxtb { rd, rm }
-        | Sxth { rd, rm } => def_use(vec![*rd], vec![*rm]),
+        | Sxth { rd, rm }
+        | Uxtb { rd, rm }
+        | Uxth { rd, rm } => def_use(vec![*rd], vec![*rm]),
 
         // flag-setting compares: read operands, write no GP register
         Cmp { rn, op2 } | Cmn { rn, op2 } => {
@@ -561,6 +563,93 @@ pub fn fold_immediate_shifts(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
                 // M must be dead after the shift for the movw to be a dead store.
                 if reg_dead_by_redef(m, &instrs[j + 1..]) {
                     out[j].op = imm_shift;
+                    drop_movw[i] = true;
+                    folds += 1;
+                }
+                break; // M consumed (folded or declined) — done with this movw.
+            }
+            // Any other read/redef of M, or an unmodeled op, ends this movw's window.
+            match reg_effect(&instrs[j].op) {
+                Some(eff) if eff.uses.contains(&m) || eff.defs.contains(&m) => break,
+                Some(_) => {}
+                None => break,
+            }
+        }
+    }
+
+    if folds == 0 {
+        return (out, 0);
+    }
+    let folded: Vec<ArmInstruction> = out
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !drop_movw[*i])
+        .map(|(_, ins)| ins)
+        .collect();
+    (folded, folds)
+}
+
+/// VCR-RA peephole (#428, #242): fold a 16/8-bit mask materialized into a scratch
+/// register and consumed by `AND` into the dedicated zero-extend instruction.
+///
+/// ```text
+/// movw rM, #0xffff ; and rD, rN, rM   ->   uxth rD, rN   (rD = rN & 0xffff)
+/// movw rM, #0x00ff ; and rD, rN, rM   ->   uxtb rD, rN   (rD = rN & 0x00ff)
+/// ```
+///
+/// `0xffff`/`0xff` are not Thumb-2 modified immediates, so the selector must
+/// materialize the mask into a register (`movw`) and use the register form of AND;
+/// `uxth`/`uxtb` express the same masking in one instruction, freeing the scratch
+/// register. Sound unconditionally: `r & 0xffff` and `r & 0xff` are exactly what
+/// UXTH/UXTB compute (rotation 0). AND is commutative, so the masked source is
+/// whichever operand is not the materialized mask register.
+///
+/// Same soundness scaffolding as [`fold_immediate_shifts`]: the mask register `M`
+/// must be untouched between the `movw` and the `and`, and **dead after** the `and`
+/// (`reg_dead_by_redef`) for the `movw` to be a removable dead store. Removal-only
+/// and rewrite-in-place, so offset-neutral (no labels/branches move). Pure
+/// function; callers opt in (flag-gated wiring is a separate, oracle-gated step).
+pub fn fold_uxth(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    use crate::rules::Operand2;
+    let n = instrs.len();
+    let mut out = instrs.to_vec();
+    let mut drop_movw: Vec<bool> = vec![false; n];
+    let mut folds = 0usize;
+
+    for i in 0..n {
+        // [i] must be `movw rM, #0xffff` (→ uxth) or `#0xff` (→ uxtb).
+        let (m, wide) = match &instrs[i].op {
+            ArmOp::Movw { rd, imm16: 0xffff } => (*rd, true),
+            ArmOp::Movw { rd, imm16: 0x00ff } => (*rd, false),
+            _ => continue,
+        };
+        for j in (i + 1)..n {
+            // The AND consuming M as one operand; the source is the OTHER operand.
+            let extended = match &out[j].op {
+                ArmOp::And {
+                    rd,
+                    rn,
+                    op2: Operand2::Reg(rm),
+                } if *rm == m && *rn != m => Some((*rd, *rn)),
+                ArmOp::And {
+                    rd,
+                    rn,
+                    op2: Operand2::Reg(rm),
+                } if *rn == m && *rm != m => Some((*rd, *rm)),
+                _ => None,
+            };
+            if let Some((rd, src)) = extended {
+                // The movw must be a dead store once the AND (its only consumer of
+                // M in this window) becomes a `uxth/uxtb` that doesn't read M. That
+                // holds if either the fold's destination IS M — `and M,src,M`
+                // ⇒ `uxth M,src` redefines M, killing the movw — or M is otherwise
+                // dead after the AND.
+                if rd == m || reg_dead_by_redef(m, &instrs[j + 1..]) {
+                    out[j].op = if wide {
+                        ArmOp::Uxth { rd, rm: src }
+                    } else {
+                        ArmOp::Uxtb { rd, rm: src }
+                    };
                     drop_movw[i] = true;
                     folds += 1;
                 }
@@ -1898,6 +1987,14 @@ fn rewrite_op(
             rd: d(rd),
             rm: u(rm),
         },
+        Uxtb { rd, rm } => Uxtb {
+            rd: d(rd),
+            rm: u(rm),
+        },
+        Uxth { rd, rm } => Uxth {
+            rd: d(rd),
+            rm: u(rm),
+        },
         Cmp { rn, op2 } => Cmp {
             rn: u(rn),
             op2: op2_map(op2, use_map),
@@ -2814,6 +2911,14 @@ fn rename_use(op: &ArmOp, from: Reg, to: Reg) -> Option<ArmOp> {
             rd: *rd,
             rm: sub(*rm),
         },
+        Uxtb { rd, rm } => Uxtb {
+            rd: *rd,
+            rm: sub(*rm),
+        },
+        Uxth { rd, rm } => Uxth {
+            rd: *rd,
+            rm: sub(*rm),
+        },
         Cmp { rn, op2 } => Cmp {
             rn: sub(*rn),
             op2: op2_rename(op2, from, to),
@@ -3570,6 +3675,189 @@ mod tests {
             }),
         ];
         let (_, n) = fold_immediate_shifts(&seq);
+        assert_eq!(n, 0);
+    }
+
+    // ---- fold_uxth (#428) ----
+
+    #[test]
+    fn fold_uxth_basic_folds_mask_and_into_uxth() {
+        // movw r7,#0xffff ; and r8,r6,r7 ; movw r7,#0 (redef ⇒ r7 dead)
+        // ⇒ uxth r8,r6 and the movw is removed.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 0xffff,
+            }),
+            ins(ArmOp::And {
+                rd: Reg::R8,
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R7),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 0,
+            }),
+        ];
+        let (out, n) = fold_uxth(&seq);
+        assert_eq!(n, 1);
+        assert_eq!(out.len(), seq.len() - 1, "the folded movw is removed");
+        assert!(
+            out.iter().any(|i| matches!(
+                i.op,
+                ArmOp::Uxth {
+                    rd: Reg::R8,
+                    rm: Reg::R6
+                }
+            )),
+            "mask-and folded to uxth r8,r6"
+        );
+        assert!(
+            !out.iter().any(|i| matches!(i.op, ArmOp::And { .. })),
+            "no AND remains"
+        );
+    }
+
+    #[test]
+    fn fold_uxth_uxtb_for_0xff_mask() {
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 0x00ff,
+            }),
+            ins(ArmOp::And {
+                rd: Reg::R2,
+                rn: Reg::R3,
+                op2: Operand2::Reg(Reg::R4),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R4,
+                imm16: 0,
+            }),
+        ];
+        let (out, n) = fold_uxth(&seq);
+        assert_eq!(n, 1);
+        assert!(
+            out.iter().any(|i| matches!(
+                i.op,
+                ArmOp::Uxtb {
+                    rd: Reg::R2,
+                    rm: Reg::R3
+                }
+            )),
+            "0xff mask folds to uxtb"
+        );
+    }
+
+    #[test]
+    fn fold_uxth_handles_commutative_mask_in_rn() {
+        // and r8,r7,r6 with the mask in rn (r7) ⇒ source is r6.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 0xffff,
+            }),
+            ins(ArmOp::And {
+                rd: Reg::R8,
+                rn: Reg::R7,
+                op2: Operand2::Reg(Reg::R6),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 0,
+            }),
+        ];
+        let (out, n) = fold_uxth(&seq);
+        assert_eq!(n, 1);
+        assert!(
+            out.iter().any(|i| matches!(
+                i.op,
+                ArmOp::Uxth {
+                    rd: Reg::R8,
+                    rm: Reg::R6
+                }
+            )),
+            "commutative: mask in rn ⇒ uxth of the op2 source"
+        );
+    }
+
+    #[test]
+    fn fold_uxth_folds_when_and_writes_back_to_mask_reg() {
+        // The common codegen shape: `and r3,r0,r3` reuses the mask reg as the dest.
+        // The fold `uxth r3,r0` redefines r3, so the movw is dead even though r3 is
+        // read afterward (it then holds the AND result, not the mask).
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 0xffff,
+            }),
+            ins(ArmOp::And {
+                rd: Reg::R3,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R3),
+            }),
+            ins(ArmOp::LslReg {
+                rd: Reg::R3,
+                rn: Reg::R3,
+                rm: Reg::R5,
+            }), // reads r3 (the AND result) — must NOT block the fold
+        ];
+        let (out, n) = fold_uxth(&seq);
+        assert_eq!(n, 1, "and-writes-back-to-mask still folds");
+        assert!(
+            out.iter().any(|i| matches!(
+                i.op,
+                ArmOp::Uxth {
+                    rd: Reg::R3,
+                    rm: Reg::R0
+                }
+            )),
+            "folded to uxth r3,r0"
+        );
+    }
+
+    #[test]
+    fn fold_uxth_declines_non_mask_constant() {
+        // 0x1234 is neither 0xffff nor 0xff ⇒ not a zero-extend ⇒ no fold.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 0x1234,
+            }),
+            ins(ArmOp::And {
+                rd: Reg::R8,
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R7),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 0,
+            }),
+        ];
+        let (_, n) = fold_uxth(&seq);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn fold_uxth_declines_when_mask_live_after_and() {
+        // r7 is read again after the AND ⇒ the movw is not a dead store ⇒ no fold.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R7,
+                imm16: 0xffff,
+            }),
+            ins(ArmOp::And {
+                rd: Reg::R8,
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R7),
+            }),
+            ins(ArmOp::Add {
+                rd: Reg::R0,
+                rn: Reg::R7,
+                op2: Operand2::Imm(1),
+            }), // reads r7 ⇒ live
+        ];
+        let (_, n) = fold_uxth(&seq);
         assert_eq!(n, 0);
     }
 
