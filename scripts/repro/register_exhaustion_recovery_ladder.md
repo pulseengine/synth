@@ -76,3 +76,29 @@ the surface is ~5 functions (incl. the shipped `control_step` fixture); the same
 counter run over a real dissolved workload measures the production surface VCR-RA
 must absorb. (`SYNTH_REALLOC_STATS` is the analogous counter for the separate
 range-realloc pass on the optimized path.)
+
+## Does the shadow allocator subsume the ladder? — MEASURED
+
+`SYNTH_SHADOW_ALLOC=1` runs the graph-colouring allocator (`allocate_function`, the
+VCR-RA prototype) on the selected stream and logs whether it colours within the
+R0-R8 pool, the **true value-pressure** (one node per value, not per reused physical
+register), and remat opportunities — measure-only, byte-identical. Running it on the
+ladder-firing functions answers the acceptance question directly:
+
+| function | recovery rung | shadow allocator | verdict |
+|---|---|---|---|
+| `control_step.wasm` | spill | would spill R3, but **peak value-pressure 8 ≤ 9** | **spurious spill — VCR-RA subsumes it** |
+| `high_pressure_i32` | spill | would spill R1, **peak 10 > 9** | genuine — VCR-RA spills too |
+| `promotion_exhaustion_fallback` | promotion-off→spill | would spill R5, **peak 10 > 9** | genuine — VCR-RA spills too |
+| `high_pressure_i64` | param-backing | declined (i64 unmodeled) | Track-A model gap |
+| `msgq_put_359.wasm` | spill | declined (calls/i64) | Track-A model gap |
+
+So the single-pass allocator's spill is **not always real pressure**: `control_step`
+— a *shipped* fixture — spills only as a physical-register artifact (peak 8 fits the
+9-wide pool once values are allocated virtually), exactly the case a verified
+allocator removes. The genuine floor in this corpus is the **peak-10** functions
+(`high_pressure_i32`, `promotion_exhaustion_fallback`): there VCR-RA must spill too,
+so its acceptance bar there is "spill no *worse* than the ladder," not "no spill."
+The i64/call functions are the shadow model's current scope gap (it declines them) —
+a `VCR-RA` modelling TODO, not an allocation result. The spurious-vs-genuine split is
+asserted by `shadow_alloc_spurious_vs_genuine_spill_242`.

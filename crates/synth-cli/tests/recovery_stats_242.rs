@@ -88,3 +88,57 @@ fn recovery_stats_rung_classification_242() {
         "local_promote_i32 should compile on the base attempt; got:\n{base}"
     );
 }
+
+/// Run a fixture with `SYNTH_SHADOW_ALLOC=1` and return the parsed peak
+/// value-pressure from the `[shadow-alloc]` line (None if the shadow allocator
+/// declined the function — calls/i64/fp it does not yet model).
+fn shadow_peak(wasm: &str) -> Option<u32> {
+    let out = Command::new(synth())
+        .env("SYNTH_SHADOW_ALLOC", "1")
+        .args([
+            "compile",
+            fixture(wasm).to_str().unwrap(),
+            "-o",
+            &format!("/tmp/shadow_{wasm}.elf"),
+            "--target",
+            "cortex-m4",
+            "--relocatable",
+            "--all-exports",
+        ])
+        .output()
+        .expect("run synth");
+    assert!(out.status.success(), "compile {wasm} failed");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    // "... peak value-pressure is 8 (..." or "..., peak value-pressure 8, ..."
+    stderr.lines().find_map(|l| {
+        let l = l.strip_prefix("[shadow-alloc]")?;
+        let after = l.split("value-pressure").nth(1)?;
+        after
+            .split(|c: char| !c.is_ascii_digit())
+            .find(|s| !s.is_empty())
+            .and_then(|n| n.parse().ok())
+    })
+}
+
+/// The VCR-RA acceptance question, made executable: the recovery ladder's spills
+/// split into SPURIOUS (a physical-register artifact the verified/virtual-register
+/// allocator removes — peak value-pressure ≤ the 9-wide pool) and GENUINE (peak >
+/// 9, real pressure the verified allocator must spill too). `control_step` — a
+/// SHIPPED frozen fixture — spills only spuriously; `high_pressure_i32` is genuine.
+/// (Pins the threshold, not the exact peak, so minor codegen drift won't flap.)
+#[test]
+fn shadow_alloc_spurious_vs_genuine_spill_242() {
+    // control_step: single-pass spills, but the shadow allocator fits it in the
+    // 9-wide pool ⇒ the verified allocator subsumes this spill.
+    let cs = shadow_peak("control_step.wasm").expect("control_step is shadow-modelled");
+    assert!(
+        cs <= 9,
+        "control_step spill should be SPURIOUS (peak ≤ 9); got peak {cs}"
+    );
+    // high_pressure_i32: genuinely exceeds the pool ⇒ a real spill VCR-RA also incurs.
+    let hp = shadow_peak("high_pressure_i32.wat").expect("high_pressure_i32 is shadow-modelled");
+    assert!(
+        hp > 9,
+        "high_pressure_i32 spill should be GENUINE (peak > 9); got peak {hp}"
+    );
+}
