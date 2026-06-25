@@ -2394,6 +2394,41 @@ pub struct ReallocStats {
 ///     register invisibly to `reg_effect`, so it declines; `Bx {LR}` is an
 ///     allowed return).
 pub fn shrink_callee_saved_saves(instrs: &[ArmInstruction]) -> Option<Vec<ArmInstruction>> {
+    shrink_callee_saved_saves_impl(instrs, false)
+}
+
+/// Like [`shrink_callee_saved_saves`], but also shrinks NON-LEAF thin forwarders
+/// — functions that contain a DIRECT call (`Bl`/`Call`) yet write no callee-saved
+/// register of their own (#428, epic #242). Driver-class primitives that forward
+/// through one import (e.g. an IRQ poll) still emit the full `push {r4-r8,lr}`
+/// because the leaf-only variant declines on *any* call; this variant prunes the
+/// save-set for them.
+///
+/// SOUNDNESS — why allowing direct calls is safe:
+///   - A direct call clobbers only *caller-saved* registers; the callee preserves
+///     r4–r8 per AAPCS, so a call contributes NOTHING to the callee-saved
+///     save-set. If the forwarder itself needs a value live ACROSS the call, the
+///     allocator homes it in a callee-saved register and the body *writes* that
+///     register — which this pass still sees and keeps. So "body writes no
+///     callee-saved ⇒ the saves are dead" holds with calls exactly as without.
+///   - A plain `Bl`/`Call` does not move SP. Stack-passed outgoing args would, but
+///     they manifest as `[sp,#off]` stores / a frame `sub sp` that the existing
+///     SP-untouched guard already declines on.
+///   - The even-count push padding (preserved here) keeps SP 8-byte aligned at
+///     the call site — the one property the leaf-only restriction protected.
+///   - INDIRECT calls (`Blx`/`CallIndirect`) still decline: their target lives in
+///     a register that may itself be callee-saved, so the save-set is not provably
+///     unaffected. Out of this variant's scope.
+pub fn shrink_callee_saved_saves_nonleaf(
+    instrs: &[ArmInstruction],
+) -> Option<Vec<ArmInstruction>> {
+    shrink_callee_saved_saves_impl(instrs, true)
+}
+
+fn shrink_callee_saved_saves_impl(
+    instrs: &[ArmInstruction],
+    allow_calls: bool,
+) -> Option<Vec<ArmInstruction>> {
     use ArmOp::*;
     const CALLEE_SAVED: [Reg; 5] = [Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8];
 
@@ -2426,6 +2461,20 @@ pub fn shrink_callee_saved_saves(instrs: &[ArmInstruction]) -> Option<Vec<ArmIns
             | Blo { .. }
             | Bcc { .. } => {}
             Bx { rm } if *rm == Reg::LR => {}
+            // Non-leaf variant: a DIRECT call clobbers only caller-saved registers
+            // and does not move SP, so it adds nothing to the callee-saved
+            // save-set. A `Call`'s result lands in a caller-saved register (r0);
+            // fold it into `used` only on the off chance it is callee-saved
+            // (defensive — never is in practice). Indirect calls fall through to
+            // `reg_effect` below and decline (their target register is unmodeled
+            // here and may be callee-saved). When `allow_calls` is false, direct
+            // calls also fall through and decline (leaf-only, unchanged).
+            Bl { .. } if allow_calls => {}
+            Call { rd, .. } if allow_calls => {
+                if CALLEE_SAVED.contains(rd) {
+                    used.insert(*rd);
+                }
+            }
             op => {
                 let e = reg_effect(op)?; // unmodeled (BrTable/calls/...) → decline
                 for r in e.defs.iter().chain(e.uses.iter()) {
@@ -2523,6 +2572,28 @@ pub fn shrink_callee_saved_saves(instrs: &[ArmInstruction]) -> Option<Vec<ArmIns
 ///   - every instruction is register-modeled (`reg_effect`) or pure label
 ///     control flow (`Label`/`B*`/`Bx {LR}`).
 pub fn elide_dead_frame(instrs: &[ArmInstruction]) -> Option<Vec<ArmInstruction>> {
+    elide_dead_frame_impl(instrs, false)
+}
+
+/// Like [`elide_dead_frame`], but also removes a dead frame from a NON-LEAF
+/// function — one containing a DIRECT call (`Bl`/`Call`) (#428, epic #242). The
+/// base variant declines on any call (`reg_effect` → None), but a direct call
+/// neither moves SP nor indexes the frame, so a `sub sp`/`add sp` pair with no
+/// `[sp]` access anywhere is dead regardless of the call. Removing it restores
+/// the SP-untouched precondition [`shrink_callee_saved_saves_nonleaf`] needs, so
+/// the two compose to minimize a thin forwarder's whole prologue.
+///
+/// Indirect calls (`Blx`/`CallIndirect`) still decline (their target register is
+/// unmodeled here). And the frame size must be a multiple of 8: a balanced
+/// non-8-multiple frame is anomalous (it would have left SP misaligned at the
+/// call under the original code), so decline rather than touch it — defensive
+/// conservatism, not the alignment proof (that is the even-count push the shrink
+/// preserves).
+pub fn elide_dead_frame_nonleaf(instrs: &[ArmInstruction]) -> Option<Vec<ArmInstruction>> {
+    elide_dead_frame_impl(instrs, true)
+}
+
+fn elide_dead_frame_impl(instrs: &[ArmInstruction], allow_calls: bool) -> Option<Vec<ArmInstruction>> {
     use ArmOp::*;
 
     // Pass 1: locate the single frame allocation and its matching deallocs, and
@@ -2551,6 +2622,12 @@ pub fn elide_dead_frame(instrs: &[ArmInstruction]) -> Option<Vec<ArmInstruction>
     }
     let (sub_idx, frame_n) = frame_sub?;
     if frame_adds.is_empty() {
+        return None;
+    }
+    // Non-leaf: only touch an 8-multiple frame. A balanced non-8-multiple frame
+    // is anomalous across a call (it would have left SP misaligned at the call
+    // under the original code) — decline rather than risk it.
+    if allow_calls && frame_n % 8 != 0 {
         return None;
     }
     // Every frame dealloc must restore exactly `frame_n` (balanced); a different
@@ -2585,6 +2662,11 @@ pub fn elide_dead_frame(instrs: &[ArmInstruction]) -> Option<Vec<ArmInstruction>
             | Blo { .. }
             | Bcc { .. } => {}
             Bx { rm } if *rm == Reg::LR => {}
+            // Non-leaf: a DIRECT call neither moves SP nor indexes the frame, so
+            // it does not keep the frame alive. Indirect calls fall through and
+            // decline (unmodeled target register). When `allow_calls` is false,
+            // direct calls also fall through and decline (leaf-only, unchanged).
+            Bl { .. } | Call { .. } if allow_calls => {}
             op => {
                 // Unmodeled op (call/BrTable/i64-pair/...): cannot prove SP-free.
                 let e = reg_effect(op)?;
@@ -5885,6 +5967,137 @@ mod tests {
         assert_eq!(out[4], seq[4]);
     }
 
+    // ---- shrink_callee_saved_saves_nonleaf (#428, driver-class forwarders) ----
+
+    #[test]
+    fn nonleaf_shrink_prunes_forwarder_save_set() {
+        // A thin forwarder: set up an arg in r0, call an import, return its
+        // result. Writes NO callee-saved register, so the leaf-only variant
+        // declines (it's non-leaf) but the nonleaf variant shrinks {r4-r8,lr}.
+        let seq = vec![
+            prologue(),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0,
+            }),
+            ins(ArmOp::Bl {
+                label: "irq_poll".to_string(),
+            }),
+            epilogue(),
+        ];
+        // Leaf-only variant: unchanged behaviour — declines on the call.
+        assert_eq!(shrink_callee_saved_saves(&seq), None);
+        // Nonleaf variant: shrinks the save-set, body untouched.
+        let out = shrink_callee_saved_saves_nonleaf(&seq).expect("shrinks forwarder");
+        assert_eq!(
+            out[0].op,
+            ArmOp::Push {
+                regs: vec![Reg::R4, Reg::LR]
+            }
+        );
+        assert_eq!(
+            out[3].op,
+            ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC]
+            }
+        );
+        assert_eq!(out[1], seq[1]);
+        assert_eq!(out[2], seq[2]); // the call is preserved verbatim
+    }
+
+    /// LOAD-BEARING (the AAPCS alignment invariant the leaf-only restriction
+    /// protected): a non-leaf shrink's push/pop must keep an EVEN register count
+    /// (so SP stays 8-byte aligned at the call site) and still save/restore
+    /// LR/PC. An execution differential cannot catch a violation — M-profile does
+    /// not fault on a misaligned SP at the `bl` itself — so assert it statically.
+    #[test]
+    fn nonleaf_shrink_keeps_push_even_and_8byte_aligned_at_call() {
+        // Forwarder that holds one value (r4) live across the call, plus a call:
+        // save-set is {r4} → {r4,lr} (even). Then a pure forwarder: {} → {r4,lr}.
+        for body in [
+            vec![
+                ins(ArmOp::Add {
+                    rd: Reg::R4,
+                    rn: Reg::R0,
+                    op2: Operand2::Imm(1),
+                }),
+                ins(ArmOp::Bl {
+                    label: "f".to_string(),
+                }),
+                ins(ArmOp::Mov {
+                    rd: Reg::R0,
+                    op2: Operand2::Reg(Reg::R4),
+                }),
+            ],
+            vec![ins(ArmOp::Bl {
+                label: "f".to_string(),
+            })],
+        ] {
+            let mut seq = vec![prologue()];
+            seq.extend(body);
+            seq.push(epilogue());
+            let out = shrink_callee_saved_saves_nonleaf(&seq).expect("shrinks");
+            for op in [&out[0].op, &out[out.len() - 1].op] {
+                let (regs, terminator) = match op {
+                    ArmOp::Push { regs } => (regs, Reg::LR),
+                    ArmOp::Pop { regs } => (regs, Reg::PC),
+                    other => panic!("expected push/pop, got {other:?}"),
+                };
+                assert!(
+                    regs.contains(&terminator),
+                    "save-set must keep {terminator:?}: {regs:?}"
+                );
+                assert_eq!(
+                    regs.len() % 2,
+                    0,
+                    "even register count keeps SP 8-byte aligned at the call: {regs:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn nonleaf_shrink_keeps_callee_saved_held_across_call() {
+        // r5 is written (held across the call) → the nonleaf shrink must KEEP it,
+        // exactly like a leaf would. Proves the "body writes callee-saved ⇒ saved"
+        // invariant holds with calls present.
+        let seq = vec![
+            prologue(),
+            ins(ArmOp::Add {
+                rd: Reg::R5,
+                rn: Reg::R0,
+                op2: Operand2::Imm(1),
+            }),
+            ins(ArmOp::Bl {
+                label: "f".to_string(),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R5),
+            }),
+            epilogue(),
+        ];
+        let out = shrink_callee_saved_saves_nonleaf(&seq).expect("shrinks");
+        assert_eq!(
+            out[0].op,
+            ArmOp::Push {
+                regs: vec![Reg::R5, Reg::LR]
+            }
+        );
+    }
+
+    #[test]
+    fn nonleaf_shrink_declines_on_indirect_call() {
+        // An indirect call's target lives in a register that may be callee-saved
+        // and is unmodeled here → decline even in the nonleaf variant.
+        let seq = vec![
+            prologue(),
+            ins(ArmOp::Blx { rm: Reg::R4 }),
+            epilogue(),
+        ];
+        assert_eq!(shrink_callee_saved_saves_nonleaf(&seq), None);
+    }
+
     // ---- elide_dead_frame (VCR-RA-002, #390) ----
 
     fn frame_sub(n: i32) -> ArmInstruction {
@@ -6033,6 +6246,132 @@ mod tests {
                 epilogue(),
             ],
         );
+    }
+
+    // ---- non-leaf frame elision + composed prologue shrink (#428) ----
+
+    #[test]
+    fn nonleaf_frame_elim_removes_dead_frame_across_direct_call() {
+        // Forwarder: dead 8-byte frame straddling a direct call. Leaf-only variant
+        // declines (the call), the nonleaf variant removes the frame.
+        let seq = vec![
+            prologue(),
+            frame_sub(8),
+            ins(ArmOp::Bl {
+                label: "helper".to_string(),
+            }),
+            frame_add(8),
+            epilogue(),
+        ];
+        assert_eq!(elide_dead_frame(&seq), None);
+        let out = elide_dead_frame_nonleaf(&seq).expect("dead frame across call elided");
+        assert_eq!(
+            out,
+            vec![
+                prologue(),
+                ins(ArmOp::Bl {
+                    label: "helper".to_string(),
+                }),
+                epilogue(),
+            ],
+        );
+    }
+
+    /// Advisor's soundness check: a frame kept LIVE by an `[sp]` outgoing-arg store
+    /// (a call WITH stack args) must NOT be removed — even though it has a call.
+    #[test]
+    fn nonleaf_frame_elim_declines_on_live_frame_with_stack_args() {
+        use crate::rules::MemAddr;
+        let seq = vec![
+            prologue(),
+            frame_sub(8),
+            // outgoing 5th arg stored into the frame, then the call reads it
+            ins(ArmOp::Str {
+                rd: Reg::R0,
+                addr: MemAddr {
+                    base: Reg::SP,
+                    offset: 0,
+                    offset_reg: None,
+                },
+            }),
+            ins(ArmOp::Bl {
+                label: "helper".to_string(),
+            }),
+            frame_add(8),
+            epilogue(),
+        ];
+        // The `[sp]` store keeps the frame live → decline even in the nonleaf path.
+        assert_eq!(elide_dead_frame_nonleaf(&seq), None);
+    }
+
+    #[test]
+    fn nonleaf_frame_elim_declines_on_non_8_multiple_frame() {
+        // A balanced but non-8-multiple frame is anomalous across a call → decline.
+        let seq = vec![
+            prologue(),
+            frame_sub(20),
+            ins(ArmOp::Bl {
+                label: "helper".to_string(),
+            }),
+            frame_add(20),
+            epilogue(),
+        ];
+        assert_eq!(elide_dead_frame_nonleaf(&seq), None);
+    }
+
+    #[test]
+    fn nonleaf_frame_elim_declines_on_indirect_call() {
+        let seq = vec![
+            prologue(),
+            frame_sub(8),
+            ins(ArmOp::Blx { rm: Reg::R4 }),
+            frame_add(8),
+            epilogue(),
+        ];
+        assert_eq!(elide_dead_frame_nonleaf(&seq), None);
+    }
+
+    /// The composition the backend wires under `SYNTH_NONLEAF_PROLOGUE`: remove
+    /// the dead frame across the call, THEN shrink the now-SP-untouched prologue.
+    /// Asserts both wins independently — frame gone (instruction count drops) AND
+    /// the push/pop save-set shrank to an even-count, 8-byte-aligned list.
+    #[test]
+    fn nonleaf_frame_elim_then_shrink_composes_to_minimal_prologue() {
+        let seq = vec![
+            prologue(),
+            frame_sub(24),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 5,
+            }),
+            ins(ArmOp::Bl {
+                label: "helper".to_string(),
+            }),
+            frame_add(24),
+            epilogue(),
+        ];
+        let deframed = elide_dead_frame_nonleaf(&seq).expect("frame elided");
+        // Frame gone: the sub/add sp pair is removed (instruction count drops 2).
+        assert_eq!(deframed.len(), seq.len() - 2);
+        assert!(
+            !deframed
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Sub { rd: Reg::SP, .. } | ArmOp::Add { rd: Reg::SP, .. })),
+            "no frame sub/add sp remains: {deframed:?}"
+        );
+        let out = shrink_callee_saved_saves_nonleaf(&deframed).expect("prologue shrinks");
+        // Prologue gone: the save-set shrank, and the push/pop keep an EVEN
+        // register count (SP stays 8-byte aligned at the call) with LR/PC present.
+        for op in [&out[0].op, &out[out.len() - 1].op] {
+            let (regs, terminator) = match op {
+                ArmOp::Push { regs } => (regs, Reg::LR),
+                ArmOp::Pop { regs } => (regs, Reg::PC),
+                other => panic!("expected push/pop, got {other:?}"),
+            };
+            assert!(regs.len() < 6, "save-set shrank from 6: {regs:?}");
+            assert!(regs.contains(&terminator), "keeps {terminator:?}: {regs:?}");
+            assert_eq!(regs.len() % 2, 0, "even count → 8-aligned at call: {regs:?}");
+        }
     }
 
     #[test]

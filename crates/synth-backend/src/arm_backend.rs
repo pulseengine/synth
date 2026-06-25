@@ -436,12 +436,32 @@ fn compile_wasm_to_arm(
         // `shrink_callee_saved_saves` requires — so it must run FIRST. Flag-off
         // (opt-in `SYNTH_DEAD_FRAME_ELIM=1`); off ⇒ byte-identical. Default-on
         // flip held for on-silicon validation, like the realloc/shrink levers.
-        let out = if std::env::var("SYNTH_DEAD_FRAME_ELIM").is_ok() {
+        // Non-leaf forwarder (#428): the dead frame must come out even across a
+        // direct call before the prologue can shrink, so `SYNTH_NONLEAF_PROLOGUE`
+        // enables the call-tolerant frame elision too. Otherwise the leaf-only
+        // `SYNTH_DEAD_FRAME_ELIM` path (declines on any call) applies.
+        let nonleaf = std::env::var("SYNTH_NONLEAF_PROLOGUE").is_ok();
+        let out = if nonleaf {
+            synth_synthesis::liveness::elide_dead_frame_nonleaf(&out).unwrap_or(out)
+        } else if std::env::var("SYNTH_DEAD_FRAME_ELIM").is_ok() {
             synth_synthesis::liveness::elide_dead_frame(&out).unwrap_or(out)
         } else {
             out
         };
-        synth_synthesis::liveness::shrink_callee_saved_saves(&out).unwrap_or(out)
+        // Non-leaf thin-forwarder prologue minimization (#428, epic #242): the
+        // base shrink is leaf-only (declines on any call); the `_nonleaf` variant
+        // also prunes the save-set of a function that forwards through a DIRECT
+        // call yet writes no callee-saved register — driver-class primitives that
+        // the arithmetic levers don't reach. Flag-off (opt-in
+        // `SYNTH_NONLEAF_PROLOGUE=1`); off ⇒ byte-identical (the leaf-only path),
+        // so the frozen fixtures — including the non-leaf `flight_algo` that calls
+        // `filter_step` — are unchanged. Default-on flip held for on-silicon
+        // validation, like the other prologue levers.
+        if nonleaf {
+            synth_synthesis::liveness::shrink_callee_saved_saves_nonleaf(&out).unwrap_or(out)
+        } else {
+            synth_synthesis::liveness::shrink_callee_saved_saves(&out).unwrap_or(out)
+        }
     } else {
         arm_instrs
     };
