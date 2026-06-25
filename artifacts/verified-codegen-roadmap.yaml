@@ -596,6 +596,44 @@ artifacts:
       the differential = repro) until #490 lands. This is a "correctness from
       construction" item (the north star itself) and gates the perf lever
       downstream of it.
+      RESOLVED + BROADER OPTIMIZER-BRIDGE CONTROL-FLOW FRONTIER (2026-06-26,
+      #490/#483/#500): #490 LANDED (PR #495) — the optimized path now wraps any
+      body that genuinely touches r4-r8 in `push {r4-r8,lr}` / `pop {r4-r8,pc}`,
+      decided on the POST-realloc body (only genuinely-clobbered regs saved, so a
+      cs-free leaf never gets a spurious permanent push; >4-param functions
+      decline to the direct selector, so the inserted push cannot perturb
+      incoming stack-arg offsets — verified byte-identical to `--no-optimize`),
+      gated by `scripts/repro/callee_saved_490_differential.py` (r4-r8 sentinels +
+      result vs wasmtime, covering the 16-bit push and the 32-bit PUSH.W
+      high-register form). The non-leaf thin-forwarder prologue lever this blocked
+      is now unblocked for a deliberate flip. A companion optimized-path
+      control-flow miscompile LANDED the same arc (#483, PR #497): a forward
+      `block`+`br_if` branch landed mid-instruction — two causes, the closing
+      `End` labelled with its OWN id instead of the id of the block it closes (so
+      the `br_if` resolved against an id no label held, left as the unpatched
+      offset-0 placeholder), plus a `byte_offsets` size estimate that sized
+      `Strh`/`Strb`/`Ldrh`/`Ldrsh`/`Ldrb`/`Ldrsb` as 2 when the high-base
+      optimized path emits the 4-byte `.w` form — gated by
+      `scripts/repro/block_brif_483_differential.py` (linear-memory diff vs
+      wasmtime, both branch directions, forward + nested blocks). A multi-modal
+      control-flow SWEEP then established these are ONE CLUSTER of optimizer_bridge
+      (optimized-path) control-flow / ABI defects — the concrete measured evidence
+      for VCR-SEL-001's "(ii) collapse the two/three-selector accretion
+      (select_default / select_with_stack / optimizer_bridge) into one verified
+      source" motivation — and the next gated frontier, none of it in shipped
+      firmware (gale ships `--relocatable` / direct): #500 — `br_if` STILL
+      unresolved for if/else (nested block+br_if+`br`) and SEQUENTIAL-block shapes
+      (`seqblocks`, two non-nested blocks, is the minimal repro; the #483
+      End-label fix is necessary-not-sufficient; the Pattern-3 select matcher was
+      ruled OUT); #499 — a spill frame (`sub sp,#N`) not deallocated under control
+      flow (missing `add sp`), a latent SP leak that #490's `pop {..,pc}` epilogue
+      turned FATAL (#215-class "epilogue change exposes a latent frame bug"); #498
+      — the `byte_offsets` estimator still lacks `Cmp`/`Cmn`/`Adds`/`Subs`/`Popcnt`
+      (structural: synth-synthesis cannot depend on synth-backend, so the size
+      table is a hand-maintained mirror of the encoder that drifts); #496 —
+      register-exhausting i32 folds silently miscompiled (no spill, no decline).
+      All four are SEPARATE gated steps (flag-off / differential / silicon as
+      applicable), never idle-tick increments.
     status: approved
     tags: [oracle, differential, coverage, mcdc, validation, track-c, riscv]
     links:
