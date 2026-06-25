@@ -575,6 +575,27 @@ artifacts:
       `br_if`->predicated-branch half of the cmp->select item (split candidate).
       All three are SEPARATE gated steps (flag-off -> differential -> silicon),
       never an idle-tick increment.
+      LEVER IMPLEMENTED, BLOCKED ON A BASE-SELECTOR CLOBBER (2026-06-25, #490): the
+      non-leaf prologue lever was implemented flag-off (relax `elide_dead_frame` +
+      `shrink_callee_saved_saves` across DIRECT calls; 9 unit tests:
+      even-count/8-byte-aligned push, keeps callee-saved held across a call,
+      declines on indirect/non-8/live-frame). Its execution differential then
+      proved the shrink's soundness is NON-LOCAL — pruning a forwarder's save-set
+      is only correct if every callee preserves r4-r8, which the OPTIMIZED PATH
+      does not: `alloc_i32_scratch` hands out the callee-saved [R4..R8] pool to
+      every function with a scratch temp and the path emits NO callee-saved push,
+      so even the silicon-validated `control_step` clobbers r4/r6/r8 (masked only
+      because it is top-level / its callers fall back to the pushing direct
+      selector). This is a SYSTEMIC base-selector ABI bug (#490), not a small-leaf
+      special case — the scratch pool is shared, so fixing it (push-what-you-use in
+      the optimized path) re-freezes control_step/filter_step and needs gale
+      re-validation. NOT a live miscompile in shipped firmware (gale ships
+      `--relocatable`, which uses the direct selector that preserves r4-r8
+      correctly); it is a latent optimized-path violation that BLOCKS this lever's
+      flip. The lever stays unmerged (branch wip/nonleaf-prologue-blocked-on-leaf-clobber,
+      the differential = repro) until #490 lands. This is a "correctness from
+      construction" item (the north star itself) and gates the perf lever
+      downstream of it.
     status: approved
     tags: [oracle, differential, coverage, mcdc, validation, track-c, riscv]
     links:
