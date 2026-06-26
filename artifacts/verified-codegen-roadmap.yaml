@@ -634,6 +634,51 @@ artifacts:
       register-exhausting i32 folds silently miscompiled (no spill, no decline).
       All four are SEPARATE gated steps (flag-off / differential / silicon as
       applicable), never idle-tick increments.
+      FRONTIER ADVANCED + A LOAD-BEARING NEGATIVE RESULT (2026-06-26, second arc,
+      #496/#503/#507/#509): three of the cluster LANDED, each with a new CI
+      execution oracle, and a fourth mapped the hard boundary of the
+      decline-to-direct pattern. #496 RESOLVED (PR #502, `988ea3b`): the optimized
+      path's `alloc_i32_scratch` borrowed R12/IP (the encoder's indexed-load base
+      scratch, #212) on R4-R8 exhaustion → collision miscompile (control_step
+      execution-faulted `add ip,ip,ip`=2×base; flight_seam_flat wrong values); fix
+      flags exhaustion via a Cell and DECLINES the whole function to the direct
+      selector (which spills), gated by `r12_spill_496_differential.py` (both
+      silicon fixtures, default path, execute == wasmtime). #503 RESOLVED + SHIPPED
+      v0.16.0 (PR #504, `8e917a2`): the SHIPPED `--relocatable` direct selector
+      SKIPPED functions needing the AAPCS stack-arg path beyond a conservative cap
+      (>8 scalar params, or a call passing >8 args) — 3 falcon helpers dropped; the
+      incoming/outgoing stack-arg machinery was already generic, so the fix lifts
+      the `>8` caps and leans on the existing 12-bit `[sp,#imm]` guards, unblocking
+      2 of 3 (func_57/58); the 64-bit stack-param case stays refused. Gated by
+      `stack_args_503_differential.py` (sum10/sum25-reading-param-24/outgoing/
+      combined, all == wasmtime). This is the first SHIPPED-path member of the
+      cluster, hence the v0.16.0 minor (the optimized-path-only #490/#483/#496/#507
+      ride along, no individual tags). #507 RESOLVED (PR #508, `ed3e48c`): the
+      optimized path DROPPED `br_table` during wasm→IR (no `cmp`, selector never
+      loaded → all arms fell through); since the drop precedes `ir_to_arm`, the fix
+      detects `br_table` on the RAW wasm op stream in `arm_backend` and forces the
+      direct selector (#496-pattern), gated by `br_table_507_differential.py`
+      (void seq/shared shapes × every selector). #509 — NEGATIVE RESULT, the
+      load-bearing one: the DIRECT selector (so the SHIPPED `--relocatable` path)
+      ALSO drops the carried value of a value-returning branch — `br`/`br_if`/
+      `br_table`-direct to a result-typed block returns 0 for the dispatched arm
+      (`pick(0)=0` vs wasmtime 10). The #507 decline-to-direct shortcut DOES NOT
+      WORK here and must not be re-attempted: the IR carries no block-result arity
+      (`WasmOp::Block` is a UNIT variant; the decoder tracks none), so a
+      "non-empty vstack at the branch ⇒ decline" heuristic cannot distinguish a
+      CARRIED result from an UNWOUND void-target value (`i32.const 1; br 2` to a
+      VOID block is legal WASM that compiles correctly today), and the decline
+      over-refuses valid code (broke 4 selector tests, 3 plain-`Br`). Trading a
+      latent miscompile for a latent regression is not progress, and no shipped
+      artifact hits it today (gust's `br_table` is void-dispatch) — so #509 is
+      BACKGROUND priority and requires the REAL fix: thread block-result arity
+      (decoder → `WasmOp::Block`/`Loop`/`If` → selector) + a result-register
+      convention generalizing the #313 if/else reconciliation to labeled-block
+      branches. That is precisely VCR-SEL-001's "(ii) collapse the selector
+      accretion into one verified source" — the value-carry boundary is the
+      sharpest evidence yet that the hand-written selectors lack the structured
+      block-arity model a verified DSL would carry by construction. Cross-cutting,
+      byte-changing, silicon-gated — never an idle-tick increment.
     status: approved
     tags: [oracle, differential, coverage, mcdc, validation, track-c, riscv]
     links:
