@@ -2983,8 +2983,54 @@ impl OptimizerBridge {
             });
         }
 
+        // VCR-RA const-CSE (#242): when the same constant is already
+        // materialized in a still-valid register, alias the new vreg to that
+        // register and emit NO materialization. Pressure-neutral-or-better — the
+        // value is already in a register, so aliasing never adds register
+        // pressure (it can only share one). `reg_holds_const` (keyed by the
+        // u32 bit-pattern, so a negative i32 const matches its movw/movt
+        // reconstruction) is derived from the EMITTED ARM at the top of each
+        // iteration — so it survives the many `continue` arms — and is reset at
+        // every control-flow boundary, confining CSE to straight-line segments.
+        // Opt-in `SYNTH_CONST_CSE=1`; off ⇒ byte-identical (no new state read).
+        let const_cse = std::env::var("SYNTH_CONST_CSE").is_ok();
+        let mut reg_holds_const: HashMap<Reg, u32> = HashMap::new();
+        let mut cse_seen_len = 0usize;
+
         // Second pass: generate ARM instructions
         for inst in instructions {
+            if const_cse {
+                // Reconcile the cache with everything emitted since last iteration.
+                for op in &arm_instrs[cse_seen_len..] {
+                    match op {
+                        ArmOp::Movw { rd, imm16 } => {
+                            reg_holds_const.insert(*rd, *imm16 as u32);
+                        }
+                        ArmOp::Movt { rd, imm16 } => {
+                            let lo = reg_holds_const.get(rd).copied().unwrap_or(0) & 0xFFFF;
+                            reg_holds_const.insert(*rd, lo | ((*imm16 as u32) << 16));
+                        }
+                        ArmOp::Mov {
+                            rd,
+                            op2: Operand2::Imm(v),
+                        } => {
+                            reg_holds_const.insert(*rd, *v as u32);
+                        }
+                        other => match crate::liveness::reg_effect(other) {
+                            // Any other write clobbers the const in its dest reg(s).
+                            Some(eff) => {
+                                for d in eff.defs {
+                                    reg_holds_const.remove(&d);
+                                }
+                            }
+                            // Unmodeled op (branch/bl/bx/label) = control-flow
+                            // boundary: the cache cannot be trusted across it.
+                            None => reg_holds_const.clear(),
+                        },
+                    }
+                }
+                cse_seen_len = arm_instrs.len();
+            }
             match &inst.opcode {
                 Opcode::Nop => continue,
 
@@ -3071,6 +3117,33 @@ impl OptimizerBridge {
                     if let Some(plan) = &base_cse
                         && plan.skip_const.contains(&dest.0)
                     {
+                        continue;
+                    }
+                    // const-CSE: if this exact value already lives in a register
+                    // (and `dest` isn't a pre-assigned local/param), alias `dest`
+                    // to it and emit nothing. The aliased register is protected
+                    // from reuse while `dest` is live (it's in `vreg_to_arm`).
+                    //
+                    // DEFAULT-OFF prerequisite for the flip (see
+                    // const_cse_reduction_242.rs): aliasing makes two live vregs
+                    // share one physical register, breaking the spill model's
+                    // vreg↔reg bijection (the eviction path at ~3168 spills a
+                    // SINGLE victim vreg). If the older alias is spilled while the
+                    // younger keeps the alias, the freed register is reused under
+                    // the younger → stale read. Not reachable today (the IR
+                    // optimizer dedups consecutive identical consts upstream), but
+                    // default-on must prove unreachability or make the spill path
+                    // alias-aware (spill ALL vregs sharing the victim register).
+                    let cse_want = *value as u32;
+                    if const_cse
+                        && !vreg_to_arm.contains_key(&dest.0)
+                        && !local_vregs.contains(&dest.0)
+                        && let Some(rs) = reg_holds_const
+                            .iter()
+                            .find_map(|(r, v)| if *v == cse_want { Some(*r) } else { None })
+                    {
+                        vreg_to_arm.insert(dest.0, rs);
+                        vreg_alloc_order.push(dest.0);
                         continue;
                     }
                     // Allocate a register for this constant
