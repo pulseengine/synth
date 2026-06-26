@@ -1345,17 +1345,26 @@ mod tests {
             WasmOp::End,
             WasmOp::I32Const(0),
             WasmOp::I32Const(10),
-            WasmOp::I32Store { offset: 0, align: 2 },
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
             WasmOp::Return,
             WasmOp::End,
             WasmOp::I32Const(0),
             WasmOp::I32Const(20),
-            WasmOp::I32Store { offset: 0, align: 2 },
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
             WasmOp::Return,
             WasmOp::End,
             WasmOp::I32Const(0),
             WasmOp::I32Const(30),
-            WasmOp::I32Store { offset: 0, align: 2 },
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
         ];
         let opt = CompileConfig {
             target: TargetSpec::cortex_m4(),
