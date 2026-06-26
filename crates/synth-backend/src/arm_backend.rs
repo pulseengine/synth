@@ -581,6 +581,20 @@ fn compile_wasm_to_arm(
         arm_instrs
     };
 
+    // VCR-RA frame-slot DCE (#242): once `forward_stack_reloads` has turned the
+    // reloads of a spill slot into register moves, the `str rX,[sp,#N]` that fed
+    // them is a dead store — its slot is never loaded again. Remove it. Pairs
+    // with (and only pays after) SYNTH_STACK_FWD, so it shares that flag.
+    let arm_instrs = if std::env::var("SYNTH_STACK_FWD").is_ok() {
+        let (out, n) = synth_synthesis::liveness::eliminate_dead_frame_stores(&arm_instrs);
+        if std::env::var("SYNTH_FUSE_STATS").is_ok() {
+            eprintln!("[frame-slot-dce] {n} dead frame store(s) removed");
+        }
+        out
+    } else {
+        arm_instrs
+    };
+
     // VCR-RA immediate-shift folding (#390, #242): a constant shift amount the
     // stack selector materialized into a scratch register (`movw rM,#C; lsl rD,rN,rM`)
     // folds to the immediate form (`lsl rD,rN,#C`), removing the dead `movw` — −1
