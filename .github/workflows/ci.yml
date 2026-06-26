@@ -497,3 +497,42 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/stack_args_503_differential.py
+
+  br-table-507-oracle:
+    name: optimized-path br_table oracle
+    # VCR-ORACLE-001 (#242, #507): EXECUTE br_table dispatch compiled via the
+    # DEFAULT optimized path (no --relocatable) under unicorn (UC_ARCH_ARM /
+    # Thumb) and diff the resulting linear memory vs wasmtime across every
+    # selector (incl. out-of-range → default arm) and two table shapes. Guards
+    # the #507 fix: the optimized path DROPPED the br_table dispatch during
+    # wasm→IR, emitting the arm bodies in fall-through with no selector compare —
+    # a silent miscompile (every input hit the last arm). The fix detects
+    # br_table on the raw wasm op stream and forces the direct selector (which
+    # lowers it as a cmp-chain). The frozen byte gate only covers the
+    # --relocatable direct path, so nothing else exercises the default path's
+    # br_table lowering. Isolated job: emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run br_table oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/br_table_507_differential.py

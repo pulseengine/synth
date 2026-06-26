@@ -314,7 +314,23 @@ fn compile_wasm_to_arm(
     // host-linked object, where the linmem base arrives via `fp` at runtime and
     // callees follow AAPCS. `select_with_stack` (now i64-spill capable after
     // #171) handles fp-relative memory + caller-saved preservation correctly.
-    let arm_instrs = if config.no_optimize || config.relocatable {
+    //
+    // #507: `br_table` is DROPPED during the optimized path's wasm→IR lowering
+    // (`optimize_full`), so `ir_to_arm` never sees the dispatch — it emits the
+    // arm bodies in fall-through sequence with no `cmp`/branch on the selector, a
+    // SILENT miscompile (every input hits the last arm). The selector value isn't
+    // even loaded. Because the drop happens before `ir_to_arm`, there's no `Err`
+    // to fall back on; detect it on the raw wasm op stream here and force the
+    // direct selector (`select_with_stack` lowers `br_table` correctly as a
+    // cmp-chain — confirmed on the `--relocatable` path). Same honest-degradation
+    // contract as the issue-#120 f32 decline: the function still compiles
+    // correctly, just without IR-level optimization. Frozen-safe: the frozen
+    // fixtures compile `--relocatable` (already direct), and no optimized-path
+    // fixture (control_step, flight_algo) contains `br_table`.
+    let has_br_table = wasm_ops
+        .iter()
+        .any(|op| matches!(op, WasmOp::BrTable { .. }));
+    let arm_instrs = if config.no_optimize || config.relocatable || has_br_table {
         select_direct()?
     } else {
         let opt_config = if config.loom_compat {
@@ -1303,6 +1319,72 @@ mod tests {
         assert!(
             result.is_err(),
             "f32.div must be rejected on Cortex-M3 (no FPU), not panic"
+        );
+    }
+
+    /// #507: a `br_table` function compiled via the DEFAULT (optimized) config
+    /// must produce the SAME bytes as the direct (`no_optimize`) selector —
+    /// i.e. the optimized path declined it to direct, lowering the dispatch as a
+    /// real cmp-chain instead of silently dropping it (which left all arms in
+    /// fall-through). Pre-fix the two outputs differed (the optimized one had no
+    /// selector compare). Execution correctness is gated by
+    /// `scripts/repro/br_table_507_differential.py`.
+    #[test]
+    fn test_507_br_table_declines_to_direct() {
+        let backend = ArmBackend::new();
+        // dispatch(sel): br_table over 3 blocks, each storing a marker to mem[0].
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::Block,
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::BrTable {
+                targets: vec![0, 1, 2],
+                default: 2,
+            },
+            WasmOp::End,
+            WasmOp::I32Const(0),
+            WasmOp::I32Const(10),
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::Return,
+            WasmOp::End,
+            WasmOp::I32Const(0),
+            WasmOp::I32Const(20),
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::Return,
+            WasmOp::End,
+            WasmOp::I32Const(0),
+            WasmOp::I32Const(30),
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        let opt = CompileConfig {
+            target: TargetSpec::cortex_m4(),
+            ..CompileConfig::default()
+        };
+        let direct = CompileConfig {
+            target: TargetSpec::cortex_m4(),
+            no_optimize: true,
+            ..CompileConfig::default()
+        };
+        let a = backend
+            .compile_function("dispatch", &ops, &opt)
+            .expect("optimized-default must compile br_table (via decline)");
+        let b = backend
+            .compile_function("dispatch", &ops, &direct)
+            .expect("direct must compile br_table");
+        assert_eq!(
+            a.code, b.code,
+            "#507: optimized-default br_table output must be byte-identical to the \
+             direct selector (i.e. declined to direct), not a dropped dispatch"
         );
     }
 
