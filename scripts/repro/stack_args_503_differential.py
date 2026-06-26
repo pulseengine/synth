@@ -81,6 +81,23 @@ CALL10 = """(module
     i32.const 50 i32.const 60 i32.const 70 i32.const 80 i32.const 90
     call $callee))"""
 
+# Combined: a 6-param function that BOTH reads its own incoming stack params
+# (4,5) AND makes a 6-arg call passing those same incoming params on the outgoing
+# stack. This is the realistic falcon shape (func_57/58 are unlikely pure leaves)
+# and the only path where the incoming-offset formula `frame_size+24+(k-4)*4` has
+# to correctly skip over the `outgoing_arg_bytes` region that also lives in
+# `frame_size`. params 4,5 are read again AFTER the call to confirm the incoming
+# region (above the frame) survives the inner call's use of the outgoing region
+# (at the frame bottom).
+BOTH = """(module
+  (func $g (param i32 i32 i32 i32 i32 i32) (result i32)
+    local.get 0 local.get 4 i32.add local.get 5 i32.add)
+  (func (export "both") (param i32 i32 i32 i32 i32 i32) (result i32)
+    local.get 0 local.get 1 local.get 2 local.get 3 local.get 4 local.get 5
+    call $g
+    local.get 4 i32.add
+    local.get 5 i32.add))"""
+
 
 def compile_reloc(wat_text, elf):
     wat = elf + ".wat"
@@ -216,6 +233,24 @@ def main():
         fails += 0 if ok else 1
         g = f"0x{got:08X}" if isinstance(got, int) else got
         print(f"{'OK  ' if ok else 'FAIL'} caller{vec} = {g} (wasmtime 0x{exp:08X})")
+
+    # ---- COMBINED: >4 incoming params AND a >4-arg call in one function ----
+    # The incoming offset must skip over the outgoing-arg region (both live in
+    # frame_size). 'both'=func_1 calls $g=func_0.
+    elf = "/tmp/sa503_both.elf"
+    wat = compile_reloc(BOTH, elf)
+    code, base, syms = load(elf)
+    both = syms["both"] if "both" in syms else syms["func_1"]
+    g = syms["func_0"]
+    wt_text = Path(wat).read_text()
+    for vec in [(1, 2, 3, 4, 5, 6), (10, 20, 30, 40, 50, 60),
+                (0x7FFFFFFF, 0, 0, 0, 1, 2)]:
+        exp = wasmtime_run(wt_text, "both", vec)
+        got = unicorn_run(code, base, both, vec, bl_hook_target=g)
+        ok = isinstance(got, int) and got == exp
+        fails += 0 if ok else 1
+        gs = f"0x{got:08X}" if isinstance(got, int) else got
+        print(f"{'OK  ' if ok else 'FAIL'} both{vec} = {gs} (wasmtime 0x{exp:08X})")
 
     print("\nORACLE:", "PASS" if fails == 0 else f"FAIL ({fails})")
     sys.exit(1 if fails else 0)
