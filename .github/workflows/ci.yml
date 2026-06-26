@@ -536,3 +536,41 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/br_table_507_differential.py
+
+  const-cse-242-oracle:
+    name: const-CSE flag-on execution oracle
+    # VCR-RA const-CSE (#242): EXECUTE the optimized path compiled with
+    # SYNTH_CONST_CSE=1 under unicorn (UC_ARCH_ARM / Thumb) and diff the returned
+    # value vs wasmtime across redundant-const shapes (large/small/negative/mixed
+    # consts, reuse ACROSS an if/else where the cache must reset, and a
+    # 12-live-local function that forces real spills). The const cache aliases a
+    # repeated const to the register already holding it; this proves the aliasing
+    # is semantics-preserving on the flag-ON path. The flag ships DEFAULT-OFF
+    # (off ⇒ byte-identical, pinned by const_cse_reduction_242.rs's golden), so
+    # nothing else exercises the optimized-path const cache. Isolated job:
+    # emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run const-CSE flag-on oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/const_cse_differential.py
