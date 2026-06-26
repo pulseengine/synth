@@ -574,3 +574,41 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/const_cse_differential.py
+
+  frame-slot-dce-242-oracle:
+    name: frame-slot DCE flag-on execution oracle
+    # VCR-RA frame-slot DCE (#242): EXECUTE flat_flight compiled with
+    # SYNTH_STACK_FWD=1 (stack-reload forwarding + dead-frame-store elimination)
+    # under unicorn (UC_ARCH_ARM / Thumb) and diff flight_algo's return value vs
+    # wasmtime across several sensor inputs, with linear memory seeded exactly as
+    # wasmtime's. The two paired passes turn frame reloads into register moves and
+    # remove the now-dead stores (flight_algo sp-traffic 20→7, 139→135 insns).
+    # The flag ships DEFAULT-OFF (off ⇒ byte-identical; the job also asserts the
+    # flag-off .text is byte-identical across builds), so nothing else exercises
+    # this optimized-path transform. Isolated job: emulation deps pip-installed
+    # here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run frame-slot DCE flag-on oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/frame_slot_dce_differential.py

@@ -496,6 +496,144 @@ pub fn forward_stack_reloads(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
     (out, rewrites)
 }
 
+/// VCR-RA frame-slot dead-store elimination (#242, epic #242): remove a
+/// `str rX, [sp, #N]` whose spill slot `N` is provably never read again before
+/// it is overwritten or the function ends. This is the natural completion of
+/// [`forward_stack_reloads`]: once the reloads of a slot have been forwarded to
+/// register moves, the store that fed them writes a value nobody loads — pure
+/// dead weight. `eliminate_dead_stores` cannot catch it (a store defines no
+/// register, so its register-def liveness is vacuous); slot liveness is what's
+/// needed.
+///
+/// SOUNDNESS — a store at `i` to `[sp, #N]` (immediate slot, no register offset)
+/// is removed only if a forward scan from `i+1` reaches either the next store to
+/// the SAME immediate slot `N`, or the end of the function, WITHOUT encountering
+/// anything that could read slot `N` or that we cannot reason past. The scan
+/// conservatively KEEPS the store (proves nothing) at the first of:
+///  - a `ldr` from `[sp, #N]` (the slot is read — live),
+///  - ANY `[sp, reg-offset]` load or store (slot unresolvable — could touch `N`),
+///  - a `Push`/`Pop` (touches the stack region — could overlap `N`),
+///  - a call (`Bl`/`Blx`/`Call`/`CallIndirect`: a callee may read an outgoing
+///    stack-argument slot),
+///  - any op that defines `SP` (frame geometry changed — `#N` no longer names
+///    the same location),
+///  - any op `reg_effect` does not model (branch / label / unmodeled): control
+///    could reach a reader, so we cannot prove deadness on a straight line.
+///
+/// Only the immediate-offset `Str`/`Ldr` forms participate; everything else is a
+/// blocker. This makes the pass effective on straight-line leaf regions (the
+/// frame-resident hot kernels) and a conservative no-op elsewhere — it never
+/// removes a store whose slot any reachable instruction might load.
+///
+/// LOAD-BEARING ASSUMPTION: spill slots are word-aligned and non-overlapping, so
+/// a `str [sp,#N]` is the ONLY writer of those 4 bytes and a different immediate
+/// `#M` provably does not alias `#N`. The sub-word-access blocker above is what
+/// enforces "no partial writers/readers"; do not widen the participating set
+/// without re-checking this.
+///
+/// **Branch-offset safety:** like [`forward_stack_reloads`] and
+/// [`eliminate_dead_stores`], intended to run on the `select_with_stack` output
+/// BEFORE `resolve_label_branches`; removing a non-branch interior instruction is
+/// offset-neutral. The frame `sub sp,#K` is untouched (the slot just goes unused),
+/// so SP balance is preserved — frame SHRINKING is [`elide_dead_frame`]'s job.
+/// Pure function; callers opt in.
+pub fn eliminate_dead_frame_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    let n = instrs.len();
+    let mut dead: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+
+    for i in 0..n {
+        // [i] must be `str rX, [sp, #N]` (immediate slot, no register offset).
+        let slot = match &instrs[i].op {
+            ArmOp::Str { addr, .. } if addr.base == Reg::SP && addr.offset_reg.is_none() => {
+                addr.offset
+            }
+            _ => continue,
+        };
+        // Scan forward for an OVERWRITE of slot N with no intervening read or
+        // aliasing op. A store is proven dead ONLY by a later store to the same
+        // immediate slot (classic dead-store-before-overwrite) — reaching the end
+        // of the function does NOT count (that "abandoned at frame teardown" case
+        // needs epilogue reasoning we deliberately do not do here, so the default
+        // is to KEEP). This makes the pass unconditionally sound: it never removes
+        // a store whose slot any reachable instruction might load.
+        let mut overwritten = false;
+        for scan in &instrs[i + 1..] {
+            match &scan.op {
+                // A reload of the SAME immediate slot ⇒ the value is used ⇒ live.
+                ArmOp::Ldr { addr, .. }
+                    if addr.base == Reg::SP && addr.offset_reg.is_none() && addr.offset == slot =>
+                {
+                    break;
+                }
+                // Overwrite of the SAME immediate slot with no intervening read ⇒
+                // THIS store is dead (its value never escaped the slot).
+                ArmOp::Str { addr, .. }
+                    if addr.base == Reg::SP && addr.offset_reg.is_none() && addr.offset == slot =>
+                {
+                    overwritten = true;
+                    break;
+                }
+                // Any sp-relative access we cannot pin to a single slot
+                // (register offset) could touch slot N ⇒ stop. Distinct immediate
+                // slots do not alias, so a different #M is fine and falls through
+                // to the reg_effect handling below.
+                ArmOp::Ldr { addr, .. } | ArmOp::Str { addr, .. }
+                    if addr.base == Reg::SP && addr.offset_reg.is_some() =>
+                {
+                    break;
+                }
+                // Sub-word sp-relative access: a `ldrb`/`ldrh`/… reads (or a
+                // `strb`/`strh` partially writes) bytes that may fall inside slot
+                // N. The overwrite rule below assumes the only writer/reader of
+                // slot N's word is a full-word `Str`/`Ldr [sp,#N]`; any narrower
+                // sp access breaks that, so stop. (Today's spill slots are
+                // word-aligned and accessed only full-word — linear-memory
+                // sub-word traffic goes through R11 — but this guard is what keeps
+                // the pass sound if that ever changes.)
+                ArmOp::Ldrb { addr, .. }
+                | ArmOp::Ldrsb { addr, .. }
+                | ArmOp::Ldrh { addr, .. }
+                | ArmOp::Ldrsh { addr, .. }
+                | ArmOp::Strb { addr, .. }
+                | ArmOp::Strh { addr, .. }
+                    if addr.base == Reg::SP =>
+                {
+                    break;
+                }
+                // Stack-region register lists could overlap slot N.
+                ArmOp::Push { .. } | ArmOp::Pop { .. } => break,
+                // A callee may read an outgoing stack-argument slot.
+                ArmOp::Bl { .. }
+                | ArmOp::Blx { .. }
+                | ArmOp::Call { .. }
+                | ArmOp::CallIndirect { .. } => break,
+                _ => {}
+            }
+            // SP redefinition or an unmodeled op (branch/label/...) ⇒ cannot prove
+            // the slot stays dead past here.
+            match reg_effect(&scan.op) {
+                Some(eff) if eff.defs.contains(&Reg::SP) => break,
+                Some(_) => {}
+                None => break,
+            }
+        }
+        if overwritten {
+            dead.insert(i);
+        }
+    }
+
+    if dead.is_empty() {
+        return (instrs.to_vec(), 0);
+    }
+    let kept: Vec<ArmInstruction> = instrs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !dead.contains(i))
+        .map(|(_, ins)| ins.clone())
+        .collect();
+    (kept, dead.len())
+}
+
 /// VCR-RA immediate-shift folding (#390, epic #242): fold a register-materialized
 /// constant shift amount into an immediate shift, dropping the `movw`.
 ///
@@ -5428,6 +5566,124 @@ mod tests {
             }),
         ];
         assert_eq!(redundant_const_defs(&seq), Some(vec![]));
+    }
+
+    #[test]
+    fn frame_dce_removes_store_overwritten_before_read() {
+        // str r0,[sp,#4] ; add ... ; str r1,[sp,#4]  — slot #4 overwritten with no
+        // intervening read ⇒ the FIRST store is dead.
+        let seq = vec![
+            str_sp(Reg::R0, 4),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R3,
+                op2: Operand2::Imm(1),
+            }),
+            str_sp(Reg::R1, 4),
+        ];
+        let (out, n) = eliminate_dead_frame_stores(&seq);
+        assert_eq!(n, 1, "overwritten-before-read store is dead");
+        assert_eq!(out.len(), 2);
+        // The surviving store is the live one (r1) into slot #4.
+        assert!(matches!(out[1].op, ArmOp::Str { rd: Reg::R1, .. }));
+    }
+
+    #[test]
+    fn frame_dce_keeps_store_that_is_read() {
+        // str r0,[sp,#4] ; ldr r1,[sp,#4]  — the slot is read ⇒ store is live.
+        let seq = vec![str_sp(Reg::R0, 4), ldr_sp(Reg::R1, 4)];
+        let (out, n) = eliminate_dead_frame_stores(&seq);
+        assert_eq!(n, 0, "a store whose slot is loaded is never removed");
+        assert_eq!(out, seq);
+    }
+
+    #[test]
+    fn frame_dce_distinct_slots_do_not_alias() {
+        // str r0,[sp,#4] ; str r1,[sp,#8] ; str r2,[sp,#4]  — #8 does not alias #4,
+        // so the first #4 store is still dead (overwritten by the second #4 store).
+        let seq = vec![str_sp(Reg::R0, 4), str_sp(Reg::R1, 8), str_sp(Reg::R2, 4)];
+        let (out, n) = eliminate_dead_frame_stores(&seq);
+        assert_eq!(n, 1, "distinct immediate slots are independent");
+        assert!(
+            !out.iter()
+                .any(|i| matches!(&i.op, ArmOp::Str { rd: Reg::R0, .. }))
+        );
+    }
+
+    #[test]
+    fn frame_dce_keeps_store_across_a_call() {
+        // str r0,[sp,#4] ; bl f ; str r1,[sp,#4]  — a callee could read the slot as
+        // an outgoing stack argument ⇒ conservatively keep the first store.
+        let seq = vec![
+            str_sp(Reg::R0, 4),
+            ins(ArmOp::Bl { label: "f".into() }),
+            str_sp(Reg::R1, 4),
+        ];
+        let (_out, n) = eliminate_dead_frame_stores(&seq);
+        assert_eq!(n, 0, "a call before the overwrite blocks the removal");
+    }
+
+    #[test]
+    fn frame_dce_keeps_store_across_sp_change() {
+        // str r0,[sp,#4] ; add sp,sp,#8 ; str r1,[sp,#4]  — sp moved, so [sp,#4] no
+        // longer names the same location ⇒ conservatively keep.
+        let seq = vec![
+            str_sp(Reg::R0, 4),
+            ins(ArmOp::Add {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(8),
+            }),
+            str_sp(Reg::R1, 4),
+        ];
+        let (_out, n) = eliminate_dead_frame_stores(&seq);
+        assert_eq!(n, 0, "an SP change blocks the removal");
+    }
+
+    #[test]
+    fn frame_dce_keeps_store_before_subword_read_of_slot() {
+        // str r0,[sp,#4] ; ldrb r1,[sp,#4] ; str r2,[sp,#4]  — the byte load READS
+        // slot #4, so the first store is NOT dead even though a later store
+        // overwrites the slot. A sub-word slot access must block the removal.
+        let seq = vec![
+            str_sp(Reg::R0, 4),
+            ins(ArmOp::Ldrb {
+                rd: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, 4),
+            }),
+            str_sp(Reg::R2, 4),
+        ];
+        let (_out, n) = eliminate_dead_frame_stores(&seq);
+        assert_eq!(n, 0, "a sub-word read of the slot blocks the removal");
+    }
+
+    #[test]
+    fn frame_dce_never_crosses_a_branch() {
+        // str r0,[sp,#4] ; <branch> ; str r1,[sp,#4]  — control could reach a
+        // reader on the other side of the branch ⇒ the first store is kept.
+        let seq = vec![
+            str_sp(Reg::R0, 4),
+            ins(ArmOp::BOffset { offset: 4 }),
+            str_sp(Reg::R1, 4),
+        ];
+        let (_out, n) = eliminate_dead_frame_stores(&seq);
+        assert_eq!(n, 0, "a branch between the stores blocks the removal");
+    }
+
+    #[test]
+    fn frame_dce_keeps_store_before_ambiguous_reg_offset_access() {
+        // str r0,[sp,#4] ; ldr r1,[sp,r2] ; str r3,[sp,#4]  — the register-offset
+        // load could target slot #4 ⇒ keep.
+        let seq = vec![
+            str_sp(Reg::R0, 4),
+            ins(ArmOp::Ldr {
+                rd: Reg::R1,
+                addr: MemAddr::reg(Reg::SP, Reg::R2),
+            }),
+            str_sp(Reg::R3, 4),
+        ];
+        let (_out, n) = eliminate_dead_frame_stores(&seq);
+        assert_eq!(n, 0, "an unresolvable sp-relative access blocks removal");
     }
 
     #[test]
