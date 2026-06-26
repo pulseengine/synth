@@ -3383,11 +3383,28 @@ fn safe_cse_uses(
 /// and `ra` provably still holds `v` through every later read of `rd` (until
 /// `rd` is redefined within the segment), drop the `movw` and retarget those
 /// reads to `ra`. This is the allocator's rematerialization-avoidance applied as
-/// a targeted transform — every rewrite is *proven* by liveness, and it only
-/// ever REMOVES a materialization (register pressure never rises), so it cannot
-/// trigger the #277-class on-target regression. Returns the rewritten stream and
-/// the count removed. Pure; callers opt in (flag-gated, differential-verified).
+/// a targeted transform — every rewrite is *proven* by liveness.
+///
+/// SIZE GUARD (#242): this pass operates on already-register-assigned
+/// instructions, so it cannot itself spill — but a removal+retarget can still
+/// *grow* a function by changing what a later pass or the encoder does. Two
+/// concrete ways: (a) the retargeted read keeps a constant resident longer,
+/// defeating a downstream immediate-fold that would have absorbed it (the
+/// `gust_mix` 90→92 B regression gale measured on `--relocatable`, 2026-06-26);
+/// and (b) retargeting a read from a low register to a high one flips a 16-bit
+/// Thumb encoding to its 32-bit form (`ldr r0,[r3,#off]` → `ldr r0,[r8,#off]`,
+/// +2 B). (a) is structurally eliminated by running this pass LAST, after every
+/// immediate-fold (so foldable consts are already gone); (b) is caught here:
+/// each maximal segment's staged removals/rewrites are committed only if they do
+/// not increase the segment's estimated byte size
+/// ([`crate::optimizer_bridge::estimate_arm_byte_size`], the #511 encoder mirror)
+/// — otherwise the whole segment's CSE is declined and every materialization is
+/// kept. Monotone-or-neutral on size by measurement, not by hand-wave.
+///
+/// Returns the rewritten stream and the count removed. Pure; callers opt in
+/// (flag-gated, differential-verified).
 pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    use crate::optimizer_bridge::estimate_arm_byte_size;
     let n = instrs.len();
     let mut removed = vec![false; n];
     let mut rewrites: Vec<(usize, Reg, Reg)> = Vec::new(); // (use_index, from, to)
@@ -3395,6 +3412,10 @@ pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
     // Process each maximal straight-line, fully-modeled segment independently.
     let mut seg_start = 0;
     let mut process_segment = |start: usize, end: usize| {
+        // Stage this segment's candidate changes locally; commit only if they do
+        // not grow the segment's estimated byte size (#242 size guard below).
+        let mut seg_removed: Vec<usize> = Vec::new();
+        let mut seg_rewrites: Vec<(usize, Reg, Reg)> = Vec::new();
         let mut held: Vec<(Reg, i32)> = Vec::new(); // reg → resident constant
         for i in start..end {
             if let Some((rd, v)) = const_materialization(&instrs[i].op) {
@@ -3402,9 +3423,9 @@ pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
                     && ra != rd
                     && let Some(use_indices) = safe_cse_uses(instrs, i, rd, ra, end)
                 {
-                    removed[i] = true;
+                    seg_removed.push(i);
                     for j in use_indices {
-                        rewrites.push((j, rd, ra));
+                        seg_rewrites.push((j, rd, ra));
                     }
                     continue; // movw dropped; rd not added to `held`
                 }
@@ -3416,6 +3437,37 @@ pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
                 }
             }
         }
+        if seg_removed.is_empty() {
+            return;
+        }
+        // Per-index rename map for this segment, so we can estimate the rewritten
+        // bytes (a retarget can change an op's encoding width).
+        let mut renames_seg: BTreeMap<usize, Vec<(Reg, Reg)>> = BTreeMap::new();
+        for &(j, from, to) in &seg_rewrites {
+            renames_seg.entry(j).or_default().push((from, to));
+        }
+        let orig_bytes: usize = (start..end)
+            .map(|i| estimate_arm_byte_size(&instrs[i].op))
+            .sum();
+        let new_bytes: usize = (start..end)
+            .filter(|i| !seg_removed.contains(i))
+            .map(|i| {
+                let mut op = instrs[i].op.clone();
+                if let Some(rs) = renames_seg.get(&i) {
+                    for &(from, to) in rs {
+                        op = rename_use(&op, from, to).unwrap_or(op);
+                    }
+                }
+                estimate_arm_byte_size(&op)
+            })
+            .sum();
+        if new_bytes <= orig_bytes {
+            for i in seg_removed {
+                removed[i] = true;
+            }
+            rewrites.extend(seg_rewrites);
+        }
+        // else: declining this segment's CSE keeps every materialization in place.
     };
     for (i, ins) in instrs.iter().enumerate() {
         if !is_straight_line(&ins.op) || reg_effect(&ins.op).is_none() {
@@ -7516,6 +7568,109 @@ mod tests {
         assert_eq!(
             removed, 0,
             "rd not redefined in segment → may be live-out → no fold"
+        );
+    }
+
+    #[test]
+    fn const_cse_size_guard_declines_when_retarget_flips_16bit_to_32bit() {
+        // #242 size guard (non-vacuity proof, half 1 of 2). A const resident in a
+        // HIGH register (r8) is re-materialized in a LOW register (r3) and used as
+        // the base of three 16-bit `ldr`s. Retargeting r3→r8 flips each `ldr` to
+        // its 32-bit form (low base <8 ⇒ 2 B, base r8 ⇒ 4 B): +2 B × 3 = +6 B,
+        // versus the −4 B saved by dropping the redundant `movw r3`. Net +2 B, so
+        // the guard must DECLINE the whole segment and keep every materialization.
+        let mem = |b: Reg, o: i32| crate::rules::MemAddr {
+            base: b,
+            offset: o,
+            offset_reg: None,
+        };
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R8,
+                imm16: 100,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 100,
+            }),
+            ins(ArmOp::Ldr {
+                rd: Reg::R0,
+                addr: mem(Reg::R3, 0),
+            }),
+            ins(ArmOp::Ldr {
+                rd: Reg::R1,
+                addr: mem(Reg::R3, 4),
+            }),
+            ins(ArmOp::Ldr {
+                rd: Reg::R2,
+                addr: mem(Reg::R3, 8),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 5,
+            }),
+        ];
+        let (out, removed) = apply_const_cse(&seq);
+        assert_eq!(
+            removed, 0,
+            "guard declines: retarget would grow the segment"
+        );
+        assert_eq!(
+            out, seq,
+            "declined segment is returned byte-for-byte unchanged"
+        );
+    }
+
+    #[test]
+    fn const_cse_size_guard_commits_when_retarget_keeps_16bit_encoding() {
+        // #242 size guard (non-vacuity proof, half 2 of 2). IDENTICAL structure to
+        // the decline test, except the resident register is LOW (r2): retargeting
+        // r3→r2 keeps every `ldr` 16-bit (base still <8), so the segment shrinks by
+        // the dropped `movw` (−4 B) and the guard COMMITS. This isolates the guard
+        // to the encoding-width effect — the only difference is the register class.
+        let mem = |b: Reg, o: i32| crate::rules::MemAddr {
+            base: b,
+            offset: o,
+            offset_reg: None,
+        };
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 100,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 100,
+            }),
+            ins(ArmOp::Ldr {
+                rd: Reg::R0,
+                addr: mem(Reg::R3, 0),
+            }),
+            ins(ArmOp::Ldr {
+                rd: Reg::R1,
+                addr: mem(Reg::R3, 4),
+            }),
+            ins(ArmOp::Ldr {
+                rd: Reg::R4,
+                addr: mem(Reg::R3, 8),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 5,
+            }),
+        ];
+        let (out, removed) = apply_const_cse(&seq);
+        assert_eq!(
+            removed, 1,
+            "guard commits: retarget keeps the segment smaller"
+        );
+        // The three loads now read the resident r2.
+        assert_eq!(
+            out.iter()
+                .filter(|i| matches!(&i.op, ArmOp::Ldr { addr, .. } if addr.base == Reg::R2))
+                .count(),
+            3,
+            "all three loads retargeted to the low resident register r2"
         );
     }
 

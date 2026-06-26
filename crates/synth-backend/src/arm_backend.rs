@@ -382,21 +382,14 @@ fn compile_wasm_to_arm(
     // needs an on-target/allocator-aware gate, not a byte-count gate, before it
     // can default on.
 
-    // VCR-RA-001 const-CSE / rematerialization-avoidance (#209), the first
-    // allocator-analysis-driven CODEGEN change. Drops `movw` re-materializations
-    // of a constant already resident in another register and retargets the reads
-    // — every rewrite proven by the liveness analysis, and it ONLY removes
-    // materializations (pressure never rises), so unlike the mla fusion (#277) it
-    // cannot regress on-target. Runs on the selected stream before branch
-    // resolution (it removes instructions, shifting byte offsets). Behind
-    // `SYNTH_CONST_CSE=1` while it is validated against the differential oracle +
-    // gale's five on-target baselines; off by default keeps every fixture
-    // bit-identical.
-    let arm_instrs = if std::env::var("SYNTH_CONST_CSE").is_ok() {
-        synth_synthesis::liveness::apply_const_cse(&arm_instrs).0
-    } else {
-        arm_instrs
-    };
+    // VCR-RA-001 const-CSE / rematerialization-avoidance (#209): moved to run
+    // LAST, after the immediate-folds — see the apply_const_cse call below
+    // (#242). Earlier it ran here (before range-realloc and the folds), which is
+    // what let it grow gale's --relocatable `gust_mix` 90→92 B (#242 burndown,
+    // 2026-06-26): retargeting a read defeated a *downstream* immediate-fold that
+    // would otherwise have absorbed the constant. Running CSE-last makes those
+    // foldable consts already-folded-and-gone, so CSE only ever touches genuinely
+    // redundant materializations.
 
     // VCR-RA-001 RANGE RE-ALLOCATION (#209/#242, wiring step 3a) — the first
     // CONSEQUENTIAL allocator pass: re-colour each maximal straight-line
@@ -630,6 +623,29 @@ fn compile_wasm_to_arm(
         let (out, folds) = synth_synthesis::liveness::fold_uxth(&arm_instrs);
         if std::env::var("SYNTH_FUSE_STATS").is_ok() {
             eprintln!("[uxth-fold] {folds} mask-and folded to uxth/uxtb, movw dropped");
+        }
+        out
+    } else {
+        arm_instrs
+    };
+
+    // VCR-RA-001 const-CSE / rematerialization-avoidance (#209, #242). Drops a
+    // `movw`/`mov #imm` that re-materializes a constant already resident in
+    // another register and retargets the reads — every rewrite proven by the
+    // liveness analysis. Runs LAST, after every immediate-fold (shift, uxth) and
+    // range-realloc, but BEFORE branch resolution/encoding (it removes
+    // instructions, shifting byte offsets). CSE-last is the #242 no-regression
+    // fix: the folds have already absorbed every foldable constant, so CSE can no
+    // longer defeat one (the gust_mix 90→92 mechanism). The pass additionally
+    // size-guards each segment via the byte-estimator — it commits a segment's
+    // rewrites only if they do not grow its estimated size — so a retarget that
+    // would flip a 16-bit encoding to 32-bit (higher base register) is declined.
+    // Behind `SYNTH_CONST_CSE=1` while validated against the differential oracle;
+    // off by default keeps every fixture bit-identical.
+    let arm_instrs = if std::env::var("SYNTH_CONST_CSE").is_ok() {
+        let (out, removed) = synth_synthesis::liveness::apply_const_cse(&arm_instrs);
+        if std::env::var("SYNTH_FUSE_STATS").is_ok() {
+            eprintln!("[const-cse] {removed} redundant constant materialization(s) removed");
         }
         out
     } else {

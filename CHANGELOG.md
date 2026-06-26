@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **const-CSE size-regression guard (#242).** gale's v0.17.0 burndown found
+  `SYNTH_CONST_CSE=1` GREW a tiny `--relocatable` function (`gust_mix` 90→92 B): the
+  post-hoc `apply_const_cse` retargeted a use, kept a constant resident longer, and
+  defeated a downstream immediate-fold that would otherwise have absorbed it. Two
+  fixes: (1) `apply_const_cse` now runs **last** in the pass pipeline, after every
+  immediate-fold (so foldable consts are already gone before CSE looks), which
+  structurally eliminates that mechanism; (2) a per-segment **size guard** commits a
+  segment's removals/retargets only when they do not grow its *estimated* bytes (the
+  #511 encoder mirror) — e.g. a retarget that flips a 16-bit `ldr` to its 32-bit form
+  is declined. The guard's decline path is unit-tested non-vacuously;
+  `const_cse_differential.py` gains per-function no-regression gates on both the
+  optimized and `--relocatable` paths. Verified on the test corpus; gale's exact
+  `gust_mix` case is not yet reproduced in-tree (fixture requested to pin it).
+  const-CSE remains flag-off (`SYNTH_CONST_CSE`); flag-off output is byte-identical
+  (frozen gate green).
+
 ## [0.17.0] - 2026-06-26
 
 **Stack-reload forwarding + frame-slot dead-store elimination now default-on
