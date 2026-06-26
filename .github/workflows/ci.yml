@@ -458,3 +458,42 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/r12_spill_496_differential.py
+
+  stack-args-503-oracle:
+    name: AAPCS stack-argument path oracle
+    # VCR-ORACLE-001 (#242, #503): EXECUTE functions that need the AAPCS
+    # stack-argument path with >8 scalar i32 params/args under unicorn
+    # (UC_ARCH_ARM / Thumb), via the SHIPPED direct path (--relocatable, what
+    # falcon uses), and diff the result vs wasmtime. Guards the #503 fix: the arm
+    # backend used to SKIP (emit no code for) any function with >8 scalar params
+    # or a call passing >8 args — 3 reachable falcon helpers were dropped. The fix
+    # lifts the conservative caps over the already-generic incoming_params /
+    # emit_stack_args machinery, leaning on the existing 12-bit [sp,#imm] guards.
+    # Covers a HIGH param count (sum25, reading param 24) and an outgoing 10-arg
+    # call. The 64-bit stack-param case stays refused (a #503 follow-up). Isolated
+    # job: emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools capstone
+      - name: Run AAPCS stack-argument oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/stack_args_503_differential.py

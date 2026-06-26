@@ -4948,7 +4948,7 @@ impl InstructionSelector {
             for k in ARG_REGS.len()..n {
                 if stack[base + k].is_i64() {
                     return Err(synth_core::Error::synthesis(format!(
-                        "#359: call arg {k} is passed on the stack and is i64/f64; \
+                        "#503: call arg {k} is passed on the stack and is i64/f64; \
                          only i32 stack args are supported"
                     )));
                 }
@@ -4985,7 +4985,7 @@ impl InstructionSelector {
             let off = (k as i32 - ARG_REGS.len() as i32) * 4;
             if off > 4095 {
                 return Err(synth_core::Error::synthesis(format!(
-                    "#359: outgoing stack-arg offset {off} exceeds the 12-bit \
+                    "#503: outgoing stack-arg offset {off} exceeds the 12-bit \
                      [sp,#imm] range"
                 )));
             }
@@ -5348,31 +5348,37 @@ impl InstructionSelector {
         // a panic deep in the selector's pop sequence (see PR #117).
         synth_core::wasm_stack_check::check_no_underflow(wasm_ops)?;
 
-        // #359: AAPCS stack arguments. We pass params index>=4 on the outgoing
-        // stack and read incoming params index>=4 from the caller's stack. The
-        // frame-reserved (no dynamic SP) scheme this implements bounds the count:
-        // refuse functions with more than 8 scalar params (the [sp,#imm] offsets
-        // and the outgoing-region size stay small and in-range). Ok-or-Err — this
-        // repo is never silently wrong (#180/#185).
-        if num_params > 8 {
-            return Err(synth_core::Error::synthesis(format!(
-                "#359: function has {num_params} params; the AAPCS stack-argument \
-                 path supports at most 8 scalar params"
-            )));
-        }
-        // #359 Ok-or-Err (#180/#185): the register-homing + incoming-stack-slot
-        // scheme assumes every param is a 4-byte i32. A 64-bit param (i64/f64)
-        // occupies a register PAIR / 8-byte stack slot and shifts which params
-        // land on the stack — even an UNUSED one. Declared widths (not op-stream
-        // inference, which can't see an unused i64 param) drive this refusal.
-        // Gated on num_params>4: a <=4-param function never touches the stack-arg
-        // path, so the legacy i64-param handling (param_slots) is unchanged and
-        // every existing fixture stays byte-identical. Empty `params_i64`
-        // (no signature plumbed, e.g. unit tests) ⇒ assume i32.
+        // #359/#503: AAPCS stack arguments. We pass params index>=4 on the
+        // outgoing stack and read incoming params index>=4 from the caller's
+        // stack. The incoming-param homing (`compute_local_layout` →
+        // `incoming_params`, offset `frame_size+24+(k-4)*4`) and the outgoing
+        // store (`emit_stack_args`, offset `(k-4)*4`) are both GENERIC in the
+        // param/arg index — no fixed ≤8 structure — so an arbitrary scalar count
+        // lowers correctly. The real bound is the 12-bit `[sp,#imm]` immediate
+        // (0..4095), enforced over the finalized layout at the homing site
+        // (incoming, below) and at `emit_stack_args` (outgoing). #503 lifts the
+        // old conservative `num_params > 8` / `arg_count > 8` refusals — they
+        // dropped legitimate falcon helpers (10- and 25-param functions) that the
+        // generic machinery handles. The 12-bit guards remain the Ok-or-Err
+        // backstop (#180/#185): never silently emit an out-of-range encoding.
+        //
+        // #359/#503 Ok-or-Err (#180/#185): the register-homing + incoming-stack-
+        // slot scheme assumes every param is a 4-byte i32. A 64-bit param
+        // (i64/f64) occupies a register PAIR / 8-byte stack slot and shifts which
+        // params land on the stack — even an UNUSED one. Declared widths (not
+        // op-stream inference, which can't see an unused i64 param) drive this
+        // refusal. This 64-bit stack-param case is still refused (the AAPCS
+        // pair-alignment + back-fill lowering is the #503 follow-up); only the
+        // >8-scalar-i32 cap is lifted here. Gated on num_params>4: a <=4-param
+        // function never touches the stack-arg path, so the legacy i64-param
+        // handling (param_slots) is unchanged and every existing fixture stays
+        // byte-identical. Empty `params_i64` (no signature plumbed, e.g. unit
+        // tests) ⇒ assume i32.
         if num_params > 4 && self.params_i64.iter().take(num_params as usize).any(|&w| w) {
             return Err(synth_core::Error::synthesis(format!(
-                "#359: function has {num_params} params including a 64-bit (i64/f64) \
-                 param; the AAPCS stack-argument path supports only i32 params"
+                "#503: function has {num_params} params including a 64-bit (i64/f64) \
+                 param on the AAPCS stack-argument path; only i32 stack params are \
+                 supported (64-bit stack params are not yet lowered)"
             )));
         }
 
@@ -5404,12 +5410,8 @@ impl InstructionSelector {
                     .unwrap_or(0),
                 _ => continue,
             };
-            if arg_count > 8 {
-                return Err(synth_core::Error::synthesis(format!(
-                    "#359: call passes {arg_count} args; the AAPCS stack-argument \
-                     path supports at most 8 scalar args"
-                )));
-            }
+            // #503: no conservative >8 cap — `emit_stack_args` is generic in the
+            // arg index and its 12-bit `[sp,#imm]` guard is the real backstop.
             max_stack_args = max_stack_args.max(arg_count.saturating_sub(4));
         }
         let outgoing_arg_bytes = ((max_stack_args as i32) * 4 + 7) & !7;
@@ -5449,7 +5451,7 @@ impl InstructionSelector {
             && max_off > 4095
         {
             return Err(synth_core::Error::synthesis(format!(
-                "#359: incoming stack-param offset {max_off} exceeds the 12-bit \
+                "#503: incoming stack-param offset {max_off} exceeds the 12-bit \
                  [sp,#imm] range (frame too large for the stack-argument path)"
             )));
         }
@@ -11260,18 +11262,52 @@ mod tests {
         );
     }
 
-    /// #359 Ok-or-Err: more than 8 call args exceeds the verified range → Err.
+    /// #503: a >8-scalar-i32 call now LOWERS (the old conservative >8 cap is
+    /// lifted; `emit_stack_args` is generic and the 12-bit `[sp,#imm]` guard is
+    /// the real backstop). A 9-arg call stores args 4..8 (five of them) to the
+    /// outgoing region at `[sp,#0..16]` and then branches. Execution correctness
+    /// is gated by `scripts/repro/stack_args_503_differential.py`.
     #[test]
-    fn test_359_too_many_args_errs() {
+    fn test_503_nine_arg_call_lowers_to_outgoing_stack() {
         let db = RuleDatabase::new();
         let mut selector = InstructionSelector::new(db.rules().to_vec());
         selector.set_func_arg_counts(vec![0, 0, 0, 9], Vec::new());
         let mut wasm_ops: Vec<WasmOp> = (0..9).map(WasmOp::I32Const).collect();
         wasm_ops.push(WasmOp::Call(3));
-        let r = selector.select_with_stack(&wasm_ops, 0);
+        let arm = selector
+            .select_with_stack(&wasm_ops, 0)
+            .expect("a 9-arg i32 call must lower after #503");
+        let bl = arm
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Bl { .. } | ArmOp::Blx { .. }))
+            .expect("the call must emit a branch");
+        // Five stack args (4..8) stored to the outgoing region before the branch,
+        // at offsets 0,4,8,12,16.
+        for off in [0, 4, 8, 12, 16] {
+            assert!(
+                arm[..bl].iter().any(|i| matches!(&i.op,
+                    ArmOp::Str { addr, .. } if addr.base == Reg::SP && addr.offset == off)),
+                "9-arg call must store outgoing arg at [sp,#{off}]: {arm:#?}"
+            );
+        }
+    }
+
+    /// #503: a function with >8 scalar i32 params lowers (the old `num_params > 8`
+    /// cap is lifted); the high param (index 9) is read from the incoming stack.
+    #[test]
+    fn test_503_ten_param_reads_incoming_stack() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        // 10-param function returning its 10th param (index 9) — a high incoming
+        // stack slot.
+        let wasm_ops = vec![WasmOp::LocalGet(9)];
+        let arm = selector
+            .select_with_stack(&wasm_ops, 10)
+            .expect("a 10-param i32 function must lower after #503");
         assert!(
-            r.is_err(),
-            "a 9-arg call must Err (verified range is ≤8): {r:?}"
+            arm.iter()
+                .any(|i| matches!(&i.op, ArmOp::Ldr { addr, .. } if addr.base == Reg::SP)),
+            "the 10th param must be loaded from the incoming stack: {arm:#?}"
         );
     }
 
