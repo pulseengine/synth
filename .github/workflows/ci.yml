@@ -418,3 +418,43 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/block_brif_483_differential.py
+
+  r12-spill-496-oracle:
+    name: optimized-path register-exhaustion oracle
+    # VCR-ORACLE-001 (#242, #496): EXECUTE the two silicon fixtures
+    # (control_step, flight_seam_flat) compiled via the DEFAULT optimized path
+    # (no --relocatable) under unicorn (UC_ARCH_ARM / Thumb) and diff the result
+    # vs wasmtime. Guards the #496 fix: the optimized path used to borrow R12/IP
+    # as last-resort scratch when its R4-R8 pool was exhausted, but R12 is the
+    # encoder's indexed-load base scratch (#212), so under real register pressure
+    # the value collided — control_step execution-faulted (READ_UNMAPPED from
+    # `add ip,ip,ip` = 2×base) and flight_seam_flat produced wrong values. The fix
+    # flags exhaustion and DECLINES the function to the direct selector (which
+    # spills). The frozen byte gate only covers the --relocatable direct path, so
+    # nothing else exercises the default self-contained-image path's register
+    # pressure. Isolated job: emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run register-exhaustion oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/r12_spill_496_differential.py

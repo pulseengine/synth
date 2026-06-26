@@ -2581,6 +2581,17 @@ impl OptimizerBridge {
                 }
             };
 
+        // #496: the optimized path's last-resort scratch fallbacks below
+        // (`alloc_i32_scratch` → R12, `alloc_i64_pair` → (R4,R5)) are UNSAFE under
+        // real register pressure — R12/IP is the encoder's indexed-load base
+        // scratch (#212), so a fold that exhausts R4-R8 and borrows R12 collides
+        // with the address math of a later MemLoad (control_step: `lsl ip,r4,ip`
+        // clobbered by base materialization → `add ip,ip,ip`). Rather than emit a
+        // silent miscompile, we record that exhaustion happened and DECLINE the
+        // whole function to the direct selector (which spills correctly) at the end
+        // of the build. The Cell is shared by reference into both closures.
+        let r12_exhausted = std::cell::Cell::new(false);
+
         // Allocate a CONSECUTIVE callee-saved register pair for an i64 destination.
         //
         // Searches `[(R4,R5), (R6,R7), (R8,R9), (R10,R11)]` for a pair where neither
@@ -2615,11 +2626,13 @@ impl OptimizerBridge {
                     return (lo, hi);
                 }
             }
-            // Fallback — same hardcoded pair the buggy code used. Better than crashing,
-            // and matches existing behaviour when the caller is so pressured that
-            // even R8..R11 are occupied. (Empirically this never triggers for
-            // workloads we care about; if it does, the architectural fix is
-            // proper spilling, not a wider search.)
+            // #496: every pair is occupied — the (R4,R5) fallback would alias a
+            // live value. Flag exhaustion so the build declines to the direct
+            // selector; still return a pair so the rest of the build completes
+            // (its bytes are discarded). This path is unverified by a fixture
+            // (empirically never triggered for our workloads), but flagging it is
+            // free insurance against the same class as the i32 case below.
+            r12_exhausted.set(true);
             (Reg::R4, Reg::R5)
         };
 
@@ -2654,10 +2667,14 @@ impl OptimizerBridge {
                     return r;
                 }
             }
-            // Pressure-relief fallback. R12 is acceptable here because
-            // the call sites that use this helper write the destination
-            // BEFORE using R12 as scratch (e.g. MemLoad emits the LDR
-            // last, after the address math).
+            // #496: every callee-saved scratch is live. Borrowing R12/IP here is
+            // a miscompile under real pressure — IP is the encoder's indexed-load
+            // base scratch, so the "dest written before R12 used" assumption fails
+            // when two folds both land on R12 (collide) or an R12 value survives
+            // across a later MemLoad's base math. Flag exhaustion so the build
+            // declines to the direct selector (which spills); still return R12 so
+            // the remaining build completes (those bytes are discarded).
+            r12_exhausted.set(true);
             Reg::R12
         };
 
@@ -5548,6 +5565,22 @@ impl OptimizerBridge {
         // live — realloc lowers low-pressure r4-r8 scratch back to r0-r3, so a
         // decision here (pre-realloc) would over-save. See
         // `liveness::ensure_callee_saved_prologue`.
+
+        // #496: if any scratch allocation exhausted the R4-R8 pool and fell back to
+        // R12/IP (or the i64 (R4,R5) alias), the body we just built contains a
+        // latent miscompile (R12 is the encoder's indexed-load base scratch).
+        // Decline the whole function to the direct selector, which has real
+        // spill-on-exhaustion support (`instruction_selector`); `arm_backend`
+        // catches this `Err` and retries via `select_direct`. This is a
+        // correctness retreat, not a perf win — keeping these functions on the
+        // optimized path requires proper spilling there, the VCR-RA follow-up.
+        if r12_exhausted.get() {
+            return Err(Error::UnsupportedInstruction(
+                "optimized path: R4-R8 scratch pool exhausted — declining to the \
+                 direct selector for correct spilling (#496)"
+                    .to_string(),
+            ));
+        }
 
         Ok(arm_instrs)
     }
