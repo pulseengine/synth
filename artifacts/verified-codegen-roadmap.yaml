@@ -238,7 +238,19 @@ artifacts:
       `cargo test --workspace` green under the new default (wast/spec suite is
       compile-only, so gale silicon is the broad-execution check). NOT flipped:
       const-CSE (SYNTH_CONST_CSE) stays flag-off — its alias-eviction prerequisite is
-      open and it is inert on flat_flight.
+      open and it is inert on flat_flight. NO-REGRESSION FIX (#242, 2026-06-26): gale's
+      v0.17.0 burndown found const-CSE GREW a `--relocatable` `gust_mix` 90→92 B (the
+      post-hoc `apply_const_cse` retargeted a use, kept a constant resident longer, and
+      defeated a downstream immediate-fold). Fixed by running `apply_const_cse` LAST in
+      the pass pipeline (after every immediate-fold, so foldable consts are already
+      gone) plus a per-segment SIZE GUARD (commit a segment's removals/retargets only
+      when they do not grow its estimated bytes — e.g. a retarget flipping a 16-bit
+      `ldr` to 32-bit is declined). Guard decline path proven non-vacuously by two
+      contrasting liveness unit tests; per-function no-regression gate added to
+      `const_cse_differential.py`; flag-off byte-identical (frozen gate green). The
+      pressure/size prerequisite for the eventual default-on flip is now CLOSED;
+      alias-eviction remains the sole open prerequisite. (Not empirically reproduced on
+      gale's exact `gust_mix` — fixture requested to pin the trigger.)
     status: implemented
     tags: [codegen, register-allocation, ssa, regalloc2, track-a, release-v0.11.40]
     links:
