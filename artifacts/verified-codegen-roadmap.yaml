@@ -1286,17 +1286,25 @@ artifacts:
       branch object sequence (I64SetCond / I64Shl / I64DivU / …); preserved =
       every 1:1 `br_if`.
 
-      ONE OPEN ITEM TO SETTLE BEFORE IMPLEMENTING (raised on #396): the offset
-      NORMALIZATION domain — synth's `op_offsets` are module-relative WASM byte
-      offsets (into the code section); witness's `InstrLocId` byte_offset must be
-      confirmed module-relative vs function-body-relative so the join is exact, not
-      off-by-a-function-header. Once witness confirms, the emitter is the
-      implementation milestone: thread a per-branch transformation label through
-      BOTH lowering paths (optimized `ir_to_arm` currently sets `source_line: None`
-      — provenance is dropped there today; the direct selector carries it) and
-      serialize `synth-provenance-v1` behind a CLI flag (frozen-safe: additive
-      output file, no `.text` change). NOT in scope for the contract-settling step;
-      tracked as the VCR-DBG/witness follow-up.
+      OFFSET-NORMALIZATION DOMAIN — RESOLVED on synth's side (#396, 2026-06-27):
+      synth's `op_offsets` are ABSOLUTE byte offsets into the original `.wasm`
+      binary, verified from code — `wasm_decoder.rs` feeds the whole module to
+      wasmparser (`Parser::new(0).parse_all(wasm_bytes)`, base 0) and reads per-op
+      offsets via `into_iter_with_offsets()` (whole-buffer positions, NOT
+      function-body-relative). walrus `InstrLocId` is the same origin (offset in
+      the original Wasm buffer), so the join is DIRECT — no per-function header
+      subtraction, no normalization. Pending only witness's confirmation of the
+      walrus side. The replacement invariant to carry in the contract: both tools
+      must key off the SAME input `.wasm` bytes (witness measures the module before
+      synth lowers it; if witness re-serializes via walrus, the `InstrLocId`s must
+      refer to the bytes synth then compiles).
+
+      Remaining = the EMITTER milestone (purely synth-internal): thread a per-branch
+      transformation label through BOTH lowering paths (optimized `ir_to_arm`
+      currently sets `source_line: None` — provenance is dropped there today; the
+      direct selector carries it) and serialize `synth-provenance-v1` behind a CLI
+      flag (frozen-safe: additive output file, no `.text` change). NOT in scope for
+      the contract-settling step; tracked as the VCR-DBG/witness follow-up.
     status: proposed
     tags: [witness, mcdc, traceability, provenance, vcr-dbg, decision, integration]
     links:
