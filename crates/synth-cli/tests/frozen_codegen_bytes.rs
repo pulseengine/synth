@@ -69,6 +69,7 @@ fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
         .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
         .env_remove("SYNTH_NO_LOCAL_PROMOTE")
         .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
+        .env_remove("SYNTH_NO_STACK_FWD")
         .env_remove("SYNTH_CONST_CSE")
         .args([
             "compile",
@@ -130,16 +131,20 @@ fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
 /// the `.py` differentials cover): control_step ↔ 0x00210A55, flight_seam_flat ↔
 /// flat+inlined flight_algo 0x07FDF307, plus flight_seam and the div seam.
 ///
-/// Goldens RE-FROZEN for v0.15.0 (#390): immediate-shift folding is now default-on
-/// (on top of v0.13.0 cmp→select + v0.14.0 local promotion), so these lock the
-/// folded+promoted+fused .text. The execution RESULTS are preserved — re-verified
-/// on this commit: control_step still 0x00210A55 (control_step_differential.py
-/// 13/13), flat+inlined flight_algo still 0x07FDF307 (flight_seam_differential.py
-/// MATCH). .text shrank again (constant shift-amount `movw`s removed): control_step
-/// 316→304, flight_seam 866→774, flight_seam_flat 1006→910 (−200 B total);
-/// signed_div_const (no register-shift folds) unchanged. Measured −2 cyc/call on the
-/// dissolved hot path (.text 100→90 B on gust_mix). Prior promotion goldens were on
-/// main @ 6b46f09 (v0.14.0), 2026-06-24.
+/// Goldens RE-FROZEN for the SYNTH_STACK_FWD flip (#242 feature loop): stack-reload
+/// forwarding + frame-slot dead-store elimination are now default-on (on top of
+/// v0.13.0 cmp→select + v0.14.0 local promotion + v0.15.0 immediate-shift folding),
+/// so these lock the forwarded+DCE'd .text. The execution RESULTS are preserved —
+/// re-verified on this commit: control_step still 0x00210A55
+/// (control_step_differential.py 13/13), flat+inlined flight_algo still 0x07FDF307
+/// (flight_seam_differential.py MATCH on BOTH flat and inlined). .text shrank again
+/// (dead frame stores removed, reloads → register moves): flight_seam 774→738,
+/// flight_seam_flat 910→878 (−68 B); control_step (no spurious slot reuse) and
+/// signed_div_const unchanged. Instruction/memory-op proxy: flight_algo sp-traffic
+/// 20→7, 139→135 insns — the measured CYCLE number is gale's G474RE (post-ship).
+/// Escape hatch `SYNTH_NO_STACK_FWD=1` restores the prior goldens (asserted by
+/// `frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes`). Prior (flag-off)
+/// goldens were flight_seam 9e73eea3…/774, flight_seam_flat 887ea546…/910.
 #[test]
 fn frozen_fixtures_text_is_bit_identical_oracle_001() {
     let cases = [
@@ -150,13 +155,13 @@ fn frozen_fixtures_text_is_bit_identical_oracle_001() {
         ),
         (
             "flight_seam.wasm",
-            "9e73eea3867ba085820329951e84a7d650c38a7fc78d9d03a6a83d02963f9670",
-            774,
+            "dce728b48e14aa9187774799c0b268c6ad60be6dc0fa3e7cc9458c17dc65403b",
+            738,
         ),
         (
             "flight_seam_flat.wasm",
-            "887ea546429a4569112147fdc94b0ba90f02a6ccd2b511aa2ca48dab017dbc2c",
-            910,
+            "0665e623f33457479940046d57a4b7ec02416a61bcc6ec71ea3556ed5b3cb568",
+            878,
         ),
         (
             "signed_div_const.wasm",
@@ -165,6 +170,73 @@ fn frozen_fixtures_text_is_bit_identical_oracle_001() {
         ),
     ];
     assert_frozen(&cases, "arm", "cortex-m4");
+}
+
+/// ESCAPE-HATCH GATE for the SYNTH_STACK_FWD flip (#242). Proves the opt-out
+/// actually rolls back: with `SYNTH_NO_STACK_FWD=1` the two fixtures the flip moved
+/// restore their PRE-flip goldens byte-for-byte. This is both the rollback proof and
+/// a tripwire — if forwarding/DCE ever leaks into the opt-out path, the old hashes
+/// stop matching. (control_step / signed_div_const are unaffected by the flip, so
+/// they are not re-checked here; the default gate above already locks them.)
+#[test]
+fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
+    // (fixture, PRE-flip golden sha256, PRE-flip len) — the v0.15.0 goldens.
+    let old = [
+        (
+            "flight_seam.wasm",
+            "9e73eea3867ba085820329951e84a7d650c38a7fc78d9d03a6a83d02963f9670",
+            774usize,
+        ),
+        (
+            "flight_seam_flat.wasm",
+            "887ea546429a4569112147fdc94b0ba90f02a6ccd2b511aa2ca48dab017dbc2c",
+            910,
+        ),
+    ];
+    for &(wasm, golden, golden_len) in &old {
+        let elf = format!("/tmp/frozen_nofwd_{wasm}.elf");
+        let out = Command::new(synth())
+            .env("SYNTH_NO_STACK_FWD", "1")
+            .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
+            .env_remove("SYNTH_NO_LOCAL_PROMOTE")
+            .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
+            .env_remove("SYNTH_CONST_CSE")
+            .args([
+                "compile",
+                fixture(wasm).to_str().unwrap(),
+                "-o",
+                &elf,
+                "-b",
+                "arm",
+                "--target",
+                "cortex-m4",
+                "--all-exports",
+                "--relocatable",
+            ])
+            .output()
+            .expect("run synth");
+        assert!(out.status.success(), "compile failed for {wasm}");
+        let bytes = std::fs::read(&elf).expect("read elf");
+        let obj = object::File::parse(&*bytes).expect("parse elf");
+        let data = obj
+            .section_by_name(".text")
+            .expect(".text")
+            .data()
+            .expect("read .text");
+        assert_eq!(
+            data.len(),
+            golden_len,
+            "{wasm}: SYNTH_NO_STACK_FWD must restore the pre-flip length"
+        );
+        let hex: String = Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            hex, golden,
+            "{wasm}: SYNTH_NO_STACK_FWD=1 must restore the pre-flip bytes (rollback broken)"
+        );
+    }
 }
 
 /// THE RV32 GATE. The RISC-V backend (`synth-backend-riscv`) is an INDEPENDENT

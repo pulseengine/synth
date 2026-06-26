@@ -214,6 +214,31 @@ artifacts:
       differential (resolve the internal BL, run flag-on vs wasmtime) as the gate,
       (c) re-freeze + G474RE silicon. This pass landed the frozen-safe fixture +
       finding; flag-off bit-identical, no codegen change.
+
+      STACK-FWD + FRAME-SLOT-DCE FLIP TO DEFAULT-ON (#242 feature loop): the two
+      paired lowering passes — `forward_stack_reloads` (a `local.set; local.get`
+      reload `ldr rY,[sp,#N]` whose value still lives in `rX` becomes `mov rY,rX`)
+      and `eliminate_dead_frame_stores` (the now-dead `str rX,[sp,#N]` whose slot is
+      overwritten-before-read is removed) — shipped flag-off in PR #514/#515 and are
+      now DEFAULT-ON. Escape hatch `SYNTH_NO_STACK_FWD=1` restores the frame-resident
+      bytes. Gated exactly like the cmp→select (v0.13.0) and local-promotion
+      (v0.14.0) flips: RESULTS re-verified bit-identical on every frozen anchor
+      (control_step 0x00210A55 13/13; flat AND inlined flight_algo 0x07FDF307 —
+      flight_seam_differential.py MATCH both) while .text shrank on the SHIPPED
+      --relocatable path (flight_seam 774→738, flight_seam_flat 910→878; control_step
+      unchanged — no spurious slot reuse; signed_div_const + all RV32 unchanged,
+      ARM-only). Frozen goldens re-frozen + an escape-hatch gate asserts the opt-out
+      restores the pre-flip bytes. SOUNDNESS: overwrite-only DCE (dead only when a
+      later store to the same immediate slot overwrites it with no intervening read;
+      reaching the function end does NOT count), sub-word sp accesses (ldrb/ldrh/…)
+      as blockers (advisor-caught #483-class hole, test verified failing pre-fix); 8
+      unit tests pin the boundaries. Instruction/memory proxy: flight_algo sp-traffic
+      20→7, 139→135 insns — the measured CYCLE number is gale's G474RE (post-ship
+      confirmation, the cmp→select silicon-gate-waiver precedent). Broad oracle:
+      `cargo test --workspace` green under the new default (wast/spec suite is
+      compile-only, so gale silicon is the broad-execution check). NOT flipped:
+      const-CSE (SYNTH_CONST_CSE) stays flag-off — its alias-eviction prerequisite is
+      open and it is inert on flat_flight.
     status: implemented
     tags: [codegen, register-allocation, ssa, regalloc2, track-a, release-v0.11.40]
     links:

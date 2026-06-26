@@ -567,11 +567,15 @@ fn compile_wasm_to_arm(
     // synth lowers every wasm local to a frame slot, so `local.set; local.get` emits
     // `str rX,[sp,#N]; … ; ldr rY,[sp,#N]`; when rX still holds the value the reload
     // (a ~2-cycle M4 load) becomes `mov rY,rX`. Removal-of-a-load + rename only ⇒ no
-    // new instruction form and no label/offset change. BEHIND `SYNTH_STACK_FWD=1`
-    // (opt-in, off by default ⇒ bit-identical) while it is validated against the
-    // execution differential + gale's G474RE bench — the same gated path the
-    // cmp→select flip took before shipping default-on in v0.13.0.
-    let arm_instrs = if std::env::var("SYNTH_STACK_FWD").is_ok() {
+    // new instruction form and no label/offset change. DEFAULT-ON (#242 feature
+    // loop): validated bit-identical RESULTS on every frozen anchor (control_step
+    // 0x00210A55 13/13, flat+inlined flight_algo 0x07FDF307) with .text reduced on
+    // the shipped --relocatable path, plus 8 unit tests + the frame_slot_dce
+    // execution differential — the same gated path cmp→select took to default-on in
+    // v0.13.0 (G474RE silicon confirms perf post-ship). Escape hatch:
+    // `SYNTH_NO_STACK_FWD=1` restores the frame-resident bytes (frozen-old goldens).
+    let stack_fwd = std::env::var("SYNTH_NO_STACK_FWD").is_err();
+    let arm_instrs = if stack_fwd {
         let (out, fwd) = synth_synthesis::liveness::forward_stack_reloads(&arm_instrs);
         if std::env::var("SYNTH_FUSE_STATS").is_ok() {
             eprintln!("[stack-fwd] {fwd} stack reload(s) forwarded to register moves");
@@ -584,8 +588,8 @@ fn compile_wasm_to_arm(
     // VCR-RA frame-slot DCE (#242): once `forward_stack_reloads` has turned the
     // reloads of a spill slot into register moves, the `str rX,[sp,#N]` that fed
     // them is a dead store — its slot is never loaded again. Remove it. Pairs
-    // with (and only pays after) SYNTH_STACK_FWD, so it shares that flag.
-    let arm_instrs = if std::env::var("SYNTH_STACK_FWD").is_ok() {
+    // with (and only pays after) stack-reload forwarding, so it shares the flag.
+    let arm_instrs = if stack_fwd {
         let (out, n) = synth_synthesis::liveness::eliminate_dead_frame_stores(&arm_instrs);
         if std::env::var("SYNTH_FUSE_STATS").is_ok() {
             eprintln!("[frame-slot-dce] {n} dead frame store(s) removed");

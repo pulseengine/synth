@@ -576,17 +576,17 @@ jobs:
         run: python scripts/repro/const_cse_differential.py
 
   frame-slot-dce-242-oracle:
-    name: frame-slot DCE flag-on execution oracle
-    # VCR-RA frame-slot DCE (#242): EXECUTE flat_flight compiled with
-    # SYNTH_STACK_FWD=1 (stack-reload forwarding + dead-frame-store elimination)
+    name: frame-slot DCE default+optout execution oracle
+    # VCR-RA frame-slot DCE (#242): EXECUTE flat_flight (stack-reload forwarding +
+    # dead-frame-store elimination, DEFAULT-ON since the #242 feature-loop flip)
     # under unicorn (UC_ARCH_ARM / Thumb) and diff flight_algo's return value vs
-    # wasmtime across several sensor inputs, with linear memory seeded exactly as
-    # wasmtime's. The two paired passes turn frame reloads into register moves and
-    # remove the now-dead stores (flight_algo sp-traffic 20→7, 139→135 insns).
-    # The flag ships DEFAULT-OFF (off ⇒ byte-identical; the job also asserts the
-    # flag-off .text is byte-identical across builds), so nothing else exercises
-    # this optimized-path transform. Isolated job: emulation deps pip-installed
-    # here ONLY.
+    # wasmtime across several sensor inputs, in BOTH the shipped default AND the
+    # SYNTH_NO_STACK_FWD=1 opt-out (a default flip is only safe if the shipped path
+    # AND its rollback both match), with linear memory seeded exactly as wasmtime's.
+    # Also asserts the two configs emit DIFFERENT bytes (the flip is engaged). The
+    # paired passes turn frame reloads into register moves and remove the now-dead
+    # stores (flight_algo sp-traffic 20→7, 139→135 insns). Isolated job: emulation
+    # deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
