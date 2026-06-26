@@ -6414,59 +6414,16 @@ mod tests {
 
     #[cfg(test)]
     fn count_arm_byte_size(arm: &[ArmOp]) -> usize {
-        use crate::rules::Operand2;
-        // Mirror the size table in OptimizerBridge::estimate_arm_byte_size
-        // for the ops we care about in these tests. Keep this small and
-        // local so the tests don't depend on encoder reachability — only
-        // a regression in the optimizer bridge should change these counts.
-        arm.iter()
-            .map(|op| match op {
-                ArmOp::I64ShrU { .. } | ArmOp::I64Shl { .. } => 38,
-                ArmOp::I64ShrS { .. } => 40,
-                ArmOp::And { .. }
-                | ArmOp::Orr { .. }
-                | ArmOp::Eor { .. }
-                | ArmOp::Asr { .. }
-                | ArmOp::Adc { .. }
-                | ArmOp::Sbc { .. } => 4,
-                ArmOp::Mov { rd, op2 } => {
-                    // 16-bit Thumb encoding for MOV rd, #imm8 is available
-                    // when rd is a low register (R0..R7) and the immediate
-                    // fits in 8 bits. MOV rd, rm (register form) is 2 bytes
-                    // for low-register destinations.
-                    let rd_n = reg_idx(*rd);
-                    match op2 {
-                        Operand2::Imm(v) if rd_n < 8 && (0..=255).contains(v) => 2,
-                        Operand2::Reg(_) if rd_n < 8 => 2,
-                        _ => 4,
-                    }
-                }
-                ArmOp::Movw { .. } | ArmOp::Movt { .. } => 4,
-                _ => 4,
-            })
-            .sum()
-    }
-
-    #[cfg(test)]
-    fn reg_idx(r: crate::rules::Reg) -> u32 {
-        match r {
-            crate::rules::Reg::R0 => 0,
-            crate::rules::Reg::R1 => 1,
-            crate::rules::Reg::R2 => 2,
-            crate::rules::Reg::R3 => 3,
-            crate::rules::Reg::R4 => 4,
-            crate::rules::Reg::R5 => 5,
-            crate::rules::Reg::R6 => 6,
-            crate::rules::Reg::R7 => 7,
-            crate::rules::Reg::R8 => 8,
-            crate::rules::Reg::R9 => 9,
-            crate::rules::Reg::R10 => 10,
-            crate::rules::Reg::R11 => 11,
-            crate::rules::Reg::R12 => 12,
-            crate::rules::Reg::SP => 13,
-            crate::rules::Reg::LR => 14,
-            crate::rules::Reg::PC => 15,
-        }
+        // Delegate to the production size table. Before PR #511 this was a
+        // hand-maintained mirror of `estimate_arm_byte_size` (a drifted copy
+        // with its own `_ => 4` default and a partial op set); #511 extracted
+        // that table to `estimate_arm_byte_size` AND established the real
+        // independent check — the `estimator_encoder_agreement` oracle, which
+        // pins the table against the actual Thumb-2 encoder. With the encoder
+        // as ground truth, the local proxy was redundant: point the tests at
+        // the production estimator so a regression in it is what moves these
+        // counts.
+        arm.iter().map(estimate_arm_byte_size).sum()
     }
 
     /// Print before/after sizes for the canonical issue #94 pattern. This
