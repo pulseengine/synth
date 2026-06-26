@@ -4429,6 +4429,761 @@ mod tests {
         );
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // #242 / VCR-RA — reg_effect ↔ rewrite_op def/use CONSISTENCY oracle.
+    //
+    // The register allocator reads an op's def/use classification two ways that
+    // MUST agree: `reg_effect` (liveness — which registers an op defines vs
+    // uses) and `rewrite_op` (renaming — which fields it rewrites through the
+    // def-map vs the use-map). If they drift — an op edited in one but not the
+    // other, or a new op modeled inconsistently — the allocator renames a def
+    // as a use (or vice versa) and silently miscompiles. liveness.rs is the
+    // actively-churned heart of VCR-RA, and nothing pinned this invariant.
+    //
+    // This is the Track-A (allocator) analogue of the #511 Track-B (encoder)
+    // agreement oracle. There is no third ground truth here, so the achievable
+    // invariant is mutual CONSISTENCY, checked structurally: build the def/use
+    // maps FROM `reg_effect`'s classification (def regs → a def sentinel, use
+    // regs → a use sentinel, read-modify-write regs → one shared sentinel so
+    // `rewrite_op` doesn't decline), apply `rewrite_op`, then read the result
+    // back with `reg_effect`. If the two agree on every field, every register
+    // was rerouted to a sentinel; a SURVIVING original register means
+    // `rewrite_op` routed a field through the opposite map — the drift.
+    //
+    // Scope: a regression GUARD, not a bug fix — the classification agrees for
+    // all modeled ops today (measured). It freezes that agreement so a future
+    // edit that desyncs the two trips loudly.
+
+    /// Sentinels outside the operand registers used in `modeled_cases` (R0..R7).
+    const DEF_SENTINEL: Reg = Reg::R10;
+    const USE_SENTINEL: Reg = Reg::R11;
+
+    /// Operand registers used to build the cases (R0..R7) — none equal a sentinel.
+    const OPERAND_REGS: [Reg; 8] = [
+        Reg::R0,
+        Reg::R1,
+        Reg::R2,
+        Reg::R3,
+        Reg::R4,
+        Reg::R5,
+        Reg::R6,
+        Reg::R7,
+    ];
+
+    /// Assert `reg_effect` and `rewrite_op` classify every field of `op`
+    /// identically (see the module note above). Panics on drift.
+    fn assert_def_use_consistent(label: &str, op: &ArmOp) {
+        let e = reg_effect(op)
+            .unwrap_or_else(|| panic!("{label}: reg_effect returned None for a modeled op"));
+        let defs: BTreeSet<Reg> = e.defs.iter().copied().collect();
+        let uses: BTreeSet<Reg> = e.uses.iter().copied().collect();
+        let mut def_map: BTreeMap<Reg, Reg> = BTreeMap::new();
+        let mut use_map: BTreeMap<Reg, Reg> = BTreeMap::new();
+        for &r in &defs {
+            if uses.contains(&r) {
+                // RMW field (def AND use of one register): both maps must agree
+                // or rewrite_op declines, so route it to a single sentinel.
+                def_map.insert(r, DEF_SENTINEL);
+                use_map.insert(r, DEF_SENTINEL);
+            } else {
+                def_map.insert(r, DEF_SENTINEL);
+            }
+        }
+        for &r in &uses {
+            if !defs.contains(&r) {
+                use_map.insert(r, USE_SENTINEL);
+            }
+        }
+        let rewritten = rewrite_op(op, &use_map, &def_map)
+            .unwrap_or_else(|| panic!("{label}: rewrite_op declined an op reg_effect models"));
+        let e2 = reg_effect(&rewritten)
+            .unwrap_or_else(|| panic!("{label}: rewritten op no longer modeled"));
+        let survivors: Vec<Reg> = e2
+            .defs
+            .iter()
+            .chain(e2.uses.iter())
+            .copied()
+            .filter(|r| OPERAND_REGS.contains(r))
+            .collect();
+        assert!(
+            survivors.is_empty(),
+            "{label}: reg_effect/rewrite_op def-use DRIFT — original registers \
+             {survivors:?} survived rerouting (a field classified differently by \
+             the two). reg_effect: defs={:?} uses={:?}",
+            e.defs,
+            e.uses,
+        );
+
+        // The survivor check above routes a read-modify-write register (one
+        // `reg_effect` reports in BOTH defs and uses) to a single shared
+        // sentinel, so it can't tell an RMW field from a def-only or use-only
+        // one — both reroute cleanly. Pin the RMW property directly: for each
+        // such register, `rewrite_op` must DECLINE (its documented
+        // disagreement-is-a-decline contract) when the def-map and use-map send
+        // it to DIFFERENT registers. If `rewrite_op` drifted to treat the field
+        // as def-only or use-only, it would consult one map and return `Some` —
+        // caught here. Keyed off the RMW structure, so a future dual-role op is
+        // covered automatically.
+        for &r in defs.intersection(&uses) {
+            let d: BTreeMap<Reg, Reg> = [(r, DEF_SENTINEL)].into();
+            let u: BTreeMap<Reg, Reg> = [(r, USE_SENTINEL)].into();
+            assert!(
+                rewrite_op(op, &u, &d).is_none(),
+                "{label}: RMW register {r:?} is def+use in reg_effect, but \
+                 rewrite_op did NOT decline when the def-map and use-map \
+                 disagree on it — rewrite_op no longer treats the field as \
+                 read-modify-write (def/use drift on a dual-role field)."
+            );
+        }
+    }
+
+    /// One representative instance of every ArmOp variant the allocator models,
+    /// each field a distinct operand register so a misrouted field is visible.
+    fn modeled_cases() -> Vec<(&'static str, ArmOp)> {
+        use ArmOp::*;
+        let r = OPERAND_REGS;
+        let mem = |b: Reg, o: Reg| crate::rules::MemAddr {
+            base: b,
+            offset: 0,
+            offset_reg: Some(o),
+        };
+        let reg = |x: Reg| Operand2::Reg(x);
+        vec![
+            (
+                "Add",
+                Add {
+                    rd: r[0],
+                    rn: r[1],
+                    op2: reg(r[2]),
+                },
+            ),
+            (
+                "Sub",
+                Sub {
+                    rd: r[0],
+                    rn: r[1],
+                    op2: reg(r[2]),
+                },
+            ),
+            (
+                "Adds",
+                Adds {
+                    rd: r[0],
+                    rn: r[1],
+                    op2: reg(r[2]),
+                },
+            ),
+            (
+                "Subs",
+                Subs {
+                    rd: r[0],
+                    rn: r[1],
+                    op2: reg(r[2]),
+                },
+            ),
+            (
+                "Adc",
+                Adc {
+                    rd: r[0],
+                    rn: r[1],
+                    op2: reg(r[2]),
+                },
+            ),
+            (
+                "Sbc",
+                Sbc {
+                    rd: r[0],
+                    rn: r[1],
+                    op2: reg(r[2]),
+                },
+            ),
+            (
+                "And",
+                And {
+                    rd: r[0],
+                    rn: r[1],
+                    op2: reg(r[2]),
+                },
+            ),
+            (
+                "Orr",
+                Orr {
+                    rd: r[0],
+                    rn: r[1],
+                    op2: reg(r[2]),
+                },
+            ),
+            (
+                "Eor",
+                Eor {
+                    rd: r[0],
+                    rn: r[1],
+                    op2: reg(r[2]),
+                },
+            ),
+            (
+                "Mul",
+                Mul {
+                    rd: r[0],
+                    rn: r[1],
+                    rm: r[2],
+                },
+            ),
+            (
+                "Umull",
+                Umull {
+                    rdlo: r[0],
+                    rdhi: r[1],
+                    rn: r[2],
+                    rm: r[3],
+                },
+            ),
+            (
+                "Sdiv",
+                Sdiv {
+                    rd: r[0],
+                    rn: r[1],
+                    rm: r[2],
+                },
+            ),
+            (
+                "Udiv",
+                Udiv {
+                    rd: r[0],
+                    rn: r[1],
+                    rm: r[2],
+                },
+            ),
+            (
+                "Mls",
+                Mls {
+                    rd: r[0],
+                    rn: r[1],
+                    rm: r[2],
+                    ra: r[3],
+                },
+            ),
+            (
+                "Mla",
+                Mla {
+                    rd: r[0],
+                    rn: r[1],
+                    rm: r[2],
+                    ra: r[3],
+                },
+            ),
+            (
+                "Lsl",
+                Lsl {
+                    rd: r[0],
+                    rn: r[1],
+                    shift: 1,
+                },
+            ),
+            (
+                "Lsr",
+                Lsr {
+                    rd: r[0],
+                    rn: r[1],
+                    shift: 1,
+                },
+            ),
+            (
+                "Asr",
+                Asr {
+                    rd: r[0],
+                    rn: r[1],
+                    shift: 1,
+                },
+            ),
+            (
+                "Ror",
+                Ror {
+                    rd: r[0],
+                    rn: r[1],
+                    shift: 1,
+                },
+            ),
+            (
+                "LslReg",
+                LslReg {
+                    rd: r[0],
+                    rn: r[1],
+                    rm: r[2],
+                },
+            ),
+            (
+                "LsrReg",
+                LsrReg {
+                    rd: r[0],
+                    rn: r[1],
+                    rm: r[2],
+                },
+            ),
+            (
+                "AsrReg",
+                AsrReg {
+                    rd: r[0],
+                    rn: r[1],
+                    rm: r[2],
+                },
+            ),
+            (
+                "RorReg",
+                RorReg {
+                    rd: r[0],
+                    rn: r[1],
+                    rm: r[2],
+                },
+            ),
+            (
+                "Rsb",
+                Rsb {
+                    rd: r[0],
+                    rn: r[1],
+                    imm: 4,
+                },
+            ),
+            ("Clz", Clz { rd: r[0], rm: r[1] }),
+            ("Rbit", Rbit { rd: r[0], rm: r[1] }),
+            ("Popcnt", Popcnt { rd: r[0], rm: r[1] }),
+            ("Sxtb", Sxtb { rd: r[0], rm: r[1] }),
+            ("Sxth", Sxth { rd: r[0], rm: r[1] }),
+            ("Uxtb", Uxtb { rd: r[0], rm: r[1] }),
+            ("Uxth", Uxth { rd: r[0], rm: r[1] }),
+            (
+                "Mov",
+                Mov {
+                    rd: r[0],
+                    op2: reg(r[1]),
+                },
+            ),
+            (
+                "Mvn",
+                Mvn {
+                    rd: r[0],
+                    op2: reg(r[1]),
+                },
+            ),
+            ("Movw", Movw { rd: r[0], imm16: 1 }),
+            ("Movt", Movt { rd: r[0], imm16: 1 }),
+            (
+                "MovwSym",
+                MovwSym {
+                    rd: r[0],
+                    symbol: "s".into(),
+                    addend: 0,
+                },
+            ),
+            (
+                "MovtSym",
+                MovtSym {
+                    rd: r[0],
+                    symbol: "s".into(),
+                    addend: 0,
+                },
+            ),
+            (
+                "LdrSym",
+                LdrSym {
+                    rd: r[0],
+                    symbol: "s".into(),
+                    addend: 0,
+                },
+            ),
+            (
+                "Cmp",
+                Cmp {
+                    rn: r[0],
+                    op2: reg(r[1]),
+                },
+            ),
+            (
+                "Cmn",
+                Cmn {
+                    rn: r[0],
+                    op2: reg(r[1]),
+                },
+            ),
+            (
+                "Ldr",
+                Ldr {
+                    rd: r[0],
+                    addr: mem(r[1], r[2]),
+                },
+            ),
+            (
+                "Str",
+                Str {
+                    rd: r[0],
+                    addr: mem(r[1], r[2]),
+                },
+            ),
+            (
+                "Ldrb",
+                Ldrb {
+                    rd: r[0],
+                    addr: mem(r[1], r[2]),
+                },
+            ),
+            (
+                "Ldrsb",
+                Ldrsb {
+                    rd: r[0],
+                    addr: mem(r[1], r[2]),
+                },
+            ),
+            (
+                "Ldrh",
+                Ldrh {
+                    rd: r[0],
+                    addr: mem(r[1], r[2]),
+                },
+            ),
+            (
+                "Ldrsh",
+                Ldrsh {
+                    rd: r[0],
+                    addr: mem(r[1], r[2]),
+                },
+            ),
+            (
+                "Strb",
+                Strb {
+                    rd: r[0],
+                    addr: mem(r[1], r[2]),
+                },
+            ),
+            (
+                "Strh",
+                Strh {
+                    rd: r[0],
+                    addr: mem(r[1], r[2]),
+                },
+            ),
+            (
+                "SetCond",
+                SetCond {
+                    rd: r[0],
+                    cond: Condition::EQ,
+                },
+            ),
+            (
+                "SelectMove",
+                SelectMove {
+                    rd: r[0],
+                    rm: r[1],
+                    cond: Condition::EQ,
+                },
+            ),
+            (
+                "Select",
+                Select {
+                    rd: r[0],
+                    rval1: r[1],
+                    rval2: r[2],
+                    rcond: r[3],
+                },
+            ),
+            (
+                "Push",
+                Push {
+                    regs: vec![r[0], r[1], r[2]],
+                },
+            ),
+            (
+                "Pop",
+                Pop {
+                    regs: vec![r[0], r[1], r[2]],
+                },
+            ),
+            ("Udf", Udf { imm: 0 }),
+            ("Nop", Nop),
+        ]
+    }
+
+    /// No-wildcard spec of which `ArmOp` variants the allocator models. A new
+    /// `ArmOp` variant will not compile here until it is classified — the
+    /// tripwire that forces a new op to be consciously added to (or excluded
+    /// from) the allocator's def/use model. (Forces classification; adding the
+    /// matching `modeled_cases` entry when `true` is a manual step, as in #511.)
+    fn is_modeled(op: &ArmOp) -> bool {
+        use ArmOp::*;
+        match op {
+            Add { .. }
+            | Sub { .. }
+            | Adds { .. }
+            | Subs { .. }
+            | Adc { .. }
+            | Sbc { .. }
+            | And { .. }
+            | Orr { .. }
+            | Eor { .. }
+            | Mul { .. }
+            | Umull { .. }
+            | Sdiv { .. }
+            | Udiv { .. }
+            | Mls { .. }
+            | Mla { .. }
+            | Lsl { .. }
+            | Lsr { .. }
+            | Asr { .. }
+            | Ror { .. }
+            | LslReg { .. }
+            | LsrReg { .. }
+            | AsrReg { .. }
+            | RorReg { .. }
+            | Rsb { .. }
+            | Clz { .. }
+            | Rbit { .. }
+            | Popcnt { .. }
+            | Sxtb { .. }
+            | Sxth { .. }
+            | Uxtb { .. }
+            | Uxth { .. }
+            | Mov { .. }
+            | Mvn { .. }
+            | Movw { .. }
+            | Movt { .. }
+            | MovwSym { .. }
+            | MovtSym { .. }
+            | LdrSym { .. }
+            | Cmp { .. }
+            | Cmn { .. }
+            | Ldr { .. }
+            | Str { .. }
+            | Ldrb { .. }
+            | Ldrsb { .. }
+            | Ldrh { .. }
+            | Ldrsh { .. }
+            | Strb { .. }
+            | Strh { .. }
+            | SetCond { .. }
+            | SelectMove { .. }
+            | Select { .. }
+            | Push { .. }
+            | Pop { .. }
+            | Udf { .. }
+            | Nop => true,
+
+            // Not modeled by the allocator's def/use layer: control flow and
+            // address pseudo-ops with no renamable GP-register fields, the
+            // i64-pair family (lowered before allocation), and all FP/SIMD.
+            MemorySize { .. }
+            | MemoryGrow { .. }
+            | Label { .. }
+            | B { .. }
+            | BOffset { .. }
+            | BCondOffset { .. }
+            | Bhs { .. }
+            | Blo { .. }
+            | Bcc { .. }
+            | Bl { .. }
+            | Bx { .. }
+            | Blx { .. }
+            | LocalGet { .. }
+            | LocalSet { .. }
+            | LocalTee { .. }
+            | GlobalGet { .. }
+            | GlobalSet { .. }
+            | BrTable { .. }
+            | Call { .. }
+            | CallIndirect { .. }
+            | I64SetCond { .. }
+            | I64SetCondZ { .. }
+            | I64Mul { .. }
+            | I64Shl { .. }
+            | I64ShrS { .. }
+            | I64ShrU { .. }
+            | I64Add { .. }
+            | I64Sub { .. }
+            | I64DivS { .. }
+            | I64DivU { .. }
+            | I64RemS { .. }
+            | I64RemU { .. }
+            | I64And { .. }
+            | I64Or { .. }
+            | I64Xor { .. }
+            | I64Rotl { .. }
+            | I64Rotr { .. }
+            | I64Clz { .. }
+            | I64Ctz { .. }
+            | I64Popcnt { .. }
+            | I64Eqz { .. }
+            | I64Eq { .. }
+            | I64Ne { .. }
+            | I64LtS { .. }
+            | I64LtU { .. }
+            | I64LeS { .. }
+            | I64LeU { .. }
+            | I64GtS { .. }
+            | I64GtU { .. }
+            | I64GeS { .. }
+            | I64GeU { .. }
+            | I64Const { .. }
+            | I64Ldr { .. }
+            | I64Str { .. }
+            | I64ExtendI32S { .. }
+            | I64ExtendI32U { .. }
+            | I64Extend8S { .. }
+            | I64Extend16S { .. }
+            | I64Extend32S { .. }
+            | I32WrapI64 { .. }
+            | F32Add { .. }
+            | F32Sub { .. }
+            | F32Mul { .. }
+            | F32Div { .. }
+            | F32Abs { .. }
+            | F32Neg { .. }
+            | F32Sqrt { .. }
+            | F32Ceil { .. }
+            | F32Floor { .. }
+            | F32Trunc { .. }
+            | F32Nearest { .. }
+            | F32Min { .. }
+            | F32Max { .. }
+            | F32Copysign { .. }
+            | F32Eq { .. }
+            | F32Ne { .. }
+            | F32Lt { .. }
+            | F32Le { .. }
+            | F32Gt { .. }
+            | F32Ge { .. }
+            | F32Const { .. }
+            | F32Load { .. }
+            | F32Store { .. }
+            | F32ConvertI32S { .. }
+            | F32ConvertI32U { .. }
+            | F32ConvertI64S { .. }
+            | F32ConvertI64U { .. }
+            | F32ReinterpretI32 { .. }
+            | I32ReinterpretF32 { .. }
+            | I32TruncF32S { .. }
+            | I32TruncF32U { .. }
+            | F64Add { .. }
+            | F64Sub { .. }
+            | F64Mul { .. }
+            | F64Div { .. }
+            | F64Abs { .. }
+            | F64Neg { .. }
+            | F64Sqrt { .. }
+            | F64Ceil { .. }
+            | F64Floor { .. }
+            | F64Trunc { .. }
+            | F64Nearest { .. }
+            | F64Min { .. }
+            | F64Max { .. }
+            | F64Copysign { .. }
+            | F64Eq { .. }
+            | F64Ne { .. }
+            | F64Lt { .. }
+            | F64Le { .. }
+            | F64Gt { .. }
+            | F64Ge { .. }
+            | F64Const { .. }
+            | F64Load { .. }
+            | F64Store { .. }
+            | F64ConvertI32S { .. }
+            | F64ConvertI32U { .. }
+            | F64ConvertI64S { .. }
+            | F64ConvertI64U { .. }
+            | F64PromoteF32 { .. }
+            | F64ReinterpretI64 { .. }
+            | I64ReinterpretF64 { .. }
+            | I64TruncF64S { .. }
+            | I64TruncF64U { .. }
+            | I32TruncF64S { .. }
+            | I32TruncF64U { .. }
+            | MveLoad { .. }
+            | MveStore { .. }
+            | MveConst { .. }
+            | MveAnd { .. }
+            | MveOrr { .. }
+            | MveEor { .. }
+            | MveMvn { .. }
+            | MveBic { .. }
+            | MveAddI { .. }
+            | MveSubI { .. }
+            | MveMulI { .. }
+            | MveNegI { .. }
+            | MveCmpEqI { .. }
+            | MveCmpNeI { .. }
+            | MveCmpLtS { .. }
+            | MveCmpLtU { .. }
+            | MveCmpGtS { .. }
+            | MveCmpGtU { .. }
+            | MveCmpLeS { .. }
+            | MveCmpLeU { .. }
+            | MveCmpGeS { .. }
+            | MveCmpGeU { .. }
+            | MveDup { .. }
+            | MveExtractLane { .. }
+            | MveInsertLane { .. }
+            | MveAddF32 { .. }
+            | MveSubF32 { .. }
+            | MveMulF32 { .. }
+            | MveNegF32 { .. }
+            | MveAbsF32 { .. }
+            | MveCmpEqF32 { .. }
+            | MveCmpNeF32 { .. }
+            | MveCmpLtF32 { .. }
+            | MveCmpLeF32 { .. }
+            | MveCmpGtF32 { .. }
+            | MveCmpGeF32 { .. }
+            | MveDupF32 { .. }
+            | MveExtractLaneF32 { .. }
+            | MveReplaceLaneF32 { .. }
+            | MveDivF32 { .. }
+            | MveSqrtF32 { .. } => false,
+        }
+    }
+
+    #[test]
+    fn reg_effect_rewrite_op_def_use_consistency() {
+        // Every modeled op: the two def/use views must agree (see module note).
+        for (label, op) in modeled_cases() {
+            assert!(
+                is_modeled(&op),
+                "{label}: in modeled_cases but is_modeled=false"
+            );
+            assert!(
+                reg_effect(&op).is_some(),
+                "{label}: modeled but reg_effect returned None"
+            );
+            assert_def_use_consistent(label, &op);
+        }
+        // A SAMPLE of NOT-modeled ops (not exhaustive): both layers must agree
+        // they're unmodeled (reg_effect=None), and the spec must say so. This
+        // spot-ties is_modeled to reality on the false side; the real assurance
+        // that the false side is complete is the careful 55-variant extraction
+        // behind `modeled_cases`, not this sample.
+        let unmodeled: Vec<(&str, ArmOp)> = vec![
+            ("Bx", ArmOp::Bx { rm: Reg::R0 }),
+            ("Bl", ArmOp::Bl { label: "f".into() }),
+            (
+                "I64Mul",
+                ArmOp::I64Mul {
+                    rd_lo: Reg::R0,
+                    rd_hi: Reg::R1,
+                    rn_lo: Reg::R2,
+                    rn_hi: Reg::R3,
+                    rm_lo: Reg::R4,
+                    rm_hi: Reg::R5,
+                },
+            ),
+        ];
+        for (label, op) in unmodeled {
+            assert!(
+                !is_modeled(&op),
+                "{label}: is_modeled=true for an unmodeled op"
+            );
+            assert!(
+                reg_effect(&op).is_none(),
+                "{label}: reg_effect models an op is_modeled says it doesn't"
+            );
+        }
+    }
+
     #[test]
     fn reg_effect_models_three_operand_alu() {
         let e = reg_effect(&ArmOp::Add {
