@@ -1250,6 +1250,77 @@ artifacts:
         criterion: t_lock << 887, handoff < 1661). All frozen fixtures stay
         bit-identical at every step.
 
+  - id: VCR-DEC-003
+    type: sw-req
+    title: "Decision: emit `synth-provenance-v1` branch-transformation map for witness MC/DC source-to-object reconciliation (#396, witness#130)"
+    description: >
+      witness (#396, PR witness#130 — reconciler + `witness object-disposition`
+      CLI landed AHEAD of synth) defines the contract synth must emit so MC/DC
+      coverage measured on the WASM can be reconciled against the object code
+      synth's branch folding/splitting actually produces. Schema
+      `synth-provenance-v1`: a list of entries
+      `{ func_index, instruction_offset, kind, count?, scry_evidence? }` where
+      `kind ∈ preserved | folded-predication | eliminated-constant |
+      split-into-object-branches`. witness's reconciler maps each to an
+      object-verdict: preserved/folded-predication → obligation-stands (WASM MC/DC
+      authoritative); eliminated-constant → justified-infeasible (carries optional
+      scry#51 evidence); split-into-object-branches → needs-object-coverage (N new
+      object obligations); an object branch witness never instrumented →
+      only-in-synth divergence (surfaced, not hidden). Output extends the
+      rivet-evidence schema as `witness-object-disposition-v1`.
+
+      FEASIBILITY — the join key ALREADY EXISTS in synth. witness keys by the WASM
+      `(func_index, byte_offset)` (from walrus `InstrLocId`); synth's decoder
+      records exactly this as the `op_offsets` side-table (VCR-DBG-001 step 1,
+      SWVER-016 — per-op WASM byte offset, parallel to ops, per function). No
+      decoder/manifest change is needed on either side; an if/else's two arms share
+      one WASM op offset (one `if` instruction), matching witness's intentionally
+      many-to-one join (emit one entry per WASM instruction, not per witness
+      branch-arm).
+
+      TAXONOMY maps cleanly onto synth's real transformations: folded-predication =
+      the cmp→select→IT fuse (VCR-SEL-004, SYNTH_CMP_SELECT_FUSE, default-on);
+      eliminated-constant = constant-condition guard elision (Opt-1a) carrying
+      scry#51 reachability evidence; split-into-object-branches = `br_table`
+      lowering (#508) and the i64 ops that expand one WASM branch into a multi-cmp/
+      branch object sequence (I64SetCond / I64Shl / I64DivU / …); preserved =
+      every 1:1 `br_if`.
+
+      ONE OPEN ITEM TO SETTLE BEFORE IMPLEMENTING (raised on #396): the offset
+      NORMALIZATION domain — synth's `op_offsets` are module-relative WASM byte
+      offsets (into the code section); witness's `InstrLocId` byte_offset must be
+      confirmed module-relative vs function-body-relative so the join is exact, not
+      off-by-a-function-header. Once witness confirms, the emitter is the
+      implementation milestone: thread a per-branch transformation label through
+      BOTH lowering paths (optimized `ir_to_arm` currently sets `source_line: None`
+      — provenance is dropped there today; the direct selector carries it) and
+      serialize `synth-provenance-v1` behind a CLI flag (frozen-safe: additive
+      output file, no `.text` change). NOT in scope for the contract-settling step;
+      tracked as the VCR-DBG/witness follow-up.
+    status: proposed
+    tags: [witness, mcdc, traceability, provenance, vcr-dbg, decision, integration]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: refines
+        target: VCR-DBG-001
+      - type: traces-to
+        target: synth:396
+      - type: traces-to
+        target: witness:130
+    fields:
+      req-type: constraint
+      priority: should
+      verification-criteria: >
+        Contract-settling step (this artifact): the `synth-provenance-v1` schema +
+        kind-taxonomy + join-key (op_offsets) are agreed with witness on #396, and
+        the offset-normalization domain is resolved. Implementation milestone
+        (separate): `witness object-disposition --manifest m.witness.json
+        --provenance synth-map.json` composes end-to-end on a shared fixture, with
+        each kind producing its specified object-verdict; the emitter is frozen-safe
+        (no frozen `.text` byte changes — control_step 0x00210A55, flight_algo
+        0x07FDF307).
+
   - id: VCR-PERF-001
     type: sw-req
     title: "Silicon-quantified gust hot-path size gap: 3.9× vs LLVM, per-pass attribution (gale #390)"
