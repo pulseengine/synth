@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-06-26
+
+**AAPCS stack-argument path: functions with >8 scalar i32 params/args now lower
+(#503).** The arm direct selector (`select_with_stack`, the shipped `--relocatable`
+path) used to **skip** — emit no code for — any function whose signature needs the
+AAPCS stack-argument path beyond a conservative cap: more than 8 scalar params, or
+a call passing more than 8 args. On the falcon flight component this dropped 3
+reachable helpers (a 10-param, a 25-param, and a 64-bit case) from the ELF, a
+completeness gap on the road to self-contained firmware.
+
+The incoming-param homing (`compute_local_layout` → `incoming_params`, offset
+`frame_size+24+(k-4)*4`) and the outgoing store (`emit_stack_args`, offset
+`(k-4)*4`) were already **generic in the index** — the `> 8` refusals were
+conservative, not load-bearing. This release lifts them and leans on the existing
+12-bit `[sp,#imm]` guards as the real Ok-or-Err backstop (a genuinely
+frame-too-large function still skips cleanly, never a silent miscompile). Functions
+with ≤8 i32 params/args never reach the lifted path, so existing output is
+**bit-identical** (frozen byte gate unchanged: control_step `0x00210A55`,
+flight_algo `0x07FDF307`).
+
+Scope: the **>8-scalar-i32** case only. The 64-bit stack-param case (AAPCS
+pair-alignment + back-fill) stays refused and is tracked as the #503 follow-up;
+its diagnostic now cites #503, not the closed #359. Validated by a new
+execution differential (`stack-args-503-oracle`): sum10, sum25 (reading param 24),
+a 10-arg outgoing call, and a combined incoming+outgoing function all run
+bit-identically to wasmtime under unicorn.
+
 ## [0.15.1] - 2026-06-24
 
 **Bug-fix: local promotion must never CAUSE a compile failure (#474).** v0.14.0
