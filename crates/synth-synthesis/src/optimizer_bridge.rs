@@ -290,6 +290,165 @@ pub struct OptimizationStats {
 }
 
 /// Optimizer bridge that integrates with synthesis pipeline
+/// Estimate the encoded byte size of a single optimized-path ARM instruction.
+///
+/// This MUST mirror the Thumb-2 encoder (`synth_backend::ArmEncoder::encode`)
+/// for every `ArmOp` the optimized path emits, because `ir_to_arm`'s
+/// branch-resolution pass sums these sizes to compute branch displacements: an
+/// under-estimate lands a forward branch short (the #483-class miscompile), an
+/// over-estimate lands it long. It is a *hand-maintained mirror* of the encoder
+/// only because synth-synthesis cannot depend on synth-backend (the encoder
+/// lives downstream), so the two cannot share one source of truth — the
+/// structural cause behind #498. The `estimator_encoder_agreement` oracle in
+/// synth-backend (which *can* see both) pins this mirror against the real
+/// encoder and documents every remaining divergence as a known gap.
+///
+/// Extracted verbatim from the inline `instr_byte_size` closure (#498, #242) so
+/// the agreement oracle can call it; the body is logic-identical to the
+/// pre-extraction closure.
+pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
+    use crate::rules::{Operand2, Reg};
+    // Helper to get register number
+    let reg_num = |r: &Reg| -> u8 {
+        match r {
+            Reg::R0 => 0,
+            Reg::R1 => 1,
+            Reg::R2 => 2,
+            Reg::R3 => 3,
+            Reg::R4 => 4,
+            Reg::R5 => 5,
+            Reg::R6 => 6,
+            Reg::R7 => 7,
+            Reg::R8 => 8,
+            Reg::R9 => 9,
+            Reg::R10 => 10,
+            Reg::R11 => 11,
+            Reg::R12 => 12,
+            Reg::SP => 13,
+            Reg::LR => 14,
+            Reg::PC => 15,
+        }
+    };
+
+    match op {
+        // SetCond: ITE + MOV #1 + MOV #0 = 2 + 2 + 2 = 6 bytes
+        ArmOp::SetCond { .. } => 6,
+        // SelectMove: IT + MOV = 2 + 2 = 4 bytes
+        ArmOp::SelectMove { .. } => 4,
+        // 32-bit Thumb-2 instructions (always 4 bytes)
+        ArmOp::Movw { .. } | ArmOp::Movt { .. } => 4,
+        // Register shifts and RSB are always 32-bit Thumb-2
+        ArmOp::LslReg { .. }
+        | ArmOp::LsrReg { .. }
+        | ArmOp::AsrReg { .. }
+        | ArmOp::RorReg { .. }
+        | ArmOp::Rsb { .. } => 4,
+        // MUL, MLS, SDIV, UDIV are always 32-bit Thumb-2
+        ArmOp::Mul { .. } | ArmOp::Mls { .. } | ArmOp::Sdiv { .. } | ArmOp::Udiv { .. } => 4,
+        // ADC, SBC are always 32-bit Thumb-2
+        ArmOp::Adc { .. } | ArmOp::Sbc { .. } => 4,
+        // CLZ, RBIT are always 32-bit Thumb-2
+        ArmOp::Clz { .. } | ArmOp::Rbit { .. } => 4,
+        // SXTB, SXTH, UXTB, UXTH can be 16-bit for low registers
+        ArmOp::Sxtb { rd, rm }
+        | ArmOp::Sxth { rd, rm }
+        | ArmOp::Uxtb { rd, rm }
+        | ArmOp::Uxth { rd, rm } => {
+            let rd_bits = reg_num(rd);
+            let rm_bits = reg_num(rm);
+            if rd_bits < 8 && rm_bits < 8 { 2 } else { 4 }
+        }
+        // I64SetCond: multi-instruction sequence (12 bytes for all conditions)
+        // EQ/NE: CMP(2) + IT EQ(2) + CMP(2) + ITE(2) + MOV(2) + MOV(2)
+        // LT/GT: CMP(2) + SBCS(4) + ITE(2) + MOV(2) + MOV(2)
+        ArmOp::I64SetCond { .. } => 12,
+        // I64SetCondZ: ORR.W(4) + CMP(2) + ITE(2) + MOV(2) + MOV(2)
+        ArmOp::I64SetCondZ { .. } => 12,
+        // I64Mul: MUL(4) + MLA(4) + UMULL(4) + ADD(2) = 14 bytes
+        ArmOp::I64Mul { .. } => 14,
+        // I64Shl/ShrU: AND.W(4) + SUBS.W(4) + BPL(2) + small_block(22) + B(2) + large_block(6) - but byte_size = total = 38
+        ArmOp::I64Shl { .. } | ArmOp::I64ShrU { .. } => 38,
+        // I64ShrS: same as ShrU but large block is 8 bytes (ASR+ASR vs LSR+MOV) = 40
+        ArmOp::I64ShrS { .. } => 40,
+        // I64Rotl/Rotr: PUSH(2) + AND(4) + SUBS(4) + BPL(2) + small_block(30) + B(2) + large_block(30) + POP(2) = 74 bytes
+        ArmOp::I64Rotl { .. } | ArmOp::I64Rotr { .. } => 74,
+        // I64Clz: CMP.W(4) + BEQ(2) + CLZ.W(4) + B(2) + NOP(2) + CLZ.W(4) + ADD.W(4) + MOV(2) = 24 bytes
+        ArmOp::I64Clz { .. } => 24,
+        // I64Ctz: CMP.W(4) + BEQ(2) + RBIT.W(4) + CLZ.W(4) + B(2) + NOP(2) + RBIT.W(4) + CLZ.W(4) + ADD.W(4) + MOV(2) = 32 bytes
+        ArmOp::I64Ctz { .. } => 32,
+        // I64Popcnt: large implementation with PUSH/POP and duplicate algorithm for lo and hi = ~180 bytes
+        ArmOp::I64Popcnt { .. } => 200,
+        // I64 sign extension: SXTB/SXTH/ASR + ASR = 4-8 bytes
+        ArmOp::I64Extend8S { .. } => 8,
+        ArmOp::I64Extend16S { .. } => 8,
+        ArmOp::I64Extend32S { .. } => 8,
+        // I64 division: PUSH + init + loop body + MOV + POP = ~80-150 bytes
+        ArmOp::I64DivU { .. } => 100,
+        ArmOp::I64RemU { .. } => 100,
+        // Signed versions have additional negation logic
+        ArmOp::I64DivS { .. } => 150,
+        ArmOp::I64RemS { .. } => 150,
+        // AND/OR/XOR: encoder always uses 32-bit Thumb-2 (.W) encoding
+        ArmOp::And { .. } | ArmOp::Orr { .. } | ArmOp::Eor { .. } => 4,
+        // LDR/STR with high base register or large offset need 32-bit
+        ArmOp::Ldr { rd, addr } => {
+            let rd_bits = reg_num(rd);
+            let base_bits = reg_num(&addr.base);
+            let offset = addr.offset as u32;
+            if rd_bits < 8 && base_bits < 8 && (offset & 0x3) == 0 && offset <= 124 {
+                2
+            } else {
+                4
+            }
+        }
+        ArmOp::Str { rd, addr } => {
+            let rd_bits = reg_num(rd);
+            let base_bits = reg_num(&addr.base);
+            let offset = addr.offset as u32;
+            if rd_bits < 8 && base_bits < 8 && (offset & 0x3) == 0 && offset <= 124 {
+                2
+            } else {
+                4
+            }
+        }
+        // #483: half/byte loads and stores. The optimized path always
+        // materializes a memory access against a HIGH base register
+        // (`ip`/r12 for a const address, r11 for the base-CSE linmem
+        // anchor), so the encoder always emits the 32-bit `.w` form — the
+        // 16-bit Thumb T1 encoding (low base + small aligned offset) is
+        // never produced here. Sizing these as the default 2 (the bug)
+        // drifts `byte_offsets` and miscompiles any branch that spans the
+        // access (the i32.store16 in the #483 `block`/`br_if` repro).
+        ArmOp::Strh { .. }
+        | ArmOp::Strb { .. }
+        | ArmOp::Ldrh { .. }
+        | ArmOp::Ldrsh { .. }
+        | ArmOp::Ldrb { .. }
+        | ArmOp::Ldrsb { .. } => 4,
+        // BL is always 32-bit
+        ArmOp::Bl { .. } => 4,
+        // MOV with high register (R8-R15) or large immediate needs MOVW (4 bytes)
+        ArmOp::Mov {
+            rd,
+            op2: Operand2::Imm(v),
+        } if reg_num(rd) > 7 || *v > 255 || *v < 0 => 4,
+        ArmOp::Mov { .. } => 2,
+        // SUB/ADD with high registers need 32-bit encoding
+        ArmOp::Sub {
+            rd,
+            rn,
+            op2: Operand2::Reg(rm),
+        } if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 => 4,
+        ArmOp::Add {
+            rd,
+            rn,
+            op2: Operand2::Reg(rm),
+        } if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 => 4,
+        // Most 16-bit Thumb instructions (MOV low, CMP low, B, etc.)
+        _ => 2,
+    }
+}
+
 pub struct OptimizerBridge {
     config: OptimizationConfig,
     /// Number of imported functions (wasm function indices `< num_imports` are
@@ -5263,158 +5422,17 @@ impl OptimizerBridge {
         // Calculate byte offsets for each instruction to handle variable-length
         // Thumb-2 encoding (SetCond = 6 bytes, most others = 2 bytes).
 
-        // Helper to estimate instruction byte size
-        // Must match the encoder's behavior for correct branch offset calculation
-        // Helper to get register number
-        let reg_num = |r: &Reg| -> u8 {
-            match r {
-                Reg::R0 => 0,
-                Reg::R1 => 1,
-                Reg::R2 => 2,
-                Reg::R3 => 3,
-                Reg::R4 => 4,
-                Reg::R5 => 5,
-                Reg::R6 => 6,
-                Reg::R7 => 7,
-                Reg::R8 => 8,
-                Reg::R9 => 9,
-                Reg::R10 => 10,
-                Reg::R11 => 11,
-                Reg::R12 => 12,
-                Reg::SP => 13,
-                Reg::LR => 14,
-                Reg::PC => 15,
-            }
-        };
-
-        let instr_byte_size = |op: &ArmOp| -> usize {
-            match op {
-                // SetCond: ITE + MOV #1 + MOV #0 = 2 + 2 + 2 = 6 bytes
-                ArmOp::SetCond { .. } => 6,
-                // SelectMove: IT + MOV = 2 + 2 = 4 bytes
-                ArmOp::SelectMove { .. } => 4,
-                // 32-bit Thumb-2 instructions (always 4 bytes)
-                ArmOp::Movw { .. } | ArmOp::Movt { .. } => 4,
-                // Register shifts and RSB are always 32-bit Thumb-2
-                ArmOp::LslReg { .. }
-                | ArmOp::LsrReg { .. }
-                | ArmOp::AsrReg { .. }
-                | ArmOp::RorReg { .. }
-                | ArmOp::Rsb { .. } => 4,
-                // MUL, MLS, SDIV, UDIV are always 32-bit Thumb-2
-                ArmOp::Mul { .. } | ArmOp::Mls { .. } | ArmOp::Sdiv { .. } | ArmOp::Udiv { .. } => {
-                    4
-                }
-                // ADC, SBC are always 32-bit Thumb-2
-                ArmOp::Adc { .. } | ArmOp::Sbc { .. } => 4,
-                // CLZ, RBIT are always 32-bit Thumb-2
-                ArmOp::Clz { .. } | ArmOp::Rbit { .. } => 4,
-                // SXTB, SXTH, UXTB, UXTH can be 16-bit for low registers
-                ArmOp::Sxtb { rd, rm }
-                | ArmOp::Sxth { rd, rm }
-                | ArmOp::Uxtb { rd, rm }
-                | ArmOp::Uxth { rd, rm } => {
-                    let rd_bits = reg_num(rd);
-                    let rm_bits = reg_num(rm);
-                    if rd_bits < 8 && rm_bits < 8 { 2 } else { 4 }
-                }
-                // I64SetCond: multi-instruction sequence (12 bytes for all conditions)
-                // EQ/NE: CMP(2) + IT EQ(2) + CMP(2) + ITE(2) + MOV(2) + MOV(2)
-                // LT/GT: CMP(2) + SBCS(4) + ITE(2) + MOV(2) + MOV(2)
-                ArmOp::I64SetCond { .. } => 12,
-                // I64SetCondZ: ORR.W(4) + CMP(2) + ITE(2) + MOV(2) + MOV(2)
-                ArmOp::I64SetCondZ { .. } => 12,
-                // I64Mul: MUL(4) + MLA(4) + UMULL(4) + ADD(2) = 14 bytes
-                ArmOp::I64Mul { .. } => 14,
-                // I64Shl/ShrU: AND.W(4) + SUBS.W(4) + BPL(2) + small_block(22) + B(2) + large_block(6) - but byte_size = total = 38
-                ArmOp::I64Shl { .. } | ArmOp::I64ShrU { .. } => 38,
-                // I64ShrS: same as ShrU but large block is 8 bytes (ASR+ASR vs LSR+MOV) = 40
-                ArmOp::I64ShrS { .. } => 40,
-                // I64Rotl/Rotr: PUSH(2) + AND(4) + SUBS(4) + BPL(2) + small_block(30) + B(2) + large_block(30) + POP(2) = 74 bytes
-                ArmOp::I64Rotl { .. } | ArmOp::I64Rotr { .. } => 74,
-                // I64Clz: CMP.W(4) + BEQ(2) + CLZ.W(4) + B(2) + NOP(2) + CLZ.W(4) + ADD.W(4) + MOV(2) = 24 bytes
-                ArmOp::I64Clz { .. } => 24,
-                // I64Ctz: CMP.W(4) + BEQ(2) + RBIT.W(4) + CLZ.W(4) + B(2) + NOP(2) + RBIT.W(4) + CLZ.W(4) + ADD.W(4) + MOV(2) = 32 bytes
-                ArmOp::I64Ctz { .. } => 32,
-                // I64Popcnt: large implementation with PUSH/POP and duplicate algorithm for lo and hi = ~180 bytes
-                ArmOp::I64Popcnt { .. } => 200,
-                // I64 sign extension: SXTB/SXTH/ASR + ASR = 4-8 bytes
-                ArmOp::I64Extend8S { .. } => 8,
-                ArmOp::I64Extend16S { .. } => 8,
-                ArmOp::I64Extend32S { .. } => 8,
-                // I64 division: PUSH + init + loop body + MOV + POP = ~80-150 bytes
-                ArmOp::I64DivU { .. } => 100,
-                ArmOp::I64RemU { .. } => 100,
-                // Signed versions have additional negation logic
-                ArmOp::I64DivS { .. } => 150,
-                ArmOp::I64RemS { .. } => 150,
-                // AND/OR/XOR: encoder always uses 32-bit Thumb-2 (.W) encoding
-                ArmOp::And { .. } | ArmOp::Orr { .. } | ArmOp::Eor { .. } => 4,
-                // LDR/STR with high base register or large offset need 32-bit
-                ArmOp::Ldr { rd, addr } => {
-                    let rd_bits = reg_num(rd);
-                    let base_bits = reg_num(&addr.base);
-                    let offset = addr.offset as u32;
-                    if rd_bits < 8 && base_bits < 8 && (offset & 0x3) == 0 && offset <= 124 {
-                        2
-                    } else {
-                        4
-                    }
-                }
-                ArmOp::Str { rd, addr } => {
-                    let rd_bits = reg_num(rd);
-                    let base_bits = reg_num(&addr.base);
-                    let offset = addr.offset as u32;
-                    if rd_bits < 8 && base_bits < 8 && (offset & 0x3) == 0 && offset <= 124 {
-                        2
-                    } else {
-                        4
-                    }
-                }
-                // #483: half/byte loads and stores. The optimized path always
-                // materializes a memory access against a HIGH base register
-                // (`ip`/r12 for a const address, r11 for the base-CSE linmem
-                // anchor), so the encoder always emits the 32-bit `.w` form — the
-                // 16-bit Thumb T1 encoding (low base + small aligned offset) is
-                // never produced here. Sizing these as the default 2 (the bug)
-                // drifts `byte_offsets` and miscompiles any branch that spans the
-                // access (the i32.store16 in the #483 `block`/`br_if` repro).
-                ArmOp::Strh { .. }
-                | ArmOp::Strb { .. }
-                | ArmOp::Ldrh { .. }
-                | ArmOp::Ldrsh { .. }
-                | ArmOp::Ldrb { .. }
-                | ArmOp::Ldrsb { .. } => 4,
-                // BL is always 32-bit
-                ArmOp::Bl { .. } => 4,
-                // MOV with high register (R8-R15) or large immediate needs MOVW (4 bytes)
-                ArmOp::Mov {
-                    rd,
-                    op2: Operand2::Imm(v),
-                } if reg_num(rd) > 7 || *v > 255 || *v < 0 => 4,
-                ArmOp::Mov { .. } => 2,
-                // SUB/ADD with high registers need 32-bit encoding
-                ArmOp::Sub {
-                    rd,
-                    rn,
-                    op2: Operand2::Reg(rm),
-                } if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 => 4,
-                ArmOp::Add {
-                    rd,
-                    rn,
-                    op2: Operand2::Reg(rm),
-                } if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 => 4,
-                // Most 16-bit Thumb instructions (MOV low, CMP low, B, etc.)
-                _ => 2,
-            }
-        };
+        // Estimate instruction byte sizes via the shared `estimate_arm_byte_size`
+        // (extracted from the former inline closure, #498/#242). Must match the
+        // encoder's behavior for correct branch offset calculation; the
+        // `estimator_encoder_agreement` oracle in synth-backend pins it.
 
         // Build byte offset table: byte_offsets[i] = byte position of instruction i
         let mut byte_offsets: Vec<usize> = Vec::with_capacity(arm_instrs.len() + 1);
         let mut current_offset = 0usize;
         for op in &arm_instrs {
             byte_offsets.push(current_offset);
-            current_offset += instr_byte_size(op);
+            current_offset += estimate_arm_byte_size(op);
         }
         byte_offsets.push(current_offset); // End marker for target lookups
 
