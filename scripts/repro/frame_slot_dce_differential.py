@@ -14,14 +14,14 @@ passes attack it, both behind `SYNTH_STACK_FWD=1`:
 On flat_flight's `flight_algo` this cuts sp-relative memory traffic 20→7 (9 loads
 forwarded, 4 dead stores removed) and 139→135 instructions.
 
-This is byte-CHANGING codegen, so the flag ships DEFAULT-OFF (off ⇒ byte-identical;
-the frozen differential hashes enforce it on the shipped --relocatable path). This
-harness is the correctness oracle for the flag-ON path: it compiles flat_flight
-with `SYNTH_STACK_FWD=1`, runs each export under unicorn (UC_ARCH_ARM / Thumb) with
-linear memory seeded exactly as wasmtime's, and asserts the returned value is
-bit-identical to wasmtime ground truth across several sensor inputs. It also
-asserts the flag-OFF `.text` is byte-identical to a flag-never-read build (the
-frozen-safety half) and reports the instruction-count reduction.
+As of the #242 feature loop both passes are DEFAULT-ON (the win lands on the
+shipped --relocatable path); `SYNTH_NO_STACK_FWD=1` is the opt-out. This harness is
+the correctness oracle for the flip: it compiles flat_flight in BOTH configs, runs
+flight_algo under unicorn (UC_ARCH_ARM / Thumb) with linear memory seeded exactly
+as wasmtime's, and asserts the returned value is bit-identical to wasmtime ground
+truth in BOTH the default and the opt-out path across several sensor inputs (a
+default flip is only safe if the shipped path AND its rollback both match). It also
+asserts the two configs emit DIFFERENT bytes (proof the flip is engaged).
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python scripts/repro/frame_slot_dce_differential.py
@@ -78,9 +78,11 @@ CASES = [
 
 
 def compile_flat(out, fwd):
+    # `fwd` True  = the shipped DEFAULT (stack-fwd + frame-slot DCE on);
+    #       False = the SYNTH_NO_STACK_FWD opt-out (frame-resident, pre-flip bytes).
     env = {"PATH": "/usr/bin:/bin"}
-    if fwd:
-        env["SYNTH_STACK_FWD"] = "1"
+    if not fwd:
+        env["SYNTH_NO_STACK_FWD"] = "1"
     r = subprocess.run(
         [SYNTH, "compile", str(WAT), "-o", out, "-b", "arm",
          "--target", "cortex-m4", "--all-exports"],
@@ -151,30 +153,34 @@ def main():
     off_code, off_base, off_syms = load(off)
     on_code, on_base, on_syms = load(on)
 
-    # Frozen-safety half: a second flag-off build must be byte-identical.
-    compile_flat("/tmp/fsdce_off2.elf", fwd=False)
-    off2_code, _, _ = load("/tmp/fsdce_off2.elf")
-    if off_code != off2_code:
-        print("FAIL: flag-off .text is not deterministic/byte-identical")
+    # The DEFAULT (fwd-on) and the opt-out (fwd-off) must produce DIFFERENT bytes
+    # — proof the flip is actually engaged in the shipped default — yet identical
+    # RESULTS. (If these match, the default isn't doing anything.)
+    if off_code == on_code:
+        print("FAIL: default and SYNTH_NO_STACK_FWD opt-out emit identical bytes "
+              "— the flip is not engaged")
         sys.exit(1)
-    print("OK  flag-off .text byte-identical across builds")
+    print("OK  default vs SYNTH_NO_STACK_FWD opt-out: bytes differ (flip engaged)")
 
     fails = 0
     # flight_algo is the optimization target — the only export with frame-slot
     # traffic the passes touch (DCE fires 4× there, 0× on the others) and the one
-    # with a clean (i32 state_ptr, i32 sensor_ptr) -> i32 ABI to drive here. The
-    # flag-off byte-identity check above covers the whole module's bytes.
+    # with a clean (i32 state_ptr, i32 sensor_ptr) -> i32 ABI to drive here.
+    # Correctness must hold in BOTH configs (default and opt-out) — a default flip
+    # is only safe if the shipped path AND its rollback both match wasmtime.
     exports = [e for e in ("flight_algo",) if e in on_syms]
-    for fn in exports:
-        for st, s in CASES:
-            gt = wasmtime_run(fn, st, s)
-            got = unicorn_run(on_code, on_base, on_syms[fn], st, s)
-            ok = isinstance(got, int) and got == gt
-            if not ok:
-                fails += 1
-            tag = f"0x{got:08X}" if isinstance(got, int) else got
-            print(f"{'OK  ' if ok else 'FAIL'} {fn:16} fwd-on = {tag} "
-                  f"(wasmtime 0x{gt:08X})")
+    for label, (code, base, syms) in (("default", (on_code, on_base, on_syms)),
+                                      ("opt-out", (off_code, off_base, off_syms))):
+        for fn in exports:
+            for st, s in CASES:
+                gt = wasmtime_run(fn, st, s)
+                got = unicorn_run(code, base, syms[fn], st, s)
+                ok = isinstance(got, int) and got == gt
+                if not ok:
+                    fails += 1
+                tag = f"0x{got:08X}" if isinstance(got, int) else got
+                print(f"{'OK  ' if ok else 'FAIL'} {fn:14} {label:8} = {tag} "
+                      f"(wasmtime 0x{gt:08X})")
 
     print(f"\n.text instructions: off={insn_count(off_code)} "
           f"on={insn_count(on_code)} "
