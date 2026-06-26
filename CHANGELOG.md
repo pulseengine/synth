@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-06-26
+
+**Stack-reload forwarding + frame-slot dead-store elimination now default-on
+(#242).** Two paired frame-traffic passes that shipped flag-off (#514/#515) are
+flipped to default-on, the next step toward native parity (VCR-RA / epic #242).
+synth lowers every wasm local to a frame slot, so `local.set; local.get` emits
+`str rX,[sp,#N]; … ; ldr rY,[sp,#N]`. `forward_stack_reloads` rewrites the reload
+to `mov rY,rX` when `rX` still holds the value; `eliminate_dead_frame_stores` then
+removes the `str` once its slot is overwritten-before-read (a dead store the
+register-def-based DCE cannot see).
+
+The win lands on the **shipped `--relocatable` path** (the post-passes run on the
+direct selector's output): flight_seam `774→738 B`, flight_seam_flat `910→878 B`;
+control_step and all RISC-V output **unchanged** (ARM-only, m4 and m7 identically).
+RESULTS are bit-identical — control_step `0x00210A55` (13/13), flat and inlined
+flight_algo `0x07FDF307` — re-verified against wasmtime in both the default and the
+`SYNTH_NO_STACK_FWD=1` opt-out path.
+
+Gated like the cmp→select (v0.13.0) and local-promotion (v0.14.0) flips: frozen
+goldens re-frozen, an escape-hatch gate asserts `SYNTH_NO_STACK_FWD=1` restores the
+pre-flip bytes byte-for-byte, the execution differential runs both configs, and
+`cargo test --workspace` is green under the new default. Soundness is overwrite-only
+(a store is dead only when a later store to the same immediate slot overwrites it
+with no intervening read), with sub-word `[sp]` accesses treated as blockers.
+
+This is an instruction/memory-op reduction (flight_algo sp-traffic `20→7`,
+`139→135` instructions); the measured cycle number is confirmed on G474RE silicon
+post-ship. `SYNTH_NO_STACK_FWD=1` restores the prior lowering. const-CSE
+(`SYNTH_CONST_CSE`) remains flag-off.
+
 ## [0.16.0] - 2026-06-26
 
 **AAPCS stack-argument path: functions with >8 scalar i32 params/args now lower
