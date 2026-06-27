@@ -767,6 +767,20 @@ artifacts:
       with no i64 param are byte-identical by construction (the frozen anchors carry
       no i64 params), so the fix is frozen-safe on flip. Byte-changing, silicon-
       gated — its own gated session, never an idle tick.
+      CROSS-BACKEND CONTRAST (2026-06-27, measured): the SAME root cause is SILENT
+      on ARM but LOUD-SKIPPED on RISC-V. The RV32 selector validates the operand-
+      stack TYPE before lowering an i64 op, so an i64 param reaching `I64Add` as an
+      i32 operand trips `stack type mismatch ... expected i64, found i32` → typed
+      `Err` → `warning: skipping function …` + absent symbol (the #378/#180/#185
+      never-guess Ok-or-Err contract as the honest-fail backstop ARM's
+      `select_with_stack` LACKS for i64 params). So on this class RV32 is INCOMPLETE
+      (cannot yet compile i64-param functions) but SOUND (no silent wrong-code),
+      while ARM is COMPLETE-but-UNSOUND until the gated fix — the precise
+      VCR-SEL-005 parity shape (ARM lowers X; RV32 loud-declines X). Pinned by
+      `scripts/repro/i64_param_518_riscv_loudskip.py` (all 7 i64-param fns
+      loud-skipped, i32 control emitted): a regression removing the RV32 stack-type
+      guard would flip a loud-skip into a silent miscompile, which the oracle
+      catches.
     status: approved
     tags: [oracle, differential, coverage, mcdc, validation, track-c, riscv]
     links:
