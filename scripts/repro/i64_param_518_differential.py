@@ -73,11 +73,18 @@ CASES = [
     ("t_sub", [(100,)], "i64"),
     ("t_or", [(0x8,)], "i64"),
     ("t_mixed", [(3, 10)], "i32,i64"),
+    # AAPCS i64-param register-assignment matrix — the even-aligned-pair vs
+    # sequential-index distinction the fix's mapping logic must get right.
+    ("t_ii_add", [(7, 5)], "i64,i64"),          # p0=R0:R1, p1=R2:R3
+    ("t_ii_add", [(0xFFFFFFFF, 1)], "i64,i64"),
+    ("t_i64_i32", [(10, 3)], "i64,i32"),        # p0=R0:R1, p1=R2
+    ("t_snd_i64", [(100, 40)], "i64,i64"),      # reads only p1=R2:R3
     ("t_i32", [(7,)], "i32"),
 ]
 # functions whose result is i64 (read R0:R1) vs i32 (read R0 only)
-I64_RESULT = {"t_add", "t_sub", "t_or", "t_mixed"}
-I64_PARAM_FNS = {"t_add", "t_sub", "t_or", "t_mixed"}
+I64_RESULT = {"t_add", "t_sub", "t_or", "t_mixed",
+              "t_ii_add", "t_i64_i32", "t_snd_i64"}
+I64_PARAM_FNS = I64_RESULT
 
 
 def wasmtime_run(fn, args):
@@ -161,11 +168,14 @@ def run_path(label, relocatable):
     code, base, syms = load(out)
     print(f"\n=== {label} path ===")
     divergences = 0
+    control_ok = True
     for fn, args, sig in CASES:
         faddr = syms.get(fn)
         if faddr is None:
             print(f"  {fn}: SYMBOL MISSING")
             divergences += 1
+            if fn not in I64_PARAM_FNS:
+                control_ok = False
             continue
         exp = wasmtime_run(fn, args[0])
         got = unicorn_run(code, base, faddr, args, sig, fn in I64_RESULT)
@@ -173,26 +183,30 @@ def run_path(label, relocatable):
         flag = "ok " if match else "BUG"
         if not match:
             divergences += 1
+            if fn not in I64_PARAM_FNS:  # an i32-control regression is a real fail
+                control_ok = False
         print(f"  [{flag}] {fn}{args[0]} -> {got}  (wasmtime {exp})"
-              + ("" if match else f"  [MISCOMPILE: off by hi/param]"))
-    return divergences
+              + ("" if match else "  [MISCOMPILE: off by hi/param]"))
+    return divergences, control_ok
 
 
 def main():
-    opt_div = run_path("OPTIMIZED (--target cortex-m4)", relocatable=False)
-    rel_div = run_path("DIRECT (--relocatable)", relocatable=True)
+    opt_div, opt_ctrl = run_path("OPTIMIZED (--target cortex-m4)", relocatable=False)
+    rel_div, rel_ctrl = run_path("DIRECT (--relocatable)", relocatable=True)
 
     print("\n--- characterization verdict ---")
     # The i32 control must ALWAYS match; only i64-param fns are allowed to diverge
     # while the bug is live. So a "healthy" buggy state = both paths diverge on
-    # >=1 i64-param fn AND neither diverges on t_i32.
+    # >=1 i64-param fn AND neither breaks the i32 control.
     if EXPECT_MISCOMPILE:
-        ok = opt_div > 0 and rel_div > 0
-        print(f"opt divergences={opt_div}  direct divergences={rel_div}")
+        ok = opt_div > 0 and rel_div > 0 and opt_ctrl and rel_ctrl
+        print(f"opt divergences={opt_div} (control_ok={opt_ctrl})  "
+              f"direct divergences={rel_div} (control_ok={rel_ctrl})")
         if ok:
             print("RESULT: PASS — #518 reproduces on BOTH paths exactly as the "
-                  "root-cause documents (i64 param dropped/high-half clobbered; "
-                  "i32 control correct). Oracle ready for the gated fix.")
+                  "root-cause documents (i64 param dropped/high-half clobbered "
+                  "across the full single/dual/even-aligned matrix; i32 control "
+                  "correct). Oracle ready for the gated fix.")
             sys.exit(0)
         print("RESULT: FAIL — reality diverged from the documented #518 root "
               "cause (a path no longer miscompiles, or the i32 control broke). "
