@@ -72,5 +72,7 @@ gimli = { version = "0.33", default-features = false, features = ["read", "std"]
 # Tracks scry 2.x (SCPV v3): the major bump reshaped the provenance wire format,
 # but synth's consumed surface (call_graph / function_summaries / stack_usage /
 # reachable_from_exports / operand_stack) is unchanged and additive-only, so the
-# bump is transparent here. See scry#63 / scry v2.0.0.
+# bump is transparent here. See scry#63 / scry v2.0.0. Empirically re-verified
+# against scry v2.3.0 (2026-06-27, lockfile bumped) — scry_shadow_stack_budget
+# stays GREEN, so the "transparent" claim is tested, not just asserted.
 scry-sai-core = "2.0"
