@@ -681,16 +681,28 @@ artifacts:
       flags exhaustion via a Cell and DECLINES the whole function to the direct
       selector (which spills), gated by `r12_spill_496_differential.py` (both
       silicon fixtures, default path, execute == wasmtime). #503 RESOLVED + SHIPPED
-      v0.16.0 (PR #504, `8e917a2`): the SHIPPED `--relocatable` direct selector
-      SKIPPED functions needing the AAPCS stack-arg path beyond a conservative cap
-      (>8 scalar params, or a call passing >8 args) — 3 falcon helpers dropped; the
+      v0.16.0 (PR #504, `8e917a2`) — but only its >8-SCALAR sub-case; #503 the ISSUE
+      STAYS OPEN for the 64-bit-stack-param sub-case. The SHIPPED `--relocatable`
+      direct selector SKIPPED functions needing the AAPCS stack-arg path beyond a
+      conservative cap (>8 scalar params, or a call passing >8 args) — the
       incoming/outgoing stack-arg machinery was already generic, so the fix lifts
-      the `>8` caps and leans on the existing 12-bit `[sp,#imm]` guards, unblocking
-      2 of 3 (func_57/58); the 64-bit stack-param case stays refused. Gated by
+      the `>8` caps and leans on the existing 12-bit `[sp,#imm]` guards. Gated by
       `stack_args_503_differential.py` (sum10/sum25-reading-param-24/outgoing/
-      combined, all == wasmtime). This is the first SHIPPED-path member of the
-      cluster, hence the v0.16.0 minor (the optimized-path-only #490/#483/#496/#507
-      ride along, no individual tags). #507 RESOLVED (PR #508, `ed3e48c`): the
+      combined, all == wasmtime) — the standalone >8-i32 capability is confirmed.
+      FALCON RESULT CORRECTED (gale-verified v0.16.0 @ `4a6b1ef`, 2026-06-26):
+      this unblocked **0 of the 3** named falcon helpers, NOT the "2 of 3" an
+      earlier optimistic note here claimed — all three carry i64, so lifting the
+      >8-scalar cap only EXPOSED their true blocker (the earlier "10 params / 25
+      params" labels were the scalar check tripping FIRST and masking the i64
+      signature). `func_57` `(…i64 i64 i64)` + `func_163` `(i32 i64 i64 i64 i64)`
+      hit the 64-bit-stack-param case #503 stays open for; `func_58` hits a
+      DISTINCT wall — i64-register-pair allocation (no high register free for the
+      R8 pair), #242/regalloc territory, NOT the stack-arg path. falcon skip count
+      29/145 unchanged from 0.15.1 until the 64-bit-stack-param piece + the i64-pair
+      allocation both land. jess v0.6.0 correctly lists #503 as a still-open v0.7.0
+      supplier pole. This is the first SHIPPED-path member of the cluster, hence the
+      v0.16.0 minor (the optimized-path-only #490/#483/#496/#507 ride along, no
+      individual tags). #507 RESOLVED (PR #508, `ed3e48c`): the
       optimized path DROPPED `br_table` during wasm→IR (no `cmp`, selector never
       loaded → all arms fell through); since the drop precedes `ir_to_arm`, the fix
       detects `br_table` on the RAW wasm op stream in `arm_backend` and forces the
