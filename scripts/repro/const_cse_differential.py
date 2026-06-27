@@ -28,6 +28,11 @@ negatives and zero), THEN asserts no function grew flag-on vs flag-off. Covered
 shapes (see the .wat header): large/small/negative/mixed consts, reuse ACROSS an
 if/else (cache must reset), and a 12-live-local function that forces real spills.
 
+It also runs a DIRECT-PATH (`--relocatable`) gate on `const_cse_direct.wat` —
+the path gale's gust_mix regression lived on, where only the post-hoc pass
+runs — asserting CSE actually fires there, stays bit-identical to wasmtime,
+and never grows a function (non-vacuous: fails if the fixture stops firing).
+
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python scripts/repro/const_cse_differential.py
 Exits nonzero on any value mismatch OR any function that grew under const-CSE.
@@ -49,25 +54,31 @@ from unicorn.arm_const import (
 )
 
 WAT = Path(__file__).with_name("const_cse.wat")
+# Direct-path (`--relocatable`) trigger fixtures — shapes that make the DIRECT
+# selector emit the redundant const materialization `apply_const_cse` dedups, so
+# the direct-path gate actually exercises gale's path (single-param, reloc-free →
+# runnable under unicorn). See its header.
+WAT_DIRECT = Path(__file__).with_name("const_cse_direct.wat")
+DIRECT_EXPORTS = ["r1", "r2", "rneg"]
 SYNTH = os.environ.get("SYNTH", "./target/release/synth")
 CODE, STK, RET = 0x100000, 0x900000, 0x300000
 EXPORTS = ["large3", "small3", "neg", "mixed", "ctrl", "spill12"]
 INPUTS = [5, 0, -3, 1000, -100000, 7]
 
 
-def wasmtime_run(fn, arg):
+def wasmtime_run(fn, arg, wat=WAT):
     engine = wasmtime.Engine()
-    module = wasmtime.Module.from_file(engine, str(WAT))
+    module = wasmtime.Module.from_file(engine, str(wat))
     store = wasmtime.Store(engine)
     inst = wasmtime.Instance(store, module, [])
     return inst.exports(store)[fn](store, arg)
 
 
-def compile_optimized(out, cse_on, relocatable=False):
+def compile_optimized(out, cse_on, relocatable=False, wat=WAT):
     env = {"PATH": "/usr/bin:/bin"}
     if cse_on:
         env["SYNTH_CONST_CSE"] = "1"
-    cmd = [SYNTH, "compile", str(WAT), "-o", out, "-b", "arm",
+    cmd = [SYNTH, "compile", str(wat), "-o", out, "-b", "arm",
            "--target", "cortex-m4", "--all-exports"]
     if relocatable:
         cmd.append("--relocatable")
@@ -165,34 +176,59 @@ def main():
             print(f"OK      {fn}: {o} -> {n} B ({tag})")
     fails += grew
 
-    # --relocatable NO-REGRESSION GATE (#242). gale's gust_mix 90→92 B regression
-    # was on `--relocatable`, which routes through `select_direct()` — there the
-    # INLINE const cache never runs, so the post-hoc `apply_const_cse` acts ALONE.
-    # This is the precise path of the bug; the optimized-path gate above does not
-    # exercise it (inline aliasing dominates there). We compile the corpus on the
-    # direct path flag-on vs flag-off and assert no function grows. NOTE: post-hoc
-    # CSE is currently INERT on this corpus (the direct selector does not emit the
-    # redundant same-value-in-two-registers shape these arithmetic fixtures would
-    # need) — so this gate is, for now, a tripwire that will light up the moment a
-    # fixture that DOES trigger it (e.g. gale's gust_mix Q8 clamp mixer) is added.
-    print("\n--- per-function no-regression gate, --relocatable / direct path (#242) ---")
-    roff, ron = "/tmp/const_cse_reloc_off.o", "/tmp/const_cse_reloc_on.o"
-    compile_optimized(roff, cse_on=False, relocatable=True)
-    compile_optimized(ron, cse_on=True, relocatable=True)
-    _, _, _, roff_sizes = load(roff)
-    _, _, _, ron_sizes = load(ron)
-    rgrew, rfired = 0, 0
-    for fn in sorted(set(roff_sizes) & set(ron_sizes)):
-        o, n = roff_sizes[fn], ron_sizes[fn]
+    # --relocatable DIRECT-PATH GATE (#242) — the precise path of gale's gust_mix
+    # 90→92 B regression. `--relocatable` routes through `select_direct()`, where
+    # the INLINE const cache never runs, so the post-hoc `apply_const_cse` acts
+    # ALONE; the optimized-path gate above does not exercise this (inline aliasing
+    # dominates there). The main `const_cse.wat` corpus is INERT on this path (its
+    # shapes don't make the direct selector emit the redundant same-value-in-two-
+    # registers materialization apply_const_cse dedups), so it gave no positive
+    # evidence. `const_cse_direct.wat` DOES trigger it. This gate is NON-VACUOUS:
+    # it asserts (a) CSE actually fires on ≥1 function (else the gate has gone
+    # blind — fail), (b) no function grows (the no-regression property on gale's
+    # path), and (c) every result is bit-identical to wasmtime under unicorn
+    # (correctness of post-hoc CSE on the direct selector's output).
+    print("\n--- direct-path (--relocatable) gate, const_cse_direct.wat (#242) ---")
+    doff, don = "/tmp/const_cse_direct_off.o", "/tmp/const_cse_direct_on.o"
+    compile_optimized(doff, cse_on=False, relocatable=True, wat=WAT_DIRECT)
+    compile_optimized(don, cse_on=True, relocatable=True, wat=WAT_DIRECT)
+    d_off_code, d_off_base, _, d_off_sizes = load(doff)
+    d_on_code, d_on_base, d_on_syms, d_on_sizes = load(don)
+    dgrew, dfired = 0, 0
+    for fn in DIRECT_EXPORTS:
+        o, n = d_off_sizes.get(fn), d_on_sizes.get(fn)
+        if o is None or n is None:
+            continue
         if n > o:
-            rgrew += 1
+            dgrew += 1
             print(f"REGRESS {fn}: {o} -> {n} B (+{n - o}) — const-CSE grew a function")
         elif n < o:
-            rfired += 1
-            print(f"OK      {fn}: {o} -> {n} B (-{o - n}) — CSE fired")
-    if rfired == 0:
-        print(f"(post-hoc CSE inert on this corpus — {len(roff_sizes)} fns, none changed)")
-    fails += rgrew
+            dfired += 1
+            print(f"OK      {fn}: {o} -> {n} B (-{o - n}) — CSE fired (direct path)")
+        else:
+            print(f"--      {fn}: {o} B (inert)")
+    # correctness vs wasmtime on the CSE-on direct-path object (reloc-free → runs)
+    for fn in DIRECT_EXPORTS:
+        faddr = d_on_syms.get(fn)
+        if faddr is None:
+            continue
+        for arg in INPUTS:
+            exp = wasmtime_run(fn, arg, wat=WAT_DIRECT)
+            got = unicorn_run(d_on_code, d_on_base, faddr, arg)
+            if not (isinstance(got, int) and got == exp):
+                fails += 1
+                print(f"FAIL {fn} cse-on(direct)({arg}) = {got} (wasmtime {exp})")
+    fails += dgrew
+    if dfired == 0:
+        # Non-vacuity guard: if no function shrank, the fixture no longer triggers
+        # post-hoc CSE on the direct path — the gate has gone blind. Fail loudly so
+        # it is fixed rather than silently passing.
+        fails += 1
+        print("FAIL: direct-path gate is VACUOUS — no function exercised post-hoc "
+              "CSE (fixture no longer triggers it). Fix const_cse_direct.wat.")
+    else:
+        print(f"direct-path gate non-vacuous: CSE fired on {dfired} function(s), "
+              f"all results match wasmtime, none grew")
 
     print("\n--- instruction-count delta, optimized path (information) ---")
     off_n, on_n = insn_count(off_code), insn_count(on_code)
