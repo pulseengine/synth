@@ -728,6 +728,39 @@ artifacts:
       sharpest evidence yet that the hand-written selectors lack the structured
       block-arity model a verified DSL would carry by construction. Cross-cutting,
       byte-changing, silicon-gated — never an idle-tick increment.
+      #518 ORACLE-FIRST (2026-06-27, third arc member, NOT yet fixed): an i64
+      binop reading an i64 PARAM silently miscompiles on BOTH selectors — the same
+      `func_58`-class i64-pair-register wall the #503 falcon correction named, now
+      isolated to a minimal fixture and quantified ahead of the gated fix. The
+      defect is ONE omission with two surface forms: an i64 PARAM is never
+      classified as i64. (a) DIRECT/`--relocatable` (`select_with_stack`):
+      `infer_i64_locals` learns width only from `LocalSet`/`LocalTee` of an i64
+      producer, so a param that is only READ keeps `is_i64=false` → `local.get`
+      pushes `StackVal::Reg{is_i64:false}` → its implicit hi (`i64_pair_hi(R0)=R1`)
+      is unreserved on the vstack → the following `i64.const` allocates INTO R1 →
+      `i64.add` reads the clobbered `a_hi`. Low half correct, high half returns the
+      const's low word (`t_add(7)` → `0x5_0000_000C`). (b) OPTIMIZED (`ir_to_arm`):
+      the `I64Load` param-home guard (`num_params >= 2`/`>= 4`) confuses a REGISTER
+      count with a PARAM count — `(param i64)` has num_params==1, falls through to a
+      fresh callee-saved pair (R4:R5) never homed from R0:R1, dropping the param
+      (`t_add(7)` → 5, the bare const). Characterization oracle landed THIS tick
+      (frozen-safe, no codegen touched): `scripts/repro/i64_param_518.wat` +
+      `i64_param_518_differential.py` — AAPCS-correct arg placement (even-aligned
+      i64 pairs: `(i32,i64)` → R0,R2:R3), i64-aware result readback (R0|R1<<32),
+      runs BOTH paths vs wasmtime. Measured: 6/6 i64-param functions diverge on
+      each path; the i32 control (`t_i32`) stays correct on both. The script is a
+      stable characterization (exit 0 = "bug reproduces as the root cause
+      documents"); the gated fix flips its `EXPECT_MISCOMPILE→False` and it becomes
+      the correctness gate. BOUNDED FIX SPEC for the gated step (NOT this tick):
+      direct path — seed `i64_locals` from `self.params_i64` and replace the
+      sequential `index_to_reg(i)` param mapping with AAPCS-correct even-aligned
+      pair assignment; optimized path — DECLINE i64-param functions to the direct
+      selector (the #359/#188/#507 honest-degradation pattern, since `ir_to_arm`
+      lacks the param TYPES needed to compute AAPCS pairing). DECLINE LOUDLY at the
+      #503-i64 boundary (an i64 param past R3 → stack-passed → still open). Functions
+      with no i64 param are byte-identical by construction (the frozen anchors carry
+      no i64 params), so the fix is frozen-safe on flip. Byte-changing, silicon-
+      gated — its own gated session, never an idle tick.
     status: approved
     tags: [oracle, differential, coverage, mcdc, validation, track-c, riscv]
     links:
