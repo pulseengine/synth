@@ -113,6 +113,22 @@ OIDC identity (workflow ref + repo + commit). There is nothing to rotate.
 Before pushing a `v*` tag:
 
 - [ ] All target changes merged to `main`; CI green on the merge commit.
+- [ ] **Release readiness (rivet ≥ v0.22.0, `release` command, #516):** if the
+      release's scope is tracked in rivet via the `release:` field, the burn-down
+      gate is cuttable. Scope artifacts with
+      `rivet modify <ID> --set-release vX.Y.Z` (or re-target with
+      `rivet release move <ID> vX.Y.Z`), then:
+      ```bash
+      rivet release status vX.Y.Z            # ✓ Cuttable / ✗ NOT cuttable + the unverified set
+      rivet release status vX.Y.Z --format json   # machine-readable {cuttable, not_verified, …}
+      ```
+      `rivet release status` exits non-zero while any scoped artifact is not yet
+      `verified`/`accepted`, so it gates cleanly in a script. (synth historically
+      scopes releases with `release-vX.Y.Z` *tags* in `tags:`; the `release:`
+      field is the first-class planning dimension the `release` command reads —
+      adopt it per-release as scope is assigned. CI pins rivet to the validated
+      version; bumping that pin re-runs the `validate`/`coverage` gate first, per
+      the #229 regression lesson.)
 - [ ] `cargo test --workspace` passes locally.
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` clean.
 - [ ] `cargo fmt --check` clean.
