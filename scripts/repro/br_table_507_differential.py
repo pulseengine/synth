@@ -44,8 +44,12 @@ SYNTH = os.environ.get("SYNTH", "./target/release/synth")
 CODE, STK, RET = 0x100000, 0x900000, 0x300000
 LIN_SIZE = 0x10000  # 1 page
 
-# Three br_table shapes (sequential targets, shared-tail, value-returning) — the
-# three gale reproduced. Each stores a selector-dependent marker to mem[0].
+# Two VOID-dispatch br_table shapes (sequential targets, shared-tail) — each
+# stores a selector-dependent marker to mem[0]. The VALUE-RETURNING br_table
+# shape (a carried operand to a result-typed block) is a DISTINCT, still-open
+# defect (#509) covered by `br_table_value_509_differential.py`, not here: #507
+# is the void-dispatch decline-to-direct fix, and the carried-value case needs
+# block-arity threading the #507 shortcut cannot provide.
 FIXTURES = {
     # sequential distinct targets
     "seq": """(module (memory (export "memory") 1)

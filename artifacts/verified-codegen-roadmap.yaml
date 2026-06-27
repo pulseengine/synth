@@ -728,6 +728,23 @@ artifacts:
       sharpest evidence yet that the hand-written selectors lack the structured
       block-arity model a verified DSL would carry by construction. Cross-cutting,
       byte-changing, silicon-gated — never an idle-tick increment.
+      #509 ORACLE-FIRST (2026-06-27, frozen-safe, NOT yet fixed): the
+      characterization oracle now exists in-tree —
+      `scripts/repro/br_table_value_509_differential.py` +
+      `br_value_509.wat` (value-returning `br_table` `pick`, value-returning
+      `br_if` `pick_brif`, and a branchless value-returning `ctrl` control). Measured
+      vs wasmtime under unicorn on BOTH paths: the SHIPPED direct path drops the
+      carried value on every dispatched/taken arm (`pick(1)`→2 vs 12, `pick_brif(1)`
+      →0 vs 10) while the branchless `ctrl` stays correct — isolating the defect to
+      the branch value-carry, not result-typed blocks in general. A richer fact than
+      the issue stated: the DEFAULT (optimized) path handles `br_if` value-carry but
+      still drops `br_table` value-carry, so the bug is not uniform across paths. The
+      script is a stable characterization (exit 0 = bug-as-documented); the gated
+      block-arity fix flips `EXPECT_MISCOMPILE`→False and it becomes the correctness
+      gate. Also corrected a STALE over-claim: `br_table_507_differential.py`'s
+      header advertised a "value-returning" shape its `FIXTURES` never contained
+      (only the two void-dispatch shapes) — now points at the #509 oracle for the
+      carried-value case. Still byte-changing / background — its own gated step.
       #518 ORACLE-FIRST (2026-06-27, third arc member, NOT yet fixed): an i64
       binop reading an i64 PARAM silently miscompiles on BOTH selectors — the same
       `func_58`-class i64-pair-register wall the #503 falcon correction named, now
