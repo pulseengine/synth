@@ -1,9 +1,14 @@
 //! VCR-MEM-001 (#383) layer-2 substrate — scry shadow-stack-depth proof, in-tree.
 //!
 //! Proves, in CI against the REAL gust-family module, that synth can obtain a
-//! SOUND worst-case shadow-stack budget from scry (`scry-sai-core` v1.12, the
-//! crates.io library finalized in scry#51 / scry PR #53). This is the layer-2
-//! "proof the budget is sufficient" half of #383 — the half scry owns:
+//! SOUND worst-case shadow-stack budget from scry (`scry-sai-core`, the crates.io
+//! library finalized in scry#51 / scry PR #53). First validated on v1.12, then
+//! across the SCPV v3 major bump (v2.x); re-verified GREEN on **scry v2.3.0**
+//! (2026-06-27) — the consumed surface (`stack_usage.max_stack_bytes`,
+//! `function_summaries[].recursive`, `reachable_from_exports`) is unchanged, so
+//! the "2.x bump is transparent" claim in `Cargo.toml` is empirically backed, not
+//! just asserted. This is the layer-2 "proof the budget is sufficient" half of
+//! #383 — the half scry owns:
 //!
 //!   - layer-1 (synth-side): the ELF `.bss` retarget mechanics that consume the
 //!     budget — still silicon-gated on gale's `--stack-first` answer.
