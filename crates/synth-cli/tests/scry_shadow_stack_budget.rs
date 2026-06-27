@@ -3,12 +3,22 @@
 //! Proves, in CI against the REAL gust-family module, that synth can obtain a
 //! SOUND worst-case shadow-stack budget from scry (`scry-sai-core`, the crates.io
 //! library finalized in scry#51 / scry PR #53). First validated on v1.12, then
-//! across the SCPV v3 major bump (v2.x); re-verified GREEN on **scry v2.3.0**
-//! (2026-06-27) — the consumed surface (`stack_usage.max_stack_bytes`,
+//! across the SCPV v3 major bump (v2.x); re-verified GREEN on **scry v2.3.0** then
+//! **v2.5.0** (2026-06-27) — the consumed surface (`stack_usage.max_stack_bytes`,
 //! `function_summaries[].recursive`, `reachable_from_exports`) is unchanged, so
 //! the "2.x bump is transparent" claim in `Cargo.toml` is empirically backed, not
-//! just asserted. This is the layer-2 "proof the budget is sufficient" half of
-//! #383 — the half scry owns:
+//! just asserted. scry v2.4.0/v2.5.0 are behavioral-precision + soundness updates
+//! with no API/contract change: v2.4.0 models `memory.size`/`grow` (FEAT-038);
+//! v2.5.0 (FEAT-039) makes `reachable_from_exports` sound in the OPEN world — a
+//! function reachable only via an ESCAPED funcref (exported table / exported
+//! funcref global / passed to an import) is no longer dropped. That value is
+//! exactly the "sound superset" synth's layer-1 shadow-stack pruning relies on:
+//! under <=2.4.0 such a module could prune a genuinely-reachable function and
+//! UNDER-reserve. `scry_reachable_superset_is_open_world_sound_383_feat039` below
+//! pins that soundness property in synth's CI (with a closed-world dead-function
+//! contrast so it is non-vacuous), so a future scry regression of FEAT-039 reddens
+//! synth's gate rather than silently re-introducing the under-reservation. This is
+//! the layer-2 "proof the budget is sufficient" half of #383 — the half scry owns:
 //!
 //!   - layer-1 (synth-side): the ELF `.bss` retarget mechanics that consume the
 //!     budget — still silicon-gated on gale's `--stack-first` answer.
@@ -70,5 +80,66 @@ fn scry_proves_msgq_shadow_stack_budget_383() {
     assert!(
         !r.reachable_from_exports.is_empty(),
         "reachable_from_exports is the sound superset synth prunes against"
+    );
+}
+
+/// VCR-MEM-001 (#383) — pin scry v2.5.0's FEAT-039 open-world soundness fix for
+/// the `reachable_from_exports` superset synth's layer-1 shadow-stack pruning
+/// consumes. A function reachable ONLY via an escaped funcref (here: present in
+/// an EXPORTED funcref table, never called in-module) is host-dispatchable, so it
+/// MUST be in the sound superset — under scry <=2.4.0 it was wrongly omitted, and
+/// pruning the complement would drop a genuinely-reachable function and
+/// UNDER-reserve its shadow stack. Wiring this into synth's CI means a future scry
+/// regression of FEAT-039 reddens synth's gate instead of silently re-introducing
+/// the under-reservation. The closed-world dead-function contrast keeps the test
+/// non-vacuous: it proves the superset still PRUNES (it is not trivially "all").
+#[test]
+fn scry_reachable_superset_is_open_world_sound_383_feat039() {
+    let cfg = || AnalysisConfig {
+        widening_threshold: None,
+        emit_diagnostics: false,
+        taint_policy: None,
+    };
+
+    // ESCAPE: func 1 is only in an exported funcref table — never called by the
+    // exported `main`. Host code can `call_indirect` it through the table.
+    let escaping = wat::parse_str(
+        r#"(module
+             (table (export "t") 1 funcref)
+             (elem (i32.const 0) 1)
+             (func (export "main"))
+             (func (result i32) i32.const 7))"#,
+    )
+    .expect("valid wat");
+    let r = analyze(escaping, cfg()).expect("scry analyzes the escaping module");
+    assert!(
+        r.reachable_from_exports.contains(&1),
+        "FEAT-039: a function in an EXPORTED funcref table is host-dispatchable ⇒ \
+         must be in the sound superset synth prunes against (got {:?}) — under \
+         scry <=2.4.0 this was dropped and synth would under-reserve",
+        r.reachable_from_exports
+    );
+
+    // CONTRAST (non-vacuity): a closed, escape-free module — func 1 is neither
+    // exported, called, nor address-taken, so the superset still PRUNES it. If
+    // this stopped holding, the superset would be trivially "everything" and the
+    // escape assertion above would prove nothing.
+    let closed = wat::parse_str(
+        r#"(module
+             (func (export "main"))
+             (func (result i32) i32.const 7))"#,
+    )
+    .expect("valid wat");
+    let r2 = analyze(closed, cfg()).expect("scry analyzes the closed module");
+    assert!(
+        r2.reachable_from_exports.contains(&0),
+        "the exported root is reachable (got {:?})",
+        r2.reachable_from_exports
+    );
+    assert!(
+        !r2.reachable_from_exports.contains(&1),
+        "a non-exported, uncalled, address-not-taken function MUST be pruned in a \
+         closed escape-free module — else the superset is vacuously 'all' (got {:?})",
+        r2.reachable_from_exports
     );
 }

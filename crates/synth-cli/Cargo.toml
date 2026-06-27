@@ -73,6 +73,10 @@ gimli = { version = "0.33", default-features = false, features = ["read", "std"]
 # but synth's consumed surface (call_graph / function_summaries / stack_usage /
 # reachable_from_exports / operand_stack) is unchanged and additive-only, so the
 # bump is transparent here. See scry#63 / scry v2.0.0. Empirically re-verified
-# against scry v2.3.0 (2026-06-27, lockfile bumped) — scry_shadow_stack_budget
-# stays GREEN, so the "transparent" claim is tested, not just asserted.
+# against scry v2.3.0 then v2.5.0 (2026-06-27, lockfile bumped) —
+# scry_shadow_stack_budget stays GREEN, so the "transparent" claim is tested, not
+# just asserted. v2.4.0 (FEAT-038) models memory.size/grow; v2.5.0 (FEAT-039)
+# makes reachable_from_exports sound in the open world (escaped funcref) — the
+# superset synth's shadow-stack pruning relies on; pinned by
+# scry_reachable_superset_is_open_world_sound_383_feat039.
 scry-sai-core = "2.0"
