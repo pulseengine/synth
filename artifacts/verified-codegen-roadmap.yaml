@@ -747,8 +747,14 @@ artifacts:
       (frozen-safe, no codegen touched): `scripts/repro/i64_param_518.wat` +
       `i64_param_518_differential.py` — AAPCS-correct arg placement (even-aligned
       i64 pairs: `(i32,i64)` → R0,R2:R3), i64-aware result readback (R0|R1<<32),
-      runs BOTH paths vs wasmtime. Measured: 6/6 i64-param functions diverge on
-      each path; the i32 control (`t_i32`) stays correct on both. The script is a
+      runs BOTH paths vs wasmtime. Measured: 10/10 i64-param functions diverge on
+      each path; the i32 control (`t_i32`) stays correct on both. The fixture
+      covers the FULL AAPCS i64-param register-assignment matrix the fix's mapping
+      logic must get right — not just the single leading `(i64)` (R0:R1) case but
+      the multi-param shapes the sequential `index_to_reg(i)` mapping botches:
+      `(i64,i64)` (p1 = even-aligned R2:R3, mis-mapped to R1 → computes p0.lo+p0.hi
+      instead of p0+p1), `(i64,i32)` (p1=R2 ignored), and reading ONLY the second
+      i64 param (sequential reads R1, and the const clobbers the real p1.lo=R2). The script is a
       stable characterization (exit 0 = "bug reproduces as the root cause
       documents"); the gated fix flips its `EXPECT_MISCOMPILE→False` and it becomes
       the correctness gate. BOUNDED FIX SPEC for the gated step (NOT this tick):
