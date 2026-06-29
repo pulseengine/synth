@@ -269,7 +269,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -302,7 +302,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -336,7 +336,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -373,7 +373,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -411,7 +411,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -451,7 +451,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -490,7 +490,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -529,7 +529,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -567,7 +567,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Install emulation deps
@@ -605,7 +605,7 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Build synth
         run: cargo build -p synth-cli
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
       - name: Install emulation deps
