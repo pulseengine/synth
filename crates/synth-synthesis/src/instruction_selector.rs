@@ -132,6 +132,56 @@ fn index_to_reg(index: u8) -> Reg {
     reg
 }
 
+/// AAPCS core-register assignment for a function's first parameters (#518).
+///
+/// Walks the declared param widths left-to-right over the 4 core argument
+/// registers R0..R3. An i32/f32 param takes the next register; an i64/f64 param
+/// takes an EVEN-ALIGNED consecutive pair (rounding the cursor up to an even
+/// index first) and the returned register is its LOW half (hi = [`i64_pair_hi`]).
+/// Returns the lo register for every param that lands wholly within R0..R3; a
+/// param that would spill past R3 is stack-passed and is absent from the map
+/// (an i64 there is the open #503-i64 case, declined by the caller).
+///
+/// For an all-i32 signature this is exactly `index_to_reg(i)` for each `i`, so
+/// the param→register mapping is byte-identical to the legacy sequential scheme
+/// whenever no i64/f64 param is present — the #518 fix only diverges for the
+/// i64-param functions that were miscompiled.
+fn aapcs_param_regs(num_params: u32, params_i64: &[bool]) -> std::collections::HashMap<u32, Reg> {
+    let mut map = std::collections::HashMap::new();
+    let mut next: u8 = 0; // next free core arg-register index (0..=3)
+    for i in 0..num_params {
+        let is_wide = params_i64.get(i as usize).copied().unwrap_or(false);
+        if is_wide {
+            if !next.is_multiple_of(2) {
+                next += 1; // even-align the pair
+            }
+            if next <= 2 {
+                // the pair (next, next+1) lands wholly within R0..R3
+                map.insert(i, index_to_reg(next));
+                next += 2;
+            } else {
+                next = 4; // spilled to the stack (#503-i64)
+            }
+        } else if next <= 3 {
+            map.insert(i, index_to_reg(next));
+            next += 1;
+        } else {
+            next = 4; // i32 stack param (#359 incoming-arg path)
+        }
+    }
+    map
+}
+
+/// True if any declared i64/f64 param of this function lands (wholly or its
+/// even-aligned start) PAST R3 — i.e. AAPCS passes it on the stack (#518/#503).
+/// The register-pair homing below only covers i64 params resident in R0..R3; a
+/// stack-passed 64-bit param is the open #503-i64 follow-up and is declined.
+fn i64_param_overflows_core_regs(num_params: u32, params_i64: &[bool]) -> bool {
+    let regs = aapcs_param_regs(num_params, params_i64);
+    (0..num_params)
+        .any(|i| params_i64.get(i as usize).copied().unwrap_or(false) && !regs.contains_key(&i))
+}
+
 /// A virtual-stack entry (#171). A value normally lives in a physical register
 /// ([`StackVal::Reg`] — for an i64, this is the `lo`; the `hi` is the
 /// conventional [`i64_pair_hi`]). When register pressure exhausts the
@@ -5382,6 +5432,41 @@ impl InstructionSelector {
             )));
         }
 
+        // #518 Ok-or-Err (#180/#185): an i64/f64 PARAM is correctly homed below
+        // (AAPCS register-pair, `aapcs_param_regs`) only for the LEAF,
+        // register-resident case. Two sub-cases are declined LOUDLY here rather
+        // than silently miscompiled (the #518 defect): (1) an i64 param that
+        // AAPCS passes PAST R3 on the stack — the open #503-i64 follow-up;
+        // (2) a function that FRAME-BACKS its params — `has_call` (params spill
+        // to the frame to survive the call's caller-saved clobber, #204/#193) or
+        // the pair-exhaustion retry (`param_backing_on_exhaustion`) — where the
+        // `param_slots` path would size an i64 param's slot from `i64_set`, which
+        // does not include params, dropping the high half. Both fall back to a
+        // loud skip (warning + absent symbol), never wrong code. The common
+        // leaf-in-registers case is FIXED below. (Empty `params_i64` ⇒ all-i32 ⇒
+        // this is a no-op and every existing fixture stays byte-identical.)
+        let has_i64_param = self.params_i64.iter().take(num_params as usize).any(|&w| w);
+        if has_i64_param {
+            if i64_param_overflows_core_regs(num_params, &self.params_i64) {
+                return Err(synth_core::Error::synthesis(
+                    "#518/#503: an i64/f64 param is AAPCS-passed past R3 (on the \
+                     stack); 64-bit stack params are not yet lowered"
+                        .to_string(),
+                ));
+            }
+            let has_call = wasm_ops
+                .iter()
+                .any(|op| matches!(op, Call(_) | CallIndirect { .. }));
+            if has_call || self.param_backing_on_exhaustion {
+                return Err(synth_core::Error::synthesis(
+                    "#518: an i64/f64 param in a frame-backing function (contains a \
+                     call, or the register-pair-exhaustion retry) is not yet \
+                     lowered — the param_slots path drops the high half"
+                        .to_string(),
+                ));
+            }
+        }
+
         // #359: size of the outgoing stack-argument region = the max over all
         // Call/CallIndirect sites of `max(0, arg_count - 4) * 4`, rounded up to 8.
         // Reserved at the BOTTOM of the frame (offset 0) by `compute_local_layout`.
@@ -5505,11 +5590,20 @@ impl InstructionSelector {
         // Map of local index -> register
         let mut local_to_reg: std::collections::HashMap<u32, Reg> =
             std::collections::HashMap::new();
-        // First 4 params are in r0-r3
+        // First 4 params are in r0-r3.
+        // #518: register homes follow the AAPCS core-register assignment
+        // (`aapcs_param_regs`) — an i64 param takes an even-aligned pair, so e.g.
+        // `(i32, i64)` puts the i64 in R2:R3, not the sequential R1:R2 that the
+        // old `index_to_reg(i)` mapping wrongly used. For an all-i32 signature
+        // this is identical to `index_to_reg(i)`, so non-i64-param functions are
+        // byte-identical. (Frame-backing i64 params are declined above, so any
+        // `param_slots` entry reached here is i32 — its sequential `index_to_reg`
+        // already equals the AAPCS reg; left unchanged to minimise the diff.)
         // #204/#193: a param the function reads is spilled to a frame slot at
         // entry and accessed only through it, so it can never be clobbered in
         // its home register between reads. Params with no slot (unused) stay
         // register-backed via local_to_reg.
+        let param_aapcs = aapcs_param_regs(num_params, &self.params_i64);
         for i in 0..num_params.min(4) {
             if let Some(&(off, is_i64)) = layout.param_slots.get(&i) {
                 let reg = index_to_reg(i as u8);
@@ -5530,11 +5624,27 @@ impl InstructionSelector {
                     source_line: None,
                 });
             } else {
-                local_to_reg.insert(i, index_to_reg(i as u8));
+                let reg = param_aapcs
+                    .get(&i)
+                    .copied()
+                    .unwrap_or_else(|| index_to_reg(i as u8));
+                local_to_reg.insert(i, reg);
             }
         }
 
-        let i64_locals = infer_i64_locals(wasm_ops, &self.func_ret_i64, &self.type_ret_i64);
+        let mut i64_locals = infer_i64_locals(wasm_ops, &self.func_ret_i64, &self.type_ret_i64);
+        // #518: an i64/f64 PARAM is 64-bit by signature even if it is only READ
+        // (never `local.set`/`tee`), which `infer_i64_locals` — driven by
+        // LocalSet/Tee/Call result widths — cannot see. Seed those indices so a
+        // `LocalGet` of an i64 param pushes a `StackVal::i64` (whose hi register
+        // is reserved via `i64_pair_hi`) instead of an i32 entry that left the hi
+        // unreserved — the exact direct-path #518 mechanism (a following
+        // `i64.const` was then allocated into the param's hi register).
+        for (k, &wide) in self.params_i64.iter().take(num_params as usize).enumerate() {
+            if wide {
+                i64_locals.insert(k as u32);
+            }
+        }
 
         // VCR-RA local promotion (#390, #242): choose non-param i32 locals to keep
         // in callee-saved registers (r4..r8) instead of frame slots, and seed them
@@ -5573,11 +5683,23 @@ impl InstructionSelector {
             }
         }
         let live_param_regs = |at: usize| -> Vec<Reg> {
-            param_regs
-                .iter()
-                .filter(|(p, _)| param_last_read.get(p).is_some_and(|&last| last >= at))
-                .map(|(_, r)| *r)
-                .collect::<Vec<_>>()
+            let mut out = Vec::new();
+            for (p, r) in &param_regs {
+                if param_last_read.get(p).is_some_and(|&last| last >= at) {
+                    out.push(*r);
+                    // #518: an i64 param occupies a register PAIR (lo in `r`, hi in
+                    // `i64_pair_hi(r)`). Reserve the hi half too — otherwise a
+                    // constant/temp allocated into it clobbers the param's high
+                    // word before the i64 op reads it (the direct-path #518 bug:
+                    // `movw r1,#K` overwrote R1 = hi of an i64 param in R0:R1).
+                    if i64_locals.contains(p)
+                        && let Ok(hi) = i64_pair_hi(*r)
+                    {
+                        out.push(hi);
+                    }
+                }
+            }
+            out
         };
 
         for (idx, op) in wasm_ops.iter().enumerate() {
@@ -10414,6 +10536,48 @@ pub struct SelectionStats {
 mod tests {
     use super::*;
     use crate::rules::RuleDatabase;
+
+    /// #518: the AAPCS core-register assignment for parameters. An i64 takes an
+    /// even-aligned consecutive pair (lo returned); a param that spills past R3 is
+    /// absent. For an all-i32 signature it must equal `index_to_reg(i)`, so
+    /// non-i64-param functions stay byte-identical.
+    #[test]
+    fn test_aapcs_param_regs_518() {
+        let m = |np: u32, w: &[bool]| aapcs_param_regs(np, w);
+        // single i64 -> R0:R1 (lo = R0)
+        assert_eq!(m(1, &[true]).get(&0), Some(&Reg::R0));
+        // (i32, i64) -> R0, then even-aligned R2:R3 (R1 skipped)
+        let mixed = m(2, &[false, true]);
+        assert_eq!(mixed.get(&0), Some(&Reg::R0));
+        assert_eq!(mixed.get(&1), Some(&Reg::R2));
+        // (i64, i64) -> R0:R1, R2:R3
+        let two = m(2, &[true, true]);
+        assert_eq!(two.get(&0), Some(&Reg::R0));
+        assert_eq!(two.get(&1), Some(&Reg::R2));
+        // (i32, i32, i64) -> R0, R1, even-aligned R2:R3
+        let m3 = m(3, &[false, false, true]);
+        assert_eq!(m3.get(&2), Some(&Reg::R2));
+        // (i64, i32) -> R0:R1, R2
+        let i64_i32 = m(2, &[true, false]);
+        assert_eq!(i64_i32.get(&0), Some(&Reg::R0));
+        assert_eq!(i64_i32.get(&1), Some(&Reg::R2));
+        // all-i32 must match the legacy sequential index_to_reg (byte-identity)
+        let all_i32 = m(4, &[false, false, false, false]);
+        for i in 0..4u32 {
+            assert_eq!(all_i32.get(&i), Some(&index_to_reg(i as u8)));
+        }
+        // (i32, i32, i32, i64): the i64 even-aligns to R4:R5 -> past R3 -> absent
+        let overflow = m(4, &[false, false, false, true]);
+        assert_eq!(overflow.get(&3), None);
+        assert!(i64_param_overflows_core_regs(
+            4,
+            &[false, false, false, true]
+        ));
+        // the in-register cases never report overflow
+        assert!(!i64_param_overflows_core_regs(1, &[true]));
+        assert!(!i64_param_overflows_core_regs(2, &[false, true]));
+        assert!(!i64_param_overflows_core_regs(2, &[true, true]));
+    }
 
     #[test]
     fn test_register_allocation() {

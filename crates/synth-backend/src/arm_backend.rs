@@ -1434,9 +1434,18 @@ mod tests {
             ..CompileConfig::default()
         };
 
-        // Optimized path: `(local.get 0) >>> 32; wrap_i64`
+        // #518: the i64 value must NOT come from an i64 PARAM — the optimized
+        // path now declines i64-param functions to the direct selector (it homed
+        // an i64 param in R4:R5 instead of R0:R1, a silent miscompile this test's
+        // byte-size-only assertion masked). The canonical #94 case is a u64 from
+        // an FFI return, not a param, anyway. Source the i64 from a sign-extended
+        // i32 param (`extend_i32_s`): a runtime, non-constant-foldable i64 that
+        // stays on the optimized path, so the shift-by-32 hi-extract peephole is
+        // still exercised on CORRECT code.
+        // Optimized path: `(i64.extend_i32_s (local.get 0)) >>> 32; wrap_i64`
         let ops_hi32 = vec![
-            WasmOp::LocalGet(0), // i64 param in R0:R1
+            WasmOp::LocalGet(0), // i32 param in R0
+            WasmOp::I64ExtendI32S,
             WasmOp::I64Const(32),
             WasmOp::I64ShrU,
             WasmOp::I32WrapI64,
@@ -1445,11 +1454,11 @@ mod tests {
             .compile_function("hi32_extract", &ops_hi32, &config)
             .unwrap();
 
-        // Generic path: `(local.get 0) >>> 7; wrap_i64` — same shape, but the
-        // shift amount is not a multiple of 32, so it falls through to the
-        // 38-byte runtime shift.
+        // Generic path: `... >>> 7; wrap_i64` — same shape, but the shift amount
+        // is not a multiple of 32, so it falls through to the runtime shift.
         let ops_generic = vec![
             WasmOp::LocalGet(0),
+            WasmOp::I64ExtendI32S,
             WasmOp::I64Const(7),
             WasmOp::I64ShrU,
             WasmOp::I32WrapI64,

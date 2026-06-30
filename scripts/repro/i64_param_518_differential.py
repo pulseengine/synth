@@ -54,12 +54,21 @@ from unicorn.arm_const import (
 )
 
 WAT = Path(__file__).with_name("i64_param_518.wat")
+# The DECLINE half: i64-param sub-cases that are loud-skipped (not lowered) — an
+# i64 param past R3 (#503-i64 stack-param) and an i64 param in a frame-backing
+# (has-call) function. d_leaf is the control: a leaf i64 param IS emitted.
+DECLINE_WAT = Path(__file__).with_name("i64_param_518_decline.wat")
+DECLINE_SKIPPED = ["d_past_r3", "d_call"]   # must warn + be absent from symtab
+DECLINE_EMITTED = ["d_leaf"]                # must be emitted (non-vacuity)
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 CODE, STK, RET, R11 = 0x100000, 0x900000, 0x300000, 0x20000000
 
-# While the bug is live we EXPECT the i64-param functions to miscompile. Flip to
-# False in the gated fix PR; the script then enforces correctness on every path.
-EXPECT_MISCOMPILE = True
+# The #518 fix is LANDED: the leaf register-resident i64-param cases are lowered
+# correctly on both paths; the two unsupported sub-cases are declined loudly. So
+# this is now the CORRECTNESS gate (every run must match wasmtime), not the
+# pre-fix characterization. (Set True only to re-demonstrate the original bug on
+# a pre-fix build.)
+EXPECT_MISCOMPILE = False
 
 # (export, arg-list, signature) — args/sig drive AAPCS-correct placement so the
 # harness matches the TRUE calling convention, not synth's buggy mapping.
@@ -190,9 +199,77 @@ def run_path(label, relocatable):
     return divergences, control_ok
 
 
+def check_decline_contract():
+    """The unsupported i64-param sub-cases must LOUD-SKIP (warn + absent symbol),
+    never silently emit wrong code; a leaf i64 param must still be emitted AND
+    execute correctly (non-vacuity). Returns the number of failures."""
+    out = "/tmp/i518_decline.o"
+    cmd = [SYNTH, "compile", str(DECLINE_WAT), "-o", out, "-b", "arm",
+           "--target", "cortex-m4", "--all-exports", "--relocatable"]
+    r = subprocess.run(cmd, capture_output=True, text=True,
+                       env={"PATH": "/usr/bin:/bin"})
+    if r.returncode != 0:
+        print(f"FAIL: decline fixture failed to compile: {r.stderr}")
+        return 1
+    code, base, syms = load(out)
+    print("\n=== decline contract (loud-skip, not silent miscompile) ===")
+    fails = 0
+    for fn in DECLINE_SKIPPED:
+        warned = f"skipping function '{fn}'" in r.stderr
+        absent = fn not in syms
+        ok = warned and absent
+        if not ok:
+            fails += 1
+        why = "" if ok else (
+            "  [" + ", ".join(
+                ([] if warned else ["no warning"])
+                + ([] if absent else ["SILENTLY EMITTED — regression!"])
+            ) + "]"
+        )
+        print(f"  [{'ok ' if ok else 'BUG'}] {fn}: loud-skipped{why}")
+    # leaf control: emitted AND correct under unicorn
+    for fn in DECLINE_EMITTED:
+        if fn not in syms:
+            print(f"  [BUG] {fn}: expected emitted, but it was skipped")
+            fails += 1
+            continue
+        # d_leaf: (param i64)(result i64) i64.add(p,3); run with p=7 -> 10
+        ok = got_i64_leaf(code, base, syms[fn], 7) == leaf_expect(7)
+        print(f"  [{'ok ' if ok else 'BUG'}] {fn}: emitted + executes correctly")
+        if not ok:
+            fails += 1
+    return fails
+
+
+def leaf_expect(p):
+    # d_leaf = (i64.add (local.get 0) (i64.const 3))
+    return (p + 3) & 0xFFFFFFFFFFFFFFFF
+
+
+def got_i64_leaf(code, base, faddr, arg):
+    foff = (faddr & ~1) - base
+    mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+    mu.mem_map(CODE, 0x20000)
+    mu.mem_map(STK - 0x10000, 0x20000)
+    mu.mem_map(RET & ~0xFFF, 0x1000)
+    mu.mem_write(CODE, code)
+    mu.reg_write(UC_ARM_REG_SP, STK)
+    mu.reg_write(UC_ARM_REG_R11, R11)
+    mu.reg_write(UC_ARM_REG_R0, arg & 0xFFFFFFFF)
+    mu.reg_write(UC_ARM_REG_R1, (arg >> 32) & 0xFFFFFFFF)
+    mu.reg_write(UC_ARM_REG_LR, RET | 1)
+    try:
+        mu.emu_start((CODE + foff) | 1, RET, count=100000)
+    except UcError as e:
+        return f"ERR:{e}"
+    return (mu.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF) | (
+        (mu.reg_read(UC_ARM_REG_R1) & 0xFFFFFFFF) << 32)
+
+
 def main():
     opt_div, opt_ctrl = run_path("OPTIMIZED (--target cortex-m4)", relocatable=False)
     rel_div, rel_ctrl = run_path("DIRECT (--relocatable)", relocatable=True)
+    decline_fails = check_decline_contract()
 
     print("\n--- characterization verdict ---")
     # The i32 control must ALWAYS match; only i64-param fns are allowed to diverge
@@ -213,12 +290,15 @@ def main():
               "Re-examine before trusting the fix spec.")
         sys.exit(1)
     else:
-        total = opt_div + rel_div
+        total = opt_div + rel_div + decline_fails
         if total == 0:
-            print("RESULT: PASS — both paths now match wasmtime on every i64-param "
-                  "function. #518 fixed.")
+            print("RESULT: PASS — both paths match wasmtime on every leaf i64-param "
+                  "function across the full AAPCS matrix, AND the unsupported "
+                  "sub-cases (i64 past R3, frame-backed i64 param) loud-skip rather "
+                  "than miscompile. #518 fixed.")
             sys.exit(0)
-        print(f"RESULT: FAIL — {total} residual divergence(s); #518 not fully fixed.")
+        print(f"RESULT: FAIL — {opt_div + rel_div} value divergence(s) + "
+              f"{decline_fails} decline-contract failure(s); #518 not fully fixed.")
         sys.exit(1)
 
 

@@ -2611,6 +2611,25 @@ impl OptimizerBridge {
             ));
         }
 
+        // #518: this lowering cannot home an i64 PARAM correctly — it has only the
+        // param COUNT, not the per-param TYPES, so it cannot compute the AAPCS
+        // even-aligned register pair an i64 param occupies (the `I64Load` arm's
+        // `num_params >= 2/4` guard conflated register-count with param-count and
+        // dropped the param). Decline any function that READS an i64 param (an
+        // `I64Load` from a param index) to the direct selector, which homes the
+        // pair via `aapcs_param_regs`. Honest degradation (the #359/#188/#507
+        // pattern); functions with no i64-param read are untouched (byte-identical).
+        if instructions.iter().any(|inst| {
+            matches!(inst.opcode, Opcode::I64Load { addr, .. } if (addr as usize) < num_params)
+        }) {
+            return Err(synth_core::Error::synthesis(
+                "optimized path declines functions that read an i64 param (no \
+                 per-param AAPCS pair model — see #518); falling back to direct \
+                 selector"
+                    .to_string(),
+            ));
+        }
+
         let mut arm_instrs = Vec::new();
         let mut vreg_to_arm: HashMap<u32, Reg> = HashMap::new();
 
@@ -6263,10 +6282,17 @@ mod tests {
     }
 
     #[test]
-    fn test_ir_to_arm_i64_add_uses_operand_regs() {
-        // Build IR that loads two i64 params (R0:R1 and R2:R3 via I64Load
-        // with addr=0/1 and num_params >= 4), then adds them. The fix should
-        // emit Adds/Adc that use the operand registers, NOT hardcoded ones.
+    fn test_ir_to_arm_i64_add_operand_regs_and_param_decline_518() {
+        // Build IR that loads two i64 values via I64Load (addr 0/1) then adds
+        // them. Two assertions:
+        //  (1) #518: when those I64Loads are PARAM reads (addr < num_params) the
+        //      optimized path DECLINES (it cannot AAPCS-home an i64 param pair),
+        //      so ir_to_arm returns Err and the backend falls back to the direct
+        //      selector. Correct param lowering is covered end-to-end by
+        //      scripts/repro/i64_param_518_differential.py.
+        //  (2) for NON-param i64 values (addr >= num_params) it still lowers,
+        //      emitting Adds/Adc that use the operand registers, not hardcoded
+        //      ones.
         let bridge = OptimizerBridge::new();
         let instrs = vec![
             // I64Load addr=0 → R0:R1
@@ -6306,9 +6332,16 @@ mod tests {
                 is_dead: false,
             },
         ];
-        let arm = bridge.ir_to_arm(&instrs, 4).expect("valid IR lowers");
-        // We must see at least one Adds and at least one Adc — that's the
-        // characteristic shape of a 64-bit add on 32-bit ARM.
+        // (1) addr 0/1 ARE params (num_params=4) → decline (#518).
+        assert!(
+            bridge.ir_to_arm(&instrs, 4).is_err(),
+            "#518: reading an i64 param must decline the optimized path"
+        );
+        // (2) same IR, but num_params=0 → addr 0/1 are non-param i64 locals →
+        //     lowers, using operand registers for the ADDS/ADC.
+        let arm = bridge
+            .ir_to_arm(&instrs, 0)
+            .expect("non-param i64 IR lowers");
         let has_adds = arm.iter().any(|op| matches!(op, ArmOp::Adds { .. }));
         let has_adc = arm.iter().any(|op| matches!(op, ArmOp::Adc { .. }));
         assert!(has_adds, "i64.add should emit ADDS for the low half");
@@ -6514,7 +6547,8 @@ mod tests {
             WasmOp::I32WrapI64,
         ];
         let (instrs, _, _) = bridge.optimize_full(&after_ops).unwrap();
-        let arm_after = bridge.ir_to_arm(&instrs, 2).expect("valid IR lowers");
+        // #518: num_params=0 → non-param i64 source (i64-param reads decline).
+        let arm_after = bridge.ir_to_arm(&instrs, 0).expect("valid IR lowers");
         let bytes_after = count_arm_byte_size(&arm_after);
 
         // Pre-fix proxy: shift-by-7 takes the generic ArmOp::I64ShrU path,
@@ -6526,7 +6560,7 @@ mod tests {
             WasmOp::I32WrapI64,
         ];
         let (instrs, _, _) = bridge.optimize_full(&before_ops).unwrap();
-        let arm_before = bridge.ir_to_arm(&instrs, 2).expect("valid IR lowers");
+        let arm_before = bridge.ir_to_arm(&instrs, 0).expect("valid IR lowers");
         let bytes_before = count_arm_byte_size(&arm_before);
 
         println!(
@@ -6549,17 +6583,19 @@ mod tests {
         let bridge = OptimizerBridge::new();
         // (i64) -> i32, body = `local.get 0; i64.const 32; i64.shr_u; i32.wrap_i64`
         let wasm_ops = vec![
-            WasmOp::LocalGet(0),  // i64 param in R0:R1
+            WasmOp::LocalGet(0),
             WasmOp::I64Const(32), // shift amount
             WasmOp::I64ShrU,
             WasmOp::I32WrapI64,
         ];
 
         let (instrs, _, _) = bridge.optimize_full(&wasm_ops).unwrap();
-        // num_params = 1 (one i64 param occupies R0:R1 per AAPCS — but we
-        // pass 2 to ir_to_arm because each i64 counts as two AAPCS slots
-        // in the codegen's accounting).
-        let arm = bridge.ir_to_arm(&instrs, 2).expect("valid IR lowers");
+        // #518: num_params = 0 → the i64 source is a NON-PARAM local. An i64
+        // PARAM read is now declined to the direct selector (the optimized path
+        // can't AAPCS-home a param pair), so this peephole is exercised on a
+        // non-param i64; the i64-param path's correctness is covered by
+        // scripts/repro/i64_param_518_differential.py.
+        let arm = bridge.ir_to_arm(&instrs, 0).expect("valid IR lowers");
 
         // After fix: NO ArmOp::I64ShrU should be emitted. The 38-byte runtime
         // shift sequence is the bug we're fixing.
@@ -6596,7 +6632,8 @@ mod tests {
         ];
 
         let (instrs, _, _) = bridge.optimize_full(&wasm_ops).unwrap();
-        let arm = bridge.ir_to_arm(&instrs, 2).expect("valid IR lowers");
+        // #518: num_params=0 → non-param i64 source (i64-param reads decline).
+        let arm = bridge.ir_to_arm(&instrs, 0).expect("valid IR lowers");
 
         let has_runtime_shift = arm.iter().any(|op| matches!(op, ArmOp::I64ShrS { .. }));
         assert!(
@@ -6639,7 +6676,8 @@ mod tests {
         ];
 
         let (instrs, _, _) = bridge.optimize_full(&wasm_ops).unwrap();
-        let arm = bridge.ir_to_arm(&instrs, 2).expect("valid IR lowers");
+        // #518: num_params=0 → non-param i64 source (i64-param reads decline).
+        let arm = bridge.ir_to_arm(&instrs, 0).expect("valid IR lowers");
 
         // After fix: at most one AND should remain, and it shouldn't be the
         // pair of ANDs from the generic i64.and lowering. (We allow zero ANDs
@@ -6669,7 +6707,8 @@ mod tests {
         ];
 
         let (instrs, _, _) = bridge.optimize_full(&wasm_ops).unwrap();
-        let arm = bridge.ir_to_arm(&instrs, 2).expect("valid IR lowers");
+        // #518: num_params=0 → non-param i64 source (i64-param reads decline).
+        let arm = bridge.ir_to_arm(&instrs, 0).expect("valid IR lowers");
 
         let has_runtime_shift = arm.iter().any(|op| matches!(op, ArmOp::I64ShrU { .. }));
         assert!(
