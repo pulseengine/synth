@@ -7,7 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-06-30
+
+**i64-parameter codegen correctness — closes the #518 silent miscompile.**
+
 ### Fixed
+
+- **i64 params homed per AAPCS register-pairs (#518, #242).** An i64 binary op
+  reading an i64 **parameter** silently miscompiled on **both** ARM selectors: an
+  i64 param occupies an AAPCS register *pair* (param0 = R0:R1), but both selectors
+  treated a param as a single i32-width register. Direct selector
+  (`--relocatable`/shipped): `infer_i64_locals` learned i64-ness only from
+  `local.set`/`tee`, so a read-only i64 param stayed `is_i64=false` → its hi
+  register was unreserved and a following `i64.const` was allocated *into* it
+  (`movw r1,#K` clobbered R1 = the param's high half). Fixed by (a) seeding
+  `i64_locals` from the declared param widths, (b) reserving the i64 param's hi
+  half in the live-param reservation, and (c) mapping params to registers via a
+  new AAPCS even-aligned assignment (`(i32,i64)` → R0,R2:R3, not the sequential
+  R1:R2 the old mapping used). The optimized path — which lacks per-param types —
+  declines i64-param functions to the direct selector (the honest-degradation
+  pattern). All-i32 signatures map identically, so **non-i64-param functions are
+  byte-identical** (frozen anchors unchanged). Two sub-cases are declined *loudly*
+  (Ok-or-Err, never silent wrong-code), tracked under #503: an i64 param passed
+  past R3 (on the stack), and an i64 param in a frame-backing function (with a
+  call). So no silent wrong-code remains: every i64-param function is either
+  correctly compiled or loud-skipped. Gated by
+  `scripts/repro/i64_param_518_differential.py` (11 leaf cases match wasmtime on
+  both paths across the full AAPCS matrix) + a decline-contract fixture;
+  independently clean-room verified.
+
+### Changed
+
+- **CI pins rivet v0.22.0** (adds the `rivet release` planning command, #516),
+  validated regression-free on this repo's artifacts before pinning. The release
+  readiness gate (`rivet release status`) is documented in the release process.
+- **VCR-ORACLE-001 (#242):** in-tree characterization oracles landed for the
+  #518 i64-param defect (incl. the RISC-V cross-backend loud-skip contrast) and
+  the still-open #509 value-returning-branch drop; scry consumed-surface
+  re-validated against scry-sai-core 2.5.0 (FEAT-039 open-world reachability
+  soundness pinned).
+
+### Fixed (flag-off, no shipped behavior change)
 
 - **const-CSE size-regression guard (#242).** gale's v0.17.0 burndown found
   `SYNTH_CONST_CSE=1` GREW a tiny `--relocatable` function (`gust_mix` 90→92 B): the
