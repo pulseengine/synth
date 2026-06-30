@@ -3,12 +3,20 @@
 //! Proves, in CI against the REAL gust-family module, that synth can obtain a
 //! SOUND worst-case shadow-stack budget from scry (`scry-sai-core`, the crates.io
 //! library finalized in scry#51 / scry PR #53). First validated on v1.12, then
-//! across the SCPV v3 major bump (v2.x); re-verified GREEN on **scry v2.3.0** then
-//! **v2.5.0** (2026-06-27) — the consumed surface (`stack_usage.max_stack_bytes`,
-//! `function_summaries[].recursive`, `reachable_from_exports`) is unchanged, so
-//! the "2.x bump is transparent" claim in `Cargo.toml` is empirically backed, not
-//! just asserted. scry v2.4.0/v2.5.0 are behavioral-precision + soundness updates
-//! with no API/contract change: v2.4.0 models `memory.size`/`grow` (FEAT-038);
+//! across the SCPV v3 major bump (v2.x); re-verified GREEN on **scry v2.3.0**,
+//! **v2.5.0** (2026-06-27), then **v2.6.0** (2026-06-30) — the consumed surface
+//! (`stack_usage.max_stack_bytes`, `function_summaries[].recursive`,
+//! `reachable_from_exports`) is unchanged, so the "2.x bump is transparent" claim
+//! in `Cargo.toml` is empirically backed, not just asserted. v2.6.0 ADDS the
+//! machine-readable `gaps` field (FEAT-040) and hardens the shadow-stack bound by
+//! the *resolved* `call_indirect` target set (FEAT-043, six under-reporting
+//! soundness holes closed). msgq_put's `Bytes(32)` bound is UNCHANGED under that
+//! hardening (it has no `call_indirect`), and assertion (4) below now consumes
+//! `gaps`: msgq_put gaps only in the VALUE domain (div_u/load8/store8/block),
+//! never on call resolution, which is *why* the bound stayed a finite `Bytes` —
+//! FEAT-043 forces `Unbounded` on a bound-affecting gap. scry v2.4.0/v2.5.0 are
+//! behavioral-precision + soundness updates with no API/contract change: v2.4.0
+//! models `memory.size`/`grow` (FEAT-038);
 //! v2.5.0 (FEAT-039) makes `reachable_from_exports` sound in the OPEN world — a
 //! function reachable only via an ESCAPED funcref (exported table / exported
 //! funcref global / passed to an import) is no longer dropped. That value is
@@ -37,7 +45,7 @@
 //! proves the true worst case is 32 bytes — a 2048× over-reservation the layer-1
 //! retarget will collapse.
 
-use scry_analyze_core::{AnalysisConfig, StackBound, analyze};
+use scry_analyze_core::{AnalysisConfig, GapKind, StackBound, analyze};
 
 /// Absolute path to a repo fixture (tests run with CWD = the crate dir).
 fn fixture(rel: &str) -> std::path::PathBuf {
@@ -80,6 +88,33 @@ fn scry_proves_msgq_shadow_stack_budget_383() {
     assert!(
         !r.reachable_from_exports.is_empty(),
         "reachable_from_exports is the sound superset synth prunes against"
+    );
+
+    // (4) GAP OBSERVABILITY (v2.6.0 FEAT-040 + FEAT-043). `gaps` records every
+    //     site where a fact degraded to ⊤. msgq_put DOES gap — but only in the
+    //     VALUE domain (i32.div_u / i32.load8_u / i32.store8 unsupported, plus a
+    //     havocked block) — never on call-target resolution. That distinction is
+    //     the FEAT-043 soundness contract: a call_indirect / call_ref /
+    //     table-mutation gap forces the shadow-stack bound to Unbounded/Unknown,
+    //     NOT a finite under-report (the "cardinal error"). So the finite
+    //     `Bytes(32)` above PROVES scry resolved the call structure soundly; the
+    //     value-domain gaps scrub *data* facts, not call depth. synth's
+    //     consumption rule, now mechanically checkable: trust a finite budget, and
+    //     treat Unbounded as honest-fail. A regression that let a control-flow
+    //     gap (UnmodeledBranch) co-exist with a finite bound would trip this.
+    assert!(
+        r.gaps
+            .iter()
+            .all(|g| !matches!(g.kind, GapKind::UnmodeledBranch)),
+        "msgq_put's gaps must be value-domain (no UnmodeledBranch), so the finite \
+         Bytes(32) bound is not perturbed by an unmodelled multi-target branch; \
+         got {:?}",
+        r.gaps
+    );
+    assert!(
+        matches!(r.stack_usage.max_stack_bytes, StackBound::Bytes(_)),
+        "a finite (Bytes) bound means scry resolved the call structure with no \
+         bound-affecting gap — FEAT-043 forces Unbounded/Unknown otherwise"
     );
 }
 
