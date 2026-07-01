@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-07-01
+
+**`memory.grow(0)` correctness — closes #539.**
+
+### Fixed
+
+- **`memory.grow(0)` returns the current page count, not `-1` (#539).** Growing
+  by zero pages can never fail (WASM Core §4.4.7), so `memory.grow(0)` must return
+  the current size; every ARM lowering path emitted a delta-agnostic `-1`, so a
+  guest doing `if (memory.grow(0) < 0) trap;` (a legal "read/validate current
+  size" idiom) wrongly faulted. Fixed by folding the `i32.const 0; memory.grow`
+  idiom to `memory.size` before lowering — semantically identical, and it fixes
+  the optimized and direct selectors at once. A non-zero delta keeps `-1` (fixed
+  memory genuinely cannot grow). The fold also surfaced and fixed a latent
+  optimized-path bug where `memory.size` returned the size in **bytes**
+  (`MOV rd, R10`) instead of **pages** (`LSR R10, #16`). Verified on both paths
+  under unicorn vs wasmtime; frozen anchors byte-identical; RISC-V continues to
+  loud-skip `memory.size`/`grow` (sound honest-fail).
+
 ## [0.18.0] - 2026-06-30
 
 **i64-parameter codegen correctness — closes the #518 silent miscompile.**
