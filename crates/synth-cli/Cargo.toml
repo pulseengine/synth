@@ -32,6 +32,9 @@ synth-frontend = { path = "../synth-frontend", version = "0.18.1" }
 synth-synthesis = { path = "../synth-synthesis", version = "0.18.1" }
 synth-backend = { path = "../synth-backend", version = "0.18.1" }
 
+# AArch64 host-native backend (#538) — small pure-Rust crate, always on.
+synth-backend-aarch64 = { path = "../synth-backend-aarch64", version = "0.18.1" }
+
 # Optional external backends
 synth-backend-awsm = { path = "../synth-backend-awsm", version = "0.18.1", optional = true }
 synth-backend-wasker = { path = "../synth-backend-wasker", version = "0.18.1", optional = true }

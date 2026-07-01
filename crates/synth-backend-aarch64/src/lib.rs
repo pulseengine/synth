@@ -20,9 +20,12 @@
 //!   arm64 host, diff vs wasmtime).
 //! - **later:** spilling, i64, floats, memory, control flow, calls, DWARF.
 
+pub mod backend;
+pub mod elf;
 pub mod encoder;
 pub mod selector;
 
+pub use backend::AArch64Backend;
 pub use selector::{SelectError, select};
 
 /// Lower a single leaf integer function (wasm ops + declared param count) to A64

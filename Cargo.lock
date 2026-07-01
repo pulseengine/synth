@@ -2109,6 +2109,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "synth-backend",
+ "synth-backend-aarch64",
  "synth-backend-awsm",
  "synth-backend-riscv",
  "synth-backend-wasker",
