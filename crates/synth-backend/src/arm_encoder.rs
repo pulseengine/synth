@@ -5352,21 +5352,17 @@ impl ArmEncoder {
             // I64Ldr: LDR rdlo, [base, offset]; LDR rdhi, [base, offset+4]
             ArmOp::I64Ldr { rdlo, rdhi, addr } => {
                 let mut bytes = Vec::new();
-                let offset = if addr.offset < 0 {
-                    0u32
-                } else {
-                    addr.offset as u32
-                };
-                // #372: a memory `i64.load` carries an index register
+                // #372/#382: a memory `i64.load` carries an index register
                 // (`reg_imm(R11, addr_reg, offset)` = R11 + addr + offset). The
                 // immediate `encode_thumb32_ldr` below uses only base+offset and
                 // would SILENTLY DROP `offset_reg` — the #206 defect, here for
-                // i64. Materialize the effective base `ip = base + index` first
-                // (ADD.W ip, base, index — byte-verified), then load with
-                // immediate offsets. Frame i64 loads (no `offset_reg`, e.g. a
-                // spilled local at `[SP, #off]`) keep the plain `[base,#off]`
+                // i64. `i64_effective_base` materializes the effective base into
+                // `ip` (and, when `offset+4 > 0xFFF`, folds the offset in too so
+                // the function is NOT skipped — #382), returning the residual
+                // imm12 for the two halves. Frame i64 loads (no `offset_reg`, e.g.
+                // a spilled local at `[SP, #off]`) keep the plain `[base,#off]`
                 // form unchanged — so existing output is byte-identical.
-                let base = self.i64_effective_base(&mut bytes, addr);
+                let (base, offset) = self.i64_effective_base(&mut bytes, addr)?;
                 bytes.extend_from_slice(&self.encode_thumb32_ldr(rdlo, &base, offset)?);
                 bytes.extend_from_slice(&self.encode_thumb32_ldr(
                     rdhi,
@@ -5379,13 +5375,9 @@ impl ArmEncoder {
             // I64Str: STR rdlo, [base, offset]; STR rdhi, [base, offset+4]
             ArmOp::I64Str { rdlo, rdhi, addr } => {
                 let mut bytes = Vec::new();
-                let offset = if addr.offset < 0 {
-                    0u32
-                } else {
-                    addr.offset as u32
-                };
-                // #372: same index-materialization as I64Ldr (see above).
-                let base = self.i64_effective_base(&mut bytes, addr);
+                // #372/#382: same index-materialization + large-offset fold as
+                // I64Ldr (see above).
+                let (base, offset) = self.i64_effective_base(&mut bytes, addr)?;
                 bytes.extend_from_slice(&self.encode_thumb32_str(rdlo, &base, offset)?);
                 bytes.extend_from_slice(&self.encode_thumb32_str(
                     rdhi,
@@ -6417,26 +6409,58 @@ impl ArmEncoder {
         Ok(bytes)
     }
 
-    /// #372: resolve the base register for an `I64Ldr`/`I64Str` whose address
-    /// may carry an index register. If `addr.offset_reg` is set (a memory
-    /// `i64.load`/`i64.store`: `R11 + addr + offset`), emit `ADD.W ip, base,
-    /// index` and return `ip` (R12) as the base for the two immediate-offset
-    /// halves. If unset (a frame access at `[base, #off]`), return `addr.base`
-    /// unchanged — emitting nothing — so non-indexed i64 access is byte-identical.
-    /// `ip = base + index` is computed BEFORE the halves load, so an `rdlo`
-    /// aliasing the index register is safe (the address is already materialized).
-    fn i64_effective_base(&self, bytes: &mut Vec<u8>, addr: &MemAddr) -> Reg {
+    /// #372/#382: resolve the base register AND residual immediate offset for an
+    /// `I64Ldr`/`I64Str` whose address may carry an index register. Returns
+    /// `(base, low_offset)`; the caller accesses the halves at `[base,
+    /// #low_offset]` and `[base, #low_offset + 4]`.
+    ///
+    /// - Frame access (no `offset_reg`, e.g. a spilled local at `[SP, #off]`):
+    ///   returns `(addr.base, off)` and emits NOTHING — byte-identical.
+    /// - Memory access (`reg_imm(R11, addr, offset)` = `R11 + addr + offset`)
+    ///   with `offset + 4 <= 0xFFF`: emits `ADD.W ip, base, index` and returns
+    ///   `(ip, offset)`, folding `offset`/`offset+4` into the halves' imm12.
+    ///   Byte-identical to the pre-#382 (#372) behavior.
+    /// - Memory access with `offset + 4 > 0xFFF`: the imm12 form cannot hold the
+    ///   high half's offset, so `encode_thumb32_ldr`'s `check_ldst_imm12` (#259)
+    ///   rightly refused it and the WHOLE function was skipped (#382). Instead
+    ///   MATERIALIZE the offset into the base: `ADD ip, index, #offset` (against
+    ///   the read-only INDEX register, so `encode_thumb32_add_imm` never trips its
+    ///   `rd==rn==R12` alias trap), then `ADD.W ip, ip, base` (+ R11), and return
+    ///   `(ip, 0)` so the halves use `[ip, #0]` / `[ip, #4]`.
+    ///
+    /// The effective address is fully materialized into `ip` BEFORE the halves
+    /// are accessed, so an `rdlo` aliasing the index register is safe.
+    fn i64_effective_base(&self, bytes: &mut Vec<u8>, addr: &MemAddr) -> Result<(Reg, u32)> {
+        let offset = if addr.offset < 0 {
+            0u32
+        } else {
+            addr.offset as u32
+        };
         match addr.offset_reg {
             Some(idx) => {
                 let ip = Reg::R12;
-                // ADD.W ip, addr.base, idx  (Thumb-2, byte-verified vs as)
-                let hw1: u16 = 0xEB00 | reg_to_bits(&addr.base) as u16;
-                let hw2: u16 = 0x0C00 | reg_to_bits(&idx) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-                ip
+                if offset.wrapping_add(4) > 0xFFF {
+                    // Large static offset (#382): fold it (and R11) into ip so the
+                    // imm12 halves stay in range instead of skipping the function.
+                    // ADD ip, index, #offset  (index != ip → no add_imm alias trap)
+                    bytes.extend_from_slice(&self.encode_thumb32_add_imm(&ip, &idx, offset)?);
+                    // ADD.W ip, ip, base  (+ R11)
+                    bytes.extend_from_slice(&self.encode_thumb32_add_reg_raw(
+                        reg_to_bits(&ip),
+                        reg_to_bits(&ip),
+                        reg_to_bits(&addr.base),
+                    )?);
+                    Ok((ip, 0))
+                } else {
+                    // ADD.W ip, addr.base, idx  (Thumb-2, byte-verified vs as)
+                    let hw1: u16 = 0xEB00 | reg_to_bits(&addr.base) as u16;
+                    let hw2: u16 = 0x0C00 | reg_to_bits(&idx) as u16;
+                    bytes.extend_from_slice(&hw1.to_le_bytes());
+                    bytes.extend_from_slice(&hw2.to_le_bytes());
+                    Ok((ip, offset))
+                }
             }
-            None => addr.base,
+            None => Ok((addr.base, offset)),
         }
     }
 
@@ -8933,6 +8957,82 @@ mod tests {
             &[0x0b, 0xeb],
             "frame (non-indexed) I64Ldr must NOT emit an ADD.W"
         );
+    }
+
+    #[test]
+    fn test_382_i64_ldst_large_offset_materializes_not_skips() {
+        // #382: an indexed i64.load/store whose static offset > 0xFFF must
+        // MATERIALIZE the offset into the base — NOT return Err (skip the fn).
+        // Sequence for reg_imm(R11, R0, 5000): MOVW ip,#5000 ; ADD ip,r0,ip ;
+        // ADD ip,ip,fp ; LDR/STR halves at [ip,#0] / [ip,#4]. Byte-verified tail
+        // vs arm-none-eabi-as.
+        let encoder = ArmEncoder::new_thumb2();
+        // 0x1388 > 0xFFF (MemAddr is not Copy, so build it per use).
+
+        let ld = encoder
+            .encode(&ArmOp::I64Ldr {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                addr: MemAddr::reg_imm(Reg::R11, Reg::R0, 5000),
+            })
+            .expect("large-offset i64.load must lower, not skip");
+        // MOVW ip,#0x1388 (4) + ADD ip,r0,ip (4) + ADD ip,ip,fp (4) + 2 LDR (8).
+        assert_eq!(ld.len(), 20, "expected MOVW + 2×ADD + 2×LDR");
+        // Must NOT be the small-offset `ADD.W ip, fp, r0` (0x0b 0xeb) prefix —
+        // that path can only reach imm12 offsets.
+        assert_ne!(
+            &ld[0..2],
+            &[0x0b, 0xeb],
+            "must materialize the large offset"
+        );
+        // Effective base built in ip, then halves at [ip,#0] / [ip,#4].
+        assert_eq!(
+            &ld[4..20],
+            &[
+                0x00, 0xeb, 0x0c, 0x0c, // ADD.W ip, r0, ip
+                0x0c, 0xeb, 0x0b, 0x0c, // ADD.W ip, ip, fp
+                0xdc, 0xf8, 0x00, 0x00, // LDR.W r0, [ip, #0]
+                0xdc, 0xf8, 0x04, 0x10, // LDR.W r1, [ip, #4]
+            ],
+            "large-offset i64.load must fold offset into ip and access [ip,#0]/[ip,#4]"
+        );
+
+        // Store: same base materialization, STR halves.
+        let st = encoder
+            .encode(&ArmOp::I64Str {
+                rdlo: Reg::R2,
+                rdhi: Reg::R3,
+                addr: MemAddr::reg_imm(Reg::R11, Reg::R0, 5000),
+            })
+            .expect("large-offset i64.store must lower, not skip");
+        assert_eq!(st.len(), 20);
+        assert_eq!(
+            &st[4..20],
+            &[
+                0x00, 0xeb, 0x0c, 0x0c, // ADD.W ip, r0, ip
+                0x0c, 0xeb, 0x0b, 0x0c, // ADD.W ip, ip, fp
+                0xcc, 0xf8, 0x00, 0x20, // STR.W r2, [ip, #0]
+                0xcc, 0xf8, 0x04, 0x30, // STR.W r3, [ip, #4]
+            ],
+            "large-offset i64.store must fold offset into ip and access [ip,#0]/[ip,#4]"
+        );
+
+        // Small-offset (imm12) indexed access stays byte-identical (#372): the
+        // effective base is a single `ADD.W ip, fp, r0` and the halves keep the
+        // folded immediates — NO extra MOVW/ADD.
+        let small = encoder
+            .encode(&ArmOp::I64Ldr {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                addr: MemAddr::reg_imm(Reg::R11, Reg::R0, 8),
+            })
+            .unwrap();
+        assert_eq!(
+            &small[0..4],
+            &[0x0b, 0xeb, 0x00, 0x0c],
+            "small-offset indexed i64 must keep the single ADD.W ip, fp, r0"
+        );
+        assert_eq!(small.len(), 12, "ADD.W + 2×LDR.W (offset folded in imm12)");
     }
 
     #[test]
