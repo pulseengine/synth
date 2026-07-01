@@ -2228,3 +2228,63 @@ artifacts:
         MC/DC or a recorded faithful-implementation argument. No object branch is
         untraceable to a source decision. Frozen fixtures bit-identical (the map
         is emitted metadata, not a codegen change).
+
+  - id: VCR-DMA-001
+    type: sw-req
+    title: Volatile DMA segment — loads/stores in a marked range not cached or reordered
+    description: >
+      An integrator can mark a segment of the fused linear memory as VOLATILE —
+      the DMA transfer window. During a DMA-owned window an external agent (the
+      DMA engine, which gale models as a Component-Model `own<buffer>` handoff,
+      gale#124) rewrites the segment out-of-band, so synth must treat that byte
+      range `[base, base+len)` as volatile: a load or store whose address falls
+      inside a marked range must NOT be cached, hoisted, common-subexpression-
+      eliminated, or reordered across the transfer boundary — each access
+      re-materializes its address and re-issues the memory operation. gale's
+      decision DD-DMA-REGION-001 places the DMA buffer in a dedicated shared
+      segment precisely so the range is concrete and verifier-visible.
+
+      PHASE 1 (this artifact, LANDED — flag + plumbing + traceability only, no
+      codegen change): synth accepts `--volatile-segment <base>:<len>` (hex or
+      decimal, repeatable), parses it into `CompileConfig.volatile_segments`
+      (crates/synth-core/src/backend.rs), and threads it to codegen. The ranges
+      are NOT yet consumed by any pass, so the emitted `.text` is byte-identical
+      whether or not the flag is passed (the frozen-codegen byte gate holds). This
+      is why the status is `proposed`, not `implemented`: the requirement's actual
+      guarantee (no caching/reordering across the boundary) is not yet realized.
+
+      PHASE 2 (deferred, gated — the codegen back-off): the optimizer's
+      address-caching passes must DECLINE for any access overlapping a volatile
+      range — specifically const-CSE (`SYNTH_CONST_CSE`, aliasing repeated address
+      constants — see VCR-RA-001) and the #468 base-CSE / const-address-fold
+      (hoisting the linmem base into R11 and folding `[R11,#imm]` loads — also
+      VCR-RA-001), plus any load-reuse / instruction reordering that would move a
+      marked access across the boundary. That step CHANGES emitted bytes, so it is
+      oracle-gated: a differential proving the volatile access pattern (re-load
+      after an external write) and a deliberate re-freeze of any affected fixture.
+
+      Alternative surface deferred with Phase 2: honoring a wasm custom-section
+      convention meld emits (so the range travels with the module) in addition to
+      the explicit CLI flag (#543 option 2).
+    status: proposed
+    tags: [dma, volatile, memory, codegen, const-cse, base-cse, gale-integration, synth-543, phase-1]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: constrained-by
+        target: VCR-RA-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        Tracks GitHub issue #543 (see description + `synth-543` tag).
+        Phase 1 (met): `--volatile-segment 0x20001000:4096` parses into
+        `CompileConfig.volatile_segments` with base=0x20001000 and len=4096;
+        malformed input (`--volatile-segment garbage`) is rejected with a
+        non-zero exit and a descriptive error; a compile WITH the flag is
+        `.text`-byte-identical to one WITHOUT it (the flag is inert plumbing).
+        Phase 2 (deferred, gated): a differential in which an external agent
+        rewrites the marked range between two loads observes the SECOND value,
+        proving synth did not cache/reorder across the boundary; const-CSE and
+        the #468 base-CSE decline for accesses overlapping a marked range; any
+        affected frozen fixture is deliberately re-frozen alongside the change.

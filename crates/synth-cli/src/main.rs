@@ -15,7 +15,7 @@ use synth_backend::{
 };
 use synth_core::HardwareCapabilities;
 use synth_core::SafetyManifest;
-use synth_core::backend::{Backend, BackendRegistry, CompileConfig, SafetyBounds};
+use synth_core::backend::{Backend, BackendRegistry, CompileConfig, SafetyBounds, VolatileRange};
 use synth_core::target::TargetSpec;
 use synth_core::wasm_decoder::ImportEntry;
 use synth_synthesis::{
@@ -269,6 +269,21 @@ enum Commands {
         /// separately until the local-section-symbol follow-up lands.
         #[arg(long)]
         debug_line: bool,
+
+        /// #543 (Phase 1): mark a linear-memory segment as VOLATILE — the DMA
+        /// transfer window. Format `<base>:<len>`; both accept hex (`0x…`) or
+        /// decimal, e.g. `--volatile-segment 0x20001000:4096`. Repeatable to mark
+        /// more than one range. Names a region `[base, base+len)` of the fused
+        /// linear memory that an external agent (the DMA engine, gale's
+        /// `own<buffer>` handoff / decision DD-DMA-REGION-001) rewrites out-of-band,
+        /// so loads/stores inside it must eventually not be cached or reordered
+        /// across the transfer boundary. PHASE 1 = plumbing only: the ranges are
+        /// parsed and threaded to codegen but NOT yet consumed — the emitted bytes
+        /// are unchanged whether or not the flag is passed. The codegen back-off
+        /// (const-CSE + #468 base-CSE decline inside these ranges) is the gated
+        /// Phase 2. See rivet VCR-DMA-001.
+        #[arg(long, value_name = "BASE:LEN")]
+        volatile_segment: Vec<String>,
     },
 
     /// Disassemble an ARM ELF file (e.g., synth disasm output.elf)
@@ -387,6 +402,7 @@ fn main() -> Result<()> {
             sign_output,
             shadow_stack_size,
             debug_line,
+            volatile_segment,
         } => {
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
             let target_spec = resolve_target_spec(target.as_deref(), cortex_m, &backend)?;
@@ -406,6 +422,10 @@ fn main() -> Result<()> {
             // means "next to the ELF" (`<output>.cdx.json`); `--sbom PATH`
             // writes there; absent means no SBOM.
             let sbom_path = resolve_sbom_path(sbom, &output);
+
+            // #543 Phase 1: parse the volatile DMA-window ranges. Inert plumbing —
+            // threaded to codegen but not yet consumed (Phase 2 is gated).
+            let volatile_segments = parse_volatile_segments(&volatile_segment)?;
 
             compile_command(
                 input,
@@ -428,6 +448,7 @@ fn main() -> Result<()> {
                 sign_output,
                 shadow_stack_size,
                 debug_line,
+                volatile_segments,
             )?;
 
             // If --link requested, invoke the cross-linker
@@ -931,6 +952,55 @@ fn resolve_sbom_path(sbom: Option<PathBuf>, output: &std::path::Path) -> Option<
     }
 }
 
+/// #543 (Phase 1): parse the repeated `--volatile-segment <base>:<len>` flag
+/// values into [`VolatileRange`]s. Both fields accept a `0x`-prefixed hex or a
+/// plain decimal `u32`. A range must be `base:len` with exactly one colon; a
+/// zero-length range and a range whose `base + len` overflows `u32` are rejected.
+///
+/// Phase 1 only PARSES and validates — the ranges are threaded onto
+/// [`CompileConfig::volatile_segments`] but not yet consumed by any pass, so the
+/// flag is inert on the emitted bytes. Returns a descriptive error for malformed
+/// input (the flag surface must reject `garbage` loudly, not silently drop it).
+fn parse_volatile_segments(raw: &[String]) -> Result<Vec<VolatileRange>> {
+    fn parse_u32(field: &str, whole: &str) -> Result<u32> {
+        let t = field.trim();
+        let parsed = if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+            u32::from_str_radix(hex, 16)
+        } else {
+            t.parse::<u32>()
+        };
+        parsed.map_err(|_| {
+            anyhow::anyhow!(
+                "invalid --volatile-segment '{whole}': '{field}' is not a u32 \
+                 (expected hex like 0x20001000 or decimal)"
+            )
+        })
+    }
+
+    let mut ranges = Vec::with_capacity(raw.len());
+    for spec in raw {
+        let (base_s, len_s) = spec.split_once(':').ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid --volatile-segment '{spec}': expected '<base>:<len>' \
+                 (e.g. 0x20001000:4096)"
+            )
+        })?;
+        let base = parse_u32(base_s, spec)?;
+        let len = parse_u32(len_s, spec)?;
+        if len == 0 {
+            anyhow::bail!("invalid --volatile-segment '{spec}': length must be non-zero");
+        }
+        if base.checked_add(len).is_none() {
+            anyhow::bail!(
+                "invalid --volatile-segment '{spec}': base + len overflows the 32-bit \
+                 linear-memory address space"
+            );
+        }
+        ranges.push(VolatileRange { base, len });
+    }
+    Ok(ranges)
+}
+
 /// Emit a CycloneDX 1.5 SBOM next to the compiled ELF when `--sbom` was
 /// requested. The SBOM documents the synth compiler, the input WASM module
 /// (hash + size), the output ELF (hash + size + target + backend), and the
@@ -994,6 +1064,9 @@ fn compile_command(
     shadow_stack_size: Option<u32>,
     // VCR-DBG-001 step 4 (#394): `--debug-line` — emit `.debug_line` DWARF.
     debug_line: bool,
+    // #543 Phase 1: integrator-marked volatile DMA-window ranges. Threaded to the
+    // CompileConfig; not yet consumed (Phase 2 is the gated codegen back-off).
+    volatile_segments: Vec<VolatileRange>,
 ) -> Result<()> {
     // Validate backend exists
     let registry = build_backend_registry();
@@ -1042,6 +1115,7 @@ fn compile_command(
             sign_output,
             shadow_stack_size,
             debug_line,
+            volatile_segments,
         );
     }
 
@@ -1177,6 +1251,8 @@ fn compile_command(
         loom_compat,
         safety_bounds,
         target: target_spec.clone(),
+        // #543 Phase 1: threaded but not yet consumed (inert plumbing).
+        volatile_segments,
         ..CompileConfig::default()
     };
 
@@ -1827,6 +1903,9 @@ fn compile_all_exports(
     // VCR-DBG-001 step 4 (#394): emit a `.debug_line` section from the input
     // wasm's DWARF + the ARM line_maps. Default off ⇒ output byte-identical.
     debug_line: bool,
+    // #543 Phase 1: integrator-marked volatile DMA-window ranges. Threaded to the
+    // CompileConfig; not yet consumed (Phase 2 is the gated codegen back-off).
+    volatile_segments: Vec<VolatileRange>,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -2086,6 +2165,10 @@ fn compile_all_exports(
         // source of truth for the AAPCS stack-argument refusal. The per-function
         // `current_func_params_i64` is derived from this in the compile loop.
         func_params_i64: all_func_params_i64.clone(),
+        // #543 Phase 1: threaded but not yet consumed (inert plumbing). The
+        // Phase-2 back-off (const-CSE + #468 base-CSE decline inside these ranges)
+        // lives on the optimized path this config feeds. See VCR-DMA-001.
+        volatile_segments,
         ..CompileConfig::default()
     };
 
@@ -4402,6 +4485,57 @@ fn link_firmware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- #543 Phase 1: `--volatile-segment` parsing ---------------------------
+
+    /// The canonical example from the flag docs parses into a `VolatileRange`
+    /// with the right base/len. Hex base + decimal len is the documented form.
+    #[test]
+    fn volatile_segment_parses_hex_base_decimal_len_543() {
+        let ranges = parse_volatile_segments(&["0x20001000:4096".to_string()]).unwrap();
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].base, 0x2000_1000);
+        assert_eq!(ranges[0].len, 4096);
+    }
+
+    /// Both fields accept decimal or hex interchangeably, and the flag is
+    /// repeatable (>1 range).
+    #[test]
+    fn volatile_segment_accepts_decimal_and_is_repeatable_543() {
+        let ranges = parse_volatile_segments(&[
+            "536875008:0x1000".to_string(), // decimal base, hex len
+            "0x20002000:256".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(ranges[0].base, 536_875_008);
+        assert_eq!(ranges[0].len, 0x1000);
+        assert_eq!(ranges[1].base, 0x2000_2000);
+        assert_eq!(ranges[1].len, 256);
+    }
+
+    /// Malformed input must be rejected loudly (not silently dropped): missing
+    /// colon, non-numeric fields, zero length, and base+len overflow all error.
+    #[test]
+    fn volatile_segment_rejects_malformed_543() {
+        assert!(parse_volatile_segments(&["garbage".to_string()]).is_err());
+        assert!(parse_volatile_segments(&["0x20001000".to_string()]).is_err());
+        assert!(parse_volatile_segments(&["nothex:4096".to_string()]).is_err());
+        assert!(parse_volatile_segments(&["0x1000:notlen".to_string()]).is_err());
+        assert!(parse_volatile_segments(&["0x1000:0".to_string()]).is_err());
+        assert!(parse_volatile_segments(&["0xFFFFFFFF:0x10".to_string()]).is_err());
+        // Too many colons is malformed (base:len only).
+        assert!(parse_volatile_segments(&["0x1000:0x10:0x20".to_string()]).is_err());
+    }
+
+    /// No `--volatile-segment` flags → empty ranges (the inert default). This is
+    /// what keeps the config's `volatile_segments` empty on a normal compile, so
+    /// Phase 1 changes no emitted bytes.
+    #[test]
+    fn volatile_segment_empty_by_default_543() {
+        assert!(parse_volatile_segments(&[]).unwrap().is_empty());
+        assert!(CompileConfig::default().volatile_segments.is_empty());
+    }
 
     fn fop(index: u32, export: Option<&str>, ops: Vec<WasmOp>) -> FunctionOps {
         FunctionOps {
