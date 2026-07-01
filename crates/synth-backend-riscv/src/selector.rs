@@ -3630,6 +3630,29 @@ impl Selector {
     /// callee-saved and never handed out by `alloc_temp`.
     const DIV_MOVE_SCRATCH: Reg = Reg::S7;
 
+    /// #317: the complete set of registers the inline long-division core
+    /// writes (its fixed state file + the three loop scratches). The core
+    /// bypasses the allocator entirely, so any allocator-chosen temporary
+    /// that must stay live *across* `emit_i64_udiv_inline` (the signed
+    /// path's `nsign`/`dsign` sign masks) has to avoid this set — otherwise
+    /// the core's input parallel-move overwrites it before the result-sign
+    /// fix-up reads it. `DIV_MOVE_SCRATCH` (`s7`) is never in the `temps`
+    /// pool so it needs no entry here. Of the pool, only `s4..s6` sit
+    /// outside this set — and they are callee-saved, so a non-leaf function
+    /// preserves them via `preserve_callee_saved`.
+    const DIV_CORE_TEMPS: [Reg; 10] = [
+        Self::DIV_Q_LO,
+        Self::DIV_Q_HI,
+        Self::DIV_R_LO,
+        Self::DIV_R_HI,
+        Self::DIV_D_LO,
+        Self::DIV_D_HI,
+        Self::DIV_CNT,
+        Self::DIV_SCRATCH0,
+        Self::DIV_SCRATCH1,
+        Self::DIV_SCRATCH2,
+    ];
+
     /// Emit a set of parallel register moves `dst <- src` such that every
     /// source is read before any move overwrites it — i.e. the moves behave
     /// as if performed simultaneously. `scratch` is a free register used to
@@ -3994,13 +4017,23 @@ impl Selector {
         // ── Signed: reduce to magnitudes, divide, fix up the sign. ───────
         // The sign of each operand is bit 63 = the MSB of its hi half;
         // `sra hi, 31` broadcasts it to an all-ones / all-zeros mask.
-        let nsign = self.alloc_temp();
+        //
+        // #317: `nsign`/`dsign` stay live across `emit_i64_udiv_inline`
+        // (they're read only in the post-core result-sign fix-up), so they
+        // must NOT land in the core's fixed register file — otherwise the
+        // core's input parallel-move (which copies the divisor into
+        // `DIV_D_LO`/`DIV_D_HI` = `t4`/`t5`) clobbers them before the sign
+        // is applied, yielding the wrong sign (e.g. `div_s(-100,3)` → `0x1f`
+        // instead of `-34`). Allocate them outside `DIV_CORE_TEMPS`; with
+        // the operands typically in the low `t`-registers this places them
+        // in the callee-saved `s4..s6`, which the core provably never writes.
+        let nsign = self.alloc_temp_avoiding(&Self::DIV_CORE_TEMPS);
         self.out.push(RiscVOp::Srai {
             rd: nsign,
             rs1: nh,
             shamt: 31,
         });
-        let dsign = self.alloc_temp();
+        let dsign = self.alloc_temp_avoiding(&Self::DIV_CORE_TEMPS);
         self.out.push(RiscVOp::Srai {
             rd: dsign,
             rs1: dh,
@@ -6011,6 +6044,43 @@ mod tests {
             count(&out, |op| matches!(op, RiscVOp::Srai { shamt: 31, .. })) >= 2,
             "signed rem derives operand sign masks via `sra hi, 31`"
         );
+    }
+
+    /// #317: the `nsign`/`dsign` sign masks (the only `sra hi, 31` ops in the
+    /// signed div/rem lowering) must NOT land in the inline long-division
+    /// core's fixed register file. The core bypasses the allocator and copies
+    /// its inputs into `DIV_D_LO`/`DIV_D_HI` (t4/t5) via a parallel-move; if a
+    /// sign mask sat there it would be clobbered before `result_sign` reads it,
+    /// producing the wrong sign (div_s(-100,3) → 0x1f instead of -34).
+    #[test]
+    fn i64_signed_div_sign_masks_avoid_div_core_file() {
+        for op in [WasmOp::I64DivS, WasmOp::I64RemS] {
+            let out = run_i64(&[
+                WasmOp::I64Const(-100),
+                WasmOp::I64Const(3),
+                op.clone(),
+                WasmOp::Drop,
+            ]);
+            let sign_mask_regs: Vec<Reg> = out
+                .iter()
+                .filter_map(|o| match o {
+                    RiscVOp::Srai { rd, shamt: 31, .. } => Some(*rd),
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                sign_mask_regs.len() >= 2,
+                "{op:?}: expected the two operand sign masks (`sra hi, 31`)"
+            );
+            for r in &sign_mask_regs {
+                assert!(
+                    !Selector::DIV_CORE_TEMPS.contains(r),
+                    "{op:?}: sign mask landed in {r:?}, a register the udiv core \
+                     overwrites (DIV_CORE_TEMPS = {:?}) — #317 sign clobber",
+                    Selector::DIV_CORE_TEMPS
+                );
+            }
+        }
     }
 
     #[test]
