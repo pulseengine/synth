@@ -1167,7 +1167,14 @@ fn compile_command(
     let code = compiled.code;
     info!("Encoded {} bytes of machine code", code.len());
 
-    let elf_data = if matches!(target_spec.family, synth_core::target::ArchFamily::RiscV) {
+    let elf_data = if backend.name() == "aarch64" {
+        // #546: emit the AArch64 backend's own EM_AARCH64 ELF64 object, not the
+        // ARM (EM_ARM/ELF32) wrapper. The A64 codegen is correct; only the
+        // container differs. Discriminate on backend name, not target family:
+        // `cortex_a53()` is `ArchFamily::ArmCortexA` (isa AArch64), so a family
+        // check would misroute it into the ARM builder.
+        build_aarch64_elf(&code, &func_name)?
+    } else if matches!(target_spec.family, synth_core::target::ArchFamily::RiscV) {
         build_riscv_elf(&code, &func_name)?
     } else if cortex_m {
         build_cortex_m_elf(&code, &func_name, target_spec)?
@@ -2224,9 +2231,14 @@ fn compile_all_exports(
     // standalone Cortex-M executable, route to the cortex-m builder, which
     // patches each internal BL displacement in place after layout (#170).
     let is_riscv = matches!(target_spec.family, synth_core::target::ArchFamily::RiscV);
+    // #546: route the A64 `.text` into the AArch64 backend's own EM_AARCH64
+    // ELF64 object rather than the ARM (EM_ARM/ELF32) wrapper. Keyed on backend
+    // name — `cortex_a53()` is `ArchFamily::ArmCortexA` (isa AArch64), so a
+    // family check would misroute it. The AArch64 object is always ET_REL.
+    let is_aarch64 = backend.name() == "aarch64";
     // Tracks whether we emitted an ET_REL object (needs linking) vs a standalone
     // executable, so the summary below reports the right type and link hint.
-    let produced_relocatable = is_riscv || has_external_relocations || relocatable;
+    let produced_relocatable = is_riscv || is_aarch64 || has_external_relocations || relocatable;
 
     // VCR-DBG-001 step 4 (#394): when `--debug-line` is set, parse the input
     // wasm's `.debug_line` from the bytes synth actually compiled
@@ -2247,7 +2259,7 @@ fn compile_all_exports(
     // relocatable text symbol to anchor the addresses, so `--debug-line` would
     // silently drop. Warn LOUDLY rather than mislead a consumer (jess) into
     // expecting source lines that aren't there — the #383 honest-fail rule.
-    let dwarf_effective = !is_riscv && (has_external_relocations || relocatable);
+    let dwarf_effective = !is_riscv && !is_aarch64 && (has_external_relocations || relocatable);
     if debug_line && !dwarf_effective {
         warn!(
             "--debug-line has no effect on this output: DWARF line tables are emitted only on \
@@ -2255,13 +2267,21 @@ fn compile_all_exports(
              {} produces no .debug_* sections.",
             if is_riscv {
                 "The RISC-V backend"
+            } else if is_aarch64 {
+                "The AArch64 backend"
             } else {
                 "A self-contained executable image"
             }
         );
     }
 
-    let elf_data = if is_riscv {
+    let elf_data = if is_aarch64 {
+        // #546: the AArch64 backend emits its own EM_AARCH64 ELF64 (ET_REL)
+        // object. This must precede the `has_external_relocations || relocatable`
+        // arm so `-b aarch64 --relocatable` isn't stolen into the ARM builder.
+        info!("Building AArch64 multi-function relocatable object (EM_AARCH64)");
+        build_multi_func_aarch64_elf(&compiled_funcs)?
+    } else if is_riscv {
         info!("Building RISC-V multi-function relocatable object (EM_RISCV)");
         build_multi_func_riscv_elf(&compiled_funcs)?
     } else if has_external_relocations || relocatable {
@@ -3895,6 +3915,32 @@ fn build_multi_func_riscv_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
 #[cfg(not(feature = "riscv"))]
 fn build_multi_func_riscv_elf(_funcs: &[ElfFunction]) -> Result<Vec<u8>> {
     anyhow::bail!("RISC-V backend was not compiled in (rebuild with --features riscv)")
+}
+
+/// #546: emit a single-function `EM_AARCH64` ELF64 (`ET_REL`) object via the
+/// AArch64 backend's own emitter, instead of wrapping the A64 `.text` in the ARM
+/// (EM_ARM/ELF32) container. Mirrors `build_riscv_elf` — the per-backend ELF path.
+fn build_aarch64_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
+    use synth_backend_aarch64::elf::{ElfFunction as A64ElfFunction, build_relocatable_object};
+    Ok(build_relocatable_object(&[A64ElfFunction {
+        name: func_name.to_string(),
+        code: code.to_vec(),
+    }]))
+}
+
+/// #546: emit a multi-function `EM_AARCH64` ELF64 (`ET_REL`) object exposing one
+/// global `STT_FUNC` symbol per compiled export. Mirrors
+/// `build_multi_func_riscv_elf` — the per-backend ELF path (#538 milestone-1c).
+fn build_multi_func_aarch64_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
+    use synth_backend_aarch64::elf::{ElfFunction as A64ElfFunction, build_relocatable_object};
+    let a64_funcs: Vec<A64ElfFunction> = funcs
+        .iter()
+        .map(|f| A64ElfFunction {
+            name: f.name.clone(),
+            code: f.code.clone(),
+        })
+        .collect();
+    Ok(build_relocatable_object(&a64_funcs))
 }
 
 /// Build a simple ELF with just the code section (for quick testing)
