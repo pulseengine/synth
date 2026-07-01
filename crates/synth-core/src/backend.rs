@@ -155,6 +155,42 @@ pub struct CompileConfig {
     /// driver loop, because `compile_function` is shared across backends and
     /// carries no function index. Empty → assume i32.
     pub current_func_params_i64: Vec<bool>,
+
+    /// #543 Phase 1 — integrator-marked volatile linear-memory segments (the DMA
+    /// transfer window). Each range `[base, base+len)` names a region of the fused
+    /// linear memory that an EXTERNAL agent (the DMA engine, modelled by gale as a
+    /// Component-Model `own<buffer>` handoff — gale decision `DD-DMA-REGION-001`,
+    /// gale#124) rewrites out-of-band. Loads and stores whose address falls inside
+    /// a marked range must eventually be treated as VOLATILE: not cached, hoisted,
+    /// or reordered across the transfer boundary.
+    ///
+    /// PHASE-1 CONTRACT (this field is plumbing only): it is populated by the CLI
+    /// `--volatile-segment <base>:<len>` flag and threaded to codegen, but is NOT
+    /// yet consumed by any pass. Empty by default, so the emitted `.text` is
+    /// byte-identical with or without the flag (the frozen-codegen gate holds).
+    ///
+    /// PHASE-2 CONSUMPTION POINT (deferred, gated — issue #543): the optimizer's
+    /// address-caching passes must BACK OFF for any access inside these ranges —
+    /// specifically const-CSE (`SYNTH_CONST_CSE`, aliasing repeated address
+    /// constants) and the #468 base-CSE / const-address-fold (hoisting the linmem
+    /// base into R11 and folding `[R11,#imm]` loads), plus any load-reuse /
+    /// reorder. A load or store overlapping a volatile range must re-materialize
+    /// its address and re-issue the memory access at each occurrence, and no such
+    /// access may move across a marked boundary. See rivet `VCR-DMA-001`.
+    pub volatile_segments: Vec<VolatileRange>,
+}
+
+/// #543 — an integrator-marked volatile linear-memory segment (the DMA transfer
+/// window): the half-open byte range `[base, base + len)` of the fused linear
+/// memory that an external agent rewrites out-of-band. Parsed from the CLI
+/// `--volatile-segment <base>:<len>` flag. See [`CompileConfig::volatile_segments`]
+/// for the Phase-1/Phase-2 split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VolatileRange {
+    /// Start address of the volatile region, in linear-memory bytes.
+    pub base: u32,
+    /// Length of the volatile region, in bytes. The region is `[base, base+len)`.
+    pub len: u32,
 }
 
 impl CompileConfig {
@@ -190,6 +226,9 @@ impl Default for CompileConfig {
             type_ret_i64: Vec::new(),
             func_params_i64: Vec::new(),
             current_func_params_i64: Vec::new(),
+            // #543 Phase 1: no volatile segments unless the CLI flag names them.
+            // Empty ⇒ inert ⇒ emitted bytes unchanged.
+            volatile_segments: Vec::new(),
         }
     }
 }
