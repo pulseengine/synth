@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-07-01
+
+**AArch64 host-native backend + source-level DWARF, plus a sweep of codegen
+correctness fixes across three backends.**
+
+### Added
+
+- **AArch64 (A64) host-native backend (#538).** New `synth-backend-aarch64`
+  crate reachable via `-b aarch64`: a `clang`-verified A64 integer encoder, a
+  minimal straight-line selector (params `w0..w7`, i32 add/sub/mul/and/or/xor +
+  const, result `w0`, `ret`), an `EM_AARCH64` ELF64 relocatable-object emitter,
+  and the `Backend` trait wiring. synth output now runs and debugs natively on
+  arm64 dev hosts (Apple Silicon, arm64 Linux/CI) instead of only under
+  QEMU/Renode, and a third backend becomes a third differential oracle against
+  the Thumb-2 and RV32 lowerings. Milestone-1 is the integer subset; ops outside
+  it fail honestly (see #554 below).
+- **Source-level DWARF debug info on the ARM `--relocatable` path (#394).** The
+  emitted `.debug_line` now carries the **real** source file names from the input
+  wasm's DWARF (not a fabricated `synth.wasm`), and per-function
+  `DW_TAG_subprogram` DIEs are emitted so gdb/lldb backtraces show **function
+  names**, not bare addresses. DWARF is additive/non-loadable — `.text` stays
+  byte-identical. (Variable locations remain Tier-2, gated on the VCR-RA
+  allocator.)
+
+### Fixed
+
+- **AArch64 rejects f32 ops honestly instead of silent miscompile (#554).**
+  Scalar `f32.*` is dropped by the decoder (`_ => None`) and recorded in
+  `FunctionOps::unsupported`, but the single-function CLI path discarded that
+  marker and lowered the remaining stream into wrong code (`f32.add` → `mov
+  w0,w1`). Now the decode-boundary honors the loud-skip marker — the
+  single-function analogue of the `--all-exports` loud-skip (#369) — closing the
+  same latent silent-drop on the ARM/RISC-V single-function paths too.
+- **RV32 `if`/`else`-with-result register reconciliation (#343).** A
+  value-returning `if/else` left the two arms' results in different registers; the
+  epilogue read whichever the else-arm left, so the then-path returned a stale
+  value. The join now reconciles both arms onto one result register (i32 and the
+  i64 lo/hi pair), byte-identical when the arms already coincide.
+- **RV32 `i64.div_s`/`i64.rem_s` sign clobber (#317).** The sign-mask temporaries
+  landed in the udiv core's fixed `t4`/`t5` (`DIV_D_LO/HI`) registers and were
+  overwritten before `result_sign` was computed (wrong signs). Moved to
+  callee-saved `s4..s6`, outside the core's fixed register file.
+- **Value-stack pre-flight soundness on stack-polymorphic terminators (#329).**
+  Code after `unreachable`/`return`/`br`/`br_table` is unreachable and
+  type-checks against an infinite polymorphic stack (wasm spec); the finite depth
+  counter reported false underflows on such dead code. The check now bails
+  soundly there. (The falcon false-underflow this issue reported was already
+  resolved by #369's float loud-skip.)
+- **ARM byte-size estimator ↔ encoder alignment (#498).** Closed 10 pure-estimator
+  size gaps (`Cmn`/`Adds`/`Subs` high-reg forms, `Popcnt`/`I64Popcnt`,
+  `I64Extend32S`, i64 `div`/`rem`) so `estimate_arm_byte_size` matches the real
+  encoder length, tightening the agreement oracle. Estimator-only — no emitted
+  `.text` change. (A latent neg-imm `MOVS` *encoder* bug is documented for a
+  separate, byte-changing PR.)
+
+### Changed
+
+- **Publish verification uses `cargo package` (#146).** The release pre-flight
+  verifies each publishable crate with `cargo package` rather than `cargo publish
+  --dry-run`; restored `synth-backend-aarch64` to the publishable set.
+
 ## [0.18.1] - 2026-07-01
 
 **`memory.grow(0)` correctness — closes #539.**
