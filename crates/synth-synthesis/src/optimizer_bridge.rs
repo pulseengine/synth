@@ -349,6 +349,52 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         ArmOp::Adc { .. } | ArmOp::Sbc { .. } => 4,
         // CLZ, RBIT are always 32-bit Thumb-2
         ArmOp::Clz { .. } | ArmOp::Rbit { .. } => 4,
+        // Popcnt: the encoder expands it to a fixed bit-twiddle sequence using
+        // r11/r12 scratch (arm_encoder.rs). 84 bytes for the body, +2 for the
+        // leading 16-bit `MOV rd, rm` when rd != rm. #498: previously absent
+        // from the estimator (fell to `_ => 2`), an 82/84-byte under-estimate.
+        ArmOp::Popcnt { rd, rm } => {
+            if reg_num(rd) != reg_num(rm) {
+                86
+            } else {
+                84
+            }
+        }
+        // ADDS/SUBS with a register operand: 16-bit only when rd, rn, rm are all
+        // R0-R7 (flag-setting T1 form); any high register forces the 32-bit
+        // ADDS.W/SUBS.W (#178/#180). The immediate form is always 32-bit.
+        // #498: previously fell to `_ => 2`, under-estimating the high-reg form.
+        ArmOp::Adds {
+            rd,
+            rn,
+            op2: Operand2::Reg(rm),
+        }
+        | ArmOp::Subs {
+            rd,
+            rn,
+            op2: Operand2::Reg(rm),
+        } => {
+            if reg_num(rd) < 8 && reg_num(rn) < 8 && reg_num(rm) < 8 {
+                2
+            } else {
+                4
+            }
+        }
+        ArmOp::Adds { .. } | ArmOp::Subs { .. } => 4,
+        // CMN with a register operand: 16-bit T1 only for R0-R7; high registers
+        // (CMN has no 16-bit high-reg form, #184) force CMN.W (32-bit). The
+        // immediate form is always 32-bit (CMN.W). #498: previously `_ => 2`.
+        ArmOp::Cmn {
+            rn,
+            op2: Operand2::Reg(rm),
+        } => {
+            if reg_num(rn) < 8 && reg_num(rm) < 8 {
+                2
+            } else {
+                4
+            }
+        }
+        ArmOp::Cmn { .. } => 4,
         // SXTB, SXTH, UXTB, UXTH can be 16-bit for low registers
         ArmOp::Sxtb { rd, rm }
         | ArmOp::Sxth { rd, rm }
@@ -376,18 +422,22 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         ArmOp::I64Clz { .. } => 24,
         // I64Ctz: CMP.W(4) + BEQ(2) + RBIT.W(4) + CLZ.W(4) + B(2) + NOP(2) + RBIT.W(4) + CLZ.W(4) + ADD.W(4) + MOV(2) = 32 bytes
         ArmOp::I64Ctz { .. } => 32,
-        // I64Popcnt: large implementation with PUSH/POP and duplicate algorithm for lo and hi = ~180 bytes
-        ArmOp::I64Popcnt { .. } => 200,
-        // I64 sign extension: SXTB/SXTH/ASR + ASR = 4-8 bytes
+        // I64Popcnt: PUSH/POP + duplicate popcount for lo and hi word (#498:
+        // measured 172, was a ~180-guess 200 over-estimate).
+        ArmOp::I64Popcnt { .. } => 172,
+        // I64 sign extension: SXTB/SXTH/ASR + ASR.
         ArmOp::I64Extend8S { .. } => 8,
         ArmOp::I64Extend16S { .. } => 8,
-        ArmOp::I64Extend32S { .. } => 8,
-        // I64 division: PUSH + init + loop body + MOV + POP = ~80-150 bytes
-        ArmOp::I64DivU { .. } => 100,
-        ArmOp::I64RemU { .. } => 100,
-        // Signed versions have additional negation logic
-        ArmOp::I64DivS { .. } => 150,
-        ArmOp::I64RemS { .. } => 150,
+        // I64Extend32S: MOV (lo passthrough) + ASR (sign-fill hi) = 6 bytes
+        // (#498: measured 6, was an 8-byte over-estimate).
+        ArmOp::I64Extend32S { .. } => 6,
+        // I64 division: PUSH + init + binary long-division loop + MOV + POP.
+        // #498: exact measured sizes (were ~80-150 guesses).
+        ArmOp::I64DivU { .. } => 74,
+        ArmOp::I64RemU { .. } => 78,
+        // Signed versions have additional negation logic.
+        ArmOp::I64DivS { .. } => 126,
+        ArmOp::I64RemS { .. } => 124,
         // AND/OR/XOR: encoder always uses 32-bit Thumb-2 (.W) encoding
         ArmOp::And { .. } | ArmOp::Orr { .. } | ArmOp::Eor { .. } => 4,
         // LDR/STR with high base register or large offset need 32-bit
