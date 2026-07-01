@@ -704,6 +704,12 @@ struct ControlFrame {
     /// Snapshot of the value-stack height when this frame was pushed.
     /// Used to drop excess values on br / end.
     stack_height_at_entry: usize,
+    /// #343: for an `if (result …)` frame, the then-arm's result value(s) —
+    /// the vstack entries above `stack_height_at_entry`, captured at `else`.
+    /// They are reconciled with the else-arm's results at `end` so both arms
+    /// leave the value in the SAME register(s) at the join. Empty for
+    /// blocks/loops and for control-flow-only (arity-0) if/else.
+    then_results: Vec<VstackVal>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1198,6 +1204,7 @@ impl Selector {
                     head_label: None,
                     else_label: None,
                     stack_height_at_entry: self.vstack.len(),
+                    then_results: Vec::new(),
                 });
             }
             Loop => {
@@ -1210,6 +1217,7 @@ impl Selector {
                     head_label: Some(head),
                     else_label: None,
                     stack_height_at_entry: self.vstack.len(),
+                    then_results: Vec::new(),
                 });
             }
             If => self.lower_if(op)?,
@@ -1960,14 +1968,17 @@ impl Selector {
             head_label: None,
             else_label: Some(else_label),
             stack_height_at_entry: self.vstack.len(),
+            then_results: Vec::new(),
         });
         Ok(())
     }
 
     fn lower_else(&mut self, _op: &WasmOp) -> Result<(), SelectorError> {
+        // Read the frame's fields up front so the mutable borrow is released
+        // before touching `self.vstack` / `self.out`.
         let frame = self
             .ctrl
-            .last_mut()
+            .last()
             .ok_or(SelectorError::ControlMismatch("else without matching if"))?;
         if frame.kind != FrameKind::If {
             return Err(SelectorError::ControlMismatch(
@@ -1979,6 +1990,7 @@ impl Selector {
             .else_label
             .clone()
             .ok_or(SelectorError::ControlMismatch("if frame has no else label"))?;
+        let entry = frame.stack_height_at_entry;
         // jal zero, Lif_end  → end of then-branch jumps past the else
         self.out.push(RiscVOp::Jal {
             rd: Reg::ZERO,
@@ -1986,9 +1998,18 @@ impl Selector {
         });
         // Lelse:
         self.out.push(RiscVOp::Label { name: else_label });
-        // Reset the value-stack height to what it was at if-entry — wasm
-        // discards then-branch values when entering the else-branch.
-        self.vstack.truncate(frame.stack_height_at_entry);
+        // #343: capture the then-arm's result value(s) — the vstack entries
+        // above the if-entry checkpoint — before resetting the stack for the
+        // else-arm. wasm discards the then-branch values when entering the
+        // else-branch, but their REGISTERS must be reconciled with the
+        // else-arm's at `end` (see `lower_end`) so both arms leave the join
+        // value in the same place. `split_off` both captures and truncates.
+        let then_results = self.vstack.split_off(entry);
+        let frame = self
+            .ctrl
+            .last_mut()
+            .expect("if frame still open (checked above)");
+        frame.then_results = then_results;
         frame.kind = FrameKind::Else;
         Ok(())
     }
@@ -2002,8 +2023,36 @@ impl Selector {
                 && let Some(else_label) = frame.else_label.clone()
             {
                 // The if had no else: emit the else label here and let it
-                // join the end label so beq lands here.
+                // join the end label so beq lands here. A valid if-without-else
+                // has arity 0 (no result), so there is nothing to reconcile.
                 self.out.push(RiscVOp::Label { name: else_label });
+            } else if frame.kind == FrameKind::Else {
+                // #343: reconcile the two arms onto a single set of result
+                // registers. The then-arm's results were captured at `else`
+                // (`frame.then_results`); the else-arm's results are the vstack
+                // entries above the entry checkpoint right now. The `mv`s
+                // emitted here sit on the ELSE path — between the else-arm body
+                // and `end_label` — and the then-path's `jal end_label`
+                // (emitted at `else`) jumps over them. So on the then path the
+                // then-arm's value is already live in the merged register; on
+                // the else path each `mv rd_then, rd_else` moves the else value
+                // into the same register. When both arms already chose the same
+                // register, NO `mv` is emitted (control-flow-only / register-
+                // symmetric if/else stays byte-identical).
+                let then_results = frame.then_results;
+                let else_results = self.vstack.split_off(frame.stack_height_at_entry);
+                if then_results.len() != else_results.len() {
+                    return Err(SelectorError::ControlMismatch(
+                        "if/else arms disagree on result arity (#343)",
+                    ));
+                }
+                for (then_v, else_v) in then_results.iter().zip(else_results.iter()) {
+                    self.reconcile_if_result(*then_v, *else_v)?;
+                }
+                // The merged results live in the then-arm's registers — push
+                // them back so the surrounding code (return / outer op) reads
+                // them.
+                self.vstack.extend(then_results);
             }
             self.out.push(RiscVOp::Label {
                 name: frame.end_label,
@@ -2014,6 +2063,64 @@ impl Selector {
             self.emitted_return = true;
         }
         Ok(())
+    }
+
+    /// #343: reconcile one if-result position between the two arms — make the
+    /// else-arm's result register(s) hold the value the then-arm's do, by
+    /// emitting `mv rd_then, rd_else` (i64: lo and hi) on the ELSE path when the
+    /// two arms chose different registers. RV32 has no `mv` mnemonic; `addi rd,
+    /// rs, 0` is the canonical encoding (the same one the return epilogue uses).
+    /// Emitting NOTHING when the registers already match is what keeps register-
+    /// symmetric / control-flow-only if/else byte-identical.
+    ///
+    /// A width mismatch between arms (i32 vs i64) is invalid wasm; surface it as
+    /// a recoverable `ControlMismatch` rather than emit a half-move.
+    ///
+    /// The i64 case emits the `lo` then `hi` move sequentially, which is only
+    /// correct if the two positions do not form a register-permutation cycle
+    /// (`else.lo == then.hi && else.hi == then.lo`). That cannot arise here:
+    /// both arms begin allocation from the identical free-register set (the
+    /// else-arm resets the vstack to the if-entry checkpoint) and every i64
+    /// lowering allocates `lo` before `hi`, so `lo` occupies a lower-indexed
+    /// register than `hi` in BOTH arms — a 2-cycle would require
+    /// `else.lo == then.hi > then.lo == else.hi`, contradicting lo-before-hi.
+    fn reconcile_if_result(
+        &mut self,
+        then_v: VstackVal,
+        else_v: VstackVal,
+    ) -> Result<(), SelectorError> {
+        match (then_v, else_v) {
+            (VstackVal::I32(rt), VstackVal::I32(re)) => {
+                if rt != re {
+                    self.out.push(RiscVOp::Addi {
+                        rd: rt,
+                        rs1: re,
+                        imm: 0,
+                    });
+                }
+                Ok(())
+            }
+            (VstackVal::I64 { lo: tl, hi: th }, VstackVal::I64 { lo: el, hi: eh }) => {
+                if tl != el {
+                    self.out.push(RiscVOp::Addi {
+                        rd: tl,
+                        rs1: el,
+                        imm: 0,
+                    });
+                }
+                if th != eh {
+                    self.out.push(RiscVOp::Addi {
+                        rd: th,
+                        rs1: eh,
+                        imm: 0,
+                    });
+                }
+                Ok(())
+            }
+            _ => Err(SelectorError::ControlMismatch(
+                "if/else result width mismatch between arms (#343)",
+            )),
+        }
     }
 
     fn lower_br(&mut self, depth: u32, _op: &WasmOp) -> Result<(), SelectorError> {
@@ -4471,6 +4578,84 @@ mod tests {
         );
         // The then-branch needs to jump past the else.
         assert!(count(&out, |op| matches!(op, RiscVOp::Jal { .. })) >= 1);
+    }
+
+    /// #343: an `if (result i32)` whose arms land the result in DIFFERENT
+    /// registers must reconcile them at the join — exactly one `mv rd_then,
+    /// rd_else` (`addi rd, rs, 0`) on the else path, between the else label and
+    /// the end label. The then-path `jal` jumps over it, so both arms leave the
+    /// value in `rd_then`. Here the then-arm computes `1 + 2` (result lands in
+    /// an `add` destination, a distinct register from the else-arm's bare const).
+    #[test]
+    fn if_result_asymmetric_arms_reconcile_to_one_register_343() {
+        let out = s(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::If,
+                WasmOp::I32Const(1),
+                WasmOp::I32Const(2),
+                WasmOp::I32Add, // then-result in the add's dest reg
+                WasmOp::Else,
+                WasmOp::I32Const(20), // else-result in a bare const reg
+                WasmOp::End,
+                WasmOp::End,
+            ],
+            1,
+        );
+        let else_pos = out
+            .iter()
+            .position(|o| matches!(o, RiscVOp::Label { name } if name.starts_with("Lelse")))
+            .expect("else label emitted");
+        let end_pos = out
+            .iter()
+            .position(|o| matches!(o, RiscVOp::Label { name } if name.starts_with("Lif_end")))
+            .expect("if-end label emitted");
+        assert!(else_pos < end_pos, "else label precedes end label");
+        // A reconciliation move is `addi rd, rs, 0` with rd != rs (register→
+        // register copy). The else-arm's const is `addi rd, zero, 20` (imm 20),
+        // so it is not mistaken for one.
+        let recon: Vec<(Reg, Reg)> = out[else_pos + 1..end_pos]
+            .iter()
+            .filter_map(|o| match o {
+                RiscVOp::Addi { rd, rs1, imm: 0 } if rd != rs1 => Some((*rd, *rs1)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            recon.len(),
+            1,
+            "exactly one reconciliation mv on the else path, got {recon:?}"
+        );
+    }
+
+    /// #343: a control-flow-only / result-less `if/else` (arity 0) carries no
+    /// value across the join, so NO reconciliation move is emitted — this is
+    /// what keeps such if/else byte-identical to the pre-#343 output.
+    #[test]
+    fn if_without_result_emits_no_reconciliation_343() {
+        let out = s(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::If,
+                WasmOp::Else,
+                WasmOp::End,
+                WasmOp::End,
+            ],
+            1,
+        );
+        let else_pos = out
+            .iter()
+            .position(|o| matches!(o, RiscVOp::Label { name } if name.starts_with("Lelse")))
+            .expect("else label emitted");
+        let end_pos = out
+            .iter()
+            .position(|o| matches!(o, RiscVOp::Label { name } if name.starts_with("Lif_end")))
+            .expect("if-end label emitted");
+        let recon = out[else_pos + 1..end_pos]
+            .iter()
+            .filter(|o| matches!(o, RiscVOp::Addi { rd, rs1, imm: 0 } if rd != rs1))
+            .count();
+        assert_eq!(recon, 0, "no reconciliation for an arity-0 if/else");
     }
 
     #[test]
