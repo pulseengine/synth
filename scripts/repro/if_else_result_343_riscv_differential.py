@@ -30,6 +30,7 @@ from elftools.elf.elffile import ELFFile
 from unicorn import UC_ARCH_RISCV, UC_MODE_RISCV32, Uc, UcError
 from unicorn.riscv_const import (
     UC_RISCV_REG_A0,
+    UC_RISCV_REG_A1,
     UC_RISCV_REG_RA,
     UC_RISCV_REG_S11,
     UC_RISCV_REG_SP,
@@ -39,6 +40,10 @@ WAT = "scripts/repro/if_else_result_343.wat"
 ELF = sys.argv[1] if len(sys.argv) > 1 else "/tmp/if343.o"
 
 CODE, LIN, RET = 0x100000, 0x40000, 0x200000
+# Functions returning i64 hand their result back in the a0:a1 pair (lo:hi),
+# per the RV32 ILP32 convention — the harness reads both halves for these and
+# masks the comparison to 64 bits.
+I64_FUNCS = {"pick64"}
 # (export, param) — exercise BOTH the then-arm (nonzero cond) and the
 # else-arm (zero cond) of each value-returning if/else.
 VECTORS = [
@@ -51,6 +56,11 @@ VECTORS = [
     ("pick3", 1),
     ("pick3", 99),
     ("pick3", 0),
+    # #343 i64 — both arms land in different register pairs with nonzero,
+    # differing high halves, so the join must emit BOTH the lo and hi `mv`.
+    ("pick64", 1),
+    ("pick64", 55),
+    ("pick64", 0),
 ]
 
 
@@ -72,7 +82,8 @@ def main():
     def wt(name, arg):
         store = wasmtime.Store(engine)
         inst = wasmtime.Instance(store, module, [])
-        return inst.exports(store)[name](store, arg) & 0xFFFFFFFF
+        mask = 0xFFFFFFFFFFFFFFFF if name in I64_FUNCS else 0xFFFFFFFF
+        return inst.exports(store)[name](store, arg) & mask
 
     syms, code = symbols(ELF)
 
@@ -92,7 +103,11 @@ def main():
             mu.emu_start(CODE + addr, RET, count=4000)
         except UcError as e:
             return None, str(e)
-        return mu.reg_read(UC_RISCV_REG_A0) & 0xFFFFFFFF, ""
+        lo = mu.reg_read(UC_RISCV_REG_A0) & 0xFFFFFFFF
+        if name in I64_FUNCS:
+            hi = mu.reg_read(UC_RISCV_REG_A1) & 0xFFFFFFFF
+            return lo | (hi << 32), ""
+        return lo, ""
 
     fails = 0
     for name, arg in VECTORS:

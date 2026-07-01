@@ -4628,6 +4628,63 @@ mod tests {
         );
     }
 
+    /// #343 (i64): an `if (result i64)` whose arms land the pair in DIFFERENT
+    /// register pairs must reconcile BOTH halves — two `mv` (`addi rd, rs, 0`)
+    /// on the else path, one for `lo` and one for `hi`. This is the arm carrying
+    /// the documented no-cycle argument (`lo` allocated before `hi` in both
+    /// arms), so it gets its own gate rather than riding on the i32 test. The
+    /// then-arm's `i64.add` result occupies a distinct pair from the else-arm's
+    /// bare `i64.const`, and both halves of the two constants differ, so neither
+    /// move can collapse into a self-copy.
+    #[test]
+    fn if_result_i64_reconciles_both_halves_343() {
+        let out = s(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::If,
+                WasmOp::I64Const(0x1_0000_0002),
+                WasmOp::I64Const(1),
+                WasmOp::I64Add, // then-result pair in the add's dest regs
+                WasmOp::Else,
+                WasmOp::I64Const(0x7_0000_0020), // else-result pair, distinct
+                WasmOp::End,
+                WasmOp::End,
+            ],
+            1,
+        );
+        let else_pos = out
+            .iter()
+            .position(|o| matches!(o, RiscVOp::Label { name } if name.starts_with("Lelse")))
+            .expect("else label emitted");
+        let end_pos = out
+            .iter()
+            .position(|o| matches!(o, RiscVOp::Label { name } if name.starts_with("Lif_end")))
+            .expect("if-end label emitted");
+        assert!(else_pos < end_pos, "else label precedes end label");
+        let recon: Vec<(Reg, Reg)> = out[else_pos + 1..end_pos]
+            .iter()
+            .filter_map(|o| match o {
+                RiscVOp::Addi { rd, rs1, imm: 0 } if rd != rs1 => Some((*rd, *rs1)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            recon.len(),
+            2,
+            "an i64 join reconciles both lo and hi, got {recon:?}"
+        );
+        // The no-cycle invariant: the two moves are not a register permutation
+        // (`mv a,b; mv b,a` would clobber `b` before its move). Distinct dests,
+        // and no dest is another move's source.
+        let (d0, s0) = recon[0];
+        let (d1, s1) = recon[1];
+        assert_ne!(d0, d1, "lo and hi move to different registers");
+        assert!(
+            d0 != s1 && d1 != s0,
+            "reconciliation moves must not form a permutation cycle: {recon:?}"
+        );
+    }
+
     /// #343: a control-flow-only / result-less `if/else` (arity 0) carries no
     /// value across the join, so NO reconciliation move is emitted — this is
     /// what keeps such if/else byte-identical to the pre-#343 output.
