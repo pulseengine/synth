@@ -229,8 +229,21 @@ rust_library(
     ],
 )
 
+# AArch64 host-native backend (#538) — A64 encoder + selector + ELF emitter.
+rust_library(
+    name = "synth-backend-aarch64",
+    srcs = glob(["synth-backend-aarch64/src/**/*.rs"]),
+    crate_root = "synth-backend-aarch64/src/lib.rs",
+    edition = "2024",
+    deps = [
+        ":synth-core",
+        "@crates//:thiserror",
+        "@crates//:tracing",
+    ],
+)
+
 # Main CLI binary — `riscv` feature wires synth-backend-riscv in (matches
-# Cargo's default = ["riscv"]).
+# Cargo's default = ["riscv"]); synth-backend-aarch64 is always linked (#538).
 rust_binary(
     name = "synth",
     srcs = glob(["synth-cli/src/**/*.rs"]),
@@ -243,6 +256,7 @@ rust_binary(
         ":synth-synthesis",
         ":synth-backend",
         ":synth-backend-riscv",
+        ":synth-backend-aarch64",
         "@crates//:anyhow",
         "@crates//:clap",
         "@crates//:serde_json",

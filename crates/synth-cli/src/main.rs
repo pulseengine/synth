@@ -754,6 +754,8 @@ fn resolve_target_spec(target: Option<&str>, cortex_m: bool, backend: &str) -> R
         // No --target given: pick a backend-appropriate default so `-b riscv`
         // doesn't inherit the ARM profile and bail (#218).
         None if backend == "riscv" => Ok(TargetSpec::riscv32("imac")),
+        // #538: `-b aarch64` without --target defaults to the A64 host profile.
+        None if backend == "aarch64" => Ok(TargetSpec::cortex_a53()),
         None if cortex_m => Ok(TargetSpec::cortex_m3()),
         None => {
             // Default: Arm32 ISA (non-Cortex-M, no vector table)
@@ -771,6 +773,9 @@ fn build_backend_registry() -> BackendRegistry {
 
     // Always register the built-in ARM backend
     registry.register(Box::new(ArmBackend::new()));
+
+    // AArch64 host-native backend (#538) — always available (pure Rust).
+    registry.register(Box::new(synth_backend_aarch64::AArch64Backend::new()));
 
     // Register w2c2 backend (always available, checks tool at runtime)
     registry.register(Box::new(W2C2Backend::new()));
