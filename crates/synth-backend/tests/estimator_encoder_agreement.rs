@@ -15,38 +15,48 @@
 //! estimator and the real encoder. This oracle pins one against the other for
 //! every op the optimized path emits, at the operand shapes it emits them in.
 //!
-//! ## Scope — this is a gap-documenting REGRESSION GUARD, not a #498 fix.
+//! ## Scope — the estimator-side gaps are now CLOSED; two survivors remain.
 //!
-//! Several estimator entries diverge from the encoder today; this test does not
-//! correct them (that is byte-changing codegen, a separately-gated step — it
-//! shifts every branch displacement on the optimized path and must be re-frozen,
-//! execution-differentialed, and silicon-checked). Instead it freezes the
-//! divergence as a measured `KNOWN_GAP`, so:
+//! The #498 estimator-alignment step (this PR) corrected every gap that was a
+//! pure estimator under/over-count against a CORRECT encoder length. Those are
+//! estimator-only edits (`estimate_arm_byte_size` in synth-synthesis) — they do
+//! not change emitted `.text` (verified: frozen anchors bit-identical), only the
+//! branch-displacement bookkeeping the estimator feeds. The oracle now asserts
+//! EXACT agreement for them, so any future drift fails loudly. Two divergences
+//! remain pinned as `KNOWN_GAP` because they are NOT simple table errors:
 //!
 //! - a NEW estimator drift (an added op left at the `_ => 2` default, or a
 //!   changed encoding) fails the agreement assertion loudly, and
-//! - a future #498 fix that closes a gap fails the `assert_ne!` "still
-//!   diverges" check, forcing the gap to be removed from the list.
+//! - a re-closure of one of the two survivors fails the "gap closed" check,
+//!   forcing the gap to be removed from the list.
 //!
 //! ## Findings recorded here (correct + extend #498's original report)
 //! - #498 claimed `Cmp` high-reg drifts. It does NOT: the 16-bit CMP (T2,
 //!   `0x45xx`) encodes high registers, so `cmp r10, r8` is 2 bytes and the
-//!   estimator's default is right. The real high-reg drifts are `Cmn`/`Adds`/
+//!   estimator's default is right. The real high-reg drifts were `Cmn`/`Adds`/
 //!   `Subs` (no 16-bit high-reg form / flag-setting) → 4 bytes, est 2.
-//! - `Popcnt` is absent from the estimator entirely → `_ => 2`, but the
-//!   encoder expands it to a 21-instruction sequence = 86 bytes. An 84-byte
-//!   hole — the largest single drift.
-//! - The i64 long-sequence estimates `I64DivU/RemU/DivS/RemS`, `I64Popcnt`
-//!   and `I64Extend32S` OVER-estimate (e.g. DivU est 100 vs 74) — branch
-//!   lands long.
-//! - Far branches (`BOffset`/`BCondOffset` with a large displacement) need
-//!   the 4-byte `.w` form but the estimator (which runs BEFORE displacements
-//!   are known, with a 0-offset placeholder) sizes them 2 — a chicken-and-egg
-//!   the single-pass estimator cannot resolve.
-//! - `Mov` with a small NEGATIVE immediate: estimator sizes 4 (prudent), but
-//!   the encoder's `if *imm <= 255` is a *signed* test and emits a 2-byte
-//!   `MOVS Rd, #(imm & 0xFF)` — a wrong-value 0xFF, a latent ENCODER bug for
-//!   negative imm8, surfaced here as a side effect. Tracked separately.
+//!   CLOSED: the estimator now guards the high-reg reg-form (and the
+//!   always-32-bit imm form) of all three.
+//! - `Popcnt` was absent from the estimator entirely → `_ => 2`, but the
+//!   encoder expands it to a fixed bit-twiddle sequence = 84 body + 2 for the
+//!   `rd != rm` MOV. CLOSED: estimator now mirrors `if rd != rm { 86 } else
+//!   { 84 }`.
+//! - The i64 long-sequence estimates `I64DivU/RemU/DivS/RemS` (100/100/150/150),
+//!   `I64Popcnt` (200) and `I64Extend32S` (8) OVER-estimated. CLOSED: pinned to
+//!   the exact encoder lengths (74/78/126/124, 172, 6).
+//! - SURVIVOR (structural): far branches (`BOffset`/`BCondOffset` with a large
+//!   displacement) need the 4-byte `.w` form but the estimator runs BEFORE
+//!   displacements are known, on a 0-offset placeholder, so it sizes them 2 —
+//!   a chicken-and-egg the single-pass estimator cannot resolve. Making it
+//!   offset-sensitive would either be cosmetic (production always sees offset 0)
+//!   or entangle with the displacement-resolution pass (byte-changing). Left as
+//!   a documented structural gap, not an estimator-table fix.
+//! - SURVIVOR (encoder-side, deferred): `Mov` with a small NEGATIVE immediate:
+//!   estimator sizes 4 (prudent), but the encoder's `if *imm <= 255` is a
+//!   *signed* test and emits a 2-byte `MOVS Rd, #(imm & 0xFF)` — a wrong-value
+//!   0xFF, a latent ENCODER bug for negative imm8. Aligning the estimator DOWN
+//!   to 2 would endorse a buggy encoding; the real fix is encoder-side (emits
+//!   different bytes → frozen-affecting → a separate gated PR). Kept pinned.
 
 use synth_backend::ArmEncoder;
 use synth_synthesis::{ArmOp, Condition, MemAddr, Operand2, Reg, estimate_arm_byte_size};
@@ -618,76 +628,60 @@ fn cases() -> Vec<Case> {
                 rnlo: Reg::R2,
             },
         ),
-        // ============================ KNOWN GAPS ============================
-        // High-reg flag-setting / no-16-bit-form ops: estimator default 2, but
-        // the encoder must use the 32-bit `.w` form (4 bytes). The #498 core.
-        gap(
+        // === #498 closed gaps: estimator now mirrors the encoder exactly ===
+        // High-reg flag-setting / no-16-bit-form ops: the encoder uses the
+        // 32-bit `.w` form (4 bytes); the estimator now guards the high-reg
+        // reg-form (and the always-32-bit imm form) instead of defaulting to 2.
+        agree(
             "Cmn_hi",
             Cmn {
                 rn: Reg::R10,
                 op2: Operand2::Reg(Reg::R8),
             },
-            2,
-            4,
-            "CMN has no 16-bit high-reg form → CMN.W (4); estimator _=>2. Under-estimate.",
         ),
-        gap(
+        agree(
             "Adds_hi",
             Adds {
                 rd: Reg::R10,
                 rn: Reg::R10,
                 op2: Operand2::Reg(Reg::R8),
             },
-            2,
-            4,
-            "flag-setting ADDS high-reg → ADDS.W (4); estimator _=>2. Under-estimate.",
         ),
-        gap(
+        agree(
             "Subs_hi",
             Subs {
                 rd: Reg::R10,
                 rn: Reg::R10,
                 op2: Operand2::Reg(Reg::R8),
             },
-            2,
-            4,
-            "flag-setting SUBS high-reg → SUBS.W (4); estimator _=>2. Under-estimate.",
         ),
-        // Popcnt: absent from the estimator entirely; encoder expands it.
-        gap(
+        // Popcnt: the estimator now sizes the encoder's fixed bit-twiddle
+        // sequence (84 body + 2 for the rd!=rm MOV = 86).
+        agree(
             "Popcnt",
             Popcnt {
                 rd: Reg::R0,
                 rm: Reg::R1,
             },
-            2,
-            86,
-            "Popcnt absent from estimator (_=>2); encoder emits a 21-insn sequence (86). 84-byte under-estimate.",
         ),
-        // i64 long sequences whose hand-counted estimate is too large.
-        gap(
+        // i64 long sequences: estimator now pinned to the exact encoder lengths.
+        agree(
             "I64Popcnt",
             I64Popcnt {
                 rd: Reg::R0,
                 rnlo: Reg::R1,
                 rnhi: Reg::R2,
             },
-            200,
-            172,
-            "estimate 200 (~180 guess) vs real 172. Over-estimate.",
         ),
-        gap(
+        agree(
             "I64Extend32S",
             I64Extend32S {
                 rdlo: Reg::R0,
                 rdhi: Reg::R1,
                 rnlo: Reg::R2,
             },
-            8,
-            6,
-            "estimate 8 vs real 6 (MOV + ASR). Over-estimate.",
         ),
-        gap(
+        agree(
             "I64DivU",
             I64DivU {
                 rdlo: Reg::R0,
@@ -697,11 +691,8 @@ fn cases() -> Vec<Case> {
                 rmlo: Reg::R4,
                 rmhi: Reg::R5,
             },
-            100,
-            74,
-            "estimate 100 (~80-150 guess) vs real 74. Over-estimate.",
         ),
-        gap(
+        agree(
             "I64RemU",
             I64RemU {
                 rdlo: Reg::R0,
@@ -711,11 +702,8 @@ fn cases() -> Vec<Case> {
                 rmlo: Reg::R4,
                 rmhi: Reg::R5,
             },
-            100,
-            78,
-            "estimate 100 vs real 78. Over-estimate.",
         ),
-        gap(
+        agree(
             "I64DivS",
             I64DivS {
                 rdlo: Reg::R0,
@@ -725,11 +713,8 @@ fn cases() -> Vec<Case> {
                 rmlo: Reg::R4,
                 rmhi: Reg::R5,
             },
-            150,
-            126,
-            "estimate 150 vs real 126. Over-estimate.",
         ),
-        gap(
+        agree(
             "I64RemS",
             I64RemS {
                 rdlo: Reg::R0,
@@ -739,10 +724,9 @@ fn cases() -> Vec<Case> {
                 rmlo: Reg::R4,
                 rmhi: Reg::R5,
             },
-            150,
-            124,
-            "estimate 150 vs real 124. Over-estimate.",
         ),
+        // ===================== REMAINING KNOWN GAPS =====================
+        // Two survivors, NOT simple estimator table errors — kept pinned.
         // Far branches: the estimator sizes the 0-offset placeholder (it runs
         // before displacements are resolved) as 2, but a far target needs the
         // 4-byte form. Chicken-and-egg in the single-pass estimator.
