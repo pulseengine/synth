@@ -192,10 +192,55 @@ pub fn select_with_result_types(
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
 ) -> Result<RiscVSelection, SelectorError> {
+    // #472: read the local-promotion flag exactly once, here, so the rest of the
+    // selector (and its unit tests) work off a plain bool. Flag off by default →
+    // `compute_local_promotion` is never consulted → byte-identical baseline.
+    let promote_locals = std::env::var_os("SYNTH_RV_LOCAL_PROMO").is_some();
+    select_inner(
+        wasm_ops,
+        num_params,
+        options,
+        func_ret_i64,
+        type_ret_i64,
+        promote_locals,
+    )
+}
+
+/// Shared selection pipeline. `promote_locals` drives the #472 lever; the public
+/// entry point derives it from the env, unit tests pass it explicitly.
+fn select_inner(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    options: SelectorOptions,
+    func_ret_i64: &[bool],
+    type_ret_i64: &[bool],
+    promote_locals: bool,
+) -> Result<RiscVSelection, SelectorError> {
     let mut ctx = Selector::new_with_options(num_params, options);
     ctx.func_ret_i64 = func_ret_i64.to_vec();
     ctx.type_ret_i64 = type_ret_i64.to_vec();
+    ctx.promote_locals = promote_locals;
     ctx.compute_local_layout(wasm_ops, num_params); // #223 / #312
+    // #472: zero-init any promoted local whose first access is a read (#457).
+    // Emitted BEFORE the body so (a) `preserve_callee_saved`'s dest scan sees
+    // the write and spills the caller's s-reg first, and (b) the zero dominates
+    // every depth-0 read. Ascending index for deterministic output. No-op with
+    // the flag off (promoted_zero_init is empty).
+    if !ctx.promoted_zero_init.is_empty() {
+        let mut zi: Vec<(u32, Reg)> = ctx
+            .promoted_zero_init
+            .iter()
+            .map(|idx| (*idx, ctx.promoted[idx]))
+            .collect();
+        zi.sort_unstable_by_key(|(idx, _)| *idx);
+        for (_, reg) in zi {
+            ctx.out.push(RiscVOp::Addi {
+                rd: reg,
+                rs1: Reg::ZERO,
+                imm: 0,
+            });
+        }
+    }
     ctx.lower_seq(wasm_ops)?;
     // #226: if any allocation ran out of registers that weren't pinning a live
     // vstack value, the function needs spilling we don't yet do — skip it rather
@@ -607,6 +652,102 @@ fn fold_const_addr(out: &mut Vec<RiscVOp>) -> usize {
     folds
 }
 
+/// #472 (VCR-RA RV32 local promotion) — the RISC-V port of the ARM
+/// `compute_local_promotion` lever (#390/#457/#458). Promote non-parameter
+/// i32 locals into callee-saved s-registers so their reads/writes become
+/// register moves instead of frame `lw`/`sw` traffic (leaf functions only).
+///
+/// Returns `(idx -> s-reg, {idx whose FIRST access is a read})`. The second set
+/// drives a prologue zero-init (`addi s_i, zero, 0`) so a read-before-write
+/// promoted local still observes the wasm-mandated 0 — the #457 gotcha. (ARM's
+/// v1 instead *declined* read-before-write locals; zero-initing lets us promote
+/// them, which is sound because the entry zero dominates every depth-0 access.)
+///
+/// SOUNDNESS (v1, conservative — never under-reserves):
+/// - **Leaf-only.** Any `Call`/`CallIndirect` in the body → promote nothing.
+///   A callee-saved s-reg survives a call by the psABI, but this selector keeps
+///   no cross-call spill discipline for a register-resident local; the ARM
+///   precedent is likewise leaf-only (#390), matching the RV32 #220 callee-saved
+///   machinery. Decline rather than risk a clobber.
+/// - **i32 only.** An i64 local needs a register PAIR; leave it on the frame.
+/// - **Depth-0 straight-line.** Every access outside any block/loop/if, so a
+///   `local.set` at op i dominates every `local.get` at j>i without a dominator
+///   analysis (a `br_if` only skips forward; no loop header sits at depth 0). A
+///   local touched inside any control-flow region is declined.
+/// - **Cost gate.** >= 2 accesses (one access can't repay the s-reg save/restore).
+///
+/// Budget: `s8`, `s9`, `s10` (x24..x26) — callee-saved, OUTSIDE the `temps`
+/// pool (t0..t6, s1..s6) and the div core's fixed file (s1..s3 + s7 move
+/// scratch), and neither s0(fp) nor s11(linmem base). They therefore never
+/// collide with `alloc_temp`, and `preserve_callee_saved` saves/restores each
+/// one the body writes. Eligible locals past the 3-register budget stay on the
+/// frame (unchanged path).
+fn compute_local_promotion(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    i64_set: &std::collections::HashSet<u32>,
+) -> (
+    std::collections::HashMap<u32, Reg>,
+    std::collections::HashSet<u32>,
+) {
+    use std::collections::{HashMap, HashSet};
+    // Leaf-only: a call anywhere disqualifies the whole function.
+    if wasm_ops
+        .iter()
+        .any(|op| matches!(op, WasmOp::Call(_) | WasmOp::CallIndirect { .. }))
+    {
+        return (HashMap::new(), HashSet::new());
+    }
+    struct Info {
+        count: u32,
+        all_depth0: bool,
+        first_is_write: bool,
+        seen: bool,
+    }
+    let mut info: HashMap<u32, Info> = HashMap::new();
+    let mut depth: i32 = 0;
+    for op in wasm_ops {
+        match op {
+            WasmOp::Block | WasmOp::Loop | WasmOp::If => depth += 1,
+            WasmOp::End => depth -= 1,
+            WasmOp::LocalGet(idx) | WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx)
+                if *idx >= num_params =>
+            {
+                let is_write = matches!(op, WasmOp::LocalSet(_) | WasmOp::LocalTee(_));
+                let e = info.entry(*idx).or_insert(Info {
+                    count: 0,
+                    all_depth0: true,
+                    first_is_write: false,
+                    seen: false,
+                });
+                if !e.seen {
+                    e.first_is_write = is_write;
+                    e.seen = true;
+                }
+                e.count += 1;
+                if depth != 0 {
+                    e.all_depth0 = false;
+                }
+            }
+            _ => {}
+        }
+    }
+    const PROMO_REGS: [Reg; 3] = [Reg::S8, Reg::S9, Reg::S10];
+    let mut eligible: Vec<u32> = info
+        .iter()
+        .filter(|(idx, e)| e.all_depth0 && e.count >= 2 && !i64_set.contains(idx))
+        .map(|(&idx, _)| idx)
+        .collect();
+    eligible.sort_unstable();
+    let map: HashMap<u32, Reg> = eligible.iter().copied().zip(PROMO_REGS).collect();
+    let zero_init: HashSet<u32> = map
+        .keys()
+        .copied()
+        .filter(|idx| !info[idx].first_is_write)
+        .collect();
+    (map, zero_init)
+}
+
 /// True for callee-saved registers the allocator may hand out as temps:
 /// `s1` (x9) and `s2..s10` (x18..x26). Excludes the runtime-reserved `s0`
 /// (x8, frame pointer) and `s11` (x27, `__linear_memory_base`) — which the
@@ -783,6 +924,19 @@ struct Selector {
     /// by the width inference today — call_indirect itself is still
     /// `Unsupported` in this selector.
     type_ret_i64: Vec<bool>,
+    /// #472 (VCR-RA RV32 local promotion): non-parameter i32 locals promoted
+    /// into callee-saved s-registers (`s8`/`s9`/`s10`). Empty unless
+    /// `SYNTH_RV_LOCAL_PROMO` is set — with the flag off the frame path is
+    /// taken for every local and codegen is byte-identical to the baseline.
+    /// See [`compute_local_promotion`].
+    promoted: std::collections::HashMap<u32, Reg>,
+    /// #472: promoted locals whose FIRST access is a read — they rely on the
+    /// wasm zero-init and get an `addi s_i, zero, 0` at function entry (#457).
+    promoted_zero_init: std::collections::HashSet<u32>,
+    /// #472: whether local promotion is enabled for this function. Set by the
+    /// public entry point from `SYNTH_RV_LOCAL_PROMO`; the env is read exactly
+    /// once there so the decision function stays pure and unit-testable.
+    promote_locals: bool,
 }
 
 impl Selector {
@@ -821,6 +975,9 @@ impl Selector {
             i64_locals: std::collections::HashSet::new(),
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
+            promoted: std::collections::HashMap::new(),
+            promoted_zero_init: std::collections::HashSet::new(),
+            promote_locals: false,
         }
     }
 
@@ -835,11 +992,22 @@ impl Selector {
         use std::collections::BTreeSet;
         self.i64_locals =
             synth_synthesis::infer_i64_locals(wasm_ops, &self.func_ret_i64, &self.type_ret_i64);
+        // #472: VCR-RA local promotion — flag-gated (SYNTH_RV_LOCAL_PROMO). With
+        // the flag unset the map is empty, every local falls to the frame path
+        // below, and codegen is byte-identical to the pre-lever baseline (the
+        // frozen RV32 fixtures compile without it). The promoted set is the ONE
+        // source of truth: the layout skips exactly the promoted locals, so a
+        // frame slot is reserved iff the local is NOT register-resident.
+        if self.promote_locals {
+            let (map, zero_init) = compute_local_promotion(wasm_ops, num_params, &self.i64_locals);
+            self.promoted = map;
+            self.promoted_zero_init = zero_init;
+        }
         let mut used: BTreeSet<u32> = BTreeSet::new();
         for op in wasm_ops {
             match op {
                 WasmOp::LocalGet(i) | WasmOp::LocalSet(i) | WasmOp::LocalTee(i)
-                    if *i >= num_params =>
+                    if *i >= num_params && !self.promoted.contains_key(i) =>
                 {
                     used.insert(*i);
                 }
@@ -950,6 +1118,57 @@ impl Selector {
 
     fn push_i64(&mut self, lo: Reg, hi: Reg) {
         self.vstack.push(VstackVal::I64 { lo, hi });
+    }
+
+    /// #472 WAR fix: before a promoted `local.set`/`local.tee` overwrites its
+    /// s-register `reg`, snapshot any still-live vstack entry that aliases `reg`
+    /// (pushed by an EARLIER `local.get` of this same promoted local) into a
+    /// fresh temp, and rewrite those entries to the temp. Without this, the
+    /// `mv reg, val` would corrupt the earlier value — the classic
+    /// get→…→set→use WAR hazard the direct-alias `local.get` opens.
+    ///
+    /// `skip` (if `Some`) is the vstack index NOT to rewrite — used by
+    /// `local.tee`, whose own result (the top of stack) is intentionally the
+    /// value being written and stays aliased to `reg`. Fires only when an alias
+    /// is actually present, so the common case pays nothing. Only i32 entries
+    /// can alias a promoted reg (s8/s9/s10 are never handed out to i64 pairs),
+    /// but i64 halves are checked too for defence in depth.
+    fn snapshot_aliases(&mut self, reg: Reg, skip: Option<usize>) {
+        let aliased = self.vstack.iter().enumerate().any(|(i, v)| {
+            Some(i) != skip
+                && match v {
+                    VstackVal::I32(r) => *r == reg,
+                    VstackVal::I64 { lo, hi } => *lo == reg || *hi == reg,
+                }
+        });
+        if !aliased {
+            return;
+        }
+        // `reg` is live on the vstack, so `alloc_temp` (skips live + op_pinned)
+        // never returns it; the fresh temp is distinct.
+        let tmp = self.alloc_temp();
+        self.out.push(RiscVOp::Addi {
+            rd: tmp,
+            rs1: reg,
+            imm: 0,
+        });
+        for (i, v) in self.vstack.iter_mut().enumerate() {
+            if Some(i) == skip {
+                continue;
+            }
+            match v {
+                VstackVal::I32(r) if *r == reg => *r = tmp,
+                VstackVal::I64 { lo, hi } => {
+                    if *lo == reg {
+                        *lo = tmp;
+                    }
+                    if *hi == reg {
+                        *hi = tmp;
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn pop_any(&mut self, op: &WasmOp) -> Result<VstackVal, SelectorError> {
@@ -1361,6 +1580,16 @@ impl Selector {
                 imm: 0,
             });
             self.push_i32(dst);
+        } else if let Some(&reg) = self.promoted.get(&idx) {
+            // #472: promoted i32 local lives in a callee-saved s-reg. Alias it
+            // DIRECTLY onto the vstack — no load, no copy. Sound because (a) any
+            // op consuming this value allocates a fresh dst (never the pinned
+            // operand, and s8/s9/s10 are outside the temp pool), so the s-reg is
+            // never clobbered by a consumer; and (b) a later `local.set`/`tee`
+            // of this local snapshots any still-live alias before overwriting
+            // the s-reg (`snapshot_aliases`). This is where the byte win lands:
+            // repeated reads become free.
+            self.push_i32(reg);
         } else {
             // #223: non-param local — load from its frame slot (lw dst, off(sp)).
             // #312: an i64 local loads both words of its 8-byte slot
@@ -1414,6 +1643,22 @@ impl Selector {
                 rs1: src,
                 imm: 0,
             });
+            Ok(())
+        } else if let Some(&reg) = self.promoted.get(&idx) {
+            // #472: promoted i32 local — write the s-reg (`mv reg, src`) instead
+            // of a frame `sw`. Pop the value FIRST, then snapshot any surviving
+            // vstack alias of `reg` (from an earlier `local.get` of this local)
+            // so the overwrite can't corrupt it (WAR fix). `src` was just popped
+            // so it is not among the scanned entries.
+            let src = self.pop_i32(op)?;
+            if src != reg {
+                self.snapshot_aliases(reg, None);
+                self.out.push(RiscVOp::Addi {
+                    rd: reg,
+                    rs1: src,
+                    imm: 0,
+                });
+            }
             Ok(())
         } else {
             // #223: non-param local — store to its frame slot (sw src, off(sp)).
@@ -1472,6 +1717,33 @@ impl Selector {
                 rs1: src,
                 imm: 0,
             });
+            Ok(())
+        } else if let Some(&reg) = self.promoted.get(&idx) {
+            // #472: promoted i32 local — `mv reg, src`, value STAYS on the
+            // vstack (tee semantics). The kept top holds the value written and
+            // is left aliased to whatever produced it (`src`), independent of
+            // `reg`, so a later `local.set` of this local can't corrupt it.
+            // Snapshot only the OTHER live aliases of `reg` (earlier reads),
+            // never the top (skip = top index).
+            let src = match top {
+                VstackVal::I32(r) => r,
+                other => {
+                    return Err(SelectorError::StackTypeMismatch {
+                        op: op.clone(),
+                        expected: "i32",
+                        found: other.type_name(),
+                    });
+                }
+            };
+            if src != reg {
+                let top_idx = self.vstack.len() - 1;
+                self.snapshot_aliases(reg, Some(top_idx));
+                self.out.push(RiscVOp::Addi {
+                    rd: reg,
+                    rs1: src,
+                    imm: 0,
+                });
+            }
             Ok(())
         } else {
             // #223: tee = store to the frame slot, value stays on the vstack.
@@ -7268,5 +7540,189 @@ mod tests {
             "i64 param must skip honestly, got: {:?}",
             r.map(|sel| sel.ops)
         );
+    }
+
+    // ─────────────── #472: RV32 i32 local promotion (VCR-RA) ───────────────
+
+    fn s_promo(ops: &[WasmOp], num_params: u32, promote: bool) -> Vec<RiscVOp> {
+        select_inner(
+            ops,
+            num_params,
+            SelectorOptions::wasm_compliant(),
+            &[],
+            &[],
+            promote,
+        )
+        .unwrap()
+        .ops
+    }
+
+    fn count_lw_any_sp(out: &[RiscVOp]) -> usize {
+        count(out, |op| matches!(op, RiscVOp::Lw { rs1: Reg::SP, .. }))
+    }
+
+    fn writes_reg(out: &[RiscVOp], reg: Reg) -> bool {
+        out.iter().any(|op| op_dest(op) == Some(reg))
+    }
+
+    /// A leaf function whose local 1 (non-param) is written once and read three
+    /// times at depth 0 — the promotable shape.
+    fn promotable_ops() -> Vec<WasmOp> {
+        vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalSet(1), // local1 = param0 (write first)
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ]
+    }
+
+    /// Flag OFF must be byte-identical to the default `select()` path, and must
+    /// keep the local on the frame (frame `lw`s, no promoted s-register).
+    #[test]
+    fn local_promotion_flag_off_is_identical_and_frame_backed_472() {
+        let ops = promotable_ops();
+        let default = s(&ops, 1); // select() — env unset in tests
+        let off = s_promo(&ops, 1, false);
+        assert_eq!(
+            default, off,
+            "flag-off must equal the default select() path"
+        );
+        assert!(
+            count_lw_any_sp(&off) >= 3,
+            "local must stay frame-backed (>=3 lw): {off:?}"
+        );
+        assert!(
+            !writes_reg(&off, Reg::S8),
+            "no promotion register may be written with the flag off: {off:?}"
+        );
+    }
+
+    /// Flag ON promotes local 1 into `s8`: no frame loads for it, and the
+    /// callee-saved preservation pass saves+restores `s8` in the prologue.
+    #[test]
+    fn local_promotion_flag_on_uses_s_register_472() {
+        let ops = promotable_ops();
+        let on = s_promo(&ops, 1, true);
+        assert!(
+            writes_reg(&on, Reg::S8),
+            "local 1 must be promoted to s8: {on:?}"
+        );
+        assert!(
+            count_lw_any_sp(&on) < count_lw_any_sp(&s_promo(&ops, 1, false)),
+            "promotion must remove frame loads: {on:?}"
+        );
+        // preserve_callee_saved must spill+restore the promoted s8.
+        assert!(
+            on.iter().any(|op| matches!(
+                op,
+                RiscVOp::Sw {
+                    rs2: Reg::S8,
+                    rs1: Reg::SP,
+                    ..
+                }
+            )),
+            "prologue must save s8: {on:?}"
+        );
+        assert!(
+            on.iter().any(|op| matches!(
+                op,
+                RiscVOp::Lw {
+                    rd: Reg::S8,
+                    rs1: Reg::SP,
+                    ..
+                }
+            )),
+            "epilogue must restore s8: {on:?}"
+        );
+    }
+
+    /// The pure decision function: which locals promote, to which reg, and which
+    /// need a zero-init.
+    #[test]
+    fn compute_local_promotion_rules_472() {
+        use std::collections::HashSet;
+        let no_i64 = HashSet::new();
+
+        // Write-before-read i32, 4 accesses → promoted to s8, no zero-init.
+        let (map, zi) = compute_local_promotion(&promotable_ops(), 1, &no_i64);
+        assert_eq!(map.get(&1), Some(&Reg::S8));
+        assert!(!zi.contains(&1), "write-first local needs no zero-init");
+
+        // Read-before-write → promoted AND flagged for zero-init (#457).
+        let rbw = [
+            WasmOp::LocalGet(1), // first access is a READ
+            WasmOp::LocalGet(0),
+            WasmOp::I32Add,
+            WasmOp::LocalSet(1),
+            WasmOp::LocalGet(1),
+            WasmOp::End,
+        ];
+        let (map, zi) = compute_local_promotion(&rbw, 1, &no_i64);
+        assert_eq!(map.get(&1), Some(&Reg::S8));
+        assert!(
+            zi.contains(&1),
+            "read-before-write local must be zero-inited"
+        );
+
+        // A single access can't repay the save/restore → declined.
+        let once = [WasmOp::LocalGet(1), WasmOp::End];
+        assert!(compute_local_promotion(&once, 1, &no_i64).0.is_empty());
+
+        // A local touched inside control flow → declined (dominance not proven).
+        let cf = [
+            WasmOp::Block,
+            WasmOp::LocalGet(0),
+            WasmOp::LocalSet(1),
+            WasmOp::LocalGet(1),
+            WasmOp::End,
+            WasmOp::End,
+        ];
+        assert!(compute_local_promotion(&cf, 1, &no_i64).0.is_empty());
+
+        // An i64 local (needs a pair) → declined.
+        let mut i64_set = HashSet::new();
+        i64_set.insert(1u32);
+        assert!(
+            compute_local_promotion(&promotable_ops(), 1, &i64_set)
+                .0
+                .is_empty()
+        );
+
+        // Any call in the body → leaf-only, promote nothing.
+        let with_call = [
+            WasmOp::LocalGet(0),
+            WasmOp::LocalSet(1),
+            WasmOp::Call(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        assert!(compute_local_promotion(&with_call, 1, &no_i64).0.is_empty());
+    }
+
+    /// Three promotable locals exhaust exactly the s8/s9/s10 budget in
+    /// ascending index order.
+    #[test]
+    fn compute_local_promotion_budget_order_472() {
+        use std::collections::HashSet;
+        let mut ops = Vec::new();
+        for idx in [1u32, 2, 3] {
+            ops.push(WasmOp::LocalGet(0));
+            ops.push(WasmOp::LocalSet(idx));
+            ops.push(WasmOp::LocalGet(idx));
+            ops.push(WasmOp::LocalGet(idx));
+            ops.push(WasmOp::I32Add);
+            ops.push(WasmOp::Drop);
+        }
+        ops.push(WasmOp::End);
+        let (map, _) = compute_local_promotion(&ops, 1, &HashSet::new());
+        assert_eq!(map.get(&1), Some(&Reg::S8));
+        assert_eq!(map.get(&2), Some(&Reg::S9));
+        assert_eq!(map.get(&3), Some(&Reg::S10));
     }
 }
