@@ -1,8 +1,10 @@
 //! Helper script for publishing the synth workspace to crates.io.
 //!
 //! Modes:
-//!   ./publish verify   — `cargo package` every publishable crate (#146)
-//!                        in dependency order, fail on first error.
+//!   ./publish verify   — `cargo package` all publishable crates in ONE
+//!                        invocation (#146), so inter-member deps resolve
+//!                        against the locally packaged tarballs, not the
+//!                        crates.io index. Fails if any crate fails.
 //!   ./publish publish  — `cargo publish` every publishable crate in
 //!                        dependency order; retries up to 10 times to
 //!                        ride out crates.io index-propagation lag.
@@ -40,6 +42,11 @@ const CRATES_TO_PUBLISH: &[&str] = &[
     "synth-synthesis",
     // Depend on the above.
     "synth-backend",
+    // Host-native AArch64 backend (#538). A hard, always-on dependency of
+    // synth-cli, so it must be published too — otherwise synth-cli fails
+    // to resolve `synth-backend-aarch64` against the index. The restored
+    // `./publish verify` step (#146) is what surfaced this omission.
+    "synth-backend-aarch64",
     "synth-backend-awsm",
     "synth-backend-wasker",
     "synth-backend-riscv",
@@ -102,28 +109,39 @@ fn read_workspace_version() -> String {
 }
 
 fn verify(crates: &[Krate]) {
-    // #146: use `cargo package` rather than `cargo publish --dry-run`.
-    // `--dry-run` resolves every workspace dep against crates.io, so for a
-    // first publish of any new version the dependents always fail with the
-    // chicken-and-egg "dep not yet published" error (this sank the v0.7.0
-    // verify step, dropped in PR #144). `cargo package` resolves through the
-    // local path deps, builds the `.crate` end-to-end, and still catches the
-    // surface a pre-flight check should: missing README/license, bad
-    // include/exclude, broken metadata, and code that doesn't compile.
-    let mut failed = Vec::new();
+    // #146: use `cargo package` rather than `cargo publish --dry-run`, and
+    // package the whole publishable set in ONE invocation (`cargo package
+    // -p a -p b ...`) instead of once per crate.
+    //
+    // `cargo publish --dry-run` resolves every workspace dep against
+    // crates.io, so on a first publish of any new version the dependents
+    // fail with the chicken-and-egg "dep not yet published" error (this
+    // sank the v0.7.0 verify step, dropped in PR #144).
+    //
+    // A *per-crate* `cargo package -p <name>` has the SAME problem for
+    // dependents: cargo verifies the packaged crate outside the workspace,
+    // so it downloads each dep from crates.io and fails when the new
+    // version isn't there yet. Empirically confirmed at an unpublished
+    // 0.99.0 (see PR for #146).
+    //
+    // Packaging the whole set in one invocation fixes it: cargo packages
+    // every selected member into `target/package/*.crate` first, then
+    // verify-builds each against those local tarballs — so `synth-cli`
+    // compiles against the just-packaged `synth-core` etc. at the NEW
+    // version, never touching the index. Full verify build is retained
+    // (no `--no-verify`), so "code that doesn't compile" is still caught.
+    let mut args: Vec<String> = vec!["package".to_string()];
     for k in crates {
-        println!("--- cargo package -p {} ---", k.name);
-        let status = Command::new("cargo")
-            .args(["package", "-p", &k.name])
-            .status()
-            .expect("invoke cargo");
-        if !status.success() {
-            println!("FAIL: {} package failed: {status}", k.name);
-            failed.push(k.name.clone());
-        }
+        args.push("-p".to_string());
+        args.push(k.name.clone());
     }
-    if !failed.is_empty() {
-        eprintln!("\nverify failed for: {}", failed.join(", "));
+    println!("--- cargo {} ---", args.join(" "));
+    let status = Command::new("cargo")
+        .args(&args)
+        .status()
+        .expect("invoke cargo");
+    if !status.success() {
+        eprintln!("\nverify failed: cargo package exited with {status}");
         std::process::exit(1);
     }
     println!("\nAll {} crates passed cargo package.", crates.len());

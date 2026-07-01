@@ -215,10 +215,18 @@ The maintainer asked for the rollout to be staged. The committed
   is in `scripts/publish.rs` (compiled at workflow start by `rustc`).
   Final user-visible result: `cargo install synth-cli` works after the
   first release that runs this pipeline.
+- **Pre-flight check (#146).** Before publishing, the workflow runs
+  `./publish verify`, which packages the whole publishable set in one
+  `cargo package -p a -p b …` invocation. Packaging every member together
+  lets cargo verify-build each against the locally packaged tarballs at
+  the new version, so it sidesteps the crates.io chicken-and-egg that a
+  per-crate `cargo package` (or `cargo publish --dry-run`) hits on a first
+  publish, while still catching broken metadata and non-compiling code.
+  This needs no registry token.
 - **Trust model:** an org-wide `CRATES_IO_TOKEN` secret on the
   `pulseengine` GitHub organization, inherited by this repo. The
-  workflow exports it as `CARGO_REGISTRY_TOKEN` for `./publish verify`
-  and `./publish publish`. Migration to OIDC trusted publishing (to
+  workflow exports it as `CARGO_REGISTRY_TOKEN` for `./publish publish`.
+  Migration to OIDC trusted publishing (to
   match sigil) is tracked as future work — see "Phase 4 — auth model"
   below; we chose the token path first because the org secret already
   exists and OIDC requires per-crate trusted-publisher registration
@@ -239,6 +247,7 @@ The maintainer asked for the rollout to be staged. The committed
   | `synth-frontend`       | yes        | dep of CLI |
   | `synth-synthesis`      | yes        | dep of CLI |
   | `synth-backend`        | yes        | dep of CLI |
+  | `synth-backend-aarch64`| yes        | hard, always-on dep of CLI (#538) |
   | `synth-backend-awsm`   | yes        | optional dep of CLI |
   | `synth-backend-wasker` | yes        | optional dep of CLI |
   | `synth-backend-riscv`  | yes        | default optional dep of CLI |
