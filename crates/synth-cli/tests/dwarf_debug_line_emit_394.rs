@@ -330,9 +330,12 @@ fn line_rows(secs: &HashMap<String, Vec<u8>>) -> Vec<(u64, u64)> {
 /// `.rel.debug_*`. This oracle proves the records do exactly that:
 ///
 ///   1. `.debug_line` carries EXACTLY ONE relocation — `R_ARM_ABS32` against
-///      `__synth_text_base` (the single `DW_LNE_set_address` anchor) — and
-///      `.debug_info` one (the CU `DW_AT_low_pc`). REL form ⇒ the in-place addend
-///      bytes are 0.
+///      `__synth_text_base` (the single `DW_LNE_set_address` anchor), REL form ⇒
+///      its in-place addend is 0. `.debug_info` carries `1 + N` relocations
+///      (#394): the CU `DW_AT_low_pc` (addend 0) plus one per `DW_TAG_subprogram`
+///      `DW_AT_low_pc`, each `R_ARM_ABS32` against `__synth_text_base` with its
+///      in-place addend equal to that function's object-relative `.text` offset —
+///      so on link each subprogram resolves to `text_base + low_pc`.
 ///   2. APPLY the `.debug_line` relocation at a NON-ZERO base (`S + A`, A=0 ⇒
 ///      the base itself), then re-walk the line program. EVERY row's address must
 ///      shift by exactly the base and its source LINE must be preserved — i.e. on
@@ -393,7 +396,64 @@ fn rel_debug_relocations_shift_addresses_to_correct_line_394() {
     };
 
     let line_reloc_off = check_one_text_reloc(".debug_line") as usize;
-    let _ = check_one_text_reloc(".debug_info");
+
+    // `.debug_info`: 1 CU low_pc reloc (addend 0) + one per subprogram low_pc
+    // (addend = that function's object-relative `.text` offset), all R_ARM_ABS32
+    // against `__synth_text_base`. The multiset of in-place addends must equal
+    // {0} ∪ {each subprogram low_pc}, proving every subprogram low_pc relocates
+    // by the base to `text_base + low_pc` (#394).
+    {
+        let subs = collect_subprograms(&section_data(&dbg));
+        assert!(
+            !subs.is_empty(),
+            ".debug_info reloc check needs ≥1 subprogram DIE"
+        );
+        let sec = obj
+            .section_by_name(".debug_info")
+            .expect(".debug_info present");
+        let data = sec.data().expect(".debug_info data");
+        let relocs: Vec<_> = sec.relocations().collect();
+        assert_eq!(
+            relocs.len(),
+            1 + subs.len(),
+            ".debug_info must carry 1 (CU low_pc) + {} (subprogram low_pc) `.text` \
+             relocations; got {}",
+            subs.len(),
+            relocs.len()
+        );
+        let mut got_addends: Vec<u64> = Vec::new();
+        for (offset, reloc) in &relocs {
+            match reloc.flags() {
+                object::RelocationFlags::Elf { r_type } => assert_eq!(
+                    r_type, R_ARM_ABS32,
+                    ".debug_info reloc must be R_ARM_ABS32, got r_type={r_type}"
+                ),
+                other => panic!(".debug_info reloc has non-ELF flags: {other:?}"),
+            }
+            let object::RelocationTarget::Symbol(sym_idx) = reloc.target() else {
+                panic!(".debug_info reloc target is not a symbol");
+            };
+            let sym = obj.symbol_by_index(sym_idx).expect("reloc symbol");
+            assert_eq!(
+                sym.name().expect("sym name"),
+                "__synth_text_base",
+                ".debug_info reloc must resolve against the .text base symbol"
+            );
+            let off = *offset as usize;
+            got_addends.push(u32::from_le_bytes(data[off..off + 4].try_into().unwrap()) as u64);
+        }
+        got_addends.sort_unstable();
+        // Expected: the CU (0) plus every subprogram's object-relative low_pc.
+        let mut expected: Vec<u64> = std::iter::once(0u64)
+            .chain(subs.iter().map(|s| s.low_pc))
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(
+            got_addends, expected,
+            ".debug_info in-place addends must be {{0 (CU)}} ∪ subprogram low_pcs; \
+             each subprogram low_pc must relocate by the base"
+        );
+    }
 
     // (2) Un-relocated rows (object-relative, base 0) vs rows after applying the
     // `.debug_line` relocation at a non-zero base.
@@ -562,5 +622,169 @@ fn emitted_debug_line_carries_real_source_filenames_394() {
     eprintln!(
         "[dbg394-oracleE] input rows reference {expected:?}; emitted file table {emitted:?} \
          (real names propagated, synth.wasm gone)"
+    );
+}
+
+/// One emitted `DW_TAG_subprogram` DIE: its `DW_AT_name` and the object-relative
+/// `[low_pc, high_pc)` its `DW_AT_low_pc`/`DW_AT_high_pc` describe. On an ET_REL
+/// object the low_pc read here is the in-place addend (object-relative `.text`
+/// offset, base 0); `DW_AT_high_pc` is the offset form (size), so
+/// `high_pc = low_pc + size`.
+#[derive(Debug, Clone)]
+struct SubprogramDie {
+    name: Option<String>,
+    low_pc: u64,
+    high_pc: u64,
+}
+
+/// Walk an emitted DWARF map the debugger way (`dwarf.units()` → the CU tree) and
+/// collect every `DW_TAG_subprogram` child DIE's name + `[low_pc, high_pc)`.
+fn collect_subprograms(secs: &HashMap<String, Vec<u8>>) -> Vec<SubprogramDie> {
+    let empty: &[u8] = &[];
+    let load = |id: SectionId| -> Result<EndianSlice<'_, LittleEndian>, gimli::Error> {
+        let data = secs.get(id.name()).map_or(empty, |v| v.as_slice());
+        Ok(EndianSlice::new(data, LittleEndian))
+    };
+    let dwarf = gimli::Dwarf::load(load).expect("load emitted .debug_* sections");
+    let mut out = Vec::new();
+    let mut units = dwarf.units();
+    while let Some(header) = units.next().expect("unit header") {
+        let unit = dwarf.unit(header).expect("unit");
+        let mut entries = unit.entries();
+        while let Some(entry) = entries.next_dfs().expect("dfs") {
+            if entry.tag() != gimli::DW_TAG_subprogram {
+                continue;
+            }
+            let name = entry
+                .attr_value(gimli::DW_AT_name)
+                .and_then(|v| dwarf.attr_string(&unit, v).ok())
+                .map(|s| s.to_string_lossy().into_owned());
+            let low_pc = match entry.attr_value(gimli::DW_AT_low_pc) {
+                Some(gimli::AttributeValue::Addr(a)) => a,
+                other => panic!("subprogram DW_AT_low_pc must be an Addr, got {other:?}"),
+            };
+            // Tier-1 emits high_pc as the offset (size) form.
+            let size = match entry.attr_value(gimli::DW_AT_high_pc) {
+                Some(gimli::AttributeValue::Udata(n)) => n,
+                other => {
+                    panic!("subprogram DW_AT_high_pc must be Udata (offset form), got {other:?}")
+                }
+            };
+            out.push(SubprogramDie {
+                name,
+                low_pc,
+                high_pc: low_pc + size,
+            });
+        }
+    }
+    out
+}
+
+/// The exported FUNCTION names declared in the input wasm's export section —
+/// ground truth for the subprogram names, derived from the fixture at runtime
+/// (like Oracle E's filenames), NOT from synth's own symbol table. These MUST
+/// reappear as `DW_TAG_subprogram` `DW_AT_name`s.
+fn wasm_exported_func_names(wasm: &[u8]) -> BTreeSet<String> {
+    use wasmparser::{ExternalKind, Parser, Payload};
+    let mut out = BTreeSet::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::ExportSection(reader)) = payload {
+            for export in reader.into_iter().flatten() {
+                if export.kind == ExternalKind::Func {
+                    out.insert(export.name.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// ORACLE F — Tier-1 `DW_TAG_subprogram` DIEs (#394). A debugger backtrace shows
+/// FUNCTION NAMES (not bare addresses) only if each function has a subprogram DIE
+/// carrying its name and address range. Before this fix the emitted CU had ZERO
+/// children, so gdb/lldb resolved a `.text` address to `file:line` but printed no
+/// function frame. This oracle proves the emitter now attaches one
+/// `DW_TAG_subprogram` per compiled function under the CU:
+///
+///   (a) every EXPORTED wasm function name (derived from the input's export
+///       section at runtime — non-circular) appears as a subprogram `DW_AT_name`;
+///   (b) the subprogram COUNT equals the number of `func_N` symbols the object
+///       defines (one per compiled function);
+///   (c) every subprogram's `[low_pc, high_pc)` lies within `.text`
+///       (`low_pc < high_pc <= text_len`).
+#[test]
+fn emitted_debug_info_has_subprogram_dies_per_function_394() {
+    let wasm = repro("msgq_put_359.wasm");
+    let wasm_bytes = std::fs::read(&wasm).expect("read fixture wasm");
+    let expected_names = wasm_exported_func_names(&wasm_bytes);
+    assert!(
+        !expected_names.is_empty(),
+        "fixture must export ≥1 function to anchor the name check"
+    );
+
+    let dbg = compile(&wasm, "/tmp/dbg394_msgq_oraclef.o", true);
+    let obj = ElfFile32::<object::Endianness>::parse(&*dbg).expect("parse ELF");
+    let text_len = obj.section_by_name(".text").expect(".text present").size();
+    assert!(text_len > 0, ".text must be non-empty");
+
+    // Count `func_N` symbols — every compiled function defines exactly one, so
+    // this is a synth-independent-of-DWARF count of the functions in the object.
+    let func_sym_count = obj
+        .symbols()
+        .filter_map(|s| s.name().ok().map(str::to_string))
+        .filter(|n| {
+            n.strip_prefix("func_")
+                .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .count();
+    assert!(func_sym_count > 0, "object must define ≥1 func_N symbol");
+
+    let subs = collect_subprograms(&section_data(&dbg));
+    assert!(
+        !subs.is_empty(),
+        "emitted CU has NO DW_TAG_subprogram children — a debugger backtrace \
+         would show addresses, not function names"
+    );
+
+    // (b) one subprogram per compiled function.
+    assert_eq!(
+        subs.len(),
+        func_sym_count,
+        "expected one DW_TAG_subprogram per compiled function ({func_sym_count} \
+         func_N symbols); got {} subprograms: {:?}",
+        subs.len(),
+        subs.iter().map(|s| &s.name).collect::<Vec<_>>()
+    );
+
+    // (c) every subprogram range is inside `.text`.
+    for s in &subs {
+        assert!(
+            s.low_pc < s.high_pc && s.high_pc <= text_len,
+            "subprogram {:?} range [0x{:x},0x{:x}) is not within .text (<0x{text_len:x})",
+            s.name,
+            s.low_pc,
+            s.high_pc
+        );
+    }
+
+    // (a) every exported function name is present as a subprogram DW_AT_name.
+    let got_names: BTreeSet<String> = subs.iter().filter_map(|s| s.name.clone()).collect();
+    for want in &expected_names {
+        assert!(
+            got_names.contains(want),
+            "no DW_TAG_subprogram named {want:?} (an exported function); \
+             got {got_names:?}"
+        );
+    }
+
+    eprintln!(
+        "[dbg394-oracleF] {} subprogram DIEs ({} func_N syms); exports {expected_names:?} \
+         all present. sample: {:?}",
+        subs.len(),
+        func_sym_count,
+        subs.iter()
+            .take(5)
+            .map(|s| format!("{:?} [0x{:x},0x{:x})", s.name, s.low_pc, s.high_pc))
+            .collect::<Vec<_>>()
     );
 }

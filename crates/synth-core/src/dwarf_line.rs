@@ -237,6 +237,22 @@ fn intern_file(files: &mut Vec<(String, String)>, entry: (String, String)) -> u3
     (files.len() - 1) as u32
 }
 
+/// One function to describe with a `DW_TAG_subprogram` child DIE (#394, Tier-1)
+/// so a debugger backtrace shows the FUNCTION NAME, not a bare address. Carries
+/// the function's name and its object-relative `[low_pc, high_pc)` `.text` range
+/// (byte offsets against the `.text` base). The emitter relocates `low_pc`
+/// against the SAME `.text` symbol as the CU (addend = `low_pc`) and writes
+/// `high_pc - low_pc` as the offset form of `DW_AT_high_pc` (no relocation).
+#[derive(Debug, Clone)]
+pub struct SubprogramInfo {
+    /// The export/function name shown in a debugger frame.
+    pub name: String,
+    /// Object-relative `.text` byte offset of the function's first instruction.
+    pub low_pc: u64,
+    /// Object-relative `.text` byte offset one past the function's last byte.
+    pub high_pc: u64,
+}
+
 /// Emit an address-ordered `(arm_addr, line)` table as a FULL minimal DWARF unit
 /// (gimli::write) and return EVERY non-empty `.debug_*` section it produces —
 /// `.debug_info`, `.debug_abbrev`, `.debug_str`, `.debug_line` (and
@@ -258,6 +274,7 @@ pub fn emit_debug_sections(
     table: &[(u64, u32, u32)],
     text_sym: usize,
     files: &[(String, String)],
+    subprograms: &[SubprogramInfo],
 ) -> Vec<EmittedDwarfSection> {
     use gimli::write::{Address, AttributeValue, DwarfUnit, LineProgram, LineString, Sections};
 
@@ -353,6 +370,37 @@ pub fn emit_debug_sections(
         root_die.set(gimli::DW_AT_high_pc, AttributeValue::Udata(high_pc));
     }
 
+    // #394 Tier-1: attach one DW_TAG_subprogram child DIE per function so a
+    // debugger backtrace shows the FUNCTION NAME, not a bare address.
+    //   - DW_AT_name    = the export/function name.
+    //   - DW_AT_low_pc  = the function's `.text` address, relocated against the
+    //     SAME `__synth_text_base` symbol as the CU low_pc but with addend =
+    //     the function's object-relative offset, so it shifts correctly when a
+    //     linker places `.text` (each is an extra `.rel.debug_info` record).
+    //   - DW_AT_high_pc = the offset (size) form `high_pc - low_pc` — a plain
+    //     constant, so it needs no relocation (matches the CU's high_pc form).
+    // No parameters/locals/frame-base yet — that is Tier-2, gated on VCR-RA.
+    {
+        let root = dwarf.unit.root();
+        for sp in subprograms {
+            let name_id = dwarf.strings.add(sp.name.clone());
+            let die_id = dwarf.unit.add(root, gimli::DW_TAG_subprogram);
+            let die = dwarf.unit.get_mut(die_id);
+            die.set(gimli::DW_AT_name, AttributeValue::StringRef(name_id));
+            die.set(
+                gimli::DW_AT_low_pc,
+                AttributeValue::Address(Address::Symbol {
+                    symbol: text_sym,
+                    addend: sp.low_pc as i64,
+                }),
+            );
+            die.set(
+                gimli::DW_AT_high_pc,
+                AttributeValue::Udata(sp.high_pc.saturating_sub(sp.low_pc)),
+            );
+        }
+    }
+
     let seed = RelocWriter {
         inner: gimli::write::EndianVec::new(LittleEndian),
         relocs: Vec::new(),
@@ -416,9 +464,10 @@ pub struct EmittedDwarfSection {
 /// overridden — `write_offset` (gimli's internal section-to-section references,
 /// e.g. `.debug_info` → `.debug_str`/`.debug_abbrev` and `DW_AT_stmt_list` →
 /// `.debug_line`) keeps the default, so those stay CONCRETE intra-file offsets
-/// and need no section symbols. The only relocations captured are the two
-/// `.text` references (the line program's `DW_LNE_set_address` and the CU's
-/// `DW_AT_low_pc`). `Clone` so `Sections::new` can seed each section writer.
+/// and need no section symbols. The relocations captured are the `.text`
+/// references: the line program's `DW_LNE_set_address`, the CU's `DW_AT_low_pc`,
+/// and one per `DW_TAG_subprogram` `DW_AT_low_pc` (#394). `Clone` so
+/// `Sections::new` can seed each section writer.
 #[derive(Clone)]
 struct RelocWriter {
     inner: gimli::write::EndianVec<LittleEndian>,
