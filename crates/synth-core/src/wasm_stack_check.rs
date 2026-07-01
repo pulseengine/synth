@@ -6,13 +6,25 @@
 //! fuzz harnesses, which intentionally generate malformed sequences to
 //! prove the contract that lowering returns `Err`, not panics.
 //!
-//! The check is best-effort: control-flow ops (`Block`, `Loop`, `If`/`Else`,
-//! `End`, `Br`/`BrIf`/`BrTable`, `Return`, `Call`) have stack effects that
-//! depend on block types and function signatures we don't have here. When
-//! the input contains any such op, validation gracefully bails out with
-//! `Ok(())` rather than reporting a spurious underflow. This keeps the
-//! check conservative — it never rejects valid input — at the cost of
-//! catching only the underflow cases that don't involve control flow.
+//! The check is best-effort and, above all, *sound* — it never rejects valid
+//! wasm. Stack effects that depend on data we don't have here (block-result
+//! arities, callee signatures) are handled conservatively:
+//!
+//! * `Call` and unmodeled ops (SIMD, etc.) bail out with `Ok(())` — their
+//!   effect is signature/type dependent.
+//! * The stack-polymorphic terminators `unreachable`/`return`/`br`/`br_table`
+//!   also bail with `Ok(())`: everything after them (up to the enclosing
+//!   `end`) is unreachable and, per the wasm spec, type-checks against an
+//!   infinite-depth polymorphic stack, so depth-only reasoning would produce
+//!   *false* underflows there (issue #329).
+//! * `Block`/`Loop`/`If`/`Else`/`End` are modeled as stack-neutral. In
+//!   reachable code the depth counter can then only ever *over*-count (it
+//!   never pops the `if` condition and never resets at `else`/`end`), so it
+//!   cannot invent an underflow — it just catches fewer of them past a block.
+//!
+//! The net effect: the check reliably rejects the control-flow-free underflow
+//! shapes (the fuzz-harness bug class below) and never false-rejects a
+//! `wasm-tools`-valid module.
 //!
 //! The bug this was written for ([PR #113 fuzz harness wasm_ops_lower_or_error,
 //! input `[I32DivS]` with empty initial stack]) sits squarely inside the
@@ -163,38 +175,48 @@ fn stack_effect_or_bail(op: &WasmOp) -> StackEffect {
         // three i32 operands and push nothing.
         MemoryCopy | MemoryFill => modeled(3, 0),
 
-        // ---- select / nop / unreachable ---------------------------------
+        // ---- select / nop -----------------------------------------------
         // select: pops two values and a condition (i32), pushes one value
         Select => modeled(3, 1),
         Nop => modeled(0, 0),
-        // `unreachable` is wasm's stack-polymorphic terminator: the wasm
-        // validator treats subsequent ops in the same block as type-checking
-        // against an infinite-depth polymorphic stack. We don't model that
-        // (we'd need a real type system). Pragmatically we keep tracking
-        // with `pops: 0, pushes: 0` so dead-code shapes that would crash
-        // `wasm_to_ir` (e.g. `[Unreachable, I32GeS]` from PR #117 fuzz
-        // follow-up — I32GeS would underflow at depth 0) get rejected with
-        // a typed Err instead of triggering the unmapped-vreg panic.
-        //
-        // Cost: formally-valid wasm with code-after-Unreachable that doesn't
-        // re-push values (e.g. `(unreachable) (i32.ge_s)`) is rejected. Real
-        // compilers don't emit this shape — wasmparser-decoded production
-        // input always has `i32.const`/`local.get` between the `unreachable`
-        // and any binary op, so depth is non-zero when the op fires and the
-        // check passes. The pathological-input case is a fuzz-harness
-        // construction, not a real wasm pattern.
-        Unreachable => modeled(0, 0),
 
-        // ---- terminators (stack-polymorphic in wasm spec) ----------------
-        // Same reasoning as `Unreachable`: model as stack-neutral so the
-        // pre-flight catches subsequent ops that would underflow `wasm_to_ir`'s
-        // mechanical IR generation. The fuzz harness found follow-up crashes
-        // on `[Return, I64Eqz, ...]` (PR #117 second-round) — Return was
-        // bailing the same way Unreachable did. `Br`/`BrTable` have the same
-        // shape semantically.
-        Return | Br(_) | BrTable { .. } => modeled(0, 0),
-        // BrIf pops the condition (i32) but doesn't terminate — fall-through
-        // path keeps executing. After it, the stack lost the condition.
+        // ---- stack-polymorphic terminators (#329) ------------------------
+        // `unreachable`, `return`, `br`, and `br_table` unconditionally
+        // transfer control, so every op *after* one of them (up to the
+        // enclosing `end`) is unreachable and, per the wasm spec, type-checks
+        // against an infinite-depth *polymorphic* stack. A
+        // `drop`/`select`/`local.set`/binary op in that dead region is
+        // perfectly valid wasm even at depth 0 — but our finite depth counter
+        // keeps decrementing and reports a *false* underflow (issue #329).
+        //
+        // (Note: falcon's original `func_30`/`func_39` underflows were a
+        // *different* root cause — the old #369 silent float-op decoder drop,
+        // which dropped pushes and starved the abstract stack; that was fixed
+        // by #369's loud-skip. This arm closes the remaining, latent
+        // dead-code-after-terminator false-positive in the same model.)
+        //
+        // Note the model can only ever *over*-count in reachable code (it
+        // never pops the `if` condition, never resets at `else`/`end`), so a
+        // false underflow is impossible there. Dead code after a polymorphic
+        // terminator is the sole false-reject class — and without block-result
+        // arities we cannot tell where reachable code resumes after the
+        // matching `end`. So we BAIL to `Ok(())` at the terminator: this keeps
+        // the check SOUND (it can only miss a genuine underflow, never invent
+        // one) and matches the module's documented "accept when unsure" intent.
+        //
+        // This does NOT reintroduce the PR #117 fuzz crashes. Those were
+        // panics deep in `wasm_to_ir`/`ir_to_arm` on shapes like
+        // `[Unreachable, I32GeS]`; the panic sites were since converted to
+        // typed `Err` (issue #93 / PR #101 `get_arm_reg`, issue #121
+        // `slot_stack`, and the `Unreachable`/`Return` handlers in
+        // `wasm_to_ir`). The fuzz contract is *no panic* — `Ok` or `Err` both
+        // pass — and those downstream changes, not this pre-flight, guarantee
+        // it. See the `*_does_not_panic_*` regression tests in synth-synthesis.
+        Unreachable | Return | Br(_) | BrTable { .. } => StackEffect::Bail,
+        // BrIf pops the condition (i32) but does NOT terminate — the
+        // fall-through path keeps executing reachable code. After it the stack
+        // lost the condition, so a genuine depth-0 `br_if` still underflows
+        // (kept as a real-underflow anchor).
         BrIf(_) => modeled(1, 0),
         // Block / Loop / If / Else / End — control region delimiters. Their
         // stack effect depends on block type, which we don't have. Treat as
@@ -308,21 +330,37 @@ mod tests {
     }
 
     #[test]
-    fn return_then_binary_op_at_depth_zero_is_underflow() {
-        // PR #117 second follow-up crash: `[Return, I64Eqz, I32Const(0)]`
-        // had the same shape as the Unreachable crash — Return was bailing
-        // and letting the subsequent op slip through to wasm_to_ir.
+    fn return_then_binary_op_is_accepted_dead_code_329() {
+        // #329: after `return`, the rest of the block is unreachable and
+        // type-checks against a polymorphic (infinite-depth) stack in wasm, so
+        // `[Return, I64Eqz]` is VALID wasm — the pre-flight must not invent an
+        // underflow. (It previously did, modeling `Return` as stack-neutral.)
+        // The downstream `wasm_to_ir` panic-safety this used to stand in for is
+        // now guaranteed by the `slot_stack`/`get_arm_reg` Err conversions —
+        // see the synth-synthesis `*_does_not_panic_*` regression tests.
         let ops = vec![WasmOp::Return, WasmOp::I64Eqz];
-        let err = check_no_underflow(&ops).unwrap_err();
-        assert!(matches!(err, Error::ValidationError(_)));
+        assert!(check_no_underflow(&ops).is_ok());
     }
 
     #[test]
-    fn br_then_binary_op_at_depth_zero_is_underflow() {
-        // Mirror of the Return case for unconditional branch.
+    fn br_then_binary_op_is_accepted_dead_code_329() {
+        // Mirror of the Return case for unconditional branch: code after `br`
+        // is unreachable/polymorphic, hence accepted.
         let ops = vec![WasmOp::Br(0), WasmOp::I32Add];
-        let err = check_no_underflow(&ops).unwrap_err();
-        assert!(matches!(err, Error::ValidationError(_)));
+        assert!(check_no_underflow(&ops).is_ok());
+    }
+
+    #[test]
+    fn br_table_then_pop_is_accepted_dead_code_329() {
+        // br_table is also a stack-polymorphic terminator.
+        let ops = vec![
+            WasmOp::BrTable {
+                targets: vec![0],
+                default: 0,
+            },
+            WasmOp::Select,
+        ];
+        assert!(check_no_underflow(&ops).is_ok());
     }
 
     #[test]
@@ -348,23 +386,19 @@ mod tests {
     }
 
     #[test]
-    fn unreachable_then_binary_op_at_depth_zero_is_underflow() {
-        // The PR #117 CI follow-up crash: `[Unreachable, I32GeS]` would
-        // crash `wasm_to_ir` (the i32.ge_s after a depth-0 unreachable
-        // generates IR referencing unmapped vregs). With `Unreachable` now
-        // modeled as `pops: 0, pushes: 0`, the subsequent binary op sees
-        // depth 0 and is correctly rejected as an underflow.
+    fn unreachable_then_binary_op_is_accepted_dead_code_329() {
+        // `[Unreachable, I32GeS]` is VALID wasm: after `unreachable` the stack
+        // is polymorphic, so i32.ge_s type-checks. The pre-flight must accept
+        // it (it previously reported a false underflow). The `wasm_to_ir`
+        // no-panic guarantee this used to proxy for now lives downstream.
         let ops = vec![WasmOp::Unreachable, WasmOp::I32GeS];
-        let err = check_no_underflow(&ops).unwrap_err();
-        assert!(matches!(err, Error::ValidationError(_)));
+        assert!(check_no_underflow(&ops).is_ok());
     }
 
     #[test]
     fn unreachable_then_consts_then_binary_op_is_ok() {
-        // Formally-valid wasm pattern: after `unreachable` the wasm spec
-        // makes the stack polymorphic, but a real compiler always re-pushes
-        // values before any binary op. Our check accepts this shape because
-        // the consts lift depth back above the op's pop count.
+        // Also valid — and accepted whether or not the consts re-push (we bail
+        // at the `unreachable`).
         let ops = vec![
             WasmOp::Unreachable,
             WasmOp::I32Const(1),
@@ -372,6 +406,57 @@ mod tests {
             WasmOp::I32GeS,
         ];
         assert!(check_no_underflow(&ops).is_ok());
+    }
+
+    #[test]
+    fn unreachable_then_drop_is_accepted_329() {
+        // Minimal #329 repro shape: `(unreachable) (drop)` — wasm-tools valid,
+        // previously rejected with "would pop 1 from depth 0".
+        let ops = vec![WasmOp::Unreachable, WasmOp::Drop];
+        assert!(check_no_underflow(&ops).is_ok());
+    }
+
+    #[test]
+    fn return_then_select_is_accepted_329() {
+        // The #329 `func_39` Select shape: a select in dead code after a
+        // terminator. Previously "would pop 3 from depth N".
+        let ops = vec![WasmOp::I32Const(0), WasmOp::Return, WasmOp::Select];
+        assert!(check_no_underflow(&ops).is_ok());
+    }
+
+    #[test]
+    fn return_then_local_set_is_accepted_329() {
+        // The #329 `func_30` LocalSet shape: a local.set in dead code.
+        // Previously "would pop 1 from depth 0".
+        let ops = vec![WasmOp::Return, WasmOp::LocalSet(0)];
+        assert!(check_no_underflow(&ops).is_ok());
+    }
+
+    #[test]
+    fn reachable_select_with_block_result_operand_is_ok_329() {
+        // A reachable select whose operands include a block result stays
+        // accepted — the depth counter over-counts across the block markers,
+        // so it never false-rejects. (Sanity that we didn't over-loosen away
+        // from reachable control flow.)
+        let ops = vec![
+            WasmOp::Block,
+            WasmOp::I32Const(5),
+            WasmOp::End,
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::Select,
+        ];
+        assert!(check_no_underflow(&ops).is_ok());
+    }
+
+    #[test]
+    fn reachable_binary_op_underflow_still_caught_after_block() {
+        // Bounded-loosening anchor: a genuine underflow that does NOT sit in a
+        // dead region is still caught. `Block` is stack-neutral, then I32Add at
+        // depth 0 underflows.
+        let ops = vec![WasmOp::Block, WasmOp::I32Add];
+        let err = check_no_underflow(&ops).unwrap_err();
+        assert!(matches!(err, Error::ValidationError(_)));
     }
 
     #[test]
