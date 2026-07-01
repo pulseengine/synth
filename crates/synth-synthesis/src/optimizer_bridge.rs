@@ -5370,10 +5370,12 @@ impl OptimizerBridge {
                     let rd =
                         alloc_i32_scratch(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[]);
                     vreg_to_arm.insert(dest.0, rd);
-                    arm_instrs.push(ArmOp::Mov {
-                        rd,
-                        op2: Operand2::Reg(Reg::R10),
-                    });
+                    // #539: emit the dedicated MemorySize op — its encoder does
+                    // `LSR rd, R10, #16` (bytes → pages). The previous `MOV rd,
+                    // R10` returned the size in BYTES, not pages, so `memory.size`
+                    // (and the `memory.grow(0)` fold that lowers to it) was 65536×
+                    // too large on the optimized path.
+                    arm_instrs.push(ArmOp::MemorySize { rd });
                     last_result_vreg = Some(dest.0);
                 }
 

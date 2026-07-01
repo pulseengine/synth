@@ -148,6 +148,33 @@ fn count_params(wasm_ops: &[WasmOp]) -> u32 {
         .unwrap_or(0)
 }
 
+/// #539: fold the `i32.const 0; memory.grow m` idiom to `memory.size m`.
+/// `memory.grow(0)` always succeeds and returns the current page count (WASM
+/// Core §4.4.7), which is exactly `memory.size`; the fixed-memory backend
+/// otherwise emits a constant `-1` for every `memory.grow`, so the legal
+/// `memory.grow(0)` "read/validate current size" idiom wrongly reported failure.
+/// Only the ADJACENT const-0 delta is folded (a non-zero delta keeps the sound
+/// `-1` — fixed memory genuinely cannot grow; a runtime-computed 0 is a
+/// documented follow-up). Backend- and path-agnostic: `memory.size` reads the
+/// runtime memory-size register on every selector, so this fixes the optimized
+/// and direct paths at once.
+fn rewrite_memory_grow_zero(wasm_ops: &[WasmOp]) -> Vec<WasmOp> {
+    let mut out = Vec::with_capacity(wasm_ops.len());
+    let mut i = 0;
+    while i < wasm_ops.len() {
+        if matches!(wasm_ops[i], WasmOp::I32Const(0))
+            && let Some(WasmOp::MemoryGrow(m)) = wasm_ops.get(i + 1)
+        {
+            out.push(WasmOp::MemorySize(*m));
+            i += 2;
+        } else {
+            out.push(wasm_ops[i].clone());
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Core compilation: WASM ops → ARM machine code bytes + relocations
 ///
 /// Returns (code_bytes, relocations) where relocations record BL instructions
@@ -156,6 +183,19 @@ fn compile_wasm_to_arm(
     wasm_ops: &[WasmOp],
     config: &CompileConfig,
 ) -> Result<(Vec<u8>, Vec<CodeRelocation>, LineMap), String> {
+    // #539: `memory.grow(0)` must return the CURRENT page count, not the
+    // fixed-memory `-1` sentinel — growing by zero pages can never fail (WASM
+    // Core §4.4.7), so a guest doing `if (memory.grow(0) < 0) trap;` wrongly
+    // faulted. Every lowering path emitted a delta-agnostic `-1`. `memory.grow(0)`
+    // is semantically identical to `memory.size`, which the backend already
+    // computes from the runtime memory-size register (R10 >> 16 = pages), so fold
+    // the `i32.const 0; memory.grow` idiom to `memory.size` up front — backend-
+    // and path-agnostic. A non-zero delta keeps `-1` (fixed memory genuinely
+    // cannot grow); a runtime delta that happens to be 0 is the documented
+    // follow-up.
+    let rewritten = rewrite_memory_grow_zero(wasm_ops);
+    let wasm_ops: &[WasmOp] = &rewritten;
+
     let num_params = count_params(wasm_ops);
 
     let bounds_config = match config.effective_safety_bounds() {
@@ -907,6 +947,44 @@ fn resolve_label_branches(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #539: `i32.const 0; memory.grow m` folds to `memory.size m`; other deltas
+    /// (const non-zero, runtime) are left as `memory.grow` (→ the sound fixed-
+    /// memory -1). Non-grow ops are untouched, so functions without the idiom are
+    /// byte-identical.
+    #[test]
+    fn test_rewrite_memory_grow_zero_539() {
+        // the idiom -> memory.size
+        assert_eq!(
+            rewrite_memory_grow_zero(&[WasmOp::I32Const(0), WasmOp::MemoryGrow(0)]),
+            vec![WasmOp::MemorySize(0)]
+        );
+        // const non-zero delta: NOT folded
+        assert_eq!(
+            rewrite_memory_grow_zero(&[WasmOp::I32Const(2), WasmOp::MemoryGrow(0)]),
+            vec![WasmOp::I32Const(2), WasmOp::MemoryGrow(0)]
+        );
+        // runtime delta (no preceding const): NOT folded
+        assert_eq!(
+            rewrite_memory_grow_zero(&[WasmOp::LocalGet(0), WasmOp::MemoryGrow(0)]),
+            vec![WasmOp::LocalGet(0), WasmOp::MemoryGrow(0)]
+        );
+        // a bare const-0 not feeding a grow is untouched
+        assert_eq!(
+            rewrite_memory_grow_zero(&[WasmOp::I32Const(0), WasmOp::I32Add]),
+            vec![WasmOp::I32Const(0), WasmOp::I32Add]
+        );
+        // fold is local: surrounding ops preserved, indices past the fold intact
+        assert_eq!(
+            rewrite_memory_grow_zero(&[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Const(0),
+                WasmOp::MemoryGrow(0),
+                WasmOp::I32Add,
+            ]),
+            vec![WasmOp::LocalGet(0), WasmOp::MemorySize(0), WasmOp::I32Add]
+        );
+    }
 
     #[test]
     fn test_arm_backend_name() {
