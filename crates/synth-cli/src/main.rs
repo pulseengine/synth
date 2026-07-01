@@ -1113,6 +1113,26 @@ fn compile_command(
                 .unwrap_or_else(|| format!("func_{}", func.index));
             info!("Compiling function {} ({} ops)", name, func.ops.len());
 
+            // #554: an op the decoder DROPPED (`_ => None`, e.g. scalar `f32.*`)
+            // is recorded in `func.unsupported` but is already gone from
+            // `func.ops` — so it never reaches a backend selector's
+            // unsupported-op guard, and the backend would lower the remaining
+            // stream into a SILENT MISCOMPILE (aarch64 emitted `mov w0,w1`). Fail
+            // honestly here, the single-function analogue of the `--all-exports`
+            // loud-skip (#369). Backend-agnostic: this guards the ARM/RISC-V
+            // direct paths too, not just `-b aarch64`.
+            if let Some(reason) = &func.unsupported {
+                anyhow::bail!(
+                    "function '{}' contains an unsupported operator ({}) the '{}' \
+                     backend cannot lower — it was dropped at decode, so refusing \
+                     to emit a silent miscompile (#369, #554). Implement the op or \
+                     compile a function the backend supports.",
+                    name,
+                    reason,
+                    backend.name()
+                );
+            }
+
             (func.ops, name)
         }
         (None, Some(demo_name)) => {

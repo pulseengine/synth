@@ -107,6 +107,18 @@ impl Backend for AArch64Backend {
         let mut elf_funcs = Vec::new();
         for func in &exports {
             let name = func.export_name.clone().unwrap();
+            // #554: honor the decoder's loud-skip marker. An op dropped at decode
+            // (`_ => None`, e.g. scalar `f32.*`) is absent from `func.ops`, so it
+            // never reaches the selector's unsupported-op guard — lowering the
+            // remaining stream would be a silent miscompile. Reject honestly,
+            // matching the milestone-1 "unsupported wasm op" contract.
+            if let Some(reason) = &func.unsupported {
+                return Err(BackendError::CompilationFailed(format!(
+                    "function '{name}' contains an unsupported operator ({reason}) \
+                     dropped at decode — refusing to emit a silent miscompile \
+                     (#369, #554)"
+                )));
+            }
             let compiled = self.compile_function(&name, &func.ops, config)?;
             elf_funcs.push(ElfFunction {
                 name: compiled.name.clone(),
