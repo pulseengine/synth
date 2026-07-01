@@ -3192,7 +3192,8 @@ fn build_relocatable_elf(
         && !input_dwarf.rows.is_empty()
     {
         use synth_core::dwarf_line::{SourceLoc, op_offsets_to_source};
-        let mut table: Vec<(u64, u32)> = Vec::new();
+        // (arm_addr, source line, GLOBAL file index into input_dwarf.files).
+        let mut table: Vec<(u64, u32, u32)> = Vec::new();
         for (i, func) in funcs.iter().enumerate() {
             if func.line_map.is_empty() || func.op_offsets.is_empty() {
                 continue; // RISC-V (empty line_map) or a func with no op offsets
@@ -3203,17 +3204,19 @@ fn build_relocatable_elf(
             for &(machine_off, op_idx) in &func.line_map {
                 // None entries (prologue / literal pool) carry no source.
                 let Some(op_idx) = op_idx else { continue };
-                if let Some(Some(SourceLoc { line, .. })) = locs.get(op_idx)
+                // Carry the real source FILE through (was dropped, forcing every
+                // stop to the fabricated `synth.wasm`); emit reproduces it.
+                if let Some(Some(SourceLoc { line, file })) = locs.get(op_idx)
                     && *line != 0
                 {
                     let arm_addr = (func_offsets[i] + machine_off) as u64;
-                    table.push((arm_addr, *line));
+                    table.push((arm_addr, *line, *file));
                 }
             }
         }
         // One address-ordered, de-duped sequence covering every function.
-        table.sort_by_key(|&(a, _)| a);
-        table.dedup_by_key(|&mut (a, _)| a);
+        table.sort_by_key(|&(a, _, _)| a);
+        table.dedup_by_key(|&mut (a, _, _)| a);
 
         // A dedicated GLOBAL symbol at `.text + 0` that the DWARF `.rel.debug_*`
         // records resolve against (R_ARM_ABS32, REL: S=`.text` base + in-place
@@ -3229,8 +3232,11 @@ fn build_relocatable_elf(
             .with_section(4); // .text is section index 4
         let text_sym_idx = elf_builder.add_symbol_indexed(text_base_sym);
 
-        let dwarf_sections =
-            synth_core::dwarf_line::emit_debug_sections(&table, text_sym_idx as usize);
+        let dwarf_sections = synth_core::dwarf_line::emit_debug_sections(
+            &table,
+            text_sym_idx as usize,
+            &input_dwarf.files,
+        );
         if !dwarf_sections.is_empty() {
             let names: Vec<&str> = dwarf_sections.iter().map(|s| s.name).collect();
             let mut total_relocs = 0usize;

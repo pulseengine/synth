@@ -57,6 +57,12 @@ wast.workspace = true
 
 [dev-dependencies]
 object.workspace = true
+# VCR-DBG-001 Tier-1 (#394) — oracle E parses the INPUT wasm's `.debug_*` custom
+# sections independently (mirroring the production reader) to derive, at runtime,
+# the real source basenames its `.debug_line` rows reference — so the emitted
+# file-table check is robust vs hardcoding. Test-only; matches synth-core's pin.
+# Bazel globs src/ only, so no MODULE.bazel pin is needed for a dev-dependency.
+wasmparser.workspace = true
 # VCR-ORACLE-001 (#242) — the frozen-codegen byte gate hashes each fixture's
 # `.text` to lock it against accidental drift (e.g. a dependabot parser bump
 # shifting lowering). Already in the lock tree; test-only ⇒ no production pull,

@@ -102,6 +102,14 @@ pub struct InputDwarfLine {
     /// Module-relative byte offset of the code section payload start. Empty wasm
     /// or a wasm with no code section reports 0.
     pub code_base: u32,
+    /// GLOBAL source-file table `(directory, file name)`. `LineRow.file` indexes
+    /// into this — NOT the input's per-unit DWARF file index. The input wasm has
+    /// several compilation units each with their own file table (colliding
+    /// per-unit indices), so the reader resolves every row's file to a real
+    /// `(dir, name)` string and interns it here, giving one flat table the emit
+    /// reproduces 1:1. Empty when no row resolves to a file (emit then falls back
+    /// to its single-file default).
+    pub files: Vec<(String, String)>,
 }
 
 /// Read the input wasm's `.debug_line` into code-section-relative
@@ -127,21 +135,31 @@ pub fn read_input_dwarf_line(wasm: &[u8]) -> InputDwarfLine {
         return InputDwarfLine {
             rows: Vec::new(),
             code_base,
+            files: Vec::new(),
         };
     }
 
     // (b) parse `.debug_line` with gimli. A malformed line program degrades to
     // an empty table (the feature no-ops) rather than failing the compile.
-    let rows = parse_debug_line_rows(&sections).unwrap_or_default();
-    InputDwarfLine { rows, code_base }
+    let (rows, files) = parse_debug_line_rows(&sections).unwrap_or_default();
+    InputDwarfLine {
+        rows,
+        code_base,
+        files,
+    }
 }
 
-/// gimli read of `.debug_line` → rows. `file` is recorded as the line program's
-/// file index (kept opaque per `LineRow`'s contract; the compose carries it but
-/// only `addr`/`line` are load-bearing for the wasm-offset bridge).
-fn parse_debug_line_rows(
-    sections: &HashMap<String, Vec<u8>>,
-) -> Result<Vec<LineRow>, gimli::Error> {
+/// gimli read of `.debug_line` → `(rows, global file table)`. The input carries
+/// several compilation units, each with its own file table, so a row's per-unit
+/// `file_index` is ambiguous once rows are flattened. To keep `LineRow.file`
+/// meaningful across units, each row's file index is resolved (via that unit's
+/// own header + `dwarf.attr_string`) to a real `(directory, name)` string and
+/// interned into one flat GLOBAL table; `LineRow.file` becomes that global index.
+/// `header.file(idx)` / `header.directory(idx)` handle the DWARF version's
+/// indexing (v4 is 1-based; v5 is 0-based) so both are read correctly.
+type LineTable = (Vec<LineRow>, Vec<(String, String)>);
+
+fn parse_debug_line_rows(sections: &HashMap<String, Vec<u8>>) -> Result<LineTable, gimli::Error> {
     let empty: &[u8] = &[];
     let load = |id: SectionId| -> Result<EndianSlice<'_, LittleEndian>, gimli::Error> {
         let data = sections.get(id.name()).map_or(empty, |v| v.as_slice());
@@ -150,25 +168,73 @@ fn parse_debug_line_rows(
     let dwarf = Dwarf::load(load)?;
 
     let mut rows = Vec::new();
+    let mut files: Vec<(String, String)> = Vec::new();
     let mut units = dwarf.units();
     while let Some(header) = units.next()? {
         let unit = dwarf.unit(header)?;
         let Some(program) = unit.line_program.clone() else {
             continue;
         };
+        // The header borrows the program; clone it so we can consume `program`
+        // in `rows()` while still resolving file indices afterwards.
+        let line_header = program.header().clone();
         let mut state = program.rows();
         while let Some((_, row)) = state.next_row()? {
             if row.end_sequence() {
                 continue;
             }
+            // Resolve this row's per-unit file index to a real (dir, name) and
+            // intern it into the flat global table (dedup); store the global idx.
+            let file = resolve_file(&dwarf, &unit, &line_header, row.file_index())
+                .map(|entry| intern_file(&mut files, entry))
+                .unwrap_or(0);
             rows.push(LineRow {
                 addr: row.address() as u32,
                 line: row.line().map(|l| l.get() as u32).unwrap_or(0),
-                file: row.file_index() as u32,
+                file,
             });
         }
     }
-    Ok(rows)
+    Ok((rows, files))
+}
+
+/// Resolve a line-program `file_index` to `(directory, file name)` strings using
+/// the owning unit's header. `header.file` / `header.directory` apply the correct
+/// per-version indexing; `attr_string` resolves both inline (`.debug_line`) and
+/// `.debug_line_str`/`.debug_str` forms. `None` when the index has no file entry
+/// (e.g. DWARF v4 index 0).
+fn resolve_file(
+    dwarf: &Dwarf<EndianSlice<'_, LittleEndian>>,
+    unit: &gimli::Unit<EndianSlice<'_, LittleEndian>>,
+    header: &gimli::LineProgramHeader<EndianSlice<'_, LittleEndian>>,
+    file_index: u64,
+) -> Option<(String, String)> {
+    let file = header.file(file_index)?;
+    let name = dwarf
+        .attr_string(unit, file.path_name())
+        .ok()?
+        .to_string_lossy()
+        .into_owned();
+    let dir = match header.directory(file.directory_index()) {
+        Some(av) => dwarf
+            .attr_string(unit, av)
+            .ok()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+        None => String::new(),
+    };
+    Some((dir, name))
+}
+
+/// Intern a `(dir, name)` into the global file table, returning its index
+/// (existing if already present). Keeps the table small (the fixture interns a
+/// single `panicking.rs`).
+fn intern_file(files: &mut Vec<(String, String)>, entry: (String, String)) -> u32 {
+    if let Some(i) = files.iter().position(|f| *f == entry) {
+        return i as u32;
+    }
+    files.push(entry);
+    (files.len() - 1) as u32
 }
 
 /// Emit an address-ordered `(arm_addr, line)` table as a FULL minimal DWARF unit
@@ -188,7 +254,11 @@ fn parse_debug_line_rows(
 ///
 /// Ports `tests/dwarf_emit_roundtrip_step4.rs::emit_dwarf` (which emits the same
 /// full unit and round-trips through `Dwarf::units()`).
-pub fn emit_debug_sections(table: &[(u64, u32)], text_sym: usize) -> Vec<EmittedDwarfSection> {
+pub fn emit_debug_sections(
+    table: &[(u64, u32, u32)],
+    text_sym: usize,
+    files: &[(String, String)],
+) -> Vec<EmittedDwarfSection> {
     use gimli::write::{Address, AttributeValue, DwarfUnit, LineProgram, LineString, Sections};
 
     if table.is_empty() {
@@ -204,21 +274,48 @@ pub fn emit_debug_sections(table: &[(u64, u32)], text_sym: usize) -> Vec<Emitted
 
     // The span of emitted text the unit describes: low_pc=`.text`+0 (text base),
     // high_pc one past the last mapped address.
-    let high_pc = table.iter().map(|&(a, _)| a).max().unwrap_or(0) + 1;
+    let high_pc = table.iter().map(|&(a, _, _)| a).max().unwrap_or(0) + 1;
 
-    // gimli 0.33 split the comp-dir/file args: (working_dir, source_dir,
-    // source_file, source_file_info). source_dir = None ⇒ the file sits in
-    // working_dir, matching the previous single-dir behaviour.
+    // Reproduce the input's source-file table so a debugger resolves each stop to
+    // the REAL file (e.g. `panicking.rs`), not the fabricated `synth.wasm`. The
+    // comp-dir/file passed to `LineProgram::new` become the unit's primary file;
+    // use the FIRST real interned file for it (never `synth.wasm`) so even the
+    // primary is a genuine name. Then `add_file` each interned file and map its
+    // global index → the returned `FileId`. When the input carried no resolvable
+    // file table (`files` empty) keep the historical single-file default so a
+    // DWARF-less-but-lined input still emits something rather than panicking.
+    //
+    // gimli 0.33's `LineProgram::new` args are
+    // `(working_dir, working_dir_info, source_file, source_file_info)`.
+    let (primary_dir, primary_name) = files
+        .first()
+        .map(|(d, n)| (d.clone().into_bytes(), n.clone().into_bytes()))
+        .unwrap_or_else(|| (b"/synth".to_vec(), b"synth.wasm".to_vec()));
     let mut program = LineProgram::new(
         encoding,
         gimli::LineEncoding::default(),
-        LineString::String(b"/synth".to_vec()),
+        LineString::String(primary_dir),
         None,
-        LineString::String(b"synth.wasm".to_vec()),
+        LineString::String(primary_name.clone()),
         None,
     );
-    let dir = program.default_directory();
-    let fid = program.add_file(LineString::String(b"synth.wasm".to_vec()), dir, None);
+    // Global file index → emitted `FileId`. `file_ids[0]` always exists (either
+    // the first real file or the single fallback), so an out-of-range row index
+    // clamps to it rather than panicking.
+    let mut file_ids = Vec::with_capacity(files.len().max(1));
+    if files.is_empty() {
+        let dir = program.default_directory();
+        file_ids.push(program.add_file(LineString::String(b"synth.wasm".to_vec()), dir, None));
+    } else {
+        for (dir, name) in files {
+            let dir_id = program.add_directory(LineString::String(dir.clone().into_bytes()));
+            file_ids.push(program.add_file(
+                LineString::String(name.clone().into_bytes()),
+                dir_id,
+                None,
+            ));
+        }
+    }
 
     // The sequence base is `.text + 0` as a RELOCATABLE address (one
     // `DW_LNE_set_address` against the `.text` symbol, addend 0); each row's
@@ -230,10 +327,10 @@ pub fn emit_debug_sections(table: &[(u64, u32)], text_sym: usize) -> Vec<Emitted
         addend: 0,
     };
     program.begin_sequence(Some(text_base));
-    for &(addr, line) in table {
+    for &(addr, line, file) in table {
         let row = program.row();
         row.address_offset = addr;
-        row.file = fid;
+        row.file = *file_ids.get(file as usize).unwrap_or(&file_ids[0]);
         row.line = line as u64;
         program.generate_row();
     }
@@ -242,8 +339,13 @@ pub fn emit_debug_sections(table: &[(u64, u32)], text_sym: usize) -> Vec<Emitted
 
     // Populate the root DW_TAG_compile_unit DIE: a name, the text span, and (via
     // gimli auto-wiring the attached line_program) DW_AT_stmt_list → .debug_line.
+    // Name the CU after the primary real source file (fallback `synth.wasm`).
     {
-        let name_id = dwarf.strings.add("synth.wasm");
+        let cu_name = files
+            .first()
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| "synth.wasm".to_string());
+        let name_id = dwarf.strings.add(cu_name);
         let root = dwarf.unit.root();
         let root_die = dwarf.unit.get_mut(root);
         root_die.set(gimli::DW_AT_name, AttributeValue::StringRef(name_id));

@@ -21,7 +21,7 @@
 //!      address (in-range) to a non-zero source line. This is the path a debugger
 //!      takes, so passing it proves a debugger can reach the line data.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -433,5 +433,134 @@ fn rel_debug_relocations_shift_addresses_to_correct_line_394() {
         "[dbg394-oracleC] applied .rel.debug_line at base 0x{LINK_BASE:x}: {} rows \
          shifted by exactly the base, all source lines preserved.",
         after.len()
+    );
+}
+
+/// The basename of a (possibly `/`- or `\`-separated) path string.
+fn basename(name: &str) -> String {
+    name.rsplit(['/', '\\']).next().unwrap_or(name).to_string()
+}
+
+/// Extract a wasm module's `.debug_*` custom sections into a name→bytes map.
+fn wasm_debug_sections(wasm: &[u8]) -> HashMap<String, Vec<u8>> {
+    use wasmparser::{Parser, Payload};
+    let mut out = HashMap::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::CustomSection(c)) = payload
+            && c.name().starts_with(".debug_")
+        {
+            out.insert(c.name().to_string(), c.data().to_vec());
+        }
+    }
+    out
+}
+
+/// Walk a section-name→bytes DWARF map via `dwarf.units()` and return the
+/// basenames of the source files that its `.debug_line` ROWS actually reference
+/// (resolved through each unit's own file table). This is the set the compose
+/// carries into the emitted object, so it is exactly what must reappear there —
+/// derived from the fixture AT RUNTIME rather than hardcoded.
+fn row_referenced_basenames(secs: &HashMap<String, Vec<u8>>) -> BTreeSet<String> {
+    let empty: &[u8] = &[];
+    let load = |id: SectionId| -> Result<EndianSlice<'_, LittleEndian>, gimli::Error> {
+        let data = secs.get(id.name()).map_or(empty, |v| v.as_slice());
+        Ok(EndianSlice::new(data, LittleEndian))
+    };
+    let dwarf = gimli::Dwarf::load(load).expect("load .debug_* sections");
+    let mut out = BTreeSet::new();
+    let mut units = dwarf.units();
+    while let Some(header) = units.next().expect("unit header") {
+        let unit = dwarf.unit(header).expect("unit");
+        let Some(program) = unit.line_program.clone() else {
+            continue;
+        };
+        // Clone the header (it borrows the program) before consuming `program`.
+        let h = program.header().clone();
+        let mut file_indices = Vec::new();
+        let mut state = program.rows();
+        while let Some((_, row)) = state.next_row().expect("row") {
+            if row.end_sequence() {
+                continue;
+            }
+            file_indices.push(row.file_index());
+        }
+        for fi in file_indices {
+            if let Some(file) = h.file(fi)
+                && let Ok(name) = dwarf.attr_string(&unit, file.path_name())
+            {
+                out.insert(basename(&name.to_string_lossy()));
+            }
+        }
+    }
+    out
+}
+
+/// Walk an emitted DWARF map and return the basenames present in the CU line
+/// program's FILE TABLE (`header().file_names()`), the way a debugger reads it.
+fn emitted_file_basenames(secs: &HashMap<String, Vec<u8>>) -> BTreeSet<String> {
+    let empty: &[u8] = &[];
+    let load = |id: SectionId| -> Result<EndianSlice<'_, LittleEndian>, gimli::Error> {
+        let data = secs.get(id.name()).map_or(empty, |v| v.as_slice());
+        Ok(EndianSlice::new(data, LittleEndian))
+    };
+    let dwarf = gimli::Dwarf::load(load).expect("load emitted .debug_* sections");
+    let mut out = BTreeSet::new();
+    let mut units = dwarf.units();
+    while let Some(header) = units.next().expect("unit header") {
+        let unit = dwarf.unit(header).expect("unit");
+        let Some(program) = unit.line_program.clone() else {
+            continue;
+        };
+        let h = program.header();
+        for file in h.file_names() {
+            if let Ok(name) = dwarf.attr_string(&unit, file.path_name()) {
+                out.insert(basename(&name.to_string_lossy()));
+            }
+        }
+    }
+    out
+}
+
+/// ORACLE E — Tier-1 REAL source filenames (#394). Before this fix the emitter
+/// hardcoded its only file as `synth.wasm` (dir `/synth`), a file that does not
+/// exist, so gdb resolved every stop as `synth.wasm:N` — correct line, fabricated
+/// file. This oracle proves the emitted line program's file table instead carries
+/// the input wasm's REAL row-referenced source basenames (e.g. `panicking.rs`),
+/// extracted from the fixture at runtime, and that `synth.wasm` is GONE.
+#[test]
+fn emitted_debug_line_carries_real_source_filenames_394() {
+    let wasm = repro("msgq_put_359.wasm");
+    let wasm_bytes = std::fs::read(&wasm).expect("read fixture wasm");
+
+    // (a) The real source basenames the input's `.debug_line` rows reference —
+    // exactly what the compose carries into the emitted object.
+    let expected = row_referenced_basenames(&wasm_debug_sections(&wasm_bytes));
+    assert!(
+        !expected.is_empty(),
+        "fixture must have `.debug_line` rows referencing ≥1 source file"
+    );
+
+    let dbg = compile(&wasm, "/tmp/dbg394_msgq_oraclee.o", true);
+    let emitted = emitted_file_basenames(&section_data(&dbg));
+
+    // (b) The fabricated filename must be GONE.
+    assert!(
+        !emitted.contains("synth.wasm"),
+        "emitted line-program file table must NOT contain the fabricated \
+         `synth.wasm`; got {emitted:?}"
+    );
+
+    // (a) The real row-referenced basenames must be present.
+    for want in &expected {
+        assert!(
+            emitted.contains(want),
+            "emitted file table missing real source file {want:?}; \
+             expected {expected:?}, got {emitted:?}"
+        );
+    }
+
+    eprintln!(
+        "[dbg394-oracleE] input rows reference {expected:?}; emitted file table {emitted:?} \
+         (real names propagated, synth.wasm gone)"
     );
 }
