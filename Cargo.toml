@@ -17,6 +17,7 @@ members = [
     "crates/synth-backend-awsm",
     "crates/synth-backend-wasker",
     "crates/synth-backend-riscv",
+    "crates/synth-backend-aarch64",
 ]
 resolver = "2"
 

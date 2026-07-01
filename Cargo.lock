@@ -2055,6 +2055,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "synth-backend-aarch64"
+version = "0.18.1"
+dependencies = [
+ "synth-core",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "synth-backend-awsm"
 version = "0.18.1"
 dependencies = [
