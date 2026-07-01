@@ -3378,6 +3378,117 @@ fn safe_cse_uses(
     None // rd not redefined in the segment → may be live-out → decline
 }
 
+/// Size of the general-purpose allocatable register pool (R0..R8). The
+/// optimized ARM path reserves R9/R10/R11 (linmem base / scratch) and R12 (IP,
+/// encoder scratch), so nine registers remain for values (#212).
+const ALLOCATABLE_POOL: usize = 9;
+
+/// The allocatable pool in preference order (low first, so a retargeted use is
+/// less likely to flip a 16-bit Thumb encoding to its 32-bit form).
+fn hoist_pool() -> [Reg; ALLOCATABLE_POOL] {
+    use Reg::*;
+    [R0, R1, R2, R3, R4, R5, R6, R7, R8]
+}
+
+/// A constant-materialization *unit* in a straight-line segment: either a single
+/// `mov`/`movw` (`len == 1`) or an adjacent `movw rd,#lo ; movt rd,#hi` pair
+/// (`len == 2`) that together load `value` into `rd`. Recognizing the 32-bit
+/// `movw+movt` pair (PR2, #242) makes the large clamp/flat_flight constants
+/// visible to const-CSE — a lone `movw` extractor sees only the low 16 bits.
+struct ConstUnit {
+    /// Segment-local index of the first instruction of the unit.
+    start: usize,
+    /// 1 for a single `mov`/`movw`, 2 for a `movw+movt` pair.
+    len: usize,
+    /// Destination register the constant is materialized into.
+    rd: Reg,
+    /// The full (reconstructed) 32-bit constant value.
+    value: i32,
+}
+
+/// The constant-materialization units of a straight-line segment, in order. A
+/// `movw rd,#lo` immediately followed by `movt rd,#hi` (same `rd`) is folded
+/// into one 32-bit unit; anything else is a single-instruction unit.
+fn const_units(seg: &[ArmInstruction]) -> Vec<ConstUnit> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < seg.len() {
+        if let Some((rd, lo)) = const_materialization(&seg[i].op) {
+            if let ArmOp::Movw {
+                rd: wrd,
+                imm16: lo16,
+            } = &seg[i].op
+                && i + 1 < seg.len()
+                && let ArmOp::Movt {
+                    rd: trd,
+                    imm16: hi16,
+                } = &seg[i + 1].op
+                && trd == wrd
+            {
+                let full = (*lo16 as u32 | ((*hi16 as u32) << 16)) as i32;
+                out.push(ConstUnit {
+                    start: i,
+                    len: 2,
+                    rd: *wrd,
+                    value: full,
+                });
+                i += 2;
+                continue;
+            }
+            out.push(ConstUnit {
+                start: i,
+                len: 1,
+                rd,
+                value: lo,
+            });
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Find a pool register that is provably FREE across the closed instruction
+/// range `[lo, hi]` of a straight-line segment — i.e. one that can hold a hoisted
+/// constant materialized at `lo` and read (for the last time) at `hi` without
+/// clobbering any other live value. Sound criterion (forward scan from `lo+1`):
+///   - a *use* of the candidate before it is redefined post-`lo` ⇒ the candidate
+///     carries a foreign value live across the window ⇒ reject;
+///   - a *def* of the candidate at or below `hi` ⇒ the hoisted value would be
+///     clobbered before its last use ⇒ reject; a def strictly above `hi` ⇒ the
+///     candidate is safely reusable there ⇒ accept (stop scanning).
+///
+/// `avoid` excludes the destination register(s) already in play and any register
+/// pinned by an earlier hoist in the same segment. Returns `None` if none free —
+/// the caller then declines the hoist (pressure too high in the window).
+fn free_reg_over(
+    seg: &[ArmInstruction],
+    lo: usize,
+    hi: usize,
+    avoid: &BTreeSet<Reg>,
+) -> Option<Reg> {
+    'cand: for &p in hoist_pool().iter() {
+        if avoid.contains(&p) {
+            continue;
+        }
+        for (k, ins) in seg.iter().enumerate().skip(lo + 1) {
+            // Segment is fully modeled (the caller only processes such segments),
+            // so reg_effect is always Some; `?` stays sound if that ever changes.
+            let eff = reg_effect(&ins.op)?;
+            if eff.uses.contains(&p) {
+                continue 'cand;
+            }
+            if eff.defs.contains(&p) {
+                if k <= hi {
+                    continue 'cand;
+                }
+                break;
+            }
+        }
+        return Some(p);
+    }
+    None
+}
+
 /// Const-CSE / rematerialization-avoidance driven by the value-range analysis:
 /// where a `movw rd, #v` re-materializes a constant already resident in `ra`,
 /// and `ra` provably still holds `v` through every later read of `rd` (until
@@ -3401,19 +3512,48 @@ fn safe_cse_uses(
 /// — otherwise the whole segment's CSE is declined and every materialization is
 /// kept. Monotone-or-neutral on size by measurement, not by hand-wave.
 ///
+/// WIN RECOVERY (PR2, #242): the cross-register fold above (and the inline cache)
+/// only catch a constant that is *still resident* in some register. gale measured
+/// 61% of flat_flight's materializations as redundant, yet almost none are of that
+/// shape — the greedy selector re-materializes each clamp constant into the SAME
+/// register, which is clobbered between uses, so no register holds it at the reuse.
+/// PR2 adds two pieces: (1) [`const_units`] reconstructs 32-bit `movw+movt` pairs
+/// so large constants are visible; (2) a same-register *extending-alias* hoist pins
+/// a repeatedly re-materialized value in a register that is provably FREE across
+/// the reuse window ([`free_reg_over`]), deletes the repeats, and retargets the
+/// reads. Because the hoist introduces one extra live register, each segment it
+/// touches is additionally gated on post-transform peak pressure
+/// ([`straight_line_peak_pressure`]) ≤ [`ALLOCATABLE_POOL`] — so it can never turn
+/// a fitting segment into a spilling one. This is post-hoc removal+retarget, not
+/// inline two-vreg aliasing, so it does not reintroduce the alias-eviction hazard;
+/// the only risk is register pressure, which the guard measures directly.
+///
 /// Returns the rewritten stream and the count removed. Pure; callers opt in
 /// (flag-gated, differential-verified).
 pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    // Two independent, individually-guarded passes, run in sequence. Pass 2 runs
+    // on Pass 1's *output* (not the original), so it observes the register uses
+    // Pass 1 introduced — a hoist that moves a materialization's destination can
+    // then correctly retarget a read Pass 1 aliased onto that register.
+    let (s1, c1) = cross_reg_const_cse(instrs);
+    let (s2, c2) = extending_alias_hoist(&s1);
+    (s2, c1 + c2)
+}
+
+/// Pass 1 (PR1): cross-register const-CSE. A `movw rd,#v` whose value is already
+/// resident in a *different* register `ra`, provably live through every later
+/// read of `rd` until `rd` is redefined in-segment → drop it and retarget the
+/// reads to `ra`. 16-bit / `mov #imm` only (a `movt` high half acts as a redefine
+/// that clears the tracked value). Per-segment size-guarded; never grows a
+/// function; declines a whole segment whose rewrite would grow it.
+fn cross_reg_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
     use crate::optimizer_bridge::estimate_arm_byte_size;
     let n = instrs.len();
     let mut removed = vec![false; n];
     let mut rewrites: Vec<(usize, Reg, Reg)> = Vec::new(); // (use_index, from, to)
 
-    // Process each maximal straight-line, fully-modeled segment independently.
     let mut seg_start = 0;
     let mut process_segment = |start: usize, end: usize| {
-        // Stage this segment's candidate changes locally; commit only if they do
-        // not grow the segment's estimated byte size (#242 size guard below).
         let mut seg_removed: Vec<usize> = Vec::new();
         let mut seg_rewrites: Vec<(usize, Reg, Reg)> = Vec::new();
         let mut held: Vec<(Reg, i32)> = Vec::new(); // reg → resident constant
@@ -3440,8 +3580,6 @@ pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
         if seg_removed.is_empty() {
             return;
         }
-        // Per-index rename map for this segment, so we can estimate the rewritten
-        // bytes (a retarget can change an op's encoding width).
         let mut renames_seg: BTreeMap<usize, Vec<(Reg, Reg)>> = BTreeMap::new();
         for &(j, from, to) in &seg_rewrites {
             renames_seg.entry(j).or_default().push((from, to));
@@ -3467,7 +3605,6 @@ pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
             }
             rewrites.extend(seg_rewrites);
         }
-        // else: declining this segment's CSE keeps every materialization in place.
     };
     for (i, ins) in instrs.iter().enumerate() {
         if !is_straight_line(&ins.op) || reg_effect(&ins.op).is_none() {
@@ -3484,8 +3621,6 @@ pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
     if rewrites.is_empty() && !removed.iter().any(|&r| r) {
         return (instrs.to_vec(), 0);
     }
-    // Apply: per-index rename map (an index may need multiple renames if several
-    // folded consts share a consumer — apply each in turn).
     let mut renames_at: BTreeMap<usize, Vec<(Reg, Reg)>> = BTreeMap::new();
     for (j, from, to) in rewrites {
         renames_at.entry(j).or_default().push((from, to));
@@ -3498,6 +3633,240 @@ pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
             continue;
         }
         let mut op = ins.op.clone();
+        if let Some(rs) = renames_at.get(&i) {
+            for &(from, to) in rs {
+                op = rename_use(&op, from, to).unwrap_or(op);
+            }
+        }
+        out.push(ArmInstruction {
+            op,
+            source_line: ins.source_line,
+        });
+    }
+    (out, count)
+}
+
+/// Pass 2 (PR2, #242 win recovery): same-register extending-alias hoist. The
+/// greedy selector re-materializes a constant into the SAME register at each
+/// reuse (e.g. flat_flight's clamp `movw r3,#980 … movw r3,#980`, with `r3`
+/// clobbered between — so no register holds it and Pass 1 / the inline cache miss
+/// it). For a value re-materialized into one register ≥2× in a straight-line
+/// segment, pin it in a register that is provably FREE across the reuse window
+/// ([`free_reg_over`]), delete the repeat materializations, and retarget the
+/// reads. Because this introduces one extra live register, every touched segment
+/// is gated on post-transform peak pressure ≤ [`ALLOCATABLE_POOL`] as well as the
+/// #242 no-grow size guard — so it can never turn a fitting segment into a
+/// spilling one, nor grow a function.
+fn extending_alias_hoist(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    use crate::optimizer_bridge::estimate_arm_byte_size;
+    let n = instrs.len();
+    let mut removed = vec![false; n];
+    let mut rewrites: Vec<(usize, Reg, Reg)> = Vec::new(); // (use_index, from, to)
+    let mut replace_at: BTreeMap<usize, ArmOp> = BTreeMap::new(); // holder materializations
+
+    let mut seg_start = 0;
+    let mut process_segment = |start: usize, end: usize| {
+        let seg = &instrs[start..end];
+        let units = const_units(seg);
+        let unit_starts: BTreeSet<usize> = units.iter().map(|u| u.start).collect();
+        let unit_len_at = |k: usize| units.iter().find(|u| u.start == k).map(|u| u.len);
+        let mut groups: BTreeMap<(i32, Reg), Vec<usize>> = BTreeMap::new();
+        for (ui, u) in units.iter().enumerate() {
+            groups.entry((u.value, u.rd)).or_default().push(ui);
+        }
+
+        let mut seg_removed: Vec<usize> = Vec::new();
+        let mut seg_rewrites: Vec<(usize, Reg, Reg)> = Vec::new();
+        let mut seg_replace: BTreeMap<usize, ArmOp> = BTreeMap::new();
+        let mut reserved: BTreeSet<Reg> = BTreeSet::new();
+
+        for ((value, rd), uidxs) in groups {
+            if uidxs.len() < 2 {
+                continue; // nothing to fold away
+            }
+            // Walk from the first unit collecting the reads that observe this value
+            // (`rd` holding it, bounded by clobbers), and check locality — the last
+            // materialization's value must die in-segment (a live-out `rd` cannot be
+            // dropped, else a later segment would read an undefined register).
+            let first_start = units[uidxs[0]].start;
+            let mut covered: Vec<usize> = Vec::new();
+            let mut holds_v = false;
+            let mut ok = true;
+            let mut k = first_start;
+            while k < seg.len() {
+                if unit_starts.contains(&k)
+                    && let Some(len) = unit_len_at(k)
+                    && units
+                        .iter()
+                        .any(|u| u.start == k && u.rd == rd && u.value == value)
+                {
+                    holds_v = true;
+                    k += len;
+                    continue;
+                }
+                let Some(eff) = reg_effect(&seg[k].op) else {
+                    ok = false;
+                    break;
+                };
+                if holds_v && eff.uses.contains(&rd) {
+                    if rename_use(&seg[k].op, rd, rd).is_none() {
+                        ok = false;
+                        break;
+                    }
+                    covered.push(k);
+                }
+                if eff.defs.contains(&rd) {
+                    holds_v = false;
+                }
+                k += 1;
+            }
+            if !ok || holds_v || covered.is_empty() {
+                continue;
+            }
+            let hi = *covered.iter().max().unwrap();
+            let mut avoid = reserved.clone();
+            avoid.insert(rd);
+            let Some(rf) = free_reg_over(seg, first_start, hi, &avoid) else {
+                continue; // no register free across the reuse window → decline
+            };
+            // Stage the holder materialization into `rf` (same value, new reg).
+            let holder = &units[uidxs[0]];
+            let staged_holder: Option<Vec<(usize, ArmOp)>> = match holder.len {
+                2 => match (&seg[holder.start].op, &seg[holder.start + 1].op) {
+                    (ArmOp::Movw { imm16: lo16, .. }, ArmOp::Movt { imm16: hi16, .. }) => {
+                        Some(vec![
+                            (
+                                holder.start,
+                                ArmOp::Movw {
+                                    rd: rf,
+                                    imm16: *lo16,
+                                },
+                            ),
+                            (
+                                holder.start + 1,
+                                ArmOp::Movt {
+                                    rd: rf,
+                                    imm16: *hi16,
+                                },
+                            ),
+                        ])
+                    }
+                    _ => None,
+                },
+                _ => match &seg[holder.start].op {
+                    ArmOp::Movw { imm16, .. } => Some(vec![(
+                        holder.start,
+                        ArmOp::Movw {
+                            rd: rf,
+                            imm16: *imm16,
+                        },
+                    )]),
+                    ArmOp::Mov {
+                        op2: Operand2::Imm(x),
+                        ..
+                    } => Some(vec![(
+                        holder.start,
+                        ArmOp::Mov {
+                            rd: rf,
+                            op2: Operand2::Imm(*x),
+                        },
+                    )]),
+                    _ => None,
+                },
+            };
+            let Some(holder_ops) = staged_holder else {
+                continue;
+            };
+            for (k, op) in holder_ops {
+                seg_replace.insert(start + k, op);
+            }
+            for &ui in &uidxs[1..] {
+                let u = &units[ui];
+                for k in u.start..u.start + u.len {
+                    seg_removed.push(start + k);
+                }
+            }
+            for k in covered {
+                seg_rewrites.push((start + k, rd, rf));
+            }
+            reserved.insert(rf);
+        }
+
+        if seg_removed.is_empty() && seg_replace.is_empty() {
+            return;
+        }
+        // Build the rewritten segment and gate on it: size never grows (#242) and
+        // peak pressure stays within the pool (the hoist added a live register).
+        let seg_removed_set: BTreeSet<usize> = seg_removed.iter().copied().collect();
+        let mut renames_seg: BTreeMap<usize, Vec<(Reg, Reg)>> = BTreeMap::new();
+        for &(j, from, to) in &seg_rewrites {
+            renames_seg.entry(j).or_default().push((from, to));
+        }
+        let rewritten: Vec<ArmInstruction> = (start..end)
+            .filter(|i| !seg_removed_set.contains(i))
+            .map(|i| {
+                let mut op = seg_replace
+                    .get(&i)
+                    .cloned()
+                    .unwrap_or_else(|| instrs[i].op.clone());
+                if let Some(rs) = renames_seg.get(&i) {
+                    for &(from, to) in rs {
+                        op = rename_use(&op, from, to).unwrap_or(op);
+                    }
+                }
+                ArmInstruction {
+                    op,
+                    source_line: instrs[i].source_line,
+                }
+            })
+            .collect();
+        let orig_bytes: usize = (start..end)
+            .map(|i| estimate_arm_byte_size(&instrs[i].op))
+            .sum();
+        let new_bytes: usize = rewritten
+            .iter()
+            .map(|x| estimate_arm_byte_size(&x.op))
+            .sum();
+        let pressure_ok =
+            matches!(straight_line_peak_pressure(&rewritten), Some(p) if p <= ALLOCATABLE_POOL);
+        if new_bytes <= orig_bytes && pressure_ok {
+            for i in seg_removed {
+                removed[i] = true;
+            }
+            rewrites.extend(seg_rewrites);
+            replace_at.extend(seg_replace);
+        }
+    };
+    for (i, ins) in instrs.iter().enumerate() {
+        if !is_straight_line(&ins.op) || reg_effect(&ins.op).is_none() {
+            if i > seg_start {
+                process_segment(seg_start, i);
+            }
+            seg_start = i + 1;
+        }
+    }
+    if instrs.len() > seg_start {
+        process_segment(seg_start, instrs.len());
+    }
+
+    if rewrites.is_empty() && replace_at.is_empty() && !removed.iter().any(|&r| r) {
+        return (instrs.to_vec(), 0);
+    }
+    let mut renames_at: BTreeMap<usize, Vec<(Reg, Reg)>> = BTreeMap::new();
+    for (j, from, to) in rewrites {
+        renames_at.entry(j).or_default().push((from, to));
+    }
+    let mut out = Vec::with_capacity(n);
+    let mut count = 0;
+    for (i, ins) in instrs.iter().enumerate() {
+        if removed[i] {
+            count += 1;
+            continue;
+        }
+        let mut op = replace_at
+            .get(&i)
+            .cloned()
+            .unwrap_or_else(|| ins.op.clone());
         if let Some(rs) = renames_at.get(&i) {
             for &(from, to) in rs {
                 op = rename_use(&op, from, to).unwrap_or(op);
@@ -7672,6 +8041,132 @@ mod tests {
             3,
             "all three loads retargeted to the low resident register r2"
         );
+    }
+
+    #[test]
+    fn const_units_reconstructs_a_32bit_movw_movt_pair() {
+        // #242 PR2 item 1: a `movw r0,#lo ; movt r0,#hi` pair is one 32-bit unit;
+        // a lone `movw` / a `movt` to a different reg is not folded.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0x7960,
+            }),
+            ins(ArmOp::Movt {
+                rd: Reg::R0,
+                imm16: 0xFFFE,
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 42,
+            }),
+        ];
+        let units = const_units(&seq);
+        assert_eq!(units.len(), 2, "the pair + the lone movw");
+        assert_eq!((units[0].rd, units[0].len), (Reg::R0, 2));
+        assert_eq!(
+            units[0].value, -100000,
+            "0xFFFE7960 reconstructs to -100000 as i32"
+        );
+        assert_eq!(
+            (units[1].rd, units[1].len, units[1].value),
+            (Reg::R1, 1, 42)
+        );
+    }
+
+    #[test]
+    fn const_cse_hoists_a_same_register_reuse_into_a_free_register_242() {
+        // #242 PR2 win recovery: `movw r2,#500` is materialized into r2, r2 is
+        // clobbered (to #9) between uses, then #500 is re-materialized into r2 —
+        // the SAME register, so Pass 1 / the inline cache miss it (no register
+        // holds 500 at the reuse). The extending-alias hoist pins 500 in a FREE
+        // register (r0), drops the repeat, and retargets both uses. r2 is redefined
+        // at the end (#1) so its value is local.
+        let add = |rd, rn| {
+            ins(ArmOp::Add {
+                rd,
+                rn,
+                op2: Operand2::Reg(rn),
+            })
+        };
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R3, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 9,
+            }),
+            add(Reg::R4, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R5, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 1,
+            }),
+        ];
+        let (out, removed) = apply_const_cse(&seq);
+        assert_eq!(removed, 1, "the repeat `movw r2,#500` is dropped");
+        // Exactly one `movw _,#500` survives, into a register other than r2.
+        let mats: Vec<Reg> = out
+            .iter()
+            .filter_map(|i| match &i.op {
+                ArmOp::Movw { rd, imm16: 500 } => Some(*rd),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(mats.len(), 1, "one hoisted materialization of 500 remains");
+        let rf = mats[0];
+        assert_ne!(rf, Reg::R2, "hoisted into a free register, not r2");
+        // Both const-uses read the hoisted register, not the clobbered r2.
+        assert_eq!(
+            out.iter()
+                .filter(
+                    |i| matches!(&i.op, ArmOp::Add { rn, op2: Operand2::Reg(m), .. }
+                    if *rn == rf && *m == rf)
+                )
+                .count(),
+            2,
+            "both `add _,500,500` uses retargeted to the hoisted register"
+        );
+    }
+
+    #[test]
+    fn const_cse_hoist_declines_when_value_is_live_out_of_segment_242() {
+        // Same shape but WITHOUT the trailing redefine of r2 — the last `movw
+        // r2,#500` leaves 500 live-out of the segment, so dropping it would strand
+        // a later read of r2. The hoist must decline (locality guard).
+        let add = |rd, rn| {
+            ins(ArmOp::Add {
+                rd,
+                rn,
+                op2: Operand2::Reg(rn),
+            })
+        };
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R3, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 9,
+            }),
+            add(Reg::R4, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R5, Reg::R2),
+        ];
+        let (_out, removed) = apply_const_cse(&seq);
+        assert_eq!(removed, 0, "value live-out → hoist declines");
     }
 
     #[test]
