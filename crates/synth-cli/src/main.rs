@@ -3232,10 +3232,28 @@ fn build_relocatable_elf(
             .with_section(4); // .text is section index 4
         let text_sym_idx = elf_builder.add_symbol_indexed(text_base_sym);
 
+        // #394 Tier-1: one DW_TAG_subprogram DIE per compiled function so a
+        // debugger backtrace shows the function NAME. Each function's name and
+        // its object-relative `.text` range come straight from the layout the
+        // reloc/symbol emission already uses (`func_offsets[i]` .. + code len,
+        // the same values `func.name`/`func_N` symbols carry). Purely additive:
+        // the subprogram low_pc addresses reuse the `__synth_text_base` symbol
+        // via an addend, so no new symbol is defined.
+        let subprograms: Vec<synth_core::dwarf_line::SubprogramInfo> = funcs
+            .iter()
+            .enumerate()
+            .map(|(i, func)| synth_core::dwarf_line::SubprogramInfo {
+                name: func.name.clone(),
+                low_pc: func_offsets[i] as u64,
+                high_pc: (func_offsets[i] + func.code.len() as u32) as u64,
+            })
+            .collect();
+
         let dwarf_sections = synth_core::dwarf_line::emit_debug_sections(
             &table,
             text_sym_idx as usize,
             &input_dwarf.files,
+            &subprograms,
         );
         if !dwarf_sections.is_empty() {
             let names: Vec<&str> = dwarf_sections.iter().map(|s| s.name).collect();
