@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-07-02
+
+**Value-carrying branch correctness on the shipped path (#509) + the Belady
+spill lever.**
+
+### Fixed
+
+- **Value-carrying `br`/`br_if`/`br_table` land the result correctly (#509).**
+  The direct (`--relocatable`/shipped) selector dropped the carried value on the
+  taken edge of a branch to a value-returning block (e.g. `br_table` dispatch
+  returned 2 instead of 12; `br_if` returned 0 instead of 10) — the same class as
+  the RV32 #343 bug, on all forward-branch shapes. Fixed by threading block
+  result-arity from the decoder (ordinal-keyed side-table, no `WasmOp` change)
+  and giving each value block a designated result register every edge moves into
+  (the #343 reconcile generalized to N edges); the fall-through `End` reconciles
+  and publishes the same register. Lazy allocation keeps never-branched-to blocks
+  bit-identical (frozen anchors 3/3 structural). The optimized path detects
+  value-carrying branches and routes to the direct selector (#507 pattern).
+  32/32 differential cases match wasmtime on both paths. Loop-param carries,
+  multi-value blocks, result-typed `if/else` joins and i64 carries decline
+  loudly (never silent).
+- `flight_seam_differential.py` resolves symbols from the ELF symtab (#570) and
+  is now CI-gated (`flight-seam relocatable-path execution oracle`).
+
+### Internal (VCR #242 — flag-off)
+
+- **Belady spill-plan re-choice (VCR-RA-001 stage 2, `SYNTH_SPILL_REALLOC`).**
+  Rewrites a segment's spill placement to the farthest-next-use plan under an
+  executable value-trace equivalence guard: flat_flight 412→396 B with frame
+  traffic 3 ld + 3 st → 0 ld + 2 st (the remaining stores await whole-function
+  slot liveness); corpus-wide 40 functions shrink, 0 grow.
+
 ## [0.22.1] - 2026-07-02
 
 **DWARF containment regression fix (#564).**
