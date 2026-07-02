@@ -142,6 +142,12 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     let mut type_params_i64: Vec<Vec<bool>> = Vec::new();
     let mut func_params_i64: Vec<Vec<bool>> = Vec::new();
     let mut elem_func_indices: Vec<u32> = Vec::new();
+    // #394 Tier-1.x: function index → developer-facing name from the wasm
+    // `name` custom section (function-names subsection). Applied to
+    // `FunctionOps.debug_name` after the parse loop — the custom section
+    // conventionally trails the code section, so the entries are not yet
+    // available when each `CodeSectionEntry` is decoded.
+    let mut name_section_names: HashMap<u32, String> = HashMap::new();
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
@@ -342,15 +348,24 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 functions.push(FunctionOps {
                     index: actual_index,
                     export_name,
+                    debug_name: None, // filled from the `name` section after the loop
                     ops,
                     op_offsets,
                     unsupported,
                 });
                 func_index += 1;
             }
+            Payload::CustomSection(c) => {
+                // #394 Tier-1.x: the wasm `name` custom section.
+                if let wasmparser::KnownCustom::Name(reader) = c.as_known() {
+                    parse_name_section_func_names(reader, &mut name_section_names);
+                }
+            }
             _ => {}
         }
     }
+
+    apply_name_section(&mut functions, &name_section_names);
 
     Ok(DecodedModule {
         functions,
@@ -368,12 +383,43 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     })
 }
 
+/// Parse the function-names subsection of a wasm `name` custom section into
+/// `out` (function index → developer-facing name, e.g.
+/// `core::panicking::panic_fmt::h...`). Best-effort by design: the section is
+/// DEBUG METADATA only, so a malformed entry is skipped rather than failing the
+/// compile — no codegen path depends on it (#394 Tier-1.x).
+fn parse_name_section_func_names(
+    reader: wasmparser::NameSectionReader<'_>,
+    out: &mut HashMap<u32, String>,
+) {
+    for subsection in reader.into_iter().flatten() {
+        if let wasmparser::Name::Function(map) = subsection {
+            for naming in map.into_iter().flatten() {
+                out.insert(naming.index, naming.name.to_string());
+            }
+        }
+    }
+}
+
+/// Fill each function's `debug_name` from the `name`-section map (keyed by the
+/// FULL function index, imports first — the same index space `FunctionOps.index`
+/// uses). A function without an entry keeps `None` (⇒ `func_N` downstream).
+fn apply_name_section(functions: &mut [FunctionOps], names: &HashMap<u32, String>) {
+    if names.is_empty() {
+        return;
+    }
+    for f in functions {
+        f.debug_name = names.get(&f.index).cloned();
+    }
+}
+
 /// Decode a WASM binary and extract all function bodies as WasmOp sequences
 pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
     let mut functions = Vec::new();
     let mut func_index = 0u32;
     let mut num_imported_funcs = 0u32;
     let mut export_names: HashMap<u32, String> = HashMap::new();
+    let mut name_section_names: HashMap<u32, String> = HashMap::new();
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
@@ -405,15 +451,24 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                 functions.push(FunctionOps {
                     index: actual_index,
                     export_name,
+                    debug_name: None, // filled from the `name` section after the loop
                     ops,
                     op_offsets,
                     unsupported,
                 });
                 func_index += 1;
             }
+            Payload::CustomSection(c) => {
+                // #394 Tier-1.x: the wasm `name` custom section.
+                if let wasmparser::KnownCustom::Name(reader) = c.as_known() {
+                    parse_name_section_func_names(reader, &mut name_section_names);
+                }
+            }
             _ => {}
         }
     }
+
+    apply_name_section(&mut functions, &name_section_names);
 
     Ok(functions)
 }
@@ -425,6 +480,15 @@ pub struct FunctionOps {
     pub index: u32,
     /// Export name if this function is exported
     pub export_name: Option<String>,
+    /// #394 Tier-1.x: the function's developer-facing name from the wasm `name`
+    /// custom section (function-names subsection), e.g.
+    /// `core::panicking::panic_fmt::h6651313c3e2c6c2f` — present for INTERNAL
+    /// (non-exported) functions too, unlike `export_name`. DEBUG METADATA only:
+    /// consumed by the `--debug-line` `DW_TAG_subprogram` emit (name priority:
+    /// name-section > export name > `func_N`); no codegen or symbol-table path
+    /// reads it, so emitted `.text`/`.symtab` are unchanged (frozen-safe).
+    /// `None` when the module has no `name` section or no entry for this index.
+    pub debug_name: Option<String>,
     /// The WASM operations in this function body
     pub ops: Vec<WasmOp>,
     /// VCR-DBG-001 step 1 (#394): module-relative wasm byte offset of each op in

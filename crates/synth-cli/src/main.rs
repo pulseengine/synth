@@ -749,6 +749,12 @@ fn print_hardware_info(caps: &HardwareCapabilities) {
 /// Compiled function for ELF building (name + code bytes + relocations)
 struct ElfFunction {
     name: String,
+    /// #394 Tier-1.x: the developer-facing name from the wasm `name` custom
+    /// section (present for internal functions too, unlike the export name).
+    /// Consumed ONLY by the `--debug-line` `DW_TAG_subprogram` emit — symbol
+    /// names and relocation labels keep using `name` (export name or `func_N`),
+    /// so linkability and emitted bytes are unchanged.
+    debug_name: Option<String>,
     /// WASM function index — used to define a `func_{index}` symbol so that
     /// internal calls (`BL func_N`, emitted by the selector against the WASM
     /// index) resolve to this function's address (#167).
@@ -2252,6 +2258,9 @@ fn compile_all_exports(
 
         compiled_funcs.push(ElfFunction {
             name: name.clone(),
+            // #394 Tier-1.x: thread the `name`-section name through for the
+            // DWARF subprogram DIE (internal functions get their REAL name).
+            debug_name: func.debug_name.clone(),
             wasm_index: func.index,
             code: compiled.code,
             relocations: compiled.relocations,
@@ -3346,7 +3355,13 @@ fn build_relocatable_elf(
             .iter()
             .enumerate()
             .map(|(i, func)| synth_core::dwarf_line::SubprogramInfo {
-                name: func.name.clone(),
+                // #394 Tier-1.x: name priority `name`-section > export name >
+                // `func_N`. `func.name` already is export-name-or-`func_N`, so
+                // internal functions stop showing the synthetic `func_N` in a
+                // backtrace whenever the input carried a `name` section (e.g.
+                // `core::panicking::panic_fmt::h...`). DWARF-only: the symbol
+                // table and relocations keep using `func.name`.
+                name: func.debug_name.clone().unwrap_or_else(|| func.name.clone()),
                 low_pc: func_offsets[i] as u64,
                 high_pc: (func_offsets[i] + func.code.len() as u32) as u64,
             })
@@ -4541,6 +4556,7 @@ mod tests {
         FunctionOps {
             index,
             export_name: export.map(String::from),
+            debug_name: None,
             ops,
             op_offsets: Vec::new(),
             unsupported: None,
@@ -4842,6 +4858,7 @@ mod tests {
         let code = vec![0u8; 8]; // MOVW + MOVT placeholders
         let func = ElfFunction {
             name: "decide".to_string(),
+            debug_name: None,
             wasm_index: 0,
             code,
             relocations: vec![
@@ -4942,6 +4959,7 @@ mod tests {
         code[4..8].copy_from_slice(&0u32.to_le_bytes()); // __synth_globals + 0
         let func = ElfFunction {
             name: "decide".to_string(),
+            debug_name: None,
             wasm_index: 0,
             code,
             relocations: vec![
@@ -5029,6 +5047,7 @@ mod tests {
         code[0..4].copy_from_slice(&C.to_le_bytes());
         let func = ElfFunction {
             name: "stack_push_decide".to_string(),
+            debug_name: None,
             wasm_index: 0,
             code,
             relocations: vec![synth_core::backend::CodeRelocation {

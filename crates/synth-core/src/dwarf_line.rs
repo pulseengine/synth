@@ -245,7 +245,11 @@ fn intern_file(files: &mut Vec<(String, String)>, entry: (String, String)) -> u3
 /// `high_pc - low_pc` as the offset form of `DW_AT_high_pc` (no relocation).
 #[derive(Debug, Clone)]
 pub struct SubprogramInfo {
-    /// The export/function name shown in a debugger frame.
+    /// The function name shown in a debugger frame. The caller composes it
+    /// with priority `name`-section name > export name > synthetic `func_N`
+    /// (#394 Tier-1.x), so internal functions carry their real developer-facing
+    /// name (e.g. `core::panicking::panic_fmt::h...`) whenever the input wasm
+    /// has a `name` custom section.
     pub name: String,
     /// Object-relative `.text` byte offset of the function's first instruction.
     pub low_pc: u64,
