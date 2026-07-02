@@ -70,6 +70,7 @@ fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
         .env_remove("SYNTH_NO_LOCAL_PROMOTE")
         .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
         .env_remove("SYNTH_NO_STACK_FWD")
+        .env_remove("SYNTH_SPILL_REALLOC")
         .env_remove("SYNTH_CONST_CSE")
         .args([
             "compile",
@@ -131,20 +132,23 @@ fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
 /// the `.py` differentials cover): control_step ↔ 0x00210A55, flight_seam_flat ↔
 /// flat+inlined flight_algo 0x07FDF307, plus flight_seam and the div seam.
 ///
-/// Goldens RE-FROZEN for the SYNTH_STACK_FWD flip (#242 feature loop): stack-reload
-/// forwarding + frame-slot dead-store elimination are now default-on (on top of
-/// v0.13.0 cmp→select + v0.14.0 local promotion + v0.15.0 immediate-shift folding),
-/// so these lock the forwarded+DCE'd .text. The execution RESULTS are preserved —
-/// re-verified on this commit: control_step still 0x00210A55
-/// (control_step_differential.py 13/13), flat+inlined flight_algo still 0x07FDF307
-/// (flight_seam_differential.py MATCH on BOTH flat and inlined). .text shrank again
-/// (dead frame stores removed, reloads → register moves): flight_seam 774→738,
-/// flight_seam_flat 910→878 (−68 B); control_step (no spurious slot reuse) and
-/// signed_div_const unchanged. Instruction/memory-op proxy: flight_algo sp-traffic
-/// 20→7, 139→135 insns — the measured CYCLE number is gale's G474RE (post-ship).
-/// Escape hatch `SYNTH_NO_STACK_FWD=1` restores the prior goldens (asserted by
-/// `frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes`). Prior (flag-off)
-/// goldens were flight_seam 9e73eea3…/774, flight_seam_flat 887ea546…/910.
+/// Goldens RE-FROZEN for the SYNTH_SPILL_REALLOC flip (#242, VCR-RA-001): the
+/// three-stage Belady spill lever (#569 reload forwarding, #576 spill re-choice,
+/// #579 whole-fn slot liveness) is now default-on, on top of the earlier flips
+/// (v0.13.0 cmp→select, v0.14.0 local promotion, v0.15.0 imm-shift fold,
+/// SYNTH_STACK_FWD). The execution RESULTS are preserved — re-verified on this
+/// commit BEFORE re-pinning: flat+inlined flight_algo still 0x07FDF307
+/// (flight_seam_differential.py MATCH + frame_slot_dce_differential.py 8/8),
+/// control_step semantics match wasmtime (r12_spill_496_differential.py 5/5;
+/// control_step_differential.py has a pre-existing symbol-parse harness break
+/// that fails identically with the opt-out), const_cse_differential.py PASS,
+/// spill_rung_581_differential.py 12/12, i64_param_518 + br_table_value_509
+/// PASS. .text shrank again (reloads dissolved + dead frame stores dropped):
+/// flight_seam 738→730 (−8), flight_seam_flat 878→866 (−12); control_step and
+/// signed_div_const unchanged (no surviving spill traffic there). Escape hatch
+/// `SYNTH_SPILL_REALLOC=0` restores the prior goldens (asserted by
+/// `frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes`). Prior
+/// goldens were flight_seam dce728b4…/738, flight_seam_flat 0665e623…/878.
 #[test]
 fn frozen_fixtures_text_is_bit_identical_oracle_001() {
     let cases = [
@@ -155,13 +159,13 @@ fn frozen_fixtures_text_is_bit_identical_oracle_001() {
         ),
         (
             "flight_seam.wasm",
-            "dce728b48e14aa9187774799c0b268c6ad60be6dc0fa3e7cc9458c17dc65403b",
-            738,
+            "6872d6f3f00331e9a52e176428fca375a87b9fbe0cf2b3eb0fb657c304a7372d",
+            730,
         ),
         (
             "flight_seam_flat.wasm",
-            "0665e623f33457479940046d57a4b7ec02416a61bcc6ec71ea3556ed5b3cb568",
-            878,
+            "d11849db9bef82b77280ee06fdc6f076a7df278b2e5a3213284e569cbf1eccc9",
+            866,
         ),
         (
             "signed_div_const.wasm",
@@ -178,6 +182,11 @@ fn frozen_fixtures_text_is_bit_identical_oracle_001() {
 /// a tripwire — if forwarding/DCE ever leaks into the opt-out path, the old hashes
 /// stop matching. (control_step / signed_div_const are unaffected by the flip, so
 /// they are not re-checked here; the default gate above already locks them.)
+///
+/// COMPOSITION NOTE: rolling back to the pre-STACK_FWD bytes now also requires
+/// opting out of the LATER spill-realloc lever (`SYNTH_SPILL_REALLOC=0`), which
+/// defaults on since its own flip and would otherwise rewrite the frame traffic
+/// these goldens pin. The two opt-outs compose; each is separately gated.
 #[test]
 fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
     // (fixture, PRE-flip golden sha256, PRE-flip len) — the v0.15.0 goldens.
@@ -197,6 +206,7 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
         let elf = format!("/tmp/frozen_nofwd_{wasm}.elf");
         let out = Command::new(synth())
             .env("SYNTH_NO_STACK_FWD", "1")
+            .env("SYNTH_SPILL_REALLOC", "0")
             .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
             .env_remove("SYNTH_NO_LOCAL_PROMOTE")
             .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
@@ -235,6 +245,76 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
         assert_eq!(
             hex, golden,
             "{wasm}: SYNTH_NO_STACK_FWD=1 must restore the pre-flip bytes (rollback broken)"
+        );
+    }
+}
+
+/// ESCAPE-HATCH GATE for the SYNTH_SPILL_REALLOC flip (#242, VCR-RA-001).
+/// Proves the opt-out actually rolls back: with `SYNTH_SPILL_REALLOC=0` the two
+/// fixtures the flip moved restore their PRE-flip goldens byte-for-byte — the
+/// rollback proof AND a tripwire against the spill-realloc stages leaking into
+/// the opt-out path. (control_step / signed_div_const are byte-identical under
+/// the flip — no surviving spill traffic — so the default gate above already
+/// locks them for both settings.)
+#[test]
+fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
+    // (fixture, PRE-flip golden sha256, PRE-flip len) — the pre-spill-realloc
+    // goldens (the SYNTH_STACK_FWD-era defaults).
+    let old = [
+        (
+            "flight_seam.wasm",
+            "dce728b48e14aa9187774799c0b268c6ad60be6dc0fa3e7cc9458c17dc65403b",
+            738usize,
+        ),
+        (
+            "flight_seam_flat.wasm",
+            "0665e623f33457479940046d57a4b7ec02416a61bcc6ec71ea3556ed5b3cb568",
+            878,
+        ),
+    ];
+    for &(wasm, golden, golden_len) in &old {
+        let elf = format!("/tmp/frozen_nospillrealloc_{wasm}.elf");
+        let out = Command::new(synth())
+            .env("SYNTH_SPILL_REALLOC", "0")
+            .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
+            .env_remove("SYNTH_NO_LOCAL_PROMOTE")
+            .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
+            .env_remove("SYNTH_NO_STACK_FWD")
+            .env_remove("SYNTH_CONST_CSE")
+            .args([
+                "compile",
+                fixture(wasm).to_str().unwrap(),
+                "-o",
+                &elf,
+                "-b",
+                "arm",
+                "--target",
+                "cortex-m4",
+                "--all-exports",
+                "--relocatable",
+            ])
+            .output()
+            .expect("run synth");
+        assert!(out.status.success(), "compile failed for {wasm}");
+        let bytes = std::fs::read(&elf).expect("read elf");
+        let obj = object::File::parse(&*bytes).expect("parse elf");
+        let data = obj
+            .section_by_name(".text")
+            .expect(".text")
+            .data()
+            .expect("read .text");
+        assert_eq!(
+            data.len(),
+            golden_len,
+            "{wasm}: SYNTH_SPILL_REALLOC=0 must restore the pre-flip length"
+        );
+        let hex: String = Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            hex, golden,
+            "{wasm}: SYNTH_SPILL_REALLOC=0 must restore the pre-flip bytes (rollback broken)"
         );
     }
 }

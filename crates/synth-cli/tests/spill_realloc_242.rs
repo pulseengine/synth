@@ -4,9 +4,10 @@
 //! flat_flight's hot segment runs peak register pressure 11 > the R0–R8 pool
 //! of 9, so every pressure-guarded optimization declines there and the greedy
 //! lowering's spill placement is naive (gale: 17 spills + 61% redundant const
-//! materializations on silicon, #209). Behind ONE flag, flag-off:
+//! materializations on silicon, #209). Behind ONE flag, DEFAULT-ON since the
+//! SYNTH_SPILL_REALLOC flip (`SYNTH_SPILL_REALLOC=0` is the opt-out):
 //!
-//!   - `SYNTH_SPILL_REALLOC=1` — stage 1: slot-value forwarding BETWEEN
+//!   - the spill-realloc lever — stage 1: slot-value forwarding BETWEEN
 //!     reloads (`liveness::apply_spill_realloc`), the case
 //!     `forward_stack_reloads` misses when pressure clobbers the spill
 //!     store's source; stage 2: the Belady spill-plan RE-CHOICE
@@ -22,11 +23,13 @@
 //!   - `SYNTH_SPILL_REPORT=1` — measure-only greedy-vs-Belady (farthest next
 //!     use) frame-traffic report per segment.
 //!
-//! Flag-OFF byte-identity is owned by the existing gates (frozen_codegen_bytes
-//! 3/3 + the const_cse_reduction_242 golden). Flag-ON semantic equivalence is
-//! the unicorn-vs-wasmtime differentials (const_cse_differential.py,
-//! frame_slot_dce_differential.py, flight_seam_differential.py — re-run green
-//! with the flag exported). What THIS file locks:
+//! DEFAULT byte-identity is owned by the existing gates (frozen_codegen_bytes,
+//! which also CI-gates the `SYNTH_SPILL_REALLOC=0` escape hatch against the
+//! pre-flip goldens, + the const_cse_reduction_242 golden). Default-path
+//! semantic equivalence is the unicorn-vs-wasmtime differentials
+//! (const_cse_differential.py, frame_slot_dce_differential.py,
+//! flight_seam_differential.py — re-run green on the new default bytes BEFORE
+//! the flip's refreeze). What THIS file locks (as default-vs-opt-out deltas):
 //!
 //!   1. NO-GROW: with the flag ON, no function in the measured corpus grows.
 //!   2. NON-VACUOUS: the rewrite actually fires on a real fixture
@@ -61,12 +64,16 @@ fn fixture(rel: &str) -> std::path::PathBuf {
         .join(rel)
 }
 
-/// Compile `rel` on the optimized path; `flag` toggles `SYNTH_SPILL_REALLOC`.
-/// Returns (ELF bytes, stderr).
+/// Compile `rel` on the optimized path; `flag` toggles `SYNTH_SPILL_REALLOC`:
+/// `true` = the shipped DEFAULT (env var removed so a stray `=0` in the test
+/// environment can't skew the gate), `false` = the `SYNTH_SPILL_REALLOC=0`
+/// opt-out (pre-flip bytes). Returns (ELF bytes, stderr).
 fn compile(rel: &str, out: &str, flag: bool) -> (Vec<u8>, String) {
     let mut cmd = Command::new(synth());
     if flag {
-        cmd.env("SYNTH_SPILL_REALLOC", "1");
+        cmd.env_remove("SYNTH_SPILL_REALLOC");
+    } else {
+        cmd.env("SYNTH_SPILL_REALLOC", "0");
     }
     let output = cmd
         .env("SYNTH_SPILL_REPORT", "1")
