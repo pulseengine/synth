@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-07-02
+
+**Two flag-off VCR levers (RV32 cmp→select; liveness-based spill re-choice) +
+gimli 0.34.**
+
+### Internal (VCR #242 — flag-off, no default behavior change)
+
+- **RV32 cmp→select fusion (#472, `SYNTH_RV_CMP_SELECT`).** A comparison feeding
+  a `select` branches directly on the compare instead of materializing the
+  boolean and re-testing it — the last of the three ARM levers ported to RV32.
+  Flag-off byte-identical; flag-on −6.8 % `.text` on the fixture, 182/182
+  differential vs wasmtime in both modes.
+- **Liveness-based spill re-choice spike (#242 / VCR-RA-001,
+  `SYNTH_SPILL_REALLOC` + `SYNTH_SPILL_REPORT`).** First real step of the SSA
+  allocator: a per-segment Belady/farthest-next-use spill report plus a
+  slot-value forwarding rewrite (reload → 1-cycle `mov` or deletion; per-segment
+  no-grow + pressure guards). flight_algo 306→300 B, reloads 6→3.
+  **flat_flight's hot segment is now a CI-locked target**: the report proves its
+  frame traffic (`peak=11`, 3 ld + 3 st) is fully recoverable at k=9 by the
+  actual re-choice step — the next VCR-RA increment, quantified.
+
+### Changed
+
+- gimli 0.33 → 0.34 (DWARF read/write; oracles A–G re-verified).
+
+## [0.21.0] - 2026-07-02
+
 ## [0.21.0] - 2026-07-02
 
 **DWARF backtraces get real internal function names; release tooling on rivet
