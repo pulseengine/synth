@@ -788,3 +788,106 @@ fn emitted_debug_info_has_subprogram_dies_per_function_394() {
             .collect::<Vec<_>>()
     );
 }
+
+/// The function-names subsection of the input wasm's `name` custom section —
+/// full function index (imports first) → developer-facing name. Ground truth
+/// for Oracle G, derived from the fixture at runtime (non-circular: read with
+/// wasmparser directly, not through synth's decoder).
+fn wasm_name_section_func_names(wasm: &[u8]) -> HashMap<u32, String> {
+    use wasmparser::{KnownCustom, Parser, Payload};
+    let mut out = HashMap::new();
+    for payload in Parser::new(0).parse_all(wasm) {
+        if let Ok(Payload::CustomSection(c)) = payload
+            && let KnownCustom::Name(reader) = c.as_known()
+        {
+            for subsection in reader.into_iter().flatten() {
+                if let wasmparser::Name::Function(map) = subsection {
+                    for naming in map.into_iter().flatten() {
+                        out.insert(naming.index, naming.name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// ORACLE G — Tier-1.x REAL names for INTERNAL functions (#394 follow-up).
+/// Oracle F proves exported functions get their export name; but an internal
+/// (non-exported) callee — a panic helper, an outlined kernel routine — fell
+/// back to the synthetic `func_N`, even when the input's `name` custom section
+/// carried its real developer-facing name. A backtrace through a panic then
+/// showed `func_7` instead of `core::panicking::panic_const::...`. This oracle
+/// proves the `name`-section names are threaded through to the
+/// `DW_TAG_subprogram` `DW_AT_name`s:
+///
+///   (a) ≥1 compiled function is INTERNAL (not exported) AND named by the
+///       fixture's `name` section — otherwise the oracle would be vacuous;
+///   (b) every such internal function's subprogram DIE carries its REAL
+///       `name`-section name (e.g. `gale::msgq::put_decide::h...`);
+///   (c) since the fixture's `name` section names EVERY function, NO
+///       subprogram is left with a synthetic `func_N` name.
+///
+/// Ground truth (name section + export section) is parsed from the fixture at
+/// runtime with wasmparser directly — independent of synth's decoder.
+#[test]
+fn emitted_subprogram_names_use_name_section_for_internal_functions_394() {
+    let wasm = repro("msgq_put_359.wasm");
+    let wasm_bytes = std::fs::read(&wasm).expect("read fixture wasm");
+    let name_map = wasm_name_section_func_names(&wasm_bytes);
+    assert!(
+        !name_map.is_empty(),
+        "fixture must carry a `name` custom section with function names \
+         (otherwise this oracle tests nothing — pick a different fixture)"
+    );
+    let exported = wasm_exported_func_names(&wasm_bytes);
+
+    // The real names of the fixture's INTERNAL (non-exported) functions.
+    let internal_names: BTreeSet<String> = name_map
+        .values()
+        .filter(|n| !exported.contains(*n))
+        .cloned()
+        .collect();
+    assert!(
+        !internal_names.is_empty(),
+        "fixture must have ≥1 internal function named by its `name` section"
+    );
+
+    let dbg = compile(&wasm, "/tmp/dbg394_msgq_oracleg.o", true);
+    let subs = collect_subprograms(&section_data(&dbg));
+    let got_names: BTreeSet<String> = subs.iter().filter_map(|s| s.name.clone()).collect();
+
+    // (a)+(b): ≥1 compiled subprogram is an internal function carrying its
+    // REAL `name`-section name. (Not every internal function need be compiled
+    // — reachability/skips can drop some — but the fixture's export calls an
+    // internal helper, so at least one must be present under its real name.)
+    let internal_present: Vec<&String> = internal_names.intersection(&got_names).collect();
+    assert!(
+        !internal_present.is_empty(),
+        "no DW_TAG_subprogram carries an internal function's `name`-section \
+         name; internal names in fixture: {internal_names:?}, subprogram names: \
+         {got_names:?} — internal functions are still falling back to `func_N`"
+    );
+
+    // (c) the fixture's `name` section names EVERY function, so no compiled
+    // function may be left with the synthetic `func_N` fallback.
+    let synthetic: Vec<&String> = got_names
+        .iter()
+        .filter(|n| {
+            n.strip_prefix("func_")
+                .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    assert!(
+        synthetic.is_empty(),
+        "the fixture's `name` section names every function, yet {} subprogram \
+         DIE(s) still carry the synthetic fallback: {synthetic:?}",
+        synthetic.len()
+    );
+
+    eprintln!(
+        "[dbg394-oracleG] {} subprogram DIEs; internal `name`-section names \
+         present: {internal_present:?}; zero synthetic func_N names remain.",
+        subs.len()
+    );
+}
