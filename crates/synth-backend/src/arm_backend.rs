@@ -467,6 +467,12 @@ fn compile_wasm_to_arm(
         // LOCAL calls (and leaves import calls on the optimized path, keeping
         // the #173 field-name relocation rewrite intact).
         bridge.set_num_imports(config.num_imports);
+        // #543 Phase 2: thread the integrator-marked volatile DMA-window ranges
+        // (`--volatile-segment <base>:<len>`) to the bridge's address-caching
+        // levers — base-CSE (#468) excludes any access inside a marked range
+        // from its fold set, and the bridge-level const-CSE declines wholesale
+        // while any range is marked. Empty (the default) ⇒ byte-identical.
+        bridge.set_volatile_segments(config.volatile_segments.clone());
         // `ir_to_arm` now returns `Result` — an `Err` means the optimized path
         // hit an unmapped vreg (issue-#93-class). Treat it identically to an
         // `optimize_full` failure: fall back to the direct selector rather
@@ -817,15 +823,25 @@ fn compile_wasm_to_arm(
     // would flip a 16-bit encoding to 32-bit (higher base register) is declined.
     // Behind `SYNTH_CONST_CSE=1` while validated against the differential oracle;
     // off by default keeps every fixture bit-identical.
-    let arm_instrs = if std::env::var("SYNTH_CONST_CSE").is_ok() {
-        let (out, removed) = synth_synthesis::liveness::apply_const_cse(&arm_instrs);
-        if std::env::var("SYNTH_FUSE_STATS").is_ok() {
-            eprintln!("[const-cse] {removed} redundant constant materialization(s) removed");
-        }
-        out
-    } else {
-        arm_instrs
-    };
+    //
+    // #543 Phase 2: const-CSE declines WHOLESALE while any volatile DMA range
+    // (`--volatile-segment`) is marked. At the ArmOp level a cached constant
+    // cannot be classified as address-vs-data (a retargeted read may be a
+    // memory-access base carrying a per-use immediate offset), so the
+    // conservative stance for statically-unknown addressing is to decline every
+    // aliasing rewrite — each constant is re-materialized at each occurrence,
+    // the documented volatile contract (`CompileConfig::volatile_segments`).
+    // Mirrors the bridge-level const-CSE gate in `optimizer_bridge::ir_to_arm`.
+    let arm_instrs =
+        if std::env::var("SYNTH_CONST_CSE").is_ok() && config.volatile_segments.is_empty() {
+            let (out, removed) = synth_synthesis::liveness::apply_const_cse(&arm_instrs);
+            if std::env::var("SYNTH_FUSE_STATS").is_ok() {
+                eprintln!("[const-cse] {removed} redundant constant materialization(s) removed");
+            }
+            out
+        } else {
+            arm_instrs
+        };
 
     // VCR-RA-001 spill-choice REPORT (#242): measure-only, like SYNTH_SHADOW_ALLOC.
     // Per straight-line segment, the frame-slot traffic actually emitted vs the

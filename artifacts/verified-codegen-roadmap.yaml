@@ -2245,30 +2245,39 @@ artifacts:
       decision DD-DMA-REGION-001 places the DMA buffer in a dedicated shared
       segment precisely so the range is concrete and verifier-visible.
 
-      PHASE 1 (this artifact, LANDED — flag + plumbing + traceability only, no
-      codegen change): synth accepts `--volatile-segment <base>:<len>` (hex or
-      decimal, repeatable), parses it into `CompileConfig.volatile_segments`
-      (crates/synth-core/src/backend.rs), and threads it to codegen. The ranges
-      are NOT yet consumed by any pass, so the emitted `.text` is byte-identical
-      whether or not the flag is passed (the frozen-codegen byte gate holds). This
-      is why the status is `proposed`, not `implemented`: the requirement's actual
-      guarantee (no caching/reordering across the boundary) is not yet realized.
+      PHASE 1 (LANDED — flag + plumbing + traceability): synth accepts
+      `--volatile-segment <base>:<len>` (hex or decimal, repeatable), parses it
+      into `CompileConfig.volatile_segments` (crates/synth-core/src/backend.rs),
+      and threads it to codegen.
 
-      PHASE 2 (deferred, gated — the codegen back-off): the optimizer's
-      address-caching passes must DECLINE for any access overlapping a volatile
-      range — specifically const-CSE (`SYNTH_CONST_CSE`, aliasing repeated address
-      constants — see VCR-RA-001) and the #468 base-CSE / const-address-fold
-      (hoisting the linmem base into R11 and folding `[R11,#imm]` loads — also
-      VCR-RA-001), plus any load-reuse / instruction reordering that would move a
-      marked access across the boundary. That step CHANGES emitted bytes, so it is
-      oracle-gated: a differential proving the volatile access pattern (re-load
-      after an external write) and a deliberate re-freeze of any affected fixture.
+      PHASE 2 (LANDED — the codegen back-off, #543): the optimizer's
+      address-caching passes HONOR the ranges. (a) The #468 base-CSE /
+      const-address-fold (`SYNTH_BASE_CSE`, `optimizer_bridge::plan_base_cse`)
+      excludes any const-address access whose 4-byte window intersects a marked
+      range from its fold set — the access keeps its verbatim per-access
+      materialize-and-access codegen while accesses outside the range still fold
+      (surgical, per-access). Dynamic (statically-unknown) addresses were never
+      fold candidates, so they always stay verbatim — the conservative stance.
+      (b) const-CSE (`SYNTH_CONST_CSE`, both the bridge-level cache and
+      `liveness::apply_const_cse`) declines WHOLESALE while any range is marked:
+      a cached constant cannot be classified address-vs-data at that level, so
+      every constant is re-materialized at each occurrence (conservative v1).
+      Nothing else on the pipeline deletes, forwards, or reorders a linear-memory
+      access (IR CSE deliberately never CSEs MemLoads; DCE removes only
+      unreachable blocks; the frame-slot passes are SP-relative-only, and linmem
+      is never a frame slot), so every marked access is issued verbatim, in
+      program order. Empty ranges (the default) change nothing by construction —
+      the frozen-codegen byte gate holds untouched. Oracles:
+      crates/synth-cli/tests/volatile_segment_phase2_543.rs (red→green byte
+      lattice, red-confirmed against pre-change main) and
+      scripts/repro/volatile_segment_543_differential.py (unicorn-vs-wasmtime:
+      ranges preserve RESULTS, only access patterns change).
 
-      Alternative surface deferred with Phase 2: honoring a wasm custom-section
-      convention meld emits (so the range travels with the module) in addition to
-      the explicit CLI flag (#543 option 2).
-    status: proposed
-    tags: [dma, volatile, memory, codegen, const-cse, base-cse, gale-integration, synth-543, phase-1]
+      Deferred follow-up: honoring a wasm custom-section convention meld emits
+      (so the range travels with the module) in addition to the explicit CLI
+      flag (#543 option 2).
+    status: implemented
+    tags: [dma, volatile, memory, codegen, const-cse, base-cse, gale-integration, synth-543, phase-2]
     links:
       - type: derives-from
         target: VCR-001
@@ -2282,10 +2291,15 @@ artifacts:
         Phase 1 (met): `--volatile-segment 0x20001000:4096` parses into
         `CompileConfig.volatile_segments` with base=0x20001000 and len=4096;
         malformed input (`--volatile-segment garbage`) is rejected with a
-        non-zero exit and a descriptive error; a compile WITH the flag is
-        `.text`-byte-identical to one WITHOUT it (the flag is inert plumbing).
-        Phase 2 (deferred, gated): a differential in which an external agent
-        rewrites the marked range between two loads observes the SECOND value,
-        proving synth did not cache/reorder across the boundary; const-CSE and
-        the #468 base-CSE decline for accesses overlapping a marked range; any
-        affected frozen fixture is deliberately re-frozen alongside the change.
+        non-zero exit and a descriptive error; on the DEFAULT configuration a
+        compile WITH the flag is `.text`-byte-identical to one WITHOUT it.
+        Phase 2 (met): const-CSE and the #468 base-CSE decline for accesses
+        overlapping a marked range — the red→green byte-lattice oracle
+        (volatile_segment_phase2_543.rs: folded < window < baseline .text, and
+        a full-coverage range byte-identical to the lever never firing) FAILS
+        on pre-change main and passes after; the unicorn-vs-wasmtime
+        differential (volatile_segment_543_differential.py) proves the ranges
+        preserve results in all four build modes; every marked access is issued
+        verbatim in program order (no pass deletes/forwards/reorders linmem
+        accesses). No frozen fixture uses the flag, so no re-freeze was needed
+        (frozen anchors pass untouched).
