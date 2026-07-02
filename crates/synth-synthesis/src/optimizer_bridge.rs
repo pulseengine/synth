@@ -507,6 +507,11 @@ pub struct OptimizerBridge {
     /// calls (declined so the direct selector can preserve caller-saved regs
     /// across them, #188). Defaults to 0.
     num_imports: u32,
+    /// VCR-RA-001 (#242, #496): allocation-time spill-on-exhaustion override
+    /// for tests. `None` (default) reads the `SYNTH_SPILL_ON_EXHAUST` env flag;
+    /// `Some(_)` forces the lever on/off regardless of the environment (unit
+    /// tests must not race on process-global env vars).
+    spill_on_exhaust: Option<bool>,
 }
 
 impl OptimizerBridge {
@@ -515,6 +520,7 @@ impl OptimizerBridge {
         Self {
             config: OptimizationConfig::default(),
             num_imports: 0,
+            spill_on_exhaust: None,
         }
     }
 
@@ -523,12 +529,27 @@ impl OptimizerBridge {
         Self {
             config,
             num_imports: 0,
+            spill_on_exhaust: None,
         }
     }
 
     /// Set the number of imported functions (see [`OptimizerBridge::num_imports`]).
     pub fn set_num_imports(&mut self, num_imports: u32) {
         self.num_imports = num_imports;
+    }
+
+    /// Force the allocation-time spill-on-exhaustion lever on/off (tests only —
+    /// production callers use the `SYNTH_SPILL_ON_EXHAUST` env flag).
+    pub fn set_spill_on_exhaust(&mut self, on: bool) {
+        self.spill_on_exhaust = Some(on);
+    }
+
+    /// Whether allocation-time spill-on-exhaustion is requested (#242, #496).
+    /// Default off: without the flag, pool exhaustion keeps declining the
+    /// function to the direct selector — byte-identical behaviour.
+    fn spill_on_exhaust_enabled(&self) -> bool {
+        self.spill_on_exhaust
+            .unwrap_or_else(|| std::env::var("SYNTH_SPILL_ON_EXHAUST").is_ok())
     }
 
     /// Preprocess WASM ops to transform patterns before IR conversion
@@ -3066,8 +3087,42 @@ impl OptimizerBridge {
         let mut reg_holds_const: HashMap<Reg, u32> = HashMap::new();
         let mut cse_seen_len = 0usize;
 
+        // VCR-RA-001 allocation-time spill-on-exhaustion (#242, closes #496 for
+        // straight-line i32 functions). Opt-in (`SYNTH_SPILL_ON_EXHAUST=1`);
+        // off ⇒ byte-identical (no new state is read, the pre-step below is
+        // skipped, and exhaustion keeps declining to the direct selector).
+        // Active only when EVERY opcode is modeled (no i64 pairs, no control
+        // flow, no calls, no non-param locals — see
+        // `spill_on_exhaust_supported` for the honest v1 scope); otherwise the
+        // #496 decline stands for the whole function.
+        let spill_on_exhaust = self.spill_on_exhaust_enabled()
+            && instructions
+                .iter()
+                .all(|i| spill_on_exhaust_supported(&i.opcode, num_params));
+        // Belady next-use table: for each vreg, the (sorted) instruction
+        // positions where it is read. "Farthest next use" picks the victim.
+        let use_positions: HashMap<u32, Vec<usize>> = if spill_on_exhaust {
+            let mut m: HashMap<u32, Vec<usize>> = HashMap::new();
+            for (pos, i) in instructions.iter().enumerate() {
+                for v in spill_i32_sources(&i.opcode) {
+                    m.entry(v).or_default().push(pos);
+                }
+            }
+            m
+        } else {
+            HashMap::new()
+        };
+        // Vregs premapped by the first pass (param registers). Never victims:
+        // their registers are outside the pool and their liveness is not
+        // tracked by `dead_vregs`.
+        let premapped_vregs: std::collections::HashSet<u32> = if spill_on_exhaust {
+            vreg_to_arm.keys().copied().collect()
+        } else {
+            std::collections::HashSet::new()
+        };
+
         // Second pass: generate ARM instructions
-        for inst in instructions {
+        for (spill_idx, inst) in instructions.iter().enumerate() {
             if const_cse {
                 // Reconcile the cache with everything emitted since last iteration.
                 for op in &arm_instrs[cse_seen_len..] {
@@ -3100,6 +3155,102 @@ impl OptimizerBridge {
                 }
                 cse_seen_len = arm_instrs.len();
             }
+
+            // VCR-RA-001 spill pre-step (#242, #496): with the flag on and the
+            // whole function in the modeled subset, make sure the handler below
+            // never hits pool exhaustion:
+            //  (a) reinstate spilled SOURCES — reload each into a pool register
+            //      (evicting the farthest-next-use victim if the pool is full)
+            //      and put it back in `vreg_to_arm`, so `get_arm_reg` finds a
+            //      real register (never the flag-off R12 spill placeholder,
+            //      which cannot carry two operands and collides with the
+            //      encoder's IP scratch — the #496 miscompile class);
+            //  (b) free a DEST register — if the handler will allocate a fresh
+            //      scratch and the pool is full, evict one victim now so
+            //      `alloc_i32_scratch` succeeds instead of flagging exhaustion.
+            // If eviction finds no victim (everything pinned), fall through:
+            // the handler's exhaustion fallback fires and the function declines
+            // to the direct selector exactly as with the flag off — the lever
+            // degrades to the status quo, never to a miscompile.
+            if spill_on_exhaust {
+                let srcs = spill_i32_sources(&inst.opcode);
+                // Registers the current instruction's operands occupy (or are
+                // being reloaded into): never evict these.
+                let mut operand_regs: Vec<Reg> = srcs
+                    .iter()
+                    .filter_map(|v| vreg_to_arm.get(v).copied())
+                    .collect();
+                for v in &srcs {
+                    if !spilled_vregs.contains_key(v) {
+                        continue;
+                    }
+                    // A free pool register, by `alloc_i32_scratch`'s in-use
+                    // rule (every mapped vreg counts, dead or not).
+                    let free = SPILL_ON_EXHAUST_POOL.iter().copied().find(|r| {
+                        !vreg_to_arm.values().any(|u| u == r)
+                            && !local_to_reg.values().any(|u| u == r)
+                            && !param_reserved_regs.contains(r)
+                            && !operand_regs.contains(r)
+                    });
+                    let rd = free.or_else(|| {
+                        spill_evict_farthest(
+                            spill_idx,
+                            &operand_regs,
+                            &use_positions,
+                            &local_vregs,
+                            &premapped_vregs,
+                            &local_to_reg,
+                            &param_reserved_regs,
+                            &mut vreg_to_arm,
+                            &mut spilled_vregs,
+                            &mut next_spill_offset,
+                            &mut arm_instrs,
+                        )
+                    });
+                    let Some(rd) = rd else {
+                        // Nothing evictable — leave the vreg spilled; the
+                        // handler's R12 placeholder path flags exhaustion and
+                        // the function declines (#496) at the end of the build.
+                        r12_exhausted.set(true);
+                        break;
+                    };
+                    let slot = spilled_vregs.remove(v).expect("checked contains_key above");
+                    arm_instrs.push(ArmOp::Ldr {
+                        rd,
+                        addr: crate::rules::MemAddr::imm(Reg::SP, slot),
+                    });
+                    vreg_to_arm.insert(*v, rd);
+                    operand_regs.push(rd);
+                }
+                if let Some(d) = spill_i32_scratch_dest(&inst.opcode)
+                    && !vreg_to_arm.contains_key(&d)
+                {
+                    let pool_full = !SPILL_ON_EXHAUST_POOL.iter().any(|r| {
+                        !vreg_to_arm.values().any(|u| u == r)
+                            && !local_to_reg.values().any(|u| u == r)
+                            && !param_reserved_regs.contains(r)
+                            && !operand_regs.contains(r)
+                    });
+                    if pool_full {
+                        // Ignore a None result: the handler then declines as
+                        // with the flag off.
+                        let _ = spill_evict_farthest(
+                            spill_idx,
+                            &operand_regs,
+                            &use_positions,
+                            &local_vregs,
+                            &premapped_vregs,
+                            &local_to_reg,
+                            &param_reserved_regs,
+                            &mut vreg_to_arm,
+                            &mut spilled_vregs,
+                            &mut next_spill_offset,
+                            &mut arm_instrs,
+                        );
+                    }
+                }
+            }
+
             match &inst.opcode {
                 Opcode::Nop => continue,
 
@@ -5680,12 +5831,30 @@ impl OptimizerBridge {
                 rd: Reg::R0,
                 op2: Operand2::Reg(result_reg),
             });
+        } else if spill_on_exhaust
+            && let Some(result_vreg) = last_result_vreg
+            && let Some(&slot) = spilled_vregs.get(&result_vreg)
+        {
+            // VCR-RA-001 (#242): the final result was evicted AFTER its def
+            // (this epilogue read is invisible to the linear next-use table,
+            // which is why eviction always STRs, never drops). Reload it
+            // straight into R0 from its frame slot.
+            arm_instrs.push(ArmOp::Ldr {
+                rd: Reg::R0,
+                addr: crate::rules::MemAddr::imm(Reg::SP, slot),
+            });
         }
 
         // If any registers were spilled, insert stack frame setup/teardown.
         // Prologue: SUB SP, SP, #frame_size at the beginning
         // Epilogue: ADD SP, SP, #frame_size before every BX LR
-        if !spilled_vregs.is_empty() {
+        //
+        // Gate on `next_spill_offset` (monotonic), not `spilled_vregs` (with
+        // SYNTH_SPILL_ON_EXHAUST reinstated vregs are REMOVED from the map, but
+        // their STR/LDR slots still need the frame). Flag-off the two are
+        // equivalent: nothing ever leaves `spilled_vregs`, so `offset > 4` ⟺
+        // `!spilled_vregs.is_empty()` — byte-identical.
+        if next_spill_offset > 4 {
             // Round frame size up to 8-byte alignment (AAPCS requirement)
             let frame_size = ((next_spill_offset as u32 + 7) & !7) as i32;
             // Insert prologue at position 0
@@ -5718,6 +5887,20 @@ impl OptimizerBridge {
 
         // Add return if not present
         if arm_instrs.is_empty() || !matches!(arm_instrs.last(), Some(ArmOp::Bx { .. })) {
+            // VCR-RA-001 (#242): the spill-frame block above only inserts the
+            // `ADD SP` epilogue before returns that ALREADY exist; a return
+            // appended here would leave SP off by the frame size (the latent
+            // shape was unreachable flag-off: any spill implied scratch-pool
+            // exhaustion, which declined the function). Flag-gated so flag-off
+            // bytes are untouched.
+            if spill_on_exhaust && next_spill_offset > 4 {
+                let frame_size = ((next_spill_offset as u32 + 7) & !7) as i32;
+                arm_instrs.push(ArmOp::Add {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    op2: Operand2::Imm(frame_size),
+                });
+            }
             arm_instrs.push(ArmOp::Bx { rm: Reg::LR });
         }
 
@@ -5748,6 +5931,281 @@ impl OptimizerBridge {
     }
 }
 
+// ---------------------------------------------------------------------------
+// VCR-RA-001 allocation-time spill-on-exhaustion (#242, closes the #496
+// hard-fail for straight-line i32 functions). Helpers for the flag-gated
+// pre-step in `ir_to_arm`: when the R4-R8 scratch pool is exhausted, spill the
+// live vreg with the FARTHEST next use (Belady) to a fresh frame slot instead
+// of declining the whole function to the direct selector.
+// ---------------------------------------------------------------------------
+
+/// The register pool `alloc_i32_scratch` draws from. The spill pre-step frees
+/// registers in exactly this pool (and only this pool — params live in R0-R3,
+/// R9/R10/R11/R12 are reserved conventions the optimized path must not touch).
+const SPILL_ON_EXHAUST_POOL: [crate::rules::Reg; 5] = [
+    crate::rules::Reg::R4,
+    crate::rules::Reg::R5,
+    crate::rules::Reg::R6,
+    crate::rules::Reg::R7,
+    crate::rules::Reg::R8,
+];
+
+/// Whether the allocation-time spill pre-step models `op`. ONE unsupported
+/// opcode disables the pre-step for the whole function, preserving the #496
+/// decline-to-direct-selector behaviour for those shapes. Deliberately narrow
+/// for v1 (honest scope):
+///
+/// - **no i64 family**: i64 values live in register PAIRS tracked as two
+///   separate vregs; spilling one half without the pair model is the #518
+///   class of bug. Pair exhaustion (`alloc_i64_pair`) keeps declining.
+/// - **no control flow** (`Branch`/`CondBranch`): the Belady next-use table is
+///   linear — a back-edge would make "next use" wrong and a reload could be
+///   skipped on a re-entered path. (`Label` alone is fine: with no branches it
+///   is inert.)
+/// - **no calls**: import calls stay on the optimized path today, but the
+///   dispatch lowering has its own scratch conventions; keep the pre-step out
+///   of its way.
+/// - **no non-param locals** (except the synthetic select-condition local 255,
+///   which is pinned to R11, outside the pool): non-param locals are pinned to
+///   R4-R7 by `local_to_reg`, and the pre-pass premapping interacts with the
+///   pool in ways v1 does not model.
+fn spill_on_exhaust_supported(op: &Opcode, num_params: usize) -> bool {
+    let param_local = |addr: u32| (addr as usize) < num_params || addr == 255;
+    match op {
+        Opcode::Nop
+        | Opcode::Label { .. }
+        | Opcode::Const { .. }
+        | Opcode::Add { .. }
+        | Opcode::Sub { .. }
+        | Opcode::Mul { .. }
+        | Opcode::DivS { .. }
+        | Opcode::DivU { .. }
+        | Opcode::RemS { .. }
+        | Opcode::RemU { .. }
+        | Opcode::And { .. }
+        | Opcode::Or { .. }
+        | Opcode::Xor { .. }
+        | Opcode::Shl { .. }
+        | Opcode::ShrS { .. }
+        | Opcode::ShrU { .. }
+        | Opcode::Rotl { .. }
+        | Opcode::Rotr { .. }
+        | Opcode::Clz { .. }
+        | Opcode::Ctz { .. }
+        | Opcode::Popcnt { .. }
+        | Opcode::Extend8S { .. }
+        | Opcode::Extend16S { .. }
+        | Opcode::Eqz { .. }
+        | Opcode::Eq { .. }
+        | Opcode::Ne { .. }
+        | Opcode::LtS { .. }
+        | Opcode::LtU { .. }
+        | Opcode::LeS { .. }
+        | Opcode::LeU { .. }
+        | Opcode::GtS { .. }
+        | Opcode::GtU { .. }
+        | Opcode::GeS { .. }
+        | Opcode::GeU { .. }
+        | Opcode::Select { .. }
+        | Opcode::Copy { .. }
+        | Opcode::MemLoad { .. }
+        | Opcode::MemStore { .. }
+        | Opcode::MemLoadSubword { .. }
+        | Opcode::MemStoreSubword { .. }
+        | Opcode::GlobalGet { .. }
+        | Opcode::GlobalSet { .. }
+        | Opcode::MemorySize { .. }
+        | Opcode::MemoryGrow { .. }
+        | Opcode::Return { .. } => true,
+        Opcode::Load { addr, .. } | Opcode::Store { addr, .. } => param_local(*addr),
+        Opcode::TeeStore { addr, .. } => param_local(*addr),
+        // Everything else — i64 family, Branch/CondBranch, Call, the i64<->i32
+        // conversions — is out of v1 scope: keep the #496 decline.
+        _ => false,
+    }
+}
+
+/// The i32 SOURCE vregs `op`'s lowering reads from registers. Used to (a)
+/// build the Belady next-use table and (b) reinstate spilled sources before
+/// the handler runs. Exhaustive over the opcodes
+/// [`spill_on_exhaust_supported`] admits.
+fn spill_i32_sources(op: &Opcode) -> Vec<u32> {
+    match op {
+        Opcode::Add { src1, src2, .. }
+        | Opcode::Sub { src1, src2, .. }
+        | Opcode::Mul { src1, src2, .. }
+        | Opcode::DivS { src1, src2, .. }
+        | Opcode::DivU { src1, src2, .. }
+        | Opcode::RemS { src1, src2, .. }
+        | Opcode::RemU { src1, src2, .. }
+        | Opcode::And { src1, src2, .. }
+        | Opcode::Or { src1, src2, .. }
+        | Opcode::Xor { src1, src2, .. }
+        | Opcode::Shl { src1, src2, .. }
+        | Opcode::ShrS { src1, src2, .. }
+        | Opcode::ShrU { src1, src2, .. }
+        | Opcode::Rotl { src1, src2, .. }
+        | Opcode::Rotr { src1, src2, .. }
+        | Opcode::Eq { src1, src2, .. }
+        | Opcode::Ne { src1, src2, .. }
+        | Opcode::LtS { src1, src2, .. }
+        | Opcode::LtU { src1, src2, .. }
+        | Opcode::LeS { src1, src2, .. }
+        | Opcode::LeU { src1, src2, .. }
+        | Opcode::GtS { src1, src2, .. }
+        | Opcode::GtU { src1, src2, .. }
+        | Opcode::GeS { src1, src2, .. }
+        | Opcode::GeU { src1, src2, .. } => vec![src1.0, src2.0],
+        Opcode::Clz { src, .. }
+        | Opcode::Ctz { src, .. }
+        | Opcode::Popcnt { src, .. }
+        | Opcode::Extend8S { src, .. }
+        | Opcode::Extend16S { src, .. }
+        | Opcode::Eqz { src, .. }
+        | Opcode::Copy { src, .. }
+        | Opcode::Store { src, .. }
+        | Opcode::TeeStore { src, .. }
+        | Opcode::GlobalSet { src, .. } => vec![src.0],
+        Opcode::Select {
+            val_true,
+            val_false,
+            cond,
+            ..
+        } => vec![val_true.0, val_false.0, cond.0],
+        Opcode::MemLoad { addr, .. } | Opcode::MemLoadSubword { addr, .. } => vec![addr.0],
+        Opcode::MemStore { src, addr, .. } | Opcode::MemStoreSubword { src, addr, .. } => {
+            vec![src.0, addr.0]
+        }
+        Opcode::MemoryGrow { delta, .. } => vec![delta.0],
+        Opcode::Return { value } => value.iter().map(|v| v.0).collect(),
+        // No register sources (Const/Load/GlobalGet/MemorySize/Nop/Label) or
+        // out of the supported set (the pre-step is disabled for those
+        // functions anyway).
+        _ => Vec::new(),
+    }
+}
+
+/// The i32 dest vreg whose register `op`'s handler allocates via
+/// `alloc_i32_scratch` (None when the handler needs no fresh scratch dest —
+/// `Const` has its own, larger pool with eviction; `Load`/`Call` bind fixed
+/// registers). Used by the pre-step to free a pool register BEFORE the handler
+/// runs, so `alloc_i32_scratch` never reaches its R12 exhaustion fallback.
+fn spill_i32_scratch_dest(op: &Opcode) -> Option<u32> {
+    match op {
+        Opcode::Add { dest, .. }
+        | Opcode::Sub { dest, .. }
+        | Opcode::Mul { dest, .. }
+        | Opcode::DivS { dest, .. }
+        | Opcode::DivU { dest, .. }
+        | Opcode::RemS { dest, .. }
+        | Opcode::RemU { dest, .. }
+        | Opcode::And { dest, .. }
+        | Opcode::Or { dest, .. }
+        | Opcode::Xor { dest, .. }
+        | Opcode::Shl { dest, .. }
+        | Opcode::ShrS { dest, .. }
+        | Opcode::ShrU { dest, .. }
+        | Opcode::Rotl { dest, .. }
+        | Opcode::Rotr { dest, .. }
+        | Opcode::Clz { dest, .. }
+        | Opcode::Ctz { dest, .. }
+        | Opcode::Popcnt { dest, .. }
+        | Opcode::Extend8S { dest, .. }
+        | Opcode::Extend16S { dest, .. }
+        | Opcode::Eqz { dest, .. }
+        | Opcode::Eq { dest, .. }
+        | Opcode::Ne { dest, .. }
+        | Opcode::LtS { dest, .. }
+        | Opcode::LtU { dest, .. }
+        | Opcode::LeS { dest, .. }
+        | Opcode::LeU { dest, .. }
+        | Opcode::GtS { dest, .. }
+        | Opcode::GtU { dest, .. }
+        | Opcode::GeS { dest, .. }
+        | Opcode::GeU { dest, .. }
+        | Opcode::Select { dest, .. }
+        | Opcode::Copy { dest, .. }
+        | Opcode::MemLoad { dest, .. }
+        | Opcode::MemLoadSubword { dest, .. }
+        | Opcode::GlobalGet { dest, .. }
+        | Opcode::MemorySize { dest }
+        | Opcode::MemoryGrow { dest, .. } => Some(dest.0),
+        // `Const` has its own allocator with a LARGER pool (R4-R8, then
+        // R9/R10/R11, then R3) and its own oldest-first eviction. Covering it
+        // here guarantees one of R4-R8 is free before the handler runs, so its
+        // `find` never reaches R9/R10/R11 (reserved conventions: globals base,
+        // memory size, base-CSE) nor the R3 last-resort clobber — both of
+        // which are only safe today because exhausted functions decline.
+        Opcode::Const { dest, .. } => Some(dest.0),
+        _ => None,
+    }
+}
+
+/// Spill the live pool vreg with the FARTHEST next use (Belady) to a fresh
+/// frame slot, freeing its register. Returns the freed register, or `None`
+/// when no vreg is evictable (everything in the pool is pinned: locals,
+/// premapped param/local vregs, aliased registers, or `avoid`-listed operands
+/// of the current instruction) — the caller then leaves `alloc_i32_scratch`
+/// to its flag-off exhaustion fallback, which flags the function for the #496
+/// decline. Every victim gets a `STR` (never drop-without-store): the victim
+/// may be the function's final result, read by the epilogue after the last
+/// instruction, which the linear next-use table cannot see.
+#[allow(clippy::too_many_arguments)]
+fn spill_evict_farthest(
+    cur_idx: usize,
+    avoid: &[crate::rules::Reg],
+    use_positions: &std::collections::HashMap<u32, Vec<usize>>,
+    local_vregs: &std::collections::HashSet<u32>,
+    premapped_vregs: &std::collections::HashSet<u32>,
+    local_to_reg: &std::collections::HashMap<u32, crate::rules::Reg>,
+    param_reserved_regs: &[crate::rules::Reg],
+    vreg_to_arm: &mut std::collections::HashMap<u32, crate::rules::Reg>,
+    spilled_vregs: &mut std::collections::HashMap<u32, i32>,
+    next_spill_offset: &mut i32,
+    arm_instrs: &mut Vec<ArmOp>,
+) -> Option<crate::rules::Reg> {
+    use crate::rules::Reg;
+    // Deterministic candidate order: sort by vreg id (HashMap iteration order
+    // must never influence emitted bytes).
+    let mut candidates: Vec<(u32, Reg)> = vreg_to_arm
+        .iter()
+        .map(|(&v, &r)| (v, r))
+        .filter(|&(v, r)| {
+            SPILL_ON_EXHAUST_POOL.contains(&r)
+                && !local_vregs.contains(&v)
+                && !premapped_vregs.contains(&v)
+                && !local_to_reg.values().any(|&u| u == r)
+                && !param_reserved_regs.contains(&r)
+                && !avoid.contains(&r)
+                // Alias guard: only evict a register held by exactly ONE vreg.
+                // const-CSE aliasing (SYNTH_CONST_CSE) makes two live vregs
+                // share a register; spilling a single victim would leave the
+                // other alias reading a reused register (the documented
+                // spill-bijection hazard).
+                && vreg_to_arm.values().filter(|&&u| u == r).count() == 1
+        })
+        .collect();
+    candidates.sort_by_key(|&(v, _)| v);
+    // Belady: farthest next use wins; a vreg with NO next use (usize::MAX) is
+    // the ideal victim. Ties broken by the sort above (lowest vreg id).
+    let (victim, victim_reg) = candidates.into_iter().max_by_key(|&(v, _)| {
+        use_positions
+            .get(&v)
+            .and_then(|ps| ps.iter().find(|&&p| p >= cur_idx))
+            .copied()
+            .unwrap_or(usize::MAX)
+    })?;
+    let offset = *next_spill_offset;
+    *next_spill_offset += 4;
+    arm_instrs.push(ArmOp::Str {
+        rd: victim_reg,
+        addr: crate::rules::MemAddr::imm(Reg::SP, offset),
+    });
+    spilled_vregs.insert(victim, offset);
+    vreg_to_arm.remove(&victim);
+    Some(victim_reg)
+}
+
 impl Default for OptimizerBridge {
     fn default() -> Self {
         Self::new()
@@ -5757,6 +6215,7 @@ impl Default for OptimizerBridge {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::Reg;
 
     // ---- base-CSE planner (VCR-RA lever 3, #468) ----
 
@@ -6902,5 +7361,326 @@ mod tests {
             "expected MOVW #0x1488 (0x20000100 + 5000 low half); got: {:#?}",
             arm
         );
+    }
+
+    // ---- VCR-RA-001 allocation-time spill-on-exhaustion (#242, #496) ----
+
+    /// Straight-line i32 IR with 6 simultaneously-live binop results over two
+    /// params — one more than the R4-R8 scratch pool holds — followed by a
+    /// non-commutative fold. Flag-off this exhausts `alloc_i32_scratch` and
+    /// declines (#496); flag-on it must spill and compile.
+    fn pressure_ir() -> Vec<Instruction> {
+        let ops = vec![
+            Opcode::Load {
+                dest: vr(0),
+                addr: 0,
+            },
+            Opcode::Load {
+                dest: vr(1),
+                addr: 1,
+            },
+            Opcode::Add {
+                dest: vr(2),
+                src1: vr(0),
+                src2: vr(1),
+            },
+            Opcode::Sub {
+                dest: vr(3),
+                src1: vr(0),
+                src2: vr(1),
+            },
+            Opcode::Xor {
+                dest: vr(4),
+                src1: vr(0),
+                src2: vr(1),
+            },
+            Opcode::Or {
+                dest: vr(5),
+                src1: vr(0),
+                src2: vr(1),
+            },
+            Opcode::And {
+                dest: vr(6),
+                src1: vr(0),
+                src2: vr(1),
+            },
+            Opcode::Mul {
+                dest: vr(7),
+                src1: vr(0),
+                src2: vr(1),
+            },
+            Opcode::Sub {
+                dest: vr(8),
+                src1: vr(2),
+                src2: vr(3),
+            },
+            Opcode::Xor {
+                dest: vr(9),
+                src1: vr(8),
+                src2: vr(4),
+            },
+            Opcode::Add {
+                dest: vr(10),
+                src1: vr(9),
+                src2: vr(5),
+            },
+            Opcode::Sub {
+                dest: vr(11),
+                src1: vr(10),
+                src2: vr(6),
+            },
+            Opcode::Xor {
+                dest: vr(12),
+                src1: vr(11),
+                src2: vr(7),
+            },
+            Opcode::Return {
+                value: Some(vr(12)),
+            },
+        ];
+        ops.into_iter().map(inst).collect()
+    }
+
+    #[test]
+    fn test_496_pressure_ir_declines_flag_off() {
+        // RED baseline: without the lever, scratch-pool exhaustion declines the
+        // whole function to the direct selector (#496) — never a silent R12
+        // borrow.
+        let mut bridge = OptimizerBridge::new();
+        bridge.set_spill_on_exhaust(false);
+        let err = bridge
+            .ir_to_arm(&pressure_ir(), 2)
+            .expect_err("6 live values over a 5-reg pool must decline flag-off");
+        assert!(
+            err.to_string().contains("#496"),
+            "decline must be the #496 exhaustion decline; got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_242_spill_on_exhaust_compiles_pressure_ir() {
+        // GREEN: with the lever, the same function compiles on the optimized
+        // path by spilling to frame slots at allocation time.
+        let mut bridge = OptimizerBridge::new();
+        bridge.set_spill_on_exhaust(true);
+        let arm = bridge
+            .ir_to_arm(&pressure_ir(), 2)
+            .expect("flag-on: exhaustion spills instead of declining");
+        // At least one spill store must exist,
+        let spill_stores: Vec<i32> = arm
+            .iter()
+            .filter_map(|op| match op {
+                ArmOp::Str { rd: _, addr } if addr.base == Reg::SP => Some(addr.offset),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !spill_stores.is_empty(),
+            "pressure function must spill; got: {arm:#?}"
+        );
+        // ... and every frame reload must read a slot some earlier store wrote
+        // (the balance invariant — an unmatched LDR is the read-of-garbage
+        // spill bug class).
+        let mut written: std::collections::HashSet<i32> = std::collections::HashSet::new();
+        for op in &arm {
+            match op {
+                ArmOp::Str { addr, .. } if addr.base == Reg::SP => {
+                    written.insert(addr.offset);
+                }
+                ArmOp::Ldr { addr, .. } if addr.base == Reg::SP => {
+                    assert!(
+                        written.contains(&addr.offset),
+                        "LDR [SP, #{}] reads a slot never written: {arm:#?}",
+                        addr.offset
+                    );
+                }
+                _ => {}
+            }
+        }
+        // The R12 exhaustion fallback must never ship (this IR has no memory
+        // ops, so no legitimate R12 use exists either).
+        for op in &arm {
+            if let ArmOp::Str { rd, .. } | ArmOp::Ldr { rd, .. } | ArmOp::Mov { rd, .. } = op {
+                assert_ne!(*rd, Reg::R12, "R12 borrow shipped flag-on: {arm:#?}");
+            }
+        }
+        // The frame must be set up and torn down (SUB at entry, ADD before BX).
+        assert!(
+            matches!(
+                arm.first(),
+                Some(ArmOp::Sub {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    ..
+                })
+            ),
+            "spill frame prologue missing: {arm:#?}"
+        );
+        let bx_pos = arm
+            .iter()
+            .position(|op| matches!(op, ArmOp::Bx { .. }))
+            .expect("return present");
+        assert!(
+            matches!(
+                &arm[bx_pos - 1],
+                ArmOp::Add {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    ..
+                }
+            ),
+            "spill frame epilogue (ADD SP) missing before BX: {arm:#?}"
+        );
+    }
+
+    #[test]
+    fn test_242_spill_on_exhaust_belady_first_victim() {
+        // At the exhausting Mul (6th live dest), the pool holds v2..v6 in
+        // R4..R8, with next uses at fold positions 8,8,9,10,11 respectively.
+        // Belady evicts the FARTHEST next use — v6 in R8 (position 11) — not
+        // the oldest allocation (v2 in R4, which LRU would pick).
+        let mut bridge = OptimizerBridge::new();
+        bridge.set_spill_on_exhaust(true);
+        let arm = bridge.ir_to_arm(&pressure_ir(), 2).expect("compiles");
+        let first_spill = arm
+            .iter()
+            .find_map(|op| match op {
+                ArmOp::Str { rd, addr } if addr.base == Reg::SP => Some(*rd),
+                _ => None,
+            })
+            .expect("pressure function must spill");
+        assert_eq!(
+            first_spill,
+            Reg::R8,
+            "Belady must evict the farthest-next-use victim (v6 in R8): {arm:#?}"
+        );
+    }
+
+    #[test]
+    fn test_242_spill_on_exhaust_noop_below_pressure() {
+        // A function that never exhausts the pool must produce IDENTICAL bytes
+        // with the lever on and off — the pre-step only acts at the pressure
+        // edge.
+        let ops = vec![
+            Opcode::Load {
+                dest: vr(0),
+                addr: 0,
+            },
+            Opcode::Load {
+                dest: vr(1),
+                addr: 1,
+            },
+            Opcode::Add {
+                dest: vr(2),
+                src1: vr(0),
+                src2: vr(1),
+            },
+            Opcode::Xor {
+                dest: vr(3),
+                src1: vr(2),
+                src2: vr(1),
+            },
+            Opcode::Return { value: Some(vr(3)) },
+        ];
+        let ir: Vec<Instruction> = ops.into_iter().map(inst).collect();
+        let mut on = OptimizerBridge::new();
+        on.set_spill_on_exhaust(true);
+        let mut off = OptimizerBridge::new();
+        off.set_spill_on_exhaust(false);
+        assert_eq!(
+            on.ir_to_arm(&ir, 2).expect("compiles"),
+            off.ir_to_arm(&ir, 2).expect("compiles"),
+            "below the pressure edge the lever must be a no-op"
+        );
+    }
+
+    #[test]
+    fn test_242_spill_on_exhaust_supported_scope() {
+        // The honest v1 scope: i64 pairs, control flow, calls, and non-param
+        // locals stay on the #496 decline path even flag-on.
+        assert!(spill_on_exhaust_supported(
+            &Opcode::Add {
+                dest: vr(0),
+                src1: vr(1),
+                src2: vr(2)
+            },
+            2
+        ));
+        assert!(spill_on_exhaust_supported(
+            &Opcode::Const {
+                dest: vr(0),
+                value: 7
+            },
+            2
+        ));
+        // Param local (addr < num_params) and the synthetic select local 255
+        // are in scope; other non-param locals are not.
+        assert!(spill_on_exhaust_supported(
+            &Opcode::Load {
+                dest: vr(0),
+                addr: 1
+            },
+            2
+        ));
+        assert!(spill_on_exhaust_supported(
+            &Opcode::Store {
+                src: vr(0),
+                addr: 255
+            },
+            2
+        ));
+        assert!(!spill_on_exhaust_supported(
+            &Opcode::Store {
+                src: vr(0),
+                addr: 2
+            },
+            2
+        ));
+        assert!(!spill_on_exhaust_supported(
+            &Opcode::I64Add {
+                dest_lo: vr(0),
+                dest_hi: vr(1),
+                src1_lo: vr(2),
+                src1_hi: vr(3),
+                src2_lo: vr(4),
+                src2_hi: vr(5)
+            },
+            2
+        ));
+        assert!(!spill_on_exhaust_supported(
+            &Opcode::Branch { target: 0 },
+            2
+        ));
+        assert!(!spill_on_exhaust_supported(
+            &Opcode::CondBranch {
+                cond: vr(0),
+                target: 0
+            },
+            2
+        ));
+        assert!(!spill_on_exhaust_supported(
+            &Opcode::Call {
+                dest: vr(0),
+                func_idx: 0
+            },
+            2
+        ));
+        // A single unsupported opcode disables the lever for the whole
+        // function: pressure IR + one i64 op must still decline flag-on.
+        let mut ir = pressure_ir();
+        ir.insert(
+            ir.len() - 1,
+            inst(Opcode::I64Const {
+                dest_lo: vr(100),
+                dest_hi: vr(101),
+                value: 1,
+            }),
+        );
+        let mut bridge = OptimizerBridge::new();
+        bridge.set_spill_on_exhaust(true);
+        let err = bridge
+            .ir_to_arm(&ir, 2)
+            .expect_err("unsupported opcode must keep the #496 decline");
+        assert!(err.to_string().contains("#496"), "got: {err}");
     }
 }
