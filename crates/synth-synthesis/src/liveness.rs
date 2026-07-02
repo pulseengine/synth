@@ -3880,6 +3880,553 @@ fn extending_alias_hoist(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
     (out, count)
 }
 
+// ─── VCR-RA-001 spill re-choice spike (#242) ────────────────────────────────
+//
+// MOTIVATION. flat_flight's hot segment runs peak register pressure 11 > the
+// R0–R8 pool of 9, so every pressure-guarded optimization (const-CSE PR2, the
+// extending-alias hoist) correctly declines there, and the greedy selector's
+// spill placement is naive — gale measured 17 spills + 61% redundant const
+// materializations on silicon (G474RE, #209). The only lever that wins on a
+// genuinely-saturated segment is smarter SPILL placement: keep the value with
+// the NEAREST next use in a register and send the FURTHEST-next-use value to
+// memory (Belady / farthest-first). This spike ships two bounded pieces:
+//
+//  1. REPORT: [`spill_choice_report`] — per straight-line segment, the actual
+//     frame-slot traffic the greedy lowering emitted (`ldr`/`str [sp,#N]`)
+//     vs. the reload/store count a farthest-next-use (Belady MIN) allocation
+//     of the same value trace would need with a k-register pool. The delta is
+//     the measured headroom the full VCR-RA-001 spill-choice rewrite can
+//     recover. Pure analysis; wired behind `SYNTH_SPILL_REPORT=1`.
+//
+//  2. REWRITE (the simplest strictly-profitable case): [`apply_spill_realloc`]
+//     — slot-value forwarding *between reloads*. Where a `ldr rZ,[sp,#N]`
+//     reloads a value PROVABLY still register-resident (an earlier reload /
+//     store / reg-reg move of the same slot value survives unclobbered), the
+//     reload is replaced by `mov rZ,rY` — or DELETED outright when `rZ`
+//     itself still holds it. Every rewritten reload is one fewer load
+//     executed. This is exactly the case [`forward_stack_reloads`] misses:
+//     that pass forwards only from the STORE's source register, so when
+//     pressure clobbers the source (the real-spill case this spike targets),
+//     its reloads survive — but reload #2..#n can still forward from reload
+//     #1. Flag-off (`SYNTH_SPILL_REALLOC=1`); off ⇒ byte-identical.
+
+/// Registers never tracked as slot-value holders and never counted as pool
+/// values: R9 (globals) / R10 (mem-size) / R11 (mem-base) are reserved, R12 is
+/// the ENCODER's scratch (encode-time expansions may clobber it without any
+/// `ArmOp`-level def — #212), and SP/LR/PC are never value homes.
+fn is_reserved_reg(r: Reg) -> bool {
+    matches!(
+        r,
+        Reg::R9 | Reg::R10 | Reg::R11 | Reg::R12 | Reg::SP | Reg::LR | Reg::PC
+    )
+}
+
+/// True for the word-sized `[sp, #imm]` address form — the only frame-slot
+/// shape the spill passes reason about (spill slots are word-aligned,
+/// non-overlapping, and accessed full-word; see
+/// [`eliminate_dead_frame_stores`]'s load-bearing-assumption note).
+fn sp_slot(addr: &MemAddr) -> Option<i32> {
+    (addr.base == Reg::SP && addr.offset_reg.is_none()).then_some(addr.offset)
+}
+
+/// VCR-RA-001 spill-reload forwarding (#242, spike step): replace or delete a
+/// frame-slot reload whose value is provably already in a register.
+///
+/// Per maximal straight-line, fully-modeled segment (same segmentation as
+/// [`reallocate_function`]), tracks — per slot `#N` — the set of R0–R8
+/// registers currently holding slot `N`'s value. Sources: the feeding
+/// `str rY,[sp,#N]` (holder `rY`), a reload `ldr rY,[sp,#N]` (holder `rY`),
+/// and value copies (`mov rZ,rY` extends every set containing `rY`). Kills: a
+/// redefinition of the register (any modeled def, including `Movt`'s RMW), a
+/// store to the slot (set reset to the new source), ANY `[sp]` access that
+/// cannot be pinned to a single whole word slot (register-offset or sub-word),
+/// `Push`/`Pop` (SP moves + stack memory touched), and any SP def. A reload
+/// `ldr rZ,[sp,#N]` with a surviving holder `rY` becomes `mov rZ,rY` (1-for-1,
+/// count-neutral, load→1-cycle move), or is DELETED when `rZ == rY`
+/// (offset-safe: runs before `resolve_label_branches`, like every pass here).
+///
+/// SOUNDNESS is by construction: the replacement writes `rZ` with the exact
+/// value the load would have fetched (the holder tracking proves memory and
+/// register agree), and a deletion leaves `rZ` already holding that value —
+/// every downstream register state is bit-identical. Non-SP stores are assumed
+/// not to alias the frame (wasm linear memory via R11 is disjoint from the
+/// machine stack — the same assumption [`forward_stack_reloads`] ships with).
+///
+/// COMMIT GATES, per segment (the whole segment keeps its original bytes if
+/// any gate fails):
+///  (a) semantics — by construction, above;
+///  (b) instruction count must not grow — structural (replacements are 1-for-1,
+///      deletions shrink), asserted;
+///  (c) register-pressure guard: a `mov` extends the holder value's live
+///      range, so the segment's post-transform peak VALUE pressure
+///      ([`straight_line_peak_pressure`]) must not exceed the pre-transform
+///      peak unless it still fits the R0–R8 pool ([`ALLOCATABLE_POOL`]) — the
+///      rewrite never turns a fitting segment into a spilling one, and on an
+///      already-saturated segment (flat_flight's peak 11) it never makes the
+///      saturation worse.
+///
+/// Returns the rewritten stream and the number of reloads forwarded/deleted.
+/// Pure; callers opt in (`SYNTH_SPILL_REALLOC=1` wiring in `arm_backend.rs`).
+pub fn apply_spill_realloc(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    let mut out: Vec<ArmInstruction> = Vec::with_capacity(instrs.len());
+    let mut total = 0usize;
+    let mut seg: Vec<ArmInstruction> = Vec::new();
+    let flush =
+        |seg: &mut Vec<ArmInstruction>, out: &mut Vec<ArmInstruction>, total: &mut usize| {
+            if seg.is_empty() {
+                return;
+            }
+            match spill_forward_segment(seg) {
+                Some((rewritten, n)) => {
+                    *total += n;
+                    out.extend(rewritten);
+                }
+                None => out.append(seg),
+            }
+            seg.clear();
+        };
+    for ins in instrs {
+        if is_straight_line(&ins.op) && reg_effect(&ins.op).is_some() {
+            seg.push(ins.clone());
+        } else {
+            flush(&mut seg, &mut out, &mut total);
+            out.push(ins.clone());
+        }
+    }
+    flush(&mut seg, &mut out, &mut total);
+    (out, total)
+}
+
+/// One segment of [`apply_spill_realloc`]: `Some((rewritten, count))` iff at
+/// least one reload was forwarded/deleted AND every commit gate holds;
+/// `None` ⇒ caller keeps the original segment bytes.
+fn spill_forward_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>, usize)> {
+    // slot #N → set of R0–R8 registers currently holding slot N's value.
+    let mut holders: BTreeMap<i32, BTreeSet<Reg>> = BTreeMap::new();
+    // Staged edits: index → Some(op) = replace, None = delete.
+    let mut staged: BTreeMap<usize, Option<ArmOp>> = BTreeMap::new();
+
+    for (i, ins) in seg.iter().enumerate() {
+        match &ins.op {
+            // Full-word reload of a pinnable slot — the forwarding candidate.
+            ArmOp::Ldr { rd, addr } if sp_slot(addr).is_some() => {
+                let slot = sp_slot(addr).unwrap();
+                let rd = *rd;
+                let known = holders.get(&slot).cloned().unwrap_or_default();
+                if !is_reserved_reg(rd) && known.contains(&rd) {
+                    // rd already holds the slot's value — the reload is a no-op.
+                    staged.insert(i, None);
+                    // State unchanged: rd keeps the (identical) value.
+                } else if !is_reserved_reg(rd) && !known.is_empty() {
+                    let ry = *known.iter().next().unwrap(); // lowest reg: deterministic
+                    staged.insert(
+                        i,
+                        Some(ArmOp::Mov {
+                            rd,
+                            op2: Operand2::Reg(ry),
+                        }),
+                    );
+                    // rd is redefined with the slot's value (same as the ldr):
+                    for set in holders.values_mut() {
+                        set.remove(&rd);
+                    }
+                    // rd now equals ry — it joins every slot set ry belongs to
+                    // (which includes `slot`).
+                    for set in holders.values_mut() {
+                        if set.contains(&ry) {
+                            set.insert(rd);
+                        }
+                    }
+                } else {
+                    // Ordinary reload: rd is redefined and now holds slot's value.
+                    for set in holders.values_mut() {
+                        set.remove(&rd);
+                    }
+                    if !is_reserved_reg(rd) {
+                        holders.entry(slot).or_default().insert(rd);
+                    }
+                }
+            }
+            // Full-word store to a pinnable slot: the slot now holds rd's value.
+            ArmOp::Str { rd, addr } if sp_slot(addr).is_some() => {
+                let mut set = BTreeSet::new();
+                if !is_reserved_reg(*rd) {
+                    set.insert(*rd);
+                }
+                holders.insert(sp_slot(addr).unwrap(), set);
+            }
+            // Any [sp] access we cannot pin to a single whole word slot:
+            // register offset (unresolvable) or sub-word (partial overlap).
+            ArmOp::Ldr { addr, .. } | ArmOp::Str { addr, .. } if addr.base == Reg::SP => {
+                holders.clear();
+            }
+            ArmOp::Ldrb { addr, .. }
+            | ArmOp::Ldrsb { addr, .. }
+            | ArmOp::Ldrh { addr, .. }
+            | ArmOp::Ldrsh { addr, .. }
+            | ArmOp::Strb { addr, .. }
+            | ArmOp::Strh { addr, .. }
+                if addr.base == Reg::SP =>
+            {
+                holders.clear();
+            }
+            // SP moves + stack memory touched — every slot name is invalidated.
+            ArmOp::Push { .. } | ArmOp::Pop { .. } => holders.clear(),
+            // Register-to-register copy propagates value identity.
+            ArmOp::Mov {
+                rd,
+                op2: Operand2::Reg(rm),
+            } if rd != rm => {
+                let (rd, rm) = (*rd, *rm);
+                let member: Vec<i32> = holders
+                    .iter()
+                    .filter(|(_, s)| s.contains(&rm))
+                    .map(|(k, _)| *k)
+                    .collect();
+                for set in holders.values_mut() {
+                    set.remove(&rd);
+                }
+                if !is_reserved_reg(rd) {
+                    for k in member {
+                        if let Some(s) = holders.get_mut(&k) {
+                            s.insert(rd);
+                        }
+                    }
+                }
+            }
+            op => {
+                // Segment precondition guarantees Some; `?` stays sound if the
+                // segmentation ever drifts.
+                let eff = reg_effect(op)?;
+                if eff.defs.contains(&Reg::SP) {
+                    holders.clear();
+                } else {
+                    for d in &eff.defs {
+                        for set in holders.values_mut() {
+                            set.remove(d);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if staged.is_empty() {
+        return None;
+    }
+
+    let mut rewritten: Vec<ArmInstruction> = Vec::with_capacity(seg.len());
+    for (i, ins) in seg.iter().enumerate() {
+        match staged.get(&i) {
+            None => rewritten.push(ins.clone()),
+            Some(None) => {} // deleted redundant reload
+            Some(Some(op)) => rewritten.push(ArmInstruction {
+                op: op.clone(),
+                source_line: ins.source_line,
+            }),
+        }
+    }
+    // Gate (b): never grow — structural, but asserted so a future edit that
+    // breaks the 1-for-1/deletion property fails loudly.
+    assert!(
+        rewritten.len() <= seg.len(),
+        "spill_forward_segment must never grow a segment"
+    );
+    // Gate (c): pressure guard — a forwarding `mov` extends the holder's live
+    // range; commit only if the segment still fits the pool or did not get
+    // more saturated than it already was.
+    let pre = straight_line_peak_pressure(seg)?;
+    let post = straight_line_peak_pressure(&rewritten)?;
+    if post > pre && post > ALLOCATABLE_POOL {
+        return None;
+    }
+    Some((rewritten, staged.len()))
+}
+
+/// Per-segment greedy-vs-Belady spill-choice report — the REPORT half of the
+/// VCR-RA-001 spike (#242). See [`spill_choice_report`].
+#[derive(Debug, Clone)]
+pub struct SegmentSpillChoice {
+    /// Function-stream index of the segment's first instruction.
+    pub start: usize,
+    /// Segment length in instructions.
+    pub len: usize,
+    /// Peak VALUE pressure of the segment ([`straight_line_peak_pressure`]).
+    pub peak_pressure: usize,
+    /// Frame-slot reloads the greedy lowering actually emitted
+    /// (word `ldr [sp,#imm]` count).
+    pub actual_reloads: usize,
+    /// Frame-slot stores the greedy lowering actually emitted
+    /// (word `str [sp,#imm]` count).
+    pub actual_spill_stores: usize,
+    /// Reloads a farthest-next-use (Belady MIN) allocation of the segment's
+    /// value trace would execute with a k-register pool.
+    pub belady_reloads: usize,
+    /// Spill stores the Belady allocation would execute.
+    pub belady_spill_stores: usize,
+}
+
+/// The greedy-vs-farthest-next-use spill-choice delta, per straight-line
+/// segment: how much of the emitted frame-slot traffic a Belady (evict the
+/// value with the FURTHEST next use) allocation over `k` registers would
+/// avoid. `actual_* − belady_*` is the measured recovery headroom for the full
+/// VCR-RA-001 spill-choice rewrite.
+///
+/// METHOD. The segment's frame traffic is first dissolved back into an
+/// abstract VALUE trace: a `str [sp,#N]` binds slot `N` to its source's value
+/// and a `ldr [sp,#N]` re-binds the target register to that same value — so a
+/// value's uses after a reload are uses of the ORIGINAL value, and the spill
+/// instructions themselves vanish from the ideal trace (a reload from a slot
+/// whose value is unknown — written outside the segment — stays a genuine,
+/// unavoidable load and is charged to Belady too). Values homed in reserved
+/// registers (R9–R12/SP/LR/PC) are excluded: they do not compete for the pool.
+/// Belady MIN then replays the trace with `k` register slots, evicting the
+/// resident value with the farthest next use (a first eviction of a value that
+/// is still needed and has no memory copy costs one store; re-touching an
+/// evicted value costs one reload).
+///
+/// CAVEAT (stated, not hidden): the actual counts include the frame-resident
+/// lowering's LOCAL-variable traffic, so the delta is the ceiling recoverable
+/// by full value-based allocation (locals promoted + Belady spill choice), not
+/// by spill re-choice alone. Pure analysis — changes no bytes; wired behind
+/// `SYNTH_SPILL_REPORT=1`.
+pub fn spill_choice_report(instrs: &[ArmInstruction], k: usize) -> Vec<SegmentSpillChoice> {
+    let mut out = Vec::new();
+    let mut seg_start = 0usize;
+    let flush = |start: usize, end: usize, out: &mut Vec<SegmentSpillChoice>| {
+        if end > start
+            && let Some(r) = segment_spill_choice(&instrs[start..end], k, start)
+        {
+            out.push(r);
+        }
+    };
+    for (i, ins) in instrs.iter().enumerate() {
+        if !is_straight_line(&ins.op) || reg_effect(&ins.op).is_none() {
+            flush(seg_start, i, &mut out);
+            seg_start = i + 1;
+        }
+    }
+    flush(seg_start, instrs.len(), &mut out);
+    out
+}
+
+/// Value-trace reconstruction + Belady MIN simulation for one straight-line,
+/// fully-modeled segment. `None` iff the segment cannot be modeled (should not
+/// happen under [`spill_choice_report`]'s segmentation).
+fn segment_spill_choice(
+    seg: &[ArmInstruction],
+    k: usize,
+    start: usize,
+) -> Option<SegmentSpillChoice> {
+    // ── 1. Reconstruct the abstract value trace. ──────────────────────────
+    let mut current: BTreeMap<Reg, usize> = BTreeMap::new(); // reg → value id
+    let mut slot_value: BTreeMap<i32, usize> = BTreeMap::new(); // slot → value id
+    let mut n_values = 0usize;
+    let mut mem_origin: Vec<bool> = Vec::new(); // value born memory-resident?
+    // Per position: values that must be register-resident (reads), values born
+    // into a register (writes), values entering from unknown memory (charged
+    // as unavoidable reloads on both sides).
+    struct PosTouch {
+        required: Vec<usize>,
+        born: Vec<usize>,
+        mem_born: Vec<usize>,
+    }
+    let mut touches: Vec<PosTouch> = Vec::with_capacity(seg.len());
+    let mut required_at: Vec<Vec<usize>> = Vec::new(); // value → positions
+    let mut actual_reloads = 0usize;
+    let mut actual_spill_stores = 0usize;
+
+    let mut new_value = |mem: bool, mem_origin: &mut Vec<bool>| -> usize {
+        let v = n_values;
+        n_values += 1;
+        mem_origin.push(mem);
+        v
+    };
+
+    for (p, ins) in seg.iter().enumerate() {
+        let mut t = PosTouch {
+            required: Vec::new(),
+            born: Vec::new(),
+            mem_born: Vec::new(),
+        };
+        match &ins.op {
+            // Spill store: binds the slot to the source's value; not part of
+            // the ideal trace (the value is already in a register here).
+            ArmOp::Str { rd, addr } if sp_slot(addr).is_some() => {
+                actual_spill_stores += 1;
+                match current.get(rd).copied() {
+                    Some(v) if !is_reserved_reg(*rd) => {
+                        slot_value.insert(sp_slot(addr).unwrap(), v);
+                    }
+                    _ => {
+                        slot_value.remove(&sp_slot(addr).unwrap());
+                    }
+                }
+            }
+            // Spill reload: re-binds the register to the slot's value. A known
+            // slot value vanishes from the ideal trace; an unknown one is a
+            // genuine memory-resident value entering registers.
+            ArmOp::Ldr { rd, addr } if sp_slot(addr).is_some() => {
+                actual_reloads += 1;
+                let slot = sp_slot(addr).unwrap();
+                if is_reserved_reg(*rd) {
+                    current.remove(rd);
+                } else {
+                    match slot_value.get(&slot).copied() {
+                        Some(v) => {
+                            current.insert(*rd, v);
+                        }
+                        None => {
+                            let v = new_value(true, &mut mem_origin);
+                            required_at.push(Vec::new());
+                            slot_value.insert(slot, v);
+                            current.insert(*rd, v);
+                            t.mem_born.push(v);
+                        }
+                    }
+                }
+            }
+            op => {
+                // Any other [sp] access invalidates the slot map (unpinnable),
+                // but still has its ordinary register effect.
+                let sp_touch = match op {
+                    ArmOp::Ldr { addr, .. }
+                    | ArmOp::Str { addr, .. }
+                    | ArmOp::Ldrb { addr, .. }
+                    | ArmOp::Ldrsb { addr, .. }
+                    | ArmOp::Ldrh { addr, .. }
+                    | ArmOp::Ldrsh { addr, .. }
+                    | ArmOp::Strb { addr, .. }
+                    | ArmOp::Strh { addr, .. } => addr.base == Reg::SP,
+                    ArmOp::Push { .. } | ArmOp::Pop { .. } => true,
+                    _ => false,
+                };
+                if sp_touch {
+                    slot_value.clear();
+                }
+                let eff = reg_effect(op)?;
+                for u in &eff.uses {
+                    if is_reserved_reg(*u) {
+                        continue;
+                    }
+                    let v = match current.get(u).copied() {
+                        Some(v) => v,
+                        None => {
+                            // Segment input: arrives register-resident.
+                            let v = new_value(false, &mut mem_origin);
+                            required_at.push(Vec::new());
+                            current.insert(*u, v);
+                            v
+                        }
+                    };
+                    t.required.push(v);
+                    required_at[v].push(p);
+                }
+                if eff.defs.contains(&Reg::SP) {
+                    slot_value.clear();
+                }
+                for d in &eff.defs {
+                    if is_reserved_reg(*d) {
+                        current.remove(d);
+                        continue;
+                    }
+                    let v = new_value(false, &mut mem_origin);
+                    required_at.push(Vec::new());
+                    current.insert(*d, v);
+                    t.born.push(v);
+                }
+            }
+        }
+        touches.push(t);
+    }
+
+    // ── 2. Belady MIN replay with k register slots. ───────────────────────
+    let next_required = |v: usize, p: usize| -> Option<usize> {
+        let reqs = &required_at[v];
+        let idx = reqs.partition_point(|&q| q <= p);
+        reqs.get(idx).copied()
+    };
+    let mut resident: BTreeSet<usize> = BTreeSet::new();
+    let mut stored: BTreeSet<usize> = BTreeSet::new(); // has a memory copy
+    let mut belady_reloads = 0usize;
+    let mut belady_spill_stores = 0usize;
+
+    for (p, t) in touches.iter().enumerate() {
+        let make_room = |resident: &mut BTreeSet<usize>,
+                         stored: &mut BTreeSet<usize>,
+                         protect: &BTreeSet<usize>,
+                         stores: &mut usize| {
+            while resident.len() >= k {
+                // Farthest next requirement; a value never needed again (None)
+                // is the ideal victim and costs nothing.
+                let victim = resident
+                    .iter()
+                    .filter(|v| !protect.contains(v))
+                    .max_by_key(|&&v| next_required(v, p).unwrap_or(usize::MAX))
+                    .copied();
+                let Some(v) = victim else { break }; // over-wide instruction
+                if next_required(v, p).is_some() && !stored.contains(&v) {
+                    *stores += 1;
+                    stored.insert(v);
+                }
+                resident.remove(&v);
+            }
+        };
+        // Reads: every required value must be resident (protect all reads).
+        let protect: BTreeSet<usize> = t.required.iter().copied().collect();
+        for &v in &t.required {
+            if resident.contains(&v) {
+                continue;
+            }
+            // First touch of an input value is free (it arrives in a register);
+            // re-touching an evicted (memory-backed) value is a reload.
+            if stored.contains(&v) || mem_origin[v] {
+                belady_reloads += 1;
+            }
+            make_room(
+                &mut resident,
+                &mut stored,
+                &protect,
+                &mut belady_spill_stores,
+            );
+            resident.insert(v);
+        }
+        // Writes: reads are done (operands consumed before the write), so only
+        // the values born at this instruction are protected.
+        let born_protect: BTreeSet<usize> =
+            t.born.iter().chain(t.mem_born.iter()).copied().collect();
+        for &v in &t.born {
+            make_room(
+                &mut resident,
+                &mut stored,
+                &born_protect,
+                &mut belady_spill_stores,
+            );
+            resident.insert(v);
+        }
+        for &v in &t.mem_born {
+            belady_reloads += 1; // unavoidable: the slot was written elsewhere
+            make_room(
+                &mut resident,
+                &mut stored,
+                &born_protect,
+                &mut belady_spill_stores,
+            );
+            resident.insert(v);
+            stored.insert(v); // its memory copy exists by construction
+        }
+    }
+
+    Some(SegmentSpillChoice {
+        start,
+        len: seg.len(),
+        peak_pressure: straight_line_peak_pressure(seg)?,
+        actual_reloads,
+        actual_spill_stores,
+        belady_reloads,
+        belady_spill_stores,
+    })
+}
+
 /// Per-register def+use occurrence counts over an instruction stream — the
 /// numerator of Chaitin's spill cost (each spill inserts a store per def and a
 /// reload per use, so spill cost scales with occurrences). Unmodeled ops are
@@ -9154,6 +9701,332 @@ mod tests {
              (criterion: <5% of {} segments; current truth and the pinned \
              value: 0)",
             total.segments
+        );
+    }
+
+    // ---- VCR-RA-001 spill re-choice spike (#242) ----------------------------
+
+    fn sp_str(rd: Reg, off: i32) -> ArmInstruction {
+        ins(ArmOp::Str {
+            rd,
+            addr: crate::rules::MemAddr {
+                base: Reg::SP,
+                offset: off,
+                offset_reg: None,
+            },
+        })
+    }
+    fn sp_ldr(rd: Reg, off: i32) -> ArmInstruction {
+        ins(ArmOp::Ldr {
+            rd,
+            addr: crate::rules::MemAddr {
+                base: Reg::SP,
+                offset: off,
+                offset_reg: None,
+            },
+        })
+    }
+    fn movw(rd: Reg, imm16: u16) -> ArmInstruction {
+        ins(ArmOp::Movw { rd, imm16 })
+    }
+    fn add3(rd: Reg, rn: Reg, rm: Reg) -> ArmInstruction {
+        ins(ArmOp::Add {
+            rd,
+            rn,
+            op2: Operand2::Reg(rm),
+        })
+    }
+    fn mov_rr(rd: Reg, rm: Reg) -> ArmInstruction {
+        ins(ArmOp::Mov {
+            rd,
+            op2: Operand2::Reg(rm),
+        })
+    }
+
+    /// The target case forward_stack_reloads misses: the spill store's SOURCE
+    /// is clobbered (genuine pressure spill), but reload #2 can forward from
+    /// reload #1.
+    #[test]
+    fn spill_realloc_forwards_reload_to_reload_242() {
+        let seq = vec![
+            sp_str(Reg::R0, 8), // spill A
+            movw(Reg::R0, 7),   // A's register clobbered → store-source dead
+            sp_ldr(Reg::R1, 8), // reload #1 (stays: no holder survives)
+            add3(Reg::R2, Reg::R1, Reg::R0),
+            sp_ldr(Reg::R3, 8), // reload #2 → mov r3, r1
+            add3(Reg::R4, Reg::R3, Reg::R2),
+        ];
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 1, "exactly the second reload forwards");
+        assert_eq!(out.len(), seq.len(), "1-for-1 replacement, no growth");
+        assert_eq!(out[2].op, seq[2].op, "reload #1 must remain a load");
+        assert_eq!(
+            out[4].op,
+            ArmOp::Mov {
+                rd: Reg::R3,
+                op2: Operand2::Reg(Reg::R1)
+            },
+            "reload #2 forwards from reload #1's register"
+        );
+    }
+
+    /// A reload into a register that already holds the slot's value is deleted.
+    #[test]
+    fn spill_realloc_deletes_redundant_same_reg_reload_242() {
+        let seq = vec![
+            sp_str(Reg::R0, 4),
+            movw(Reg::R0, 1), // clobber the store source
+            sp_ldr(Reg::R1, 4),
+            ins(ArmOp::Cmp {
+                rn: Reg::R1,
+                op2: Operand2::Imm(0),
+            }),
+            sp_ldr(Reg::R1, 4), // r1 still holds slot #4's value → delete
+            add3(Reg::R2, Reg::R1, Reg::R0),
+        ];
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 1);
+        assert_eq!(out.len(), seq.len() - 1, "the redundant reload is deleted");
+        assert!(
+            !out.iter()
+                .skip(3)
+                .any(|i| matches!(&i.op, ArmOp::Ldr { addr, .. } if addr.base == Reg::SP)),
+            "no second frame reload remains"
+        );
+    }
+
+    /// Clobbering the only holder kills forwarding — the reload must stay.
+    #[test]
+    fn spill_realloc_holder_clobber_blocks_forwarding_242() {
+        let seq = vec![
+            sp_str(Reg::R0, 4),
+            movw(Reg::R0, 1),
+            sp_ldr(Reg::R1, 4),
+            movw(Reg::R1, 2), // holder clobbered
+            sp_ldr(Reg::R2, 4),
+        ];
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 0, "no provable holder at reload #2");
+        assert_eq!(out, seq, "stream unchanged");
+    }
+
+    /// Push/Pop moves SP and touches stack memory — every slot name dies.
+    #[test]
+    fn spill_realloc_push_pop_clears_slot_tracking_242() {
+        let seq = vec![
+            sp_str(Reg::R0, 4),
+            ins(ArmOp::Push {
+                regs: vec![Reg::R4],
+            }),
+            sp_ldr(Reg::R1, 4), // #4 no longer names the same slot
+        ];
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 0);
+        assert_eq!(out, seq);
+    }
+
+    /// A reg-reg move propagates value identity: the copy becomes a holder.
+    #[test]
+    fn spill_realloc_mov_propagates_holder_242() {
+        let seq = vec![
+            sp_str(Reg::R0, 0),
+            mov_rr(Reg::R3, Reg::R0), // r3 := A (copy)
+            movw(Reg::R0, 9),         // original holder clobbered
+            sp_ldr(Reg::R1, 0),       // → mov r1, r3
+        ];
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 1);
+        assert_eq!(
+            out[3].op,
+            ArmOp::Mov {
+                rd: Reg::R1,
+                op2: Operand2::Reg(Reg::R3)
+            }
+        );
+    }
+
+    /// A slot overwrite retargets forwarding to the NEW value's holder.
+    #[test]
+    fn spill_realloc_slot_overwrite_retargets_242() {
+        let seq = vec![
+            sp_str(Reg::R0, 4),
+            movw(Reg::R0, 1),
+            sp_str(Reg::R5, 4), // slot now holds r5's value
+            sp_ldr(Reg::R2, 4), // → mov r2, r5 (NOT r0)
+        ];
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 1);
+        assert_eq!(
+            out[3].op,
+            ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R5)
+            }
+        );
+    }
+
+    /// Pressure gate (c): the forwarding `mov` extends the holder's live range;
+    /// if that pushes the segment's peak value pressure past the pool AND past
+    /// the pre-transform peak, the whole segment is declined. Identical stream
+    /// minus the extra long-lived value commits (post ≤ pool headroom rule).
+    #[test]
+    fn spill_realloc_pressure_gate_declines_when_saturated_242() {
+        // Common skeleton: A := r1 (from a load); spill A; A's last real use;
+        // 8 long-lived values fill r0,r2..r8; then a reload of A that forwards
+        // from r1, extending A across the fat window.
+        let build = |with_extra: bool| {
+            let mut s = vec![
+                ins(ArmOp::Ldr {
+                    rd: Reg::R1,
+                    addr: crate::rules::MemAddr {
+                        base: Reg::R11,
+                        offset: 0,
+                        offset_reg: None,
+                    },
+                }),
+                sp_str(Reg::R1, 0), // holders = {r1}
+                ins(ArmOp::Cmp {
+                    rn: Reg::R1,
+                    op2: Operand2::Imm(0),
+                }), // A's last pre-transform use
+            ];
+            if with_extra {
+                // Two more values live across the window (homed OUTSIDE the
+                // pool, in R9/R10 — value pressure counts every register, so
+                // these saturate the window without freeing a pool reg).
+                s.push(movw(Reg::R9, 98));
+                s.push(movw(Reg::R10, 99));
+            }
+            for (k, rd) in [Reg::R3, Reg::R4, Reg::R5, Reg::R6, Reg::R7, Reg::R8]
+                .iter()
+                .enumerate()
+            {
+                s.push(movw(*rd, k as u16));
+            }
+            s.push(movw(Reg::R0, 40)); // v0, last use just before the reload
+            s.push(ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }));
+            s.push(sp_ldr(Reg::R0, 0)); // reload A → mov r0, r1 (candidate)
+            // Keep SP's value live past the reload (real segments always have
+            // later frame traffic), so the forwarding genuinely ADDS pressure.
+            s.push(sp_str(Reg::R4, 20));
+            let mut used = vec![
+                Reg::R0,
+                Reg::R3,
+                Reg::R4,
+                Reg::R5,
+                Reg::R6,
+                Reg::R7,
+                Reg::R8,
+            ];
+            if with_extra {
+                used.push(Reg::R9);
+                used.push(Reg::R10);
+            }
+            s.push(ins(ArmOp::Push { regs: used }));
+            s
+        };
+
+        // Without the extra value: post-transform peak fits the pool → commit.
+        let lean = build(false);
+        let (out, n) = apply_spill_realloc(&lean);
+        assert_eq!(
+            n, 1,
+            "lean segment: forwarding commits within pool headroom"
+        );
+        assert!(
+            out.iter().any(|i| i.op
+                == ArmOp::Mov {
+                    rd: Reg::R0,
+                    op2: Operand2::Reg(Reg::R1)
+                }),
+            "the reload became a mov"
+        );
+
+        // With them: post > pre AND post > pool → the segment is declined whole.
+        let fat = build(true);
+        let pre = straight_line_peak_pressure(&fat).unwrap();
+        let (out, n) = apply_spill_realloc(&fat);
+        assert_eq!(
+            n, 0,
+            "saturated segment (pre-peak {pre}) must be declined by the pressure gate"
+        );
+        assert_eq!(out, fat, "declined segment keeps its original bytes");
+    }
+
+    /// Belady report: the double-reload trace needs ZERO frame traffic with the
+    /// full pool — the emitted 1 store + 2 reloads are all recoverable headroom.
+    #[test]
+    fn spill_report_belady_beats_greedy_on_double_reload_242() {
+        let seq = vec![
+            movw(Reg::R0, 5), // A
+            sp_str(Reg::R0, 8),
+            movw(Reg::R0, 7), // B clobbers A's register
+            sp_ldr(Reg::R1, 8),
+            add3(Reg::R2, Reg::R1, Reg::R0),
+            sp_ldr(Reg::R3, 8),
+            add3(Reg::R4, Reg::R3, Reg::R2),
+        ];
+        let report = spill_choice_report(&seq, 9);
+        assert_eq!(report.len(), 1);
+        let s = &report[0];
+        assert_eq!((s.actual_reloads, s.actual_spill_stores), (2, 1));
+        assert_eq!(
+            (s.belady_reloads, s.belady_spill_stores),
+            (0, 0),
+            "≤9 concurrent values → the ideal allocation needs no frame traffic"
+        );
+        assert!(s.peak_pressure <= 9);
+    }
+
+    /// Belady mechanics under an artificially tiny pool (k=2): one eviction
+    /// (store) of the farthest-next-use value and one reload when it returns.
+    #[test]
+    fn spill_report_belady_counts_eviction_and_reload_k2_242() {
+        let seq = vec![
+            movw(Reg::R0, 1),                // A
+            movw(Reg::R1, 2),                // B
+            add3(Reg::R2, Reg::R0, Reg::R1), // C := A+B; k=2 → evict B (farther)
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }), // use A (near)
+            ins(ArmOp::Cmp {
+                rn: Reg::R1,
+                op2: Operand2::Imm(0),
+            }), // use B (far) → reload
+        ];
+        let report = spill_choice_report(&seq, 2);
+        assert_eq!(report.len(), 1);
+        let s = &report[0];
+        assert_eq!((s.actual_reloads, s.actual_spill_stores), (0, 0));
+        assert_eq!(
+            (s.belady_reloads, s.belady_spill_stores),
+            (1, 1),
+            "farthest-first evicts B once (1 store) and reloads it once"
+        );
+    }
+
+    /// A reload from a slot written OUTSIDE the segment is unavoidable: it is
+    /// charged to Belady too (no phantom headroom).
+    #[test]
+    fn spill_report_unknown_slot_reload_charged_to_belady_242() {
+        let seq = vec![
+            sp_ldr(Reg::R0, 12), // slot written before the segment
+            ins(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            }),
+        ];
+        let report = spill_choice_report(&seq, 9);
+        assert_eq!(report.len(), 1);
+        let s = &report[0];
+        assert_eq!(s.actual_reloads, 1);
+        assert_eq!(
+            s.belady_reloads, 1,
+            "an out-of-segment slot value must be loaded in the ideal world too"
         );
     }
 }

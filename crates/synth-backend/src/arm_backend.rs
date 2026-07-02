@@ -632,6 +632,32 @@ fn compile_wasm_to_arm(
         arm_instrs
     };
 
+    // VCR-RA-001 spill re-choice spike (#242): slot-value forwarding BETWEEN
+    // reloads. `forward_stack_reloads` (above) forwards only from a spill
+    // store's SOURCE register, so when register pressure clobbers that source
+    // — the genuine-spill case, flat_flight's peak-11 hot segment — its
+    // reloads survive. This pass tracks which registers provably still hold a
+    // frame slot's value (through earlier reloads and reg-reg moves) and turns
+    // reload #2..#n into a 1-cycle `mov` (or deletes it when the target
+    // already holds the value). A forwarded reload can leave the feeding
+    // store dead, so the frame-slot DCE sweep runs once more behind the same
+    // flag. Per-segment commit gates: never grows, and post-transform peak
+    // value pressure must fit the R0–R8 pool or not exceed the pre-transform
+    // peak (see `apply_spill_realloc`). Flag-off (`SYNTH_SPILL_REALLOC=1`)
+    // while differential-validated; off ⇒ byte-identical.
+    let arm_instrs = if std::env::var("SYNTH_SPILL_REALLOC").is_ok() {
+        let (out, n) = synth_synthesis::liveness::apply_spill_realloc(&arm_instrs);
+        let (out, d) = synth_synthesis::liveness::eliminate_dead_frame_stores(&out);
+        if std::env::var("SYNTH_FUSE_STATS").is_ok() {
+            eprintln!(
+                "[spill-realloc] {n} reload(s) forwarded/eliminated, {d} newly-dead frame store(s) removed"
+            );
+        }
+        out
+    } else {
+        arm_instrs
+    };
+
     // VCR-RA immediate-shift folding (#390, #242): a constant shift amount the
     // stack selector materialized into a scratch register (`movw rM,#C; lsl rD,rN,rM`)
     // folds to the immediate form (`lsl rD,rN,#C`), removing the dead `movw` — −1
@@ -691,6 +717,29 @@ fn compile_wasm_to_arm(
     } else {
         arm_instrs
     };
+
+    // VCR-RA-001 spill-choice REPORT (#242): measure-only, like SYNTH_SHADOW_ALLOC.
+    // Per straight-line segment, the frame-slot traffic actually emitted vs the
+    // reload/store count a farthest-next-use (Belady) allocation over the R0-R8
+    // pool would need — the measured headroom for the full spill-choice rewrite.
+    // Printed on the FINAL stream (post all rewrite passes), so a flag-off run
+    // reports the greedy baseline and a flag-on run reports what remains.
+    if std::env::var("SYNTH_SPILL_REPORT").is_ok() {
+        for seg in synth_synthesis::liveness::spill_choice_report(&arm_instrs, 9) {
+            if seg.actual_reloads + seg.actual_spill_stores > 0 || seg.peak_pressure > 9 {
+                eprintln!(
+                    "[spill-report] seg@{} len={} peak={} actual={}ld+{}st belady(k=9)={}ld+{}st",
+                    seg.start,
+                    seg.len,
+                    seg.peak_pressure,
+                    seg.actual_reloads,
+                    seg.actual_spill_stores,
+                    seg.belady_reloads,
+                    seg.belady_spill_stores
+                );
+            }
+        }
+    }
 
     // ISA feature gate: validate that all generated instructions are supported
     // by the target. This catches FPU instructions on no-FPU targets, double-precision
