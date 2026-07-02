@@ -46,7 +46,7 @@ jobs:
         uses: pulseengine/rivet/.github/actions/compliance@v0.22.1
         with:
           theme: dark
-          rivet-version: v0.15.0
+          rivet-version: v0.23.0
           include-data-formats: true
           report-label: ${{ steps.tag.outputs.tag }}
           archive: 'true'

@@ -187,18 +187,18 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/rivet
-          key: ${{ runner.os }}-rivet-cli-v0.22.0
+          key: ${{ runner.os }}-rivet-cli-v0.23.0
       # PIN rivet to a release tag (was `--branch main`, unpinned). Unpinned, an
       # upstream schema/behaviour bump silently reddened the gate on unchanged
-      # artifacts (rivet 0.15.0 promoted a WARN→ERROR, #229). v0.22.0 (adds the
-      # `rivet release` planning command, #516) is validated clean on this repo's
+      # artifacts (rivet 0.15.0 promoted a WARN→ERROR, #229). v0.23.0 (adds configurable
+      # release-readiness ready-when/coverage, check verification-evidence, trace-results) is validated clean on this repo's
       # artifacts before pinning — the exact CI gate below run locally under
-      # v0.22.0 gives non-xref ERROR 0 and coverage exit 0, same as v0.19.0. Skip
+      # v0.23.0 gives non-xref ERROR 0, same as v0.22.0. Skip
       # the (expensive) build entirely on a cache hit.
-      - name: Install rivet (pinned v0.22.0)
+      - name: Install rivet (pinned v0.23.0)
         run: |
-          if ! rivet --version 2>/dev/null | grep -q "0.22.0"; then
-            cargo install --force --git https://github.com/pulseengine/rivet --tag v0.22.0 rivet-cli
+          if ! rivet --version 2>/dev/null | grep -q "0.23.0"; then
+            cargo install --force --git https://github.com/pulseengine/rivet --tag v0.23.0 rivet-cli
           fi
       - name: Validate artifacts
         run: |

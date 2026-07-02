@@ -252,6 +252,7 @@ artifacts:
       alias-eviction remains the sole open prerequisite. (Not empirically reproduced on
       gale's exact `gust_mix` — fixture requested to pin the trigger.)
     status: implemented
+    release: v0.21.0
     tags: [codegen, register-allocation, ssa, regalloc2, track-a, release-v0.11.40]
     links:
       - type: derives-from
