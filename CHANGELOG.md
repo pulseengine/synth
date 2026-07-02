@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-07-02
+
+**DWARF containment regression fix (#564).**
+
+### Fixed
+
+- **CU `DW_AT_high_pc` covers child subprogram code extents (#564).** Since the
+  #557 subprogram DIEs (v0.19.0), the compile unit's `high_pc` was the
+  `.debug_line` extent, which can be smaller than the code extent — so the last
+  function's DIE fell outside its parent's range, `llvm-dwarfdump --verify`
+  failed post-link, and PC-range CU walks could miss that function. The CU
+  `high_pc` is now the max subprogram end (line-table extent as fallback).
+  Verified with real `llvm-dwarfdump --verify` ("No errors") on the issue's
+  linked repro, and CI-gated by a new gimli containment oracle (CU range ⊇
+  every subprogram range). `.debug_line` and `.text` bytes unchanged.
+
 ## [0.22.0] - 2026-07-02
 
 **Two flag-off VCR levers (RV32 cmp→select; liveness-based spill re-choice) +
