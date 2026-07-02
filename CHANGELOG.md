@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-02
+
+**i64 large-offset completeness fix, the `--volatile-segment` DMA surface, and two
+flag-off VCR-RA levers.**
+
+### Added
+
+- **`--volatile-segment <base>:<len>` CLI flag (#543, Phase 1).** Marks an address
+  range of the linear memory as externally-mutable (a DMA transfer window). Phase 1
+  is the flag + config plumbing + traceability (rivet `VCR-DMA-001`); the codegen
+  consumption — the const-CSE / base-CSE (#468) load-caching passes backing off
+  inside a marked range — is the gated Phase 2. Inert today (no emitted-byte
+  change), so downstream (meld/gale) can begin wiring the surface.
+
+### Fixed
+
+- **ARM direct selector materializes large i64 load/store offsets (#382).** A
+  `--relocatable` function with an `i64.load`/`i64.store` at an immediate offset
+  `> 0xFFF` was **skipped** (Thumb-2 `LDR/STR` encodes only a 12-bit offset). The
+  i64 encoder path now materializes the offset against the read-only index register
+  (`ADD ip, index, #off; ADD.W ip, ip, base; LDR/STR [ip,#0/#4]`), so the function
+  lowers instead of being dropped. (The optimized-path and i32 cases were already
+  handled by #384/#372.) Differential vs wasmtime; frozen anchors byte-identical.
+
+### Internal (VCR-RA / #242 — flag-off, no default behavior change)
+
+- **RV32 i32 local-promotion lever ported (#472), behind `SYNTH_RV_LOCAL_PROMO`.**
+  Promotes non-param i32 locals in leaf functions to callee-saved `s8`/`s9`/`s10`,
+  matching the ARM lever (#390). Flag-off ⇒ RV32 codegen byte-identical; flag-on
+  measured −12 % `.text` on the port fixture, differential-clean vs wasmtime.
+- **const-CSE PR2 win-recovery (#242), behind `SYNTH_CONST_CSE`.** Reconstructs
+  32-bit `movw+movt` constants and adds a pressure-guarded same-register extending
+  hoist (commits only if post-transform peak pressure ≤ the R0–R8 pool). Flag-off
+  byte-identical; flag-on shrinks e.g. `spill12` 236→148 B with no function
+  growing. Notably, `flat_flight` does **not** shrink — its hot segment already
+  runs at pressure 11 > pool 9, so the guard correctly declines every hoist:
+  recovering that win needs the separate **liveness-based spilling** lever (the
+  VCR-RA SSA allocator), not more CSE.
+
 ## [0.19.0] - 2026-07-01
 
 **AArch64 host-native backend + source-level DWARF, plus a sweep of codegen
