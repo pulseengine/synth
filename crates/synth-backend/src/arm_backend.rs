@@ -738,10 +738,22 @@ fn compile_wasm_to_arm(
     // function (labels/branches/loops, SP-displacement tracked) and drops a
     // store whose slot NO reachable instruction can read — flat_flight's two
     // surviving stores (#576), completing Belady's 0-load side with a 0-store
-    // side. Same flag: the three stages are one lever for the v0.24.0 flip.
-    // Flag-off (`SYNTH_SPILL_REALLOC=1`) while differential-validated;
-    // off ⇒ byte-identical.
-    let arm_instrs = if std::env::var("SYNTH_SPILL_REALLOC").is_ok() {
+    // side. Same flag: the three stages are one lever, flipped together.
+    // DEFAULT-ON (#242 feature loop, the v0.14.0 local-promotion pattern):
+    // Belady spilling ships by default. Evidence basis for the flip: three
+    // landed flag-off increments (#569 forwarding, #576 Belady re-choice,
+    // #579 whole-fn slot liveness), 40+ functions shrink / 0 grow across the
+    // 68-fixture × 2-path sweep, per-segment executable value-trace equality
+    // guards, and the unicorn-vs-wasmtime execution differentials re-run
+    // green on the new default bytes (flat+inlined flight_algo 0x07FDF307,
+    // const_cse, frame_slot_dce, spill_rung_581, r12_spill_496 — which covers
+    // control_step_decide vs wasmtime; control_step's .text is byte-identical
+    // under the flip) BEFORE the frozen goldens were re-pinned. Escape hatch:
+    // `SYNTH_SPILL_REALLOC=0` is the OPT-OUT — it disables all three stages
+    // and restores the pre-flip bytes (CI-gated by
+    // `frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes`). Any
+    // other value (or unset) runs the pass.
+    let arm_instrs = if !std::env::var("SYNTH_SPILL_REALLOC").is_ok_and(|v| v == "0") {
         let (out, n) = synth_synthesis::liveness::apply_spill_realloc(&arm_instrs);
         let (out, d) = synth_synthesis::liveness::eliminate_dead_frame_stores(&out);
         let (out, u) = synth_synthesis::liveness::eliminate_unread_frame_stores(&out);

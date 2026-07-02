@@ -689,9 +689,9 @@ pub fn eliminate_dead_frame_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruc
 /// Removal-only ⇒ the output never grows (asserted) and, run before
 /// `resolve_label_branches` like every pass here, is branch-offset neutral.
 /// The frame `sub sp, #K` is untouched (the slot goes unused; frame SHRINKING
-/// is [`elide_dead_frame`]'s job). Pure function; callers opt in
-/// (`SYNTH_SPILL_REALLOC=1` wiring in `arm_backend.rs`, same lever as the
-/// spill re-choice it completes).
+/// is [`elide_dead_frame`]'s job). Pure function; DEFAULT-ON via the
+/// `arm_backend.rs` wiring (`SYNTH_SPILL_REALLOC=0` is the opt-out), same
+/// lever as the spill re-choice it completes.
 pub fn eliminate_unread_frame_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
     use ArmOp::*;
 
@@ -4172,8 +4172,8 @@ fn extending_alias_hoist(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
 //     value trace ([`segment_value_trace`]) must be identical to the
 //     original's, including exit register and frame-slot state.
 //
-//  Both rewrite stages share one flag (`SYNTH_SPILL_REALLOC=1`, stage 2 runs
-//  on stage 1's output); off ⇒ byte-identical.
+//  Both rewrite stages share one flag (stage 2 runs on stage 1's output),
+//  DEFAULT-ON; `SYNTH_SPILL_REALLOC=0` opts out ⇒ pre-flip byte-identical.
 
 /// Registers never tracked as slot-value holders and never counted as pool
 /// values: R9 (globals) / R10 (mem-size) / R11 (mem-base) are reserved, R12 is
@@ -4234,7 +4234,8 @@ fn sp_slot(addr: &MemAddr) -> Option<i32> {
 /// forwarded/eliminated across both stages (stage 1 forwarding + stage 2
 /// Belady re-choice, see the module block above — stage 2 runs on stage 1's
 /// output, same flag).
-/// Pure; callers opt in (`SYNTH_SPILL_REALLOC=1` wiring in `arm_backend.rs`).
+/// Pure; DEFAULT-ON via the `arm_backend.rs` wiring (`SYNTH_SPILL_REALLOC=0`
+/// is the opt-out).
 pub fn apply_spill_realloc(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
     let mut out: Vec<ArmInstruction> = Vec::with_capacity(instrs.len());
     let mut total = 0usize;
