@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-02
+
+**DWARF backtraces get real internal function names; release tooling on rivet
+0.23.**
+
+### Added
+
+- **Internal functions carry their real names in DWARF (#394).** The decoder now
+  parses the wasm `name` custom section (function-names subsection) and the
+  `DW_TAG_subprogram` emit prefers name-section name > export name > `func_N` —
+  so a gdb/lldb backtrace through a synth-compiled image shows
+  `core::panicking::panic_fmt::…` / `gale::msgq::put_decide::…` instead of
+  `func_7`. Best-effort: malformed debug metadata never fails a compile. DWARF
+  is additive — `.text` byte-identical.
+
+### Changed
+
+- **Release planning/tracking pinned to rivet v0.23.0** (configurable
+  release-status readiness, `check verification-evidence`, `trace-results`);
+  CI + compliance pins bumped, drift-validated (0 non-xref errors on unchanged
+  artifacts). `VCR-RA-001` (SSA allocator) tracked for v0.22.0.
+
 ## [0.20.0] - 2026-07-02
 
 **i64 large-offset completeness fix, the `--volatile-segment` DMA surface, and two
