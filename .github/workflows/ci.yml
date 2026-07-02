@@ -461,6 +461,49 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/r12_spill_496_differential.py
 
+  flight-seam-570-oracle:
+    name: flight-seam relocatable-path execution oracle
+    # VCR-ORACLE-001 (#242, #212/#215, #570): EXECUTE the two flight_seam silicon
+    # fixtures (inlined w/ internal `bl filter_step`, and flat fully-dissolved)
+    # compiled via the SHIPPED direct path (--relocatable) under unicorn
+    # (UC_ARCH_ARM / Thumb) and diff flight_algo's result vs wasmtime (anchor
+    # 0x07FDF307). Guards the #212 R12-scratch reservation and #215 exposure on
+    # the relocatable path. Previously a dev-only script: it drifted silently
+    # when the #394 name work changed symbol naming (#570) — CI-gating it here
+    # so harness drift reddens instead of rotting. Symbols come from the ELF
+    # symtab, not `synth disasm` text (host-dependent, PR #489). Isolated job:
+    # emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools capstone
+      - name: Run flight-seam oracle (inlined #212 + flat #215)
+        run: |
+          ./target/debug/synth compile scripts/repro/flight_seam.wasm \
+            -o /tmp/fs.elf --target cortex-m4 --all-exports --relocatable
+          python scripts/repro/flight_seam_differential.py /tmp/fs.elf
+          ./target/debug/synth compile scripts/repro/flight_seam_flat.wasm \
+            -o /tmp/fsf.elf --target cortex-m4 --all-exports --relocatable
+          python scripts/repro/flight_seam_differential.py /tmp/fsf.elf \
+            scripts/repro/flight_seam_flat.wasm
+
   stack-args-503-oracle:
     name: AAPCS stack-argument path oracle
     # VCR-ORACLE-001 (#242, #503): EXECUTE functions that need the AAPCS

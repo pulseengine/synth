@@ -15,16 +15,20 @@ divided fields (st[0], st[4]) used that pattern under enough pressure to reach
 R12, so aileron/elevator saturated to 127 while rudder/updates read correctly.
 Fix: reserve R12 as scratch (remove it from ALLOCATABLE_REGS).
 
-Run:
+Symbols are resolved from the ELF symtab (SHT_SYMTAB, located by section type —
+synth's relocatable objects leave the section name empty), matching the export
+name first with a positional `func_N` fallback for older objects. `synth disasm`
+text is NOT parsed: it is host-dependent (PR #489) and its naming changed with
+the #394 name work (#570 — this script used to hardcode `func_0`/`func_1`).
+
+Run (deps: wasmtime unicorn pyelftools capstone):
   synth compile scripts/repro/flight_seam.wasm -o /tmp/fs.elf \
         --target cortex-m4 --all-exports --relocatable
-  /tmp/armv/bin/python scripts/repro/flight_seam_differential.py /tmp/fs.elf
+  python scripts/repro/flight_seam_differential.py /tmp/fs.elf
 
 Exits nonzero on mismatch so it can gate a release.
 """
-import re
 import struct
-import subprocess
 import sys
 
 import wasmtime
@@ -45,9 +49,32 @@ from unicorn.arm_const import (
 # `flight_algo` contains a `bl` and only hooks filter_step when it does.
 ELF = sys.argv[1] if len(sys.argv) > 1 else "/tmp/fs.elf"
 WASM = sys.argv[2] if len(sys.argv) > 2 else "scripts/repro/flight_seam.wasm"
-SYNTH = "./target/debug/synth"
 
 ST_OFF, S_OFF = 0x1000, 0x2000
+
+
+def elf_func_symbols(path):
+    """(func symbols, .text bytes, .text base) read from the ELF itself.
+
+    The symtab is found by section TYPE — synth's ET_REL objects emit it with
+    an empty section name, so get_section_by_name('.symtab') returns None.
+    st_value carries the Thumb bit on STT_FUNC symbols; clear it so the
+    addresses index .text directly.
+    """
+    with open(path, "rb") as fh:
+        elf = ELFFile(fh)
+        symtab = next(
+            (s for s in elf.iter_sections() if s["sh_type"] == "SHT_SYMTAB"), None
+        )
+        if symtab is None:
+            sys.exit(f"no SHT_SYMTAB section in {path}")
+        syms = {
+            s.name: s["st_value"] & ~1
+            for s in symtab.iter_symbols()
+            if s.name and s["st_info"]["type"] == "STT_FUNC"
+        }
+        text = elf.get_section_by_name(".text")
+        return syms, text.data(), text["sh_addr"]
 
 
 def st_init():
@@ -78,16 +105,24 @@ def main():
     gt = inst.exports(store)["flight_algo"](store, ST_OFF, S_OFF) & 0xFFFFFFFF
 
     # synth ARM under unicorn (full flight_algo incl. internal bl filter_step)
-    dis = subprocess.run([SYNTH, "disasm", ELF], capture_output=True, text=True).stdout
-    syms = {m.group(2): int(m.group(1), 16)
-            for m in re.finditer(r'^([0-9a-f]{8}) <(\w+)>:', dis, re.M)}
-    text = ELFFile(open(ELF, "rb")).get_section_by_name(".text")
-    code, base = text.data(), text["sh_addr"]
-    fa, fs = syms["func_0"], syms["func_1"]
+    syms, code, base = elf_func_symbols(ELF)
+
+    def resolve(name, idx):
+        # Export/name-section name first (post-#394); positional func_N alias
+        # as a fallback for older objects (#570 — never hardcode func_N).
+        for cand in (name, f"func_{idx}"):
+            if cand in syms:
+                return syms[cand]
+        sys.exit(f"SYMBOL MISSING: {name} (or func_{idx}); symtab has {sorted(syms)}")
+
+    fa = resolve("flight_algo", 0)
+    fs = resolve("filter_step", 1)
+    fa_end = min((a for a in syms.values() if a > fa), default=base + len(code))
     md = Cs(CS_ARCH_ARM, CS_MODE_THUMB)
     # Inlined (#212) variant has an internal `bl filter_step`; the flat (#215)
     # fully-dissolved variant has none. Hook the BL only when present.
-    bl_addr = next((i.address for i in md.disasm(bytes(code[fa:syms["func_1"]]), fa)
+    bl_addr = next((i.address for i in
+                    md.disasm(bytes(code[fa - base:fa_end - base]), fa)
                     if i.mnemonic == "bl"), None)
 
     CODE, LIN, STK = 0x10000, 0x40000, 0x90000
