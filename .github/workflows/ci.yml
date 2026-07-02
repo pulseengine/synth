@@ -504,6 +504,46 @@ jobs:
           python scripts/repro/flight_seam_differential.py /tmp/fsf.elf \
             scripts/repro/flight_seam_flat.wasm
 
+  control-step-584-oracle:
+    name: control-step relocatable-path execution oracle
+    # VCR-ORACLE-001 (#242, #209, #584): EXECUTE the control_step silicon fixture
+    # (4x unsigned constant div_u — the reciprocal-multiply cost-gate repro)
+    # compiled via the SHIPPED direct path (--relocatable) under unicorn
+    # (UC_ARCH_ARM / Thumb) and diff control_step_decide's result vs wasmtime
+    # (anchor 0x00210A55, 13 vectors). Previously a dev-only script: its `synth
+    # disasm` text parse drifted into a KeyError on current main (#584, same
+    # class as #570/#489) — symbols now come from the ELF symtab, and CI-gating
+    # it here (flight-seam-570-oracle pattern) so harness drift reddens instead
+    # of rotting. The r12_spill_496 oracle covers control_step on the DEFAULT
+    # optimized path; this covers the --relocatable direct path. Isolated job:
+    # emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run control-step oracle
+        run: |
+          ./target/debug/synth compile scripts/repro/control_step.wasm \
+            -o /tmp/cs.elf --target cortex-m4 --all-exports --relocatable
+          python scripts/repro/control_step_differential.py /tmp/cs.elf
+
   stack-args-503-oracle:
     name: AAPCS stack-argument path oracle
     # VCR-ORACLE-001 (#242, #503): EXECUTE functions that need the AAPCS
