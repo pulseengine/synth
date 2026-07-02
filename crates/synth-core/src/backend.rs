@@ -174,19 +174,31 @@ pub struct CompileConfig {
     /// a marked range must eventually be treated as VOLATILE: not cached, hoisted,
     /// or reordered across the transfer boundary.
     ///
-    /// PHASE-1 CONTRACT (this field is plumbing only): it is populated by the CLI
-    /// `--volatile-segment <base>:<len>` flag and threaded to codegen, but is NOT
-    /// yet consumed by any pass. Empty by default, so the emitted `.text` is
-    /// byte-identical with or without the flag (the frozen-codegen gate holds).
+    /// PHASE-2 CONTRACT (implemented — issue #543): the optimizer's
+    /// address-caching passes HONOR these ranges. Consumption points:
+    ///  - the #468 base-CSE / const-address-fold
+    ///    (`optimizer_bridge::plan_base_cse`, `SYNTH_BASE_CSE`): a const-address
+    ///    access whose 4-byte window intersects a marked range is EXCLUDED from
+    ///    the fold set — it keeps its verbatim per-access materialize-and-access
+    ///    codegen, while accesses outside the range still fold;
+    ///  - const-CSE (`SYNTH_CONST_CSE`, both the bridge-level cache in
+    ///    `optimizer_bridge::ir_to_arm` and `liveness::apply_const_cse` wired in
+    ///    `arm_backend.rs`): declines WHOLESALE while any range is marked — a
+    ///    cached constant cannot be classified address-vs-data at that level, so
+    ///    the conservative stance for statically-unknown addressing is to
+    ///    re-materialize every constant at each occurrence.
     ///
-    /// PHASE-2 CONSUMPTION POINT (deferred, gated — issue #543): the optimizer's
-    /// address-caching passes must BACK OFF for any access inside these ranges —
-    /// specifically const-CSE (`SYNTH_CONST_CSE`, aliasing repeated address
-    /// constants) and the #468 base-CSE / const-address-fold (hoisting the linmem
-    /// base into R11 and folding `[R11,#imm]` loads), plus any load-reuse /
-    /// reorder. A load or store overlapping a volatile range must re-materialize
-    /// its address and re-issue the memory access at each occurrence, and no such
-    /// access may move across a marked boundary. See rivet `VCR-DMA-001`.
+    /// Passes that only touch SP-relative frame slots (stack-reload forwarding,
+    /// frame-slot DCE, spill re-choice) are unaffected by design: these ranges
+    /// are LINEAR-MEMORY addresses, and frame slots are never linmem. Nothing on
+    /// the pipeline deletes, forwards, or reorders a linear-memory access (IR CSE
+    /// deliberately never CSEs `MemLoad`s; DCE removes only unreachable blocks),
+    /// so every marked access is issued verbatim, in program order.
+    ///
+    /// Empty (the default): zero behavior change by construction — every gate
+    /// reduces to the pre-#543 path, so the emitted `.text` is byte-identical
+    /// with or without this code (the frozen-codegen gate holds). See rivet
+    /// `VCR-DMA-001`.
     pub volatile_segments: Vec<VolatileRange>,
 }
 

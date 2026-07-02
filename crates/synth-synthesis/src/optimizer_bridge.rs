@@ -141,10 +141,46 @@ fn base_cse_sources(op: &Opcode) -> Option<Vec<u32>> {
     }
 }
 
+/// #543 Phase 2: does a linear-memory access at (wasm-address-space) byte
+/// address `addr` intersect any integrator-marked volatile DMA range
+/// `[base, base+len)`?
+///
+/// The access is modelled as the half-open window `[addr, addr+4)` — the widest
+/// i32 access. Sub-word accesses (1/2 bytes) are over-approximated to 4, which
+/// can only DECLINE more folds (sound conservatism; a fold is an optimization,
+/// never a correctness requirement). Arithmetic in i64 so `base+len` at the
+/// u32 boundary cannot wrap.
+fn intersects_volatile(addr: i64, ranges: &[synth_core::backend::VolatileRange]) -> bool {
+    const ACCESS_WIDTH: i64 = 4;
+    ranges.iter().any(|r| {
+        let base = r.base as i64;
+        let end = base + r.len as i64;
+        addr < end && addr + ACCESS_WIDTH > base
+    })
+}
+
 /// Decide whether base-CSE activates for this function and, if so, which const
 /// addresses fold. Returns `None` (decline → unchanged per-access codegen) unless
 /// ≥2 constant-address accesses fold and every opcode is base-CSE-safe.
-fn plan_base_cse(instructions: &[Instruction]) -> Option<BaseCsePlan> {
+///
+/// #543 Phase 2 — volatile DMA windows (`--volatile-segment`, threaded through
+/// [`OptimizerBridge::set_volatile_segments`]): a const-address access whose
+/// window intersects a marked range is EXCLUDED from the fold set — it keeps its
+/// per-access materialized address and its verbatim load/store, exactly as if
+/// base-CSE had never run for that access. Non-intersecting accesses in the same
+/// function still fold (surgical, per-access back-off). Two notes on soundness:
+///  - base-CSE never deletes, forwards, or reorders a memory access — every
+///    load/store is still issued in program order even when folded — so the
+///    exclusion enforces the documented re-materialization contract
+///    (`CompileConfig::volatile_segments`), not a value-caching hazard;
+///  - DYNAMIC-address accesses are never fold candidates in the first place
+///    (only a single-use compile-time-constant address folds), so an access
+///    that MIGHT hit a volatile range at runtime is always left verbatim by
+///    this pass — the conservative stance for statically-unknown addresses.
+fn plan_base_cse(
+    instructions: &[Instruction],
+    volatile: &[synth_core::backend::VolatileRange],
+) -> Option<BaseCsePlan> {
     use std::collections::HashMap;
     let mut const_val: HashMap<u32, i32> = HashMap::new();
     let mut uses: HashMap<u32, u32> = HashMap::new();
@@ -178,7 +214,9 @@ fn plan_base_cse(instructions: &[Instruction]) -> Option<BaseCsePlan> {
             && uses.get(&addr_vreg) == Some(&1)
         {
             let folded = (aval as i64) + (off as i64);
-            if (0..=0xFFF).contains(&folded) {
+            // #543 Phase 2: an access inside a marked volatile DMA window is
+            // NOT folded — it keeps its verbatim per-access codegen.
+            if (0..=0xFFF).contains(&folded) && !intersects_volatile(folded, volatile) {
                 plan.fold.insert(addr_vreg, folded as i32);
                 plan.skip_const.insert(addr_vreg);
             }
@@ -512,6 +550,14 @@ pub struct OptimizerBridge {
     /// `Some(_)` forces the lever on/off regardless of the environment (unit
     /// tests must not race on process-global env vars).
     spill_on_exhaust: Option<bool>,
+    /// #543 Phase 2: integrator-marked volatile linear-memory segments (the DMA
+    /// transfer window), threaded from `CompileConfig::volatile_segments`. The
+    /// address-caching levers consume it: base-CSE (#468) excludes any access
+    /// whose window intersects a marked range from its fold set (see
+    /// [`plan_base_cse`]), and const-CSE declines wholesale while any range is
+    /// marked (a constant cannot be classified address-vs-data at that level —
+    /// conservative v1). Empty (the default) ⇒ byte-identical behavior.
+    volatile_segments: Vec<synth_core::backend::VolatileRange>,
 }
 
 impl OptimizerBridge {
@@ -521,6 +567,7 @@ impl OptimizerBridge {
             config: OptimizationConfig::default(),
             num_imports: 0,
             spill_on_exhaust: None,
+            volatile_segments: Vec::new(),
         }
     }
 
@@ -530,12 +577,20 @@ impl OptimizerBridge {
             config,
             num_imports: 0,
             spill_on_exhaust: None,
+            volatile_segments: Vec::new(),
         }
     }
 
     /// Set the number of imported functions (see [`OptimizerBridge::num_imports`]).
     pub fn set_num_imports(&mut self, num_imports: u32) {
         self.num_imports = num_imports;
+    }
+
+    /// #543 Phase 2: thread the integrator-marked volatile DMA-window ranges
+    /// (`CompileConfig::volatile_segments`) to the address-caching levers — see
+    /// [`OptimizerBridge::volatile_segments`] for what consumes them.
+    pub fn set_volatile_segments(&mut self, ranges: Vec<synth_core::backend::VolatileRange>) {
+        self.volatile_segments = ranges;
     }
 
     /// Force the allocation-time spill-on-exhaustion lever on/off (tests only —
@@ -2731,8 +2786,12 @@ impl OptimizerBridge {
         // Opt-in (`SYNTH_BASE_CSE=1`) → off ⇒ byte-identical. The optimized path
         // is the ONLY caller of `ir_to_arm`, so this never reaches the relocatable
         // lowering (which already pins the base in `fp`).
+        // #543 Phase 2: the planner receives the integrator-marked volatile
+        // DMA ranges — an access inside a marked window is excluded from the
+        // fold set (it keeps its verbatim per-access materialize-and-access
+        // codegen), while accesses outside still fold.
         let base_cse: Option<BaseCsePlan> = if std::env::var("SYNTH_BASE_CSE").is_ok() {
-            plan_base_cse(instructions)
+            plan_base_cse(instructions, &self.volatile_segments)
         } else {
             None
         };
@@ -3083,7 +3142,18 @@ impl OptimizerBridge {
         // iteration — so it survives the many `continue` arms — and is reset at
         // every control-flow boundary, confining CSE to straight-line segments.
         // Opt-in `SYNTH_CONST_CSE=1`; off ⇒ byte-identical (no new state read).
-        let const_cse = std::env::var("SYNTH_CONST_CSE").is_ok();
+        //
+        // #543 Phase 2: const-CSE declines WHOLESALE while any volatile DMA
+        // range is marked. At this level a cached constant cannot be classified
+        // as address-vs-data (its uses — including memory-access bases with
+        // per-use immediate offsets — are not known at aliasing time), so the
+        // conservative stance for statically-unknown addressing is to decline
+        // every aliasing rewrite: each constant, address or not, is
+        // re-materialized at each occurrence, which is exactly the documented
+        // volatile contract (`CompileConfig::volatile_segments`). Empty ranges
+        // (the default) ⇒ unchanged behavior by construction.
+        let const_cse =
+            std::env::var("SYNTH_CONST_CSE").is_ok() && self.volatile_segments.is_empty();
         let mut reg_holds_const: HashMap<Reg, u32> = HashMap::new();
         let mut cse_seen_len = 0usize;
 
@@ -6257,7 +6327,7 @@ mod tests {
     #[test]
     fn plan_base_cse_folds_two_or_more_const_addr_stores() {
         let ir = const_addr_stores(&[(0, 11), (4, 22), (8, 33)]);
-        let plan = plan_base_cse(&ir).expect("activates with 3 foldable stores");
+        let plan = plan_base_cse(&ir, &[]).expect("activates with 3 foldable stores");
         assert_eq!(plan.fold.len(), 3);
         assert_eq!(plan.skip_const.len(), 3);
         // addr vreg 0 → folded immediate 0; vreg 2 → 4; vreg 4 → 8.
@@ -6269,7 +6339,105 @@ mod tests {
     #[test]
     fn plan_base_cse_declines_below_two_folds() {
         let ir = const_addr_stores(&[(0, 11)]);
-        assert_eq!(plan_base_cse(&ir), None);
+        assert_eq!(plan_base_cse(&ir, &[]), None);
+    }
+
+    /// #543 Phase 2: accesses inside a marked volatile DMA window are excluded
+    /// from the fold set; accesses outside the window still fold (surgical,
+    /// per-access back-off — not a whole-function decline).
+    #[test]
+    fn plan_base_cse_excludes_volatile_window_accesses_543() {
+        use synth_core::backend::VolatileRange;
+        // addr vregs: 0→0x100, 2→0x104 (window), 4→0x80, 6→0x84 (outside).
+        let ir = const_addr_stores(&[(0x100, 11), (0x104, 22), (0x80, 33), (0x84, 44)]);
+        let win = [VolatileRange {
+            base: 0x100,
+            len: 16,
+        }];
+        let plan = plan_base_cse(&ir, &win).expect("outside accesses still activate the plan");
+        assert_eq!(plan.fold.len(), 2, "only the two outside accesses fold");
+        assert_eq!(plan.fold.get(&4), Some(&0x80));
+        assert_eq!(plan.fold.get(&6), Some(&0x84));
+        assert!(
+            !plan.fold.contains_key(&0) && !plan.fold.contains_key(&2),
+            "window accesses must keep their verbatim per-access codegen"
+        );
+        assert!(!plan.skip_const.contains(&0) && !plan.skip_const.contains(&2));
+    }
+
+    /// #543 Phase 2: if the volatile exclusions leave fewer than two folds the
+    /// whole plan declines — byte-identical to base-CSE never running.
+    #[test]
+    fn plan_base_cse_declines_when_volatile_leaves_below_two_folds_543() {
+        use synth_core::backend::VolatileRange;
+        let ir = const_addr_stores(&[(0x100, 11), (0x104, 22), (0x80, 33)]);
+        let win = [VolatileRange {
+            base: 0x100,
+            len: 16,
+        }];
+        assert_eq!(plan_base_cse(&ir, &win), None);
+    }
+
+    /// #543 Phase 2: half-open range semantics of the intersection test, with
+    /// the conservative 4-byte access window.
+    #[test]
+    fn intersects_volatile_is_half_open_and_width_conservative_543() {
+        use synth_core::backend::VolatileRange;
+        let win = [VolatileRange {
+            base: 0x100,
+            len: 16,
+        }];
+        // Exactly at the window end [0x110,0x114): no intersection.
+        assert!(!intersects_volatile(0x110, &win));
+        // Last in-window byte address 0x10F: intersects.
+        assert!(intersects_volatile(0x10F, &win));
+        // [0xFC,0x100) ends exactly at the base: no intersection.
+        assert!(!intersects_volatile(0xFC, &win));
+        // [0xFD,0x101) straddles the base: intersects.
+        assert!(intersects_volatile(0xFD, &win));
+        // u32-boundary range must not wrap (i64 arithmetic).
+        let hi = [VolatileRange {
+            base: 0xFFFF_FFF0,
+            len: 0x10,
+        }];
+        assert!(intersects_volatile(0xFFFF_FFF4, &hi));
+        assert!(!intersects_volatile(0xFFFF_FFE0, &hi));
+    }
+
+    /// #543 Phase 2: the STATIC access offset participates in the intersection —
+    /// `i32.store offset=12 (i32.const 0xF8)` lands at 0x104, inside the window,
+    /// even though the const base 0xF8 is below it.
+    #[test]
+    fn plan_base_cse_volatile_check_includes_static_offset_543() {
+        use synth_core::backend::VolatileRange;
+        let mut ir = const_addr_stores(&[(0x80, 33), (0x84, 44)]);
+        // Const 0xF8 + access offset 12 → effective address 0x104.
+        ir.push(inst(Opcode::Const {
+            dest: vr(100),
+            value: 0xF8,
+        }));
+        ir.push(inst(Opcode::Const {
+            dest: vr(101),
+            value: 55,
+        }));
+        ir.push(inst(Opcode::MemStore {
+            src: vr(101),
+            addr: vr(100),
+            offset: 12,
+        }));
+        let win = [VolatileRange {
+            base: 0x100,
+            len: 16,
+        }];
+        let plan = plan_base_cse(&ir, &win).expect("the two outside accesses still fold");
+        assert_eq!(plan.fold.len(), 2);
+        assert!(
+            !plan.fold.contains_key(&100),
+            "offset-folded effective address 0x104 is in the window → excluded"
+        );
+        // Without the window the same access folds to 0x104.
+        let plan_free = plan_base_cse(&ir, &[]).expect("activates");
+        assert_eq!(plan_free.fold.get(&100), Some(&0x104));
     }
 
     #[test]
@@ -6282,7 +6450,7 @@ mod tests {
             val_false: vr(102),
             cond: vr(103),
         }));
-        assert_eq!(plan_base_cse(&ir), None);
+        assert_eq!(plan_base_cse(&ir, &[]), None);
     }
 
     #[test]
@@ -6294,7 +6462,7 @@ mod tests {
             cond: vr(100),
             target: 0,
         }));
-        assert_eq!(plan_base_cse(&ir), None);
+        assert_eq!(plan_base_cse(&ir, &[]), None);
     }
 
     #[test]
@@ -6303,7 +6471,7 @@ mod tests {
         // does NOT split control flow, so base-CSE still activates.
         let mut ir = const_addr_stores(&[(0, 11), (4, 22)]);
         ir.push(inst(Opcode::Label { id: 99 }));
-        let plan = plan_base_cse(&ir).expect("activates despite a structural label");
+        let plan = plan_base_cse(&ir, &[]).expect("activates despite a structural label");
         assert_eq!(plan.fold.len(), 2);
     }
 
@@ -6312,7 +6480,7 @@ mod tests {
         // 0x1000 + 0 exceeds the imm12 window → that access does not fold; with
         // only one other foldable store the function falls below threshold.
         let ir = const_addr_stores(&[(0x1000, 11), (4, 22)]);
-        let plan = plan_base_cse(&ir);
+        let plan = plan_base_cse(&ir, &[]);
         // Only the (4,22) store folds → 1 fold → below the ≥2 threshold → None.
         assert_eq!(plan, None);
     }
@@ -6346,7 +6514,7 @@ mod tests {
             }),
         ];
         // addr vreg 0 has use_count 2 → neither store folds → None.
-        assert_eq!(plan_base_cse(&ir), None);
+        assert_eq!(plan_base_cse(&ir, &[]), None);
     }
 
     #[test]
@@ -6380,7 +6548,7 @@ mod tests {
                 offset: 32,
             }),
         ];
-        let plan = plan_base_cse(&ir).expect("activates");
+        let plan = plan_base_cse(&ir, &[]).expect("activates");
         assert_eq!(plan.fold.get(&0), Some(&16)); // 0 + 16
         assert_eq!(plan.fold.get(&2), Some(&32)); // 0 + 32
     }

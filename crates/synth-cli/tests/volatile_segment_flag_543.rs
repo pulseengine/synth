@@ -1,20 +1,22 @@
 //! #543 Phase 1 — `--volatile-segment <base>:<len>` CLI flag: acceptance,
 //! rejection, and INERTNESS.
 //!
-//! Phase 1 is FLAG + PLUMBING + TRACEABILITY only — the marked DMA-window ranges
-//! are parsed into `CompileConfig.volatile_segments` and threaded to codegen, but
-//! NOT yet consumed by any pass. The codegen back-off (const-CSE + the #468
-//! base-CSE declining inside a marked range) is the gated Phase 2.
+//! Phase 1 was FLAG + PLUMBING + TRACEABILITY — the marked DMA-window ranges
+//! are parsed into `CompileConfig.volatile_segments` and threaded to codegen.
+//! Phase 2 (LANDED — `volatile_segment_phase2_543.rs`) is the codegen back-off:
+//! the #468 base-CSE excludes accesses inside a marked range from its fold set
+//! and const-CSE declines wholesale while any range is marked.
 //!
-//! The load-bearing Phase-1 claim is therefore INERTNESS *even when the flag is
-//! set*: compiling WITH `--volatile-segment` must produce byte-identical `.text`
-//! to compiling WITHOUT it. `frozen_codegen_bytes.rs` only proves the flag-OFF
+//! Both consuming levers are OPT-IN env flags (`SYNTH_BASE_CSE` /
+//! `SYNTH_CONST_CSE`), so the load-bearing claim locked HERE survives Phase 2:
+//! on the DEFAULT configuration, compiling WITH `--volatile-segment` must
+//! produce byte-identical `.text` to compiling WITHOUT it (the ranges are
+//! consumed vacuously). `frozen_codegen_bytes.rs` only proves the flag-OFF
 //! bytes are unchanged (trivially true for an empty default); this test proves
 //! the stronger promise. Value-level parsing correctness (base/len, malformed →
 //! error) is unit-tested in `main.rs::tests` (`volatile_segment_*_543`).
 //!
-//! Traceability: rivet `VCR-DMA-001` (status `proposed`), gale decision
-//! `DD-DMA-REGION-001`.
+//! Traceability: rivet `VCR-DMA-001`, gale decision `DD-DMA-REGION-001`.
 
 use object::{Object, ObjectSection};
 use std::process::Command;
@@ -108,9 +110,12 @@ fn volatile_segment_flag_rejects_garbage_543() {
     );
 }
 
-/// INERTNESS: compiling WITH the flag is `.text`-byte-identical to compiling
-/// WITHOUT it. This is the Phase-1 frozen-safe contract — the ranges are parsed
-/// and threaded but no pass consumes them yet, so no emitted byte moves.
+/// INERTNESS on the DEFAULT configuration: compiling WITH the flag is
+/// `.text`-byte-identical to compiling WITHOUT it. Post-Phase-2 this still
+/// holds because the consuming levers (base-CSE / const-CSE) are opt-in env
+/// flags that are unset here — the ranges are consumed vacuously. The
+/// byte-CHANGING behavior under `SYNTH_BASE_CSE`/`SYNTH_CONST_CSE` is locked
+/// in `volatile_segment_phase2_543.rs`.
 #[test]
 fn volatile_segment_flag_is_byte_inert_543() {
     let without = compile_text(FIXTURE, "inert_without", &[])
@@ -123,7 +128,8 @@ fn volatile_segment_flag_is_byte_inert_543() {
     .expect("compile with flag must succeed");
     assert_eq!(
         without, with,
-        "#543 Phase 1 must be inert: --volatile-segment changed the emitted .text \
-         (that back-off is the GATED Phase 2, not Phase 1)"
+        "#543: --volatile-segment changed the emitted .text on the DEFAULT \
+         configuration — the back-off must only fire under the opt-in \
+         SYNTH_BASE_CSE / SYNTH_CONST_CSE levers"
     );
 }
