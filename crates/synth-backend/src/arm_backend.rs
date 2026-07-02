@@ -632,19 +632,25 @@ fn compile_wasm_to_arm(
         arm_instrs
     };
 
-    // VCR-RA-001 spill re-choice spike (#242): slot-value forwarding BETWEEN
-    // reloads. `forward_stack_reloads` (above) forwards only from a spill
-    // store's SOURCE register, so when register pressure clobbers that source
-    // — the genuine-spill case, flat_flight's peak-11 hot segment — its
-    // reloads survive. This pass tracks which registers provably still hold a
-    // frame slot's value (through earlier reloads and reg-reg moves) and turns
-    // reload #2..#n into a 1-cycle `mov` (or deletes it when the target
-    // already holds the value). A forwarded reload can leave the feeding
+    // VCR-RA-001 spill re-choice (#242), two stages behind one flag.
+    // Stage 1 (the #569 spike): slot-value forwarding BETWEEN reloads.
+    // `forward_stack_reloads` (above) forwards only from a spill store's
+    // SOURCE register, so when register pressure clobbers that source its
+    // reloads survive; this stage tracks which registers provably still hold
+    // a frame slot's value (through earlier reloads and reg-reg moves) and
+    // turns reload #2..#n into a 1-cycle `mov` (or deletes it when the target
+    // already holds the value). Stage 2 (the Belady re-choice): where NO
+    // register still holds the value — the genuine-spill case, flat_flight's
+    // peak-11 hot segment — the value was usually evicted while a dead
+    // register existed; the clobbering def(s) are renamed onto a provably-dead
+    // register (`spill_rechoice_segment`) so the value stays resident and the
+    // reload dissolves outright. A dissolved reload can leave the feeding
     // store dead, so the frame-slot DCE sweep runs once more behind the same
-    // flag. Per-segment commit gates: never grows, and post-transform peak
-    // value pressure must fit the R0–R8 pool or not exceed the pre-transform
-    // peak (see `apply_spill_realloc`). Flag-off (`SYNTH_SPILL_REALLOC=1`)
-    // while differential-validated; off ⇒ byte-identical.
+    // flag. Per-segment commit gates: executable same-value-flow trace
+    // equality, strict shrink, pool-pressure fit, sub-word/unknown-slot
+    // conservatism (see `apply_spill_realloc` / `spill_rechoice_segment`).
+    // Flag-off (`SYNTH_SPILL_REALLOC=1`) while differential-validated;
+    // off ⇒ byte-identical.
     let arm_instrs = if std::env::var("SYNTH_SPILL_REALLOC").is_ok() {
         let (out, n) = synth_synthesis::liveness::apply_spill_realloc(&arm_instrs);
         let (out, d) = synth_synthesis::liveness::eliminate_dead_frame_stores(&out);

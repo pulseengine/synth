@@ -3898,17 +3898,37 @@ fn extending_alias_hoist(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
 //     the measured headroom the full VCR-RA-001 spill-choice rewrite can
 //     recover. Pure analysis; wired behind `SYNTH_SPILL_REPORT=1`.
 //
-//  2. REWRITE (the simplest strictly-profitable case): [`apply_spill_realloc`]
-//     — slot-value forwarding *between reloads*. Where a `ldr rZ,[sp,#N]`
-//     reloads a value PROVABLY still register-resident (an earlier reload /
-//     store / reg-reg move of the same slot value survives unclobbered), the
-//     reload is replaced by `mov rZ,rY` — or DELETED outright when `rZ`
-//     itself still holds it. Every rewritten reload is one fewer load
-//     executed. This is exactly the case [`forward_stack_reloads`] misses:
-//     that pass forwards only from the STORE's source register, so when
-//     pressure clobbers the source (the real-spill case this spike targets),
-//     its reloads survive — but reload #2..#n can still forward from reload
-//     #1. Flag-off (`SYNTH_SPILL_REALLOC=1`); off ⇒ byte-identical.
+//  2. REWRITE stage 1 (the simplest strictly-profitable case):
+//     [`spill_forward_segment`] — slot-value forwarding *between reloads*.
+//     Where a `ldr rZ,[sp,#N]` reloads a value PROVABLY still
+//     register-resident (an earlier reload / store / reg-reg move of the same
+//     slot value survives unclobbered), the reload is replaced by
+//     `mov rZ,rY` — or DELETED outright when `rZ` itself still holds it.
+//     Every rewritten reload is one fewer load executed. This is exactly the
+//     case [`forward_stack_reloads`] misses: that pass forwards only from the
+//     STORE's source register, so when pressure clobbers the source (the
+//     real-spill case this spike targets), its reloads survive — but reload
+//     #2..#n can still forward from reload #1.
+//
+//  3. REWRITE stage 2 (the Belady re-choice, successor to the spike):
+//     [`spill_rechoice_segment`] — where NO register still holds the slot's
+//     value at the reload (stage 1's decline case; flat_flight's 3 surviving
+//     pairs), the value was evicted not because the pool was full but because
+//     the greedy lowering re-used the HOLDING register for an unrelated value
+//     while a free register existed — exactly the choice the Belady
+//     (farthest-next-use) MIN plan from [`spill_choice_report`] avoids. The
+//     rewrite makes the spilled value stay register-resident by RENAMING each
+//     in-window kill-def of the holder (def + every use, via [`rewrite_op`])
+//     onto a register that is provably dead across that def's live range,
+//     then deleting the reload (or folding it to a `mov` when it targets a
+//     different register). Committed per segment only under the guards
+//     spelled out on [`spill_rechoice_segment`], the load-bearing one being
+//     an executable same-value-flow check: the rewritten segment's symbolic
+//     value trace ([`segment_value_trace`]) must be identical to the
+//     original's, including exit register and frame-slot state.
+//
+//  Both rewrite stages share one flag (`SYNTH_SPILL_REALLOC=1`, stage 2 runs
+//  on stage 1's output); off ⇒ byte-identical.
 
 /// Registers never tracked as slot-value holders and never counted as pool
 /// values: R9 (globals) / R10 (mem-size) / R11 (mem-base) are reserved, R12 is
@@ -3965,7 +3985,10 @@ fn sp_slot(addr: &MemAddr) -> Option<i32> {
 ///      already-saturated segment (flat_flight's peak 11) it never makes the
 ///      saturation worse.
 ///
-/// Returns the rewritten stream and the number of reloads forwarded/deleted.
+/// Returns the rewritten stream and the number of reloads
+/// forwarded/eliminated across both stages (stage 1 forwarding + stage 2
+/// Belady re-choice, see the module block above — stage 2 runs on stage 1's
+/// output, same flag).
 /// Pure; callers opt in (`SYNTH_SPILL_REALLOC=1` wiring in `arm_backend.rs`).
 pub fn apply_spill_realloc(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
     let mut out: Vec<ArmInstruction> = Vec::with_capacity(instrs.len());
@@ -3976,12 +3999,21 @@ pub fn apply_spill_realloc(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, u
             if seg.is_empty() {
                 return;
             }
-            match spill_forward_segment(seg) {
-                Some((rewritten, n)) => {
-                    *total += n;
-                    out.extend(rewritten);
-                }
-                None => out.append(seg),
+            // Stage 1: slot-value forwarding between reloads.
+            let (mut cur, mut n) = match spill_forward_segment(seg) {
+                Some((rewritten, n)) => (rewritten, n),
+                None => (seg.clone(), 0),
+            };
+            // Stage 2: Belady spill-plan re-choice on the surviving reloads.
+            if let Some((rewritten, m)) = spill_rechoice_segment(&cur) {
+                cur = rewritten;
+                n += m;
+            }
+            if n > 0 {
+                *total += n;
+                out.extend(cur);
+            } else {
+                out.append(seg); // nothing fired: keep the original bytes
             }
             seg.clear();
         };
@@ -4140,6 +4172,402 @@ fn spill_forward_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>,
         return None;
     }
     Some((rewritten, staged.len()))
+}
+
+/// Symbolic value trace of one straight-line segment — the executable
+/// same-value-flow oracle behind stage 2's guard (a).
+///
+/// Registers and word frame slots are dissolved into abstract VALUE ids
+/// (birth order: lazily on first read for segment inputs, per def otherwise).
+/// Pure value plumbing produces NO event and births no value: a word
+/// `str [sp,#N]` binds the slot to its source's value, a word `ldr [sp,#N]`
+/// re-binds the target register to the slot's value, and a plain `mov rd,rm`
+/// copies value identity. Every other modeled op emits one event: the VALUES
+/// it reads (in [`reg_effect`] order) and how many values it births. Two
+/// streams with equal traces and equal exit register/slot maps compute the
+/// same values everywhere and leave the machine in the same state — register
+/// names are exactly what is quotiented out, which is what a spill-plan
+/// rewrite changes and nothing more.
+#[derive(Debug, PartialEq, Eq)]
+struct SegmentTrace {
+    /// Per observable op: (value ids read, number of values defined).
+    events: Vec<(Vec<usize>, usize)>,
+    /// Register → value id at segment exit.
+    exit_regs: BTreeMap<Reg, usize>,
+    /// Word frame slot → value id at segment exit.
+    exit_slots: BTreeMap<i32, usize>,
+}
+
+/// Compute the [`SegmentTrace`] of a straight-line segment, or `None` if the
+/// segment cannot be traced soundly. The `None` cases double as stage 2's
+/// guard (d) — the #483-class conservatism inherited from the frame-slot DCE:
+/// any sub-word (`ldrb`/`ldrh`/…) or register-offset `[sp]` access, and any
+/// reload from a slot whose value is unknown (written outside the segment or
+/// invalidated by an SP move) disqualify the segment.
+fn segment_value_trace(seg: &[ArmInstruction]) -> Option<SegmentTrace> {
+    let mut current: BTreeMap<Reg, usize> = BTreeMap::new(); // reg → value id
+    let mut slots: BTreeMap<i32, usize> = BTreeMap::new(); // slot → value id
+    let mut n_values = 0usize;
+    let mut events: Vec<(Vec<usize>, usize)> = Vec::new();
+
+    fn read(r: Reg, current: &mut BTreeMap<Reg, usize>, n: &mut usize) -> usize {
+        *current.entry(r).or_insert_with(|| {
+            let v = *n; // segment input: born on first read
+            *n += 1;
+            v
+        })
+    }
+
+    for ins in seg {
+        match &ins.op {
+            // Word spill store to a pinnable slot: value plumbing, no event.
+            ArmOp::Str { rd, addr } if sp_slot(addr).is_some() => {
+                let v = read(*rd, &mut current, &mut n_values);
+                slots.insert(sp_slot(addr).unwrap(), v);
+            }
+            // Word spill reload: the slot's value must be known — an unknown
+            // slot (guard d) makes the segment untraceable.
+            ArmOp::Ldr { rd, addr } if sp_slot(addr).is_some() => {
+                let v = *slots.get(&sp_slot(addr).unwrap())?;
+                current.insert(*rd, v);
+            }
+            // Plain register move: value identity copy, no event. (The
+            // flag-setting compare/arith forms are distinct ops and take the
+            // generic arm, so flag effects are never dissolved.)
+            ArmOp::Mov {
+                rd,
+                op2: Operand2::Reg(rm),
+            } => {
+                let v = read(*rm, &mut current, &mut n_values);
+                current.insert(*rd, v);
+            }
+            op => {
+                // Guard (d): sub-word or register-offset frame access.
+                match op {
+                    ArmOp::Ldr { addr, .. } | ArmOp::Str { addr, .. } if addr.base == Reg::SP => {
+                        return None; // register-offset [sp] (word forms with
+                        // an immediate slot matched above)
+                    }
+                    ArmOp::Ldrb { addr, .. }
+                    | ArmOp::Ldrsb { addr, .. }
+                    | ArmOp::Ldrh { addr, .. }
+                    | ArmOp::Ldrsh { addr, .. }
+                    | ArmOp::Strb { addr, .. }
+                    | ArmOp::Strh { addr, .. }
+                        if addr.base == Reg::SP =>
+                    {
+                        return None; // sub-word frame access (#483-class)
+                    }
+                    // SP moves + stack memory touched: slot names invalidated.
+                    ArmOp::Push { .. } | ArmOp::Pop { .. } => slots.clear(),
+                    _ => {}
+                }
+                let eff = reg_effect(op)?;
+                let uses: Vec<usize> = eff
+                    .uses
+                    .iter()
+                    .map(|u| read(*u, &mut current, &mut n_values))
+                    .collect();
+                events.push((uses, eff.defs.len()));
+                if eff.defs.contains(&Reg::SP) {
+                    slots.clear();
+                }
+                for d in &eff.defs {
+                    let v = n_values;
+                    n_values += 1;
+                    current.insert(*d, v);
+                }
+            }
+        }
+    }
+    Some(SegmentTrace {
+        events,
+        exit_regs: current,
+        exit_slots: slots,
+    })
+}
+
+/// Peak simultaneous VALUE pressure counting only values homed in the
+/// allocatable R0–R8 pool — [`straight_line_peak_pressure`] restricted to the
+/// registers that actually compete for spill slots (R9–R12/SP/LR/PC values are
+/// reserved-resident and never candidates). Stage 2's guard (c) metric.
+fn pool_peak_pressure(instrs: &[ArmInstruction]) -> Option<usize> {
+    let pool = hoist_pool();
+    let n = instrs.len();
+    let mut current: BTreeMap<Reg, usize> = BTreeMap::new();
+    let mut def_at: Vec<usize> = Vec::new();
+    let mut last_use: Vec<usize> = Vec::new();
+    for (i, ins) in instrs.iter().enumerate() {
+        if !is_straight_line(&ins.op) {
+            return None;
+        }
+        let eff = reg_effect(&ins.op)?;
+        for u in &eff.uses {
+            if !pool.contains(u) {
+                continue;
+            }
+            let vid = *current.entry(*u).or_insert_with(|| {
+                def_at.push(0);
+                last_use.push(0);
+                def_at.len() - 1
+            });
+            last_use[vid] = i;
+        }
+        for d in &eff.defs {
+            if !pool.contains(d) {
+                continue;
+            }
+            def_at.push(i);
+            last_use.push(i);
+            current.insert(*d, def_at.len() - 1);
+        }
+    }
+    let mut delta = vec![0i32; n + 1];
+    for vid in 0..def_at.len() {
+        let (d, l) = (def_at[vid], last_use[vid]);
+        if l > d {
+            delta[d] += 1;
+            delta[l] -= 1;
+        }
+    }
+    let (mut cur, mut peak) = (0i32, 0i32);
+    for d in delta.iter().take(n) {
+        cur += *d;
+        peak = peak.max(cur);
+    }
+    Some(peak as usize)
+}
+
+/// A surviving spill pair stage 2 attempts to dissolve: `str holder,[sp,#slot]`
+/// at `store`, next word reload of the same slot at `load` into `rd`, with no
+/// intervening store to the slot and no SP event in between.
+struct SpillPair {
+    store: usize,
+    load: usize,
+    holder: Reg,
+    rd: Reg,
+}
+
+/// Collect the candidate spill pairs of a segment, in stream order.
+fn collect_spill_pairs(seg: &[ArmInstruction]) -> Vec<SpillPair> {
+    let mut live_stores: BTreeMap<i32, (usize, Reg)> = BTreeMap::new();
+    let mut pairs = Vec::new();
+    for (i, ins) in seg.iter().enumerate() {
+        match &ins.op {
+            ArmOp::Str { rd, addr } if sp_slot(addr).is_some() => {
+                let slot = sp_slot(addr).unwrap();
+                if is_reserved_reg(*rd) {
+                    live_stores.remove(&slot);
+                } else {
+                    live_stores.insert(slot, (i, *rd));
+                }
+            }
+            ArmOp::Ldr { rd, addr } if sp_slot(addr).is_some() => {
+                let slot = sp_slot(addr).unwrap();
+                if let Some(&(store, holder)) = live_stores.get(&slot)
+                    && !is_reserved_reg(*rd)
+                {
+                    pairs.push(SpillPair {
+                        store,
+                        load: i,
+                        holder,
+                        rd: *rd,
+                    });
+                }
+            }
+            op => {
+                // Any event that invalidates slot addressing kills the map.
+                let sp_event = match op {
+                    ArmOp::Push { .. } | ArmOp::Pop { .. } => true,
+                    _ => reg_effect(op).is_none_or(|e| e.defs.contains(&Reg::SP)),
+                };
+                if sp_event {
+                    live_stores.clear();
+                }
+            }
+        }
+    }
+    pairs
+}
+
+/// Rename the kill-def of `r` at position `k` in `scratch` — the def AND every
+/// read of that def, via [`rewrite_op`] — onto a register that is provably
+/// dead across the def's live range. Returns `None` (scratch may be partially
+/// edited; the caller works on a throwaway clone) if no such register exists
+/// or the ops cannot be renamed (single-field RMW like `Movt`/`SelectMove`).
+///
+/// Deadness proof for the target `t`, all within the segment:
+///  - `t` is untouched (no def, no use) at every position in `(k, q]` and not
+///    read or co-defined at `k` itself, where `q` is the last read of the
+///    renamed def — so the rename cannot clobber or misread a live value;
+///  - the FIRST op touching `t` after `q` is a pure def of `t` (`t` ∉ its
+///    uses), and such a def EXISTS in the segment — so `t`'s incoming value is
+///    dead at `k` (never read again) and `t`'s exit value is that later def's,
+///    unchanged by the rename. A `t` never touched again could be live-out:
+///    rejected.
+fn rename_kill_def(scratch: &mut [ArmInstruction], k: usize, r: Reg) -> Option<()> {
+    // The def's live range: reads of `r` strictly after `k`, up to and
+    // including any reads AT the next def of `r` (operands are consumed
+    // before the write). No next def in the segment ⇒ the value may be
+    // live-out in `r` ⇒ renaming would change exit state ⇒ decline.
+    let mut uses: Vec<usize> = Vec::new();
+    let mut next_def: Option<usize> = None;
+    for (i, ins) in scratch.iter().enumerate().skip(k + 1) {
+        let eff = reg_effect(&ins.op)?;
+        if eff.uses.contains(&r) {
+            uses.push(i);
+        }
+        if eff.defs.contains(&r) {
+            next_def = Some(i);
+            break;
+        }
+    }
+    next_def?;
+    let q = uses.last().copied().unwrap_or(k);
+
+    let target = hoist_pool().into_iter().find(|&t| {
+        if t == r {
+            return false;
+        }
+        // Untouched over [k, q] (at k: not read, not co-defined).
+        for (i, ins) in scratch.iter().enumerate().take(q + 1).skip(k) {
+            let Some(eff) = reg_effect(&ins.op) else {
+                return false;
+            };
+            if eff.uses.contains(&t) || (eff.defs.contains(&t) && i != k) {
+                return false;
+            }
+            if i == k && eff.defs.contains(&t) {
+                return false; // multi-def op already defines t (e.g. Umull)
+            }
+        }
+        // First touch after q must be a pure in-segment def.
+        for ins in &scratch[q + 1..] {
+            let Some(eff) = reg_effect(&ins.op) else {
+                return false;
+            };
+            if eff.uses.contains(&t) {
+                return false; // read first → t's value is live
+            }
+            if eff.defs.contains(&t) {
+                return true; // pure redefinition → dead in between
+            }
+        }
+        false // never touched again → possibly live-out → decline
+    })?;
+
+    let rename: BTreeMap<Reg, Reg> = [(r, target)].into_iter().collect();
+    let empty: BTreeMap<Reg, Reg> = BTreeMap::new();
+    scratch[k].op = rewrite_op(&scratch[k].op, &empty, &rename)?;
+    for &i in &uses {
+        scratch[i].op = rewrite_op(&scratch[i].op, &rename, &empty)?;
+    }
+    Some(())
+}
+
+/// Attempt to dissolve one spill pair on a throwaway clone of the segment:
+/// rename every kill-def of the holder inside the window, then delete the
+/// reload (or fold it to `mov rd,holder` when it targets another register).
+/// `None` ⇒ some kill-def could not be renamed; caller keeps the input.
+fn dissolve_spill_pair(seg: &[ArmInstruction], pair: &SpillPair) -> Option<Vec<ArmInstruction>> {
+    let mut scratch = seg.to_vec();
+    // Rename kill-defs left to right; each rename removes that def of the
+    // holder, so re-scanning always terminates.
+    let mut i = pair.store + 1;
+    while i < pair.load {
+        let eff = reg_effect(&scratch[i].op)?;
+        if eff.defs.contains(&pair.holder) {
+            rename_kill_def(&mut scratch, i, pair.holder)?;
+        }
+        i += 1;
+    }
+    if pair.rd == pair.holder {
+        scratch.remove(pair.load); // the reload is a proven no-op
+    } else {
+        scratch[pair.load].op = ArmOp::Mov {
+            rd: pair.rd,
+            op2: Operand2::Reg(pair.holder),
+        };
+    }
+    Some(scratch)
+}
+
+/// VCR-RA-001 stage 2 — the Belady spill-plan re-choice (#242). Where the
+/// [`spill_choice_report`] shows the farthest-next-use (Belady MIN) allocation
+/// needs strictly less frame traffic than the segment executes, rewrite the
+/// segment's spill placement toward that plan: each surviving reload whose
+/// value was evicted only because the greedy lowering re-used the holding
+/// register while a provably-dead register existed is dissolved by renaming
+/// the clobbering def(s) onto that register ([`rename_kill_def`]) and deleting
+/// the reload. Register assignments stay within the R0–R8 pool; the frame
+/// never grows (no slot is added — freed slots are simply left to the
+/// flag-shared dead-store sweep).
+///
+/// COMMIT GATES — the segment keeps its original bytes unless ALL hold:
+///  (a) same value flow: the rewritten segment's [`segment_value_trace`] —
+///      every op reads the same VALUES, exit register and slot state
+///      identical — must equal the original's (executable, not by-argument);
+///  (b) the segment must net strictly FEWER instructions and a strictly
+///      smaller estimated byte size (a `mov`-only fold that nets ≥0
+///      instructions is discarded), so a fired segment always shrinks and the
+///      function can never grow flag-on;
+///  (c) post-transform pool-value pressure ≤ the R0–R8 pool
+///      ([`pool_peak_pressure`]) — the re-chosen residency must actually fit;
+///  (d) sub-word or register-offset `[sp]` accesses and reloads from unknown
+///      slots disqualify the whole segment (inside [`segment_value_trace`],
+///      the #483-class conservatism).
+///
+/// Returns `Some((rewritten, reloads_dissolved))` or `None` to keep the input.
+fn spill_rechoice_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>, usize)> {
+    use crate::optimizer_bridge::estimate_arm_byte_size;
+    // Cheap prefilter: nothing to re-choose without a word [sp,#N] reload.
+    if !seg
+        .iter()
+        .any(|ins| matches!(&ins.op, ArmOp::Ldr { addr, .. } if sp_slot(addr).is_some()))
+    {
+        return None;
+    }
+    // Guard (d) + baseline for guard (a).
+    let baseline = segment_value_trace(seg)?;
+    // Only segments where the Belady MIN plan beats the executed traffic.
+    let report = segment_spill_choice(seg, ALLOCATABLE_POOL, 0)?;
+    if report.belady_reloads + report.belady_spill_stores
+        >= report.actual_reloads + report.actual_spill_stores
+    {
+        return None;
+    }
+
+    let pairs = collect_spill_pairs(seg);
+    let mut cur = seg.to_vec();
+    let mut dissolved = 0usize;
+    // Back to front: deleting a reload only shifts positions after it, so
+    // earlier pairs' recorded positions stay valid.
+    for pair in pairs.iter().rev() {
+        if let Some(candidate) = dissolve_spill_pair(&cur, pair)
+            // Guard (a), per pair: value flow provably unchanged.
+            && segment_value_trace(&candidate).as_ref() == Some(&baseline)
+        {
+            cur = candidate;
+            dissolved += 1;
+        }
+    }
+    if dissolved == 0 {
+        return None;
+    }
+    // Guard (b): strictly fewer instructions AND strictly smaller bytes.
+    let bytes = |s: &[ArmInstruction]| {
+        s.iter()
+            .map(|i| estimate_arm_byte_size(&i.op))
+            .sum::<usize>()
+    };
+    if cur.len() >= seg.len() || bytes(&cur) >= bytes(seg) {
+        return None;
+    }
+    // Guard (c): the re-chosen residency fits the pool.
+    if pool_peak_pressure(&cur)? > ALLOCATABLE_POOL {
+        return None;
+    }
+    Some((cur, dissolved))
 }
 
 /// Per-segment greedy-vs-Belady spill-choice report — the REPORT half of the
@@ -9954,6 +10382,161 @@ mod tests {
             "saturated segment (pre-peak {pre}) must be declined by the pressure gate"
         );
         assert_eq!(out, fat, "declined segment keeps its original bytes");
+    }
+
+    // ---- VCR-RA-001 stage 2: Belady spill-plan re-choice (#242) -------------
+
+    /// The flat_flight shape stage 1 cannot touch: the greedy lowering re-used
+    /// the HOLDING register for an unrelated constant while a provably-dead
+    /// register existed. Stage 2 renames the clobbering def (and its use) onto
+    /// the dead register and deletes the reload outright.
+    #[test]
+    fn spill_rechoice_renames_clobberer_and_deletes_reload_242() {
+        let seq = vec![
+            sp_str(Reg::R2, 8), // v (segment input in r2) spilled
+            movw(Reg::R2, 20),  // kill-def: holder re-used for a constant
+            ins(ArmOp::Mul {
+                rd: Reg::R3,
+                rn: Reg::R3,
+                rm: Reg::R2,
+            }), // the constant's only use
+            sp_ldr(Reg::R2, 8), // reload of v — no surviving holder
+            add3(Reg::R0, Reg::R2, Reg::R3), // v used; also r0's pure def
+        ];
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 1, "the reload dissolves via re-choice");
+        assert_eq!(out.len(), seq.len() - 1, "reload deleted, renames 1-for-1");
+        assert_eq!(
+            out[1].op,
+            ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 20
+            },
+            "the clobbering def is renamed onto the dead register (r0: first \
+             touch after its range is r0's pure def at the tail add)"
+        );
+        assert_eq!(
+            out[2].op,
+            ArmOp::Mul {
+                rd: Reg::R3,
+                rn: Reg::R3,
+                rm: Reg::R0,
+            },
+            "the renamed def's use follows it"
+        );
+        assert!(
+            !out.iter()
+                .any(|i| matches!(&i.op, ArmOp::Ldr { addr, .. } if addr.base == Reg::SP)),
+            "no frame reload remains"
+        );
+    }
+
+    /// No provably-dead register across the clobber window ⇒ the re-choice
+    /// declines (every candidate's first touch after the window is a READ).
+    #[test]
+    fn spill_rechoice_declines_when_no_register_is_dead_242() {
+        let mut seq = vec![
+            sp_str(Reg::R0, 0),
+            movw(Reg::R0, 7), // kill-def
+            ins(ArmOp::Mul {
+                rd: Reg::R1,
+                rn: Reg::R1,
+                rm: Reg::R0,
+            }), // use (r1 touched inside the window too)
+            sp_ldr(Reg::R0, 0),
+        ];
+        // Every remaining pool candidate is read first after the window.
+        for t in [
+            Reg::R2,
+            Reg::R3,
+            Reg::R4,
+            Reg::R5,
+            Reg::R6,
+            Reg::R7,
+            Reg::R8,
+        ] {
+            seq.push(add3(t, t, Reg::R0));
+        }
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 0, "no dead register → the pair must decline");
+        assert_eq!(out, seq, "declined segment keeps its original bytes");
+    }
+
+    /// Guard (d): a sub-word frame access disqualifies the whole segment
+    /// (the #483-class conservatism — slot identity is word-granular).
+    #[test]
+    fn spill_rechoice_declines_subword_frame_access_242() {
+        let seq = vec![
+            sp_str(Reg::R2, 8),
+            movw(Reg::R2, 20),
+            ins(ArmOp::Mul {
+                rd: Reg::R3,
+                rn: Reg::R3,
+                rm: Reg::R2,
+            }),
+            ins(ArmOp::Ldrb {
+                rd: Reg::R5,
+                addr: crate::rules::MemAddr {
+                    base: Reg::SP,
+                    offset: 16,
+                    offset_reg: None,
+                },
+            }), // sub-word [sp] access
+            sp_ldr(Reg::R2, 8),
+            add3(Reg::R0, Reg::R2, Reg::R3),
+        ];
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 0, "sub-word frame access must disqualify the segment");
+        assert_eq!(out, seq);
+    }
+
+    /// A single-field RMW clobberer (`movt` writes AND reads rd) cannot be
+    /// renamed — `rewrite_op` declines the disagreeing def/use maps.
+    #[test]
+    fn spill_rechoice_declines_rmw_clobberer_242() {
+        let seq = vec![
+            sp_str(Reg::R2, 0),
+            ins(ArmOp::Movt {
+                rd: Reg::R2,
+                imm16: 5,
+            }), // kill-def that also READS r2
+            sp_ldr(Reg::R2, 0),
+            add3(Reg::R0, Reg::R2, Reg::R2),
+        ];
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 0, "an RMW clobberer cannot be renamed away");
+        assert_eq!(out, seq);
+    }
+
+    /// The clobbering def's value may be live-out (no later def of the holder
+    /// in the segment) — renaming would change exit state ⇒ decline.
+    #[test]
+    fn spill_rechoice_declines_liveout_clobberer_242() {
+        let seq = vec![
+            sp_str(Reg::R0, 0),
+            movw(Reg::R0, 7), // kill-def; r0 never redefined in the segment
+            sp_ldr(Reg::R1, 0),
+            add3(Reg::R2, Reg::R1, Reg::R0),
+        ];
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 0, "possibly-live-out clobberer must decline");
+        assert_eq!(out, seq);
+    }
+
+    /// Guard (b): a reload folded to `mov rd,holder` (rd ≠ holder) nets zero
+    /// instructions — a segment that does not strictly shrink is discarded.
+    #[test]
+    fn spill_rechoice_discards_count_neutral_mov_fold_242() {
+        let seq = vec![
+            sp_str(Reg::R2, 0),
+            movw(Reg::R2, 9),
+            add3(Reg::R3, Reg::R2, Reg::R2),
+            sp_ldr(Reg::R5, 0), // rd ≠ holder → would fold to mov r5,r2
+            add3(Reg::R0, Reg::R5, Reg::R5),
+        ];
+        let (out, n) = apply_spill_realloc(&seq);
+        assert_eq!(n, 0, "count-neutral rewrite must be discarded (guard b)");
+        assert_eq!(out, seq);
     }
 
     /// Belady report: the double-reload trace needs ZERO frame traffic with the
