@@ -634,6 +634,251 @@ pub fn eliminate_dead_frame_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruc
     (kept, dead.len())
 }
 
+/// VCR-RA whole-function frame-slot liveness (#242, VCR-RA-001): remove a
+/// `str rX, [sp, #N]` whose slot is provably never READ anywhere the store can
+/// reach — including the reach-end case [`eliminate_dead_frame_stores`]
+/// deliberately keeps. That pass proves deadness only via a later same-slot
+/// overwrite on a straight line ("reach-end ≠ dead" — the #515 stance, because
+/// segment-local reasoning cannot see past its scope). This pass supplies the
+/// missing whole-function view: it walks every path the store can reach
+/// (fall-through + label/branch edges, loops included) and drops the store only
+/// when NO reachable instruction can observe the slot's bytes. flat_flight's
+/// two surviving spill stores (#576) are exactly this shape — their slots are
+/// never loaded again anywhere in the function.
+///
+/// ADMISSION (whole function declines — returns the input unchanged — on the
+/// first violation; per-slot precision is never traded for soundness):
+///  - any sp-relative access with a REGISTER offset (`[sp, rM]`): the touched
+///    slot is unresolvable, so every slot would have to be assumed live;
+///  - SP used as a general operand (`add rD, sp, #x`, `mov rD, sp`,
+///    `[rN, sp]`, …): the frame address ESCAPES into a register, and a later
+///    plain `ldr [rD]` could read any slot invisibly;
+///  - SP redefined by anything other than the tracked shapes (`add/sub
+///    sp, sp, #imm`, `Push`, `Pop`): the frame geometry becomes untrackable;
+///  - a call (`Bl`/`Blx`/`Call`/`CallIndirect`): a callee may read an outgoing
+///    stack-argument slot through its own view of SP;
+///  - a branch whose target cannot be resolved (numeric `BOffset`/
+///    `BCondOffset` — this pass runs BEFORE `resolve_label_branches` — a
+///    `BrTable`, a missing/duplicate label, or an indirect `Bx` that is not the
+///    `bx lr` return);
+///  - any op [`reg_effect`] does not model (i64-pair pseudo-ops, FP, memory
+///    builtins, …): its memory behavior is unknown.
+///
+/// THE WALK — per candidate store, a may-reach traversal over states
+/// `(index, sp_delta)` where `sp_delta` is SP's displacement from its value at
+/// the store (so slot `N` occupies bytes `[N, N+4)` in store-time coordinates,
+/// and an access `[sp, #M]` under displacement `d` touches `[d+M, d+M+w)`):
+///  - a load (`ldr`/`ldrb`/`ldrsb`/`ldrh`/`ldrsh [sp, #M]`) whose byte
+///    interval OVERLAPS the slot ⇒ the store is LIVE (sub-word reads thus count
+///    as reads of their containing word — the #483-class lesson);
+///  - a whole-word `str [sp, #M]` with `d+M == N` COVERS the slot ⇒ the path
+///    dies (classic overwrite-kill); any partial overlap is neither a read nor
+///    a kill and the walk continues;
+///  - `add/sub sp, sp, #imm` adjusts `d` and is NOT a read (frame teardown);
+///  - `Push {regs}` writes strictly below SP (no read), `d -= 4·|regs|`;
+///  - `Pop {regs}` READS `[d, d+4·|regs|)` — if that overlaps the slot the
+///    store is LIVE (a mis-paired epilogue is caught, not assumed away);
+///    otherwise it is teardown, `d += 4·|regs|`, and a `pop {…, pc}` ends the
+///    path (return);
+///  - `bx lr` ends the path; conditional branches fork; unconditional `b`
+///    follows its label; falling off the end of the function ends the path
+///    (reach-end without a read — the case this pass exists to catch);
+///  - a state budget (`16·len + 64` visited states) bounds loops whose SP
+///    displacement diverges; exceeding it conservatively keeps the store.
+///
+/// Removal-only ⇒ the output never grows (asserted) and, run before
+/// `resolve_label_branches` like every pass here, is branch-offset neutral.
+/// The frame `sub sp, #K` is untouched (the slot goes unused; frame SHRINKING
+/// is [`elide_dead_frame`]'s job). Pure function; callers opt in
+/// (`SYNTH_SPILL_REALLOC=1` wiring in `arm_backend.rs`, same lever as the
+/// spill re-choice it completes).
+pub fn eliminate_unread_frame_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    use ArmOp::*;
+
+    // ---- Admission: label map + whole-function soundness scan. ----
+    let mut labels: BTreeMap<&str, usize> = BTreeMap::new();
+    for (i, ins) in instrs.iter().enumerate() {
+        if let Label { name } = &ins.op
+            && labels.insert(name.as_str(), i).is_some()
+        {
+            return (instrs.to_vec(), 0); // duplicate label: ambiguous CFG
+        }
+    }
+    for ins in instrs {
+        let admissible = match &ins.op {
+            Label { .. } => true,
+            B { label } | Bhs { label } | Blo { label } | Bcc { label, .. } => {
+                labels.contains_key(label.as_str())
+            }
+            // Only the `bx lr` return form: any other indirect jump could land
+            // anywhere, so "no successors" would be a wrong CFG.
+            Bx { rm } => *rm == Reg::LR,
+            Push { .. } | Pop { .. } => true,
+            // Tracked frame adjust: add/sub sp, sp, #imm.
+            Add {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(_),
+            }
+            | Sub {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(_),
+            } => true,
+            // sp-relative memory access: must be a pinnable immediate slot.
+            Ldr { addr, .. }
+            | Ldrb { addr, .. }
+            | Ldrsb { addr, .. }
+            | Ldrh { addr, .. }
+            | Ldrsh { addr, .. }
+            | Str { addr, .. }
+            | Strb { addr, .. }
+            | Strh { addr, .. }
+                if addr.base == Reg::SP =>
+            {
+                addr.offset_reg.is_none()
+            }
+            // Everything else: must be fully modeled AND not touch SP at all
+            // (an SP use here is an address-of-frame ESCAPE; an SP def is an
+            // untracked frame move). Calls, BrTable, numeric branch offsets and
+            // unmodeled pseudo-ops all land in the `None` arm.
+            op => match reg_effect(op) {
+                Some(eff) => !eff.uses.contains(&Reg::SP) && !eff.defs.contains(&Reg::SP),
+                None => false,
+            },
+        };
+        if !admissible {
+            return (instrs.to_vec(), 0);
+        }
+    }
+
+    // ---- Per-store may-reach walk. ----
+    let dead: std::collections::BTreeSet<usize> = instrs
+        .iter()
+        .enumerate()
+        .filter(|(i, ins)| match &ins.op {
+            Str { addr, .. } => {
+                sp_slot(addr).is_some_and(|slot| frame_slot_unread_from(instrs, &labels, *i, slot))
+            }
+            _ => false,
+        })
+        .map(|(i, _)| i)
+        .collect();
+
+    if dead.is_empty() {
+        return (instrs.to_vec(), 0);
+    }
+    let kept: Vec<ArmInstruction> = instrs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !dead.contains(i))
+        .map(|(_, ins)| ins.clone())
+        .collect();
+    // Guard: removal-only — the function can only shrink.
+    assert!(
+        kept.len() + dead.len() == instrs.len(),
+        "eliminate_unread_frame_stores must be removal-only"
+    );
+    (kept, dead.len())
+}
+
+/// The may-reach walk of [`eliminate_unread_frame_stores`]: `true` iff no
+/// instruction reachable from the store at `start` can read slot
+/// `[slot, slot+4)` (byte interval in store-time SP coordinates). The stream
+/// has already passed the admission scan, so every op encountered is one of
+/// the tracked shapes.
+fn frame_slot_unread_from(
+    instrs: &[ArmInstruction],
+    labels: &BTreeMap<&str, usize>,
+    start: usize,
+    slot: i32,
+) -> bool {
+    use ArmOp::*;
+    let n = instrs.len();
+    let max_states = 16 * n + 64;
+    let slot = i64::from(slot);
+    // An access at [sp, #M] of width w under displacement d overlaps the slot?
+    let reads_slot = |d: i64, m: i32, w: i64| {
+        let lo = d + i64::from(m);
+        lo < slot + 4 && slot < lo + w
+    };
+
+    let mut visited: std::collections::BTreeSet<(usize, i64)> = std::collections::BTreeSet::new();
+    // Work list of (index, sp_delta) states still to examine.
+    let mut work: Vec<(usize, i64)> = vec![(start + 1, 0)];
+    while let Some((i, d)) = work.pop() {
+        if i >= n || !visited.insert((i, d)) {
+            continue; // fell off the end (reach-end ≠ read) or already seen
+        }
+        if visited.len() > max_states {
+            return false; // budget exceeded: conservatively live
+        }
+        match &instrs[i].op {
+            // sp-relative loads: any byte overlap with the slot is a read.
+            Ldr { addr, .. } if addr.base == Reg::SP => {
+                if reads_slot(d, addr.offset, 4) {
+                    return false;
+                }
+                work.push((i + 1, d));
+            }
+            Ldrb { addr, .. } | Ldrsb { addr, .. } if addr.base == Reg::SP => {
+                if reads_slot(d, addr.offset, 1) {
+                    return false;
+                }
+                work.push((i + 1, d));
+            }
+            Ldrh { addr, .. } | Ldrsh { addr, .. } if addr.base == Reg::SP => {
+                if reads_slot(d, addr.offset, 2) {
+                    return false;
+                }
+                work.push((i + 1, d));
+            }
+            // Whole-word store covering the slot exactly: overwrite-kill — the
+            // path dies. Anything else (partial overlap, other slot, sub-word
+            // store) is neither a read nor a kill.
+            Str { addr, .. } if addr.base == Reg::SP => {
+                if d + i64::from(addr.offset) != slot {
+                    work.push((i + 1, d));
+                }
+            }
+            // Tracked frame adjusts — teardown, not a read.
+            Add {
+                rd: Reg::SP,
+                op2: Operand2::Imm(k),
+                ..
+            } => work.push((i + 1, d + i64::from(*k))),
+            Sub {
+                rd: Reg::SP,
+                op2: Operand2::Imm(k),
+                ..
+            } => work.push((i + 1, d - i64::from(*k))),
+            // Push writes strictly below SP: no read; SP drops.
+            Push { regs } => work.push((i + 1, d - 4 * regs.len() as i64)),
+            // Pop READS [d, d+4·|regs|): a mis-paired epilogue that would read
+            // the slot keeps the store; the normal `add sp,#K; pop` epilogue
+            // has d ≥ K > slot and is teardown. `pop {…, pc}` returns.
+            Pop { regs } => {
+                if slot >= d && slot < d + 4 * regs.len() as i64 {
+                    return false;
+                }
+                if !regs.contains(&Reg::PC) {
+                    work.push((i + 1, d + 4 * regs.len() as i64));
+                }
+            }
+            // Control flow (targets exist — admission checked).
+            B { label } => work.push((labels[label.as_str()], d)),
+            Bhs { label } | Blo { label } | Bcc { label, .. } => {
+                work.push((i + 1, d));
+                work.push((labels[label.as_str()], d));
+            }
+            Bx { .. } => {} // `bx lr` return: path ends
+            // Every other admitted op neither touches the frame nor moves SP.
+            _ => work.push((i + 1, d)),
+        }
+    }
+    true
+}
+
 /// VCR-RA immediate-shift folding (#390, epic #242): fold a register-materialized
 /// constant shift amount into an immediate shift, dropping the `movw`.
 ///
@@ -7080,6 +7325,229 @@ mod tests {
         ];
         let (_out, n) = eliminate_dead_frame_stores(&seq);
         assert_eq!(n, 0, "an unresolvable sp-relative access blocks removal");
+    }
+
+    // ---- whole-function frame-slot liveness (eliminate_unread_frame_stores) ----
+
+    /// The flat_flight epilogue shape: `add sp,#K; pop {…, pc}`.
+    fn teardown(k: i32) -> [ArmInstruction; 2] {
+        [
+            ins(ArmOp::Add {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(k),
+            }),
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::PC],
+            }),
+        ]
+    }
+
+    #[test]
+    fn unread_store_reaching_function_end_is_dropped() {
+        // str r0,[sp,#8] ; add r1,… ; add sp,#88 ; pop {r4,pc} — slot #8 is never
+        // read anywhere; the teardown does not count as a read. This is exactly
+        // the reach-end case the segment-local pass keeps (flat_flight's 2 stores).
+        let mut seq = vec![
+            str_sp(Reg::R0, 8),
+            ins(ArmOp::Add {
+                rd: Reg::R1,
+                rn: Reg::R2,
+                op2: Operand2::Imm(1),
+            }),
+        ];
+        seq.extend(teardown(88));
+        // The segment-local pass proves nothing here (no overwrite).
+        assert_eq!(eliminate_dead_frame_stores(&seq).1, 0);
+        let (out, n) = eliminate_unread_frame_stores(&seq);
+        assert_eq!(n, 1, "an unread reach-end store is provably dead");
+        assert_eq!(out.len(), seq.len() - 1);
+        assert!(!out.iter().any(|i| matches!(&i.op, ArmOp::Str { .. })));
+    }
+
+    #[test]
+    fn unread_store_read_via_back_edge_is_kept() {
+        // L: ldr r1,[sp,#8] ; … ; str r0,[sp,#8] ; bcc L ; teardown — the ONLY
+        // read of slot #8 is BEFORE the store in program order, reachable only
+        // through the loop back-edge. A linear scan would call the store dead;
+        // the may-reach walk must not.
+        let mut seq = vec![
+            ins(ArmOp::Label { name: "L".into() }),
+            ldr_sp(Reg::R1, 8),
+            str_sp(Reg::R0, 8),
+            ins(ArmOp::Bcc {
+                cond: Condition::NE,
+                label: "L".into(),
+            }),
+        ];
+        seq.extend(teardown(16));
+        let (out, n) = eliminate_unread_frame_stores(&seq);
+        assert_eq!(n, 0, "a slot read via a loop back-edge is live");
+        assert_eq!(out, seq);
+    }
+
+    #[test]
+    fn unread_store_subword_read_blocks() {
+        // str r0,[sp,#8] ; ldrb r1,[sp,#10] ; teardown — the byte load reads a
+        // byte INSIDE slot #8's word ⇒ live (sub-word reads count as reads of
+        // their containing word, the #483-class rule).
+        let mut seq = vec![
+            str_sp(Reg::R0, 8),
+            ins(ArmOp::Ldrb {
+                rd: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, 10),
+            }),
+        ];
+        seq.extend(teardown(16));
+        let (_out, n) = eliminate_unread_frame_stores(&seq);
+        assert_eq!(
+            n, 0,
+            "a sub-word read inside the slot's word keeps the store"
+        );
+        // A byte read OUTSIDE the slot's word does not alias it.
+        let mut seq2 = vec![
+            str_sp(Reg::R0, 8),
+            ins(ArmOp::Ldrb {
+                rd: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, 12),
+            }),
+        ];
+        seq2.extend(teardown(16));
+        let (_out, n2) = eliminate_unread_frame_stores(&seq2);
+        assert_eq!(n2, 1, "a byte read of a DIFFERENT word does not alias");
+    }
+
+    #[test]
+    fn unread_store_unknown_index_declines_function() {
+        // str r0,[sp,#8] ; ldr r1,[sp,r2] ; teardown — a register-offset sp
+        // access could touch any slot: the whole function declines.
+        let mut seq = vec![
+            str_sp(Reg::R0, 8),
+            ins(ArmOp::Ldr {
+                rd: Reg::R1,
+                addr: MemAddr::reg(Reg::SP, Reg::R2),
+            }),
+        ];
+        seq.extend(teardown(16));
+        let (out, n) = eliminate_unread_frame_stores(&seq);
+        assert_eq!(
+            n, 0,
+            "an unresolvable sp access declines the whole function"
+        );
+        assert_eq!(out, seq);
+    }
+
+    #[test]
+    fn unread_store_frame_escape_declines_function() {
+        // str r0,[sp,#8] ; add r2,sp,#8 ; teardown — the slot's ADDRESS escapes
+        // into r2; a later plain `ldr [r2]` could read it invisibly. Decline.
+        let mut seq = vec![
+            str_sp(Reg::R0, 8),
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::SP,
+                op2: Operand2::Imm(8),
+            }),
+        ];
+        seq.extend(teardown(16));
+        let (out, n) = eliminate_unread_frame_stores(&seq);
+        assert_eq!(n, 0, "a frame-address escape declines the whole function");
+        assert_eq!(out, seq);
+
+        // mov r2, sp is the same escape.
+        let mut seq2 = vec![
+            str_sp(Reg::R0, 8),
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::SP),
+            }),
+        ];
+        seq2.extend(teardown(16));
+        assert_eq!(eliminate_unread_frame_stores(&seq2).1, 0);
+    }
+
+    #[test]
+    fn unread_store_call_declines_function() {
+        // str r0,[sp,#0] ; bl f ; teardown — a callee may read an outgoing
+        // stack-argument slot through its own view of SP. Decline.
+        let mut seq = vec![str_sp(Reg::R0, 0), ins(ArmOp::Bl { label: "f".into() })];
+        seq.extend(teardown(16));
+        let (out, n) = eliminate_unread_frame_stores(&seq);
+        assert_eq!(n, 0, "a call declines the whole function");
+        assert_eq!(out, seq);
+    }
+
+    #[test]
+    fn unread_store_mispaired_pop_reads_slot() {
+        // str r0,[sp,#4] ; pop {r4,r5,pc} — NO `add sp` first: the pop reads
+        // [sp,#0..#12), which OVERLAPS slot #4 ⇒ live. The Pop-is-teardown rule
+        // is displacement-checked, not assumed.
+        let seq = vec![
+            str_sp(Reg::R0, 4),
+            ins(ArmOp::Pop {
+                regs: vec![Reg::R4, Reg::R5, Reg::PC],
+            }),
+        ];
+        let (_out, n) = eliminate_unread_frame_stores(&seq);
+        assert_eq!(n, 0, "a pop that reads the slot's bytes keeps the store");
+    }
+
+    #[test]
+    fn unread_store_read_on_one_branch_arm_is_kept() {
+        // str r0,[sp,#8] ; bcc T ; teardown ; T: ldr r1,[sp,#8] ; teardown —
+        // one successor reads the slot, the other returns: may-reach must keep.
+        let mut seq = vec![
+            str_sp(Reg::R0, 8),
+            ins(ArmOp::Bcc {
+                cond: Condition::EQ,
+                label: "T".into(),
+            }),
+        ];
+        seq.extend(teardown(16));
+        seq.push(ins(ArmOp::Label { name: "T".into() }));
+        seq.push(ldr_sp(Reg::R1, 8));
+        seq.extend(teardown(16));
+        let (_out, n) = eliminate_unread_frame_stores(&seq);
+        assert_eq!(n, 0, "a read on ANY reachable path keeps the store");
+    }
+
+    #[test]
+    fn unread_store_overwrite_kills_path_and_later_read_is_of_new_value() {
+        // str r0,[sp,#8] ; str r1,[sp,#8] ; ldr r2,[sp,#8] ; teardown — the
+        // second store covers the slot before any read: store #1 is dead (the
+        // read observes r1's value); store #2 is live.
+        let mut seq = vec![str_sp(Reg::R0, 8), str_sp(Reg::R1, 8), ldr_sp(Reg::R2, 8)];
+        seq.extend(teardown(16));
+        let (out, n) = eliminate_unread_frame_stores(&seq);
+        assert_eq!(
+            n, 1,
+            "overwritten-before-read store is dead; the live one stays"
+        );
+        assert!(matches!(out[0].op, ArmOp::Str { rd: Reg::R1, .. }));
+    }
+
+    #[test]
+    fn unread_store_sp_tracking_across_frame_adjust() {
+        // str r0,[sp,#8] ; sub sp,#4 ; ldr r1,[sp,#12] ; add sp,#4 ; teardown —
+        // after `sub sp,#4` the SAME bytes are named [sp,#12]: the walk tracks
+        // the displacement and sees the read.
+        let mut seq = vec![
+            str_sp(Reg::R0, 8),
+            ins(ArmOp::Sub {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(4),
+            }),
+            ldr_sp(Reg::R1, 12),
+            ins(ArmOp::Add {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(4),
+            }),
+        ];
+        seq.extend(teardown(16));
+        let (_out, n) = eliminate_unread_frame_stores(&seq);
+        assert_eq!(n, 0, "a renamed read after an SP adjust is still a read");
     }
 
     #[test]

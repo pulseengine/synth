@@ -732,14 +732,22 @@ fn compile_wasm_to_arm(
     // flag. Per-segment commit gates: executable same-value-flow trace
     // equality, strict shrink, pool-pressure fit, sub-word/unknown-slot
     // conservatism (see `apply_spill_realloc` / `spill_rechoice_segment`).
+    // Stage 3 (whole-function slot liveness): the segment-local DCE keeps a
+    // store whose slot reaches function end ("reach-end ≠ dead" — it cannot
+    // see other segments); `eliminate_unread_frame_stores` walks the whole
+    // function (labels/branches/loops, SP-displacement tracked) and drops a
+    // store whose slot NO reachable instruction can read — flat_flight's two
+    // surviving stores (#576), completing Belady's 0-load side with a 0-store
+    // side. Same flag: the three stages are one lever for the v0.24.0 flip.
     // Flag-off (`SYNTH_SPILL_REALLOC=1`) while differential-validated;
     // off ⇒ byte-identical.
     let arm_instrs = if std::env::var("SYNTH_SPILL_REALLOC").is_ok() {
         let (out, n) = synth_synthesis::liveness::apply_spill_realloc(&arm_instrs);
         let (out, d) = synth_synthesis::liveness::eliminate_dead_frame_stores(&out);
+        let (out, u) = synth_synthesis::liveness::eliminate_unread_frame_stores(&out);
         if std::env::var("SYNTH_FUSE_STATS").is_ok() {
             eprintln!(
-                "[spill-realloc] {n} reload(s) forwarded/eliminated, {d} newly-dead frame store(s) removed"
+                "[spill-realloc] {n} reload(s) forwarded/eliminated, {d} newly-dead frame store(s) removed, {u} unread-slot store(s) removed"
             );
         }
         out
