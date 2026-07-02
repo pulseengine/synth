@@ -155,6 +155,16 @@ pub struct CompileConfig {
     /// driver loop, because `compile_function` is shared across backends and
     /// carries no function index. Empty → assume i32.
     pub current_func_params_i64: Vec<bool>,
+    /// #509: blocktype-arity side-table of the function CURRENTLY being compiled
+    /// — `(param_count, result_count)` of the k-th `Block`/`Loop`/`If` in its op
+    /// stream (ordinal-keyed; see [`FunctionOps::block_arity`]). Set per function
+    /// by the driver loop (like [`current_func_params_i64`]). The direct selector
+    /// uses it to land a value carried by `br`/`br_if`/`br_table` in the target
+    /// block's designated result register instead of dropping it. Empty → every
+    /// block treated as void (the legacy lowering; hand-built op streams).
+    ///
+    /// [`FunctionOps::block_arity`]: crate::wasm_decoder::FunctionOps::block_arity
+    pub current_func_block_arity: Vec<(u8, u8)>,
 
     /// #543 Phase 1 — integrator-marked volatile linear-memory segments (the DMA
     /// transfer window). Each range `[base, base+len)` names a region of the fused
@@ -226,6 +236,9 @@ impl Default for CompileConfig {
             type_ret_i64: Vec::new(),
             func_params_i64: Vec::new(),
             current_func_params_i64: Vec::new(),
+            // #509: empty ⇒ legacy void-block lowering (unit tests / hand-built
+            // op streams); the driver loops fill it per function.
+            current_func_block_arity: Vec::new(),
             // #543 Phase 1: no volatile segments unless the CLI flag names them.
             // Empty ⇒ inert ⇒ emitted bytes unchanged.
             volatile_segments: Vec::new(),

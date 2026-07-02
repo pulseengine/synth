@@ -50,16 +50,24 @@ WAT = Path(__file__).with_name("br_value_509.wat")
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 CODE, STK, RET = 0x100000, 0x900000, 0x300000
 
-# Flip to False in the gated fix PR; the script then enforces correctness.
-EXPECT_MISCOMPILE = True
+# Flipped to False by the #509 fix PR (blocktype-arity side-table + designated
+# result register per value block in `select_with_stack`, plus the #507-style
+# detect-and-route-to-direct for value-carrying br/br_if on the optimized
+# path): the script now enforces correctness — every edge (taken, dispatched,
+# and fall-through) on BOTH paths must match wasmtime. Pre-fix recorded wrong
+# values (direct path): pick(1/2/5)->2 vs 12, pick_brif(1/7)->0 vs 10,
+# pick_br(0/1/7)->0 vs 30/31/37, pick_br_fall(1/7)->0 vs 10.
+EXPECT_MISCOMPILE = False
 
 # (export, args) — the dispatched/taken arms are the value-carry cases.
 CASES = [
     ("pick", [0, 1, 2, 5]),       # br_table; sel>=1 dispatched arms drop the carry
     ("pick_brif", [0, 1, 7]),     # br_if; taken (arg!=0) arms drop the carry
+    ("pick_br", [0, 1, 7]),       # plain br; always-taken edge drops the carry
+    ("pick_br_fall", [0, 1, 7]),  # br (taken, arg!=0) + real fall-through (arg==0)
     ("ctrl", [0, 1, 7]),          # branchless value block — control, must stay OK
 ]
-VALUE_CARRY_FNS = {"pick", "pick_brif"}
+VALUE_CARRY_FNS = {"pick", "pick_brif", "pick_br", "pick_br_fall"}
 
 
 def wasmtime_run(fn, arg):

@@ -2207,16 +2207,19 @@ fn compile_all_exports(
         // the declared widths — an unused i64 param still shifts the layout, so
         // op-stream inference cannot reconstruct them. Cheap per-function clone
         // (`compile_function` is a shared trait method with no function index).
-        let func_config = if all_func_params_i64
-            .get(func.index as usize)
-            .is_some_and(|p| !p.is_empty())
-        {
-            CompileConfig {
-                current_func_params_i64: all_func_params_i64[func.index as usize].clone(),
-                ..config.clone()
+        // #509: also thread THIS function's blocktype-arity side-table, so the
+        // direct selector can land a value carried by br/br_if/br_table in the
+        // target block's designated result register (and the optimized path can
+        // detect-and-decline the shape).
+        let func_config = {
+            let mut fc = config.clone();
+            if let Some(p) = all_func_params_i64.get(func.index as usize)
+                && !p.is_empty()
+            {
+                fc.current_func_params_i64 = p.clone();
             }
-        } else {
-            config.clone()
+            fc.current_func_block_arity = func.block_arity.clone();
+            fc
         };
         // #369: the decoder flagged a value-affecting op it cannot lower (e.g.
         // scalar f32/f64, bulk-memory). Lowering would have SILENTLY DROPPED it
@@ -4560,6 +4563,7 @@ mod tests {
             ops,
             op_offsets: Vec::new(),
             unsupported: None,
+            block_arity: Vec::new(),
         }
     }
 

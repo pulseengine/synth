@@ -141,6 +141,8 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // #359: declared param widths per type / per function (full index).
     let mut type_params_i64: Vec<Vec<bool>> = Vec::new();
     let mut func_params_i64: Vec<Vec<bool>> = Vec::new();
+    // #509: (param_count, result_count) per type index, for FuncType blocktypes.
+    let mut type_block_arity: Vec<(u8, u8)> = Vec::new();
     let mut elem_func_indices: Vec<u32> = Vec::new();
     // #394 Tier-1.x: function index → developer-facing name from the wasm
     // `name` custom section (function-names subsection). Applied to
@@ -159,6 +161,17 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 for rec_group in reader {
                     let rec_group = rec_group.context("Failed to parse type")?;
                     for sub_ty in rec_group.types() {
+                        // #509: blocktype arity per type index (saturated u8 —
+                        // >255 params/results is far beyond anything the
+                        // selector supports anyway, and the selector declines
+                        // rather than trusting a saturated count).
+                        type_block_arity.push(match &sub_ty.composite_type.inner {
+                            wasmparser::CompositeInnerType::Func(f) => (
+                                u8::try_from(f.params().len()).unwrap_or(u8::MAX),
+                                u8::try_from(f.results().len()).unwrap_or(u8::MAX),
+                            ),
+                            _ => (u8::MAX, u8::MAX),
+                        });
                         let (count, ret_i64, params_i64) = match &sub_ty.composite_type.inner {
                             wasmparser::CompositeInnerType::Func(func_ty) => (
                                 func_ty.params().len() as u32,
@@ -341,7 +354,8 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let (ops, op_offsets, unsupported) = decode_function_body(&body)?;
+                let (ops, op_offsets, block_arity, unsupported) =
+                    decode_function_body(&body, &type_block_arity)?;
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
 
@@ -352,6 +366,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     ops,
                     op_offsets,
                     unsupported,
+                    block_arity,
                 });
                 func_index += 1;
             }
@@ -420,11 +435,31 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
     let mut num_imported_funcs = 0u32;
     let mut export_names: HashMap<u32, String> = HashMap::new();
     let mut name_section_names: HashMap<u32, String> = HashMap::new();
+    // #509: (param_count, result_count) per type index, for FuncType blocktypes.
+    let mut type_block_arity: Vec<(u8, u8)> = Vec::new();
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
 
         match payload {
+            Payload::TypeSection(reader) => {
+                // #509: the blocktype-arity side-table needs the type section
+                // for `BlockType::FuncType(i)` lookups (the wasm binary format
+                // places types before code, so the table is complete before any
+                // `CodeSectionEntry` is decoded).
+                for rec_group in reader {
+                    let rec_group = rec_group.context("Failed to parse type")?;
+                    for sub_ty in rec_group.types() {
+                        type_block_arity.push(match &sub_ty.composite_type.inner {
+                            wasmparser::CompositeInnerType::Func(f) => (
+                                u8::try_from(f.params().len()).unwrap_or(u8::MAX),
+                                u8::try_from(f.results().len()).unwrap_or(u8::MAX),
+                            ),
+                            _ => (u8::MAX, u8::MAX),
+                        });
+                    }
+                }
+            }
             Payload::ImportSection(imports) => {
                 // wasmparser 0.221+ compact-imports grouping — flatten groups
                 // to individual imports (see the ImportSection handler above).
@@ -444,7 +479,8 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let (ops, op_offsets, unsupported) = decode_function_body(&body)?;
+                let (ops, op_offsets, block_arity, unsupported) =
+                    decode_function_body(&body, &type_block_arity)?;
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
 
@@ -455,6 +491,7 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                     ops,
                     op_offsets,
                     unsupported,
+                    block_arity,
                 });
                 func_index += 1;
             }
@@ -509,7 +546,43 @@ pub struct FunctionOps {
     /// contract. `None` once every op decoded or was intentionally ignorable
     /// (Nop/Unreachable).
     pub unsupported: Option<String>,
+    /// #509: blocktype arity side-table — `(param_count, result_count)` of the
+    /// k-th `Block`/`Loop`/`If` op in `ops`, in order of appearance.
+    /// ORDINAL-keyed, not op-index-keyed, on purpose: the backend may rewrite
+    /// the op stream before selection (e.g. the #539 `i32.const 0; memory.grow`
+    /// → `memory.size` fold), which shifts op indices but never adds/removes
+    /// control ops, so the ordinal stays aligned. `BlockType::Empty → (0,0)`,
+    /// `ValType → (0,1)`, `FuncType(i) →` counts from the type section
+    /// (saturated to u8; an unresolvable type index records `(u8::MAX,
+    /// u8::MAX)` so the selector declines loudly instead of miscompiling).
+    /// This is what lets the direct selector land a value carried by
+    /// `br`/`br_if`/`br_table` in the target block's designated result
+    /// register instead of dropping it — `WasmOp::Block/Loop/If` stay bare
+    /// unit variants (zero ripple through the backends' match sites), and an
+    /// empty table (hand-built op streams in unit tests) keeps the legacy
+    /// void-block lowering.
+    pub block_arity: Vec<(u8, u8)>,
 }
+
+/// #509: `(param_count, result_count)` of a wasm blocktype, for the
+/// [`FunctionOps::block_arity`] side-table. `type_block_arity` is the type
+/// section's per-type-index counts (needed for the `FuncType` form); a missing
+/// entry saturates to `(u8::MAX, u8::MAX)` so downstream declines loudly.
+fn blocktype_arity(bt: &wasmparser::BlockType, type_block_arity: &[(u8, u8)]) -> (u8, u8) {
+    match bt {
+        wasmparser::BlockType::Empty => (0, 0),
+        wasmparser::BlockType::Type(_) => (0, 1),
+        wasmparser::BlockType::FuncType(i) => type_block_arity
+            .get(*i as usize)
+            .copied()
+            .unwrap_or((u8::MAX, u8::MAX)),
+    }
+}
+
+/// The per-function payload [`decode_function_body`] extracts: `(ops,
+/// op_offsets, block_arity, unsupported)` — see the matching
+/// [`FunctionOps`] fields for each component's contract.
+type DecodedBody = (Vec<WasmOp>, Vec<u32>, Vec<(u8, u8)>, Option<String>);
 
 /// Decode a single function body to WasmOp sequence.
 ///
@@ -518,13 +591,17 @@ pub struct FunctionOps {
 /// not silently miscompiled by dropping the op).
 fn decode_function_body(
     body: &wasmparser::FunctionBody,
-) -> Result<(Vec<WasmOp>, Vec<u32>, Option<String>)> {
+    type_block_arity: &[(u8, u8)],
+) -> Result<DecodedBody> {
     let mut ops = Vec::new();
     // VCR-DBG-001 step 1: parallel to `ops` — the module-relative wasm byte
     // offset of each emitted op (the DWARF-for-wasm address space). Captured via
     // the offset-aware reader; pushed only when an op is pushed, so indices stay
     // aligned with `ops`. Additive metadata, no codegen consumer ⇒ frozen-safe.
     let mut op_offsets = Vec::new();
+    // #509: ordinal blocktype-arity side-table — one entry per Block/Loop/If in
+    // `ops` order (see `FunctionOps::block_arity`).
+    let mut block_arity: Vec<(u8, u8)> = Vec::new();
     let mut unsupported: Option<String> = None;
 
     let ops_reader = body.get_operators_reader()?;
@@ -532,6 +609,14 @@ fn decode_function_body(
         let (op, offset) = item.context("Failed to read operator")?;
 
         if let Some(wasm_op) = convert_operator(&op) {
+            // #509: capture the blocktype arity BEFORE the enum flattens it away
+            // (`WasmOp::Block/Loop/If` are unit variants by design).
+            if let wasmparser::Operator::Block { blockty }
+            | wasmparser::Operator::Loop { blockty }
+            | wasmparser::Operator::If { blockty } = &op
+            {
+                block_arity.push(blocktype_arity(blockty, type_block_arity));
+            }
             ops.push(wasm_op);
             op_offsets.push(offset as u32);
         } else if unsupported.is_none() && !is_intentionally_ignored(&op) {
@@ -542,7 +627,7 @@ fn decode_function_body(
         }
     }
 
-    Ok((ops, op_offsets, unsupported))
+    Ok((ops, op_offsets, block_arity, unsupported))
 }
 
 /// Operators that `convert_operator` returns `None` for *on purpose* — they
@@ -1650,5 +1735,58 @@ mod tests {
         let c = &module.globals[1];
         assert_eq!(c.init_i32, Some(7));
         assert!(!c.mutable, "second global is immutable");
+    }
+
+    /// #509: the decoder records `(param_count, result_count)` for every
+    /// `Block`/`Loop`/`If`, ordinal-keyed in op order, covering all three
+    /// blocktype encodings: `Empty → (0,0)`, `ValType → (0,1)`, and
+    /// `FuncType(i) →` counts from the type section (here a multi-result
+    /// block, which wat encodes as a functype blocktype).
+    #[test]
+    fn test_decode_records_block_arity_side_table_509() {
+        let wat = r#"
+            (module
+                (func (export "f") (param i32) (result i32)
+                    (block (result i32)
+                        (block (nop))
+                        (local.get 0)
+                        (if (result i32)
+                            (then (i32.const 1))
+                            (else (i32.const 2)))))
+                (func (export "g") (result i32)
+                    (block (result i32 i32)
+                        (i32.const 1) (i32.const 2))
+                    i32.add)
+                (func (export "h") (param i32) (result i32)
+                    (local.get 0)
+                    (loop (param i32) (result i32))))
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse WAT");
+
+        // Both decode entry points must produce the same side-table.
+        for functions in [
+            decode_wasm_functions(&wasm).expect("decode"),
+            decode_wasm_module(&wasm).expect("decode").functions,
+        ] {
+            // f: Block(result i32), Block(void), If(result i32) — in op order.
+            assert_eq!(
+                functions[0].block_arity,
+                vec![(0, 1), (0, 0), (0, 1)],
+                "f: ValType/Empty/ValType blocktypes"
+            );
+            // g: one multi-result block via a FuncType blocktype.
+            assert_eq!(
+                functions[1].block_arity,
+                vec![(0, 2)],
+                "g: functype blocktype result count from the type section"
+            );
+            // h: a parameterized loop — the input arity is what a br to the
+            // header would carry (the #509 loud-decline discriminator).
+            assert_eq!(
+                functions[2].block_arity,
+                vec![(1, 1)],
+                "h: loop params captured"
+            );
+        }
     }
 }

@@ -80,12 +80,20 @@ impl Backend for ArmBackend {
             // 64-bit param on the AAPCS stack-argument path. Cheap clone only when
             // a signature table is present and this function has a width entry —
             // otherwise reuse the shared config (every existing module unchanged).
-            let func_config = match config.func_params_i64.get(func.index as usize) {
-                Some(p) if !p.is_empty() => Some(CompileConfig {
-                    current_func_params_i64: p.clone(),
+            // #509: same per-function pattern for the blocktype-arity side-table
+            // (value-carrying-branch lowering).
+            let params = config
+                .func_params_i64
+                .get(func.index as usize)
+                .filter(|p| !p.is_empty());
+            let func_config = if params.is_some() || !func.block_arity.is_empty() {
+                Some(CompileConfig {
+                    current_func_params_i64: params.cloned().unwrap_or_default(),
+                    current_func_block_arity: func.block_arity.clone(),
                     ..config.clone()
-                }),
-                _ => None,
+                })
+            } else {
+                None
             };
             let cfg = func_config.as_ref().unwrap_or(config);
             let compiled = self.compile_function(&name, &func.ops, cfg)?;
@@ -175,6 +183,68 @@ fn rewrite_memory_grow_zero(wasm_ops: &[WasmOp]) -> Vec<WasmOp> {
     out
 }
 
+/// #509: does the op stream contain a `br`/`br_if`/`br_table` that CARRIES a
+/// value — i.e. one targeting a result-typed block/if (forward edge with
+/// results > 0) or a parameterized loop header (backward edge with loop
+/// params > 0)?
+///
+/// The optimized path's wasm→IR lowering drops the carried value on such
+/// edges (the taken arm returns the fall-through result — same class as the
+/// #507 `br_table` drop, observed on `pick_br`/`pick_br_fall`), so — like
+/// #507 — the shape is detected on the raw op stream and routed to the direct
+/// selector, whose #509 designated-result-register lowering lands the value
+/// correctly. `block_arity` is the decoder's ordinal blocktype-arity
+/// side-table; when it is empty (hand-built op streams) every block reads as
+/// void and this never fires, keeping the optimized path byte-identical for
+/// every existing caller. Frozen-safe for the same reason as #507: the frozen
+/// fixtures compile `--relocatable` (already direct), and no optimized-path
+/// fixture branches to a result-typed block.
+fn has_value_carrying_branch(wasm_ops: &[WasmOp], block_arity: &[(u8, u8)]) -> bool {
+    // Open control constructs: (is_loop, params, results), innermost last.
+    let mut open: Vec<(bool, u8, u8)> = Vec::new();
+    let mut ctrl_ord = 0usize;
+    // A branch edge carries a value when its target is a result-typed forward
+    // join (block/if) or a parameterized loop header.
+    let carries = |open: &[(bool, u8, u8)], depth: u32| -> bool {
+        let Some(&(is_loop, params, results)) = open
+            .len()
+            .checked_sub(1 + depth as usize)
+            .and_then(|i| open.get(i))
+        else {
+            return false; // function-level target — handled by Return lowering
+        };
+        if is_loop { params > 0 } else { results > 0 }
+    };
+    for op in wasm_ops {
+        match op {
+            WasmOp::Block | WasmOp::If => {
+                let (p, r) = block_arity.get(ctrl_ord).copied().unwrap_or((0, 0));
+                ctrl_ord += 1;
+                open.push((false, p, r));
+            }
+            WasmOp::Loop => {
+                let (p, r) = block_arity.get(ctrl_ord).copied().unwrap_or((0, 0));
+                ctrl_ord += 1;
+                open.push((true, p, r));
+            }
+            WasmOp::End => {
+                open.pop(); // None only at the function-level end — harmless
+            }
+            WasmOp::Br(d) | WasmOp::BrIf(d) if carries(&open, *d) => return true,
+            WasmOp::BrTable { targets, default }
+                if targets
+                    .iter()
+                    .chain(std::iter::once(default))
+                    .any(|d| carries(&open, *d)) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Core compilation: WASM ops → ARM machine code bytes + relocations
 ///
 /// Returns (code_bytes, relocations) where relocations record BL instructions
@@ -242,6 +312,11 @@ fn compile_wasm_to_arm(
         // #359: declared param widths of THIS function, so the AAPCS stack-arg
         // path can refuse 64-bit params (Ok-or-Err). Empty ⇒ assume i32.
         selector.set_params_i64(config.current_func_params_i64.clone());
+        // #509: blocktype-arity side-table of THIS function, so value-carrying
+        // br/br_if/br_table land the carried value in the target block's
+        // designated result register instead of dropping it. Empty ⇒ legacy
+        // void-block lowering.
+        selector.set_block_arity(config.current_func_block_arity.clone());
         // Stack-pointer promotion is meaningful only under the native-pointer ABI;
         // gating here keeps every non-native compile (all frozen fixtures) on the
         // legacy R9 globals-table path, bit-identical.
@@ -370,7 +445,15 @@ fn compile_wasm_to_arm(
     let has_br_table = wasm_ops
         .iter()
         .any(|op| matches!(op, WasmOp::BrTable { .. }));
-    let arm_instrs = if config.no_optimize || config.relocatable || has_br_table {
+    // #509: the optimized path also drops the value carried by a `br`/`br_if`
+    // to a result-typed block (the taken edge returns the wrong arm's value —
+    // same silent-miscompile class as the #507 br_table drop). Route the shape
+    // to the direct selector, whose designated-result-register lowering (#509)
+    // lands the carried value at the join. Never fires for void-block control
+    // flow (all frozen/optimized fixtures), so those stay byte-identical.
+    let has_value_carry = has_value_carrying_branch(wasm_ops, &config.current_func_block_arity);
+    let arm_instrs = if config.no_optimize || config.relocatable || has_br_table || has_value_carry
+    {
         select_direct()?
     } else {
         let opt_config = if config.loom_compat {
