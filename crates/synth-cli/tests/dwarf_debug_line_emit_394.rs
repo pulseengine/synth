@@ -891,3 +891,100 @@ fn emitted_subprogram_names_use_name_section_for_internal_functions_394() {
         subs.len()
     );
 }
+
+/// The root `DW_TAG_compile_unit`'s `[low_pc, high_pc)`, walked the debugger way.
+/// On an ET_REL object `DW_AT_low_pc` reads as the in-place addend (object-
+/// relative `.text` offset, 0); `DW_AT_high_pc` is a constant-class value, i.e.
+/// the DWARF offset-from-low_pc form, so `high_pc = low_pc + offset`.
+fn compile_unit_range(secs: &HashMap<String, Vec<u8>>) -> (u64, u64) {
+    let empty: &[u8] = &[];
+    let load = |id: SectionId| -> Result<EndianSlice<'_, LittleEndian>, gimli::Error> {
+        let data = secs.get(id.name()).map_or(empty, |v| v.as_slice());
+        Ok(EndianSlice::new(data, LittleEndian))
+    };
+    let dwarf = gimli::Dwarf::load(load).expect("load emitted .debug_* sections");
+    let mut units = dwarf.units();
+    while let Some(header) = units.next().expect("unit header") {
+        let unit = dwarf.unit(header).expect("unit");
+        let mut entries = unit.entries();
+        while let Some(entry) = entries.next_dfs().expect("dfs") {
+            if entry.tag() != gimli::DW_TAG_compile_unit {
+                continue;
+            }
+            let low_pc = match entry.attr_value(gimli::DW_AT_low_pc) {
+                Some(gimli::AttributeValue::Addr(a)) => a,
+                other => panic!("CU DW_AT_low_pc must be an Addr, got {other:?}"),
+            };
+            let size = match entry.attr_value(gimli::DW_AT_high_pc) {
+                Some(gimli::AttributeValue::Udata(n)) => n,
+                other => panic!("CU DW_AT_high_pc must be Udata (offset form), got {other:?}"),
+            };
+            return (low_pc, low_pc + size);
+        }
+    }
+    panic!("no DW_TAG_compile_unit DIE in emitted .debug_info");
+}
+
+/// ORACLE H — CU/subprogram range CONTAINMENT (#564). The DWARF parent/child
+/// containment rule `llvm-dwarfdump --verify` enforces post-link: every child
+/// `DW_TAG_subprogram`'s `[low_pc, high_pc)` must lie INSIDE the compile_unit's
+/// `[low_pc, high_pc)`. Before this fix the CU's `DW_AT_high_pc` was derived
+/// from the LINE-TABLE extent (last mapped address + 1) while the subprogram
+/// DIEs (#557) carry true CODE extents — so the last function, whose code
+/// always extends past its last line-mapped instruction (the mapped op itself
+/// is ≥2 bytes, plus any unmapped epilogue/literal-pool tail), fell OUTSIDE its
+/// parent's range. llvm-dwarfdump then reports "DIE address ranges are not
+/// contained in its parent's ranges" on the linked image, and a debugger
+/// walking CUs by PC range misses that function entirely. Checked in-tree with
+/// gimli::read — no llvm needed.
+#[test]
+fn compile_unit_range_contains_every_subprogram_564() {
+    let wasm = repro("msgq_put_359.wasm");
+    let dbg = compile(&wasm, "/tmp/dbg394_msgq_oracleh.o", true);
+    let secs = section_data(&dbg);
+
+    let (cu_low, cu_high) = compile_unit_range(&secs);
+    let subs = collect_subprograms(&secs);
+    assert!(
+        !subs.is_empty(),
+        "fixture must emit ≥1 DW_TAG_subprogram to anchor the containment check"
+    );
+
+    // Fixture-shape guard (non-vacuity, the exact #564 shape): at least one
+    // function's CODE extends past the line-table extent (last mapped address
+    // + 1). If this ever stops holding, the containment assertions below can
+    // no longer distinguish line-table-extent from code-extent CU high_pc —
+    // pick a fixture whose last function ends in unmapped instructions.
+    let line_extent = line_rows(&secs)
+        .iter()
+        .map(|&(a, _)| a)
+        .max()
+        .expect("line table must have rows")
+        + 1;
+    let code_extent = subs.iter().map(|s| s.high_pc).max().unwrap();
+    assert!(
+        code_extent > line_extent,
+        "fixture no longer exercises the #564 shape: max subprogram high_pc \
+         0x{code_extent:x} must exceed the line-table extent 0x{line_extent:x}"
+    );
+
+    // The llvm-dwarfdump --verify containment rule.
+    for s in &subs {
+        assert!(
+            cu_low <= s.low_pc && s.high_pc <= cu_high,
+            "subprogram {:?} [0x{:x},0x{:x}) is NOT contained in its parent \
+             compile_unit's range [0x{cu_low:x},0x{cu_high:x}) — the CU \
+             DW_AT_high_pc is the line-table extent, not the code extent \
+             (#564); llvm-dwarfdump --verify fails this post-link",
+            s.name,
+            s.low_pc,
+            s.high_pc
+        );
+    }
+
+    eprintln!(
+        "[dbg394-oracleH] CU [0x{cu_low:x},0x{cu_high:x}) contains all {} \
+         subprograms (code extent 0x{code_extent:x} > line extent 0x{line_extent:x})",
+        subs.len()
+    );
+}
