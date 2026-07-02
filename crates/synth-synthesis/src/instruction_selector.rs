@@ -426,6 +426,50 @@ impl SpillState {
     }
 }
 
+/// #581 defensive invariant (the internal-bug panic pattern): every reload
+/// from the spill area must be preceded — in emission order, which is how the
+/// selector always orders a spill store and its reload — by a store to the
+/// same 4-byte slot offset. The #581 miscompile deleted a spill store post-hoc
+/// (a const fold dropping the tail by `source_line`), leaving `LDR` of a
+/// never-written slot: a silent wrong value on the shipped path. That is an
+/// internal selector bug, never an input property, so it panics loudly instead
+/// of compiling wrong code.
+///
+/// Only meaningful when the spill area was actually reserved (`area_reserved`);
+/// otherwise `spill_base` aliases the #204 param home slots (#331) and the scan
+/// would see unrelated frame traffic. Slot reuse means a stale earlier store
+/// can mask a lost later one — this is defense-in-depth behind the
+/// `is_const_materialization` filters, not the primary fix.
+fn assert_spill_reloads_have_stores(instructions: &[ArmInstruction], spill_base: i32) {
+    let area = spill_base..spill_base + (I64_SPILL_SLOTS as i32) * 8;
+    let mut stored = [false; I64_SPILL_SLOTS * 2]; // 4-byte halves
+    for ins in instructions {
+        match &ins.op {
+            ArmOp::Str { addr, .. }
+                if addr.base == Reg::SP
+                    && addr.offset_reg.is_none()
+                    && area.contains(&addr.offset) =>
+            {
+                stored[((addr.offset - spill_base) / 4) as usize] = true;
+            }
+            ArmOp::Ldr { addr, .. }
+                if addr.base == Reg::SP
+                    && addr.offset_reg.is_none()
+                    && area.contains(&addr.offset) =>
+            {
+                assert!(
+                    stored[((addr.offset - spill_base) / 4) as usize],
+                    "#581 internal selector bug: reload from spill slot [sp, #{}] \
+                     with no preceding spill store — a spill store was lost \
+                     (store-before-clobber invariant violated)",
+                    addr.offset
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
 /// The physical registers currently reserved by the virtual stack (#171): every
 /// [`StackVal::Reg`]'s `r` and its conventional [`i64_pair_hi`]. Spilled entries
 /// reserve nothing. (Over-reserving the pair_hi for i32 entries is the
@@ -5049,6 +5093,23 @@ impl InstructionSelector {
         if eff <= 0xFFF { Some(eff) } else { None }
     }
 
+    /// A const-materialization instruction: what the `i32.const` handler emits
+    /// to build the value in a register — `MOVW`, `MOVW+MOVT`, or `MOVW+MVN`.
+    ///
+    /// #581: the const's temp allocation can ALSO emit a spill store
+    /// (`STR victim, [SP, slot]` via [`alloc_temp_or_spill`] under the
+    /// spill-on-exhaustion retry) tagged with the SAME `source_line`. That store
+    /// is NOT part of the materialization — deleting it leaves the victim's
+    /// stack entry marked [`StackVal::Spilled`] with no store, so its later
+    /// reload reads a never-written frame slot (silent wrong value). Every
+    /// fold that drops a materialization by `source_line` must filter on this.
+    fn is_const_materialization(op: &ArmOp) -> bool {
+        matches!(
+            op,
+            ArmOp::Movw { .. } | ArmOp::Movt { .. } | ArmOp::Mvn { .. }
+        )
+    }
+
     /// Pop the const-materialization instructions emitted for the immediately
     /// preceding `i32.const`. The const handler emits 1 instruction (Movw) for
     /// values <= 0xFFFF, 2 instructions (Movw + Mvn) for inverted patterns, and
@@ -5056,9 +5117,15 @@ impl InstructionSelector {
     /// `source_line`. Removing them from the tail is safe because no later
     /// instruction depends on the materialized value once the load/store is
     /// folded.
+    ///
+    /// #581: only genuine materialization ops are popped. A spill store emitted
+    /// while allocating the const's temp shares the const's `source_line` but
+    /// MUST survive the fold — its slot is recorded as populated on the virtual
+    /// stack (store-before-clobber invariant). The materialization ops are
+    /// emitted after any such store, so the walk stops there naturally.
     fn drop_prev_const_materialization(instructions: &mut Vec<ArmInstruction>, const_idx: usize) {
         while let Some(last) = instructions.last() {
-            if last.source_line == Some(const_idx) {
+            if last.source_line == Some(const_idx) && Self::is_const_materialization(&last.op) {
                 instructions.pop();
             } else {
                 break;
@@ -5122,9 +5189,13 @@ impl InstructionSelector {
                 break;
             }
         }
-        // Drop the addr-const chunk now exposed at the tail.
+        // Drop the addr-const chunk now exposed at the tail. #581: only the
+        // materialization ops — a spill store tagged with the addr-const's
+        // line (emitted by its temp allocation under the spill retry) must
+        // survive, or its recorded slot is never populated.
         while let Some(last) = instructions.last() {
-            if last.source_line == Some(addr_const_idx) {
+            if last.source_line == Some(addr_const_idx) && Self::is_const_materialization(&last.op)
+            {
                 instructions.pop();
             } else {
                 break;
@@ -6646,9 +6717,15 @@ impl InstructionSelector {
                             // #209 cleanup: the reciprocal-multiply reads the magic
                             // constant, never the divisor — so the divisor's eager
                             // materialization (the `i32.const` at idx-1, the only op
-                            // tagged there) is dead on this path. Drop it.
+                            // tagged there) is dead on this path. Drop it. #581:
+                            // materialization ops only — a spill store emitted while
+                            // allocating the divisor's temp shares the tag but must
+                            // survive (its slot is recorded as populated).
                             if idx >= 1 {
-                                instructions.retain(|i| i.source_line != Some(idx - 1));
+                                instructions.retain(|i| {
+                                    i.source_line != Some(idx - 1)
+                                        || !Self::is_const_materialization(&i.op)
+                                });
                             }
                             // Materialize the magic constant m into rmag.
                             instructions.push(ArmInstruction {
@@ -10783,6 +10860,12 @@ impl InstructionSelector {
             },
             source_line: None,
         });
+
+        // #581 defensive invariant: no reload of a never-stored spill slot may
+        // leave the selector (see `assert_spill_reloads_have_stores`).
+        if spill.area_reserved {
+            assert_spill_reloads_have_stores(&instructions, spill.base);
+        }
 
         Ok(instructions)
     }
@@ -17553,6 +17636,85 @@ mod tests {
             then_local.is_some() && then_local == else_local,
             "both arms write the same local register; End adds no reconciliation \
              (then={then_local:?} else={else_local:?})"
+        );
+    }
+
+    /// #581: the add/sub/bitwise immediate folds delete the const
+    /// materialization by `source_line` — which, under the spill-on-exhaustion
+    /// retry, also deleted the spill store `alloc_temp_or_spill` emitted for
+    /// the const's temp (same tag), leaving the victim's stack entry marked
+    /// `Spilled` with no store: the later reload read a never-written frame
+    /// slot (silent wrong value on the shipped direct path,
+    /// `scripts/repro/spill_on_exhaust_242.wat` returned 0xffffd1ce for
+    /// hp(1,2) where wasmtime says 0x2e37). Every spill store must survive
+    /// the fold: exactly one STR per spill-area reload, at matching offsets.
+    #[test]
+    fn fold_preserves_spill_store_581() {
+        use WasmOp::*;
+        // Seven simultaneously-live binop results (R2..R8) + p0 pushed + p1
+        // reserved to its late last-read = all 9 allocatable registers pinned
+        // when `i32.const 77` materializes → the deepest value spills. The
+        // following `i32.sub` folds the const to `SUB rd, rn, #77` and drops
+        // the materialization — the spill store must NOT go with it.
+        let mut ops = Vec::new();
+        for bin in [I32Add, I32Sub, I32Xor, I32Or, I32And, I32Mul, I32Add] {
+            ops.extend([LocalGet(0), LocalGet(1), bin]);
+        }
+        ops.extend([LocalGet(0), I32Const(77), I32Sub]);
+        ops.extend([I32Sub, I32Xor, I32Add, I32Sub, I32Xor, I32Add, I32Sub]);
+        ops.extend([LocalGet(1), I32Add]);
+
+        let mut retry = fresh_selector();
+        retry.set_spill_on_exhaustion(true);
+        retry.set_params_i64(vec![false, false]);
+        let instrs = retry
+            .select_with_stack(&ops, 2)
+            .expect("spill retry must compile");
+
+        let spill_strs: Vec<i32> = instrs
+            .iter()
+            .filter_map(|i| match &i.op {
+                ArmOp::Str { addr, .. }
+                    if addr.base == Reg::SP
+                        && addr.offset_reg.is_none()
+                        && i.source_line.is_some() =>
+                {
+                    Some(addr.offset)
+                }
+                _ => None,
+            })
+            .collect();
+        let spill_ldrs: Vec<i32> = instrs
+            .iter()
+            .filter_map(|i| match &i.op {
+                ArmOp::Ldr { addr, .. }
+                    if addr.base == Reg::SP
+                        && addr.offset_reg.is_none()
+                        && i.source_line.is_some() =>
+                {
+                    Some(addr.offset)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !spill_ldrs.is_empty(),
+            "shape must exercise the spill rung (a reload is expected)"
+        );
+        for off in &spill_ldrs {
+            assert!(
+                spill_strs.contains(off),
+                "#581: reload from [sp, #{off}] has no spill store — the fold \
+                 deleted it (spill stores emitted at the const's source_line \
+                 must survive drop_prev_const_materialization)"
+            );
+        }
+        // The fold itself must still fire: no MOVW #77 materialization remains.
+        assert!(
+            !instrs
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Movw { imm16: 77, .. })),
+            "the #253 imm fold must still drop the const materialization"
         );
     }
 
