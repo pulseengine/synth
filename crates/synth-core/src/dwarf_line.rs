@@ -293,9 +293,25 @@ pub fn emit_debug_sections(
     };
     let mut dwarf = DwarfUnit::new(encoding);
 
-    // The span of emitted text the unit describes: low_pc=`.text`+0 (text base),
-    // high_pc one past the last mapped address.
+    // The line program's extent: one past the last mapped address (the
+    // `end_sequence` terminator below).
     let high_pc = table.iter().map(|&(a, _, _)| a).max().unwrap_or(0) + 1;
+
+    // #564: the CU DIE's `DW_AT_high_pc` must cover the CODE extent, not merely
+    // the line-table extent. The child `DW_TAG_subprogram` DIEs (#557) carry
+    // true code extents, and a function's code routinely extends past its last
+    // line-mapped address (the mapped op itself is ≥2 bytes, plus any unmapped
+    // epilogue/literal-pool tail) — a CU high_pc derived from the line table
+    // then fails to CONTAIN its own children (`llvm-dwarfdump --verify`
+    // post-link: "DIE address ranges are not contained in its parent's
+    // ranges"), and a debugger walking CUs by PC range misses the tail
+    // function. Cover max(subprogram high_pc), i.e. the `.text` extent the
+    // caller composed; fall back to the line-table extent when no subprograms
+    // were passed (nothing to contain).
+    let cu_high_pc = subprograms
+        .iter()
+        .map(|sp| sp.high_pc)
+        .fold(high_pc, u64::max);
 
     // Reproduce the input's source-file table so a debugger resolves each stop to
     // the REAL file (e.g. `panicking.rs`), not the fabricated `synth.wasm`. The
@@ -371,7 +387,7 @@ pub fn emit_debug_sections(
         let root_die = dwarf.unit.get_mut(root);
         root_die.set(gimli::DW_AT_name, AttributeValue::StringRef(name_id));
         root_die.set(gimli::DW_AT_low_pc, AttributeValue::Address(text_base));
-        root_die.set(gimli::DW_AT_high_pc, AttributeValue::Udata(high_pc));
+        root_die.set(gimli::DW_AT_high_pc, AttributeValue::Udata(cu_high_pc));
     }
 
     // #394 Tier-1: attach one DW_TAG_subprogram child DIE per function so a
