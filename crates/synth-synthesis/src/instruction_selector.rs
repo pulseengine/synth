@@ -222,6 +222,158 @@ impl StackVal {
     }
 }
 
+/// #509: one entry per OPEN wasm control construct in `select_with_stack`
+/// (replaces the old `(label, is_loop)` tuple). `label` is the branch-target
+/// label: the end label for a block/if, the start label for a loop.
+/// `params`/`results` come from the decoder's blocktype-arity side-table
+/// ([`FunctionOps::block_arity`]) — `(0, 0)` when the table is absent (the
+/// legacy hand-built-ops path, which keeps every existing unit test
+/// byte-identical).
+///
+/// `result_reg` is the block's DESIGNATED RESULT REGISTER: every edge into the
+/// join moves the carried value into it — each value-carrying `br`/`br_if`/
+/// `br_table` emits `mov R_res, carried` before its jump, and the fall-through
+/// at `End` emits `mov R_res, top` (elided when equal) — so all predecessors
+/// agree on one register by construction (the #313 if/else two-arm
+/// reconciliation generalized to N forward edges). It is allocated LAZILY at
+/// the FIRST branch that targets the block and reserved (via the per-op
+/// `live_params` reservation) for the rest of the block's extent; a value
+/// block that is never branched to therefore keeps the pure fall-through
+/// lowering AND its exact register allocation — bit-identity for existing
+/// code is structural, not behavioural.
+///
+/// [`FunctionOps::block_arity`]: synth_core::wasm_decoder::FunctionOps::block_arity
+struct BlockLabel {
+    label: String,
+    is_loop: bool,
+    /// An `if`/`else` join (its `end_label`). A branch carrying a value here
+    /// would have to agree with the #313 then/else reconciliation registers,
+    /// which are not knowable at the branch site — declined loudly (rare from
+    /// LLVM output, which branches to blocks).
+    is_if: bool,
+    /// Blocktype input arity. For a LOOP this is what a `br` to its header
+    /// carries (loop parameters) — nonzero ⇒ the branch is declined loudly.
+    params: u8,
+    /// Blocktype result arity. `>1` (multi-value) ⇒ value-carrying branches
+    /// are declined loudly (the direct selector does not do multi-value).
+    results: u8,
+    result_reg: Option<Reg>,
+}
+
+/// #509: at a `br`/`br_if`/`br_table` edge, land the carried value in the
+/// target block's designated result register (allocating it on first use).
+///
+/// No-op for edges that carry nothing: a loop back-edge without loop params, a
+/// void target block, or an empty operand stack (dead code after a terminator,
+/// #329-class — matches the legacy lowering, which also emitted a bare branch
+/// there). Loud `Err` — never a silent drop — for the shapes the direct
+/// selector does not support: loop-parameter-carrying branches, multi-value
+/// results, a branch to a result-typed `if` join, and an i64 carried value.
+///
+/// The carried value is PEEKED, not popped: on a `br_if` fall-through the
+/// value stays live on the operand stack (wasm `br_if : [t*] i32 -> [t*]`),
+/// and for `br`/`br_table` leaving it matches the legacy stack shape for the
+/// dead code that follows. The `mov R_res, carried` is emitted before the
+/// compare/branch of the edge (never between CMP and Bcc, so flag-setting MOV
+/// encodings can never corrupt the condition); a `mov` executed on a
+/// NOT-taken path is harmless because `R_res` is reserved for the block's
+/// extent and only meaningful at its join label.
+///
+/// `reserved` must contain every register the caller still needs raw (the
+/// #193 live params + this edge's condition/index register + previously
+/// allocated result registers) so the lazy `R_res` allocation cannot clobber
+/// them.
+fn edge_value_move(
+    block_labels: &mut [BlockLabel],
+    target_idx: usize,
+    stack: &mut [StackVal],
+    next_temp: &mut u8,
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    reserved: &[Reg],
+    line: usize,
+) -> Result<()> {
+    let (is_loop, is_if, params, results) = {
+        let bl = &block_labels[target_idx];
+        (bl.is_loop, bl.is_if, bl.params, bl.results)
+    };
+    if is_loop {
+        if params > 0 {
+            return Err(synth_core::Error::synthesis(format!(
+                "#509: br to a loop header with {params} loop parameter(s) — \
+                 value-carrying backward branches are not supported by the \
+                 direct selector (declined rather than dropping the carried \
+                 value)"
+            )));
+        }
+        return Ok(()); // plain loop back-edge — carries nothing
+    }
+    if results == 0 {
+        return Ok(()); // void target — an unwound value is legal, not carried
+    }
+    if results > 1 {
+        return Err(synth_core::Error::synthesis(format!(
+            "#509: br to a block with {results} results — multi-value blocks \
+             are not supported by the direct selector (declined rather than \
+             dropping the carried values)"
+        )));
+    }
+    if is_if {
+        return Err(synth_core::Error::synthesis(
+            "#509: br to a result-typed if/else join — the #313 reconciliation \
+             registers are not knowable at the branch site (declined rather \
+             than dropping the carried value)"
+                .to_string(),
+        ));
+    }
+    // Dead code after a terminator (#329-class) can reach a branch with an
+    // empty operand stack; the legacy lowering emitted a bare branch there, so
+    // keep that (this path is unreachable at runtime for valid wasm).
+    if stack.is_empty() {
+        return Ok(());
+    }
+    if stack.last().is_some_and(StackVal::is_i64) {
+        return Err(synth_core::Error::synthesis(
+            "#509: an i64 value carried over a br/br_if/br_table is not yet \
+             supported by the direct selector (declined rather than dropping \
+             the carried value)"
+                .to_string(),
+        ));
+    }
+    // Materialize the carried value (reloads a spilled top in place).
+    let val = peek_operand(stack, next_temp, instructions, spill, reserved, line)?;
+    let r_res = match block_labels[target_idx].result_reg {
+        Some(r) => r,
+        None => {
+            // Lazy allocation: avoid the caller's reserved set, the carried
+            // value itself (it is on the vstack, but be explicit), and every
+            // already-designated result register of an open block (a sibling
+            // `br_table` edge allocated in this same op is not yet in the
+            // per-op `live_params` snapshot).
+            let mut avoid = reserved.to_vec();
+            avoid.push(val);
+            for bl in block_labels.iter() {
+                if let Some(r) = bl.result_reg {
+                    avoid.push(r);
+                }
+            }
+            let r = alloc_temp_or_spill(next_temp, stack, instructions, spill, &avoid, line)?;
+            block_labels[target_idx].result_reg = Some(r);
+            r
+        }
+    };
+    if val != r_res {
+        instructions.push(ArmInstruction {
+            op: ArmOp::Mov {
+                rd: r_res,
+                op2: Operand2::Reg(val),
+            },
+            source_line: Some(line),
+        });
+    }
+    Ok(())
+}
+
 /// Number of i64 spill slots reserved in the frame (#171). Each is 8 bytes
 /// (lo+hi). Slots are reused (freed on reload), so this caps *simultaneous*
 /// spills, not total. 8 is generous for real i64-heavy functions; exceeding it
@@ -1581,6 +1733,15 @@ pub struct InstructionSelector {
     /// path refuses (Ok-or-Err) when any param is 64-bit. Empty ⇒ assume i32
     /// (the legacy path; every function with <=4 i32 params is byte-identical).
     params_i64: Vec<bool>,
+    /// #509: blocktype-arity side-table of the function being compiled —
+    /// `(param_count, result_count)` of the k-th `Block`/`Loop`/`If` in the op
+    /// stream (ordinal-keyed: rewrites like the #539 memory.grow fold shift op
+    /// indices but never add/remove control ops). Lets `select_with_stack` give
+    /// every result-typed block a designated result register so value-carrying
+    /// `br`/`br_if`/`br_table` edges land the value at the join instead of
+    /// dropping it. Empty ⇒ every block treated as void (the legacy lowering;
+    /// hand-built op streams in unit tests stay byte-identical).
+    block_arity: Vec<(u8, u8)>,
     /// AAPCS argument count per function, indexed by the *full* WASM function
     /// index (imports first, then locals). Plumbed from the frontend's type +
     /// function sections (issue #195). `func_arg_counts[i]` = number of integer
@@ -1658,6 +1819,7 @@ impl InstructionSelector {
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
             params_i64: Vec::new(),
+            block_arity: Vec::new(),
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1688,6 +1850,7 @@ impl InstructionSelector {
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
             params_i64: Vec::new(),
+            block_arity: Vec::new(),
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             fpu: None,
@@ -1785,6 +1948,14 @@ impl InstructionSelector {
     /// (Ok-or-Err). Empty ⇒ all params assumed i32 (the legacy path).
     pub fn set_params_i64(&mut self, params_i64: Vec<bool>) {
         self.params_i64 = params_i64;
+    }
+
+    /// #509: register the blocktype-arity side-table of the function about to
+    /// be compiled — `(param_count, result_count)` of the k-th
+    /// `Block`/`Loop`/`If` in its op stream (see the `block_arity` field).
+    /// Empty ⇒ every block treated as void (the legacy lowering).
+    pub fn set_block_arity(&mut self, block_arity: Vec<(u8, u8)>) {
+        self.block_arity = block_arity;
     }
 
     pub fn set_native_pointer_stack(&mut self, sp_index: u32, sp_init: i32) {
@@ -5567,9 +5738,17 @@ impl InstructionSelector {
         // Control flow tracking
         let mut cf = ControlFlowManager::new();
         cf.enter_function();
-        // Stack of (label, is_loop) for branch target resolution
-        // For blocks: label is the end label; for loops: label is the start label
-        let mut block_labels: Vec<(String, bool)> = Vec::new();
+        // Stack of open control constructs for branch target resolution.
+        // For blocks/ifs: label is the end label; for loops: the start label.
+        // #509: each entry also carries the blocktype arity (from the decoder's
+        // ordinal side-table) and the block's designated result register — see
+        // [`BlockLabel`].
+        let mut block_labels: Vec<BlockLabel> = Vec::new();
+        // #509: ordinal of the NEXT Block/Loop/If op in the stream — the key
+        // into `self.block_arity` (ordinal-keyed so op-stream rewrites that
+        // don't touch control ops, e.g. the #539 memory.grow fold, stay
+        // aligned).
+        let mut ctrl_ord: usize = 0;
         // Stack of (else_label, end_label) for if/else blocks
         let mut if_labels: Vec<(String, String)> = Vec::new();
         // #313: per-if-block operand-stack checkpoint (vstack depth captured at
@@ -5721,6 +5900,16 @@ impl InstructionSelector {
                             live_params.push(hi);
                         }
                     }
+                }
+            }
+            // #509: the designated result register of every open, branched-to
+            // value block is reserved for the block's extent — a temp/const/
+            // reload allocated into it would be clobbered by the edge moves
+            // into the join. Blocks never branched to have no `result_reg`, so
+            // existing code allocates byte-identically.
+            for bl in &block_labels {
+                if let Some(r) = bl.result_reg {
+                    live_params.push(r);
                 }
             }
             match op {
@@ -7514,16 +7703,38 @@ impl InstructionSelector {
                 // =========================================================
                 Block => {
                     let label = self.alloc_label("block_end");
+                    // #509: blocktype arity from the ordinal side-table —
+                    // (0,0) (void) when absent, preserving the legacy lowering.
+                    let (params, results) =
+                        self.block_arity.get(ctrl_ord).copied().unwrap_or((0, 0));
+                    ctrl_ord += 1;
                     // Push block info so br can find the end label
                     cf.enter_block(BlockType::Block);
-                    block_labels.push((label.clone(), false)); // (end_label, is_loop)
+                    block_labels.push(BlockLabel {
+                        label, // end label
+                        is_loop: false,
+                        is_if: false,
+                        params,
+                        results,
+                        result_reg: None, // allocated lazily at the first br edge
+                    });
                     // No ARM code emitted at block entry (label at end)
                 }
 
                 Loop => {
                     let label = self.alloc_label("loop_start");
+                    let (params, results) =
+                        self.block_arity.get(ctrl_ord).copied().unwrap_or((0, 0));
+                    ctrl_ord += 1;
                     cf.enter_block(BlockType::Loop);
-                    block_labels.push((label.clone(), true)); // (start_label, is_loop)
+                    block_labels.push(BlockLabel {
+                        label: label.clone(), // start label
+                        is_loop: true,
+                        is_if: false,
+                        params,
+                        results,
+                        result_reg: None,
+                    });
                     // Emit loop start label
                     instructions.push(ArmInstruction {
                         op: ArmOp::Label { name: label },
@@ -7545,10 +7756,23 @@ impl InstructionSelector {
                     let else_label = self.alloc_label("else");
                     let end_label = self.alloc_label("if_end");
 
+                    let (params, results) =
+                        self.block_arity.get(ctrl_ord).copied().unwrap_or((0, 0));
+                    ctrl_ord += 1;
                     cf.enter_block(BlockType::If);
                     // Store both labels: else_label for the if-branch, end_label for the end
                     if_labels.push((else_label.clone(), end_label.clone()));
-                    block_labels.push((end_label, false));
+                    // #509: `is_if` marks this join as #313-reconciled — a
+                    // value-carrying br to it is declined at the branch site
+                    // (the reconciliation registers are not knowable there).
+                    block_labels.push(BlockLabel {
+                        label: end_label,
+                        is_loop: false,
+                        is_if: true,
+                        params,
+                        results,
+                        result_reg: None,
+                    });
                     // #313: checkpoint the operand-stack depth (the condition is
                     // already popped). The then-arm runs from here; its results
                     // are whatever sits ABOVE this depth at `Else`. Reservation
@@ -7687,15 +7911,65 @@ impl InstructionSelector {
                         cf.add_instruction();
                         if_labels.pop();
                         block_labels.pop();
-                    } else if let Some((label, is_loop)) = block_labels.pop()
-                        && !is_loop
+                    } else if let Some(bl) = block_labels.pop()
+                        && !bl.is_loop
                     {
-                        // Block end: emit end label
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Label { name: label },
-                            source_line: Some(idx),
-                        });
-                        cf.add_instruction();
+                        // #509: fall-through edge into a branched-to value
+                        // block's join — land the falling-through result in the
+                        // designated result register BEFORE the end label (the
+                        // branch edges jump past this move, having already done
+                        // their own), then push R_res as the block's result.
+                        // `result_reg` is only ever Some for a branched-to
+                        // arity-1 block, so plain/void blocks keep the legacy
+                        // label-only epilogue byte-identically.
+                        if let Some(r_res) = bl.result_reg {
+                            if let Some(top) = stack.last().copied() {
+                                if top.is_i64() {
+                                    return Err(synth_core::Error::synthesis(
+                                        "#509: i64 fall-through into an \
+                                         i32-carrying block join — width \
+                                         mismatch (invalid wasm or unsupported \
+                                         shape); declined rather than \
+                                         miscompiled"
+                                            .to_string(),
+                                    ));
+                                }
+                                let val = pop_operand(
+                                    &mut stack,
+                                    &mut next_temp,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &live_params,
+                                    idx,
+                                )?;
+                                if val != r_res {
+                                    instructions.push(ArmInstruction {
+                                        op: ArmOp::Mov {
+                                            rd: r_res,
+                                            op2: Operand2::Reg(val),
+                                        },
+                                        source_line: Some(idx),
+                                    });
+                                    cf.add_instruction();
+                                }
+                            }
+                            // (An empty stack here is dead code after a
+                            // terminator — the branch edges already loaded
+                            // R_res, so just publish it as the result.)
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Label { name: bl.label },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                            stack.push(StackVal::i32(r_res));
+                        } else {
+                            // Block end: emit end label
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Label { name: bl.label },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                         // Loop end: no label at end (label is at start)
                     }
                     // else: function-level end, nothing to emit
@@ -7706,24 +7980,26 @@ impl InstructionSelector {
                     // block_labels + if_labels are combined into the block_labels stack
                     let target_idx = block_labels.len().saturating_sub(1 + *depth as usize);
                     if target_idx < block_labels.len() {
-                        let (label, is_loop) = &block_labels[target_idx];
-                        if *is_loop {
-                            // Loop: branch back to start
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::B {
-                                    label: label.clone(),
-                                },
-                                source_line: Some(idx),
-                            });
-                        } else {
-                            // Block: branch forward to end
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::B {
-                                    label: label.clone(),
-                                },
-                                source_line: Some(idx),
-                            });
-                        }
+                        // #509: land a carried value in the target block's
+                        // designated result register BEFORE the jump (no-op for
+                        // void targets and plain loop back-edges).
+                        edge_value_move(
+                            &mut block_labels,
+                            target_idx,
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        // Loop: branch back to start; block: forward to end.
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::B {
+                                label: block_labels[target_idx].label.clone(),
+                            },
+                            source_line: Some(idx),
+                        });
                     } else {
                         // Depth exceeds stack — branch to function return
                         instructions.push(ArmInstruction {
@@ -7745,6 +8021,29 @@ impl InstructionSelector {
                         idx,
                     )?;
 
+                    // #509: land a carried value in the target block's
+                    // designated result register. Emitted BEFORE the CMP so no
+                    // instruction sits between CMP and Bcc; the value is PEEKED
+                    // (it stays on the operand stack for the fall-through path,
+                    // wasm `br_if : [t*] i32 -> [t*]`), and the mov on the
+                    // not-taken path is dead — R_res is reserved for the
+                    // block's extent and only meaningful at its join.
+                    let target_idx = block_labels.len().saturating_sub(1 + *depth as usize);
+                    if target_idx < block_labels.len() {
+                        let mut edge_reserved = live_params.clone();
+                        edge_reserved.push(cond_reg);
+                        edge_value_move(
+                            &mut block_labels,
+                            target_idx,
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &edge_reserved,
+                            idx,
+                        )?;
+                    }
+
                     // CMP cond_reg, #0
                     instructions.push(ArmInstruction {
                         op: ArmOp::Cmp {
@@ -7756,13 +8055,11 @@ impl InstructionSelector {
                     cf.add_instruction();
 
                     // BNE target_label (branch if non-zero)
-                    let target_idx = block_labels.len().saturating_sub(1 + *depth as usize);
                     if target_idx < block_labels.len() {
-                        let (label, _) = &block_labels[target_idx];
                         instructions.push(ArmInstruction {
                             op: ArmOp::Bcc {
                                 cond: Condition::NE,
-                                label: label.clone(),
+                                label: block_labels[target_idx].label.clone(),
                             },
                             source_line: Some(idx),
                         });
@@ -7781,6 +8078,35 @@ impl InstructionSelector {
                         idx,
                     )?;
 
+                    // #509: land the carried value in EVERY distinct target
+                    // block's designated result register up front, before the
+                    // dispatch cascade (never between a CMP and its Bcc — a
+                    // flag-setting MOV encoding would corrupt the condition).
+                    // Each mov is dead on the edges that don't take it: every
+                    // R_res is reserved for its block's extent and only
+                    // meaningful at that block's join. Valid wasm gives all
+                    // br_table targets the same arity, so either every edge
+                    // carries the value or none does.
+                    let mut moved: Vec<usize> = Vec::new();
+                    for t in targets.iter().chain(std::iter::once(default)) {
+                        let target_idx = block_labels.len().saturating_sub(1 + *t as usize);
+                        if target_idx < block_labels.len() && !moved.contains(&target_idx) {
+                            moved.push(target_idx);
+                            let mut edge_reserved = live_params.clone();
+                            edge_reserved.push(index_reg);
+                            edge_value_move(
+                                &mut block_labels,
+                                target_idx,
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &edge_reserved,
+                                idx,
+                            )?;
+                        }
+                    }
+
                     // Emit cascading CMP + BEQ for each target
                     for (i, target) in targets.iter().enumerate() {
                         instructions.push(ArmInstruction {
@@ -7794,11 +8120,10 @@ impl InstructionSelector {
 
                         let target_idx = block_labels.len().saturating_sub(1 + *target as usize);
                         if target_idx < block_labels.len() {
-                            let (label, _) = &block_labels[target_idx];
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Bcc {
                                     cond: Condition::EQ,
-                                    label: label.clone(),
+                                    label: block_labels[target_idx].label.clone(),
                                 },
                                 source_line: Some(idx),
                             });
@@ -7809,10 +8134,9 @@ impl InstructionSelector {
                     // Default branch
                     let default_idx = block_labels.len().saturating_sub(1 + *default as usize);
                     if default_idx < block_labels.len() {
-                        let (label, _) = &block_labels[default_idx];
                         instructions.push(ArmInstruction {
                             op: ArmOp::B {
-                                label: label.clone(),
+                                label: block_labels[default_idx].label.clone(),
                             },
                             source_line: Some(idx),
                         });
