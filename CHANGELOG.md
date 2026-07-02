@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-07-02
+
+**The allocator release — VCR-RA-001 verified: Belady spilling ships default-on.**
+
+### Changed (byte-changing, deliberate — anchors refrozen)
+
+- **`SYNTH_SPILL_REALLOC` is default-ON (#583).** The three-stage liveness
+  spilling pass (reload forwarding #569, Belady farthest-next-use re-choice #576,
+  whole-function slot liveness #579) now runs by default on the ARM optimized
+  path: flat_flight reaches its Belady optimum (412→388 B, frame traffic
+  3 ld + 3 st → 0), 40+ corpus functions shrink, none grow. Every fixture's new
+  bytes were execution-proven vs wasmtime BEFORE the anchors were re-pinned.
+  Opt-out: `SYNTH_SPILL_REALLOC=0` (CI-gated to reproduce the old bytes).
+
+### Added
+
+- **Whole-function frame-slot liveness (#579)** — dead frame stores drop (the
+  reach-end conservatism replaced by a may-reach analysis over full control
+  flow; sub-word/unknown-index/escape shapes decline soundly).
+- **Spill on register exhaustion (#580, `SYNTH_SPILL_ON_EXHAUST`, default off).**
+  The optimized path's exhaustion hard-fail (decline to the direct selector) can
+  now Belady-spill at allocation time instead — high-pressure functions stay on
+  the optimized path. Off by default pending silicon numbers.
+
+### Fixed
+
+- **Direct-selector spill rung: never reload a never-stored slot (#581/#582).**
+  Three immediate-fold sites deleted spill stores sharing the const's
+  `source_line` tag, so a reload could read garbage under high pressure (silent
+  wrong value on the shipped path). All three sites now preserve spill stores; a
+  defensive end-of-selection validator enforces the store-before-reload
+  invariant.
+
+VCR-RA-001 (SSA allocator with spilling — remove the hard-fail) is **verified**
+in the rivet trace; `rivet release status v0.24.0`: cuttable.
+
 ## [0.23.0] - 2026-07-02
 
 **Value-carrying branch correctness on the shipped path (#509) + the Belady
