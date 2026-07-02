@@ -196,6 +196,10 @@ pub fn select_with_result_types(
     // selector (and its unit tests) work off a plain bool. Flag off by default →
     // `compute_local_promotion` is never consulted → byte-identical baseline.
     let promote_locals = std::env::var_os("SYNTH_RV_LOCAL_PROMO").is_some();
+    // #472: cmp→select fusion (the VCR-SEL-004 lever, ported from ARM). Same
+    // read-once discipline; flag off by default → `pending_cmp` is never set →
+    // `lower_select` takes the baseline branch-on-boolean path, byte-identical.
+    let cmp_select_fuse = std::env::var_os("SYNTH_RV_CMP_SELECT").is_some();
     select_inner(
         wasm_ops,
         num_params,
@@ -203,11 +207,13 @@ pub fn select_with_result_types(
         func_ret_i64,
         type_ret_i64,
         promote_locals,
+        cmp_select_fuse,
     )
 }
 
-/// Shared selection pipeline. `promote_locals` drives the #472 lever; the public
-/// entry point derives it from the env, unit tests pass it explicitly.
+/// Shared selection pipeline. `promote_locals` drives the #472 local-promotion
+/// lever and `cmp_select_fuse` the #472 cmp→select fusion; the public entry
+/// point derives both from the env, unit tests pass them explicitly.
 fn select_inner(
     wasm_ops: &[WasmOp],
     num_params: u32,
@@ -215,11 +221,13 @@ fn select_inner(
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
     promote_locals: bool,
+    cmp_select_fuse: bool,
 ) -> Result<RiscVSelection, SelectorError> {
     let mut ctx = Selector::new_with_options(num_params, options);
     ctx.func_ret_i64 = func_ret_i64.to_vec();
     ctx.type_ret_i64 = type_ret_i64.to_vec();
     ctx.promote_locals = promote_locals;
+    ctx.cmp_select_fuse = cmp_select_fuse;
     ctx.compute_local_layout(wasm_ops, num_params); // #223 / #312
     // #472: zero-init any promoted local whose first access is a read (#457).
     // Emitted BEFORE the body so (a) `preserve_callee_saved`'s dest scan sees
@@ -829,6 +837,39 @@ fn preserve_callee_saved(out: &mut Vec<RiscVOp>, local_bytes: i32) {
     *out = new_out;
 }
 
+/// #472 (VCR-SEL-004 port): a just-lowered i32 comparison whose 0/1 boolean is
+/// still sitting on top of the vstack. If the *very next* wasm op is `select`,
+/// the boolean materialization (`slt`/`sltu`/`xor`+`sltiu`/`xori`…) is deleted
+/// and the select branches directly on the comparison via the matching B-type
+/// branch (`beq`/`bne`/`blt`/`bge`/`bltu`/`bgeu`) — RV32's branch comparators
+/// play the role ARM's IT-predicated flags do in `fuse_cmp_select`.
+///
+/// Validity is enforced two ways (belt and braces):
+/// - `lower_one` `take()`s the record at the start of EVERY op, so it only
+///   survives from a comparison to the immediately following op.
+/// - `lower_select` additionally checks the popped condition register is
+///   exactly `bool_reg` and that nothing was emitted since (`end` index),
+///   so a zero-emission op in between (e.g. a promoted `local.get`) can
+///   never smuggle a stale record through.
+///
+/// Deleting the tail is sound: `bool_reg` is a fresh temp pushed exactly once
+/// (`alloc_temp` never returns a live vstack register) and the select pops it,
+/// so nothing else can observe the boolean; `rs1`/`rs2` are unchanged since the
+/// comparison because no instruction was emitted in between.
+struct PendingCmp {
+    /// Branch condition that is TRUE exactly when the wasm comparison is 1.
+    cond: Branch,
+    /// Comparison operands, already in emitted (post-swap) order.
+    rs1: Reg,
+    rs2: Reg,
+    /// Register the deleted sequence would have left the 0/1 boolean in.
+    bool_reg: Reg,
+    /// `out.len()` BEFORE the boolean materialization — truncation point.
+    start: usize,
+    /// `out.len()` AFTER it — must still equal `out.len()` at fuse time.
+    end: usize,
+}
+
 /// Internal control-flow frame. Every wasm `block`/`loop`/`if` pushes one.
 struct ControlFrame {
     /// What kind of frame it is — affects br semantics (loop targets the
@@ -937,6 +978,16 @@ struct Selector {
     /// public entry point from `SYNTH_RV_LOCAL_PROMO`; the env is read exactly
     /// once there so the decision function stays pure and unit-testable.
     promote_locals: bool,
+    /// #472 (VCR-SEL-004 port): whether cmp→select fusion is enabled. Set by
+    /// the public entry point from `SYNTH_RV_CMP_SELECT`; unit tests pass it
+    /// explicitly. With this false, `pending_cmp` is never populated and the
+    /// select lowering is byte-identical to the baseline.
+    cmp_select_fuse: bool,
+    /// #472: the comparison lowered by the PREVIOUS wasm op, if fusion is
+    /// enabled and its boolean is on top of the vstack. `lower_one` takes it
+    /// at the start of each op so it can only feed the immediately following
+    /// `select`. See [`PendingCmp`].
+    pending_cmp: Option<PendingCmp>,
 }
 
 impl Selector {
@@ -978,6 +1029,8 @@ impl Selector {
             promoted: std::collections::HashMap::new(),
             promoted_zero_init: std::collections::HashSet::new(),
             promote_locals: false,
+            cmp_select_fuse: false,
+            pending_cmp: None,
         }
     }
 
@@ -1256,6 +1309,9 @@ impl Selector {
         // #312: per-op pin scope — operands popped and scratch allocated while
         // lowering `op` stay pinned until the next op starts.
         self.op_pinned.clear();
+        // #472: a fusible comparison record only survives from the comparison
+        // to the IMMEDIATELY following op — any other op invalidates it.
+        let pending_cmp = self.pending_cmp.take();
         match op {
             // ─── Locals ─────────────────────────────────────────────────
             LocalGet(idx) => self.lower_local_get(*idx, op)?,
@@ -1263,7 +1319,7 @@ impl Selector {
             LocalTee(idx) => self.lower_local_tee(*idx, op)?,
 
             // ─── Select (ternary) — #223 ────────────────────────────────
-            Select => self.lower_select(op)?,
+            Select => self.lower_select(op, pending_cmp)?,
 
             // ─── Constants ──────────────────────────────────────────────
             I32Const(v) => {
@@ -1495,10 +1551,48 @@ impl Selector {
     /// Handles both i32 and i64 operands (the i64 case selects both halves under
     /// one branch). `dst` may alias `a`/`b` — safe, because the two arms are
     /// mutually exclusive.
-    fn lower_select(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
+    ///
+    /// #472 (VCR-SEL-004 port): when `pending` carries the comparison lowered by
+    /// the immediately preceding op AND its boolean is exactly the popped `cond`,
+    /// the boolean materialization is deleted and the branch tests the comparison
+    /// directly (`blt a, b` instead of `slt t, a, b; bne t, zero`) — saving the
+    /// 1–2 instructions the boolean cost. Only reachable with
+    /// `SYNTH_RV_CMP_SELECT` set (the record is never created otherwise).
+    /// Note the fused branch is emitted before any `mv`, so the select's freshly
+    /// allocated `dst` aliasing a comparison operand is harmless.
+    fn lower_select(
+        &mut self,
+        op: &WasmOp,
+        pending: Option<PendingCmp>,
+    ) -> Result<(), SelectorError> {
         let cond = self.pop_i32(op)?;
         let b = self.pop_any(op)?;
         let a = self.pop_any(op)?;
+        // Fuse only if the record's boolean is the popped condition and nothing
+        // was emitted since the comparison (see PendingCmp for why both hold
+        // whenever the record survives `lower_one`'s take()).
+        let fused = pending.filter(|p| p.bool_reg == cond && p.end == self.out.len());
+        if let Some(p) = &fused {
+            // Drop the boolean materialization — dead once we branch on the
+            // comparison itself.
+            self.out.truncate(p.start);
+        }
+        // Branch taken (→ take_a arm) exactly when the wasm condition is
+        // true/non-zero: the fused comparison directly, or `cond != 0`.
+        let take_branch = |label: String| match &fused {
+            Some(p) => RiscVOp::Branch {
+                cond: p.cond,
+                rs1: p.rs1,
+                rs2: p.rs2,
+                label,
+            },
+            None => RiscVOp::Branch {
+                cond: Branch::Ne,
+                rs1: cond,
+                rs2: Reg::ZERO,
+                label,
+            },
+        };
         let take_a = self.fresh_label("Lsel_a");
         let end = self.fresh_label("Lsel_end");
         let mv = |dst: Reg, src: Reg| RiscVOp::Addi {
@@ -1509,12 +1603,7 @@ impl Selector {
         match (a, b) {
             (VstackVal::I32(ra), VstackVal::I32(rb)) => {
                 let dst = self.alloc_temp();
-                self.out.push(RiscVOp::Branch {
-                    cond: Branch::Ne,
-                    rs1: cond,
-                    rs2: Reg::ZERO,
-                    label: take_a.clone(),
-                });
+                self.out.push(take_branch(take_a.clone()));
                 self.out.push(mv(dst, rb)); // cond == 0 → b
                 self.out.push(RiscVOp::Jal {
                     rd: Reg::ZERO,
@@ -1528,12 +1617,7 @@ impl Selector {
             (VstackVal::I64 { lo: alo, hi: ahi }, VstackVal::I64 { lo: blo, hi: bhi }) => {
                 let dlo = self.alloc_temp();
                 let dhi = self.alloc_temp();
-                self.out.push(RiscVOp::Branch {
-                    cond: Branch::Ne,
-                    rs1: cond,
-                    rs2: Reg::ZERO,
-                    label: take_a.clone(),
-                });
+                self.out.push(take_branch(take_a.clone()));
                 self.out.push(mv(dlo, blo)); // cond == 0 → b
                 self.out.push(mv(dhi, bhi));
                 self.out.push(RiscVOp::Jal {
@@ -1917,9 +2001,36 @@ impl Selector {
 
     // ────────── Comparisons ──────────
 
+    /// #472 (VCR-SEL-004 port): record a fusible comparison for a possibly
+    /// following `select`. No-op unless `SYNTH_RV_CMP_SELECT` is set (the
+    /// flag-off path never populates `pending_cmp`, keeping it byte-identical).
+    /// `start` is `out.len()` from BEFORE the boolean materialization was
+    /// emitted; `cond(rs1, rs2)` must be TRUE exactly when the wasm comparison
+    /// yields 1.
+    fn record_pending_cmp(
+        &mut self,
+        cond: Branch,
+        rs1: Reg,
+        rs2: Reg,
+        bool_reg: Reg,
+        start: usize,
+    ) {
+        if self.cmp_select_fuse {
+            self.pending_cmp = Some(PendingCmp {
+                cond,
+                rs1,
+                rs2,
+                bool_reg,
+                start,
+                end: self.out.len(),
+            });
+        }
+    }
+
     fn lower_eqz(&mut self, op: &WasmOp) -> Result<(), SelectorError> {
         let src = self.pop_i32(op)?;
         let dst = self.alloc_temp();
+        let start = self.out.len();
         // sltiu dst, src, 1  → 1 iff src == 0
         self.out.push(RiscVOp::Sltiu {
             rd: dst,
@@ -1927,12 +2038,15 @@ impl Selector {
             imm: 1,
         });
         self.push_i32(dst);
+        // eqz is true iff src == 0 → beq src, zero.
+        self.record_pending_cmp(Branch::Eq, src, Reg::ZERO, dst, start);
         Ok(())
     }
 
     fn lower_cmp_eq(&mut self, op: &WasmOp, invert: bool) -> Result<(), SelectorError> {
         let (lhs, rhs) = self.pop_pair_i32(op)?;
         let diff = self.alloc_temp();
+        let start = self.out.len();
         // xor diff, lhs, rhs   → 0 iff equal
         self.out.push(RiscVOp::Xor {
             rd: diff,
@@ -1956,6 +2070,9 @@ impl Selector {
             });
         }
         self.push_i32(dst);
+        // eq → beq lhs, rhs ; ne → bne lhs, rhs (both instructions fusible).
+        let cond = if invert { Branch::Ne } else { Branch::Eq };
+        self.record_pending_cmp(cond, lhs, rhs, dst, start);
         Ok(())
     }
 
@@ -1963,8 +2080,11 @@ impl Selector {
         let (a, b) = self.pop_pair_i32(op)?;
         let dst = self.alloc_temp();
         let (rs1, rs2) = if swap { (b, a) } else { (a, b) };
+        let start = self.out.len();
         self.out.push(RiscVOp::Slt { rd: dst, rs1, rs2 });
         self.push_i32(dst);
+        // lt_s (and gt_s via the operand swap) → blt rs1, rs2.
+        self.record_pending_cmp(Branch::Lt, rs1, rs2, dst, start);
         Ok(())
     }
 
@@ -1974,6 +2094,7 @@ impl Selector {
         let lt = self.alloc_temp();
         let dst = self.alloc_temp();
         let (rs1, rs2) = if swap { (b, a) } else { (a, b) };
+        let start = self.out.len();
         self.out.push(RiscVOp::Slt { rd: lt, rs1, rs2 });
         // dst = lt ^ 1  (flip 0/1)
         self.out.push(RiscVOp::Xori {
@@ -1982,6 +2103,8 @@ impl Selector {
             imm: 1,
         });
         self.push_i32(dst);
+        // ge_s (and le_s via the operand swap) → bge rs1, rs2.
+        self.record_pending_cmp(Branch::Ge, rs1, rs2, dst, start);
         Ok(())
     }
 
@@ -1989,8 +2112,11 @@ impl Selector {
         let (a, b) = self.pop_pair_i32(op)?;
         let dst = self.alloc_temp();
         let (rs1, rs2) = if swap { (b, a) } else { (a, b) };
+        let start = self.out.len();
         self.out.push(RiscVOp::Sltu { rd: dst, rs1, rs2 });
         self.push_i32(dst);
+        // lt_u (and gt_u via the operand swap) → bltu rs1, rs2.
+        self.record_pending_cmp(Branch::Ltu, rs1, rs2, dst, start);
         Ok(())
     }
 
@@ -1999,6 +2125,7 @@ impl Selector {
         let lt = self.alloc_temp();
         let dst = self.alloc_temp();
         let (rs1, rs2) = if swap { (b, a) } else { (a, b) };
+        let start = self.out.len();
         self.out.push(RiscVOp::Sltu { rd: lt, rs1, rs2 });
         self.out.push(RiscVOp::Xori {
             rd: dst,
@@ -2006,6 +2133,8 @@ impl Selector {
             imm: 1,
         });
         self.push_i32(dst);
+        // ge_u (and le_u via the operand swap) → bgeu rs1, rs2.
+        self.record_pending_cmp(Branch::Geu, rs1, rs2, dst, start);
         Ok(())
     }
 
@@ -7552,6 +7681,7 @@ mod tests {
             &[],
             &[],
             promote,
+            false,
         )
         .unwrap()
         .ops
@@ -7724,5 +7854,206 @@ mod tests {
         assert_eq!(map.get(&1), Some(&Reg::S8));
         assert_eq!(map.get(&2), Some(&Reg::S9));
         assert_eq!(map.get(&3), Some(&Reg::S10));
+    }
+
+    // ─────────── #472: RV32 cmp→select fusion (VCR-SEL-004 port) ───────────
+
+    fn s_fuse(ops: &[WasmOp], num_params: u32, fuse: bool) -> Vec<RiscVOp> {
+        select_inner(
+            ops,
+            num_params,
+            SelectorOptions::wasm_compliant(),
+            &[],
+            &[],
+            false,
+            fuse,
+        )
+        .unwrap()
+        .ops
+    }
+
+    fn count_branch(out: &[RiscVOp], want: Branch) -> usize {
+        count(
+            out,
+            |op| matches!(op, RiscVOp::Branch { cond, .. } if *cond == want),
+        )
+    }
+
+    /// `select(p0, p1, p0 <s p1)` — a comparison directly feeding a select.
+    fn lt_s_select_ops() -> Vec<WasmOp> {
+        vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32LtS,
+            WasmOp::Select,
+            WasmOp::End,
+        ]
+    }
+
+    /// Flag OFF must be byte-identical to the default `select()` path: the
+    /// boolean is materialized (`slt`) and the select branches on `bool != 0`.
+    #[test]
+    fn cmp_select_flag_off_is_identical_and_unfused_472() {
+        let ops = lt_s_select_ops();
+        let default = s(&ops, 2); // select() — env unset in tests
+        let off = s_fuse(&ops, 2, false);
+        assert_eq!(default, off, "flag-off must equal the default path");
+        assert_eq!(count(&off, |op| matches!(op, RiscVOp::Slt { .. })), 1);
+        assert_eq!(count_branch(&off, Branch::Ne), 1, "bne bool, zero: {off:?}");
+        assert_eq!(count_branch(&off, Branch::Lt), 0);
+    }
+
+    /// Flag ON fuses `lt_s` into the select's branch: the `slt` disappears and
+    /// the branch becomes `blt a, b` — one instruction saved.
+    #[test]
+    fn cmp_select_flag_on_fuses_lt_s_472() {
+        let ops = lt_s_select_ops();
+        let off = s_fuse(&ops, 2, false);
+        let on = s_fuse(&ops, 2, true);
+        assert_eq!(
+            count(&on, |op| matches!(op, RiscVOp::Slt { .. })),
+            0,
+            "boolean materialization must be deleted: {on:?}"
+        );
+        assert_eq!(count_branch(&on, Branch::Lt), 1, "blt expected: {on:?}");
+        assert_eq!(count_branch(&on, Branch::Ne), 0, "no bne-vs-zero: {on:?}");
+        assert_eq!(on.len(), off.len() - 1, "one instruction saved: {on:?}");
+    }
+
+    /// `eq` costs two instructions to materialize (`xor` + `sltiu`) — fusing
+    /// into `beq a, b` saves both.
+    #[test]
+    fn cmp_select_flag_on_fuses_eq_472() {
+        let ops = [
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Eq,
+            WasmOp::Select,
+            WasmOp::End,
+        ];
+        let off = s_fuse(&ops, 2, false);
+        let on = s_fuse(&ops, 2, true);
+        assert_eq!(count(&on, |op| matches!(op, RiscVOp::Xor { .. })), 0);
+        assert_eq!(count(&on, |op| matches!(op, RiscVOp::Sltiu { .. })), 0);
+        assert_eq!(count_branch(&on, Branch::Eq), 1, "beq expected: {on:?}");
+        assert_eq!(on.len(), off.len() - 2, "two instructions saved: {on:?}");
+    }
+
+    /// `ge_u` costs `sltu` + `xori` — fusing into `bgeu a, b` saves both.
+    #[test]
+    fn cmp_select_flag_on_fuses_ge_u_472() {
+        let ops = [
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32GeU,
+            WasmOp::Select,
+            WasmOp::End,
+        ];
+        let off = s_fuse(&ops, 2, false);
+        let on = s_fuse(&ops, 2, true);
+        assert_eq!(count(&on, |op| matches!(op, RiscVOp::Sltu { .. })), 0);
+        assert_eq!(count(&on, |op| matches!(op, RiscVOp::Xori { .. })), 0);
+        assert_eq!(count_branch(&on, Branch::Geu), 1, "bgeu expected: {on:?}");
+        assert_eq!(on.len(), off.len() - 2, "two instructions saved: {on:?}");
+    }
+
+    /// `eqz` fuses into `beq src, zero` — the `sltiu` disappears.
+    #[test]
+    fn cmp_select_flag_on_fuses_eqz_472() {
+        let ops = [
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(0),
+            WasmOp::I32Eqz,
+            WasmOp::Select,
+            WasmOp::End,
+        ];
+        let off = s_fuse(&ops, 2, false);
+        let on = s_fuse(&ops, 2, true);
+        assert_eq!(count(&on, |op| matches!(op, RiscVOp::Sltiu { .. })), 0);
+        assert_eq!(
+            count(&on, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Eq,
+                    rs2: Reg::ZERO,
+                    ..
+                }
+            )),
+            1,
+            "beq src, zero expected: {on:?}"
+        );
+        assert_eq!(on.len(), off.len() - 1, "one instruction saved: {on:?}");
+    }
+
+    /// An i32 comparison feeding a select of i64 operands fuses too — the
+    /// condition is i32 regardless of the selected type, and both halves move
+    /// under the single fused branch.
+    #[test]
+    fn cmp_select_flag_on_fuses_i64_operand_select_472() {
+        let ops = [
+            WasmOp::I64Const(11),
+            WasmOp::I64Const(22),
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32LtU,
+            WasmOp::Select,
+            WasmOp::End,
+        ];
+        let off = s_fuse(&ops, 2, false);
+        let on = s_fuse(&ops, 2, true);
+        assert_eq!(count(&on, |op| matches!(op, RiscVOp::Sltu { .. })), 0);
+        assert_eq!(count_branch(&on, Branch::Ltu), 1, "bltu expected: {on:?}");
+        assert_eq!(on.len(), off.len() - 1, "one instruction saved: {on:?}");
+    }
+
+    /// Fusion requires the comparison to IMMEDIATELY precede the select — an
+    /// intervening op (here a `local.tee` of the boolean) invalidates the
+    /// record even though the same register ends up back on top of the stack.
+    #[test]
+    fn cmp_select_no_fuse_when_not_adjacent_472() {
+        let ops = [
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32LtS,
+            WasmOp::LocalTee(2),
+            WasmOp::Select,
+            WasmOp::End,
+        ];
+        let on = s_fuse(&ops, 2, true);
+        assert_eq!(
+            count(&on, |op| matches!(op, RiscVOp::Slt { .. })),
+            1,
+            "boolean must stay materialized (tee reads it): {on:?}"
+        );
+        assert_eq!(count_branch(&on, Branch::Ne), 1, "unfused select: {on:?}");
+        assert_eq!(count_branch(&on, Branch::Lt), 0, "no blt: {on:?}");
+    }
+
+    /// An i64 comparison feeding a select is NOT fused (out of scope — its
+    /// boolean needs the full multi-instruction sequence); the select stays on
+    /// the baseline branch-on-boolean path.
+    #[test]
+    fn cmp_select_i64_comparison_not_fused_472() {
+        let ops = [
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I64Const(3),
+            WasmOp::I64Const(4),
+            WasmOp::I64LtS,
+            WasmOp::Select,
+            WasmOp::End,
+        ];
+        let off = s_fuse(&ops, 2, false);
+        let on = s_fuse(&ops, 2, true);
+        assert_eq!(on, off, "i64 comparisons are out of fusion scope");
     }
 }
