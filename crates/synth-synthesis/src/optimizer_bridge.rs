@@ -2783,18 +2783,35 @@ impl OptimizerBridge {
         // AND the now-dead address materialization (the pressure relief that keeps
         // the reserved base a net win). R11 is realloc-immune (outside the R0–R8
         // pool), so the single entry materialization survives every segment.
-        // Opt-in (`SYNTH_BASE_CSE=1`) → off ⇒ byte-identical. The optimized path
-        // is the ONLY caller of `ir_to_arm`, so this never reaches the relocatable
-        // lowering (which already pins the base in `fp`).
+        // DEFAULT-ON (#242 feature loop, the SYNTH_SPILL_REALLOC-flip pattern):
+        // base-CSE ships by default. Evidence basis for the flip: the planner
+        // only activates on the narrow provably-profitable shape (every opcode
+        // enumerated, ≥2 single-use const-address accesses folding into the
+        // imm12 window — anything else declines the whole function), the
+        // 72-fixture corpus sweep shrinks 2 fixtures / grows 0
+        // (redundant_base_materialization 342→224 B, volatile_segment_543
+        // 256→194 B), and the unicorn-vs-wasmtime execution differentials
+        // (base_cse, volatile_segment_543, const_cse, flight_seam,
+        // frame_slot_dce, spill_rung_581, control_step) re-ran green on the
+        // new default bytes BEFORE the goldens were re-pinned
+        // (base_cse_flip_468.rs). The optimized path is the ONLY caller of
+        // `ir_to_arm`, so this never reaches the relocatable lowering (which
+        // already pins the base in `fp`) — the frozen `--relocatable` anchors
+        // are untouched by construction.
+        // Escape hatch: `SYNTH_BASE_CSE=0` is the OPT-OUT — it restores the
+        // pre-flip bytes (CI-gated by
+        // `base_cse_escape_hatch_restores_old_bytes_468`). Any other value
+        // (or unset) runs the planner.
         // #543 Phase 2: the planner receives the integrator-marked volatile
         // DMA ranges — an access inside a marked window is excluded from the
         // fold set (it keeps its verbatim per-access materialize-and-access
         // codegen), while accesses outside still fold.
-        let base_cse: Option<BaseCsePlan> = if std::env::var("SYNTH_BASE_CSE").is_ok() {
-            plan_base_cse(instructions, &self.volatile_segments)
-        } else {
-            None
-        };
+        let base_cse: Option<BaseCsePlan> =
+            if !std::env::var("SYNTH_BASE_CSE").is_ok_and(|v| v == "0") {
+                plan_base_cse(instructions, &self.volatile_segments)
+            } else {
+                None
+            };
         if base_cse.is_some() {
             param_reserved_regs.push(BASE_CSE_REG);
         }
