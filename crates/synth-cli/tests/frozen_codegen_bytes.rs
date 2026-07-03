@@ -57,10 +57,13 @@ fn fixture(name: &str) -> std::path::PathBuf {
 /// --relocatable` config the `.py` differentials use, and return the SHA-256 hex
 /// of its `.text` and the section length. The default-changing opt-out flags
 /// (`SYNTH_NO_CMP_SELECT_FUSE` — v0.13.0 cmp→select; `SYNTH_NO_LOCAL_PROMOTE` —
-/// v0.14.0 local promotion) and `SYNTH_CONST_CSE` are explicitly removed so a flag
-/// set in the environment can never silently re-freeze the gate — it locks the
-/// SHIPPED lowering, which since v0.14.0 INCLUDES cmp→select fusion AND local
-/// promotion (both default-on). The `object` crate reads `.text` arch-agnostically
+/// v0.14.0 local promotion; `SYNTH_RV_CMP_SELECT` — #472 RV32 cmp→select,
+/// `=0` opts out) and the still-opt-in levers (`SYNTH_CONST_CSE`,
+/// `SYNTH_RV_LOCAL_PROMO`) are explicitly removed so a flag set in the
+/// environment can never silently re-freeze the gate — it locks the SHIPPED
+/// lowering, which since v0.14.0 INCLUDES cmp→select fusion AND local
+/// promotion on ARM (both default-on) and since the #472 flip-wave includes
+/// RV32 cmp→select fusion. The `object` crate reads `.text` arch-agnostically
 /// (ARM Thumb-2 and RV32 alike).
 fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
     let path = fixture(wasm);
@@ -73,6 +76,8 @@ fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
         .env_remove("SYNTH_SPILL_REALLOC")
         .env_remove("SYNTH_CONST_CSE")
         .env_remove("SYNTH_BASE_CSE")
+        .env_remove("SYNTH_RV_CMP_SELECT")
+        .env_remove("SYNTH_RV_LOCAL_PROMO")
         .args([
             "compile",
             path.to_str().unwrap(),
@@ -339,9 +344,48 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
 /// `_riscv_differential.py` — control_step + signed_div_const. (flight_seam needs an
 /// import-call relocation the RV32 skeleton does not yet emit.)
 ///
-/// Goldens derived on main @ 57206a1 (post-#445), 2026-06-23.
+/// Goldens RE-FROZEN for the SYNTH_RV_CMP_SELECT flip (#472, the RV32 lever
+/// flip-wave): cmp→select fusion is now DEFAULT-ON for the RV32 selector
+/// (VCR-SEL-004 port), so control_step's three fused selects drop their
+/// boolean materializations (504 → 492 B, −12). signed_div_const has no
+/// selects — byte-identical, hash unchanged. Execution differentials were
+/// re-run green on the new default bytes BEFORE this re-pin
+/// (control_step_riscv / signed_div_const_riscv / rv32_cmp_select_472_riscv /
+/// rv32_local_promotion_472_riscv / if_else_result_343_riscv /
+/// i64_divs_317_riscv — see the flip PR). `SYNTH_RV_CMP_SELECT=0` restores
+/// the prior goldens (asserted by
+/// `frozen_fixtures_rv32_cmp_select_escape_hatch_restores_old_bytes`). Prior
+/// goldens (main @ 57206a1, 2026-06-23) were control_step 6e734c4c…/504,
+/// signed_div_const 15fa429d…/88.
+///
+/// `SYNTH_RV_LOCAL_PROMO` (#472's second lever) did NOT flip — HELD on a
+/// per-function no-grow blocker (its own WAR fixtures grow; see the env read
+/// in `synth-backend-riscv/src/selector.rs`) — so these goldens are the
+/// promo-UNSET bytes and `text_sha256` env-removes it for hygiene.
 #[test]
 fn frozen_fixtures_rv32_text_is_bit_identical_oracle_001() {
+    let cases = [
+        (
+            "control_step.wasm",
+            "780e427a7ce94b54e0aaad0165e4984bebc1c0c43d25def5b5e9abf6a3929fed",
+            492usize,
+        ),
+        (
+            "signed_div_const.wasm",
+            "15fa429d5ef5474f8b65fdd9c81b3da4c70176fb077df25131e2ec3988eb999e",
+            88,
+        ),
+    ];
+    assert_frozen(&cases, "riscv", "rv32imac");
+}
+
+/// The RV32 flip-wave ESCAPE HATCH (#472): `SYNTH_RV_CMP_SELECT=0` must
+/// restore the pre-flip RV32 goldens byte-for-byte — the rollback proof, and
+/// a tripwire against the fusion path leaking into the opt-out lowering.
+/// signed_div_const is fusion-inert (no selects), so its pin is identical in
+/// both configurations — it guards that the opt-out stays a no-op there.
+#[test]
+fn frozen_fixtures_rv32_cmp_select_escape_hatch_restores_old_bytes() {
     let cases = [
         (
             "control_step.wasm",
@@ -354,5 +398,46 @@ fn frozen_fixtures_rv32_text_is_bit_identical_oracle_001() {
             88,
         ),
     ];
-    assert_frozen(&cases, "riscv", "rv32imac");
+    for &(wasm, golden, golden_len) in &cases {
+        let path = fixture(wasm);
+        let elf = format!("/tmp/frozenbytes_rv32_cmpsel_off_{wasm}.elf");
+        let out = Command::new(synth())
+            .env_remove("SYNTH_RV_LOCAL_PROMO")
+            .env("SYNTH_RV_CMP_SELECT", "0")
+            .args([
+                "compile",
+                path.to_str().unwrap(),
+                "-o",
+                &elf,
+                "-b",
+                "riscv",
+                "--target",
+                "rv32imac",
+                "--all-exports",
+                "--relocatable",
+            ])
+            .output()
+            .expect("run synth");
+        assert!(out.status.success(), "compile failed for {wasm}");
+        let bytes = std::fs::read(&elf).expect("read elf");
+        let obj = object::File::parse(&*bytes).expect("parse elf");
+        let data = obj
+            .section_by_name(".text")
+            .expect(".text")
+            .data()
+            .expect("read .text");
+        assert_eq!(
+            data.len(),
+            golden_len,
+            "{wasm}: SYNTH_RV_CMP_SELECT=0 must restore the pre-flip length"
+        );
+        let hex: String = Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            hex, golden,
+            "{wasm}: SYNTH_RV_CMP_SELECT=0 must restore the pre-flip bytes (rollback broken)"
+        );
+    }
 }
