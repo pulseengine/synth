@@ -421,6 +421,44 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/block_brif_483_differential.py
 
+  spill-frame-499-oracle:
+    name: optimized-path spill-frame teardown oracle
+    # #499: EXECUTE optimized-path functions whose register pressure fires the
+    # flag-off Const-eviction spill (`sub sp,#N` frame) under unicorn
+    # (UC_ARCH_ARM / Thumb) and diff linear MEMORY + SP balance vs wasmtime.
+    # Guards the #499 fix: the bridge appended fall-off-the-end returns WITHOUT
+    # the `add sp,#N` teardown, so post-#490 the `pop {…,pc}` epilogue read PC
+    # from a spill slot — a shipped crash on straight-line AND control-flow
+    # shapes. Compiles with SYNTH_BASE_CSE=0 (the #592 default relieves the
+    # pressure on these fixtures; the teardown path must stay covered) and
+    # trips loudly if a fixture stops spilling (vacuity guard). Isolated job:
+    # emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run spill-frame teardown oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/spill_frame_499_differential.py
+
   r12-spill-496-oracle:
     name: optimized-path register-exhaustion oracle
     # VCR-ORACLE-001 (#242, #496): EXECUTE the two silicon fixtures

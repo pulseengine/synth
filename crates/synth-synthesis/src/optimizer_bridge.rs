@@ -6158,13 +6158,18 @@ impl OptimizerBridge {
 
         // Add return if not present
         if arm_instrs.is_empty() || !matches!(arm_instrs.last(), Some(ArmOp::Bx { .. })) {
-            // VCR-RA-001 (#242): the spill-frame block above only inserts the
-            // `ADD SP` epilogue before returns that ALREADY exist; a return
-            // appended here would leave SP off by the frame size (the latent
-            // shape was unreachable flag-off: any spill implied scratch-pool
-            // exhaustion, which declined the function). Flag-gated so flag-off
-            // bytes are untouched.
-            if spill_on_exhaust && next_spill_offset > 4 {
+            // #499: the spill-frame block above only inserts the `ADD SP`
+            // epilogue before returns that ALREADY exist; a return appended
+            // here must also deallocate the frame, or SP returns off by the
+            // frame size and the `pop {…, pc}` epilogue (#490) reads PC from
+            // a spill slot. This was previously gated on `spill_on_exhaust`
+            // under the belief that a flag-off spill implied scratch-pool
+            // exhaustion (which declines the function) — false: the
+            // `Opcode::Const` allocator has its own oldest-vreg eviction
+            // spill on R4-R11/R3 pool exhaustion that never sets
+            // `r12_exhausted`, so functions that fall off the end (the common
+            // wasm shape: no explicit `return`) shipped with an imbalanced SP.
+            if next_spill_offset > 4 {
                 let frame_size = ((next_spill_offset as u32 + 7) & !7) as i32;
                 arm_instrs.push(ArmOp::Add {
                     rd: Reg::SP,
@@ -6173,6 +6178,36 @@ impl OptimizerBridge {
                 });
             }
             arm_instrs.push(ArmOp::Bx { rm: Reg::LR });
+        }
+
+        // #499 defensive post-condition (internal-bug panic pattern): if a
+        // spill frame was allocated, EVERY return must be immediately preceded
+        // by the exact `ADD SP, SP, #frame_size` teardown. The prologue is the
+        // only `SUB SP` and the epilogue inserts the only `ADD SP`s, so the
+        // "immediately preceding instruction" check is precise — any return
+        // this scan flags would ship an SP-imbalanced function.
+        if next_spill_offset > 4 {
+            let frame_size = ((next_spill_offset as u32 + 7) & !7) as i32;
+            for (i, op) in arm_instrs.iter().enumerate() {
+                if matches!(op, ArmOp::Bx { rm: Reg::LR }) {
+                    let deallocated = i > 0
+                        && matches!(
+                            &arm_instrs[i - 1],
+                            ArmOp::Add {
+                                rd: Reg::SP,
+                                rn: Reg::SP,
+                                op2: Operand2::Imm(n),
+                            } if *n == frame_size
+                        );
+                    assert!(
+                        deallocated,
+                        "internal error (#499): return at instruction {i} does not \
+                         deallocate the {frame_size}-byte spill frame — SP would \
+                         return imbalanced and `pop {{…, pc}}` would read PC from \
+                         a spill slot. This is an optimizer_bridge epilogue bug."
+                    );
+                }
+            }
         }
 
         // #490: the callee-saved prologue/epilogue the optimized path needs to
