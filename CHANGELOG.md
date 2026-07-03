@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.27.0] - 2026-07-03
+
+**base-CSE ships default-on; two shipped miscompiles fixed; synth-verify goes
+pure-Rust (ordeal replaces the Z3 engine).**
+
+### Changed (byte-changing, deliberate — anchors refrozen where affected)
+
+- **`SYNTH_BASE_CSE` is default-ON (#468/#592).** The linmem base-CSE +
+  const-address-fold runs by default on the optimized path (−180 B corpus, −34 %
+  on its fixture, no function grows; composes with the #543 volatile-segment
+  exclusion). Opt-out `SYNTH_BASE_CSE=0`, CI-gated. const-CSE stays off: its
+  recorded flip prerequisite (retiring the bridge inline aliasing) is genuinely
+  unmet — verified, not assumed.
+- **synth-verify runs on `ordeal` (pure-Rust QF_BV) by default (#553/#595).**
+  A thin `BvSolver` trait; ordeal 0.4 as engine (139/139 validator tests, ~2 s);
+  Z3 demoted to the feature-gated differential oracle (141/141, zero
+  disagreements) — **synth-verify builds and tests without a C++ toolchain for
+  the first time**.
+
+### Fixed
+
+- **Spill frame deallocated on every return path (#499/#593).** The appended
+  return's `add sp` was gated on a flag the flag-off Const-evictor spill never
+  sets — `pop {…,pc}` read PC from a spill slot. Straight-line and the original
+  control-flow shapes covered; defensive sp-balance assert added.
+- **A32 `call_indirect` emits a real indirect call (#594/#596).** The A32
+  encoder carried a "NOP for now" placeholder — a silent wrong result on
+  `--target cortex-r5`. Now `LSL/LDR/BLX` (mirror of the Thumb sequence);
+  follow-ups filed: #597 (Thumb-2 dispatch always hits entry 0 — shift encoded
+  into the type field) and #598 (Thumb bit on A32 symbols).
+
+## Known issues
+
+- #597 (Thumb-2 call_indirect entry-0 dispatch), #599 (i64 pair right-shift
+  miscompile) — both under fix for v0.27.1.
+
 ## [0.26.0] - 2026-07-03
 
 **i64 pair-aware Belady eviction on exhaustion (#587 partial, flag-off).**
