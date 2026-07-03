@@ -3551,10 +3551,16 @@ impl ArmEncoder {
                 Ok(bytes) // Total: 40 bytes
             }
 
-            // I64Rotl: 64-bit rotate left
+            // I64Rotl: 64-bit rotate left (#610 rewrite).
             // For n < 32: new_hi = (hi << n) | (lo >> (32-n)), new_lo = (lo << n) | (hi >> (32-n))
-            // For n >= 32: same formula but with lo/hi conceptually swapped, shift by (n-32)
-            // Uses R4 (saved/restored) and R12 as scratch
+            // For n >= 32: same formula with lo/hi swapped, shift by m = n-32.
+            //
+            // Fixed-reg core: value in R0:R1, amount in R2, scratch R3 + R12
+            // (all four saved/marshaled by the #610 fixed-ABI wrapper; the
+            // pre-#610 expansion wrote through the selector's registers with
+            // colliding R3/R4 scratch and restored the saved R4 OVER the
+            // result). Relies on ARM register-shift semantics: amounts >= 32
+            // yield 0 for LSL/LSR, which makes n = 0 and n = 32 exact.
             ArmOp::I64Rotl {
                 rdlo,
                 rdhi,
@@ -3562,142 +3568,47 @@ impl ArmEncoder {
                 rnhi,
                 shift,
             } => {
-                let rd_lo_bits = reg_to_bits(rdlo);
-                let rd_hi_bits = reg_to_bits(rdhi);
-                let rn_lo_bits = reg_to_bits(rnlo);
-                let rn_hi_bits = reg_to_bits(rnhi);
-                let shift_bits = reg_to_bits(shift);
-                let r12: u32 = 12; // IP scratch
-                let r3: u32 = 3; // Scratch (high word of shift amount, unused)
-                let r4: u32 = 4; // Scratch (saved/restored)
                 let mut bytes = Vec::new();
+                emit_i64_fixed_abi_entry(&mut bytes, &[rnlo, rnhi, shift]);
 
-                // PUSH {R4}
-                bytes.extend_from_slice(&0xB410u16.to_le_bytes());
+                let core: [u16; 35] = [
+                    0xF002, 0x023F, // AND.W  R2, R2, #63   (mask amount mod 64)
+                    0xF1B2, 0x0320, // SUBS.W R3, R2, #32   (R3 = n-32, sets N)
+                    0xD50E, //         BPL    .large        (n >= 32)
+                    // --- small rotation (n < 32) ---
+                    0xF1C2, 0x0320, // RSB.W  R3, R2, #32   (R3 = 32-n)
+                    0xFA20, 0xFC03, // LSR.W  R12, R0, R3   (lo >> (32-n))
+                    0xFA21, 0xF303, // LSR.W  R3, R1, R3    (hi >> (32-n))
+                    0xFA01, 0xF102, // LSL.W  R1, R1, R2    (hi << n)
+                    0xEA41, 0x010C, // ORR.W  R1, R1, R12   (new_hi)
+                    0xFA00, 0xF002, // LSL.W  R0, R0, R2    (lo << n)
+                    0xEA40, 0x0003, // ORR.W  R0, R0, R3    (new_lo)
+                    0xE00E, //         B      .done
+                    // --- large rotation (n >= 32), R3 = m = n-32 ---
+                    0xF1C3, 0x0220, // RSB.W  R2, R3, #32   (R2 = 32-m = 64-n)
+                    0xFA21, 0xFC02, // LSR.W  R12, R1, R2   (hi >> (64-n))
+                    0xFA20, 0xF202, // LSR.W  R2, R0, R2    (lo >> (64-n))
+                    0xFA00, 0xF003, // LSL.W  R0, R0, R3    (lo << m)
+                    0xFA01, 0xF103, // LSL.W  R1, R1, R3    (hi << m)
+                    0xEA40, 0x0C0C, // ORR.W  R12, R0, R12  (new_hi = (lo<<m)|(hi>>(64-n)))
+                    0xEA41, 0x0002, // ORR.W  R0, R1, R2    (new_lo = (hi<<m)|(lo>>(64-n)))
+                    0x4661, //         MOV    R1, R12       (new_hi into place)
+                            // .done: result in R0:R1
+                ];
+                for hw in core {
+                    bytes.extend_from_slice(&hw.to_le_bytes());
+                }
 
-                // AND.W shift, shift, #63 (mask to 6 bits)
-                let hw1: u16 = (0xF000 | shift_bits) as u16;
-                let hw2: u16 = ((shift_bits << 8) | 0x3F) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // SUBS.W R3, shift, #32 (R3 = n-32, sets flags)
-                let hw1: u16 = (0xF1B0 | shift_bits) as u16;
-                let hw2: u16 = ((r3 << 8) | 0x20) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // BPL .large (branch if n >= 32, offset = +14 halfwords)
-                let bpl: u16 = 0xD50E;
-                bytes.extend_from_slice(&bpl.to_le_bytes());
-
-                // === Small rotation (n < 32) ===
-                // RSB.W R3, shift, #32 (R3 = 32-n)
-                let hw1: u16 = (0xF1C0 | shift_bits) as u16;
-                let hw2: u16 = ((r3 << 8) | 0x20) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSR.W R4, rn_lo, R3 (R4 = lo >> (32-n), will go to new_hi)
-                let hw1: u16 = (0xFA20 | rn_lo_bits) as u16;
-                let hw2: u16 = (0xF000 | (r4 << 8) | r3) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSR.W R12, rn_hi, R3 (R12 = hi >> (32-n), will go to new_lo)
-                let hw1: u16 = (0xFA20 | rn_hi_bits) as u16;
-                let hw2: u16 = (0xF000 | (r12 << 8) | r3) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSL.W rd_hi, rn_hi, shift (rd_hi = hi << n)
-                let hw1: u16 = (0xFA00 | rn_hi_bits) as u16;
-                let hw2: u16 = (0xF000 | (rd_hi_bits << 8) | shift_bits) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // ORR.W rd_hi, rd_hi, R4 (rd_hi = (hi << n) | (lo >> (32-n)))
-                let hw1: u16 = (0xEA40 | rd_hi_bits) as u16;
-                let hw2: u16 = ((rd_hi_bits << 8) | r4) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSL.W rd_lo, rn_lo, shift (rd_lo = lo << n)
-                let hw1: u16 = (0xFA00 | rn_lo_bits) as u16;
-                let hw2: u16 = (0xF000 | (rd_lo_bits << 8) | shift_bits) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // ORR.W rd_lo, rd_lo, R12 (rd_lo = (lo << n) | (hi >> (32-n)))
-                let hw1: u16 = (0xEA40 | rd_lo_bits) as u16;
-                let hw2: u16 = ((rd_lo_bits << 8) | r12) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // B .done (skip large block, offset = +14 halfwords)
-                let b_done: u16 = 0xE00E;
-                bytes.extend_from_slice(&b_done.to_le_bytes());
-
-                // === Large rotation (n >= 32) ===
-                // R3 already has n-32 from the SUBS
-                // RSB.W R4, R3, #32 (R4 = 32-(n-32) = 64-n)
-                let hw1: u16 = (0xF1C0 | r3) as u16;
-                let hw2: u16 = ((r4 << 8) | 0x20) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSR.W R12, rn_hi, R4 (R12 = hi >> (64-n), goes to new_hi low bits)
-                let hw1: u16 = (0xFA20 | rn_hi_bits) as u16;
-                let hw2: u16 = (0xF000 | (r12 << 8) | r4) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSR.W R4, rn_lo, R4 (R4 = lo >> (64-n), goes to new_lo low bits)
-                let hw1: u16 = (0xFA20 | rn_lo_bits) as u16;
-                let hw2: u16 = (0xF000 | (r4 << 8) | r4) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSL.W shift, rn_lo, R3 (shift = lo << (n-32), new_hi high bits)
-                let hw1: u16 = (0xFA00 | rn_lo_bits) as u16;
-                let hw2: u16 = (0xF000 | (shift_bits << 8) | r3) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // ORR.W shift, shift, R12 (shift = (lo << (n-32)) | (hi >> (64-n)) = new_hi)
-                let hw1: u16 = (0xEA40 | shift_bits) as u16;
-                let hw2: u16 = ((shift_bits << 8) | r12) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSL.W rd_lo, rn_hi, R3 (rd_lo = hi << (n-32), new_lo high bits)
-                let hw1: u16 = (0xFA00 | rn_hi_bits) as u16;
-                let hw2: u16 = (0xF000 | (rd_lo_bits << 8) | r3) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // ORR.W rd_lo, rd_lo, R4 (rd_lo = (hi << (n-32)) | (lo >> (64-n)) = new_lo)
-                let hw1: u16 = (0xEA40 | rd_lo_bits) as u16;
-                let hw2: u16 = ((rd_lo_bits << 8) | r4) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // MOV rd_hi, shift (rd_hi = new_hi)
-                let d_bit = (rd_hi_bits >> 3) & 1;
-                let mov_instr: u16 =
-                    (0x4600 | (d_bit << 7) | (shift_bits << 3) | (rd_hi_bits & 0x7)) as u16;
-                bytes.extend_from_slice(&mov_instr.to_le_bytes());
-
-                // POP {R4}
-                bytes.extend_from_slice(&0xBC10u16.to_le_bytes());
-
-                Ok(bytes) // Total: 74 bytes
+                emit_i64_fixed_abi_exit(&mut bytes, rdlo, rdhi)?;
+                Ok(bytes) // Total: 102 bytes
             }
 
-            // I64Rotr: 64-bit rotate right
-            // rotr(x, n) = rotl(x, 64-n)
+            // I64Rotr: 64-bit rotate right (#610 rewrite).
             // For n < 32: new_lo = (lo >> n) | (hi << (32-n)), new_hi = (hi >> n) | (lo << (32-n))
-            // For n >= 32: same formula but with lo/hi swapped, shift by (n-32)
+            // For n >= 32: same formula with lo/hi swapped, shift by m = n-32.
+            //
+            // Same fixed-reg core contract as I64Rotl: value in R0:R1, amount
+            // in R2, scratch R3 + R12, all covered by the fixed-ABI wrapper.
             ArmOp::I64Rotr {
                 rdlo,
                 rdhi,
@@ -3705,135 +3616,39 @@ impl ArmEncoder {
                 rnhi,
                 shift,
             } => {
-                let rd_lo_bits = reg_to_bits(rdlo);
-                let rd_hi_bits = reg_to_bits(rdhi);
-                let rn_lo_bits = reg_to_bits(rnlo);
-                let rn_hi_bits = reg_to_bits(rnhi);
-                let shift_bits = reg_to_bits(shift);
-                let r12: u32 = 12;
-                let r3: u32 = 3;
-                let r4: u32 = 4;
                 let mut bytes = Vec::new();
+                emit_i64_fixed_abi_entry(&mut bytes, &[rnlo, rnhi, shift]);
 
-                // PUSH {R4}
-                bytes.extend_from_slice(&0xB410u16.to_le_bytes());
+                let core: [u16; 35] = [
+                    0xF002, 0x023F, // AND.W  R2, R2, #63   (mask amount mod 64)
+                    0xF1B2, 0x0320, // SUBS.W R3, R2, #32   (R3 = n-32, sets N)
+                    0xD50E, //         BPL    .large        (n >= 32)
+                    // --- small rotation (n < 32) ---
+                    0xF1C2, 0x0320, // RSB.W  R3, R2, #32   (R3 = 32-n)
+                    0xFA01, 0xFC03, // LSL.W  R12, R1, R3   (hi << (32-n))
+                    0xFA00, 0xF303, // LSL.W  R3, R0, R3    (lo << (32-n))
+                    0xFA20, 0xF002, // LSR.W  R0, R0, R2    (lo >> n)
+                    0xEA40, 0x000C, // ORR.W  R0, R0, R12   (new_lo)
+                    0xFA21, 0xF102, // LSR.W  R1, R1, R2    (hi >> n)
+                    0xEA41, 0x0103, // ORR.W  R1, R1, R3    (new_hi)
+                    0xE00E, //         B      .done
+                    // --- large rotation (n >= 32), R3 = m = n-32 ---
+                    0xF1C3, 0x0220, // RSB.W  R2, R3, #32   (R2 = 32-m = 64-n)
+                    0xFA00, 0xFC02, // LSL.W  R12, R0, R2   (lo << (64-n))
+                    0xFA01, 0xF202, // LSL.W  R2, R1, R2    (hi << (64-n))
+                    0xFA21, 0xF103, // LSR.W  R1, R1, R3    (hi >> m)
+                    0xEA41, 0x0C0C, // ORR.W  R12, R1, R12  (new_lo = (hi>>m)|(lo<<(64-n)))
+                    0xFA20, 0xF103, // LSR.W  R1, R0, R3    (lo >> m)
+                    0xEA41, 0x0102, // ORR.W  R1, R1, R2    (new_hi = (lo>>m)|(hi<<(64-n)))
+                    0x4660, //         MOV    R0, R12       (new_lo into place)
+                            // .done: result in R0:R1
+                ];
+                for hw in core {
+                    bytes.extend_from_slice(&hw.to_le_bytes());
+                }
 
-                // AND.W shift, shift, #63
-                let hw1: u16 = (0xF000 | shift_bits) as u16;
-                let hw2: u16 = ((shift_bits << 8) | 0x3F) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // SUBS.W R3, shift, #32
-                let hw1: u16 = (0xF1B0 | shift_bits) as u16;
-                let hw2: u16 = ((r3 << 8) | 0x20) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // BPL .large (+14 halfwords)
-                let bpl: u16 = 0xD50E;
-                bytes.extend_from_slice(&bpl.to_le_bytes());
-
-                // === Small rotation (n < 32) ===
-                // RSB.W R3, shift, #32 (R3 = 32-n)
-                let hw1: u16 = (0xF1C0 | shift_bits) as u16;
-                let hw2: u16 = ((r3 << 8) | 0x20) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSL.W R4, rn_hi, R3 (R4 = hi << (32-n), will go to new_lo)
-                let hw1: u16 = (0xFA00 | rn_hi_bits) as u16;
-                let hw2: u16 = (0xF000 | (r4 << 8) | r3) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSL.W R12, rn_lo, R3 (R12 = lo << (32-n), will go to new_hi)
-                let hw1: u16 = (0xFA00 | rn_lo_bits) as u16;
-                let hw2: u16 = (0xF000 | (r12 << 8) | r3) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSR.W rd_lo, rn_lo, shift (rd_lo = lo >> n)
-                let hw1: u16 = (0xFA20 | rn_lo_bits) as u16;
-                let hw2: u16 = (0xF000 | (rd_lo_bits << 8) | shift_bits) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // ORR.W rd_lo, rd_lo, R4 (rd_lo = (lo >> n) | (hi << (32-n)))
-                let hw1: u16 = (0xEA40 | rd_lo_bits) as u16;
-                let hw2: u16 = ((rd_lo_bits << 8) | r4) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSR.W rd_hi, rn_hi, shift (rd_hi = hi >> n)
-                let hw1: u16 = (0xFA20 | rn_hi_bits) as u16;
-                let hw2: u16 = (0xF000 | (rd_hi_bits << 8) | shift_bits) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // ORR.W rd_hi, rd_hi, R12 (rd_hi = (hi >> n) | (lo << (32-n)))
-                let hw1: u16 = (0xEA40 | rd_hi_bits) as u16;
-                let hw2: u16 = ((rd_hi_bits << 8) | r12) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // B .done (+14 halfwords)
-                let b_done: u16 = 0xE00E;
-                bytes.extend_from_slice(&b_done.to_le_bytes());
-
-                // === Large rotation (n >= 32) ===
-                // RSB.W R4, R3, #32 (R4 = 64-n)
-                let hw1: u16 = (0xF1C0 | r3) as u16;
-                let hw2: u16 = ((r4 << 8) | 0x20) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSL.W R12, rn_lo, R4 (R12 = lo << (64-n), goes to new_lo low bits)
-                let hw1: u16 = (0xFA00 | rn_lo_bits) as u16;
-                let hw2: u16 = (0xF000 | (r12 << 8) | r4) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSL.W R4, rn_hi, R4 (R4 = hi << (64-n), goes to new_hi low bits)
-                let hw1: u16 = (0xFA00 | rn_hi_bits) as u16;
-                let hw2: u16 = (0xF000 | (r4 << 8) | r4) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSR.W shift, rn_hi, R3 (shift = hi >> (n-32), new_lo high bits)
-                let hw1: u16 = (0xFA20 | rn_hi_bits) as u16;
-                let hw2: u16 = (0xF000 | (shift_bits << 8) | r3) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // ORR.W shift, shift, R12 (shift = (hi >> (n-32)) | (lo << (64-n)) = new_lo)
-                let hw1: u16 = (0xEA40 | shift_bits) as u16;
-                let hw2: u16 = ((shift_bits << 8) | r12) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // LSR.W rd_hi, rn_lo, R3 (rd_hi = lo >> (n-32), new_hi high bits)
-                let hw1: u16 = (0xFA20 | rn_lo_bits) as u16;
-                let hw2: u16 = (0xF000 | (rd_hi_bits << 8) | r3) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // ORR.W rd_hi, rd_hi, R4 (rd_hi = (lo >> (n-32)) | (hi << (64-n)) = new_hi)
-                let hw1: u16 = (0xEA40 | rd_hi_bits) as u16;
-                let hw2: u16 = ((rd_hi_bits << 8) | r4) as u16;
-                bytes.extend_from_slice(&hw1.to_le_bytes());
-                bytes.extend_from_slice(&hw2.to_le_bytes());
-
-                // MOV rd_lo, shift (rd_lo = new_lo)
-                let d_bit = (rd_lo_bits >> 3) & 1;
-                let mov_instr: u16 =
-                    (0x4600 | (d_bit << 7) | (shift_bits << 3) | (rd_lo_bits & 0x7)) as u16;
-                bytes.extend_from_slice(&mov_instr.to_le_bytes());
-
-                // POP {R4}
-                bytes.extend_from_slice(&0xBC10u16.to_le_bytes());
-
-                Ok(bytes) // Total: 74 bytes
+                emit_i64_fixed_abi_exit(&mut bytes, rdlo, rdhi)?;
+                Ok(bytes) // Total: 102 bytes
             }
 
             // I64Clz: Count leading zeros in 64-bit value
@@ -4487,18 +4302,26 @@ impl ArmEncoder {
             }
 
             // I64DivU: 64-bit unsigned division using binary long division
-            // Input: R0:R1 = dividend, R2:R3 = divisor
-            // Output: R0:R1 = quotient
+            // Core: R0:R1 = dividend, R2:R3 = divisor -> R0:R1 = quotient
             // Uses: R4-R7, R12 as loop counter (avoid R8 for Renode compatibility)
+            //
+            // #610: the fixed-ABI wrapper marshals the selector-assigned
+            // operand registers into the core's fixed regs and lands the
+            // result in rd — pre-#610 this arm IGNORED its register fields,
+            // so the selector read its rd pair (e.g. R4:R5) after the core's
+            // own POP restored the stale caller values over it: 0 for every
+            // input. A zero divisor now traps (UDF #0), per WASM semantics.
             ArmOp::I64DivU {
-                rdlo: _,
-                rdhi: _,
-                rnlo: _,
-                rnhi: _,
-                rmlo: _,
-                rmhi: _,
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
             } => {
                 let mut bytes = Vec::new();
+                emit_i64_fixed_abi_entry(&mut bytes, &[rnlo, rnhi, rmlo, rmhi]);
+                emit_i64_divisor_zero_trap(&mut bytes);
 
                 // PUSH {R4-R7} - save scratch registers (NO LR — this is inline code)
                 // 16-bit PUSH: 1011 010 M rrrrrrrr where M=0 (no LR), r=R4-R7 = 0xF0
@@ -4611,22 +4434,26 @@ impl ArmEncoder {
                 // Encoding: 1011 1100 1111 0000 = 0xBCF0
                 bytes.extend_from_slice(&0xBCF0u16.to_le_bytes());
 
+                emit_i64_fixed_abi_exit(&mut bytes, rdlo, rdhi)?;
                 Ok(bytes)
             }
 
             // I64DivS: 64-bit signed division
             // Converts to unsigned, divides, then applies sign
-            // Input: R0:R1 = dividend (signed), R2:R3 = divisor (signed)
-            // Output: R0:R1 = quotient (signed)
+            // Core: R0:R1 = dividend (signed), R2:R3 = divisor (signed)
+            //   ->  R0:R1 = quotient (signed)
+            // #610: fixed-ABI wrapper + zero-divisor trap (see I64DivU).
             ArmOp::I64DivS {
-                rdlo: _,
-                rdhi: _,
-                rnlo: _,
-                rnhi: _,
-                rmlo: _,
-                rmhi: _,
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
             } => {
                 let mut bytes = Vec::new();
+                emit_i64_fixed_abi_entry(&mut bytes, &[rnlo, rnhi, rmlo, rmhi]);
+                emit_i64_divisor_zero_trap(&mut bytes);
 
                 // PUSH {R4-R11} - save scratch registers (NO LR — inline code)
                 bytes.extend_from_slice(&0xE92Du16.to_le_bytes());
@@ -4738,22 +4565,25 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&0xE8BDu16.to_le_bytes());
                 bytes.extend_from_slice(&0x0FF0u16.to_le_bytes());
 
+                emit_i64_fixed_abi_exit(&mut bytes, rdlo, rdhi)?;
                 Ok(bytes)
             }
 
             // I64RemU: 64-bit unsigned remainder using binary long division
             // Same algorithm as I64DivU but returns remainder instead of quotient
-            // Input: R0:R1 = dividend, R2:R3 = divisor
-            // Output: R0:R1 = remainder
+            // Core: R0:R1 = dividend, R2:R3 = divisor -> R0:R1 = remainder
+            // #610: fixed-ABI wrapper + zero-divisor trap (see I64DivU).
             ArmOp::I64RemU {
-                rdlo: _,
-                rdhi: _,
-                rnlo: _,
-                rnhi: _,
-                rmlo: _,
-                rmhi: _,
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
             } => {
                 let mut bytes = Vec::new();
+                emit_i64_fixed_abi_entry(&mut bytes, &[rnlo, rnhi, rmlo, rmhi]);
+                emit_i64_divisor_zero_trap(&mut bytes);
 
                 // PUSH {R4-R8} - save scratch registers (NO LR — inline code)
                 bytes.extend_from_slice(&0xE92Du16.to_le_bytes());
@@ -4822,22 +4652,26 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&0xE8BDu16.to_le_bytes());
                 bytes.extend_from_slice(&0x01F0u16.to_le_bytes());
 
+                emit_i64_fixed_abi_exit(&mut bytes, rdlo, rdhi)?;
                 Ok(bytes)
             }
 
             // I64RemS: 64-bit signed remainder
             // Remainder sign follows dividend sign (not quotient rule)
-            // Input: R0:R1 = dividend (signed), R2:R3 = divisor (signed)
-            // Output: R0:R1 = remainder (signed, same sign as dividend)
+            // Core: R0:R1 = dividend (signed), R2:R3 = divisor (signed)
+            //   ->  R0:R1 = remainder (signed, same sign as dividend)
+            // #610: fixed-ABI wrapper + zero-divisor trap (see I64DivU).
             ArmOp::I64RemS {
-                rdlo: _,
-                rdhi: _,
-                rnlo: _,
-                rnhi: _,
-                rmlo: _,
-                rmhi: _,
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
             } => {
                 let mut bytes = Vec::new();
+                emit_i64_fixed_abi_entry(&mut bytes, &[rnlo, rnhi, rmlo, rmhi]);
+                emit_i64_divisor_zero_trap(&mut bytes);
 
                 // PUSH {R4-R11} - save scratch registers (NO LR — inline code)
                 bytes.extend_from_slice(&0xE92Du16.to_le_bytes());
@@ -4945,6 +4779,7 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&0xE8BDu16.to_le_bytes());
                 bytes.extend_from_slice(&0x0FF0u16.to_le_bytes());
 
+                emit_i64_fixed_abi_exit(&mut bytes, rdlo, rdhi)?;
                 Ok(bytes)
             }
 
@@ -7031,6 +6866,101 @@ fn reg_to_bits(reg: &Reg) -> u32 {
     }
 }
 
+// ======================================================================
+// #610 — i64 fixed-ABI expansion wrappers.
+//
+// The hand-written multi-instruction i64 cores (rotl/rotr and the div/rem
+// shift-subtract loops) compute in FIXED low registers. Before #610 the
+// div/rem arms ignored their operand fields outright (hardcoded R0:R1 /
+// R2:R3 in, result to R0:R1) and the rot arms used R3/R4 scratch that
+// collided with selector-assigned registers — then restored the saved
+// scratch OVER the result (`POP {R4}` with rd_lo == R4), so the op
+// returned the caller's stale register: 0 for every input under qemu.
+//
+// These wrappers make each core honor its register parameters:
+//   1. save R0-R3,
+//   2. marshal the operand registers into the core's fixed input regs via
+//      the stack (permutation-safe: every source is read before any fixed
+//      register is written),
+//   3. run the fixed-reg core (self-preserving for R4+; R12 is encoder
+//      scratch and never allocatable, #212),
+//   4. MOV the result pair from R0:R1 into the selector's rd pair,
+//   5. restore R0-R3, skipping any register the result now occupies.
+//
+// All emitted lengths are register-independent so the optimized path's
+// byte-size estimator (`estimate_arm_byte_size`, pinned by the
+// estimator↔encoder agreement oracle #498/#511) stays a constant per op.
+// ======================================================================
+
+/// Steps 1+2: `PUSH {R0-R3}`, then marshal `srcs` (operand registers, any of
+/// R0-R12) into `R0..R<n>` via individual stack pushes. Sources are all read
+/// before any destination register is written, so arbitrary source/target
+/// permutations (including operands living in R0-R3) are safe.
+fn emit_i64_fixed_abi_entry(bytes: &mut Vec<u8>, srcs: &[&Reg]) {
+    debug_assert!(srcs.len() <= 4);
+    // PUSH {R0-R3} — save the caller-visible low registers.
+    bytes.extend_from_slice(&0xB40Fu16.to_le_bytes());
+    // STR src, [SP, #-4]! — push in reverse so srcs[0] ends up on top.
+    for src in srcs.iter().rev() {
+        let rt = reg_to_bits(src) as u16;
+        bytes.extend_from_slice(&0xF84Du16.to_le_bytes());
+        bytes.extend_from_slice(&((rt << 12) | 0x0D04).to_le_bytes());
+    }
+    // POP {Ri} — Ri := srcs[i].
+    for i in 0..srcs.len() as u16 {
+        bytes.extend_from_slice(&(0xBC00u16 | (1u16 << i)).to_le_bytes());
+    }
+}
+
+/// Steps 4+5: move the core's R0:R1 result into the selector's rd pair, then
+/// restore the R0-R3 saved by [`emit_i64_fixed_abi_entry`], skipping any
+/// register the result now lives in (its saved caller word is discarded).
+fn emit_i64_fixed_abi_exit(bytes: &mut Vec<u8>, rdlo: &Reg, rdhi: &Reg) -> Result<()> {
+    let lo = reg_to_bits(rdlo);
+    let hi = reg_to_bits(rdhi);
+    if lo == 1 && hi == 0 {
+        // A fully swapped pair would clobber one half in either MOV order.
+        // Selector pairs are consecutive (lo, lo+1), so this cannot occur.
+        return Err(synth_core::Error::synthesis(
+            "i64 expansion: swapped result pair (rd_lo=R1, rd_hi=R0) is unsupported (#610)",
+        ));
+    }
+    let mov16 = |bytes: &mut Vec<u8>, rd: u32, rm: u32| {
+        let d = ((rd >> 3) & 1) as u16;
+        bytes.extend_from_slice(
+            &(0x4600u16 | (d << 7) | ((rm as u16) << 3) | ((rd & 7) as u16)).to_le_bytes(),
+        );
+    };
+    if hi == 0 {
+        // rd_hi is R0: read R0 into rd_lo BEFORE overwriting R0 with R1.
+        mov16(bytes, lo, 0);
+        mov16(bytes, hi, 1);
+    } else {
+        // rd_lo may be R1: read R1 into rd_hi BEFORE overwriting R1 with R0.
+        mov16(bytes, hi, 1);
+        mov16(bytes, lo, 0);
+    }
+    for i in 0..4u32 {
+        if i == lo || i == hi {
+            // The result lives here — drop the saved caller word.
+            bytes.extend_from_slice(&0xB001u16.to_le_bytes()); // ADD SP, #4
+        } else {
+            bytes.extend_from_slice(&(0xBC00u16 | (1u16 << i)).to_le_bytes()); // POP {Ri}
+        }
+    }
+    Ok(())
+}
+
+/// WASM `i64.div_*` / `i64.rem_*` by zero must trap, matching the i32 path's
+/// cmp/bne/udf guard. Emitted after marshaling, when the divisor pair is in
+/// R2:R3: `ORRS R12, R2, R3` — `BNE` over a `UDF #0` when nonzero.
+fn emit_i64_divisor_zero_trap(bytes: &mut Vec<u8>) {
+    bytes.extend_from_slice(&0xEA52u16.to_le_bytes()); // ORRS.W R12, R2, R3
+    bytes.extend_from_slice(&0x0C03u16.to_le_bytes());
+    bytes.extend_from_slice(&0xD100u16.to_le_bytes()); // BNE.N +0 (skip the UDF)
+    bytes.extend_from_slice(&0xDE00u16.to_le_bytes()); // UDF #0 — divide by zero
+}
+
 /// Fallible form of the `verify_reg_bits` contract. PC (R15) is not a valid
 /// data operand for the Thumb-2 encodings that use this guard (SDIV/UDIV/MLS/…
 /// are UNPREDICTABLE with PC). Synth's own codegen never emits PC there, but
@@ -8822,6 +8752,147 @@ mod tests {
 
         // UDF #0: 0xDE00 in little-endian
         assert_eq!(code, vec![0x00, 0xDE]);
+    }
+
+    /// #610: the i64 rot/div/rem expansions must land the result in the
+    /// selector-assigned rd pair and leave R0-R3 preserved (restored from the
+    /// fixed-ABI wrapper's save area) — pre-#610 the rot expansion's own
+    /// `POP {R4}` restored stale scratch OVER the result (rd_lo == R4) and
+    /// the div/rem expansions ignored their register fields outright.
+    #[test]
+    fn test_610_i64_rot_expansion_ends_with_rd_movs_and_restore() {
+        let encoder = ArmEncoder::new_thumb2();
+        for op in [
+            ArmOp::I64Rotl {
+                rdlo: Reg::R4,
+                rdhi: Reg::R5,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                shift: Reg::R2,
+            },
+            ArmOp::I64Rotr {
+                rdlo: Reg::R4,
+                rdhi: Reg::R5,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                shift: Reg::R2,
+            },
+        ] {
+            let code = encoder.encode(&op).unwrap();
+            assert_eq!(code.len(), 102, "register-independent size (estimator pin)");
+            // Tail: MOV r5, r1 (0x460D); MOV r4, r0 (0x4604); POP {r0..r3}
+            // (rd pair r4:r5 does not overlap the save area — all 4 restored).
+            let tail: Vec<u16> = code[code.len() - 12..]
+                .chunks(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            assert_eq!(tail, vec![0x460D, 0x4604, 0xBC01, 0xBC02, 0xBC04, 0xBC08]);
+        }
+    }
+
+    /// #610: div/rem expansions honor rd and carry the divide-by-zero trap
+    /// guard (`ORRS R12, R2, R3; BNE +0; UDF #0`) after operand marshaling.
+    #[test]
+    fn test_610_i64_div_rem_expansion_guard_and_rd() {
+        let encoder = ArmEncoder::new_thumb2();
+        let mk = |which: u8| {
+            let (rdlo, rdhi, rnlo, rnhi, rmlo, rmhi) =
+                (Reg::R4, Reg::R5, Reg::R0, Reg::R1, Reg::R2, Reg::R3);
+            match which {
+                0 => ArmOp::I64DivU {
+                    rdlo,
+                    rdhi,
+                    rnlo,
+                    rnhi,
+                    rmlo,
+                    rmhi,
+                },
+                1 => ArmOp::I64RemU {
+                    rdlo,
+                    rdhi,
+                    rnlo,
+                    rnhi,
+                    rmlo,
+                    rmhi,
+                },
+                2 => ArmOp::I64DivS {
+                    rdlo,
+                    rdhi,
+                    rnlo,
+                    rnhi,
+                    rmlo,
+                    rmhi,
+                },
+                _ => ArmOp::I64RemS {
+                    rdlo,
+                    rdhi,
+                    rnlo,
+                    rnhi,
+                    rmlo,
+                    rmhi,
+                },
+            }
+        };
+        for which in 0..4u8 {
+            let code = encoder.encode(&mk(which)).unwrap();
+            // Zero-divisor trap guard right after the 26-byte marshal prologue.
+            let guard: Vec<u16> = code[26..34]
+                .chunks(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            assert_eq!(
+                guard,
+                vec![0xEA52, 0x0C03, 0xD100, 0xDE00],
+                "ORRS R12,R2,R3; BNE +0; UDF #0"
+            );
+            // Tail: result into rd pair (r5:r4), then restore all of R0-R3.
+            let tail: Vec<u16> = code[code.len() - 12..]
+                .chunks(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            assert_eq!(tail, vec![0x460D, 0x4604, 0xBC01, 0xBC02, 0xBC04, 0xBC08]);
+        }
+    }
+
+    /// #610: when rd overlaps R0-R3 the restore must SKIP the result
+    /// registers (drop the saved caller word) instead of popping over them.
+    #[test]
+    fn test_610_i64_divu_rd_in_r0_r1_skips_restore() {
+        let encoder = ArmEncoder::new_thumb2();
+        let code = encoder
+            .encode(&ArmOp::I64DivU {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            })
+            .unwrap();
+        let tail: Vec<u16> = code[code.len() - 12..]
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        // MOV r1,r1 / MOV r0,r0 (no-ops, size-stable), ADD SP,#4 twice
+        // (discard saved r0/r1 — the result lives there), POP {r2}, POP {r3}.
+        assert_eq!(tail, vec![0x4609, 0x4600, 0xB001, 0xB001, 0xBC04, 0xBC08]);
+    }
+
+    /// #610: a fully swapped rd pair (rd_lo=R1, rd_hi=R0) cannot be
+    /// materialized by two MOVs in either order — must be a loud Err, never
+    /// silent corruption. (Selector pairs are consecutive, so unreachable.)
+    #[test]
+    fn test_610_i64_swapped_rd_pair_rejected() {
+        let encoder = ArmEncoder::new_thumb2();
+        let result = encoder.encode(&ArmOp::I64RemU {
+            rdlo: Reg::R1,
+            rdhi: Reg::R0,
+            rnlo: Reg::R2,
+            rnhi: Reg::R3,
+            rmlo: Reg::R4,
+            rmhi: Reg::R5,
+        });
+        assert!(result.is_err(), "swapped rd pair must be rejected loudly");
     }
 
     #[test]

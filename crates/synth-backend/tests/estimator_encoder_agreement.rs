@@ -43,7 +43,9 @@
 //!   { 84 }`.
 //! - The i64 long-sequence estimates `I64DivU/RemU/DivS/RemS` (100/100/150/150),
 //!   `I64Popcnt` (200) and `I64Extend32S` (8) OVER-estimated. CLOSED: pinned to
-//!   the exact encoder lengths (74/78/126/124, 172, 6).
+//!   the exact encoder lengths (74/78/126/124, 172, 6). (#610 later wrapped the
+//!   div/rem and rot expansions in the fixed-ABI marshal/restore + zero-divisor
+//!   trap — now 120/124/172/170 and 102, still exact-pinned here.)
 //! - SURVIVOR (structural): far branches (`BOffset`/`BCondOffset` with a large
 //!   displacement) need the 4-byte `.w` form but the estimator runs BEFORE
 //!   displacements are known, on a 0-offset placeholder, so it sizes them 2 —
