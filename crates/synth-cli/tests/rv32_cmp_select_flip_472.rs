@@ -50,6 +50,9 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 fn compile(rel: &str, out: &str, default_on: bool) -> Vec<u8> {
     let mut cmd = Command::new(synth());
     cmd.env_remove("SYNTH_RV_LOCAL_PROMO");
+    // #242 flag-audit flip-wave: shift-fold is default-on; remove it so a
+    // stray opt-out can't skew the cmp-select isolation (both arms fold).
+    cmd.env_remove("SYNTH_RV_SHIFT_FOLD");
     if default_on {
         cmd.env_remove("SYNTH_RV_CMP_SELECT");
     } else {

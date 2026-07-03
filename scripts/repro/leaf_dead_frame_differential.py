@@ -53,9 +53,10 @@ def to_s32(x):
 
 
 def compile_elf(out, elide):
+    # DEFAULT-ON since the #242 flag-audit flip-wave: "elide" is the shipped
+    # default, else the `SYNTH_DEAD_FRAME_ELIM=0` opt-out (pre-flip lowering).
     env = {"PATH": "/usr/bin:/bin"}
-    if elide:
-        env["SYNTH_DEAD_FRAME_ELIM"] = "1"
+    env["SYNTH_DEAD_FRAME_ELIM"] = "1" if elide else "0"
     r = subprocess.run(
         [SYNTH, "compile", WASM, "-o", out, "--target", "cortex-m4",
          "--all-exports", "--relocatable", "--native-pointer-abi"],

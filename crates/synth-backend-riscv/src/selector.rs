@@ -272,13 +272,21 @@ fn select_inner(
     }
     ctx.emit_return_epilogue();
     // VCR-RA RV32 lever (#472, #242): fold constant shift amounts into the
-    // immediate-shift forms (`slli/srli/srai`), dropping the `li tmp, N`. Flag-off
-    // by default — with the env unset the output is byte-identical to the
-    // pre-lever baseline (the frozen RV32 fixtures compile without it), so this is
-    // frozen-safe. The on-target cycle win is validated under the RV32 differential
-    // before the default-on flip. (Post-pass: runs after the epilogue's `ret`
-    // terminator exists so the dead-store analysis can see live-out.)
-    if std::env::var_os("SYNTH_RV_SHIFT_FOLD").is_some() {
+    // immediate-shift forms (`slli/srli/srai`), dropping the `li tmp, N`.
+    // DEFAULT-ON (#242 flag audit flip-wave; the SYNTH_RV_CMP_SELECT template):
+    // gale re-measured the fold still off and worth −8 B toward the esp32c3
+    // 128 B floor (#242, 2026-07-03). Evidence basis: RV32 repro-corpus sweep —
+    // 0 functions grow, 20 shrink (control_step 492→484 −8, flat_flight
+    // 732→696 −36, flight_seam controller_step 452→416 −36), locked by the
+    // `rv32_shift_fold_no_grow_corpus_242` cargo gate; execution differentials
+    // re-run green on the new default bytes BEFORE the frozen RV32 anchor was
+    // re-pinned (shift_fold_riscv, control_step_riscv, the full
+    // *_riscv_differential.py set — see the flip PR). Escape hatch:
+    // `SYNTH_RV_SHIFT_FOLD=0` opts out and restores the pre-flip bytes
+    // (CI-gated in `frozen_codegen_bytes.rs`). (Post-pass: runs after the
+    // epilogue's `ret` terminator exists so the dead-store analysis can see
+    // live-out.)
+    if !std::env::var("SYNTH_RV_SHIFT_FOLD").is_ok_and(|v| v == "0") {
         fold_const_shift(&mut ctx.out);
     }
     // VCR-RA RV32 lever (#472 step 2): fold a constant memory address into the
@@ -7071,10 +7079,14 @@ mod tests {
         );
     }
 
-    /// #472 immediate-shift-fold baseline: a constant shift amount uses the
-    /// REGISTER form `sll` (preceded by an `li` of the amount), not `slli #shamt`.
+    /// #472 immediate-shift-fold DEFAULT (#242 flag-audit flip-wave): a
+    /// constant shift amount now folds to `slli #shamt` in the shipped default
+    /// — the register form `sll` and its `li amount` are gone. (Pre-flip this
+    /// test pinned the opposite, unfolded baseline; the opt-out bytes are
+    /// gated end-to-end by
+    /// `frozen_fixtures_rv32_shift_fold_escape_hatch_restores_old_bytes`.)
     #[test]
-    fn const_shift_uses_register_form_baseline_472() {
+    fn const_shift_folds_to_immediate_form_by_default_472() {
         // (i32.shl (local.get 0) (i32.const 8))
         let out = s(
             &[
@@ -7087,37 +7099,47 @@ mod tests {
             1,
         );
         assert!(
-            count(&out, |op| matches!(op, RiscVOp::Sll { .. })) >= 1,
-            "baseline: const shift uses the register form `sll`: {out:?}"
+            count(&out, |op| matches!(op, RiscVOp::Slli { shamt: 8, .. })) >= 1,
+            "default: const shift folds to `slli #8`: {out:?}"
         );
         assert_eq!(
-            count(&out, |op| matches!(op, RiscVOp::Slli { .. })),
+            count(&out, |op| matches!(op, RiscVOp::Sll { .. })),
             0,
-            "baseline: not yet folded to `slli #shamt`: {out:?}"
+            "default: the register-form `sll` is gone: {out:?}"
         );
     }
 
-    /// #472 imm-shift-fold: the post-pass folds a constant shift amount into the
-    /// immediate form `slli #shamt` and drops the `li` of the amount. Driven on
-    /// the baseline fixture output — exactly what the env flag wires in the CLI.
+    /// #472 imm-shift-fold mechanism: the post-pass folds a constant shift
+    /// amount into the immediate form `slli #shamt` and drops the dead `li` of
+    /// the amount. Driven on a hand-built UNFOLDED stream (the pre-fold
+    /// selector shape) so the mechanism stays covered independently of the
+    /// now-default-on wiring (#242 flag-audit flip-wave).
     #[test]
     fn fold_const_shift_folds_amount_into_slli_472() {
-        // (i32.shl (local.get 0) (i32.const 8)) — RESULT returned (observable).
-        let mut out = s(
-            &[
-                WasmOp::LocalGet(0),
-                WasmOp::I32Const(8),
-                WasmOp::I32Shl,
-                WasmOp::End,
-            ],
-            1,
-        );
-        let before_addi8 = count(
-            &out,
-            |op| matches!(op, RiscVOp::Addi { rs1, imm: 8, .. } if *rs1 == Reg::ZERO),
-        );
-        assert_eq!(before_addi8, 1, "baseline materializes the amount: {out:?}");
-
+        // li t1, 8; sll t2, t0, t1; mv a0, t2; ret — the pre-fold shape of
+        // (i32.shl (local.get 0) (i32.const 8)) with the result returned.
+        let mut out = vec![
+            RiscVOp::Addi {
+                rd: Reg::X6,
+                rs1: Reg::ZERO,
+                imm: 8,
+            },
+            RiscVOp::Sll {
+                rd: Reg::X7,
+                rs1: Reg::X5,
+                rs2: Reg::X6,
+            },
+            RiscVOp::Addi {
+                rd: Reg::X10,
+                rs1: Reg::X7,
+                imm: 0,
+            },
+            RiscVOp::Jalr {
+                rd: Reg::X0,
+                rs1: Reg::X1,
+                imm: 0,
+            },
+        ];
         let folds = fold_const_shift(&mut out);
         assert_eq!(folds, 1, "exactly the one const shift folds: {out:?}");
         assert_eq!(
@@ -7140,21 +7162,46 @@ mod tests {
         );
     }
 
-    /// `srl`/`sra` fold to `srli`/`srai` just like `sll` → `slli`.
+    /// `srl`/`sra` fold to `srli`/`srai` just like `sll` → `slli` — driven on
+    /// hand-built unfolded streams (see
+    /// [`fold_const_shift_folds_amount_into_slli_472`]).
     #[test]
     fn fold_const_shift_handles_srl_and_sra_472() {
         for (op, want_slli, want_srli, want_srai) in
             [(WasmOp::I32ShrU, 0, 1, 0), (WasmOp::I32ShrS, 0, 0, 1)]
         {
-            let mut out = s(
-                &[
-                    WasmOp::LocalGet(0),
-                    WasmOp::I32Const(3),
-                    op.clone(),
-                    WasmOp::End,
-                ],
-                1,
-            );
+            // li t1, 3; s{rl,ra} t2, t0, t1; mv a0, t2; ret.
+            let shift = if matches!(op, WasmOp::I32ShrU) {
+                RiscVOp::Srl {
+                    rd: Reg::X7,
+                    rs1: Reg::X5,
+                    rs2: Reg::X6,
+                }
+            } else {
+                RiscVOp::Sra {
+                    rd: Reg::X7,
+                    rs1: Reg::X5,
+                    rs2: Reg::X6,
+                }
+            };
+            let mut out = vec![
+                RiscVOp::Addi {
+                    rd: Reg::X6,
+                    rs1: Reg::ZERO,
+                    imm: 3,
+                },
+                shift,
+                RiscVOp::Addi {
+                    rd: Reg::X10,
+                    rs1: Reg::X7,
+                    imm: 0,
+                },
+                RiscVOp::Jalr {
+                    rd: Reg::X0,
+                    rs1: Reg::X1,
+                    imm: 0,
+                },
+            ];
             assert_eq!(fold_const_shift(&mut out), 1, "{op:?} folds: {out:?}");
             assert_eq!(
                 count(&out, |o| matches!(o, RiscVOp::Slli { .. })),

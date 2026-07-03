@@ -49,9 +49,10 @@ VECTORS = [
 
 def compile_variant(fold_on):
     elf = f"/tmp/uxth_{'on' if fold_on else 'off'}.elf"
+    # DEFAULT-ON since the #242 flag-audit flip-wave: "on" is the shipped
+    # default, "off" is the `SYNTH_UXTH_FOLD=0` opt-out (pre-flip lowering).
     env = {"PATH": "/usr/bin:/bin"}
-    if fold_on:
-        env["SYNTH_UXTH_FOLD"] = "1"
+    env["SYNTH_UXTH_FOLD"] = "1" if fold_on else "0"
     env["SYNTH_FUSE_STATS"] = "1"
     r = subprocess.run(
         [SYNTH, "compile", WAT, "-o", elf, "--target", "cortex-m4",
