@@ -342,6 +342,41 @@ artifacts:
       (select_default / select_with_stack / optimizer_bridge) into one verified
       source; and (iii) cross-backend op-parity — the concrete near-term increment,
       tracked as VCR-SEL-005 below.
+
+      FIRST INCREMENT SCOPE (2026-07-03, docs/design/vcr-sel-001-first-increment.md):
+      (1) OP FAMILIES: exactly the pilot's tier-A no-scratch single-instruction
+      i32 ALU class — Add/Sub/Mul/And/Or/Xor, the measured 6/6 auto-discharge
+      set — plus, as the increment's stretch (proves the DSL can carry side
+      conditions), ONE scratch-using shape (i32.rotl: RSB scratch + ROR) with
+      the explicit rs<>rn non-aliasing hypothesis. Excluded from increment 1:
+      trap-guarded div/rem (Admitted upstream, gated on VCR-ISA-001's real
+      control-flow executor), i64 pairs, memory, control flow, and everything
+      the optimized path (select_with_stack/optimizer_bridge) does — the DSL
+      targets select_default's arms only.
+      (2) COEXISTENCE: the DSL is a checked-in rule table
+      (declarative op -> parameterized ARM sequence) + a generator emitting
+      plain Rust lowering fns committed to the tree (reviewable, no build-time
+      magic); select_default KEEPS dispatch ownership — a migrated op's match
+      arm delegates to the generated rule behind SYNTH_SEL_DSL (default off),
+      unmigrated arms untouched. OFF ≡ baseline byte-identical by construction.
+      (3) ROCQ OBLIGATION PER RULE: one universally-quantified T1 theorem per
+      rule in the VcrSelPilot.v form — forall rd rn rm (+ scratch hypotheses
+      where the shape needs them), exec of the rule's emitted sequence yields
+      the op's I32 semantics in rd — auto-discharged by synth_binop_proof_poly;
+      rule<->theorem naming is 1:1 and a coverage check fails the //coq build
+      if a rule lacks its Qed (a rule without a theorem cannot merge).
+      (4) FROZEN-ANCHOR GATE for the flip: per-op mirror-pinning first (the
+      #511/#513 pattern — a test lowers the probe set through BOTH the
+      hand-written arm and the generated rule and asserts byte-equality, so the
+      two must-agree implementations are pinned before any flip); then
+      SYNTH_SEL_DSL=1 must keep control_step 0x00210A55, flat+inlined
+      flight_algo 0x07FDF307, and divseam bit-identical (the generated rules
+      reproduce the current lowering EXACTLY — increment 1 migrates structure,
+      never bytes); only then may the flag default flip, one op-class per
+      release, full differential green. Success criterion for increment 1: the
+      six ALU arms + rotl are served from the DSL with their seven Qed theorems,
+      fixtures bit-identical, and deleting a hand-written arm body becomes a
+      no-op — the first structural (not additive) step of the migration.
     status: approved
     tags: [codegen, selector, isle, verified-dsl, rocq, track-a, novel, release-v0.12.1]
     links:
@@ -1530,6 +1565,95 @@ artifacts:
         the size toward LLVM parity, measured on gale's compare-codegen.sh
         before/after; no frozen fixture changes a byte except via a deliberate,
         gale-confirmed re-freeze.
+
+  - id: VCR-PERF-002
+    type: sw-req
+    title: "Proof-carrying specialization: consume loom wsc.facts premises to elide proven-dead guards (beat-LLVM, #494)"
+    description: >
+      DESIGN (2026-07-03, docs/design/proof-carrying-specialization.md; GitHub
+      #494 part (a), loom#240/loom#231 fact-passing contract, epic #242).
+      The below-native lever: gale measured the floor on gust_floor_bench
+      (gale PR pulseengine/gale#121, qemu -icount, re-run-identical) — eliding
+      gust_mix's dead clamp under a proven ch∈[524,1524] takes it from 0.825 to
+      0.225 ticks/call = 0.45x of native LLVM, past the 0.70x target, a lowering
+      LLVM structurally cannot reach because it never had the bound. The span to
+      capture is 0.825 -> 0.225 (3.7x) on that one function; the enabling
+      information exists only in the verified pipeline (closed fused module +
+      machine-checked invariants).
+
+      WHAT LOOM FORWARDS (the loom#231 contract; loom is the PROVER): a custom
+      section `wsc.facts` (sibling of wsc.transformation.attestation) carrying
+      invariants loom's validator already discharges, keyed by (function index,
+      value identification): value-range (v ∈ [lo,hi]), shift-bound (<32/<64),
+      divisor-nonzero, in-bounds access, memory disjointness, select-totality.
+      Fail-safe skew rule (loom#231 Q4): synth IGNORES unknown fact kinds and a
+      missing/unparseable section entirely — facts are optional accelerators,
+      and the facts-absent compile is byte-identical to today's baseline BY
+      CONSTRUCTION.
+
+      HOW SYNTH CONSUMES THEM (synth is a CONDITIONAL optimizer, not a
+      re-prover): each fact becomes a premise available at selection time; a
+      specialization (dead clamp-branch elision first; later bounds-check /
+      trap-guard / mask-materialization elision) fires only with a PER-ELISION
+      PROOF OBLIGATION discharged before emission by the ordeal-backed
+      translation validator (#553/#595: certificate-checked QF_BV behind the
+      BvSolver trait, no C++ toolchain): assert the premise P as a hypothesis
+      and check general_lowering ≢ specialized_lowering under P is UNSAT —
+      certificate-checked, so the elision carries evidence, not trust in a
+      heuristic. Unknown/Sat/conflict-budget-exceeded => DECLINE loudly and emit
+      the general lowering (conservative; never a silent wrong-code path).
+      Trust split (loom#231 Q3): synth does NOT re-derive loom's fact — it
+      proves the conditional correctness of its OWN transformation given the
+      fact; fact validity stays loom's obligation (Z3 translation validation
+      upstream), attested via the existing wsc attestation channel.
+
+      ORACLE STRATEGY (every elision gated twice): (1) certificate — the
+      per-elision ordeal obligation above, logged per function; (2) differential
+      — the specialized build must be result-identical to BOTH wasmtime and the
+      unspecialized synth build over the proven bound (and ONLY over the bound —
+      that side-condition IS the contract, exit-coded exactly like gale's
+      gust_floor_bench soundness gate mix_proven ≡ mix_native ≡ gust_mix on
+      [524,1524]). Frozen fixtures carry no wsc.facts section, so every frozen
+      anchor is bit-identical trivially; the lever is additionally flag-gated
+      (SYNTH_FACT_SPEC, default off) until gale confirms on silicon.
+
+      PHASING (each phase its own oracle-gated PR):
+      Phase 1 — fact ingestion: parse wsc.facts, thread premises to
+      CompileConfig/selector, ZERO codegen change (byte-identical, frozen-safe);
+      schema versioned, unknown-kind-tolerant.
+      Phase 2 — single-elision prototype: value-range => dead conditional-branch
+      elision (the gust_mix clamp shape), flag-gated, per-elision validator
+      obligation + in-bounds differential red/green oracle.
+      Phase 3 — measurement vs the 0.45x floor: gale re-measures gust_mix on
+      gust_floor_bench (qemu -icount) and STM32F100 silicon (DWT CYCCNT);
+      kill-criterion unchanged from #494: shipped dissolved lane <1.0x then
+      <=0.70x vs native LLVM, bit-identical under the proven bound. The measured
+      floor (0.45x) gives the target 0.25x of headroom — if the productized
+      elision cannot land inside it, the premise-to-selector plumbing (not the
+      idea) is at fault and the phase re-plans.
+    status: proposed
+    tags: [codegen, perf, proof-carrying, specialization, wsc-facts, loom-integration, ordeal, beat-llvm, synth-494, gale-121]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: traces-to
+        target: VCR-PERF-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        Phase 1: a module with a wsc.facts section compiles byte-identical to
+        the same module with the section stripped (ingestion is codegen-neutral);
+        malformed/unknown-kind sections are ignored with a diagnostic, never an
+        error. Phase 2: each fired elision has (a) an ordeal certificate for
+        "general ≡ specialized under premise" logged per function and (b) a
+        differential PASS (wasmtime + unspecialized-build agreement) over the
+        proven bound; Unknown/Sat declines to the general lowering; all frozen
+        fixtures bit-identical (no facts => lever cannot fire); SYNTH_FACT_SPEC=0
+        is byte-identical to baseline. Phase 3 (kill-criterion, gale-measured):
+        gust_mix on gust_floor_bench + STM32F100 DWT reaches <1.0x then <=0.70x
+        vs native LLVM with the soundness gate green; below-target after the
+        single-elision prototype => re-plan before widening fact kinds.
 
   # ---------------------------------------------------------------------------
   # gale-proposed (issue #290, 2026-06-10): scry consumption at two trust levels
