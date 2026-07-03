@@ -7,14 +7,16 @@
 //! the #468 base-CSE excludes accesses inside a marked range from its fold set
 //! and const-CSE declines wholesale while any range is marked.
 //!
-//! Both consuming levers are OPT-IN env flags (`SYNTH_BASE_CSE` /
-//! `SYNTH_CONST_CSE`), so the load-bearing claim locked HERE survives Phase 2:
-//! on the DEFAULT configuration, compiling WITH `--volatile-segment` must
-//! produce byte-identical `.text` to compiling WITHOUT it (the ranges are
-//! consumed vacuously). `frozen_codegen_bytes.rs` only proves the flag-OFF
-//! bytes are unchanged (trivially true for an empty default); this test proves
-//! the stronger promise. Value-level parsing correctness (base/len, malformed →
-//! error) is unit-tested in `main.rs::tests` (`volatile_segment_*_543`).
+//! Since the base-CSE lever flip (#468, default-ON), the DEFAULT
+//! configuration genuinely CONSUMES the ranges — marking a range can change
+//! the emitted bytes (that is the Phase-2 contract working, locked in
+//! `volatile_segment_phase2_543.rs`). The inertness claim locked HERE is
+//! therefore the OPT-OUT form: with the levers disabled (`SYNTH_BASE_CSE=0`,
+//! `SYNTH_CONST_CSE` unset — const-CSE is still opt-in), compiling WITH
+//! `--volatile-segment` must produce byte-identical `.text` to compiling
+//! WITHOUT it (the ranges are consumed vacuously). Value-level parsing
+//! correctness (base/len, malformed → error) is unit-tested in
+//! `main.rs::tests` (`volatile_segment_*_543`).
 //!
 //! Traceability: rivet `VCR-DMA-001`, gale decision `DD-DMA-REGION-001`.
 
@@ -33,11 +35,17 @@ fn fixture(name: &str) -> std::path::PathBuf {
 }
 
 /// Compile a fixture on the optimized ARM path (self-contained image — the path
-/// where const-CSE and the #468 base-CSE live, so the Phase-2 back-off will
-/// eventually change these bytes). `extra` supplies any additional CLI args
-/// (e.g. `--volatile-segment ...`). Returns the `.text` bytes on success or the
-/// process exit/stderr on failure.
-fn compile_text(fixture_name: &str, out_tag: &str, extra: &[&str]) -> Result<Vec<u8>, String> {
+/// where const-CSE and the #468 base-CSE live). `envs` supplies lever flags
+/// (e.g. the `SYNTH_BASE_CSE=0` opt-out); both lever vars are first removed so
+/// a stray value in the test environment can't skew a gate. `extra` supplies
+/// any additional CLI args (e.g. `--volatile-segment ...`). Returns the
+/// `.text` bytes on success or the process exit/stderr on failure.
+fn compile_text(
+    fixture_name: &str,
+    out_tag: &str,
+    envs: &[(&str, &str)],
+    extra: &[&str],
+) -> Result<Vec<u8>, String> {
     let path = fixture(fixture_name);
     let elf = format!("/tmp/volseg543_{out_tag}.elf");
     let mut args = vec![
@@ -52,10 +60,13 @@ fn compile_text(fixture_name: &str, out_tag: &str, extra: &[&str]) -> Result<Vec
         "--all-exports",
     ];
     args.extend_from_slice(extra);
-    let out = Command::new(synth())
-        .args(&args)
-        .output()
-        .expect("run synth");
+    let mut cmd = Command::new(synth());
+    cmd.env_remove("SYNTH_BASE_CSE");
+    cmd.env_remove("SYNTH_CONST_CSE");
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let out = cmd.args(&args).output().expect("run synth");
     if !out.status.success() {
         return Err(format!(
             "exit={:?} stderr={}",
@@ -83,12 +94,14 @@ fn volatile_segment_flag_accepted_543() {
     compile_text(
         FIXTURE,
         "accept_single",
+        &[],
         &["--volatile-segment", "0x20001000:4096"],
     )
     .expect("single --volatile-segment must be accepted");
     compile_text(
         FIXTURE,
         "accept_repeat",
+        &[],
         &[
             "--volatile-segment",
             "0x20001000:4096",
@@ -102,7 +115,7 @@ fn volatile_segment_flag_accepted_543() {
 /// Malformed input is REJECTED with a non-zero exit (not silently dropped).
 #[test]
 fn volatile_segment_flag_rejects_garbage_543() {
-    let err = compile_text(FIXTURE, "reject", &["--volatile-segment", "garbage"])
+    let err = compile_text(FIXTURE, "reject", &[], &["--volatile-segment", "garbage"])
         .expect_err("`--volatile-segment garbage` must fail");
     assert!(
         err.contains("volatile-segment"),
@@ -110,26 +123,28 @@ fn volatile_segment_flag_rejects_garbage_543() {
     );
 }
 
-/// INERTNESS on the DEFAULT configuration: compiling WITH the flag is
-/// `.text`-byte-identical to compiling WITHOUT it. Post-Phase-2 this still
-/// holds because the consuming levers (base-CSE / const-CSE) are opt-in env
-/// flags that are unset here — the ranges are consumed vacuously. The
-/// byte-CHANGING behavior under `SYNTH_BASE_CSE`/`SYNTH_CONST_CSE` is locked
-/// in `volatile_segment_phase2_543.rs`.
+/// INERTNESS on the LEVERS-OPTED-OUT configuration: with `SYNTH_BASE_CSE=0`
+/// (base-CSE is default-ON since the lever flip) and const-CSE unset (still
+/// opt-in), compiling WITH the flag is `.text`-byte-identical to compiling
+/// WITHOUT it — the ranges are consumed vacuously when no address-caching
+/// lever is active. The byte-CHANGING behavior on the shipped default (and
+/// under `SYNTH_CONST_CSE=1`) is locked in `volatile_segment_phase2_543.rs`.
 #[test]
 fn volatile_segment_flag_is_byte_inert_543() {
-    let without = compile_text(FIXTURE, "inert_without", &[])
+    const BASE_CSE_OFF: (&str, &str) = ("SYNTH_BASE_CSE", "0");
+    let without = compile_text(FIXTURE, "inert_without", &[BASE_CSE_OFF], &[])
         .expect("baseline compile (no flag) must succeed");
     let with = compile_text(
         FIXTURE,
         "inert_with",
+        &[BASE_CSE_OFF],
         &["--volatile-segment", "0x20001000:4096"],
     )
     .expect("compile with flag must succeed");
     assert_eq!(
         without, with,
-        "#543: --volatile-segment changed the emitted .text on the DEFAULT \
-         configuration — the back-off must only fire under the opt-in \
-         SYNTH_BASE_CSE / SYNTH_CONST_CSE levers"
+        "#543: --volatile-segment changed the emitted .text with every \
+         address-caching lever disabled (SYNTH_BASE_CSE=0, const-CSE unset) \
+         — the back-off must only fire through an active lever"
     );
 }
