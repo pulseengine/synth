@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.1] - 2026-07-03
+
+**i64 rotl/rotr/div_u/rem_u (+div_s/rem_s) computed real results — were
+silently returning 0 (#610/#613).**
+
+### Fixed
+
+- **Six i64 ops silently returned 0 on the ARM path (#610).** The rot cores
+  used hardcoded scratch colliding with selector registers and POP-restored
+  over the result; the div/rem expansions ignored their register fields
+  entirely (fixed R0:R1 while the selector read R4:R5). All six rewritten
+  behind a fixed-ABI wrapper (stack-marshaled operands, permutation-safe,
+  R12-scratch); i64 div-by-zero now traps like i32 (BNE+0; UDF). 55/55
+  differential vs wasmtime (was 40/55 wrong); estimator re-aligned; frozen
+  anchors bit-identical.
+
 ## [0.30.0] - 2026-07-03
 
 **Three more levers ship default-on (RV32 shift-fold, dead-frame-elim,
