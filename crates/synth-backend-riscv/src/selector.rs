@@ -195,11 +195,24 @@ pub fn select_with_result_types(
     // #472: read the local-promotion flag exactly once, here, so the rest of the
     // selector (and its unit tests) work off a plain bool. Flag off by default →
     // `compute_local_promotion` is never consulted → byte-identical baseline.
+    //
+    // HELD from the RV32 flip-wave (honest blocker, the #592 const-CSE
+    // pattern): the lever fails the per-function no-grow gate — its own WAR
+    // fixtures grow (war_set 56→64 B, war_tee 60→68 B) and promo-ALONE grows
+    // control_step 504→508 B. The profitability model ("≥2 accesses repay
+    // save/restore") under-charges: it prices neither the per-RETURN restore
+    // (`lw s_i` duplicated into every epilogue) nor the WAR-snapshot `mv`s.
+    // Flip when the decision function models both and the corpus no-grow gate
+    // holds at function granularity.
     let promote_locals = std::env::var_os("SYNTH_RV_LOCAL_PROMO").is_some();
     // #472: cmp→select fusion (the VCR-SEL-004 lever, ported from ARM). Same
-    // read-once discipline; flag off by default → `pending_cmp` is never set →
-    // `lower_select` takes the baseline branch-on-boolean path, byte-identical.
-    let cmp_select_fuse = std::env::var_os("SYNTH_RV_CMP_SELECT").is_some();
+    // read-once discipline; DEFAULT-ON since the RV32 flip-wave (no function
+    // grows across the RV32 corpus, control_step −12 B, execution
+    // differentials green on the new default BEFORE the goldens were re-pinned);
+    // `SYNTH_RV_CMP_SELECT=0` opts out → `pending_cmp` is never set →
+    // `lower_select` takes the branch-on-boolean pre-flip baseline (CI-gated
+    // escape hatch in frozen_codegen_bytes.rs).
+    let cmp_select_fuse = !std::env::var("SYNTH_RV_CMP_SELECT").is_ok_and(|v| v == "0");
     select_inner(
         wasm_ops,
         num_params,
@@ -975,13 +988,15 @@ struct Selector {
     /// wasm zero-init and get an `addi s_i, zero, 0` at function entry (#457).
     promoted_zero_init: std::collections::HashSet<u32>,
     /// #472: whether local promotion is enabled for this function. Set by the
-    /// public entry point from `SYNTH_RV_LOCAL_PROMO`; the env is read exactly
-    /// once there so the decision function stays pure and unit-testable.
+    /// public entry point from `SYNTH_RV_LOCAL_PROMO` (still opt-in — held
+    /// from the flip-wave on the no-grow blocker documented there); the env is
+    /// read exactly once so the decision function stays pure and unit-testable.
     promote_locals: bool,
     /// #472 (VCR-SEL-004 port): whether cmp→select fusion is enabled. Set by
-    /// the public entry point from `SYNTH_RV_CMP_SELECT`; unit tests pass it
-    /// explicitly. With this false, `pending_cmp` is never populated and the
-    /// select lowering is byte-identical to the baseline.
+    /// the public entry point from `SYNTH_RV_CMP_SELECT` (default-on, `=0`
+    /// opts out); unit tests pass it explicitly. With this false,
+    /// `pending_cmp` is never populated and the select lowering is
+    /// byte-identical to the pre-flip baseline.
     cmp_select_fuse: bool,
     /// #472: the comparison lowered by the PREVIOUS wasm op, if fusion is
     /// enabled and its boolean is on top of the vstack. `lower_one` takes it
@@ -1556,8 +1571,8 @@ impl Selector {
     /// the immediately preceding op AND its boolean is exactly the popped `cond`,
     /// the boolean materialization is deleted and the branch tests the comparison
     /// directly (`blt a, b` instead of `slt t, a, b; bne t, zero`) — saving the
-    /// 1–2 instructions the boolean cost. Only reachable with
-    /// `SYNTH_RV_CMP_SELECT` set (the record is never created otherwise).
+    /// 1–2 instructions the boolean cost. Unreachable under the
+    /// `SYNTH_RV_CMP_SELECT=0` opt-out (the record is never created then).
     /// Note the fused branch is emitted before any `mv`, so the select's freshly
     /// allocated `dst` aliasing a comparison operand is harmless.
     fn lower_select(
@@ -2002,8 +2017,9 @@ impl Selector {
     // ────────── Comparisons ──────────
 
     /// #472 (VCR-SEL-004 port): record a fusible comparison for a possibly
-    /// following `select`. No-op unless `SYNTH_RV_CMP_SELECT` is set (the
-    /// flag-off path never populates `pending_cmp`, keeping it byte-identical).
+    /// following `select`. No-op under the `SYNTH_RV_CMP_SELECT=0` opt-out
+    /// (that path never populates `pending_cmp`, keeping it byte-identical to
+    /// the pre-flip baseline).
     /// `start` is `out.len()` from BEFORE the boolean materialization was
     /// emitted; `cond(rs1, rs2)` must be TRUE exactly when the wasm comparison
     /// yields 1.
@@ -7712,10 +7728,16 @@ mod tests {
 
     /// Flag OFF must be byte-identical to the default `select()` path, and must
     /// keep the local on the frame (frame `lw`s, no promoted s-register).
+    /// (Local promotion is still OPT-IN — HELD from the RV32 flip-wave on the
+    /// no-grow blocker documented at the env read in
+    /// [`select_with_result_types`].)
     #[test]
     fn local_promotion_flag_off_is_identical_and_frame_backed_472() {
         let ops = promotable_ops();
-        let default = s(&ops, 1); // select() — env unset in tests
+        // select() reads the env; promotion is opt-in, cmp→select is
+        // default-on (flip-wave) — promotable_ops has no select, so fusion is
+        // a no-op here and the env-unset default is the unpromoted lowering.
+        let default = s(&ops, 1);
         let off = s_promo(&ops, 1, false);
         assert_eq!(
             default, off,
@@ -7892,14 +7914,21 @@ mod tests {
         ]
     }
 
-    /// Flag OFF must be byte-identical to the default `select()` path: the
-    /// boolean is materialized (`slt`) and the select branches on `bool != 0`.
+    /// DEFAULT-ON since the flip-wave: the env-unset `select()` path must take
+    /// the FUSED lowering; the `SYNTH_RV_CMP_SELECT=0` opt-out (explicit
+    /// `fuse=false`, the same bool the entry point derives from `=0`) restores
+    /// the pre-flip shape — boolean materialized (`slt`), select branches on
+    /// `bool != 0`.
     #[test]
-    fn cmp_select_flag_off_is_identical_and_unfused_472() {
+    fn cmp_select_default_on_and_opt_out_is_unfused_472() {
         let ops = lt_s_select_ops();
-        let default = s(&ops, 2); // select() — env unset in tests
+        let default = s(&ops, 2); // select() — env unset in tests → default-ON
+        assert_eq!(
+            default,
+            s_fuse(&ops, 2, true),
+            "env-unset default must equal the fused path (flip-wave)"
+        );
         let off = s_fuse(&ops, 2, false);
-        assert_eq!(default, off, "flag-off must equal the default path");
         assert_eq!(count(&off, |op| matches!(op, RiscVOp::Slt { .. })), 1);
         assert_eq!(count_branch(&off, Branch::Ne), 1, "bne bool, zero: {off:?}");
         assert_eq!(count_branch(&off, Branch::Lt), 0);
