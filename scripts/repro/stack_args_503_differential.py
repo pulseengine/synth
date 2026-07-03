@@ -9,8 +9,9 @@ or a call passing `arg_count > 8`. gale hit this on the falcon flight component:
 ELF. The incoming-param homing (`compute_local_layout` → `incoming_params`,
 offset `frame_size+24+(k-4)*4`) and the outgoing store (`emit_stack_args`, offset
 `(k-4)*4`) are both GENERIC in the index; #503 lifts the >8-scalar caps and leans
-on the existing 12-bit `[sp,#imm]` guards. (The 64-bit stack-param case stays
-refused — that lowering is a #503 follow-up.)
+on the existing 12-bit `[sp,#imm]` guards. (The 64-bit stack-PARAM case is now
+lowered too — width-aware NSAA homing, gated separately by
+i64_stack_param_503_differential.py.)
 
 This harness compiles via the SHIPPED direct path (`--relocatable`, what falcon
 uses → `select_with_stack`), then runs each export under unicorn (UC_ARCH_ARM /
