@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-07-03
+
+**`--volatile-segment` becomes real: marked DMA windows suppress linear-memory
+access optimization (#543 Phase 2).**
+
+### Added
+
+- **Volatile-segment consumption (#543 Phase 2, #588).** The optimizer now
+  honors `--volatile-segment <base>:<len>`: base-CSE / const-address-fold
+  (#468) exclude any access whose (sub-word over-approximated) window
+  intersects a marked range — those accesses keep verbatim
+  materialize-and-access codegen — and const-CSE declines wholesale when a
+  range is marked (constants can't be classified address-vs-data at the ArmOp
+  level; a per-constant precision step is a follow-up). Dynamic-address
+  rewrites are conservatively declined when any range is marked. Empty config
+  ⇒ byte-identical by construction (frozen anchors prove it). rivet
+  `VCR-DMA-001` → `implemented`. Pairs with gale's `own<buffer>` DMA handoff
+  (gale#124 / `DD-DMA-REGION-001`).
+
+### Fixed
+
+- `control_step_differential.py` resolves symbols from the ELF symtab and is
+  CI-gated (`control-step-584-oracle`) — closes #584, completing the #489-class
+  harness-drift cleanup (both frozen-fixture differentials now symtab-based
+  and gated).
+
 ## [0.24.0] - 2026-07-02
 
 **The allocator release — VCR-RA-001 verified: Belady spilling ships default-on.**
