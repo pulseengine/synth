@@ -16,22 +16,26 @@
 //!      (statically-unknown) addresses were never fold candidates, so they are
 //!      always left verbatim — the conservative stance.
 //!
-//!   2. const-CSE (`SYNTH_CONST_CSE=1`, still opt-in — its recorded flip
-//!      prerequisites are unmet, see `const_cse_reduction_242.rs` — both the
-//!      bridge-level cache and `liveness::apply_const_cse`): declines
-//!      WHOLESALE while any range is marked, because at that level a cached
-//!      constant cannot be classified address-vs-data — every constant is
-//!      re-materialized at each occurrence, the documented volatile contract
-//!      (conservative v1).
+//!   2. const-CSE (`liveness::apply_const_cse`, DEFAULT-ON since the #242
+//!      flip, opt-out `SYNTH_CONST_CSE=0`; the former bridge-level inline
+//!      cache is retired): declines WHOLESALE while any range is marked,
+//!      because at that level a cached constant cannot be classified
+//!      address-vs-data — every constant is re-materialized at each
+//!      occurrence, the documented volatile contract (conservative v1).
 //!
-//! Since the base-CSE flip the DEFAULT pipeline genuinely CONSUMES the ranges
+//! Since the lever flips the DEFAULT pipeline genuinely CONSUMES the ranges
 //! (marking a range can change default bytes — that is the Phase-2 contract
-//! doing its job); with the levers opted OUT (`SYNTH_BASE_CSE=0`, const-CSE
-//! unset) the ranges are consumed vacuously and `--volatile-segment` stays
-//! byte-inert (the Phase-1 test pins that opt-out form). An empty range
-//! vector changes nothing by construction (the frozen-codegen anchors still
-//! pass — they compile `--relocatable`, the direct path base-CSE never
-//! reaches).
+//! doing its job); with the levers opted OUT (`SYNTH_BASE_CSE=0`,
+//! `SYNTH_CONST_CSE=0`) the ranges are consumed vacuously and
+//! `--volatile-segment` stays byte-inert (the Phase-1 test pins that opt-out
+//! form). An empty range vector changes nothing by construction.
+//!
+//! The base-CSE lattice below pins `SYNTH_CONST_CSE=0` on ALL FOUR builds so
+//! it isolates the base-CSE lever (with const-CSE running, the range-free
+//! arms shrink for const-CSE's own reasons and the F ≡ C equality goes
+//! vacuous). No coverage is lost: with any range marked const-CSE declines
+//! wholesale, so the range-marked builds are byte-identical to the shipped
+//! default — exactly what the const-CSE gate below asserts.
 //!
 //! Semantic (results-level) equivalence in both modes is the separate
 //! `scripts/repro/volatile_segment_543_differential.py` unicorn-vs-wasmtime
@@ -103,6 +107,9 @@ fn compile_text(
 const FIXTURE: &str = "volatile_segment_543.wat";
 /// The base-CSE OPT-OUT (default-ON since the lever flip).
 const BASE_CSE_OFF: (&str, &str) = ("SYNTH_BASE_CSE", "0");
+/// The const-CSE OPT-OUT (default-ON since the #242 flip) — pinned on the
+/// base-CSE lattice builds to isolate that lever.
+const CONST_CSE_OFF: (&str, &str) = ("SYNTH_CONST_CSE", "0");
 
 /// The red→green Phase-2 oracle for base-CSE (#468).
 ///
@@ -121,13 +128,18 @@ const BASE_CSE_OFF: (&str, &str) = ("SYNTH_BASE_CSE", "0");
 ///        byte-identical to C — every store survives verbatim.
 #[test]
 fn base_cse_honors_volatile_window_543() {
-    let c = compile_text(FIXTURE, "baseline", &[BASE_CSE_OFF], &[]);
-    let a = compile_text(FIXTURE, "folded", &[], &[]);
-    let p = compile_text(FIXTURE, "window", &[], &["--volatile-segment", "0x100:16"]);
+    let c = compile_text(FIXTURE, "baseline", &[BASE_CSE_OFF, CONST_CSE_OFF], &[]);
+    let a = compile_text(FIXTURE, "folded", &[CONST_CSE_OFF], &[]);
+    let p = compile_text(
+        FIXTURE,
+        "window",
+        &[CONST_CSE_OFF],
+        &["--volatile-segment", "0x100:16"],
+    );
     let f = compile_text(
         FIXTURE,
         "fullcover",
-        &[],
+        &[CONST_CSE_OFF],
         &["--volatile-segment", "0x80:144"],
     );
 
@@ -160,10 +172,11 @@ fn base_cse_honors_volatile_window_543() {
     );
 }
 
-/// The red→green Phase-2 oracle for const-CSE: any marked range ⇒ wholesale
-/// decline (conservative v1 — constants can't be classified address-vs-data),
-/// byte-identical to never enabling `SYNTH_CONST_CSE`. Uses the existing
-/// const-CSE headroom fixture whose flag-ON reduction is already CI-pinned
+/// The red→green Phase-2 oracle for const-CSE (DEFAULT-ON since the #242
+/// flip): any marked range ⇒ wholesale decline (conservative v1 — constants
+/// can't be classified address-vs-data), byte-identical to the
+/// `SYNTH_CONST_CSE=0` opt-out. Uses the existing const-CSE headroom fixture
+/// whose default reduction is already CI-pinned
 /// (`const_cse_reduction_242.rs`). All three compiles pin `SYNTH_BASE_CSE=0`
 /// to isolate the const-CSE lever: base-CSE is default-ON and does a SURGICAL
 /// (per-access) volatile back-off, so leaving it on would make the
@@ -173,28 +186,34 @@ fn base_cse_honors_volatile_window_543() {
 /// that accident.)
 #[test]
 fn const_cse_declines_wholesale_under_volatile_543() {
-    const CSE: (&str, &str) = ("SYNTH_CONST_CSE", "1");
-    let base = compile_text("const_cse.wat", "cse_baseline", &[BASE_CSE_OFF], &[]);
-    let on = compile_text("const_cse.wat", "cse_on", &[CSE, BASE_CSE_OFF], &[]);
+    let base = compile_text(
+        "const_cse.wat",
+        "cse_baseline",
+        &[BASE_CSE_OFF, CONST_CSE_OFF],
+        &[],
+    );
+    // Shipped default (const-CSE env untouched by `compile_text`'s removal).
+    let on = compile_text("const_cse.wat", "cse_on", &[BASE_CSE_OFF], &[]);
     let on_volatile = compile_text(
         "const_cse.wat",
         "cse_on_volatile",
-        &[CSE, BASE_CSE_OFF],
+        &[BASE_CSE_OFF],
         &["--volatile-segment", "0x100:16"],
     );
 
     assert!(
         on.len() < base.len(),
-        "non-vacuity: const-CSE must fire on the headroom fixture \
+        "non-vacuity: default const-CSE must fire on the headroom fixture \
          ({} B !< {} B)",
         on.len(),
         base.len()
     );
     assert_eq!(
         on_volatile, base,
-        "#543 Phase 2 RED CHECK: with a marked volatile range const-CSE must \
-         decline wholesale — byte-identical to SYNTH_CONST_CSE unset (a \
-         difference means an aliasing rewrite still fired)"
+        "#543 Phase 2 RED CHECK: with a marked volatile range the DEFAULT \
+         const-CSE must decline wholesale — byte-identical to the \
+         SYNTH_CONST_CSE=0 opt-out (a difference means a CSE rewrite still \
+         fired inside a volatile build)"
     );
 }
 

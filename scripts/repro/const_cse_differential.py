@@ -4,9 +4,11 @@
 The ARM path re-materializes a constant at every use: the same `i32.const N`
 becomes a fresh `movw`/`movt` (or `mov`) each time. gale measured this on silicon
 — flat_flight spends 61% of its const materializations on values already sitting
-in a register. `SYNTH_CONST_CSE=1` removes the redundant materializations via the
-post-hoc `liveness::apply_const_cse` pass (it also enables an inline const cache
-on the optimized path; this harness, run without `--relocatable`, exercises both).
+in a register. const-CSE removes the redundant materializations via the post-hoc
+`liveness::apply_const_cse` pass — DEFAULT-ON since the #242 flip (opt-out
+`SYNTH_CONST_CSE=0`); the former bridge-level inline const cache is RETIRED
+(alias-eviction spill-bijection hazard), so the post-hoc pass is the flag's only
+effect on both paths.
 
 CSE-LAST + SIZE GUARD (#242). gale's v0.17.0 burndown found const-CSE GREW a tiny
 `--relocatable` function (`gust_mix` 90→92 B): retargeting a use kept a constant
@@ -19,9 +21,8 @@ retarget that flips a 16-bit `ldr` to its 32-bit form is declined). The guard's
 decline path is unit-tested non-vacuously in `liveness.rs`; the per-function gate
 below is the end-to-end enforcement over real compiled functions.
 
-This is byte-CHANGING codegen, so the flag ships DEFAULT-OFF (off ⇒ byte-identical,
-the frozen gate proves it). This harness is the correctness + no-regression oracle
-for the flag-ON path: it compiles `const_cse.wat` with `SYNTH_CONST_CSE=1`, runs
+This harness is the correctness + no-regression oracle
+for the flag-ON (= shipped default) path: it compiles `const_cse.wat` with CSE on, runs
 each export under unicorn (UC_ARCH_ARM / Thumb), and asserts the returned value is
 bit-identical to wasmtime ground truth across a spread of inputs (including
 negatives and zero), THEN asserts no function grew flag-on vs flag-off. Covered
@@ -75,9 +76,10 @@ def wasmtime_run(fn, arg, wat=WAT):
 
 
 def compile_optimized(out, cse_on, relocatable=False, wat=WAT):
-    env = {"PATH": "/usr/bin:/bin"}
-    if cse_on:
-        env["SYNTH_CONST_CSE"] = "1"
+    # Post-flip (#242): const-CSE is DEFAULT-ON; "off" is the SYNTH_CONST_CSE=0
+    # opt-out (pre-flip it was the unset-env default — same bytes either way,
+    # the flag-off path is untouched by the flip).
+    env = {"PATH": "/usr/bin:/bin", "SYNTH_CONST_CSE": "1" if cse_on else "0"}
     cmd = [SYNTH, "compile", str(wat), "-o", out, "-b", "arm",
            "--target", "cortex-m4", "--all-exports"]
     if relocatable:

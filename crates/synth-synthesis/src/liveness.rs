@@ -3757,8 +3757,8 @@ fn free_reg_over(
 /// — otherwise the whole segment's CSE is declined and every materialization is
 /// kept. Monotone-or-neutral on size by measurement, not by hand-wave.
 ///
-/// WIN RECOVERY (PR2, #242): the cross-register fold above (and the inline cache)
-/// only catch a constant that is *still resident* in some register. gale measured
+/// WIN RECOVERY (PR2, #242): the cross-register fold above only catches a
+/// constant that is *still resident* in some register. gale measured
 /// 61% of flat_flight's materializations as redundant, yet almost none are of that
 /// shape — the greedy selector re-materializes each clamp constant into the SAME
 /// register, which is clobbered between uses, so no register holds it at the reuse.
@@ -3894,7 +3894,7 @@ fn cross_reg_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
 /// Pass 2 (PR2, #242 win recovery): same-register extending-alias hoist. The
 /// greedy selector re-materializes a constant into the SAME register at each
 /// reuse (e.g. flat_flight's clamp `movw r3,#980 … movw r3,#980`, with `r3`
-/// clobbered between — so no register holds it and Pass 1 / the inline cache miss
+/// clobbered between — so no register holds it and Pass 1 misses
 /// it). For a value re-materialized into one register ≥2× in a straight-line
 /// segment, pin it in a register that is provably FREE across the reuse window
 /// ([`free_reg_over`]), delete the repeat materializations, and retarget the
@@ -9522,7 +9522,7 @@ mod tests {
     fn const_cse_hoists_a_same_register_reuse_into_a_free_register_242() {
         // #242 PR2 win recovery: `movw r2,#500` is materialized into r2, r2 is
         // clobbered (to #9) between uses, then #500 is re-materialized into r2 —
-        // the SAME register, so Pass 1 / the inline cache miss it (no register
+        // the SAME register, so Pass 1 misses it (no register
         // holds 500 at the reuse). The extending-alias hoist pins 500 in a FREE
         // register (r0), drops the repeat, and retargets both uses. r2 is redefined
         // at the end (#1) so its value is local.

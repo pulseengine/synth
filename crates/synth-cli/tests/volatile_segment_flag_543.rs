@@ -7,16 +7,15 @@
 //! the #468 base-CSE excludes accesses inside a marked range from its fold set
 //! and const-CSE declines wholesale while any range is marked.
 //!
-//! Since the base-CSE lever flip (#468, default-ON), the DEFAULT
-//! configuration genuinely CONSUMES the ranges — marking a range can change
-//! the emitted bytes (that is the Phase-2 contract working, locked in
-//! `volatile_segment_phase2_543.rs`). The inertness claim locked HERE is
-//! therefore the OPT-OUT form: with the levers disabled (`SYNTH_BASE_CSE=0`,
-//! `SYNTH_CONST_CSE` unset — const-CSE is still opt-in), compiling WITH
-//! `--volatile-segment` must produce byte-identical `.text` to compiling
-//! WITHOUT it (the ranges are consumed vacuously). Value-level parsing
-//! correctness (base/len, malformed → error) is unit-tested in
-//! `main.rs::tests` (`volatile_segment_*_543`).
+//! Since the lever flips (#468 base-CSE, #242 const-CSE — both default-ON),
+//! the DEFAULT configuration genuinely CONSUMES the ranges — marking a range
+//! can change the emitted bytes (that is the Phase-2 contract working, locked
+//! in `volatile_segment_phase2_543.rs`). The inertness claim locked HERE is
+//! therefore the OPT-OUT form: with the levers disabled (`SYNTH_BASE_CSE=0`
+//! AND `SYNTH_CONST_CSE=0`), compiling WITH `--volatile-segment` must produce
+//! byte-identical `.text` to compiling WITHOUT it (the ranges are consumed
+//! vacuously). Value-level parsing correctness (base/len, malformed → error)
+//! is unit-tested in `main.rs::tests` (`volatile_segment_*_543`).
 //!
 //! Traceability: rivet `VCR-DMA-001`, gale decision `DD-DMA-REGION-001`.
 
@@ -124,27 +123,33 @@ fn volatile_segment_flag_rejects_garbage_543() {
 }
 
 /// INERTNESS on the LEVERS-OPTED-OUT configuration: with `SYNTH_BASE_CSE=0`
-/// (base-CSE is default-ON since the lever flip) and const-CSE unset (still
-/// opt-in), compiling WITH the flag is `.text`-byte-identical to compiling
-/// WITHOUT it — the ranges are consumed vacuously when no address-caching
-/// lever is active. The byte-CHANGING behavior on the shipped default (and
-/// under `SYNTH_CONST_CSE=1`) is locked in `volatile_segment_phase2_543.rs`.
+/// and `SYNTH_CONST_CSE=0` (both levers are default-ON since their flips),
+/// compiling WITH the flag is `.text`-byte-identical to compiling WITHOUT it
+/// — the ranges are consumed vacuously when no address-caching lever is
+/// active. The byte-CHANGING behavior on the shipped default is locked in
+/// `volatile_segment_phase2_543.rs`.
 #[test]
 fn volatile_segment_flag_is_byte_inert_543() {
     const BASE_CSE_OFF: (&str, &str) = ("SYNTH_BASE_CSE", "0");
-    let without = compile_text(FIXTURE, "inert_without", &[BASE_CSE_OFF], &[])
-        .expect("baseline compile (no flag) must succeed");
+    const CONST_CSE_OFF: (&str, &str) = ("SYNTH_CONST_CSE", "0");
+    let without = compile_text(
+        FIXTURE,
+        "inert_without",
+        &[BASE_CSE_OFF, CONST_CSE_OFF],
+        &[],
+    )
+    .expect("baseline compile (no flag) must succeed");
     let with = compile_text(
         FIXTURE,
         "inert_with",
-        &[BASE_CSE_OFF],
+        &[BASE_CSE_OFF, CONST_CSE_OFF],
         &["--volatile-segment", "0x20001000:4096"],
     )
     .expect("compile with flag must succeed");
     assert_eq!(
         without, with,
         "#543: --volatile-segment changed the emitted .text with every \
-         address-caching lever disabled (SYNTH_BASE_CSE=0, const-CSE unset) \
+         address-caching lever disabled (SYNTH_BASE_CSE=0, SYNTH_CONST_CSE=0) \
          — the back-off must only fire through an active lever"
     );
 }
