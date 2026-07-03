@@ -286,7 +286,8 @@ fn compile_wasm_to_arm(
     // not behavioural).
     let select_direct_attempt = |spill_on_exhaustion: bool,
                                  param_backing_on_exhaustion: bool,
-                                 local_promote: bool|
+                                 local_promote: bool,
+                                 i64_spill_slots: Option<usize>|
      -> Result<Vec<ArmInstruction>, synth_core::Error> {
         let db = RuleDatabase::with_standard_rules();
         let mut selector =
@@ -327,6 +328,13 @@ fn compile_wasm_to_arm(
         }
         selector.set_spill_on_exhaustion(spill_on_exhaustion);
         selector.set_param_backing_on_exhaustion(param_backing_on_exhaustion);
+        // #587 pool-grow rung: a larger i64 spill-slot pool, set ONLY on the
+        // retry after an attempt failed with the slot-pool-exhausted Err —
+        // functions that compile with the default pool keep their frame
+        // byte-identical by construction.
+        if let Some(slots) = i64_spill_slots {
+            selector.set_i64_spill_slots(slots);
+        }
         // VCR-RA local promotion (#390, #242): keep eligible non-param i32 locals
         // in callee-saved registers instead of frame slots — the structural lever
         // toward native parity. DEFAULT-ON as of v0.14.0: gale's G474RE DWT gate
@@ -345,14 +353,17 @@ fn compile_wasm_to_arm(
     let select_direct = || -> Result<Vec<ArmInstruction>, String> {
         const SINGLE_EXHAUSTION: &str = "all allocatable registers are live on the stack";
         const PAIR_EXHAUSTION: &str = "no consecutive pair of free registers for i64";
+        const SLOT_EXHAUSTION: &str = "i64 spill-slot pool exhausted";
         // The full exhaustion-recovery ladder, parameterized on whether local
         // promotion is enabled. Each rung is reached only when the previous one
         // returned a recoverable register-exhaustion Err, so a function that
         // compiles on the first attempt is untouched by the later rungs. Returns
         // the result AND which rung produced it (for the #242 measurement below).
         let recovery_ladder =
-            |promote: bool| -> (Result<Vec<ArmInstruction>, synth_core::Error>, &'static str) {
-                let mut attempt = select_direct_attempt(false, false, promote);
+            |promote: bool,
+             i64_spill_slots: Option<usize>|
+             -> (Result<Vec<ArmInstruction>, synth_core::Error>, &'static str) {
+                let mut attempt = select_direct_attempt(false, false, promote, i64_spill_slots);
                 let mut rung = "base";
                 // VCR-RA-001 step 3b-lite (#242): the i32 register-exhaustion
                 // hard-fail is recoverable — retry with spill-on-exhaustion, which
@@ -361,7 +372,7 @@ fn compile_wasm_to_arm(
                 if let Err(e) = &attempt
                     && e.to_string().contains(SINGLE_EXHAUSTION)
                 {
-                    attempt = select_direct_attempt(true, false, promote);
+                    attempt = select_direct_attempt(true, false, promote, i64_spill_slots);
                     rung = "spill";
                 }
                 // VCR-RA-001 acceptance increment (#242): the i64 consecutive-PAIR
@@ -371,7 +382,7 @@ fn compile_wasm_to_arm(
                 if let Err(e) = &attempt
                     && e.to_string().contains(PAIR_EXHAUSTION)
                 {
-                    attempt = select_direct_attempt(true, true, promote);
+                    attempt = select_direct_attempt(true, true, promote, i64_spill_slots);
                     rung = "param-backing";
                 }
                 (attempt, rung)
@@ -387,19 +398,57 @@ fn compile_wasm_to_arm(
         // is reached ONLY by functions that exhaust WITH promotion, so promotion-on
         // output is untouched by construction (frozen byte gate stays green).
         let promote = std::env::var("SYNTH_NO_LOCAL_PROMOTE").is_err();
-        let (mut attempt, mut rung) = recovery_ladder(promote);
-        let mut promotion_dropped = false;
-        if promote
-            && attempt
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.to_string().contains("register exhaustion"))
+        // The full pre-#587 recovery sequence (promotion-on ladder, then the
+        // #474 promotion-off fallback), parameterized on the pool size so the
+        // pool-grow retry below reruns it verbatim.
+        let full_sequence = |slots: Option<usize>| -> (
+            Result<Vec<ArmInstruction>, synth_core::Error>,
+            &'static str,
+            bool,
+        ) {
+            let (mut attempt, mut rung) = recovery_ladder(promote, slots);
+            let mut promotion_dropped = false;
+            if promote
+                && attempt
+                    .as_ref()
+                    .err()
+                    .is_some_and(|e| e.to_string().contains("register exhaustion"))
+            {
+                let (rescued, off_rung) = recovery_ladder(false, slots);
+                if rescued.is_ok() {
+                    attempt = rescued;
+                    rung = off_rung;
+                    promotion_dropped = true;
+                }
+            }
+            (attempt, rung, promotion_dropped)
+        };
+        let (mut attempt, mut rung, mut promotion_dropped) = full_sequence(None);
+        // #587 pool-grow retry (the falcon func_60/func_73 remainder): the fixed
+        // 8-slot i64 spill pool can exhaust while spilling is otherwise working —
+        // an i64-dense function simply has more values simultaneously live than
+        // the pool holds. Rerun the ENTIRE sequence (every rung, both promotion
+        // modes) with the pool sized from a conservative operand-stack-depth
+        // bound: the number of simultaneously spilled values can never exceed
+        // the operand-stack depth, plus a few transient slots (the arg-move
+        // cycle resolver and call-result parking each borrow one). The selector
+        // clamps the request to its 12-bit-friendly cap; a function that still
+        // exhausts stays an honest loud skip. Deliberately LAST — after the #474
+        // promotion-off fallback — so any function that compiled yesterday
+        // (through any rung or fallback) is produced by exactly yesterday's
+        // path, byte-identical; the grown pool only ever fires for functions
+        // whose every existing escape ended in the slot-pool Err.
+        if attempt
+            .as_ref()
+            .err()
+            .is_some_and(|e| e.to_string().contains(SLOT_EXHAUSTION))
         {
-            let (rescued, off_rung) = recovery_ladder(false);
-            if rescued.is_ok() {
-                attempt = rescued;
-                rung = off_rung;
-                promotion_dropped = true;
+            let depth = synth_core::wasm_stack_check::max_depth_bound(wasm_ops) as usize;
+            let (grown, _, grown_dropped) = full_sequence(Some(depth.saturating_add(4)));
+            if grown.is_ok() {
+                attempt = grown;
+                rung = "pool-grow";
+                promotion_dropped = grown_dropped;
             }
         }
         // VCR-RA measurement (#242): log which recovery rung produced the result,
@@ -452,7 +501,27 @@ fn compile_wasm_to_arm(
     // lands the carried value at the join. Never fires for void-block control
     // flow (all frozen/optimized fixtures), so those stay byte-identical.
     let has_value_carry = has_value_carrying_branch(wasm_ops, &config.current_func_block_arity);
-    let arm_instrs = if config.no_optimize || config.relocatable || has_br_table || has_value_carry
+    // #503-i64/#518: route any signature with a 64-bit (i64/f64) param to the
+    // direct selector. The optimized path's param homing is width-naive — its
+    // #518 decline covers only functions that READ an i64 param (an `I64Load`
+    // from a param index), so a function that reads an i32 param whose AAPCS
+    // home a preceding wide param SHIFTED (e.g. p1 of `(i64 i32)` lives in R2,
+    // not R1; p3 of `(i64 i32 i32 i32)` lives on the stack, not in R3) was
+    // silently miscompiled rather than falling back. The direct selector's
+    // `aapcs_param_layout` homing handles every such shape (i64-param READS
+    // already fell back to it via the ir_to_arm Err, so those functions emit
+    // the same bytes as before). `num_params` counts read-first locals, so a
+    // function that never touches any param keeps the optimized path.
+    let has_wide_param = config
+        .current_func_params_i64
+        .iter()
+        .take(num_params as usize)
+        .any(|&w| w);
+    let arm_instrs = if config.no_optimize
+        || config.relocatable
+        || has_br_table
+        || has_value_carry
+        || has_wide_param
     {
         select_direct()?
     } else {
