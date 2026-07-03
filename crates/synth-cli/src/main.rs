@@ -1131,6 +1131,17 @@ fn compile_command(
     // the module's imports. `None` for the demo path (no input module).
     let mut sbom_wasm_bytes: Option<Vec<u8>> = None;
     let mut sbom_imports: Vec<ImportEntry> = Vec::new();
+    // #599: the module's declared value-width tables, plumbed into the
+    // CompileConfig exactly as the all-exports path does. This path previously
+    // built its config from `..default()` — so a read-only i64 PARAM was never
+    // classified i64 (#518's direct-path mechanism) and the selector allocated
+    // the shift-amount constant into the param's live high register:
+    // `i64.shr_u x 32` returned 32 (the shift amount) instead of the high word.
+    // Empty for the demo path (all-i32 demos).
+    let mut current_func_params_i64: Vec<bool> = Vec::new(); // #359/#518/#599
+    let mut func_ret_i64: Vec<bool> = Vec::new(); // #311: call-result pair tagging
+    let mut type_ret_i64: Vec<bool> = Vec::new(); // #311: call_indirect results
+    let mut current_func_block_arity: Vec<(u8, u8)> = Vec::new(); // #509: value-carrying branches
     let (wasm_ops, func_name): (Vec<WasmOp>, String) = match (&input, &demo) {
         (Some(path), _) => {
             info!("Compiling WASM file: {}", path.display());
@@ -1155,12 +1166,20 @@ fn compile_command(
             // Run Loom WASM optimizer if --loom is enabled
             let wasm_bytes = maybe_run_loom(loom, wasm_bytes)?;
 
+            // #599: decode the module ONCE for its signature side-tables (the
+            // per-function declared param widths and returns-i64 tables the
+            // selector needs for i64 correctness) — previously decoded only
+            // conditionally for the SBOM, so the tables never reached the config.
+            let module = decode_wasm_module(&wasm_bytes)
+                .context("Failed to decode WASM module (signature tables)")?;
+            func_ret_i64 = module.func_ret_i64;
+            type_ret_i64 = module.type_ret_i64;
+            let module_func_params_i64 = module.func_params_i64;
+
             // Capture the WASM bytes + imports for the SBOM (the bytes synth
             // actually compiles, after WAT decode and any Loom pass).
             if sbom_path.is_some() {
-                if let Ok(module) = decode_wasm_module(&wasm_bytes) {
-                    sbom_imports = module.imports;
-                }
+                sbom_imports = module.imports;
                 sbom_wasm_bytes = Some(wasm_bytes.clone());
             }
 
@@ -1192,6 +1211,14 @@ fn compile_command(
                 .clone()
                 .unwrap_or_else(|| format!("func_{}", func.index));
             info!("Compiling function {} ({} ops)", name, func.ops.len());
+
+            // #599: THIS function's declared param widths + blocktype-arity
+            // side-table (indexed by full function index), mirroring the
+            // all-exports compile loop (#359/#509/#518).
+            if let Some(p) = module_func_params_i64.get(func.index as usize) {
+                current_func_params_i64 = p.clone();
+            }
+            current_func_block_arity = func.block_arity.clone();
 
             // #554: an op the decoder DROPPED (`_ => None`, e.g. scalar `f32.*`)
             // is recorded in `func.unsupported` but is already gone from
@@ -1259,6 +1286,14 @@ fn compile_command(
         target: target_spec.clone(),
         // #543 Phase 1: threaded but not yet consumed (inert plumbing).
         volatile_segments,
+        // #599: the module's declared value-width tables — an i64 param that is
+        // only READ is 64-bit by signature, invisible to op-stream inference.
+        // Without these the selector materialized constants into the param's
+        // live high register (i64.shr_u/shr_s returned the shift amount).
+        current_func_params_i64,
+        func_ret_i64,
+        type_ret_i64,
+        current_func_block_arity,
         ..CompileConfig::default()
     };
 
@@ -2425,6 +2460,9 @@ fn compile_all_exports(
                 None
             },
             input_dwarf.as_ref(),
+            // #598: only Thumb-encoded functions get the interworking bit on
+            // their STT_FUNC symbols; the A32 path (cortex-r5) keeps bit 0 clear.
+            !matches!(target_spec.isa, synth_core::target::IsaVariant::Arm32),
         )?
     } else if cortex_m {
         build_multi_func_cortex_m_elf(&compiled_funcs, &all_memories, target_spec)?
@@ -2584,6 +2622,10 @@ fn build_relocatable_elf(
     // code_base). `None` ⇒ `--debug-line` off OR the input carried no DWARF ⇒
     // no `.debug_line` section emitted ⇒ output byte-identical to the default.
     dwarf_line: Option<&synth_core::dwarf_line::InputDwarfLine>,
+    // #598: true for Thumb targets (STT_FUNC symbols + e_entry get bit 0, the
+    // interworking bit), false for A32 (cortex-r5) — A32 code addresses must
+    // keep bit 0 clear.
+    thumb_funcs: bool,
 ) -> Result<Vec<u8>> {
     use std::collections::HashMap;
 
@@ -2595,6 +2637,7 @@ fn build_relocatable_elf(
     // (default unset ⇒ full-page reservation ⇒ frozen fixtures bit-identical).
 
     let mut elf_builder = ElfBuilder::new_arm32()
+        .with_thumb_funcs(thumb_funcs) // #598: no Thumb bit on A32 symbols
         .with_entry(0)
         .with_type(ElfType::Rel); // ET_REL: relocatable object
 
@@ -4889,8 +4932,16 @@ mod tests {
             shadow_stack_size: None,
         };
 
-        let elf = build_relocatable_elf(&[func], &[], &[], linear_memory_bytes, Some(native), None)
-            .expect("#345: native-pointer zero-linmem object builds");
+        let elf = build_relocatable_elf(
+            &[func],
+            &[],
+            &[],
+            linear_memory_bytes,
+            Some(native),
+            None,
+            true,
+        )
+        .expect("#345: native-pointer zero-linmem object builds");
 
         // Parse the ELF and inspect sections by name + type.
         let header = object::elf::FileHeader32::<Endianness>::parse(&*elf).expect("valid ELF32");
@@ -4986,7 +5037,7 @@ mod tests {
             sp_init: 65_536,
             shadow_stack_size: None,
         };
-        let elf = build_relocatable_elf(&[func], &[], &[], 131_072, Some(native), None)
+        let elf = build_relocatable_elf(&[func], &[], &[], 131_072, Some(native), None, true)
             .expect("#345: native-pointer literal-pool object builds");
 
         let header = object::elf::FileHeader32::<Endianness>::parse(&*elf).expect("valid ELF32");
@@ -5071,8 +5122,16 @@ mod tests {
             shadow_stack_size: None,
         };
 
-        let elf = build_relocatable_elf(&[func], &[], &data_segments, 131_072, Some(native), None)
-            .expect("#354: mixed-case object builds");
+        let elf = build_relocatable_elf(
+            &[func],
+            &[],
+            &data_segments,
+            131_072,
+            Some(native),
+            None,
+            true,
+        )
+        .expect("#354: mixed-case object builds");
 
         let header = object::elf::FileHeader32::<Endianness>::parse(&*elf).expect("valid ELF32");
         let endian = header.endian().expect("endian");

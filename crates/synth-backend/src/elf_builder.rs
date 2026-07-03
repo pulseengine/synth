@@ -394,6 +394,12 @@ pub struct ElfBuilder {
     /// layout is untouched: when this is empty the build is byte-identical to the
     /// pre-generalization output (VCR-DBG-001 PR C, #394).
     extra_relocations: Vec<(String, Vec<Relocation>)>,
+    /// #598: whether the object's functions are Thumb-encoded. Bit 0 of an
+    /// STT_FUNC `st_value` (and of `e_entry`) is the Thumb interworking bit —
+    /// it must be SET for Thumb code (Cortex-M) and CLEAR for A32 code
+    /// (cortex-r5 path). Defaults to `true` (every pre-#598 ARM object was
+    /// treated as Thumb, so Thumb outputs stay bit-identical).
+    thumb_funcs: bool,
 }
 
 impl ElfBuilder {
@@ -411,16 +417,26 @@ impl ElfBuilder {
             program_headers: Vec::new(),
             relocations: Vec::new(),
             extra_relocations: Vec::new(),
+            thumb_funcs: true,
         }
+    }
+
+    /// #598: mark the object's functions as A32-encoded (cortex-r5 path) —
+    /// suppresses the Thumb interworking bit on STT_FUNC `st_value`s and on
+    /// `e_entry`. Call BEFORE `with_entry`.
+    pub fn with_thumb_funcs(mut self, thumb: bool) -> Self {
+        self.thumb_funcs = thumb;
+        self
     }
 
     /// Set entry point
     ///
-    /// For ARM (Thumb) targets, bit 0 is automatically set to indicate Thumb mode.
+    /// For ARM Thumb targets, bit 0 is automatically set to indicate Thumb mode.
     /// Cortex-M is Thumb-only, so function addresses in ELF must have bit 0 set.
+    /// A32 objects (`with_thumb_funcs(false)`, #598) keep bit 0 clear.
     pub fn with_entry(mut self, entry: u32) -> Self {
-        self.entry = if self.machine == ElfMachine::Arm {
-            entry | 1 // Set Thumb bit for ARM targets
+        self.entry = if self.machine == ElfMachine::Arm && self.thumb_funcs {
+            entry | 1 // Set Thumb bit for ARM Thumb targets
         } else {
             entry
         };
@@ -867,8 +883,14 @@ impl ElfBuilder {
             symtab.extend_from_slice(&name_offset.to_le_bytes());
 
             // st_value (4 bytes)
-            // For ARM targets, STT_FUNC symbols must have bit 0 set (Thumb interworking)
-            let value = if self.machine == ElfMachine::Arm && symbol.symbol_type == SymbolType::Func
+            // For ARM THUMB targets, STT_FUNC symbols must have bit 0 set (Thumb
+            // interworking). #598: A32 objects (cortex-r5 path) must NOT set it —
+            // bit 0 on an A32 function address is wrong metadata (harnesses had
+            // to mask it; an interworking-aware consumer would mis-classify the
+            // function as Thumb).
+            let value = if self.machine == ElfMachine::Arm
+                && self.thumb_funcs
+                && symbol.symbol_type == SymbolType::Func
             {
                 symbol.value | 1
             } else {
@@ -1451,5 +1473,37 @@ mod tests {
         let sym_type = info & 0xf;
         assert_eq!(binding, SymbolBinding::Global as u8);
         assert_eq!(sym_type, SymbolType::Func as u8);
+    }
+
+    /// #598: an A32 object (`with_thumb_funcs(false)`, cortex-r5 path) must
+    /// NOT set the Thumb interworking bit on STT_FUNC symbols or `e_entry` —
+    /// bit 0 on an A32 code address is wrong metadata (harnesses had to mask
+    /// it). Non-func symbols never carried the bit; that stays true.
+    #[test]
+    fn test_a32_symbols_have_no_thumb_bit_598() {
+        let mut builder = ElfBuilder::new_arm32().with_thumb_funcs(false);
+
+        let func_sym = Symbol::new("a32_func")
+            .with_value(0x1000)
+            .with_size(64)
+            .with_binding(SymbolBinding::Global)
+            .with_type(SymbolType::Func)
+            .with_section(1);
+        builder.add_symbol(func_sym);
+
+        let (_strtab, offsets) = builder.build_symbol_string_table();
+        let symtab = builder.build_symbol_table(&offsets);
+        let value = u32::from_le_bytes(symtab[20..24].try_into().unwrap());
+        assert_eq!(value, 0x1000, "A32 STT_FUNC st_value must keep bit 0 clear");
+
+        // e_entry stays clear too (was `0 | 1` on the A32 relocatable path).
+        let builder = ElfBuilder::new_arm32()
+            .with_thumb_funcs(false)
+            .with_entry(0x8000);
+        assert_eq!(builder.entry, 0x8000, "A32 e_entry must keep bit 0 clear");
+
+        // The default (Thumb) behavior is unchanged: bit 0 set on both.
+        let builder = ElfBuilder::new_arm32().with_entry(0x8000);
+        assert_eq!(builder.entry, 0x8001, "Thumb e_entry keeps the bit");
     }
 }
