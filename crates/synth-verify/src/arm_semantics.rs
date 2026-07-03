@@ -4,8 +4,8 @@
 //! Each ARM operation is translated to a mathematical formula that precisely
 //! captures its behavior, including register updates and condition flags.
 
+use crate::term::{BV, Bool};
 use synth_synthesis::rules::{ArmOp, Operand2, Reg, VfpReg};
-use z3::ast::{BV, Bool};
 
 /// ARM processor state representation in SMT
 ///
@@ -523,7 +523,7 @@ impl ArmSemantics {
                 // Detect carry: overflow occurred if result < either operand
                 // For unsigned: carry = (result_low < n_low)
                 let carry = result_low.bvult(&n_low);
-                let carry_bv = carry.ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32));
+                let carry_bv = carry.ite(BV::from_i64(1, 32), BV::from_i64(0, 32));
 
                 // High part: add with carry
                 let high_sum = n_high.bvadd(&m_high);
@@ -593,7 +593,7 @@ impl ArmSemantics {
 
                 // Detect borrow: borrow occurred if n_low < m_low (unsigned)
                 let borrow = n_low.bvult(&m_low);
-                let borrow_bv = borrow.ite(&BV::from_i64(1, 32), &BV::from_i64(0, 32));
+                let borrow_bv = borrow.ite(BV::from_i64(1, 32), BV::from_i64(0, 32));
 
                 // High part: subtract with borrow
                 let high_diff = n_high.bvsub(&m_high);
@@ -1226,8 +1226,8 @@ impl ArmSemantics {
                 let thirty_two = BV::from_i64(32, 32);
                 let hi_is_zero = hi_clz.eq(&thirty_two);
                 let result = hi_is_zero.ite(
-                    &thirty_two.bvadd(&lo_clz), // High is zero: 32 + clz(low)
-                    &hi_clz,                    // High has bits: clz(high)
+                    thirty_two.bvadd(&lo_clz), // High is zero: 32 + clz(low)
+                    &hi_clz,                   // High has bits: clz(high)
                 );
                 state.set_reg(rd, result);
             }
@@ -1246,8 +1246,8 @@ impl ArmSemantics {
                 let thirty_two = BV::from_i64(32, 32);
                 let lo_is_zero = lo_ctz.eq(&thirty_two);
                 let result = lo_is_zero.ite(
-                    &thirty_two.bvadd(&hi_ctz), // Low is zero: 32 + ctz(high)
-                    &lo_ctz,                    // Low has bits: ctz(low)
+                    thirty_two.bvadd(&hi_ctz), // Low is zero: 32 + ctz(high)
+                    &lo_ctz,                   // Low has bits: ctz(low)
                 );
                 state.set_reg(rd, result);
             }
@@ -1857,39 +1857,39 @@ impl ArmSemantics {
         let top_16 = remaining.bvand(&mask_16);
         let top_16_zero = top_16.eq(&zero);
 
-        count = top_16_zero.ite(&count.bvadd(BV::from_i64(16, 32)), &count);
-        remaining = top_16_zero.ite(&remaining.bvshl(BV::from_i64(16, 32)), &remaining);
+        count = top_16_zero.ite(count.bvadd(BV::from_i64(16, 32)), &count);
+        remaining = top_16_zero.ite(remaining.bvshl(BV::from_i64(16, 32)), &remaining);
 
         // Check top 8 bits
         let mask_8 = BV::from_u64(0xFF000000, 32);
         let top_8 = remaining.bvand(&mask_8);
         let top_8_zero = top_8.eq(&zero);
 
-        count = top_8_zero.ite(&count.bvadd(BV::from_i64(8, 32)), &count);
-        remaining = top_8_zero.ite(&remaining.bvshl(BV::from_i64(8, 32)), &remaining);
+        count = top_8_zero.ite(count.bvadd(BV::from_i64(8, 32)), &count);
+        remaining = top_8_zero.ite(remaining.bvshl(BV::from_i64(8, 32)), &remaining);
 
         // Check top 4 bits
         let mask_4 = BV::from_u64(0xF0000000, 32);
         let top_4 = remaining.bvand(&mask_4);
         let top_4_zero = top_4.eq(&zero);
 
-        count = top_4_zero.ite(&count.bvadd(BV::from_i64(4, 32)), &count);
-        remaining = top_4_zero.ite(&remaining.bvshl(BV::from_i64(4, 32)), &remaining);
+        count = top_4_zero.ite(count.bvadd(BV::from_i64(4, 32)), &count);
+        remaining = top_4_zero.ite(remaining.bvshl(BV::from_i64(4, 32)), &remaining);
 
         // Check top 2 bits
         let mask_2 = BV::from_u64(0xC0000000, 32);
         let top_2 = remaining.bvand(&mask_2);
         let top_2_zero = top_2.eq(&zero);
 
-        count = top_2_zero.ite(&count.bvadd(BV::from_i64(2, 32)), &count);
-        remaining = top_2_zero.ite(&remaining.bvshl(BV::from_i64(2, 32)), &remaining);
+        count = top_2_zero.ite(count.bvadd(BV::from_i64(2, 32)), &count);
+        remaining = top_2_zero.ite(remaining.bvshl(BV::from_i64(2, 32)), &remaining);
 
         // Check top bit
         let mask_1 = BV::from_u64(0x80000000, 32);
         let top_1 = remaining.bvand(&mask_1);
         let top_1_zero = top_1.eq(&zero);
 
-        count = top_1_zero.ite(&count.bvadd(BV::from_i64(1, 32)), &count);
+        count = top_1_zero.ite(count.bvadd(BV::from_i64(1, 32)), &count);
 
         // Return 32 if all zeros, otherwise return count
         all_zero.ite(&result_if_zero, &count)
@@ -2138,12 +2138,11 @@ impl ArmSemantics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::with_z3_context;
-    use z3::ast::Ast; // needed for .simplify()
+    use crate::with_verification_context;
 
     #[test]
     fn test_arm_add_semantics() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2168,7 +2167,7 @@ mod tests {
 
     #[test]
     fn test_arm_sub_semantics() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2190,7 +2189,7 @@ mod tests {
 
     #[test]
     fn test_arm_mov_immediate() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2208,7 +2207,7 @@ mod tests {
 
     #[test]
     fn test_arm_bitwise_ops() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2248,7 +2247,7 @@ mod tests {
     fn test_arm_mls() {
         // Test MLS (Multiply and Subtract): Rd = Ra - Rn * Rm
         // This is used for remainder: a % b = a - (a/b) * b
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2310,7 +2309,7 @@ mod tests {
 
     #[test]
     fn test_arm_shift_ops() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2338,7 +2337,7 @@ mod tests {
 
     #[test]
     fn test_arm_ror_comprehensive() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2434,7 +2433,7 @@ mod tests {
 
     #[test]
     fn test_arm_clz_comprehensive() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2500,7 +2499,7 @@ mod tests {
 
     #[test]
     fn test_arm_rbit_comprehensive() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2569,9 +2568,8 @@ mod tests {
     #[test]
     fn test_arm_cmp_flags() {
         // Test CMP instruction and condition flag updates
-        use z3::ast::Ast;
 
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2722,9 +2720,8 @@ mod tests {
     #[test]
     fn test_arm_flags_all_combinations() {
         // Test that flags correctly distinguish all comparison outcomes
-        use z3::ast::Ast;
 
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2767,7 +2764,7 @@ mod tests {
 
     #[test]
     fn test_arm_setcond_eq() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2817,7 +2814,7 @@ mod tests {
 
     #[test]
     fn test_arm_setcond_signed() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 
@@ -2901,7 +2898,7 @@ mod tests {
 
     #[test]
     fn test_arm_setcond_unsigned() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = ArmSemantics::new();
             let mut state = ArmState::new_symbolic();
 

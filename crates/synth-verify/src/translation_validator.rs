@@ -19,12 +19,12 @@
 //! We prove: forall a,b. i32.add(a, b) == ADD(a, b)
 
 use crate::arm_semantics::{ArmSemantics, ArmState};
+use crate::solver::{CheckOutcome, new_solver};
+use crate::term::BV;
 use crate::wasm_semantics::WasmSemantics;
 use synth_core::WasmOp;
 use synth_synthesis::{ArmOp, Reg, SynthesisRule};
 use thiserror::Error;
-use z3::ast::BV;
-use z3::{SatResult, Solver};
 
 /// Verification error types
 #[derive(Debug, Error)]
@@ -62,9 +62,9 @@ pub enum ValidationResult {
     Unknown { reason: String },
 }
 
-/// Translation validator using Z3 SMT solver.
-///
-/// Z3 0.19 uses thread-local context -- no lifetime parameters needed.
+/// Translation validator over the configured SMT engine (see
+/// [`crate::solver::new_solver`]: ordeal by default, optionally
+/// cross-checked against Z3 when `SYNTH_SOLVER_DIFF=1`).
 pub struct TranslationValidator {
     wasm_encoder: WasmSemantics,
     arm_encoder: ArmSemantics,
@@ -137,7 +137,7 @@ impl TranslationValidator {
         arm_ops: &[ArmOp],
         concrete_params: &[(usize, i64)],
     ) -> Result<ValidationResult, VerificationError> {
-        let solver = Solver::new();
+        let mut solver = new_solver();
 
         // Create inputs - some symbolic, some concrete
         let num_inputs = self.get_num_inputs(wasm_op);
@@ -164,24 +164,22 @@ impl TranslationValidator {
         // Assert that results are NOT equal
         // If this is UNSAT, then the results are always equal (proven correct)
         // If this is SAT, we found a counterexample
-        solver.assert(wasm_result.eq(&arm_result).not());
+        solver.assert(&wasm_result.eq(&arm_result).not());
 
         match solver.check() {
-            SatResult::Unsat => {
+            CheckOutcome::Unsat => {
                 // Proven correct - no inputs exist where results differ
                 Ok(ValidationResult::Verified)
             }
 
-            SatResult::Sat => {
-                // Found counterexample
-                let model = solver.get_model().ok_or_else(|| {
-                    VerificationError::SolverError("SAT but no model available".to_string())
-                })?;
-
+            CheckOutcome::Sat => {
+                // Found counterexample: read the differing inputs back from
+                // the model (symbolic inputs only — concrete params have no
+                // model entry). Values are reported unsigned, as before.
                 let mut counterexample = Vec::new();
                 for (i, input) in inputs.iter().enumerate() {
-                    if let Some(value) = model.eval(input, true)
-                        && let Some(int_val) = value.as_i64()
+                    if let Some(value) = solver.value(input)
+                        && let Ok(int_val) = i64::try_from(value)
                     {
                         counterexample.push((format!("input_{}", i), int_val));
                     }
@@ -190,10 +188,10 @@ impl TranslationValidator {
                 Ok(ValidationResult::Invalid { counterexample })
             }
 
-            SatResult::Unknown => {
+            CheckOutcome::Unknown(reason) => {
                 // Verification inconclusive
                 Ok(ValidationResult::Unknown {
-                    reason: "SMT solver returned unknown".to_string(),
+                    reason: format!("SMT solver returned unknown: {reason}"),
                 })
             }
         }
@@ -321,7 +319,7 @@ impl TranslationValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::with_z3_context;
+    use crate::with_verification_context;
     use synth_synthesis::{Cost, Operand2, Pattern, Replacement};
 
     fn create_test_rule(wasm_op: WasmOp, arm_op: ArmOp) -> SynthesisRule {
@@ -340,7 +338,7 @@ mod tests {
 
     #[test]
     fn test_verify_add_correct() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = TranslationValidator::new();
 
             let rule = create_test_rule(
@@ -359,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_verify_sub_correct() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = TranslationValidator::new();
 
             let rule = create_test_rule(
@@ -378,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_verify_mul_correct() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = TranslationValidator::new();
 
             let rule = create_test_rule(
@@ -397,7 +395,7 @@ mod tests {
 
     #[test]
     fn test_verify_and_correct() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = TranslationValidator::new();
 
             let rule = create_test_rule(
@@ -416,7 +414,7 @@ mod tests {
 
     #[test]
     fn test_verify_incorrect_rule() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = TranslationValidator::new();
 
             // INCORRECT rule: WASM i32.add -> ARM SUB (should find counterexample)
@@ -442,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_verify_bitwise_ops() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = TranslationValidator::new();
 
             // Test OR
