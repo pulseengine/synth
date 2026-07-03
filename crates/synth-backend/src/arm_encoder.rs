@@ -122,6 +122,34 @@ impl ArmEncoder {
         Ok(Some(bytes))
     }
 
+    /// #594: A32 expansion of `ArmOp::CallIndirect` — mirror of the Thumb-2
+    /// arm (same contract: R11 holds the function-pointer table base, entry
+    /// `i` is a 4-byte code address, R12 is the encoder-scratch register):
+    ///
+    /// ```text
+    /// MOV r12, idx, LSL #2   ; table byte offset
+    /// LDR r12, [r11, r12]    ; load function pointer
+    /// BLX r12                ; indirect call
+    /// ```
+    ///
+    /// Bounds and type-signature checks are not emitted — parity with the
+    /// Thumb-2 path (tracked separately, see #594's note).
+    fn encode_arm_call_indirect(table_index_reg: &Reg) -> Vec<u8> {
+        let idx = reg_to_bits(table_index_reg);
+        let mut bytes = Vec::with_capacity(12);
+        // MOV r12, idx, LSL #2 — data-processing MOV, register op2 with
+        // imm5=2/LSL: cond=E, opcode=1101, S=0, Rd=r12.
+        let mov: u32 = 0xE1A0C000 | (2 << 7) | idx;
+        bytes.extend_from_slice(&mov.to_le_bytes());
+        // LDR r12, [r11, r12] — register offset, P=1 U=1 B=0 W=0 L=1.
+        let ldr: u32 = 0xE79BC00C;
+        bytes.extend_from_slice(&ldr.to_le_bytes());
+        // BLX r12 — cond=E, 0001 0010 1111 1111 1111 0011, Rm=r12.
+        let blx: u32 = 0xE12FFF3C;
+        bytes.extend_from_slice(&blx.to_le_bytes());
+        bytes
+    }
+
     fn encode_arm(&self, op: &ArmOp) -> Result<Vec<u8>> {
         // #206: ARM32 register-offset loads/stores. `encode_mem_addr` only
         // returns the 12-bit immediate, so the immediate-form arms below
@@ -131,6 +159,17 @@ impl ArmEncoder {
         // against `[ip, #off]`, which is uniform for word/byte/halfword/signed.
         if let Some(bytes) = self.encode_arm_reg_offset_mem(op)? {
             return Ok(bytes);
+        }
+        // #594: call_indirect was encoded as a literal NOP on the A32 path
+        // (`--target cortex-r5`) — the call never happened and the function
+        // silently returned garbage. Emit the same three-instruction expansion
+        // as the Thumb-2 path (R11 = function-pointer table base, R12 scratch):
+        //   MOV r12, idx, LSL #2 ; LDR r12, [r11, r12] ; BLX r12
+        if let ArmOp::CallIndirect {
+            table_index_reg, ..
+        } = op
+        {
+            return Ok(Self::encode_arm_call_indirect(table_index_reg));
         }
         let instr: u32 = match op {
             // Data processing instructions
@@ -769,10 +808,11 @@ impl ArmEncoder {
                 0xE1A00000 // NOP for now
             }
 
+            // #594: CallIndirect is expanded to a real multi-instruction
+            // sequence by the early return at the top of this function —
+            // it must NEVER fall through to a silent NOP again.
             ArmOp::CallIndirect { .. } => {
-                // Indirect function call pseudo-instruction
-                // Not a real ARM instruction, would be expanded to indirect branch
-                0xE1A00000 // NOP for now
+                unreachable!("CallIndirect handled by encode_arm_call_indirect (#594)")
             }
 
             // i64 pseudo-instructions (Phase 2) - encode as NOP for now
@@ -7615,6 +7655,83 @@ mod tests {
         assert_eq!(ldr, 0xE59C_0008, "LDR r0,[ip,#8]: {ldr:#010x}");
         // A bare immediate ldr (the bug) would be 0xE59B0008 (base=r11) — reject.
         assert_ne!(ldr, 0xE59B_0008, "index must not be dropped");
+    }
+
+    /// #594 regression: `call_indirect` on the A32 path (`--target cortex-r5`)
+    /// was encoded as a literal NOP (0xE1A00000) — the call never happened and
+    /// the function silently returned the leftover table-index value. The A32
+    /// encoder must emit the same three-instruction expansion as Thumb-2:
+    /// `MOV r12, idx, LSL #2; LDR r12, [r11, r12]; BLX r12`.
+    #[test]
+    fn test_encode_arm32_call_indirect_is_real_call_594() {
+        use synth_synthesis::{ArmOp, Reg};
+        let enc = ArmEncoder::new_arm32();
+        let bytes = enc
+            .encode(&ArmOp::CallIndirect {
+                rd: Reg::R0,
+                type_idx: 0,
+                table_index_reg: Reg::R0,
+            })
+            .unwrap();
+        assert_eq!(
+            bytes.len(),
+            12,
+            "expected MOV + LDR + BLX (3 words): {bytes:02x?}"
+        );
+        let mov = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let ldr = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        let blx = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        // MOV r12, r0, LSL #2 = 0xE1A0C100
+        assert_eq!(mov, 0xE1A0_C100, "MOV r12,r0,LSL#2: {mov:#010x}");
+        // LDR r12, [r11, r12] = 0xE79BC00C
+        assert_eq!(ldr, 0xE79B_C00C, "LDR r12,[r11,r12]: {ldr:#010x}");
+        // BLX r12 = 0xE12FFF3C
+        assert_eq!(blx, 0xE12F_FF3C, "BLX r12: {blx:#010x}");
+        // The bug: a single NOP word. Must never come back.
+        assert!(
+            !bytes
+                .chunks_exact(4)
+                .any(|w| w == 0xE1A0_0000u32.to_le_bytes()),
+            "call_indirect must not contain a NOP (#594): {bytes:02x?}"
+        );
+
+        // A non-R0 index register lands in the MOV's Rm field.
+        let bytes = enc
+            .encode(&ArmOp::CallIndirect {
+                rd: Reg::R0,
+                type_idx: 0,
+                table_index_reg: Reg::R4,
+            })
+            .unwrap();
+        let mov = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        assert_eq!(mov, 0xE1A0_C104, "MOV r12,r4,LSL#2: {mov:#010x}");
+    }
+
+    /// #594 anchor: the Thumb-2 `CallIndirect` expansion is untouched by the
+    /// A32 fix — these are the pre-#594 bytes, frozen.
+    ///
+    /// NOTE (found while fixing #594, deliberately NOT changed here): the
+    /// first Thumb-2 word is `mov.w ip, rm, ASR #32` — the intended `LSL #2`
+    /// put its shift amount in the type field (bits 5:4) instead of imm2
+    /// (bits 7:6). For any non-negative index it yields 0, so the Thumb path
+    /// always dispatches table entry 0. Separate latent defect on the Thumb
+    /// path; tracked in the #594 follow-up note.
+    #[test]
+    fn test_encode_thumb_call_indirect_unchanged_594() {
+        use synth_synthesis::{ArmOp, Reg};
+        let enc = ArmEncoder::new_thumb2();
+        let bytes = enc
+            .encode(&ArmOp::CallIndirect {
+                rd: Reg::R0,
+                type_idx: 0,
+                table_index_reg: Reg::R0,
+            })
+            .unwrap();
+        assert_eq!(
+            bytes,
+            vec![0x4F, 0xEA, 0x20, 0x0C, 0x5B, 0xF8, 0x0C, 0xC0, 0xE0, 0x47],
+            "Thumb-2 CallIndirect bytes must stay frozen in this PR: {bytes:02x?}"
+        );
     }
 
     /// #178/#180 regression: the Thumb `Add`/`Adds`/`Subs` reg-forms used the
