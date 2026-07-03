@@ -31,11 +31,15 @@ EXPECT = 42  # wasmtime --invoke run call_indirect_594.wat
 e = ELFFile(open(ELF, "rb"))
 text = bytearray(e.get_section_by_name(".text").data())
 # Symbols from the symtab, never from disasm text (host-dependent).
-# NOTE: the ELF builder currently sets the Thumb interworking bit on every
-# STT_FUNC symbol even for A32 targets (pre-existing defect, noted on #594) —
-# mask bit 0 to get the real A32 code address.
+# #598 (fixed): A32 STT_FUNC symbols carry bit 0 CLEAR — the builder no longer
+# sets the Thumb interworking bit on A32 objects, so no masking workaround.
+# An unexpected bit 0 here would be a #598 regression: fail loudly.
 st = [s for s in e.iter_sections() if s["sh_type"] == "SHT_SYMTAB"][0]
-syms = {s.name: s["st_value"] & ~1 for s in st.iter_symbols() if s.name}
+syms = {s.name: s["st_value"] for s in st.iter_symbols() if s.name}
+odd = [n for n, v in syms.items() if v & 1]
+if odd:
+    print(f"A32 STT_FUNC symbol(s) with Thumb bit set (#598 regression): {odd}")
+    sys.exit(1)
 for need in ("run", "func_0"):
     if need not in syms:
         print(f"SYMBOL MISSING: {need}")

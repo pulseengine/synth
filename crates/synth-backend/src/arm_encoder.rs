@@ -2680,9 +2680,13 @@ impl ArmEncoder {
 
                 // LSL R12, idx_reg, #2 (multiply index by 4)
                 // Thumb-2 MOV with shift: 11101010 010 S 1111 | 0 imm3 Rd imm2 type Rm
-                // LSL: type=00, imm5=2 -> imm3=0, imm2=10
+                // LSL: type=00 (bits 5:4), imm5=2 -> imm3=000, imm2=10 (bits 7:6)
+                // #597: the shift amount was previously shifted into bits 5:4 —
+                // the TYPE field — encoding `mov.w ip, rm, ASR #32`, which
+                // destroyed the index and dispatched table entry 0 for every
+                // call. imm2 lives at bits 7:6.
                 let hw1: u16 = 0xEA4F_u16; // MOV.W R12, Rm, LSL #2
-                let hw2: u16 = ((0x0C00 | (0b10 << 4)) | idx_reg) as u16;
+                let hw2: u16 = ((0x0C00 | (0b10 << 6)) | idx_reg) as u16;
                 bytes.extend_from_slice(&hw1.to_le_bytes());
                 bytes.extend_from_slice(&hw2.to_le_bytes());
 
@@ -7707,17 +7711,23 @@ mod tests {
         assert_eq!(mov, 0xE1A0_C104, "MOV r12,r4,LSL#2: {mov:#010x}");
     }
 
-    /// #594 anchor: the Thumb-2 `CallIndirect` expansion is untouched by the
-    /// A32 fix — these are the pre-#594 bytes, frozen.
+    /// #597 anchor (justified correctness RE-PIN of the #594-era freeze): the
+    /// Thumb-2 `CallIndirect` expansion is `mov.w ip, rm, LSL #2; ldr.w ip,
+    /// [r11, ip]; blx ip`.
     ///
-    /// NOTE (found while fixing #594, deliberately NOT changed here): the
-    /// first Thumb-2 word is `mov.w ip, rm, ASR #32` — the intended `LSL #2`
-    /// put its shift amount in the type field (bits 5:4) instead of imm2
-    /// (bits 7:6). For any non-negative index it yields 0, so the Thumb path
-    /// always dispatches table entry 0. Separate latent defect on the Thumb
-    /// path; tracked in the #594 follow-up note.
+    /// The #594 PR froze the then-current bytes `4F EA 20 0C ...` whose first
+    /// word decodes as `mov.w ip, rm, ASR #32` — the intended `LSL #2` had
+    /// its shift amount in the TYPE field (bits 5:4) instead of imm2 (bits
+    /// 7:6), so the index was destroyed and every call_indirect dispatched
+    /// table entry 0 (shipped miscompile, masked by index-0 probes). #597
+    /// corrects the encoding; new bytes `4F EA 80 0C ...` were
+    /// execution-validated under unicorn against the wasmtime oracle on a
+    /// multi-entry table (indexes 0, 1, 3 —
+    /// scripts/repro/call_indirect_597_differential.py) before this pin was
+    /// replaced. Old pin: [4F EA 20 0C, 5B F8 0C C0, E0 47] (ASR #32 — must
+    /// never come back).
     #[test]
-    fn test_encode_thumb_call_indirect_unchanged_594() {
+    fn test_encode_thumb_call_indirect_lsl2_597() {
         use synth_synthesis::{ArmOp, Reg};
         let enc = ArmEncoder::new_thumb2();
         let bytes = enc
@@ -7729,8 +7739,28 @@ mod tests {
             .unwrap();
         assert_eq!(
             bytes,
-            vec![0x4F, 0xEA, 0x20, 0x0C, 0x5B, 0xF8, 0x0C, 0xC0, 0xE0, 0x47],
-            "Thumb-2 CallIndirect bytes must stay frozen in this PR: {bytes:02x?}"
+            vec![0x4F, 0xEA, 0x80, 0x0C, 0x5B, 0xF8, 0x0C, 0xC0, 0xE0, 0x47],
+            "Thumb-2 CallIndirect: mov.w ip,r0,LSL#2; ldr.w ip,[r11,ip]; blx ip: {bytes:02x?}"
+        );
+        // The #597 bug bytes (ASR #32 first word) must never come back.
+        assert_ne!(
+            &bytes[0..4],
+            &[0x4F, 0xEA, 0x20, 0x0C],
+            "mov.w ip, rm, ASR #32 — the #597 type-field bug"
+        );
+
+        // A non-R0 index register lands in the mov.w's Rm field (hw2 bits 3:0).
+        let bytes = enc
+            .encode(&ArmOp::CallIndirect {
+                rd: Reg::R0,
+                type_idx: 0,
+                table_index_reg: Reg::R4,
+            })
+            .unwrap();
+        assert_eq!(
+            &bytes[0..4],
+            &[0x4F, 0xEA, 0x84, 0x0C],
+            "mov.w ip, r4, LSL #2: {bytes:02x?}"
         );
     }
 
