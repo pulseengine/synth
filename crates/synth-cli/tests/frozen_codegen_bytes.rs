@@ -72,6 +72,7 @@ fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
         .env_remove("SYNTH_NO_STACK_FWD")
         .env_remove("SYNTH_SPILL_REALLOC")
         .env_remove("SYNTH_CONST_CSE")
+        .env_remove("SYNTH_BASE_CSE")
         .args([
             "compile",
             path.to_str().unwrap(),
@@ -149,6 +150,13 @@ fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
 /// `SYNTH_SPILL_REALLOC=0` restores the prior goldens (asserted by
 /// `frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes`). Prior
 /// goldens were flight_seam dce728b4…/738, flight_seam_flat 0665e623…/878.
+///
+/// The SYNTH_BASE_CSE flip (#468, default-on) does NOT move these goldens:
+/// the fixtures compile `--relocatable` → the DIRECT selector, and base-CSE
+/// lives only in the optimized path's `ir_to_arm` (verified: hashes unchanged
+/// under the flip). Its own default/opt-out goldens live in
+/// `base_cse_flip_468.rs`. `SYNTH_BASE_CSE` is still env-removed above so a
+/// stray opt-out in the environment can't skew any future coupling.
 #[test]
 fn frozen_fixtures_text_is_bit_identical_oracle_001() {
     let cases = [
@@ -211,6 +219,7 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
             .env_remove("SYNTH_NO_LOCAL_PROMOTE")
             .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
             .env_remove("SYNTH_CONST_CSE")
+            .env_remove("SYNTH_BASE_CSE")
             .args([
                 "compile",
                 fixture(wasm).to_str().unwrap(),
@@ -281,6 +290,7 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
             .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
             .env_remove("SYNTH_NO_STACK_FWD")
             .env_remove("SYNTH_CONST_CSE")
+            .env_remove("SYNTH_BASE_CSE")
             .args([
                 "compile",
                 fixture(wasm).to_str().unwrap(),

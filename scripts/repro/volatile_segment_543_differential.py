@@ -2,17 +2,17 @@
 """#543 Phase 2 / VCR-DMA-001 — EXECUTION-validate the volatile DMA-window back-off.
 
 `--volatile-segment <base>:<len>` must change ACCESS PATTERNS, never RESULTS:
-with the ranges marked, base-CSE (#468, SYNTH_BASE_CSE=1) keeps every in-window
-access as verbatim per-access materialize-and-access codegen (and const-CSE
-declines wholesale), but the memory the function computes must stay bit-identical
-to wasmtime ground truth in EVERY mode. This harness runs the fixture's
-`dma_window(v)` under unicorn in four builds —
+with the ranges marked, base-CSE (#468, DEFAULT-ON since the lever flip) keeps
+every in-window access as verbatim per-access materialize-and-access codegen
+(and const-CSE declines wholesale), but the memory the function computes must
+stay bit-identical to wasmtime ground truth in EVERY mode. This harness runs
+the fixture's `dma_window(v)` under unicorn in four builds —
 
-  base    : default env, no ranges           (the pre-#543 baseline)
-  folded  : SYNTH_BASE_CSE=1, no ranges      (all 4 const-address stores fold)
-  window  : SYNTH_BASE_CSE=1, --volatile-segment 0x100:16
+  base    : SYNTH_BASE_CSE=0 opt-out, no ranges (the pre-flip baseline)
+  folded  : shipped default, no ranges       (all 4 const-address stores fold)
+  window  : default + --volatile-segment 0x100:16
             (the 2 window stores stay verbatim, the 2 outside still fold)
-  cover   : SYNTH_BASE_CSE=1, --volatile-segment 0x80:144
+  cover   : default + --volatile-segment 0x80:144
             (covers all 4 → base-CSE fully declines)
 
 — and asserts the resulting LINEAR MEMORY (fields 0x80/0x84 outside, 0x100/0x104
@@ -56,8 +56,11 @@ BUILDS = {
 
 def compile_elf(out, base_cse, extra):
     env = {"PATH": "/usr/bin:/bin"}
-    if base_cse:
-        env["SYNTH_BASE_CSE"] = "1"
+    # base-CSE is DEFAULT-ON since the #468 lever flip: base_cse=True is the
+    # shipped default (env untouched); base_cse=False is the SYNTH_BASE_CSE=0
+    # opt-out (the pre-flip baseline codegen).
+    if not base_cse:
+        env["SYNTH_BASE_CSE"] = "0"
     r = subprocess.run(
         [SYNTH, "compile", WAT, "-o", out, "-b", "arm", "--target", "cortex-m4",
          "--all-exports", *extra],

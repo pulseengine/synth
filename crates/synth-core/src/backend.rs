@@ -177,10 +177,11 @@ pub struct CompileConfig {
     /// PHASE-2 CONTRACT (implemented — issue #543): the optimizer's
     /// address-caching passes HONOR these ranges. Consumption points:
     ///  - the #468 base-CSE / const-address-fold
-    ///    (`optimizer_bridge::plan_base_cse`, `SYNTH_BASE_CSE`): a const-address
-    ///    access whose 4-byte window intersects a marked range is EXCLUDED from
-    ///    the fold set — it keeps its verbatim per-access materialize-and-access
-    ///    codegen, while accesses outside the range still fold;
+    ///    (`optimizer_bridge::plan_base_cse`, DEFAULT-ON, opt-out
+    ///    `SYNTH_BASE_CSE=0`): a const-address access whose 4-byte window
+    ///    intersects a marked range is EXCLUDED from the fold set — it keeps
+    ///    its verbatim per-access materialize-and-access codegen, while
+    ///    accesses outside the range still fold;
     ///  - const-CSE (`SYNTH_CONST_CSE`, both the bridge-level cache in
     ///    `optimizer_bridge::ir_to_arm` and `liveness::apply_const_cse` wired in
     ///    `arm_backend.rs`): declines WHOLESALE while any range is marked — a

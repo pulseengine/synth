@@ -7,24 +7,31 @@
 //! back-off itself, locked here as red→green oracles against the two
 //! address-caching levers that live on the optimized path:
 //!
-//!   1. base-CSE / const-address-fold (#468, `SYNTH_BASE_CSE=1`,
-//!      `optimizer_bridge::plan_base_cse`): a const-address access whose window
-//!      intersects a marked range is EXCLUDED from the fold set — it keeps its
-//!      verbatim per-access materialize-and-access codegen — while accesses
-//!      outside the range still fold (surgical, per-access back-off). Dynamic
+//!   1. base-CSE / const-address-fold (#468, DEFAULT-ON since the lever flip,
+//!      opt-out `SYNTH_BASE_CSE=0`, `optimizer_bridge::plan_base_cse`): a
+//!      const-address access whose window intersects a marked range is
+//!      EXCLUDED from the fold set — it keeps its verbatim per-access
+//!      materialize-and-access codegen — while accesses outside the range
+//!      still fold (surgical, per-access back-off). Dynamic
 //!      (statically-unknown) addresses were never fold candidates, so they are
 //!      always left verbatim — the conservative stance.
 //!
-//!   2. const-CSE (`SYNTH_CONST_CSE=1`, both the bridge-level cache and
-//!      `liveness::apply_const_cse`): declines WHOLESALE while any range is
-//!      marked, because at that level a cached constant cannot be classified
-//!      address-vs-data — every constant is re-materialized at each occurrence,
-//!      the documented volatile contract (conservative v1).
+//!   2. const-CSE (`SYNTH_CONST_CSE=1`, still opt-in — its recorded flip
+//!      prerequisites are unmet, see `const_cse_reduction_242.rs` — both the
+//!      bridge-level cache and `liveness::apply_const_cse`): declines
+//!      WHOLESALE while any range is marked, because at that level a cached
+//!      constant cannot be classified address-vs-data — every constant is
+//!      re-materialized at each occurrence, the documented volatile contract
+//!      (conservative v1).
 //!
-//! Both levers are opt-in env flags, so the DEFAULT pipeline consumes the
-//! ranges vacuously: `--volatile-segment` with default env stays byte-inert
-//! (the Phase-1 test still passes) and an empty range vector changes nothing by
-//! construction (the frozen-codegen anchors still pass).
+//! Since the base-CSE flip the DEFAULT pipeline genuinely CONSUMES the ranges
+//! (marking a range can change default bytes — that is the Phase-2 contract
+//! doing its job); with the levers opted OUT (`SYNTH_BASE_CSE=0`, const-CSE
+//! unset) the ranges are consumed vacuously and `--volatile-segment` stays
+//! byte-inert (the Phase-1 test pins that opt-out form). An empty range
+//! vector changes nothing by construction (the frozen-codegen anchors still
+//! pass — they compile `--relocatable`, the direct path base-CSE never
+//! reaches).
 //!
 //! Semantic (results-level) equivalence in both modes is the separate
 //! `scripts/repro/volatile_segment_543_differential.py` unicorn-vs-wasmtime
@@ -48,8 +55,9 @@ fn fixture(name: &str) -> std::path::PathBuf {
 
 /// Compile a fixture on the optimized ARM path (self-contained image — the only
 /// path where base-CSE and const-CSE live) and return its `.text` bytes.
-/// `envs` supplies the opt-in lever flags (e.g. `SYNTH_BASE_CSE=1`), `extra`
-/// any additional CLI args (e.g. `--volatile-segment ...`).
+/// `envs` supplies the lever flags (e.g. the `SYNTH_BASE_CSE=0` opt-out —
+/// base-CSE is DEFAULT-ON since the lever flip); both lever vars are first
+/// removed so a stray value in the test environment can't skew a gate.
 fn compile_text(
     fixture_name: &str,
     out_tag: &str,
@@ -71,6 +79,8 @@ fn compile_text(
     ];
     args.extend_from_slice(extra);
     let mut cmd = Command::new(synth());
+    cmd.env_remove("SYNTH_BASE_CSE");
+    cmd.env_remove("SYNTH_CONST_CSE");
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -91,35 +101,33 @@ fn compile_text(
 }
 
 const FIXTURE: &str = "volatile_segment_543.wat";
-const BASE_CSE: (&str, &str) = ("SYNTH_BASE_CSE", "1");
+/// The base-CSE OPT-OUT (default-ON since the lever flip).
+const BASE_CSE_OFF: (&str, &str) = ("SYNTH_BASE_CSE", "0");
 
 /// The red→green Phase-2 oracle for base-CSE (#468).
 ///
 /// The fixture has 4 const-address stores: 2 inside the DMA window
-/// [0x100,0x110), 2 outside. Four compiles pin the whole behavior lattice:
-///   C  — no base-CSE, no ranges: the verbatim baseline (per-access
+/// [0x100,0x110), 2 outside. Four compiles pin the whole behavior lattice
+/// (base-CSE is default-ON, so "no base-CSE" is the `SYNTH_BASE_CSE=0`
+/// opt-out and "base-CSE" is the shipped default):
+///   C  — base-CSE opted out, no ranges: the verbatim baseline (per-access
 ///        `movw/movt R12` base + `add` + store);
-///   A  — base-CSE, no ranges: all 4 stores fold (strictly smaller than C —
+///   A  — default, no ranges: all 4 stores fold (strictly smaller than C —
 ///        non-vacuity: the optimization genuinely fires on this shape);
-///   P  — base-CSE + `--volatile-segment 0x100:16`: the 2 window stores stay
+///   P  — default + `--volatile-segment 0x100:16`: the 2 window stores stay
 ///        verbatim, the 2 outside still fold — strictly between A and C.
 ///        (On pre-Phase-2 main P==A: the flag was ignored — the RED assertion.)
-///   F  — base-CSE + a range covering ALL 4 stores: base-CSE fully declines,
+///   F  — default + a range covering ALL 4 stores: base-CSE fully declines,
 ///        byte-identical to C — every store survives verbatim.
 #[test]
 fn base_cse_honors_volatile_window_543() {
-    let c = compile_text(FIXTURE, "baseline", &[], &[]);
-    let a = compile_text(FIXTURE, "folded", &[BASE_CSE], &[]);
-    let p = compile_text(
-        FIXTURE,
-        "window",
-        &[BASE_CSE],
-        &["--volatile-segment", "0x100:16"],
-    );
+    let c = compile_text(FIXTURE, "baseline", &[BASE_CSE_OFF], &[]);
+    let a = compile_text(FIXTURE, "folded", &[], &[]);
+    let p = compile_text(FIXTURE, "window", &[], &["--volatile-segment", "0x100:16"]);
     let f = compile_text(
         FIXTURE,
         "fullcover",
-        &[BASE_CSE],
+        &[],
         &["--volatile-segment", "0x80:144"],
     );
 
@@ -148,7 +156,7 @@ fn base_cse_honors_volatile_window_543() {
     assert_eq!(
         f, c,
         "full-coverage range must fully decline base-CSE: every store \
-         survives verbatim, byte-identical to never enabling SYNTH_BASE_CSE"
+         survives verbatim, byte-identical to the SYNTH_BASE_CSE=0 opt-out"
     );
 }
 
@@ -156,16 +164,22 @@ fn base_cse_honors_volatile_window_543() {
 /// decline (conservative v1 — constants can't be classified address-vs-data),
 /// byte-identical to never enabling `SYNTH_CONST_CSE`. Uses the existing
 /// const-CSE headroom fixture whose flag-ON reduction is already CI-pinned
-/// (`const_cse_reduction_242.rs`).
+/// (`const_cse_reduction_242.rs`). All three compiles pin `SYNTH_BASE_CSE=0`
+/// to isolate the const-CSE lever: base-CSE is default-ON and does a SURGICAL
+/// (per-access) volatile back-off, so leaving it on would make the
+/// range-marked compile differ from the no-range baseline for base-CSE's own
+/// reasons, vacuously defeating the equality this gate locks. (base-CSE
+/// happens to decline on this fixture today, but the gate must not depend on
+/// that accident.)
 #[test]
 fn const_cse_declines_wholesale_under_volatile_543() {
     const CSE: (&str, &str) = ("SYNTH_CONST_CSE", "1");
-    let base = compile_text("const_cse.wat", "cse_baseline", &[], &[]);
-    let on = compile_text("const_cse.wat", "cse_on", &[CSE], &[]);
+    let base = compile_text("const_cse.wat", "cse_baseline", &[BASE_CSE_OFF], &[]);
+    let on = compile_text("const_cse.wat", "cse_on", &[CSE, BASE_CSE_OFF], &[]);
     let on_volatile = compile_text(
         "const_cse.wat",
         "cse_on_volatile",
-        &[CSE],
+        &[CSE, BASE_CSE_OFF],
         &["--volatile-segment", "0x100:16"],
     );
 
@@ -185,13 +199,13 @@ fn const_cse_declines_wholesale_under_volatile_543() {
 }
 
 /// Empty-config identity, stated positively: passing NO `--volatile-segment`
-/// with the levers ON is unchanged behavior — the gates reduce to the pre-#543
-/// path by construction. (The default-env inertness of the flag itself is the
-/// Phase-1 `volatile_segment_flag_is_byte_inert_543` test; the flag-off frozen
-/// bytes are the `frozen_codegen_bytes.rs` anchors.)
+/// on the shipped default (base-CSE ON) is unchanged behavior — the gates
+/// reduce to the pre-#543 path by construction. (The opt-out inertness of the
+/// flag itself is the Phase-1 `volatile_segment_flag_is_byte_inert_543` test;
+/// the direct-path frozen bytes are the `frozen_codegen_bytes.rs` anchors.)
 #[test]
 fn volatile_gates_are_identity_when_no_range_marked_543() {
-    let a1 = compile_text(FIXTURE, "id_a", &[BASE_CSE], &[]);
-    let a2 = compile_text(FIXTURE, "id_b", &[BASE_CSE], &[]);
+    let a1 = compile_text(FIXTURE, "id_a", &[], &[]);
+    let a2 = compile_text(FIXTURE, "id_b", &[], &[]);
     assert_eq!(a1, a2, "deterministic compile");
 }

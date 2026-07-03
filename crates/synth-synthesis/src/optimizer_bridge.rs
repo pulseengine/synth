@@ -2783,18 +2783,35 @@ impl OptimizerBridge {
         // AND the now-dead address materialization (the pressure relief that keeps
         // the reserved base a net win). R11 is realloc-immune (outside the R0–R8
         // pool), so the single entry materialization survives every segment.
-        // Opt-in (`SYNTH_BASE_CSE=1`) → off ⇒ byte-identical. The optimized path
-        // is the ONLY caller of `ir_to_arm`, so this never reaches the relocatable
-        // lowering (which already pins the base in `fp`).
+        // DEFAULT-ON (#242 feature loop, the SYNTH_SPILL_REALLOC-flip pattern):
+        // base-CSE ships by default. Evidence basis for the flip: the planner
+        // only activates on the narrow provably-profitable shape (every opcode
+        // enumerated, ≥2 single-use const-address accesses folding into the
+        // imm12 window — anything else declines the whole function), the
+        // 72-fixture corpus sweep shrinks 2 fixtures / grows 0
+        // (redundant_base_materialization 342→224 B, volatile_segment_543
+        // 256→194 B), and the unicorn-vs-wasmtime execution differentials
+        // (base_cse, volatile_segment_543, const_cse, flight_seam,
+        // frame_slot_dce, spill_rung_581, control_step) re-ran green on the
+        // new default bytes BEFORE the goldens were re-pinned
+        // (base_cse_flip_468.rs). The optimized path is the ONLY caller of
+        // `ir_to_arm`, so this never reaches the relocatable lowering (which
+        // already pins the base in `fp`) — the frozen `--relocatable` anchors
+        // are untouched by construction.
+        // Escape hatch: `SYNTH_BASE_CSE=0` is the OPT-OUT — it restores the
+        // pre-flip bytes (CI-gated by
+        // `base_cse_escape_hatch_restores_old_bytes_468`). Any other value
+        // (or unset) runs the planner.
         // #543 Phase 2: the planner receives the integrator-marked volatile
         // DMA ranges — an access inside a marked window is excluded from the
         // fold set (it keeps its verbatim per-access materialize-and-access
         // codegen), while accesses outside still fold.
-        let base_cse: Option<BaseCsePlan> = if std::env::var("SYNTH_BASE_CSE").is_ok() {
-            plan_base_cse(instructions, &self.volatile_segments)
-        } else {
-            None
-        };
+        let base_cse: Option<BaseCsePlan> =
+            if !std::env::var("SYNTH_BASE_CSE").is_ok_and(|v| v == "0") {
+                plan_base_cse(instructions, &self.volatile_segments)
+            } else {
+                None
+            };
         if base_cse.is_some() {
             param_reserved_regs.push(BASE_CSE_REG);
         }
@@ -6141,13 +6158,18 @@ impl OptimizerBridge {
 
         // Add return if not present
         if arm_instrs.is_empty() || !matches!(arm_instrs.last(), Some(ArmOp::Bx { .. })) {
-            // VCR-RA-001 (#242): the spill-frame block above only inserts the
-            // `ADD SP` epilogue before returns that ALREADY exist; a return
-            // appended here would leave SP off by the frame size (the latent
-            // shape was unreachable flag-off: any spill implied scratch-pool
-            // exhaustion, which declined the function). Flag-gated so flag-off
-            // bytes are untouched.
-            if spill_on_exhaust && next_spill_offset > 4 {
+            // #499: the spill-frame block above only inserts the `ADD SP`
+            // epilogue before returns that ALREADY exist; a return appended
+            // here must also deallocate the frame, or SP returns off by the
+            // frame size and the `pop {…, pc}` epilogue (#490) reads PC from
+            // a spill slot. This was previously gated on `spill_on_exhaust`
+            // under the belief that a flag-off spill implied scratch-pool
+            // exhaustion (which declines the function) — false: the
+            // `Opcode::Const` allocator has its own oldest-vreg eviction
+            // spill on R4-R11/R3 pool exhaustion that never sets
+            // `r12_exhausted`, so functions that fall off the end (the common
+            // wasm shape: no explicit `return`) shipped with an imbalanced SP.
+            if next_spill_offset > 4 {
                 let frame_size = ((next_spill_offset as u32 + 7) & !7) as i32;
                 arm_instrs.push(ArmOp::Add {
                     rd: Reg::SP,
@@ -6156,6 +6178,36 @@ impl OptimizerBridge {
                 });
             }
             arm_instrs.push(ArmOp::Bx { rm: Reg::LR });
+        }
+
+        // #499 defensive post-condition (internal-bug panic pattern): if a
+        // spill frame was allocated, EVERY return must be immediately preceded
+        // by the exact `ADD SP, SP, #frame_size` teardown. The prologue is the
+        // only `SUB SP` and the epilogue inserts the only `ADD SP`s, so the
+        // "immediately preceding instruction" check is precise — any return
+        // this scan flags would ship an SP-imbalanced function.
+        if next_spill_offset > 4 {
+            let frame_size = ((next_spill_offset as u32 + 7) & !7) as i32;
+            for (i, op) in arm_instrs.iter().enumerate() {
+                if matches!(op, ArmOp::Bx { rm: Reg::LR }) {
+                    let deallocated = i > 0
+                        && matches!(
+                            &arm_instrs[i - 1],
+                            ArmOp::Add {
+                                rd: Reg::SP,
+                                rn: Reg::SP,
+                                op2: Operand2::Imm(n),
+                            } if *n == frame_size
+                        );
+                    assert!(
+                        deallocated,
+                        "internal error (#499): return at instruction {i} does not \
+                         deallocate the {frame_size}-byte spill frame — SP would \
+                         return imbalanced and `pop {{…, pc}}` would read PC from \
+                         a spill slot. This is an optimizer_bridge epilogue bug."
+                    );
+                }
+            }
         }
 
         // #490: the callee-saved prologue/epilogue the optimized path needs to
