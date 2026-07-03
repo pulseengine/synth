@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.26.0] - 2026-07-03
+
+**i64 pair-aware Belady eviction on exhaustion (#587 partial, flag-off).**
+
+### Internal (VCR #242 — behind `SYNTH_SPILL_ON_EXHAUST`, default off)
+
+- **i64 register-pair exhaustion spills instead of declining (#589).** The #580
+  exhaustion pre-step extends to i64 pairs: unified pair-aware Belady eviction
+  over the four pair candidates (coherent live pair, or two singles freeing a
+  legal even pair; winner by farthest next use among displaced values),
+  8-byte-aligned slot couples (the #325 convention), coherent reload into any
+  legal even pair; the single-evictor now refuses to split a live pair (#518
+  class). No sound eviction ⇒ the existing honest decline. Flag-off
+  byte-identical; 8/8 + full-matrix differentials vs wasmtime. **#587 stays
+  open**: the direct-path i64 spill-slot pool and several op-class declines
+  (i64 shifts/div/bit-ops, non-param i64 locals, R9/R10 convention collisions)
+  remain, all named on the issue.
+
 ## [0.25.0] - 2026-07-03
 
 **`--volatile-segment` becomes real: marked DMA windows suppress linear-memory
