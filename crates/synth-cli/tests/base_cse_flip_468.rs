@@ -49,14 +49,24 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 }
 
 /// Compile `rel` on the optimized ARM path. `default_on` = the shipped
-/// default (env var removed so a stray opt-out in the test environment can't
+/// default (env vars removed so a stray opt-out in the test environment can't
 /// skew the gate); `false` = the `SYNTH_BASE_CSE=0` opt-out (pre-flip bytes).
+///
+/// COMPOSITION NOTE (#242): const-CSE is default-ON since its own flip, so
+/// rolling back to the pre-BASE-CSE-flip bytes now also requires
+/// `SYNTH_CONST_CSE=0` on the opt-out arm (const-CSE would otherwise rewrite
+/// the verbatim per-access materializations these goldens pin). The DEFAULT
+/// arm leaves both env vars untouched — verified at const-CSE-flip time that
+/// the default goldens below are byte-identical under const-CSE (its
+/// size-guarded passes find nothing left on the folded shape), so this gate
+/// keeps pinning the TRUE shipped default.
 fn compile(rel: &str, out: &str, default_on: bool) -> Vec<u8> {
     let mut cmd = Command::new(synth());
-    cmd.env_remove("SYNTH_CONST_CSE");
     if default_on {
+        cmd.env_remove("SYNTH_CONST_CSE");
         cmd.env_remove("SYNTH_BASE_CSE");
     } else {
+        cmd.env("SYNTH_CONST_CSE", "0");
         cmd.env("SYNTH_BASE_CSE", "0");
     }
     let out_status = cmd
@@ -167,8 +177,11 @@ fn base_cse_escape_hatch_restores_old_bytes_468() {
 /// GATE 3 — NO-GROW + non-vacuity: across the measured corpus no function
 /// grows default-vs-opt-out, and the two firing fixtures genuinely shrink
 /// (redundant_base_materialization −118 B, volatile_segment_543 −62 B at
-/// flip time). flat_flight / flight_seam / const_cse are decline-shaped for
-/// this planner (control flow / non-const addresses) — they must stay EQUAL.
+/// flip time). Since the #242 const-CSE flip the opt-out arm disables BOTH
+/// levers (see `compile`), so this is a combined-default no-grow claim;
+/// flat_flight / flight_seam / const_cse decline for the base-CSE planner
+/// (control flow / non-const addresses) but may shrink under const-CSE —
+/// per-lever equality is pinned in each lever's own gate file.
 #[test]
 fn base_cse_no_grow_corpus_468() {
     let corpus = [

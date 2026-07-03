@@ -3147,30 +3147,18 @@ impl OptimizerBridge {
             });
         }
 
-        // VCR-RA const-CSE (#242): when the same constant is already
-        // materialized in a still-valid register, alias the new vreg to that
-        // register and emit NO materialization. Pressure-neutral-or-better — the
-        // value is already in a register, so aliasing never adds register
-        // pressure (it can only share one). `reg_holds_const` (keyed by the
-        // u32 bit-pattern, so a negative i32 const matches its movw/movt
-        // reconstruction) is derived from the EMITTED ARM at the top of each
-        // iteration — so it survives the many `continue` arms — and is reset at
-        // every control-flow boundary, confining CSE to straight-line segments.
-        // Opt-in `SYNTH_CONST_CSE=1`; off ⇒ byte-identical (no new state read).
-        //
-        // #543 Phase 2: const-CSE declines WHOLESALE while any volatile DMA
-        // range is marked. At this level a cached constant cannot be classified
-        // as address-vs-data (its uses — including memory-access bases with
-        // per-use immediate offsets — are not known at aliasing time), so the
-        // conservative stance for statically-unknown addressing is to decline
-        // every aliasing rewrite: each constant, address or not, is
-        // re-materialized at each occurrence, which is exactly the documented
-        // volatile contract (`CompileConfig::volatile_segments`). Empty ranges
-        // (the default) ⇒ unchanged behavior by construction.
-        let const_cse =
-            std::env::var("SYNTH_CONST_CSE").is_ok() && self.volatile_segments.is_empty();
-        let mut reg_holds_const: HashMap<Reg, u32> = HashMap::new();
-        let mut cse_seen_len = 0usize;
+        // VCR-RA const-CSE (#242): the bridge-level INLINE aliasing that used
+        // to live here (alias a repeated const's vreg to the register already
+        // holding the value, under `SYNTH_CONST_CSE`) is RETIRED. Inline
+        // aliasing made two live vregs share one physical register, breaking
+        // the spill model's vreg↔reg bijection — the recorded alias-eviction
+        // hazard that blocked the default-on flip (see the #592 PR body and
+        // `const_cse_reduction_242.rs`). Const materialization now always
+        // falls through to the normal allocate-and-emit below; the flag gates
+        // ONLY the post-hoc, liveness-proven `liveness::apply_const_cse`
+        // passes wired in `arm_backend.rs` (PR1 #519 cross-register fold +
+        // PR2 #562 extending-alias hoist), which are removal+retarget on
+        // already-register-assigned code and cannot alias two live vregs.
 
         // VCR-RA-001 allocation-time spill-on-exhaustion (#242, closes #496 for
         // straight-line i32 functions; #587 extends it to i64 register PAIRS).
@@ -3226,39 +3214,6 @@ impl OptimizerBridge {
 
         // Second pass: generate ARM instructions
         for (spill_idx, inst) in instructions.iter().enumerate() {
-            if const_cse {
-                // Reconcile the cache with everything emitted since last iteration.
-                for op in &arm_instrs[cse_seen_len..] {
-                    match op {
-                        ArmOp::Movw { rd, imm16 } => {
-                            reg_holds_const.insert(*rd, *imm16 as u32);
-                        }
-                        ArmOp::Movt { rd, imm16 } => {
-                            let lo = reg_holds_const.get(rd).copied().unwrap_or(0) & 0xFFFF;
-                            reg_holds_const.insert(*rd, lo | ((*imm16 as u32) << 16));
-                        }
-                        ArmOp::Mov {
-                            rd,
-                            op2: Operand2::Imm(v),
-                        } => {
-                            reg_holds_const.insert(*rd, *v as u32);
-                        }
-                        other => match crate::liveness::reg_effect(other) {
-                            // Any other write clobbers the const in its dest reg(s).
-                            Some(eff) => {
-                                for d in eff.defs {
-                                    reg_holds_const.remove(&d);
-                                }
-                            }
-                            // Unmodeled op (branch/bl/bx/label) = control-flow
-                            // boundary: the cache cannot be trusted across it.
-                            None => reg_holds_const.clear(),
-                        },
-                    }
-                }
-                cse_seen_len = arm_instrs.len();
-            }
-
             // VCR-RA-001 spill pre-step (#242, #496): with the flag on and the
             // whole function in the modeled subset, make sure the handler below
             // never hits pool exhaustion:
@@ -3591,33 +3546,14 @@ impl OptimizerBridge {
                     {
                         continue;
                     }
-                    // const-CSE: if this exact value already lives in a register
-                    // (and `dest` isn't a pre-assigned local/param), alias `dest`
-                    // to it and emit nothing. The aliased register is protected
-                    // from reuse while `dest` is live (it's in `vreg_to_arm`).
-                    //
-                    // DEFAULT-OFF prerequisite for the flip (see
-                    // const_cse_reduction_242.rs): aliasing makes two live vregs
+                    // NOTE (#242): the inline const-CSE aliasing that used to
+                    // short-circuit here (alias `dest` to a register already
+                    // holding the value) is RETIRED — it made two live vregs
                     // share one physical register, breaking the spill model's
-                    // vreg↔reg bijection (the eviction path at ~3168 spills a
-                    // SINGLE victim vreg). If the older alias is spilled while the
-                    // younger keeps the alias, the freed register is reused under
-                    // the younger → stale read. Not reachable today (the IR
-                    // optimizer dedups consecutive identical consts upstream), but
-                    // default-on must prove unreachability or make the spill path
-                    // alias-aware (spill ALL vregs sharing the victim register).
-                    let cse_want = *value as u32;
-                    if const_cse
-                        && !vreg_to_arm.contains_key(&dest.0)
-                        && !local_vregs.contains(&dest.0)
-                        && let Some(rs) = reg_holds_const
-                            .iter()
-                            .find_map(|(r, v)| if *v == cse_want { Some(*r) } else { None })
-                    {
-                        vreg_to_arm.insert(dest.0, rs);
-                        vreg_alloc_order.push(dest.0);
-                        continue;
-                    }
+                    // vreg↔reg bijection (the alias-eviction hazard). Every
+                    // const now allocates and materializes normally; redundant
+                    // materializations are recovered post-hoc by the
+                    // liveness-proven `liveness::apply_const_cse` passes.
                     // Allocate a register for this constant
                     let rd = if let Some(&r) = vreg_to_arm.get(&dest.0) {
                         r
@@ -6818,10 +6754,12 @@ fn spill_evict_farthest(
                 && !param_reserved_regs.contains(&r)
                 && !avoid.contains(&r)
                 // Alias guard: only evict a register held by exactly ONE vreg.
-                // const-CSE aliasing (SYNTH_CONST_CSE) makes two live vregs
-                // share a register; spilling a single victim would leave the
-                // other alias reading a reused register (the documented
-                // spill-bijection hazard).
+                // The inline const-CSE aliasing that could make two live vregs
+                // share a register is RETIRED (#242 — const-CSE is now only
+                // the post-hoc `liveness::apply_const_cse`), so today the
+                // vreg↔reg map is a bijection by construction; the guard stays
+                // as a cheap structural tripwire (spilling a shared victim
+                // would leave the other alias reading a reused register).
                 && vreg_to_arm.values().filter(|&&u| u == r).count() == 1
         })
         .collect();

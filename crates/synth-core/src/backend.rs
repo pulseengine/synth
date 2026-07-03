@@ -182,12 +182,12 @@ pub struct CompileConfig {
     ///    intersects a marked range is EXCLUDED from the fold set — it keeps
     ///    its verbatim per-access materialize-and-access codegen, while
     ///    accesses outside the range still fold;
-    ///  - const-CSE (`SYNTH_CONST_CSE`, both the bridge-level cache in
-    ///    `optimizer_bridge::ir_to_arm` and `liveness::apply_const_cse` wired in
-    ///    `arm_backend.rs`): declines WHOLESALE while any range is marked — a
-    ///    cached constant cannot be classified address-vs-data at that level, so
-    ///    the conservative stance for statically-unknown addressing is to
-    ///    re-materialize every constant at each occurrence.
+    ///  - const-CSE (`liveness::apply_const_cse` wired in `arm_backend.rs`,
+    ///    DEFAULT-ON, opt-out `SYNTH_CONST_CSE=0`; the former bridge-level
+    ///    inline cache is retired, #242): declines WHOLESALE while any range is
+    ///    marked — a cached constant cannot be classified address-vs-data at
+    ///    that level, so the conservative stance for statically-unknown
+    ///    addressing is to re-materialize every constant at each occurrence.
     ///
     /// Passes that only touch SP-relative frame slots (stack-reload forwarding,
     /// frame-slot DCE, spill re-choice) are unaffected by design: these ranges

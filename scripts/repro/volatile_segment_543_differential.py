@@ -9,11 +9,17 @@ stay bit-identical to wasmtime ground truth in EVERY mode. This harness runs
 the fixture's `dma_window(v)` under unicorn in four builds —
 
   base    : SYNTH_BASE_CSE=0 opt-out, no ranges (the pre-flip baseline)
-  folded  : shipped default, no ranges       (all 4 const-address stores fold)
-  window  : default + --volatile-segment 0x100:16
+  folded  : base-CSE default, no ranges      (all 4 const-address stores fold)
+  window  : base-CSE default + --volatile-segment 0x100:16
             (the 2 window stores stay verbatim, the 2 outside still fold)
-  cover   : default + --volatile-segment 0x80:144
+  cover   : base-CSE default + --volatile-segment 0x80:144
             (covers all 4 → base-CSE fully declines)
+
+All four pin SYNTH_CONST_CSE=0 so the lattice isolates the base-CSE lever
+(const-CSE is DEFAULT-ON since the #242 flip); a composition check then proves
+the range-marked builds are byte-identical to the shipped default (const-CSE
+declines wholesale under a marked range), so their execution covers the
+default bytes too.
 
 — and asserts the resulting LINEAR MEMORY (fields 0x80/0x84 outside, 0x100/0x104
 inside the DMA window) matches wasmtime for several input values.
@@ -54,13 +60,22 @@ BUILDS = {
 }
 
 
-def compile_elf(out, base_cse, extra):
+def compile_elf(out, base_cse, extra, const_cse_opt_out=True):
     env = {"PATH": "/usr/bin:/bin"}
     # base-CSE is DEFAULT-ON since the #468 lever flip: base_cse=True is the
     # shipped default (env untouched); base_cse=False is the SYNTH_BASE_CSE=0
     # opt-out (the pre-flip baseline codegen).
     if not base_cse:
         env["SYNTH_BASE_CSE"] = "0"
+    # const-CSE is DEFAULT-ON since the #242 flip; opt it out UNIFORMLY so the
+    # base/folded/window/cover size lattice isolates the BASE-CSE lever (with
+    # const-CSE running, the range-free `base` arm shrinks for const-CSE's own
+    # reasons and the lattice goes vacuous). NOT a coverage loss for the
+    # range-marked arms: with any range marked const-CSE declines WHOLESALE,
+    # so window/cover are byte-identical to the shipped default — asserted
+    # below in main().
+    if const_cse_opt_out:
+        env["SYNTH_CONST_CSE"] = "0"
     r = subprocess.run(
         [SYNTH, "compile", WAT, "-o", out, "-b", "arm", "--target", "cortex-m4",
          "--all-exports", *extra],
@@ -141,6 +156,22 @@ def main():
                  "(cover .text != base .text)")
     print(f".text: base={sizes['base']}B folded={sizes['folded']}B "
           f"window={sizes['window']}B cover={sizes['cover']}B (≡ base)")
+
+    # Default-on const-CSE composition check (#242): with any range marked,
+    # const-CSE must decline WHOLESALE, so the shipped default (env untouched)
+    # must be byte-identical to the SYNTH_CONST_CSE=0 opt-out on the
+    # range-marked builds — which also means executing window/cover above
+    # covers the shipped-default bytes.
+    for tag in ("window", "cover"):
+        cse, extra = BUILDS[tag]
+        default_elf = f"/tmp/volseg543_diff_{tag}_default.elf"
+        compile_elf(default_elf, cse, extra, const_cse_opt_out=False)
+        if text_bytes(default_elf) != text_bytes(elfs[tag]):
+            sys.exit(f"FAIL: {tag}: shipped-default bytes != SYNTH_CONST_CSE=0 "
+                     "bytes with a range marked — the volatile wholesale "
+                     "decline is broken under default-on const-CSE")
+    print("default-on const-CSE composition: window/cover byte-identical "
+          "to the =0 opt-out (wholesale decline holds)")
 
     fails = 0
     for v in [0, 1, 22, 0xDEADBEEF, 0x7FFFFFFF, 0xFFFFFFFF]:

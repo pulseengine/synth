@@ -890,8 +890,20 @@ fn compile_wasm_to_arm(
     // size-guards each segment via the byte-estimator — it commits a segment's
     // rewrites only if they do not grow its estimated size — so a retarget that
     // would flip a 16-bit encoding to 32-bit (higher base register) is declined.
-    // Behind `SYNTH_CONST_CSE=1` while validated against the differential oracle;
-    // off by default keeps every fixture bit-identical.
+    // DEFAULT-ON (#242 flip-wave, the SYNTH_SPILL_REALLOC/SYNTH_BASE_CSE
+    // template): const-CSE ships by default. The flip prerequisites recorded in
+    // `const_cse_reduction_242.rs` were retired first — the bridge-level INLINE
+    // aliasing (the alias-eviction spill-bijection hazard) was DELETED from
+    // `optimizer_bridge::ir_to_arm`, so this post-hoc, liveness-proven pass is
+    // the flag's ONLY effect. Evidence basis: 152 fixture×path corpus sweep — 0
+    // functions grow (size-guarded per segment), 40 shrink (const_cse::spill12
+    // 236→148 B), total −536 B — and the execution differentials re-run green
+    // on the new default bytes BEFORE the frozen goldens were re-pinned
+    // (const_cse, frame_slot_dce, flight_seam 0x07FDF307, spill_rung_581,
+    // volatile_segment_543, control_step 0x00210A55). Escape hatch:
+    // `SYNTH_CONST_CSE=0` is the OPT-OUT — it restores the pre-flip bytes
+    // (CI-gated by `const_cse_escape_hatch_restores_old_bytes_242` and the
+    // frozen-anchor escape-hatch gate). Any other value (or unset) runs the pass.
     //
     // #543 Phase 2: const-CSE declines WHOLESALE while any volatile DMA range
     // (`--volatile-segment`) is marked. At the ArmOp level a cached constant
@@ -900,17 +912,17 @@ fn compile_wasm_to_arm(
     // conservative stance for statically-unknown addressing is to decline every
     // aliasing rewrite — each constant is re-materialized at each occurrence,
     // the documented volatile contract (`CompileConfig::volatile_segments`).
-    // Mirrors the bridge-level const-CSE gate in `optimizer_bridge::ir_to_arm`.
-    let arm_instrs =
-        if std::env::var("SYNTH_CONST_CSE").is_ok() && config.volatile_segments.is_empty() {
-            let (out, removed) = synth_synthesis::liveness::apply_const_cse(&arm_instrs);
-            if std::env::var("SYNTH_FUSE_STATS").is_ok() {
-                eprintln!("[const-cse] {removed} redundant constant materialization(s) removed");
-            }
-            out
-        } else {
-            arm_instrs
-        };
+    let arm_instrs = if !std::env::var("SYNTH_CONST_CSE").is_ok_and(|v| v == "0")
+        && config.volatile_segments.is_empty()
+    {
+        let (out, removed) = synth_synthesis::liveness::apply_const_cse(&arm_instrs);
+        if std::env::var("SYNTH_FUSE_STATS").is_ok() {
+            eprintln!("[const-cse] {removed} redundant constant materialization(s) removed");
+        }
+        out
+    } else {
+        arm_instrs
+    };
 
     // VCR-RA-001 spill-choice REPORT (#242): measure-only, like SYNTH_SHADOW_ALLOC.
     // Per straight-line segment, the frame-slot traffic actually emitted vs the
