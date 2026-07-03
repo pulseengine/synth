@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-07-03
+
+**const-CSE ships default-on (hazard retired, branch-geometry sound); i64
+direct-path completeness (#503 closed); five passes hardened against the
+resolved-offset branch class (#606).**
+
+### Changed (byte-changing, deliberate — affected anchors refrozen)
+
+- **`SYNTH_CONST_CSE` default-ON (#604/#242).** The inline aliasing (and its
+  alias-eviction hazard) is *deleted* — the flag gates only the post-hoc
+  passes. Corpus: 0 grow / 38 shrink / −488 B (48 B of unsound branched "wins"
+  honestly given back by the soundness fix). Opt-out `=0` CI-gated. The flip's
+  own gate caught a real CF miscompile pre-merge (`nested(1,)` stored 55 over
+  99): segments spanned **resolved-offset** branch joins, and deleting bytes
+  inside a branch→target span made the pre-resolved offset overshoot. Fixed
+  with `resolved_branch_geometry` (targets = barriers + span byte-freeze).
+
+### Added
+
+- **i64 stack params + pair spill-slot growth on the direct path
+  (#605 — closes #503, advances #587).** Full NCRN/NSAA AAPCS layout walk;
+  wide stack params lower (with calls); the i64 spill pool grows instead of
+  skipping (falcon func_60/func_73 class). Bonus fix: AAPCS C.5 no-back-fill —
+  `p3` of `(i64 i32 i32 i32)` was silently read from R3 on both paths.
+
+### Fixed
+
+- **Five passes now honor resolved branch geometry (#607 — closes #606).**
+  The audit's adversarial fixtures proved current defaults SAFE — but by five
+  accidents, only one designed. Stages 1–2 of spill-realloc, dead-frame-store
+  elimination, stack-reload forwarding, and range-realloc (a fifth exposure
+  found during the audit) all adopt barriers + span byte-freeze; zero give-back
+  (229/231 corpus combos byte-identical, 2 neutral validator-proven recolours).
+
 ## [0.28.0] - 2026-07-03
 
 **RV32 cmp→select ships default-on; three encoder miscompiles fixed (Thumb
