@@ -442,10 +442,29 @@ pub fn fuse_cmp_select_with_stats(
 /// the same soundness lynchpin as [`fuse_cmp_select`]) — the `ldr` is replaced by
 /// `mov rY, rX` (~1 cycle). The `str` is KEPT: the slot may still be read past a
 /// boundary the scan bailed at. Removal-of-a-load + rename only ⇒ NO new instruction
-/// form (no validator change) and labels/branch offsets are untouched. Returns the
+/// form (no validator change) and labels/branch offsets are untouched.
+///
+/// RESOLVED-BRANCH GEOMETRY (#606, the #604 hazard class): on the optimized
+/// path the stream arrives with ALREADY-RESOLVED `BOffset`/`BCondOffset`
+/// displacements that are never re-resolved, so (1) a branch TARGET is an
+/// invisible join — the forward scan stops there (`rX` proven on the
+/// fall-through edge is unproven on the taken edge, e.g. a loop back-edge
+/// re-entering between the `str` and the `ldr`), and (2) a replacement inside
+/// a branch→target span must be exactly byte-size-neutral (a 32-bit `ldr.w`
+/// folding to a 16-bit `mov` would shift the pre-resolved displacement — the
+/// `nested(1,)` overshoot class). An unmappable stream declines wholesale.
+/// Today's optimized-path streams cannot present the firing shape (the
+/// eviction store's source register is redefined immediately after it) — the
+/// gate turns that accidental safety into a structural one. Returns the
 /// rewritten stream and the number of reloads forwarded (0 ⇒ input unchanged).
 pub fn forward_stack_reloads(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    use crate::optimizer_bridge::estimate_arm_byte_size;
     let n = instrs.len();
+    // #606: decline the whole function if resolved-branch geometry cannot be
+    // reconstructed (mixed label/numeric stream or unmappable target).
+    let Some(geo) = resolved_branch_geometry_labels_as_zero(instrs) else {
+        return (instrs.to_vec(), 0);
+    };
     let mut out = instrs.to_vec();
     let mut rewrites = 0usize;
 
@@ -460,6 +479,11 @@ pub fn forward_stack_reloads(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
         // Forward `rX` into same-slot loads until it (or the slot, or sp) changes
         // or the scan reaches an op it cannot reason past.
         for j in (i + 1)..n {
+            // #606: a resolved-branch TARGET is an invisible join — a taken
+            // edge enters here with an unproven `rX`. Stop the scan.
+            if geo.targets.contains(&j) {
+                break;
+            }
             // A reload of the same slot ⇒ rewrite to `mov rY, rX`. `rX` is still
             // the live source, so keep scanning — a later same-slot load forwards too.
             if let ArmOp::Ldr { rd: ry, addr } = &out[j].op
@@ -468,10 +492,20 @@ pub fn forward_stack_reloads(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
                 && addr.offset == slot
             {
                 let ry = *ry;
-                out[j].op = ArmOp::Mov {
+                let mov = ArmOp::Mov {
                     rd: ry,
                     op2: Operand2::Reg(rx),
                 };
+                // #606 span byte-freeze: inside a branch→target span the
+                // replacement must not change the instruction's byte size, or
+                // the pre-resolved displacement overshoots. Keep the `ldr`
+                // (it re-reads the same value, so scanning continues soundly).
+                if geo.frozen[j]
+                    && estimate_arm_byte_size(&mov) != estimate_arm_byte_size(&out[j].op)
+                {
+                    continue;
+                }
+                out[j].op = mov;
                 rewrites += 1;
                 continue;
             }
@@ -534,11 +568,26 @@ pub fn forward_stack_reloads(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
 /// **Branch-offset safety:** like [`forward_stack_reloads`] and
 /// [`eliminate_dead_stores`], intended to run on the `select_with_stack` output
 /// BEFORE `resolve_label_branches`; removing a non-branch interior instruction is
-/// offset-neutral. The frame `sub sp,#K` is untouched (the slot just goes unused),
-/// so SP balance is preserved — frame SHRINKING is [`elide_dead_frame`]'s job.
+/// offset-neutral. On the optimized path, however, the stream arrives with
+/// ALREADY-RESOLVED `BOffset`/`BCondOffset` displacements that are never
+/// re-resolved (#606, the #604 hazard class): deleting a store between a
+/// resolved branch and its target would shift the target by the deleted bytes.
+/// So a candidate inside any branch→target span is kept, the forward scan
+/// stops at a resolved-branch TARGET (an invisible join), and an unmappable
+/// stream declines wholesale. Today's optimized-path spill slots are
+/// fresh-monotonic (`next_spill_offset` only grows), so the same-slot
+/// overwrite this pass needs cannot arise there — the geometry gate turns
+/// that accidental safety into a structural one. The frame `sub sp,#K` is
+/// untouched (the slot just goes unused), so SP balance is preserved — frame
+/// SHRINKING is [`elide_dead_frame`]'s job.
 /// Pure function; callers opt in.
 pub fn eliminate_dead_frame_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
     let n = instrs.len();
+    // #606: resolved numeric branches make byte layout load-bearing — decline
+    // the whole function if their geometry cannot be reconstructed.
+    let Some(geo) = resolved_branch_geometry_labels_as_zero(instrs) else {
+        return (instrs.to_vec(), 0);
+    };
     let mut dead: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
 
     for i in 0..n {
@@ -549,6 +598,11 @@ pub fn eliminate_dead_frame_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruc
             }
             _ => continue,
         };
+        // #606: deleting a store inside a resolved branch→target span shifts
+        // the pre-resolved displacement by the store's byte size. Keep it.
+        if geo.frozen[i] {
+            continue;
+        }
         // Scan forward for an OVERWRITE of slot N with no intervening read or
         // aliasing op. A store is proven dead ONLY by a later store to the same
         // immediate slot (classic dead-store-before-overwrite) — reaching the end
@@ -557,7 +611,13 @@ pub fn eliminate_dead_frame_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruc
         // is to KEEP). This makes the pass unconditionally sound: it never removes
         // a store whose slot any reachable instruction might load.
         let mut overwritten = false;
-        for scan in &instrs[i + 1..] {
+        for (j, scan) in instrs.iter().enumerate().skip(i + 1) {
+            // #606: a resolved-branch TARGET is an invisible join — a taken
+            // edge enters here, so straight-line deadness reasoning must not
+            // cross it. Conservative keep.
+            if geo.targets.contains(&j) {
+                break;
+            }
             match &scan.op {
                 // A reload of the SAME immediate slot ⇒ the value is used ⇒ live.
                 ArmOp::Ldr { addr, .. }
@@ -660,7 +720,13 @@ pub fn eliminate_dead_frame_stores(instrs: &[ArmInstruction]) -> (Vec<ArmInstruc
 ///  - a branch whose target cannot be resolved (numeric `BOffset`/
 ///    `BCondOffset` — this pass runs BEFORE `resolve_label_branches` — a
 ///    `BrTable`, a missing/duplicate label, or an indirect `Bx` that is not the
-///    `bx lr` return);
+///    `bx lr` return). This is also the #606 resolved-branch-geometry
+///    soundness point (the #604 hazard class): on the optimized path the
+///    stream arrives with already-resolved displacements, and deleting a
+///    store between a branch and its target would shift the target by the
+///    deleted bytes — declining wholesale on any numeric branch makes this
+///    pass structurally safe there (pinned by
+///    `unread_store_declines_on_resolved_numeric_branches_606`);
 ///  - any op [`reg_effect`] does not model (i64-pair pseudo-ops, FP, memory
 ///    builtins, …): its memory behavior is unknown.
 ///
@@ -3114,31 +3180,61 @@ pub fn elide_dead_frame(instrs: &[ArmInstruction]) -> Option<Vec<ArmInstruction>
 /// Defense-in-depth: before accepting a segment's rewrite, every interference
 /// edge is re-checked against the final assignment (independent of the
 /// colourer), mirroring `verify_allocation`.
+///
+/// RESOLVED-BRANCH GEOMETRY (#606, the #604 hazard class): renames preserve
+/// instruction COUNT but not byte SIZE — recolouring a low register onto R8
+/// (or back) flips 16-bit Thumb encodings to 32-bit — and on the optimized
+/// path this pass runs on streams whose `BOffset`/`BCondOffset` displacements
+/// are already byte-resolved and never re-resolved. So (1) a resolved-branch
+/// TARGET is an invisible join and becomes a segment BARRIER (a rename valid
+/// on the fall-through edge is unproven on the taken edge entering
+/// mid-segment), and (2) a segment overlapping a branch→target span commits
+/// its rewrite only if exactly byte-size-neutral. An unmappable stream
+/// declines wholesale.
 pub fn reallocate_function(
     instrs: &[ArmInstruction],
     pool: &[Reg],
 ) -> (Vec<ArmInstruction>, ReallocStats) {
-    let mut out: Vec<ArmInstruction> = Vec::with_capacity(instrs.len());
+    use crate::optimizer_bridge::estimate_arm_byte_size;
     let mut stats = ReallocStats::default();
-    let mut seg: Vec<ArmInstruction> = Vec::new();
-    let flush =
-        |seg: &mut Vec<ArmInstruction>, out: &mut Vec<ArmInstruction>, stats: &mut ReallocStats| {
-            if seg.is_empty() {
+    // #606: resolved numeric branches make join points invisible and byte
+    // layout load-bearing — decline the whole function if unmappable.
+    let Some(geo) = resolved_branch_geometry_labels_as_zero(instrs) else {
+        return (instrs.to_vec(), stats);
+    };
+    let mut out: Vec<ArmInstruction> = Vec::with_capacity(instrs.len());
+    let process =
+        |start: usize, end: usize, out: &mut Vec<ArmInstruction>, stats: &mut ReallocStats| {
+            if end <= start {
                 return;
             }
+            let seg = &instrs[start..end];
             stats.segments += 1;
             match try_reallocate_segment(seg, pool) {
                 SegmentOutcome::Rewritten(new) => {
+                    // #606 span byte-freeze: inside a branch→target span the
+                    // rewrite must not change the segment's byte size, or the
+                    // pre-resolved displacement overshoots.
+                    if geo.frozen[start..end].iter().any(|&f| f) {
+                        let orig: usize = seg.iter().map(|i| estimate_arm_byte_size(&i.op)).sum();
+                        let new_bytes: usize =
+                            new.iter().map(|i| estimate_arm_byte_size(&i.op)).sum();
+                        if new_bytes != orig {
+                            stats.declined += 1;
+                            out.extend_from_slice(seg);
+                            return;
+                        }
+                    }
                     stats.reallocated += 1;
                     out.extend(new);
                 }
                 SegmentOutcome::NeedsSpill => {
                     stats.needs_spill += 1;
-                    out.append(seg);
+                    out.extend_from_slice(seg);
                 }
                 SegmentOutcome::Declined => {
                     stats.declined += 1;
-                    out.append(seg);
+                    out.extend_from_slice(seg);
                 }
                 SegmentOutcome::ValidatorRejected => {
                     // The colourer + edge-recheck accepted a rewrite the
@@ -3147,20 +3243,24 @@ pub fn reallocate_function(
                     // a nonzero count is a pass bug, not a validator feature.
                     stats.declined += 1;
                     stats.validator_rejects += 1;
-                    out.append(seg);
+                    out.extend_from_slice(seg);
                 }
             }
-            seg.clear();
         };
-    for ins in instrs {
-        if is_straight_line(&ins.op) && reg_effect(&ins.op).is_some() {
-            seg.push(ins.clone());
-        } else {
-            flush(&mut seg, &mut out, &mut stats);
+    let mut seg_start = 0usize;
+    for (i, ins) in instrs.iter().enumerate() {
+        // #606: a resolved-branch TARGET is an invisible join point — barrier.
+        if geo.targets.contains(&i) && i > seg_start {
+            process(seg_start, i, &mut out, &mut stats);
+            seg_start = i;
+        }
+        if !(is_straight_line(&ins.op) && reg_effect(&ins.op).is_some()) {
+            process(seg_start, i, &mut out, &mut stats);
             out.push(ins.clone());
+            seg_start = i + 1;
         }
     }
-    flush(&mut seg, &mut out, &mut stats);
+    process(seg_start, instrs.len(), &mut out, &mut stats);
     (out, stats)
 }
 
@@ -3777,6 +3877,31 @@ struct ResolvedBranchGeometry {
 /// estimator's default) — in which case the caller must decline the whole
 /// function rather than guess.
 fn resolved_branch_geometry(instrs: &[ArmInstruction]) -> Option<ResolvedBranchGeometry> {
+    if instrs
+        .iter()
+        .any(|i| matches!(i.op, ArmOp::BOffset { .. } | ArmOp::BCondOffset { .. }))
+        && instrs.iter().any(|i| matches!(i.op, ArmOp::Label { .. }))
+    {
+        return None; // mixed stream: #604 keeps const-CSE's decline stance
+    }
+    resolved_branch_geometry_labels_as_zero(instrs)
+}
+
+/// The #606 variant of [`resolved_branch_geometry`] for the spill/realloc
+/// passes: a MIXED stream (label-form branches alongside numeric ones) is
+/// mapped rather than declined, sizing `Label` pseudo-ops as 0 bytes — which
+/// is exactly what `resolve_label_branches` encodes them to. The direct
+/// selector emits such streams (label-form control flow plus numeric
+/// `bne +0; udf` trap guards): its label displacements are re-resolved AFTER
+/// these passes (size-safe), while the hardcoded trap-guard displacements are
+/// the only pre-resolved spans and map exactly against the estimator table.
+/// Declining those streams wholesale (the const-CSE stance) would give back
+/// real forwarding wins (`msgq_put_359`); mapping them keeps the wins and the
+/// soundness. Still `None` when a numeric target does not land on an exact
+/// instruction boundary.
+fn resolved_branch_geometry_labels_as_zero(
+    instrs: &[ArmInstruction],
+) -> Option<ResolvedBranchGeometry> {
     use crate::optimizer_bridge::estimate_arm_byte_size;
     let n = instrs.len();
     if !instrs
@@ -3788,15 +3913,16 @@ fn resolved_branch_geometry(instrs: &[ArmInstruction]) -> Option<ResolvedBranchG
             frozen: vec![false; n],
         });
     }
-    if instrs.iter().any(|i| matches!(i.op, ArmOp::Label { .. })) {
-        return None; // mixed stream: byte offsets not reconstructible
-    }
-    // Mirror of the bridge's resolution table.
+    // Mirror of the bridge's resolution table (`Label` = 0 bytes, mirroring
+    // the encoder — the estimator has no arm for it).
     let mut byte_offsets: Vec<i64> = Vec::with_capacity(n + 1);
     let mut cur: i64 = 0;
     for ins in instrs {
         byte_offsets.push(cur);
-        cur += estimate_arm_byte_size(&ins.op) as i64;
+        cur += match &ins.op {
+            ArmOp::Label { .. } => 0,
+            op => estimate_arm_byte_size(op) as i64,
+        };
     }
     byte_offsets.push(cur);
     let mut targets = BTreeSet::new();
@@ -3810,7 +3936,12 @@ fn resolved_branch_geometry(instrs: &[ArmInstruction]) -> Option<ResolvedBranchG
         // Displacement is halfwords from PC (branch byte + 4):
         // target byte = branch + 4 + 2·offset — the bridge's own formula.
         let target_byte = byte_offsets[i] + 4 + 2 * offset as i64;
-        let ti = byte_offsets.binary_search(&target_byte).ok()?;
+        // First index at that byte (0-size labels create equal entries; the
+        // earliest is the conservative barrier/freeze endpoint).
+        let ti = byte_offsets.partition_point(|&b| b < target_byte);
+        if byte_offsets.get(ti) != Some(&target_byte) {
+            return None; // target inside an instruction: unmappable
+        }
         targets.insert(ti); // ti == n (function end) is a vacuous barrier
         // Freeze everything between branch and target (either direction):
         // deleting/resizing any of it shifts exactly one endpoint.
@@ -4360,44 +4491,78 @@ fn sp_slot(addr: &MemAddr) -> Option<i32> {
 /// forwarded/eliminated across both stages (stage 1 forwarding + stage 2
 /// Belady re-choice, see the module block above — stage 2 runs on stage 1's
 /// output, same flag).
+///
+/// RESOLVED-BRANCH GEOMETRY (#606, the #604 rule): on the optimized path this
+/// pass runs on streams whose `BOffset`/`BCondOffset` displacements are
+/// already byte-resolved and never re-resolved, so (1) a branch TARGET is an
+/// invisible join — it becomes a segment BARRIER (state proven on the
+/// fall-through edge does not hold on the taken edge), and (2) any segment
+/// overlapping a branch→target span has a load-bearing byte size — its
+/// rewrite commits only if exactly size-neutral (a deletion inside the span
+/// would make the pre-resolved displacement overshoot by the deleted bytes,
+/// the `nested(1,)` 99→55 class). An unmappable stream declines wholesale.
+/// Today's optimized-path streams cannot actually present a rewritable shape
+/// here (bridge reloads target reserved R12, which both stages exclude) — the
+/// geometry gate turns that ACCIDENTAL safety into a structural one.
 /// Pure; DEFAULT-ON via the `arm_backend.rs` wiring (`SYNTH_SPILL_REALLOC=0`
 /// is the opt-out).
 pub fn apply_spill_realloc(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    use crate::optimizer_bridge::estimate_arm_byte_size;
+    // #606: resolved numeric branches make join points invisible and byte
+    // layout load-bearing — decline the whole function if unmappable.
+    let Some(geo) = resolved_branch_geometry_labels_as_zero(instrs) else {
+        return (instrs.to_vec(), 0);
+    };
     let mut out: Vec<ArmInstruction> = Vec::with_capacity(instrs.len());
     let mut total = 0usize;
-    let mut seg: Vec<ArmInstruction> = Vec::new();
-    let flush =
-        |seg: &mut Vec<ArmInstruction>, out: &mut Vec<ArmInstruction>, total: &mut usize| {
-            if seg.is_empty() {
-                return;
-            }
-            // Stage 1: slot-value forwarding between reloads.
-            let (mut cur, mut n) = match spill_forward_segment(seg) {
-                Some((rewritten, n)) => (rewritten, n),
-                None => (seg.clone(), 0),
-            };
-            // Stage 2: Belady spill-plan re-choice on the surviving reloads.
-            if let Some((rewritten, m)) = spill_rechoice_segment(&cur) {
-                cur = rewritten;
-                n += m;
-            }
-            if n > 0 {
-                *total += n;
-                out.extend(cur);
-            } else {
-                out.append(seg); // nothing fired: keep the original bytes
-            }
-            seg.clear();
+    let process = |start: usize, end: usize, out: &mut Vec<ArmInstruction>, total: &mut usize| {
+        if end <= start {
+            return;
+        }
+        let seg = &instrs[start..end];
+        // Stage 1: slot-value forwarding between reloads.
+        let (mut cur, mut n) = match spill_forward_segment(seg) {
+            Some((rewritten, n)) => (rewritten, n),
+            None => (seg.to_vec(), 0),
         };
-    for ins in instrs {
-        if is_straight_line(&ins.op) && reg_effect(&ins.op).is_some() {
-            seg.push(ins.clone());
+        // Stage 2: Belady spill-plan re-choice on the surviving reloads.
+        if let Some((rewritten, m)) = spill_rechoice_segment(&cur) {
+            cur = rewritten;
+            n += m;
+        }
+        // #606: a segment between a resolved branch and its target has a
+        // load-bearing byte size (the displacement was resolved against
+        // it) — its rewrite must be exactly size-neutral, else decline.
+        if n > 0 && geo.frozen[start..end].iter().any(|&f| f) {
+            let orig: usize = seg.iter().map(|i| estimate_arm_byte_size(&i.op)).sum();
+            let new: usize = cur.iter().map(|i| estimate_arm_byte_size(&i.op)).sum();
+            if new != orig {
+                n = 0;
+            }
+        }
+        if n > 0 {
+            *total += n;
+            out.extend(cur);
         } else {
-            flush(&mut seg, &mut out, &mut total);
+            out.extend_from_slice(seg); // nothing fired: keep the original bytes
+        }
+    };
+    let mut seg_start = 0usize;
+    for (i, ins) in instrs.iter().enumerate() {
+        // #606: a resolved-branch TARGET is an invisible join point — state
+        // proven above it holds only on the fall-through edge. Barrier; the
+        // target instruction itself starts the next segment.
+        if geo.targets.contains(&i) && i > seg_start {
+            process(seg_start, i, &mut out, &mut total);
+            seg_start = i;
+        }
+        if !(is_straight_line(&ins.op) && reg_effect(&ins.op).is_some()) {
+            process(seg_start, i, &mut out, &mut total);
             out.push(ins.clone());
+            seg_start = i + 1;
         }
     }
-    flush(&mut seg, &mut out, &mut total);
+    process(seg_start, instrs.len(), &mut out, &mut total);
     (out, total)
 }
 
@@ -9903,6 +10068,346 @@ mod tests {
         let (out, removed) = apply_const_cse(&seq);
         assert_eq!(removed, 0, "hoist deletion inside the span would shift it");
         assert_eq!(out.len(), seq.len(), "stream unchanged");
+    }
+
+    /// #606 — the #604 rule adopted by the spill passes. The exact stage-1
+    /// deletable shape (`str r0; ldr r0` of the same slot — the reload is a
+    /// proven no-op), wrapped in a backward resolved branch so every byte is
+    /// displacement-frozen: deleting the 4-byte `ldr` would make the
+    /// pre-resolved offset overshoot. Decline; the branch-free control keeps
+    /// the win (non-vacuity).
+    #[test]
+    fn spill_realloc_freezes_bytes_inside_resolved_branch_span_606() {
+        let body = vec![
+            ins(ArmOp::Str {
+                rd: Reg::R0,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            // rd already holds the slot's value — stage 1 deletes this on a
+            // label-form stream.
+            ins(ArmOp::Ldr {
+                rd: Reg::R0,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R4,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+        ];
+        // Non-vacuity: without the branch the reload IS deleted.
+        let (out, removed) = apply_spill_realloc(&body);
+        assert_eq!(removed, 1, "branch-free control: the no-op reload deletes");
+        assert_eq!(out.len(), body.len() - 1);
+
+        // Bytes: Str[sp]=4 @0, Ldr[sp]=4 @4, Cmp=2 @8; branch @10 ⇒
+        // target 10 + 4 + 2·(−7) = 0 (the loop head).
+        let mut seq = body;
+        seq.push(ins(ArmOp::BOffset { offset: -7 }));
+        let (out, removed) = apply_spill_realloc(&seq);
+        assert_eq!(removed, 0, "in-span deletion would shift the displacement");
+        assert_eq!(out.len(), seq.len(), "stream unchanged");
+    }
+
+    /// #606 — a resolved-branch TARGET is an invisible join: slot-holder
+    /// state proven on the fall-through edge (the `str` at i1) does not hold
+    /// on the taken edge, which enters directly at the reload. The target
+    /// must be a segment barrier, so the reload stays an ordinary load.
+    #[test]
+    fn spill_realloc_treats_resolved_branch_target_as_barrier_606() {
+        // Bytes: BCondOffset=2 @0 (offset 1 ⇒ target 0+4+2 = 6), Str[sp]=4
+        // @2, JOIN Ldr[sp]=4 @6, Cmp=2 @10.
+        let seq = vec![
+            ins(ArmOp::BCondOffset {
+                cond: crate::rules::Condition::NE,
+                offset: 1,
+            }),
+            ins(ArmOp::Str {
+                rd: Reg::R0,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            // JOIN (branch target): on the taken edge r0 does NOT hold the
+            // slot's value — deleting this reload would miscompile that edge.
+            ins(ArmOp::Ldr {
+                rd: Reg::R0,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R4,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+        ];
+        let (out, removed) = apply_spill_realloc(&seq);
+        assert_eq!(removed, 0, "join is a barrier: fall-through-only holders");
+        assert_eq!(out.len(), seq.len(), "stream unchanged");
+    }
+
+    /// #606 — frame-slot DCE obeys the same freeze: a dead store (overwritten
+    /// before any read) inside a backward resolved-branch span is kept, since
+    /// deleting its 4 bytes would shift the displacement. Branch-free control
+    /// keeps the win.
+    #[test]
+    fn dead_frame_store_kept_inside_resolved_branch_span_606() {
+        let body = vec![
+            // Dead: overwritten at i2 with no intervening read.
+            ins(ArmOp::Str {
+                rd: Reg::R0,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Str {
+                rd: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+        ];
+        let (_, removed) = eliminate_dead_frame_stores(&body);
+        assert_eq!(removed, 1, "branch-free control: the dead store deletes");
+
+        // Bytes: Str=4 @0, Mov=2 @4, Str=4 @6; branch @10 ⇒
+        // target 10 + 4 + 2·(−7) = 0 (the loop head).
+        let mut seq = body;
+        seq.push(ins(ArmOp::BOffset { offset: -7 }));
+        let (out, removed) = eliminate_dead_frame_stores(&seq);
+        assert_eq!(removed, 0, "in-span deletion would shift the displacement");
+        assert_eq!(out.len(), seq.len(), "stream unchanged");
+    }
+
+    /// #606 — the DCE forward scan stops at a resolved-branch TARGET (an
+    /// invisible join a taken edge enters through), even when the candidate
+    /// store itself sits outside every span. Conservative by design: the
+    /// same-slot overwrite proof is only carried along the fall-through line.
+    #[test]
+    fn dead_frame_store_scan_stops_at_resolved_branch_target_606() {
+        // Bytes: Mov=2 @0, Str=4 @2, Mov=2 @6, JOIN Str=4 @8, Cmp=2 @12,
+        // branch @14 ⇒ target 14 + 4 + 2·(−5) = 8 (the join store).
+        let seq = vec![
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            // Candidate (outside the span): overwritten at the join store.
+            ins(ArmOp::Str {
+                rd: Reg::R0,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            ins(ArmOp::Mov {
+                rd: Reg::R3,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            // JOIN (back-edge target): the overwrite lives at the join.
+            ins(ArmOp::Str {
+                rd: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R4,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: crate::rules::Condition::NE,
+                offset: -5,
+            }),
+        ];
+        let (out, removed) = eliminate_dead_frame_stores(&seq);
+        assert_eq!(removed, 0, "scan must not cross the invisible join");
+        assert_eq!(out.len(), seq.len(), "stream unchanged");
+    }
+
+    /// #606 — stack-reload forwarding stops at a resolved-branch TARGET: a
+    /// loop back-edge re-enters between the `str` and the `ldr`, and on the
+    /// second iteration the stored register no longer holds the slot's value
+    /// (it is clobbered later in the loop body). Pre-fix this rewrote the
+    /// reload to `mov r1,r0` — a genuine taken-edge miscompile shape.
+    #[test]
+    fn stack_fwd_scan_stops_at_resolved_branch_target_606() {
+        // Bytes: Str=4 @0, JOIN Ldr=4 @4, Movw=4 @8, Cmp=2 @12, branch @14 ⇒
+        // target 14 + 4 + 2·(−7) = 4 (the reload).
+        let seq = vec![
+            ins(ArmOp::Str {
+                rd: Reg::R0,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            // JOIN (back-edge target): iteration 2 arrives here with r0 == 5,
+            // not the slot's value.
+            ins(ArmOp::Ldr {
+                rd: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 5,
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R4,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::BCondOffset {
+                cond: crate::rules::Condition::NE,
+                offset: -7,
+            }),
+        ];
+        let (out, rewrites) = forward_stack_reloads(&seq);
+        assert_eq!(rewrites, 0, "forwarding across the join is unsound");
+        assert!(
+            matches!(&out[1].op, ArmOp::Ldr { .. }),
+            "the reload survives"
+        );
+    }
+
+    /// #606 — stack-reload forwarding is byte-frozen inside a span: a word
+    /// `ldr [sp,#N]` is 4 bytes (SP base has no 16-bit T1 form here) while
+    /// the replacement `mov` is 2, so inside a branch→target span the rewrite
+    /// must be declined. Branch-free control keeps the win.
+    #[test]
+    fn stack_fwd_keeps_word_ldr_size_inside_frozen_span_606() {
+        let body = vec![
+            ins(ArmOp::Str {
+                rd: Reg::R0,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            ins(ArmOp::Ldr {
+                rd: Reg::R1,
+                addr: MemAddr::imm(Reg::SP, 8),
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R4,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let (out, rewrites) = forward_stack_reloads(&body);
+        assert_eq!(rewrites, 1, "branch-free control: the reload forwards");
+        assert!(matches!(&out[1].op, ArmOp::Mov { .. }));
+
+        // Bytes: Str=4 @0, Ldr=4 @4, Cmp=2 @8; branch @10 ⇒
+        // target 10 + 4 + 2·(−7) = 0 (the loop head).
+        let mut seq = body;
+        seq.push(ins(ArmOp::BOffset { offset: -7 }));
+        let (out, rewrites) = forward_stack_reloads(&seq);
+        assert_eq!(rewrites, 0, "4→2-byte rewrite inside the span declines");
+        assert!(
+            matches!(&out[1].op, ArmOp::Ldr { .. }),
+            "the reload survives"
+        );
+    }
+
+    /// #606 — stage 3 (`eliminate_unread_frame_stores`) is structurally safe
+    /// on resolved-offset streams: its admission scan declines the whole
+    /// function on the first numeric branch (`reg_effect → None`), so it can
+    /// never delete a store whose bytes a pre-resolved displacement depends
+    /// on. Pin that, with a branch-free non-vacuity control.
+    #[test]
+    fn unread_store_declines_on_resolved_numeric_branches_606() {
+        let unread_store = ins(ArmOp::Str {
+            rd: Reg::R0,
+            addr: MemAddr::imm(Reg::SP, 8),
+        });
+        // Branch-free: the never-read store is removed (reach-end).
+        let body = vec![
+            unread_store.clone(),
+            ins(ArmOp::Mov {
+                rd: Reg::R2,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+        ];
+        let (_, removed) = eliminate_unread_frame_stores(&body);
+        assert_eq!(removed, 1, "branch-free control: unread store removed");
+
+        // Same stream + a resolved numeric branch anywhere ⇒ wholesale decline.
+        let mut seq = body;
+        seq.push(ins(ArmOp::BCondOffset {
+            cond: crate::rules::Condition::NE,
+            offset: 0,
+        }));
+        seq.push(ins(ArmOp::Udf { imm: 0 }));
+        let (out, removed) = eliminate_unread_frame_stores(&seq);
+        assert_eq!(removed, 0, "numeric branch ⇒ admission declines wholesale");
+        assert_eq!(out.len(), seq.len(), "stream unchanged");
+    }
+
+    /// #606 — range re-allocation renames preserve instruction COUNT but not
+    /// byte SIZE (an R8↔low-reg recolour flips 16↔32-bit Thumb encodings), so
+    /// a segment inside a resolved branch→target span commits only if exactly
+    /// size-neutral. The shape: a recolourable R8 range (a second, pinned R8
+    /// range keeps the live-out) whose `cmp` shrinks 4→2 bytes when the value
+    /// recolours onto a low register — allowed straight-line, declined
+    /// in-span.
+    #[test]
+    fn realloc_declines_size_changing_rewrite_inside_frozen_span_606() {
+        const POOL: [Reg; 9] = [
+            Reg::R0,
+            Reg::R1,
+            Reg::R2,
+            Reg::R3,
+            Reg::R4,
+            Reg::R5,
+            Reg::R6,
+            Reg::R7,
+            Reg::R8,
+        ];
+        let body = vec![
+            // Segment input (pinned identity); r0/r1 kept live past range A
+            // (reads at i2/i3) so the colourer cannot hand A a live-out reg.
+            ins(ArmOp::Mov {
+                rd: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            // Range A of r8: recolourable (not an input, not last-opened).
+            ins(ArmOp::Movw {
+                rd: Reg::R8,
+                imm16: 5,
+            }),
+            // 16-bit only when rd/rn/rm are ALL low — the width the recolour
+            // flips (r8 ⇒ 4 bytes, a low reg ⇒ 2).
+            ins(ArmOp::Adds {
+                rd: Reg::R3,
+                rn: Reg::R8,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            // Redefines r2 after A dies (so recolouring A onto r2 leaves r2's
+            // exit state intact) and keeps r1 live past A.
+            ins(ArmOp::Add {
+                rd: Reg::R2,
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            // Range B of r8: last-opened ⇒ pinned (live-out).
+            ins(ArmOp::Movw {
+                rd: Reg::R8,
+                imm16: 9,
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R8),
+            }),
+        ];
+        // Branch-free control: range A recolours onto a low register and the
+        // adds shrinks 4→2 bytes — the rewrite commits.
+        let (out, stats) = reallocate_function(&body, &POOL);
+        assert_eq!(stats.reallocated, 1, "straight-line: rewrite commits");
+        let bytes = |s: &[ArmInstruction]| -> usize {
+            s.iter()
+                .map(|i| crate::optimizer_bridge::estimate_arm_byte_size(&i.op))
+                .sum()
+        };
+        assert!(
+            bytes(&out) < bytes(&body),
+            "the recolour shrinks the segment (4-byte adds → 2-byte)"
+        );
+
+        // Bytes: Mov=2 @0, Movw=4 @2, Adds(high)=4 @6, Add=2 @10, Movw=4 @12,
+        // Cmp=2 @16; branch @18 ⇒ target 18 + 4 + 2·(−11) = 0 (the loop
+        // head): the whole body is displacement-frozen, so the shrinking
+        // rewrite declines.
+        let mut seq = body.clone();
+        seq.push(ins(ArmOp::BOffset { offset: -11 }));
+        let (out, stats) = reallocate_function(&seq, &POOL);
+        assert_eq!(
+            stats.reallocated, 0,
+            "size-changing in-span rewrite declines"
+        );
+        assert_eq!(out, seq, "stream unchanged");
     }
 
     #[test]
