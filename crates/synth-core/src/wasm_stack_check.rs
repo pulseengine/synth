@@ -77,6 +77,37 @@ pub fn check_no_underflow(wasm_ops: &[WasmOp]) -> crate::Result<()> {
     Ok(())
 }
 
+/// #587: a conservative UPPER BOUND on the wasm value-stack depth this op
+/// sequence can reach. Used by the ARM backend's `pool-grow` exhaustion-
+/// recovery rung to size the i64 spill-slot pool: the number of values
+/// *simultaneously* spilled by the direct selector can never exceed the
+/// number of values simultaneously live on the operand stack, so a pool of
+/// `max_depth_bound` slots (plus the resolver/result-parking transients the
+/// caller adds) cannot exhaust through the deepest-value spill loop.
+///
+/// Over-approximation rules (never under-counts in reachable code):
+/// * Modeled ops apply their exact pops/pushes; a would-be underflow clamps
+///   to 0 (malformed input is someone else's Err, not a panic here).
+/// * Unmodeled/`Bail` ops (`call`, terminators, SIMD, …) are treated as net
+///   `+1` — every wasm op pushes at most one value net, so this only ever
+///   over-counts (a call pops its args; a terminator pushes nothing).
+/// * `Block`/`Loop`/`If`/`Else`/`End` are stack-neutral in the effects table,
+///   which over-counts (`if` really pops its condition) — same direction.
+pub fn max_depth_bound(wasm_ops: &[WasmOp]) -> u32 {
+    let mut depth: i64 = 0;
+    let mut max: i64 = 0;
+    for op in wasm_ops {
+        match stack_effect_or_bail(op) {
+            StackEffect::Modeled { pops, pushes } => {
+                depth = (depth - pops as i64).max(0) + pushes as i64;
+            }
+            StackEffect::Bail => depth += 1,
+        }
+        max = max.max(depth);
+    }
+    u32::try_from(max).unwrap_or(u32::MAX)
+}
+
 enum StackEffect {
     Modeled { pops: u32, pushes: u32 },
     Bail,
@@ -475,5 +506,27 @@ mod tests {
     #[test]
     fn empty_input_is_ok() {
         assert!(check_no_underflow(&[]).is_ok());
+    }
+
+    #[test]
+    fn max_depth_bound_exact_on_modeled_ops() {
+        // #587: 3 consts (depth 3) folded to 1 — the bound is the peak, 3.
+        let ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::I32Const(2),
+            WasmOp::I32Const(3),
+            WasmOp::I32Add,
+            WasmOp::I32Add,
+        ];
+        assert_eq!(max_depth_bound(&ops), 3);
+        assert_eq!(max_depth_bound(&[]), 0);
+    }
+
+    #[test]
+    fn max_depth_bound_over_approximates_unmodeled_ops() {
+        // #587: `call` bails in the underflow checker; the bound treats it as
+        // net +1 (an over-approximation, never an under-count).
+        let ops = vec![WasmOp::I32Const(1), WasmOp::Call(0), WasmOp::I32Add];
+        assert!(max_depth_bound(&ops) >= 2);
     }
 }

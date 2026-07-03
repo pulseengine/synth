@@ -621,6 +621,50 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/stack_args_503_differential.py
 
+  i64-completeness-503-587-oracle:
+    name: i64 stack-param + spill-pool-grow oracle
+    # VCR-ORACLE-001 (#242, #503-i64, #587): EXECUTE the two previously
+    # loud-skipped direct-selector i64 classes under unicorn and diff vs
+    # wasmtime, on BOTH paths (--relocatable = falcon's, and the default):
+    #  * #503-i64 — 64-bit params AAPCS-passed on the STACK (past R3 /
+    #    even-align-spilled), incl. the narrow-after-wide shape that was
+    #    silently MIScompiled (p3 of `(i64 i32 i32 i32)` read from R3 = p2),
+    #    a write-back shape, and a has-call shape. Falcon func_58/func_163.
+    #  * #587 — an i64-dense function whose ~16 concurrent pair spills
+    #    exhausted the fixed 8-slot pool; the pool-grow recovery retry (last
+    #    resort, after the #474 promotion-off fallback) sizes the pool from
+    #    the operand-stack-depth bound. Falcon func_60/func_73.
+    # Isolated job: emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run i64 stack-param oracle (#503-i64)
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/i64_stack_param_503_differential.py
+      - name: Run i64 spill-pool-grow oracle (#587)
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/i64_spill_pool_587_differential.py
+
   br-table-507-oracle:
     name: optimized-path br_table oracle
     # VCR-ORACLE-001 (#242, #507): EXECUTE br_table dispatch compiled via the

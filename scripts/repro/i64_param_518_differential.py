@@ -54,12 +54,14 @@ from unicorn.arm_const import (
 )
 
 WAT = Path(__file__).with_name("i64_param_518.wat")
-# The DECLINE half: i64-param sub-cases that are loud-skipped (not lowered) — an
-# i64 param past R3 (#503-i64 stack-param) and an i64 param in a frame-backing
-# (has-call) function. d_leaf is the control: a leaf i64 param IS emitted.
+# The DECLINE half: the i64-param sub-case that is still loud-skipped (not
+# lowered) — a REGISTER-resident i64 param in a frame-backing (has-call)
+# function. d_past_r3 (i64 param past R3 = on the caller's stack) was the
+# #503-i64 case and is now LOWERED: it moved to the emitted+executes set.
+# d_leaf is the control: a leaf i64 param IS emitted.
 DECLINE_WAT = Path(__file__).with_name("i64_param_518_decline.wat")
-DECLINE_SKIPPED = ["d_past_r3", "d_call"]   # must warn + be absent from symtab
-DECLINE_EMITTED = ["d_leaf"]                # must be emitted (non-vacuity)
+DECLINE_SKIPPED = ["d_call"]                # must warn + be absent from symtab
+DECLINE_EMITTED = ["d_leaf", "d_past_r3"]   # must be emitted (non-vacuity)
 SYNTH = os.environ.get("SYNTH", "./target/debug/synth")
 CODE, STK, RET, R11 = 0x100000, 0x900000, 0x300000, 0x20000000
 
@@ -227,14 +229,21 @@ def check_decline_contract():
             ) + "]"
         )
         print(f"  [{'ok ' if ok else 'BUG'}] {fn}: loud-skipped{why}")
-    # leaf control: emitted AND correct under unicorn
+    # emitted set: present in the symtab AND correct under unicorn
     for fn in DECLINE_EMITTED:
         if fn not in syms:
             print(f"  [BUG] {fn}: expected emitted, but it was skipped")
             fails += 1
             continue
-        # d_leaf: (param i64)(result i64) i64.add(p,3); run with p=7 -> 10
-        ok = got_i64_leaf(code, base, syms[fn], 7) == leaf_expect(7)
+        if fn == "d_leaf":
+            # d_leaf: (param i64)(result i64) i64.add(p,3); run with p=7 -> 10
+            ok = got_i64_leaf(code, base, syms[fn], 7) == leaf_expect(7)
+        else:
+            # d_past_r3 (#503-i64): (param i32 i32 i32 i64)(result i64)
+            # i64.add(p3,1); p3 arrives on the caller's stack at entry SP.
+            p3 = 0x1_0000_0005
+            ok = got_i64_past_r3(code, base, syms[fn], p3) == (
+                (p3 + 1) & 0xFFFFFFFFFFFFFFFF)
         print(f"  [{'ok ' if ok else 'BUG'}] {fn}: emitted + executes correctly")
         if not ok:
             fails += 1
@@ -244,6 +253,29 @@ def check_decline_contract():
 def leaf_expect(p):
     # d_leaf = (i64.add (local.get 0) (i64.const 3))
     return (p + 3) & 0xFFFFFFFFFFFFFFFF
+
+
+def got_i64_past_r3(code, base, faddr, p3):
+    """d_past_r3 (#503-i64): p0..p2 = i32 in R0..R2, p3 = i64 at [entry SP]."""
+    foff = (faddr & ~1) - base
+    mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
+    mu.mem_map(CODE, 0x20000)
+    mu.mem_map(STK - 0x10000, 0x20000)
+    mu.mem_map(RET & ~0xFFF, 0x1000)
+    mu.mem_write(CODE, code)
+    mu.reg_write(UC_ARM_REG_SP, STK)
+    mu.reg_write(UC_ARM_REG_R11, R11)
+    mu.reg_write(UC_ARM_REG_R0, 11)
+    mu.reg_write(UC_ARM_REG_R1, 22)
+    mu.reg_write(UC_ARM_REG_R2, 33)
+    mu.mem_write(STK, (p3 & 0xFFFFFFFFFFFFFFFF).to_bytes(8, "little"))
+    mu.reg_write(UC_ARM_REG_LR, RET | 1)
+    try:
+        mu.emu_start((CODE + foff) | 1, RET, count=100000)
+    except UcError as e:
+        return f"ERR:{e}"
+    return (mu.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF) | (
+        (mu.reg_read(UC_ARM_REG_R1) & 0xFFFFFFFF) << 32)
 
 
 def got_i64_leaf(code, base, faddr, arg):
@@ -293,9 +325,10 @@ def main():
         total = opt_div + rel_div + decline_fails
         if total == 0:
             print("RESULT: PASS — both paths match wasmtime on every leaf i64-param "
-                  "function across the full AAPCS matrix, AND the unsupported "
-                  "sub-cases (i64 past R3, frame-backed i64 param) loud-skip rather "
-                  "than miscompile. #518 fixed.")
+                  "function across the full AAPCS matrix, the #503-i64 stack-param "
+                  "case (d_past_r3) is emitted and correct, AND the remaining "
+                  "unsupported sub-case (frame-backed REGISTER i64 param, d_call) "
+                  "loud-skips rather than miscompiles. #518 fixed.")
             sys.exit(0)
         print(f"RESULT: FAIL — {opt_div + rel_div} value divergence(s) + "
               f"{decline_fails} decline-contract failure(s); #518 not fully fixed.")

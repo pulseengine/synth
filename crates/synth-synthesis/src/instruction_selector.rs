@@ -132,23 +132,39 @@ fn index_to_reg(index: u8) -> Reg {
     reg
 }
 
-/// AAPCS core-register assignment for a function's first parameters (#518).
+/// Full AAPCS core-register + stack assignment for a function's parameters
+/// (#518/#503). Every param lands in exactly one of the two maps.
+struct AapcsParamLayout {
+    /// Register-resident params: lo register (an i64/f64 occupies the
+    /// even-aligned pair `(lo, i64_pair_hi(lo))`).
+    regs: std::collections::HashMap<u32, Reg>,
+    /// Stack-passed params: `(nsaa_offset, is_wide)`. `nsaa_offset` is the
+    /// byte offset from SP *at function entry* (the AAPCS Next Stacked
+    /// Argument Address, starting at 0); a wide param's slot is 8-byte
+    /// aligned per AAPCS 5.5 stage C.
+    stack: std::collections::HashMap<u32, (i32, bool)>,
+}
+
+/// AAPCS parameter assignment for a function's parameters (#518/#503).
 ///
 /// Walks the declared param widths left-to-right over the 4 core argument
-/// registers R0..R3. An i32/f32 param takes the next register; an i64/f64 param
-/// takes an EVEN-ALIGNED consecutive pair (rounding the cursor up to an even
-/// index first) and the returned register is its LOW half (hi = [`i64_pair_hi`]).
-/// Returns the lo register for every param that lands wholly within R0..R3; a
-/// param that would spill past R3 is stack-passed and is absent from the map
-/// (an i64 there is the open #503-i64 case, declined by the caller).
+/// registers R0..R3 (NCRN) and the incoming stack (NSAA). An i32/f32 param
+/// takes the next register; an i64/f64 param takes an EVEN-ALIGNED
+/// consecutive pair (rounding NCRN up to even first) with the LOW half
+/// recorded (hi = [`i64_pair_hi`]). A param that does not fit the remaining
+/// registers goes to the stack — a wide one to the next 8-byte-aligned NSAA,
+/// a narrow one to the next 4-byte NSAA — and, per AAPCS stage C.5, NCRN is
+/// then 4 for good: NO later param back-fills a register (this is what makes
+/// a narrow param AFTER a stack-spilled wide param itself stack-passed).
 ///
-/// For an all-i32 signature this is exactly `index_to_reg(i)` for each `i`, so
-/// the param→register mapping is byte-identical to the legacy sequential scheme
-/// whenever no i64/f64 param is present — the #518 fix only diverges for the
-/// i64-param functions that were miscompiled.
-fn aapcs_param_regs(num_params: u32, params_i64: &[bool]) -> std::collections::HashMap<u32, Reg> {
-    let mut map = std::collections::HashMap::new();
-    let mut next: u8 = 0; // next free core arg-register index (0..=3)
+/// For an all-i32 signature this is exactly `index_to_reg(i)` for `i < 4` and
+/// NSAA `(i-4)*4` beyond, so both maps are byte-identical to the legacy
+/// sequential scheme whenever no i64/f64 param is present.
+fn aapcs_param_layout(num_params: u32, params_i64: &[bool]) -> AapcsParamLayout {
+    let mut regs = std::collections::HashMap::new();
+    let mut stack = std::collections::HashMap::new();
+    let mut next: u8 = 0; // NCRN: next free core arg-register index (0..=4)
+    let mut nsaa: i32 = 0; // next stacked-argument byte offset from entry SP
     for i in 0..num_params {
         let is_wide = params_i64.get(i as usize).copied().unwrap_or(false);
         if is_wide {
@@ -157,25 +173,41 @@ fn aapcs_param_regs(num_params: u32, params_i64: &[bool]) -> std::collections::H
             }
             if next <= 2 {
                 // the pair (next, next+1) lands wholly within R0..R3
-                map.insert(i, index_to_reg(next));
+                regs.insert(i, index_to_reg(next));
                 next += 2;
             } else {
-                next = 4; // spilled to the stack (#503-i64)
+                next = 4; // C.5: registers are done for every later param too
+                if nsaa % 8 != 0 {
+                    nsaa += 4; // 8-byte-align the wide stack slot
+                }
+                stack.insert(i, (nsaa, true));
+                nsaa += 8;
             }
         } else if next <= 3 {
-            map.insert(i, index_to_reg(next));
+            regs.insert(i, index_to_reg(next));
             next += 1;
         } else {
             next = 4; // i32 stack param (#359 incoming-arg path)
+            stack.insert(i, (nsaa, false));
+            nsaa += 4;
         }
     }
-    map
+    AapcsParamLayout { regs, stack }
+}
+
+/// AAPCS core-register assignment only — see [`aapcs_param_layout`]. A param
+/// absent from this map is stack-passed (in the layout's `stack` map).
+/// Test-only: the selector itself uses the full layout.
+#[cfg(test)]
+fn aapcs_param_regs(num_params: u32, params_i64: &[bool]) -> std::collections::HashMap<u32, Reg> {
+    aapcs_param_layout(num_params, params_i64).regs
 }
 
 /// True if any declared i64/f64 param of this function lands (wholly or its
 /// even-aligned start) PAST R3 — i.e. AAPCS passes it on the stack (#518/#503).
-/// The register-pair homing below only covers i64 params resident in R0..R3; a
-/// stack-passed 64-bit param is the open #503-i64 follow-up and is declined.
+/// Retained for the AAPCS-matrix unit tests; the selector itself now lowers
+/// this case via the width-aware `incoming_params` machinery (#503-i64).
+#[cfg(test)]
 fn i64_param_overflows_core_regs(num_params: u32, params_i64: &[bool]) -> bool {
     let regs = aapcs_param_regs(num_params, params_i64);
     (0..num_params)
@@ -374,17 +406,28 @@ fn edge_value_move(
     Ok(())
 }
 
-/// Number of i64 spill slots reserved in the frame (#171). Each is 8 bytes
-/// (lo+hi). Slots are reused (freed on reload), so this caps *simultaneous*
-/// spills, not total. 8 is generous for real i64-heavy functions; exceeding it
-/// surfaces as a clean `Err` (the #168 skip-and-continue net), never a panic.
+/// Default number of i64 spill slots reserved in the frame (#171). Each is 8
+/// bytes (lo+hi). Slots are reused (freed on reload), so this caps
+/// *simultaneous* spills, not total. 8 is generous for real i64-heavy
+/// functions; exceeding it surfaces as a clean `Err` (the #168
+/// skip-and-continue net), never a panic — which the backend's `pool-grow`
+/// recovery rung (#587) then retries with a pool sized from the function's
+/// operand-stack-depth bound, so only functions that previously did NOT
+/// compile ever get a larger frame.
 const I64_SPILL_SLOTS: usize = 8;
+
+/// Hard cap on a grown i64 spill pool (#587): 120 slots = 960 frame bytes,
+/// comfortably inside the 12-bit `[sp,#imm]` (4095) window next to typical
+/// locals. A function needing more stays an honest loud skip.
+const I64_SPILL_SLOTS_MAX: usize = 120;
 
 /// Tracks which i64 spill slots are in use (#171). `base` is the byte offset
 /// from SP of slot 0; slot `i` occupies `[base + i*8, base + i*8 + 8)`.
+/// `used.len()` is the pool size — [`I64_SPILL_SLOTS`] by default, larger only
+/// on the #587 `pool-grow` recovery rung.
 struct SpillState {
     base: i32,
-    used: [bool; I64_SPILL_SLOTS],
+    used: Vec<bool>,
     /// VCR-RA-001 step 3b-lite (#242): when set, i32 temp allocation under
     /// register exhaustion spills the deepest stack value instead of
     /// hard-failing (see [`alloc_temp_or_spill`]). Default OFF; flipped on only
@@ -403,10 +446,19 @@ struct SpillState {
 }
 
 impl SpillState {
+    /// Default-pool state (test-only; the selector sizes the pool explicitly
+    /// via [`SpillState::with_slots`] so the #587 pool-grow rung can act).
+    #[cfg(test)]
     fn new(base: i32) -> Self {
+        Self::with_slots(base, I64_SPILL_SLOTS)
+    }
+    /// #587: pool-grow rung — same state, `slots`-sized pool. The frame area
+    /// must have been reserved with the SAME count (`compute_local_layout`'s
+    /// `i64_spill_slots` argument), or slots would alias the param homes.
+    fn with_slots(base: i32, slots: usize) -> Self {
         SpillState {
             base,
-            used: [false; I64_SPILL_SLOTS],
+            used: vec![false; slots],
             spill_on_exhaustion: false,
             area_reserved: true,
         }
@@ -420,7 +472,7 @@ impl SpillState {
     /// Release the slot at byte offset `off` so it can be reused.
     fn free(&mut self, off: i32) {
         let i = ((off - self.base) / 8) as usize;
-        if i < I64_SPILL_SLOTS {
+        if i < self.used.len() {
             self.used[i] = false;
         }
     }
@@ -440,9 +492,13 @@ impl SpillState {
 /// would see unrelated frame traffic. Slot reuse means a stale earlier store
 /// can mask a lost later one — this is defense-in-depth behind the
 /// `is_const_materialization` filters, not the primary fix.
-fn assert_spill_reloads_have_stores(instructions: &[ArmInstruction], spill_base: i32) {
-    let area = spill_base..spill_base + (I64_SPILL_SLOTS as i32) * 8;
-    let mut stored = [false; I64_SPILL_SLOTS * 2]; // 4-byte halves
+fn assert_spill_reloads_have_stores(
+    instructions: &[ArmInstruction],
+    spill_base: i32,
+    spill_slots: usize,
+) {
+    let area = spill_base..spill_base + (spill_slots as i32) * 8;
+    let mut stored = vec![false; spill_slots * 2]; // 4-byte halves
     for ins in instructions {
         match &ins.op {
             ArmOp::Str { addr, .. }
@@ -1066,13 +1122,17 @@ struct LocalLayout {
     /// never clobbered in its home reg between reads. Appended last so existing
     /// local/spill offsets are unchanged.
     param_slots: std::collections::HashMap<u32, (i32, bool)>,
-    /// #359: frame slot (offset from SP) per incoming stack-passed param the fn
-    /// references — wasm param indices in `[4, num_params)` that AAPCS delivers
-    /// on the caller's stack (not in r0..r3). Computed AFTER `frame_size` is
-    /// finalized: such a param sits at `[sp, frame_size + 24 + (k-4)*4]` (24 =
-    /// the fixed `push {r4-r8,lr}`). i32-only; an i64/f64 stack param is an
-    /// Ok-or-Err refusal at the use site. Empty unless `num_params > 4`.
-    incoming_params: std::collections::HashMap<u32, i32>,
+    /// #359/#503: frame slot `(offset_from_sp, is_i64)` per incoming
+    /// stack-passed param the fn references — the wasm param indices that
+    /// AAPCS delivers on the caller's stack (not in r0..r3), per the
+    /// width-aware [`aapcs_param_layout`] walk (a wide param even-aligns to an
+    /// 8-byte NSAA slot; a narrow param AFTER a stack-spilled wide one is
+    /// itself stack-passed — AAPCS C.5, no register back-fill). Computed AFTER
+    /// `frame_size` is finalized: param k sits at
+    /// `[sp, frame_size + 24 + nsaa_k]` (24 = the fixed `push {r4-r8,lr}`).
+    /// For an all-i32 signature `nsaa_k == (k-4)*4`, byte-identical to the
+    /// legacy formula.
+    incoming_params: std::collections::HashMap<u32, (i32, bool)>,
     /// Whether the `i64_spill_base` area was actually reserved
     /// (`has_i64 || force_spill_area`). Mirrored into
     /// [`SpillState::area_reserved`]; see that field for why (#326).
@@ -1097,14 +1157,19 @@ struct LocalLayout {
 fn compute_local_layout(
     wasm_ops: &[WasmOp],
     num_params: u32,
+    params_i64: &[bool],
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
     force_spill_area: bool,
     force_param_backing: bool,
     outgoing_arg_bytes: i32,
+    i64_spill_slots: usize,
 ) -> LocalLayout {
     use std::collections::{BTreeSet, HashMap};
     let i64_set = infer_i64_locals(wasm_ops, func_ret_i64, type_ret_i64);
+    // #503-i64: the width-aware AAPCS assignment — which params are register-
+    // resident and which live on the caller's stack (and at what NSAA offset).
+    let aapcs = aapcs_param_layout(num_params, params_i64);
 
     // Collect non-param local indices, in ascending order for deterministic layout.
     let mut used: BTreeSet<u32> = BTreeSet::new();
@@ -1166,15 +1231,23 @@ fn compute_local_layout(
     // functions — `force_spill_area` is set ONLY on that retry (the function
     // failed to compile at all on the first pass), so no function that compiles
     // today changes frame size.
+    // #503-i64: a signature with a wide param AND any stack-passed param was
+    // previously declined outright, so reserving the spill area for that shape
+    // changes no function that compiled before. It is needed because a wide
+    // STACK param's `local.get` allocates a register pair (whose pressure path
+    // spills i64 values) even when the op stream contains no I64-named op —
+    // e.g. a body that only reads the param and returns it.
+    let has_wide_param = params_i64.iter().take(num_params as usize).any(|&w| w);
     let has_i64 = force_spill_area
         || !i64_set.is_empty()
+        || (has_wide_param && !aapcs.stack.is_empty())
         || wasm_ops.iter().any(|op| format!("{op:?}").contains("I64"));
     let i64_spill_base = if has_i64 {
         if (offset % 8) != 0 {
             offset += 4;
         }
         let base = offset;
-        offset += (I64_SPILL_SLOTS as i32) * 8;
+        offset += (i64_spill_slots as i32) * 8;
         base
     } else {
         offset // unused: no i64 op means no spill
@@ -1183,7 +1256,6 @@ fn compute_local_layout(
     // #204: append a spill slot for every in-register param a function with a
     // CALL reads (frame-backed → never clobbered in its home reg). Appended
     // last → existing local/spill offsets unchanged.
-    let param_count = num_params.min(4);
     let mut param_slots: HashMap<u32, (i32, bool)> = HashMap::new();
     // Frame-backing is needed precisely when a param must survive across a call:
     // AAPCS arg-marshalling reclaims r0..r3 for the call's arguments, so a param
@@ -1206,7 +1278,14 @@ fn compute_local_layout(
                 WasmOp::LocalGet(idx) | WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) => *idx,
                 _ => continue,
             };
-            if pidx < param_count {
+            // #503-i64: only REGISTER-resident params get a home-reg-backing
+            // slot — a stack-passed param (which can have index < 4 when a
+            // wide param even-align-spills, e.g. `(i32 i32 i32 i64)`) already
+            // lives in the caller's frame, which trivially survives calls;
+            // backing it from `index_to_reg(pidx)` would store an unrelated
+            // register. For an all-i32 signature `aapcs.regs` covers exactly
+            // the indices `< num_params.min(4)`, so this is byte-identical.
+            if pidx < num_params && aapcs.regs.contains_key(&pidx) {
                 used_params.insert(pidx);
             }
         }
@@ -1223,14 +1302,15 @@ fn compute_local_layout(
     // Round frame to 8-byte multiple for AAPCS SP alignment.
     let frame_size = (offset + 7) & !7;
 
-    // #359: locate the incoming stack-passed params (wasm idx in [4, num_params)
-    // that AAPCS delivers on the caller's stack). After `push {r4-r8,lr}` (24
-    // bytes) + `sub sp,#frame_size`, param k sits at
-    // `[sp, frame_size + 24 + (k-4)*4]`. Only the params actually referenced are
-    // recorded. Empty when num_params <= 4. i32-only is enforced at the use site
-    // (Ok-or-Err) — the offset is the same regardless of width.
-    let mut incoming_params: HashMap<u32, i32> = HashMap::new();
-    if num_params > 4 {
+    // #359/#503: locate the incoming stack-passed params (the wasm indices the
+    // width-aware AAPCS walk put on the caller's stack). After
+    // `push {r4-r8,lr}` (24 bytes) + `sub sp,#frame_size`, param k sits at
+    // `[sp, frame_size + 24 + nsaa_k]` where `nsaa_k` is its AAPCS stacked
+    // offset ((k-4)*4 for an all-i32 signature — byte-identical to the legacy
+    // formula; 8-byte aligned for a wide param). Only the params actually
+    // referenced are recorded.
+    let mut incoming_params: HashMap<u32, (i32, bool)> = HashMap::new();
+    if !aapcs.stack.is_empty() {
         const FIXED_PUSH_BYTES: i32 = 24; // push {r4,r5,r6,r7,r8,lr}
         let mut used_incoming: BTreeSet<u32> = BTreeSet::new();
         for op in wasm_ops {
@@ -1238,13 +1318,14 @@ fn compute_local_layout(
                 WasmOp::LocalGet(idx) | WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) => *idx,
                 _ => continue,
             };
-            if (4..num_params).contains(&k) {
+            if k < num_params && aapcs.stack.contains_key(&k) {
                 used_incoming.insert(k);
             }
         }
         for &k in &used_incoming {
-            let off = frame_size + FIXED_PUSH_BYTES + (k as i32 - 4) * 4;
-            incoming_params.insert(k, off);
+            let (nsaa, is_wide) = aapcs.stack[&k];
+            let off = frame_size + FIXED_PUSH_BYTES + nsaa;
+            incoming_params.insert(k, (off, is_wide));
         }
     }
 
@@ -1845,6 +1926,13 @@ pub struct InstructionSelector {
     /// are promoted; read-before-write (#457), control-flow, and i64 locals fall
     /// back to the frame unchanged. See [`compute_local_promotion`].
     local_promote: bool,
+    /// #587 pool-grow recovery rung: size of the i64 spill-slot pool. Default
+    /// [`I64_SPILL_SLOTS`] — the backend raises it (clamped to
+    /// [`I64_SPILL_SLOTS_MAX`]) only for a retry after an attempt failed with
+    /// the "i64 spill-slot pool exhausted" `Err`, so every function that
+    /// compiles with the default pool keeps its frame byte-identical by
+    /// construction.
+    i64_spill_slots: usize,
 }
 
 impl InstructionSelector {
@@ -1876,6 +1964,7 @@ impl InstructionSelector {
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
             local_promote: false,
+            i64_spill_slots: I64_SPILL_SLOTS,
         }
     }
 
@@ -1907,6 +1996,7 @@ impl InstructionSelector {
             spill_on_exhaustion: false,
             param_backing_on_exhaustion: false,
             local_promote: false,
+            i64_spill_slots: I64_SPILL_SLOTS,
         }
     }
 
@@ -1934,6 +2024,18 @@ impl InstructionSelector {
     /// would change its bytes.
     pub fn set_param_backing_on_exhaustion(&mut self, enabled: bool) {
         self.param_backing_on_exhaustion = enabled;
+    }
+
+    /// #587 pool-grow recovery rung: size the i64 spill-slot pool. Intended
+    /// ONLY as the backend's retry after an attempt failed with the
+    /// "i64 spill-slot pool exhausted" `Err` — a larger pool grows the frame,
+    /// so calling it for a function that compiles with the default pool would
+    /// change its bytes. Clamped to `[I64_SPILL_SLOTS, I64_SPILL_SLOTS_MAX]`:
+    /// never below the default (shrinking could break the #171 machinery),
+    /// never past the 12-bit `[sp,#imm]`-friendly cap (a function needing
+    /// more stays an honest loud skip).
+    pub fn set_i64_spill_slots(&mut self, slots: usize) {
+        self.i64_spill_slots = slots.clamp(I64_SPILL_SLOTS, I64_SPILL_SLOTS_MAX);
     }
 
     /// VCR-RA local promotion (#390, #242): keep eligible non-param i32 locals in
@@ -5640,10 +5742,10 @@ impl InstructionSelector {
         // a panic deep in the selector's pop sequence (see PR #117).
         synth_core::wasm_stack_check::check_no_underflow(wasm_ops)?;
 
-        // #359/#503: AAPCS stack arguments. We pass params index>=4 on the
-        // outgoing stack and read incoming params index>=4 from the caller's
-        // stack. The incoming-param homing (`compute_local_layout` →
-        // `incoming_params`, offset `frame_size+24+(k-4)*4`) and the outgoing
+        // #359/#503: AAPCS stack arguments. We pass args past r0..r3 on the
+        // outgoing stack and read incoming stack-passed params from the
+        // caller's stack. The incoming-param homing (`compute_local_layout` →
+        // `incoming_params`, offset `frame_size+24+nsaa_k`) and the outgoing
         // store (`emit_stack_args`, offset `(k-4)*4`) are both GENERIC in the
         // param/arg index — no fixed ≤8 structure — so an arbitrary scalar count
         // lowers correctly. The real bound is the 12-bit `[sp,#imm]` immediate
@@ -5654,48 +5756,35 @@ impl InstructionSelector {
         // generic machinery handles. The 12-bit guards remain the Ok-or-Err
         // backstop (#180/#185): never silently emit an out-of-range encoding.
         //
-        // #359/#503 Ok-or-Err (#180/#185): the register-homing + incoming-stack-
-        // slot scheme assumes every param is a 4-byte i32. A 64-bit param
-        // (i64/f64) occupies a register PAIR / 8-byte stack slot and shifts which
-        // params land on the stack — even an UNUSED one. Declared widths (not
-        // op-stream inference, which can't see an unused i64 param) drive this
-        // refusal. This 64-bit stack-param case is still refused (the AAPCS
-        // pair-alignment + back-fill lowering is the #503 follow-up); only the
-        // >8-scalar-i32 cap is lifted here. Gated on num_params>4: a <=4-param
-        // function never touches the stack-arg path, so the legacy i64-param
-        // handling (param_slots) is unchanged and every existing fixture stays
-        // byte-identical. Empty `params_i64` (no signature plumbed, e.g. unit
-        // tests) ⇒ assume i32.
-        if num_params > 4 && self.params_i64.iter().take(num_params as usize).any(|&w| w) {
-            return Err(synth_core::Error::synthesis(format!(
-                "#503: function has {num_params} params including a 64-bit (i64/f64) \
-                 param on the AAPCS stack-argument path; only i32 stack params are \
-                 supported (64-bit stack params are not yet lowered)"
-            )));
-        }
-
-        // #518 Ok-or-Err (#180/#185): an i64/f64 PARAM is correctly homed below
-        // (AAPCS register-pair, `aapcs_param_regs`) only for the LEAF,
-        // register-resident case. Two sub-cases are declined LOUDLY here rather
-        // than silently miscompiled (the #518 defect): (1) an i64 param that
-        // AAPCS passes PAST R3 on the stack — the open #503-i64 follow-up;
-        // (2) a function that FRAME-BACKS its params — `has_call` (params spill
-        // to the frame to survive the call's caller-saved clobber, #204/#193) or
-        // the pair-exhaustion retry (`param_backing_on_exhaustion`) — where the
-        // `param_slots` path would size an i64 param's slot from `i64_set`, which
-        // does not include params, dropping the high half. Both fall back to a
-        // loud skip (warning + absent symbol), never wrong code. The common
-        // leaf-in-registers case is FIXED below. (Empty `params_i64` ⇒ all-i32 ⇒
-        // this is a no-op and every existing fixture stays byte-identical.)
-        let has_i64_param = self.params_i64.iter().take(num_params as usize).any(|&w| w);
-        if has_i64_param {
-            if i64_param_overflows_core_regs(num_params, &self.params_i64) {
-                return Err(synth_core::Error::synthesis(
-                    "#518/#503: an i64/f64 param is AAPCS-passed past R3 (on the \
-                     stack); 64-bit stack params are not yet lowered"
-                        .to_string(),
-                ));
-            }
+        // #503-i64 (the falcon func_58/func_163 remainder): a 64-bit param that
+        // AAPCS passes ON THE STACK is now lowered too. `aapcs_param_layout`
+        // (declared widths — op-stream inference can't see an unused i64 param)
+        // assigns every param either a register (pair, even-aligned, for a wide
+        // one) or an NSAA stack offset (8-byte-aligned for a wide one; a narrow
+        // param AFTER any stack-spilled param is itself stack-passed — AAPCS
+        // C.5, no register back-fill: the pre-fix `index_to_reg` fallback read
+        // such a param from a WRONG register, e.g. p3 of `(i64 i32 i32 i32)`
+        // from R3 = p2). Wide incoming slots are read/written with
+        // I64Ldr/I64Str through `layout.incoming_params`.
+        //
+        // #518 Ok-or-Err (#180/#185): the ONE remaining decline — an i64/f64
+        // param that is REGISTER-resident in a function that FRAME-BACKS its
+        // params: `has_call` (params spill to the frame to survive the call's
+        // caller-saved clobber, #204/#193) or the pair-exhaustion retry
+        // (`param_backing_on_exhaustion`). There the `param_slots` path would
+        // size the i64 param's slot from `i64_set`, which does not include
+        // params, dropping the high half. A STACK-passed wide param is exempt:
+        // it lives in the caller's frame (never in a clobberable register), so
+        // it needs no backing slot and survives calls by construction. Falls
+        // back to a loud skip (warning + absent symbol), never wrong code.
+        // (Empty `params_i64` ⇒ all-i32 ⇒ this is a no-op and every existing
+        // fixture stays byte-identical.)
+        let param_layout = aapcs_param_layout(num_params, &self.params_i64);
+        let has_reg_i64_param = (0..num_params).any(|i| {
+            self.params_i64.get(i as usize).copied().unwrap_or(false)
+                && param_layout.regs.contains_key(&i)
+        });
+        if has_reg_i64_param {
             let has_call = wasm_ops
                 .iter()
                 .any(|op| matches!(op, Call(_) | CallIndirect { .. }));
@@ -5762,19 +5851,26 @@ impl InstructionSelector {
         let layout = compute_local_layout(
             wasm_ops,
             num_params,
+            &self.params_i64,
             &self.func_ret_i64,
             &self.type_ret_i64,
             self.spill_on_exhaustion,
             self.param_backing_on_exhaustion,
             outgoing_arg_bytes,
+            self.i64_spill_slots,
         );
         // #359 Ok-or-Err (#180/#185): an incoming stack-passed param is read via
-        // `ldr rd,[sp,#off]` where `off = frame_size + 24 + (k-4)*4` and
+        // `ldr rd,[sp,#off]` where `off = frame_size + 24 + nsaa_k` and
         // `frame_size` is unbounded (a function with a large locals frame). The
         // Thumb-2 `ldr [sp,#imm]` immediate is 12-bit (0..4095); refuse rather
         // than silently emit an out-of-range encoding. Checked once here over the
-        // finalized layout instead of at each use site.
-        if let Some(&max_off) = layout.incoming_params.values().max()
+        // finalized layout instead of at each use site. A wide (i64/f64) param's
+        // hi half is read 4 bytes above its lo, so its bound is `off + 4`.
+        if let Some(max_off) = layout
+            .incoming_params
+            .values()
+            .map(|&(off, is_wide)| off + if is_wide { 4 } else { 0 })
+            .max()
             && max_off > 4095
         {
             return Err(synth_core::Error::synthesis(format!(
@@ -5800,7 +5896,9 @@ impl InstructionSelector {
         // value (#171). i64 values track only the lo register/slot.
         let mut stack: Vec<StackVal> = Vec::new();
         // i64 register-pair spill slots (#171), reused across the function.
-        let mut spill = SpillState::new(layout.i64_spill_base);
+        // Pool size follows `self.i64_spill_slots` (#587 pool-grow rung) and
+        // must match the area `compute_local_layout` reserved above.
+        let mut spill = SpillState::with_slots(layout.i64_spill_base, self.i64_spill_slots);
         spill.spill_on_exhaustion = self.spill_on_exhaustion;
         spill.area_reserved = layout.spill_area_reserved;
         // Next available register for temporaries (start after params)
@@ -5853,9 +5951,13 @@ impl InstructionSelector {
         // entry and accessed only through it, so it can never be clobbered in
         // its home register between reads. Params with no slot (unused) stay
         // register-backed via local_to_reg.
-        let param_aapcs = aapcs_param_regs(num_params, &self.params_i64);
+        let param_aapcs = &param_layout.regs;
         for i in 0..num_params.min(4) {
             if let Some(&(off, is_i64)) = layout.param_slots.get(&i) {
+                // #503-i64: `param_slots` only contains REGISTER-resident
+                // params now, and every reg-resident param below a stack spill
+                // is sequential from R0 (a wide reg param + has_call is
+                // declined above), so `index_to_reg(i)` is its true home.
                 let reg = index_to_reg(i as u8);
                 let op = if is_i64 {
                     ArmOp::I64Str {
@@ -5873,13 +5975,12 @@ impl InstructionSelector {
                     op,
                     source_line: None,
                 });
-            } else {
-                let reg = param_aapcs
-                    .get(&i)
-                    .copied()
-                    .unwrap_or_else(|| index_to_reg(i as u8));
+            } else if let Some(&reg) = param_aapcs.get(&i) {
                 local_to_reg.insert(i, reg);
             }
+            // else: stack-passed (index < 4 only when a wide param
+            // even-align-spilled, #503-i64) — reads/writes route through
+            // `layout.incoming_params`; there is no register home.
         }
 
         let mut i64_locals = infer_i64_locals(wasm_ops, &self.func_ret_i64, &self.type_ret_i64);
@@ -5985,34 +6086,55 @@ impl InstructionSelector {
             }
             match op {
                 LocalGet(local_idx) => {
-                    // #359: an incoming stack-passed param (idx in [4,num_params))
-                    // is i32 by construction — a 64-bit param is refused up front
-                    // in `select_with_stack` (declared-width guard), so this path
-                    // only ever sees i32 stack params.
-                    // Get the register for this local. Three cases:
-                    //  1. Param in register — use the cached mapping.
-                    //  2. Spilled i64 local — load both halves via I64Ldr.
-                    //  3. Spilled i32 local — single Ldr.
+                    // Get the register for this local. Cases:
+                    //  1. Incoming stack-passed param (#359/#503) — load from the
+                    //     caller's frame (i32 single Ldr; i64/f64 pair via I64Ldr).
+                    //  2. Param in register — use the cached mapping.
+                    //  3. Spilled i64 local — load both halves via I64Ldr.
+                    //  4. Spilled i32 local — single Ldr.
                     let (reg, val_is_i64) =
-                        if let Some(&off) = layout.incoming_params.get(local_idx) {
-                            // #359: read the incoming stack-passed param into a
-                            // fresh temp pushed on the vstack — NOT register-homed.
-                            let dst = alloc_temp_or_spill(
-                                &mut next_temp,
-                                &mut stack,
-                                &mut instructions,
-                                &mut spill,
-                                &live_params,
-                                idx,
-                            )?;
-                            instructions.push(ArmInstruction {
-                                op: ArmOp::Ldr {
-                                    rd: dst,
-                                    addr: MemAddr::imm(Reg::SP, off),
-                                },
-                                source_line: Some(idx),
-                            });
-                            (dst, false)
+                        if let Some(&(off, is_wide)) = layout.incoming_params.get(local_idx) {
+                            // #359/#503: read the incoming stack-passed param into
+                            // fresh temp(s) pushed on the vstack — NOT register-
+                            // homed. A wide param loads its 8-byte NSAA slot into
+                            // a consecutive pair (#503-i64).
+                            if is_wide {
+                                let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                                    &mut next_temp,
+                                    &mut stack,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &[],
+                                    &live_params,
+                                    idx,
+                                )?;
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::I64Ldr {
+                                        rdlo: dst_lo,
+                                        rdhi: dst_hi,
+                                        addr: MemAddr::imm(Reg::SP, off),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                (dst_lo, true)
+                            } else {
+                                let dst = alloc_temp_or_spill(
+                                    &mut next_temp,
+                                    &mut stack,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &live_params,
+                                    idx,
+                                )?;
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Ldr {
+                                        rd: dst,
+                                        addr: MemAddr::imm(Reg::SP, off),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                (dst, false)
+                            }
                         } else if let Some(&(off, is_i64)) = layout.param_slots.get(local_idx) {
                             // #204/#193: frame-backed param — reload from its slot.
                             if is_i64 {
@@ -8661,15 +8783,23 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    if let Some(&off) = layout.incoming_params.get(local_idx) {
-                        // #359: write to the incoming stack-passed param's slot.
-                        // i32 by construction — a 64-bit param is refused up front
-                        // in `select_with_stack`.
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Str {
+                    if let Some(&(off, is_wide)) = layout.incoming_params.get(local_idx) {
+                        // #359/#503: write to the incoming stack-passed param's
+                        // slot in the caller's frame (wide: both halves, I64Str).
+                        let op = if is_wide {
+                            ArmOp::I64Str {
+                                rdlo: val,
+                                rdhi: i64_pair_hi(val)?,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            }
+                        } else {
+                            ArmOp::Str {
                                 rd: val,
                                 addr: MemAddr::imm(Reg::SP, off),
-                            },
+                            }
+                        };
+                        instructions.push(ArmInstruction {
+                            op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -8770,15 +8900,24 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    if let Some(&off) = layout.incoming_params.get(local_idx) {
-                        // #359: write to the incoming stack-passed param's slot;
-                        // value stays on the operand stack (peek kept it). i32 by
-                        // construction — a 64-bit param is refused up front.
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Str {
+                    if let Some(&(off, is_wide)) = layout.incoming_params.get(local_idx) {
+                        // #359/#503: write to the incoming stack-passed param's
+                        // slot (wide: both halves, I64Str); value stays on the
+                        // operand stack (peek kept it).
+                        let op = if is_wide {
+                            ArmOp::I64Str {
+                                rdlo: val,
+                                rdhi: i64_pair_hi(val)?,
+                                addr: MemAddr::imm(Reg::SP, off),
+                            }
+                        } else {
+                            ArmOp::Str {
                                 rd: val,
                                 addr: MemAddr::imm(Reg::SP, off),
-                            },
+                            }
+                        };
+                        instructions.push(ArmInstruction {
+                            op,
                             source_line: Some(idx),
                         });
                         cf.add_instruction();
@@ -10864,7 +11003,7 @@ impl InstructionSelector {
         // #581 defensive invariant: no reload of a never-stored spill slot may
         // leave the selector (see `assert_spill_reloads_have_stores`).
         if spill.area_reserved {
-            assert_spill_reloads_have_stores(&instructions, spill.base);
+            assert_spill_reloads_have_stores(&instructions, spill.base, spill.used.len());
         }
 
         Ok(instructions)
@@ -11817,20 +11956,135 @@ mod tests {
         );
     }
 
-    /// #359 Ok-or-Err: a 64-bit param in the stack region (>4 params, param i64)
-    /// is NOT lowered (AAPCS pair math differs) — it must return Err, never a
-    /// silent miscompile (#180/#185).
+    /// #503-i64: a 64-bit param in the stack region (>4 params, param4 i64) now
+    /// LOWERS — the width-aware `aapcs_param_layout` walk gives it an
+    /// 8-byte-aligned NSAA slot instead of the old blanket refusal. Execution
+    /// correctness is gated by `scripts/repro/i64_stack_param_503_differential.py`.
     #[test]
-    fn test_359_i64_stack_param_errs() {
+    fn test_503_i64_stack_param_lowers() {
         let db = RuleDatabase::new();
         let mut selector = InstructionSelector::new(db.rules().to_vec());
         selector.set_params_i64(vec![false, false, false, false, true]); // param4 = i64
-        let wasm_ops = vec![WasmOp::LocalGet(0)];
-        let r = selector.select_with_stack(&wasm_ops, 5);
+        let wasm_ops = vec![WasmOp::LocalGet(4)];
+        let arm = selector
+            .select_with_stack(&wasm_ops, 5)
+            .expect("a 5-param function with an i64 stack param must lower after #503-i64");
+        // The wide param is read as a PAIR from the incoming stack.
         assert!(
-            r.is_err(),
-            "a 5-param function with an i64 param must Err, not lower: {r:?}"
+            arm.iter()
+                .any(|i| matches!(&i.op, ArmOp::I64Ldr { addr, .. } if addr.base == Reg::SP)),
+            "the i64 stack param must be loaded via I64Ldr [sp,#off]: {arm:#?}"
         );
+    }
+
+    /// #503-i64: the found-along-the-way narrow-after-wide bug. In
+    /// `(i64 i32 i32 i32)`, p0 takes R0:R1, p1/p2 take R2/R3, and p3 is
+    /// STACK-passed (AAPCS C.5 — no register back-fill). The pre-fix homing
+    /// fell back to `index_to_reg(3)` and silently read p3 from R3 (= p2).
+    /// Now it must load p3 from the incoming stack.
+    #[test]
+    fn test_503_narrow_param_after_wide_reads_stack_not_r3() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_params_i64(vec![true, false, false, false]); // param0 = i64
+        let wasm_ops = vec![WasmOp::LocalGet(3)];
+        let arm = selector
+            .select_with_stack(&wasm_ops, 4)
+            .expect("(i64 i32 i32 i32) reading p3 must lower");
+        assert!(
+            arm.iter()
+                .any(|i| matches!(&i.op, ArmOp::Ldr { addr, .. } if addr.base == Reg::SP)),
+            "p3 must be loaded from the incoming stack, not read from R3: {arm:#?}"
+        );
+    }
+
+    /// #503-i64: a wide STACK param in a has-call function lowers (it lives in
+    /// the caller's frame, surviving the BL without a backing slot), while a
+    /// wide REGISTER param in a has-call function keeps the #518 loud decline
+    /// (its `param_slots` backing would drop the high half).
+    #[test]
+    fn test_503_wide_stack_param_with_call_lowers_reg_still_declines() {
+        let db = RuleDatabase::new();
+        // (i32 i32 i32 i32 i64) + call: the i64 is stack-passed -> lowers.
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_params_i64(vec![false, false, false, false, true]);
+        selector.set_func_arg_counts(vec![0, 0], Vec::new());
+        let ops = vec![WasmOp::Call(1), WasmOp::LocalGet(4), WasmOp::Drop];
+        assert!(
+            selector.select_with_stack(&ops, 5).is_ok(),
+            "a wide STACK param + call must lower (caller-frame slot)"
+        );
+        // (i64) + call: the i64 is REGISTER-resident -> #518 decline stands.
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_params_i64(vec![true]);
+        selector.set_func_arg_counts(vec![0, 0], Vec::new());
+        let ops = vec![WasmOp::Call(1), WasmOp::LocalGet(0), WasmOp::Drop];
+        let r = selector.select_with_stack(&ops, 1);
+        assert!(
+            r.as_ref().is_err_and(|e| e.to_string().contains("#518")),
+            "a wide REGISTER param + call must keep the #518 loud decline: {r:?}"
+        );
+    }
+
+    /// #503-i64: the AAPCS stack-offset matrix of `aapcs_param_layout` — NSAA
+    /// walking with 8-byte alignment for wide slots and C.5 no-back-fill.
+    #[test]
+    fn test_503_aapcs_stack_offsets() {
+        // (i32 x4, i64): p4 wide @ nsaa 0.
+        let l = aapcs_param_layout(5, &[false, false, false, false, true]);
+        assert_eq!(l.stack.get(&4), Some(&(0, true)));
+        // (i32 x5, i64): p4 narrow @ 0, p5 wide @ 8 (4-byte alignment hole).
+        let l = aapcs_param_layout(6, &[false, false, false, false, false, true]);
+        assert_eq!(l.stack.get(&4), Some(&(0, false)));
+        assert_eq!(l.stack.get(&5), Some(&(8, true)));
+        // (i32 x3, i64): even-align spills the pair with only 4 params.
+        let l = aapcs_param_layout(4, &[false, false, false, true]);
+        assert_eq!(l.stack.get(&3), Some(&(0, true)));
+        assert_eq!(l.regs.get(&3), None);
+        // (i64, i32 x3): p1=R2, p2=R3, p3 narrow @ 0 (no back-fill).
+        let l = aapcs_param_layout(4, &[true, false, false, false]);
+        assert_eq!(l.regs.get(&0), Some(&Reg::R0));
+        assert_eq!(l.regs.get(&1), Some(&Reg::R2));
+        assert_eq!(l.regs.get(&2), Some(&Reg::R3));
+        assert_eq!(l.stack.get(&3), Some(&(0, false)));
+        // all-i32 x6: legacy (k-4)*4 formula, byte-identical.
+        let l = aapcs_param_layout(6, &[false; 6]);
+        assert_eq!(l.stack.get(&4), Some(&(0, false)));
+        assert_eq!(l.stack.get(&5), Some(&(4, false)));
+    }
+
+    /// #587: the i64 spill-slot pool is growable — the same op stream that
+    /// exhausts the default 8-slot pool compiles with a grown pool. 20 i64
+    /// constants are simultaneously live (~16 concurrent pair spills; the
+    /// R0-R8 pool holds 4 pairs), folded with non-commutative ops.
+    #[test]
+    fn test_587_spill_pool_grow_rescues_exhaustion() {
+        let build_ops = || {
+            let mut ops: Vec<WasmOp> = (0..20).map(|k| WasmOp::I64Const(k + 1)).collect();
+            for j in 0..19 {
+                ops.push(match j % 3 {
+                    0 => WasmOp::I64Add,
+                    1 => WasmOp::I64Sub,
+                    _ => WasmOp::I64Xor,
+                });
+            }
+            ops
+        };
+        let db = RuleDatabase::new();
+        // Default pool: honest slot-pool exhaustion Err.
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let r = selector.select_with_stack(&build_ops(), 0);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.to_string().contains("i64 spill-slot pool exhausted")),
+            "20 live i64s must exhaust the default 8-slot pool: {r:?}"
+        );
+        // Grown pool (the #587 pool-grow rung's retry): compiles.
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_i64_spill_slots(24);
+        selector
+            .select_with_stack(&build_ops(), 0)
+            .expect("a 24-slot pool must rescue the same function");
     }
 
     /// #503: a >8-scalar-i32 call now LOWERS (the old conservative >8 cap is
@@ -16867,7 +17121,7 @@ mod tests {
     fn test_compute_local_layout_no_locals() {
         // Function with only params and no LocalGet/Set produces zero frame.
         let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add];
-        let layout = compute_local_layout(&ops, 2, &[], &[], false, false, 0);
+        let layout = compute_local_layout(&ops, 2, &[], &[], &[], false, false, 0, I64_SPILL_SLOTS);
         assert_eq!(layout.frame_size, 0);
         assert!(layout.locals.is_empty());
     }
@@ -16880,7 +17134,7 @@ mod tests {
             WasmOp::LocalSet(1),
             WasmOp::LocalGet(1),
         ];
-        let layout = compute_local_layout(&ops, 1, &[], &[], false, false, 0);
+        let layout = compute_local_layout(&ops, 1, &[], &[], &[], false, false, 0, I64_SPILL_SLOTS);
         assert!(layout.locals.contains_key(&1));
         let (off, is_i64) = layout.locals[&1];
         assert_eq!(off, 0);
@@ -16897,7 +17151,7 @@ mod tests {
             WasmOp::LocalSet(0),
             WasmOp::LocalGet(0),
         ];
-        let layout = compute_local_layout(&ops, 0, &[], &[], false, false, 0);
+        let layout = compute_local_layout(&ops, 0, &[], &[], &[], false, false, 0, I64_SPILL_SLOTS);
         let (off, is_i64) = layout.locals[&0];
         assert_eq!(off, 0);
         assert!(is_i64);
@@ -16917,7 +17171,7 @@ mod tests {
             WasmOp::I64Const(2),
             WasmOp::LocalSet(1),
         ];
-        let layout = compute_local_layout(&ops, 0, &[], &[], false, false, 0);
+        let layout = compute_local_layout(&ops, 0, &[], &[], &[], false, false, 0, I64_SPILL_SLOTS);
         let (off0, is_i64_0) = layout.locals[&0];
         let (off1, is_i64_1) = layout.locals[&1];
         assert_eq!(off0, 0);
@@ -16939,7 +17193,7 @@ mod tests {
             WasmOp::I32Add,
             WasmOp::LocalSet(2),
         ];
-        let layout = compute_local_layout(&ops, 2, &[], &[], false, false, 0);
+        let layout = compute_local_layout(&ops, 2, &[], &[], &[], false, false, 0, I64_SPILL_SLOTS);
         // Only idx 2 should be in the layout.
         assert!(!layout.locals.contains_key(&0));
         assert!(!layout.locals.contains_key(&1));
