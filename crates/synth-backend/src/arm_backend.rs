@@ -523,6 +523,9 @@ fn compile_wasm_to_arm(
         || has_value_carry
         || has_wide_param
     {
+        if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
+            eprintln!("[path-debug] direct (pre-gate)");
+        }
         select_direct()?
     } else {
         let opt_config = if config.loom_compat {
@@ -550,19 +553,29 @@ fn compile_wasm_to_arm(
             .optimize_full(wasm_ops)
             .and_then(|(opt_ir, _cfg, _stats)| bridge.ir_to_arm(&opt_ir, num_params as usize))
         {
-            Ok(arm_ops) => arm_ops
-                .into_iter()
-                .map(|op| ArmInstruction {
-                    op,
-                    source_line: None,
-                })
-                .collect(),
+            Ok(arm_ops) => {
+                if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
+                    eprintln!("[path-debug] optimized (ir_to_arm ok)");
+                }
+                arm_ops
+                    .into_iter()
+                    .map(|op| ArmInstruction {
+                        op,
+                        source_line: None,
+                    })
+                    .collect()
+            }
             // Issue #120: the optimized path declines modules it cannot lower
             // (notably scalar f32/f64 ops — the IR has no float opcodes). Fall
             // back to the direct instruction selector, which handles f32 via
             // VFP/FPU. This is honest degradation: the function still compiles
             // correctly, just without IR-level optimization.
-            Err(_) => select_direct()?,
+            Err(e) => {
+                if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
+                    eprintln!("[path-debug] direct (fallback: {e})");
+                }
+                select_direct()?
+            }
         }
     };
 
