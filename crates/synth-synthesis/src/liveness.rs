@@ -3734,6 +3734,94 @@ fn free_reg_over(
     None
 }
 
+/// Geometry of RESOLVED numeric branches (`BOffset`/`BCondOffset`) — the #604
+/// `nested(1,)` soundness rule.
+///
+/// The optimized (non-`--relocatable`) path resolves its branch displacements
+/// to byte-accurate halfword offsets INSIDE `optimizer_bridge::ir_to_arm` —
+/// BEFORE `apply_const_cse` runs — and nothing re-resolves them afterwards
+/// (`resolve_label_branches` explicitly leaves `BOffset`/`BCondOffset`
+/// untouched). Two consequences for any rewrite performed here:
+///
+///   1. a branch TARGET (join point) is invisible in the stream — no `Label`
+///      op marks it — so a "straight-line segment" can silently span a join,
+///      and `held`/hoist state proven along the fall-through path does NOT
+///      hold on the taken edge. (`spill_frame_499.wat::nested(1)`: the join
+///      tail's base materialization was folded onto a register only defined
+///      on the fall-through arm, so the taken path stored 55 over the 99.)
+///   2. deleting or resizing an instruction BETWEEN a branch and its target
+///      changes their byte distance, silently invalidating the pre-resolved
+///      displacement. (Same miscompile: two 8-byte `movw+movt` deletions in
+///      the arm made the `b` overshoot the join by exactly 16 bytes.)
+///
+/// This helper reconstructs each numeric branch's target instruction index by
+/// mirroring the bridge's own offset table (`estimate_arm_byte_size`, the
+/// #511-pinned estimator the displacements were computed against), so the
+/// passes can (1) treat every target as a segment BARRIER and (2) FREEZE the
+/// total byte size of any segment lying between a branch and its target.
+#[derive(Default)]
+struct ResolvedBranchGeometry {
+    /// Instruction indices that are targets of resolved numeric branches —
+    /// segment barriers (the target instruction STARTS a fresh segment).
+    targets: BTreeSet<usize>,
+    /// Per-instruction: lies between some resolved branch and its target, so
+    /// the enclosing segment's total byte size is load-bearing for that
+    /// displacement and must not change.
+    frozen: Vec<bool>,
+}
+
+/// `Some(geometry)` when every resolved numeric branch's displacement maps to
+/// an exact instruction boundary (empty geometry when there are none);
+/// `None` when a target cannot be mapped — or when the stream mixes numeric
+/// branches with `Label` pseudo-ops (whose real size is 0, not the
+/// estimator's default) — in which case the caller must decline the whole
+/// function rather than guess.
+fn resolved_branch_geometry(instrs: &[ArmInstruction]) -> Option<ResolvedBranchGeometry> {
+    use crate::optimizer_bridge::estimate_arm_byte_size;
+    let n = instrs.len();
+    if !instrs
+        .iter()
+        .any(|i| matches!(i.op, ArmOp::BOffset { .. } | ArmOp::BCondOffset { .. }))
+    {
+        return Some(ResolvedBranchGeometry {
+            targets: BTreeSet::new(),
+            frozen: vec![false; n],
+        });
+    }
+    if instrs.iter().any(|i| matches!(i.op, ArmOp::Label { .. })) {
+        return None; // mixed stream: byte offsets not reconstructible
+    }
+    // Mirror of the bridge's resolution table.
+    let mut byte_offsets: Vec<i64> = Vec::with_capacity(n + 1);
+    let mut cur: i64 = 0;
+    for ins in instrs {
+        byte_offsets.push(cur);
+        cur += estimate_arm_byte_size(&ins.op) as i64;
+    }
+    byte_offsets.push(cur);
+    let mut targets = BTreeSet::new();
+    let mut frozen = vec![false; n];
+    for (i, ins) in instrs.iter().enumerate() {
+        let offset = match &ins.op {
+            ArmOp::BOffset { offset } => *offset,
+            ArmOp::BCondOffset { offset, .. } => *offset,
+            _ => continue,
+        };
+        // Displacement is halfwords from PC (branch byte + 4):
+        // target byte = branch + 4 + 2·offset — the bridge's own formula.
+        let target_byte = byte_offsets[i] + 4 + 2 * offset as i64;
+        let ti = byte_offsets.binary_search(&target_byte).ok()?;
+        targets.insert(ti); // ti == n (function end) is a vacuous barrier
+        // Freeze everything between branch and target (either direction):
+        // deleting/resizing any of it shifts exactly one endpoint.
+        let (lo, hi) = if ti > i { (i, ti) } else { (ti, i) };
+        for f in frozen.iter_mut().take(hi.min(n)).skip(lo) {
+            *f = true;
+        }
+    }
+    Some(ResolvedBranchGeometry { targets, frozen })
+}
+
 /// Const-CSE / rematerialization-avoidance driven by the value-range analysis:
 /// where a `movw rd, #v` re-materializes a constant already resident in `ra`,
 /// and `ra` provably still holds `v` through every later read of `rd` (until
@@ -3794,6 +3882,11 @@ pub fn apply_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
 fn cross_reg_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
     use crate::optimizer_bridge::estimate_arm_byte_size;
     let n = instrs.len();
+    // #604: resolved numeric branches make join points invisible and byte
+    // layout load-bearing — decline the whole function if unmappable.
+    let Some(geo) = resolved_branch_geometry(instrs) else {
+        return (instrs.to_vec(), 0);
+    };
     let mut removed = vec![false; n];
     let mut rewrites: Vec<(usize, Reg, Reg)> = Vec::new(); // (use_index, from, to)
 
@@ -3844,7 +3937,16 @@ fn cross_reg_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
                 estimate_arm_byte_size(&op)
             })
             .sum();
-        if new_bytes <= orig_bytes {
+        // #604: a segment between a resolved branch and its target has a
+        // load-bearing byte size (the displacement was resolved against it) —
+        // its rewrite must be exactly size-neutral, not merely no-grow.
+        let frozen_seg = geo.frozen[start..end].iter().any(|&f| f);
+        let size_ok = if frozen_seg {
+            new_bytes == orig_bytes
+        } else {
+            new_bytes <= orig_bytes
+        };
+        if size_ok {
             for i in seg_removed {
                 removed[i] = true;
             }
@@ -3852,6 +3954,13 @@ fn cross_reg_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
         }
     };
     for (i, ins) in instrs.iter().enumerate() {
+        // #604: a resolved-branch TARGET is a join point — state proven above
+        // it holds only on the fall-through edge. Barrier; the target
+        // instruction itself starts the next segment.
+        if geo.targets.contains(&i) && i > seg_start {
+            process_segment(seg_start, i);
+            seg_start = i;
+        }
         if !is_straight_line(&ins.op) || reg_effect(&ins.op).is_none() {
             if i > seg_start {
                 process_segment(seg_start, i);
@@ -3905,6 +4014,11 @@ fn cross_reg_const_cse(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize
 fn extending_alias_hoist(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
     use crate::optimizer_bridge::estimate_arm_byte_size;
     let n = instrs.len();
+    // #604: recomputed on THIS pass's input (pass 1 preserved every resolved
+    // displacement, so the reconstruction stays exact on its output).
+    let Some(geo) = resolved_branch_geometry(instrs) else {
+        return (instrs.to_vec(), 0);
+    };
     let mut removed = vec![false; n];
     let mut rewrites: Vec<(usize, Reg, Reg)> = Vec::new(); // (use_index, from, to)
     let mut replace_at: BTreeMap<usize, ArmOp> = BTreeMap::new(); // holder materializations
@@ -4074,7 +4188,14 @@ fn extending_alias_hoist(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
             .sum();
         let pressure_ok =
             matches!(straight_line_peak_pressure(&rewritten), Some(p) if p <= ALLOCATABLE_POOL);
-        if new_bytes <= orig_bytes && pressure_ok {
+        // #604: size-frozen between a resolved branch and its target.
+        let frozen_seg = geo.frozen[start..end].iter().any(|&f| f);
+        let size_ok = if frozen_seg {
+            new_bytes == orig_bytes
+        } else {
+            new_bytes <= orig_bytes
+        };
+        if size_ok && pressure_ok {
             for i in seg_removed {
                 removed[i] = true;
             }
@@ -4083,6 +4204,11 @@ fn extending_alias_hoist(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usi
         }
     };
     for (i, ins) in instrs.iter().enumerate() {
+        // #604: resolved-branch target = join point = barrier (see pass 1).
+        if geo.targets.contains(&i) && i > seg_start {
+            process_segment(seg_start, i);
+            seg_start = i;
+        }
         if !is_straight_line(&ins.op) || reg_effect(&ins.op).is_none() {
             if i > seg_start {
                 process_segment(seg_start, i);
@@ -9611,6 +9737,172 @@ mod tests {
         ];
         let (_out, removed) = apply_const_cse(&seq);
         assert_eq!(removed, 0, "value live-out → hoist declines");
+    }
+
+    #[test]
+    fn const_cse_treats_resolved_branch_target_as_state_barrier_604() {
+        // The #604 nested(1,) miscompile, minimized: a resolved `BOffset`
+        // (optimized-path, already byte-resolved — target = branch + 4 + 2·off)
+        // jumps over a fall-through arm to a JOIN. Pre-fix, the join carried no
+        // barrier (no `Label` op), so the segment spanned it and the join's
+        // `movw r1,#0x63` was folded onto r0 — a register only defined on the
+        // fall-through arm. On the taken edge r0 holds something else entirely.
+        //
+        // Byte layout (estimator): BOffset=2 @0, Movw=4 @2, Cmp=2 @6, JOIN
+        // Movw=4 @8, Cmp=2 @12, Movw=4 @14. offset 2 ⇒ target byte 8 = JOIN.
+        let seq = vec![
+            ins(ArmOp::BOffset { offset: 2 }),
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0x63,
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R4,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            // JOIN (branch target): both edges execute from here on.
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 0x63,
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 7,
+            }),
+        ];
+        let (out, removed) = apply_const_cse(&seq);
+        assert_eq!(removed, 0, "join is a barrier: fall-through-only residency");
+        assert_eq!(out.len(), seq.len(), "stream unchanged");
+    }
+
+    #[test]
+    fn const_cse_freezes_bytes_between_resolved_branch_and_target_604() {
+        // A backward resolved branch (loop shape): every byte between target
+        // and branch is load-bearing for the pre-resolved displacement, so a
+        // fold that DELETES a materialization inside the span must decline
+        // even where the residency proof itself holds.
+        //
+        // Byte layout: Movw=4 @0, Cmp=2 @4, Movw=4 @6, Cmp=2 @10, Movw=4 @12,
+        // BOffset=2 @16. offset -10 ⇒ target byte 16 + 4 − 20 = 0 (loop head).
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 5,
+            }),
+            ins(ArmOp::BOffset { offset: -10 }),
+        ];
+        let (out, removed) = apply_const_cse(&seq);
+        assert_eq!(removed, 0, "in-span deletion would shift the displacement");
+        assert_eq!(out.len(), seq.len(), "stream unchanged");
+    }
+
+    #[test]
+    fn const_cse_still_folds_outside_resolved_branch_spans_604() {
+        // The soundness rule is targeted, not wholesale: a straight-line block
+        // AFTER every resolved-branch span (here a 2-byte skip-the-UDF trap
+        // guard: offset 0 ⇒ target byte 0 + 4 = the Movw) still folds.
+        let seq = vec![
+            ins(ArmOp::BCondOffset {
+                cond: crate::rules::Condition::NE,
+                offset: 0,
+            }),
+            ins(ArmOp::Udf { imm: 0 }),
+            // Past the span: the redundant-clamp shape folds as before.
+            ins(ArmOp::Movw {
+                rd: Reg::R0,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R5,
+                op2: Operand2::Reg(Reg::R0),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 0x7e,
+            }),
+            ins(ArmOp::Cmp {
+                rn: Reg::R6,
+                op2: Operand2::Reg(Reg::R1),
+            }),
+            ins(ArmOp::Movw {
+                rd: Reg::R1,
+                imm16: 99,
+            }),
+        ];
+        let (out, removed) = apply_const_cse(&seq);
+        assert_eq!(removed, 1, "fold outside the frozen span still commits");
+        assert!(
+            out.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Cmp {
+                    rn: Reg::R6,
+                    op2: Operand2::Reg(Reg::R0)
+                }
+            )),
+            "the surviving read is retargeted to the resident register"
+        );
+    }
+
+    #[test]
+    fn const_cse_hoist_declines_inside_resolved_branch_span_604() {
+        // The extending-alias hoist (pass 2) obeys the same freeze: the exact
+        // profitable same-register-reuse shape it exists for, wrapped in a
+        // backward resolved branch so the whole body is displacement-frozen.
+        // Deleting the repeat would shrink the span ⇒ decline.
+        let add = |rd, rn| {
+            ins(ArmOp::Add {
+                rd,
+                rn,
+                op2: Operand2::Reg(rn),
+            })
+        };
+        let mut seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R3, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 9,
+            }),
+            add(Reg::R4, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 500,
+            }),
+            add(Reg::R5, Reg::R2),
+            ins(ArmOp::Movw {
+                rd: Reg::R2,
+                imm16: 1,
+            }),
+        ];
+        // Bytes: Movw=4 / low-reg Add=2 → 4+2+4+2+4+2+4 = 22; branch @22 ⇒
+        // target 22 + 4 + 2·(−13) = 0 (the loop head).
+        seq.push(ins(ArmOp::BOffset { offset: -13 }));
+        let (out, removed) = apply_const_cse(&seq);
+        assert_eq!(removed, 0, "hoist deletion inside the span would shift it");
+        assert_eq!(out.len(), seq.len(), "stream unchanged");
     }
 
     #[test]
