@@ -653,10 +653,18 @@ fn compile_wasm_to_arm(
         // (`sub sp,#N`/`add sp,#N` reserved by `compute_local_layout` for locals
         // that promotion homed in registers, never accessed). Removing it saves
         // the two instructions AND restores the SP-untouched precondition that
-        // `shrink_callee_saved_saves` requires — so it must run FIRST. Flag-off
-        // (opt-in `SYNTH_DEAD_FRAME_ELIM=1`); off ⇒ byte-identical. Default-on
-        // flip held for on-silicon validation, like the realloc/shrink levers.
-        let out = if std::env::var("SYNTH_DEAD_FRAME_ELIM").is_ok() {
+        // `shrink_callee_saved_saves` requires — so it must run FIRST.
+        // DEFAULT-ON (#242 flag audit flip-wave, #592 audit item): evidence
+        // basis was the 2-path × repro-corpus sweep — 0 functions grow, 58
+        // shrink (flight_seam controller_step 250→242 −8 / filter_step 180→168
+        // −12, native_pointer frame_roundtrip 46→34 −12), locked by the
+        // `dead_frame_elim_no_grow_corpus_242` cargo gate; execution
+        // differentials re-run green on the new default bytes BEFORE the
+        // frozen ARM anchors were re-pinned (leaf_dead_frame, flight_seam,
+        // frame_slot_dce — see the flip PR). Escape hatch:
+        // `SYNTH_DEAD_FRAME_ELIM=0` opts out and restores the pre-flip bytes
+        // (CI-gated in `frozen_codegen_bytes.rs`).
+        let out = if !std::env::var("SYNTH_DEAD_FRAME_ELIM").is_ok_and(|v| v == "0") {
             synth_synthesis::liveness::elide_dead_frame(&out).unwrap_or(out)
         } else {
             out
@@ -879,10 +887,16 @@ fn compile_wasm_to_arm(
     // instruction, −1 live register per 16/8-bit mask. 0xffff/0xff are not Thumb-2
     // modified immediates so the selector materializes them into a register; the
     // dedicated zero-extend expresses the same masking inline. Removal-only +
-    // rewrite-in-place (offset-neutral). FLAG-OFF by default (opt-in
-    // `SYNTH_UXTH_FOLD=1`) ⇒ bit-identical (frozen gate green); the byte-changing
-    // default-on flip is the separate on-target-gated step, like the prior levers.
-    let arm_instrs = if std::env::var("SYNTH_UXTH_FOLD").is_ok() {
+    // rewrite-in-place (offset-neutral). DEFAULT-ON (#242 flag audit flip-wave,
+    // #592 audit item): evidence basis was the 2-path × repro-corpus sweep —
+    // 0 functions grow, 13 shrink (control_step 300→294 −6, gust_mix 38→32 −6,
+    // uxth_fold pack 36→24 −12), locked by the `uxth_fold_no_grow_corpus_242`
+    // cargo gate; execution differentials re-run green on the new default
+    // bytes BEFORE the frozen ARM anchors were re-pinned (uxth_fold,
+    // control_step — see the flip PR). Escape hatch: `SYNTH_UXTH_FOLD=0` opts
+    // out and restores the pre-flip bytes (CI-gated in
+    // `frozen_codegen_bytes.rs`).
+    let arm_instrs = if !std::env::var("SYNTH_UXTH_FOLD").is_ok_and(|v| v == "0") {
         let (out, folds) = synth_synthesis::liveness::fold_uxth(&arm_instrs);
         if std::env::var("SYNTH_FUSE_STATS").is_ok() {
             eprintln!("[uxth-fold] {folds} mask-and folded to uxth/uxtb, movw dropped");

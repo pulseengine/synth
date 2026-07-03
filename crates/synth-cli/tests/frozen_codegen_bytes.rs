@@ -79,6 +79,9 @@ fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
         .env_remove("SYNTH_BASE_CSE")
         .env_remove("SYNTH_RV_CMP_SELECT")
         .env_remove("SYNTH_RV_LOCAL_PROMO")
+        .env_remove("SYNTH_RV_SHIFT_FOLD")
+        .env_remove("SYNTH_DEAD_FRAME_ELIM")
+        .env_remove("SYNTH_UXTH_FOLD")
         .args([
             "compile",
             path.to_str().unwrap(),
@@ -177,23 +180,41 @@ fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
 /// prior goldens (asserted by
 /// `frozen_fixtures_const_cse_escape_hatch_restores_old_bytes`). Prior
 /// goldens were control_step 1a97711c…/304, flight_seam 6872d6f3…/730.
+///
+/// Goldens RE-FROZEN for the #242 FLAG-AUDIT FLIP-WAVE (SYNTH_DEAD_FRAME_ELIM
+/// and SYNTH_UXTH_FOLD, both default-on; #592 audit items): the uxth/uxtb fold
+/// drops control_step's `movw #0xffff` mask materializations (300→294, −6);
+/// dead-frame elimination removes the provably-dead `sub/add sp` frames in
+/// flight_seam's controller_step (−8) and filter_step (−12) — flight_seam
+/// 726→706, flight_seam_flat 866→846. signed_div_const is inert under both.
+/// Execution differentials re-run green on the new default bytes BEFORE this
+/// re-pin: 52/56 scripts/repro/*_differential.py PASS incl. uxth_fold,
+/// leaf_dead_frame, control_step 13/13, flight_seam flat+inlined flight_algo
+/// 0x07FDF307, frame_slot_dce 8/8 (the 4 non-PASS: 3 needed regenerated
+/// external inputs then passed; sret_decide is a pre-existing flip-neutral
+/// harness discrepancy — its fixture bytes are IDENTICAL default vs opt-out).
+/// Per-flag opt-outs restore the prior goldens (asserted by
+/// `frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes` and
+/// `frozen_fixtures_uxth_fold_escape_hatch_restores_old_bytes`). Prior
+/// goldens were control_step 158b036b…/300, flight_seam 1e1d2b75…/726,
+/// flight_seam_flat d11849db…/866.
 #[test]
 fn frozen_fixtures_text_is_bit_identical_oracle_001() {
     let cases = [
         (
             "control_step.wasm",
-            "158b036bc678261a6f6ee71450d0af7b23d92415d16d21679347e2a436c25bb2",
-            300usize,
+            "d0907e0206e8abd5724dec30eb261f2b9d689c6ec1a3d3b66853691fb532de82",
+            294usize,
         ),
         (
             "flight_seam.wasm",
-            "1e1d2b75fe6c4975359c8b1163a6e082a548a0ce1e23d7a360495785bf5e54c2",
-            726,
+            "92fd68638e4074024f54c7744775f44aa88d2f5b36abbd0963d27d62b95e1e97",
+            706,
         ),
         (
             "flight_seam_flat.wasm",
-            "d11849db9bef82b77280ee06fdc6f076a7df278b2e5a3213284e569cbf1eccc9",
-            866,
+            "660c3fbc3a58820b13949412e11f79d47eccfb4de7cfa737a781abe01e4e1b96",
+            846,
         ),
         (
             "signed_div_const.wasm",
@@ -212,10 +233,11 @@ fn frozen_fixtures_text_is_bit_identical_oracle_001() {
 /// they are not re-checked here; the default gate above already locks them.)
 ///
 /// COMPOSITION NOTE: rolling back to the pre-STACK_FWD bytes now also requires
-/// opting out of the LATER spill-realloc lever (`SYNTH_SPILL_REALLOC=0`) and
-/// the const-CSE lever (`SYNTH_CONST_CSE=0`, #242) — both default on since
-/// their own flips and would otherwise rewrite the traffic these goldens pin.
-/// The opt-outs compose; each is separately gated.
+/// opting out of the LATER spill-realloc lever (`SYNTH_SPILL_REALLOC=0`), the
+/// const-CSE lever (`SYNTH_CONST_CSE=0`, #242), and the flag-audit flip-wave
+/// levers (`SYNTH_DEAD_FRAME_ELIM=0` + `SYNTH_UXTH_FOLD=0`, #242) — all
+/// default on since their own flips and would otherwise rewrite the traffic
+/// these goldens pin. The opt-outs compose; each is separately gated.
 #[test]
 fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
     // (fixture, PRE-flip golden sha256, PRE-flip len) — the v0.15.0 goldens.
@@ -237,6 +259,8 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
             .env("SYNTH_NO_STACK_FWD", "1")
             .env("SYNTH_SPILL_REALLOC", "0")
             .env("SYNTH_CONST_CSE", "0")
+            .env("SYNTH_DEAD_FRAME_ELIM", "0")
+            .env("SYNTH_UXTH_FOLD", "0")
             .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
             .env_remove("SYNTH_NO_LOCAL_PROMOTE")
             .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
@@ -288,8 +312,9 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
 /// locks them for both settings.)
 ///
 /// COMPOSITION NOTE: rolling back to these bytes now also requires opting out
-/// of the LATER const-CSE lever (`SYNTH_CONST_CSE=0`, #242 flip), which would
-/// otherwise drop a redundant materialization these goldens pin.
+/// of the LATER const-CSE lever (`SYNTH_CONST_CSE=0`, #242 flip) and the
+/// flag-audit flip-wave levers (`SYNTH_DEAD_FRAME_ELIM=0` + `SYNTH_UXTH_FOLD=0`,
+/// #242), which would otherwise rewrite traffic these goldens pin.
 #[test]
 fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
     // (fixture, PRE-flip golden sha256, PRE-flip len) — the pre-spill-realloc
@@ -311,6 +336,8 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
         let out = Command::new(synth())
             .env("SYNTH_SPILL_REALLOC", "0")
             .env("SYNTH_CONST_CSE", "0")
+            .env("SYNTH_DEAD_FRAME_ELIM", "0")
+            .env("SYNTH_UXTH_FOLD", "0")
             .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
             .env_remove("SYNTH_NO_LOCAL_PROMOTE")
             .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
@@ -359,9 +386,12 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
 /// moved restore their PRE-flip goldens byte-for-byte — the rollback proof
 /// AND a tripwire against the post-hoc CSE passes leaking into the opt-out
 /// path. (flight_seam_flat / signed_div_const are byte-identical under the
-/// flip, so the default gate above locks them for both settings.) Unlike the
-/// earlier hatches this needs NO composition: const-CSE is the LAST-flipped
-/// lever, so `=0` alone lands exactly on the previous shipped default.
+/// flip, so the default gate above locks them for both settings.)
+///
+/// COMPOSITION NOTE: since the #242 flag-audit flip-wave, rolling back to
+/// these bytes also requires opting out of the LATER levers
+/// (`SYNTH_DEAD_FRAME_ELIM=0` + `SYNTH_UXTH_FOLD=0`), which fire on
+/// control_step (uxth) and flight_seam (dead-frame).
 #[test]
 fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
     // (fixture, PRE-flip golden sha256, PRE-flip len) — the pre-const-CSE
@@ -382,6 +412,8 @@ fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
         let elf = format!("/tmp/frozen_nocse_{wasm}.elf");
         let out = Command::new(synth())
             .env("SYNTH_CONST_CSE", "0")
+            .env("SYNTH_DEAD_FRAME_ELIM", "0")
+            .env("SYNTH_UXTH_FOLD", "0")
             .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
             .env_remove("SYNTH_NO_LOCAL_PROMOTE")
             .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
@@ -426,6 +458,148 @@ fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
     }
 }
 
+/// ESCAPE-HATCH GATE for the SYNTH_DEAD_FRAME_ELIM flip (#242 flag-audit
+/// flip-wave, VCR-RA-002 #390). Proves the opt-out actually rolls back: with
+/// `SYNTH_DEAD_FRAME_ELIM=0` ALONE the two fixtures the flip moved restore
+/// their PRE-flip goldens byte-for-byte — the rollback proof AND a tripwire
+/// against `elide_dead_frame` leaking into the opt-out path. No composition
+/// needed for THESE fixtures: the sibling uxth lever is fold-inert on
+/// flight_seam/flight_seam_flat (no 0xffff/0xff mask materializations), so
+/// `=0` alone lands exactly on the previous shipped default there.
+/// (control_step / signed_div_const are dead-frame-inert — the default gate
+/// above locks them.)
+#[test]
+fn frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes() {
+    // (fixture, PRE-flip golden sha256, PRE-flip len) — the const-CSE-flip-era
+    // defaults.
+    let old = [
+        (
+            "flight_seam.wasm",
+            "1e1d2b75fe6c4975359c8b1163a6e082a548a0ce1e23d7a360495785bf5e54c2",
+            726usize,
+        ),
+        (
+            "flight_seam_flat.wasm",
+            "d11849db9bef82b77280ee06fdc6f076a7df278b2e5a3213284e569cbf1eccc9",
+            866,
+        ),
+    ];
+    for &(wasm, golden, golden_len) in &old {
+        let elf = format!("/tmp/frozen_nodfe_{wasm}.elf");
+        let out = Command::new(synth())
+            .env("SYNTH_DEAD_FRAME_ELIM", "0")
+            .env_remove("SYNTH_UXTH_FOLD")
+            .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
+            .env_remove("SYNTH_NO_LOCAL_PROMOTE")
+            .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
+            .env_remove("SYNTH_NO_STACK_FWD")
+            .env_remove("SYNTH_SPILL_REALLOC")
+            .env_remove("SYNTH_CONST_CSE")
+            .env_remove("SYNTH_BASE_CSE")
+            .args([
+                "compile",
+                fixture(wasm).to_str().unwrap(),
+                "-o",
+                &elf,
+                "-b",
+                "arm",
+                "--target",
+                "cortex-m4",
+                "--all-exports",
+                "--relocatable",
+            ])
+            .output()
+            .expect("run synth");
+        assert!(out.status.success(), "compile failed for {wasm}");
+        let bytes = std::fs::read(&elf).expect("read elf");
+        let obj = object::File::parse(&*bytes).expect("parse elf");
+        let data = obj
+            .section_by_name(".text")
+            .expect(".text")
+            .data()
+            .expect("read .text");
+        assert_eq!(
+            data.len(),
+            golden_len,
+            "{wasm}: SYNTH_DEAD_FRAME_ELIM=0 must restore the pre-flip length"
+        );
+        let hex: String = Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            hex, golden,
+            "{wasm}: SYNTH_DEAD_FRAME_ELIM=0 must restore the pre-flip bytes (rollback broken)"
+        );
+    }
+}
+
+/// ESCAPE-HATCH GATE for the SYNTH_UXTH_FOLD flip (#242 flag-audit flip-wave,
+/// #428). Proves the opt-out actually rolls back: with `SYNTH_UXTH_FOLD=0`
+/// ALONE the fixture the flip moved restores its PRE-flip golden
+/// byte-for-byte — the rollback proof AND a tripwire against `fold_uxth`
+/// leaking into the opt-out path. No composition needed: the sibling
+/// dead-frame lever is inert on control_step (no dead frame survives), so
+/// `=0` alone lands exactly on the previous shipped default.
+#[test]
+fn frozen_fixtures_uxth_fold_escape_hatch_restores_old_bytes() {
+    // (fixture, PRE-flip golden sha256, PRE-flip len) — the const-CSE-flip-era
+    // default.
+    let old = [(
+        "control_step.wasm",
+        "158b036bc678261a6f6ee71450d0af7b23d92415d16d21679347e2a436c25bb2",
+        300usize,
+    )];
+    for &(wasm, golden, golden_len) in &old {
+        let elf = format!("/tmp/frozen_nouxth_{wasm}.elf");
+        let out = Command::new(synth())
+            .env("SYNTH_UXTH_FOLD", "0")
+            .env_remove("SYNTH_DEAD_FRAME_ELIM")
+            .env_remove("SYNTH_NO_CMP_SELECT_FUSE")
+            .env_remove("SYNTH_NO_LOCAL_PROMOTE")
+            .env_remove("SYNTH_NO_IMM_SHIFT_FOLD")
+            .env_remove("SYNTH_NO_STACK_FWD")
+            .env_remove("SYNTH_SPILL_REALLOC")
+            .env_remove("SYNTH_CONST_CSE")
+            .env_remove("SYNTH_BASE_CSE")
+            .args([
+                "compile",
+                fixture(wasm).to_str().unwrap(),
+                "-o",
+                &elf,
+                "-b",
+                "arm",
+                "--target",
+                "cortex-m4",
+                "--all-exports",
+                "--relocatable",
+            ])
+            .output()
+            .expect("run synth");
+        assert!(out.status.success(), "compile failed for {wasm}");
+        let bytes = std::fs::read(&elf).expect("read elf");
+        let obj = object::File::parse(&*bytes).expect("parse elf");
+        let data = obj
+            .section_by_name(".text")
+            .expect(".text")
+            .data()
+            .expect("read .text");
+        assert_eq!(
+            data.len(),
+            golden_len,
+            "{wasm}: SYNTH_UXTH_FOLD=0 must restore the pre-flip length"
+        );
+        let hex: String = Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            hex, golden,
+            "{wasm}: SYNTH_UXTH_FOLD=0 must restore the pre-flip bytes (rollback broken)"
+        );
+    }
+}
+
 /// THE RV32 GATE. The RISC-V backend (`synth-backend-riscv`) is an INDEPENDENT
 /// codegen path with its own miscompile history (#220/#223/#226) — the ARM gate
 /// gives it zero protection, and its frozen RV32 result-identity invariants
@@ -454,8 +628,44 @@ fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
 /// per-function no-grow blocker (its own WAR fixtures grow; see the env read
 /// in `synth-backend-riscv/src/selector.rs`) — so these goldens are the
 /// promo-UNSET bytes and `text_sha256` env-removes it for hygiene.
+///
+/// Goldens RE-FROZEN for the SYNTH_RV_SHIFT_FOLD flip (#242 flag-audit
+/// flip-wave; gale re-measured the fold still off and worth −8 B toward the
+/// esp32c3 128 B floor, #242 2026-07-03): constant shift amounts fold into
+/// the immediate forms (`slli/srli/srai`), dropping the `li tmp, N` —
+/// control_step 492→484 (−8, exactly gale's number). signed_div_const has no
+/// constant shifts surviving selection — byte-identical, hash unchanged.
+/// Execution differentials re-run green on the new default bytes BEFORE this
+/// re-pin (shift_fold_riscv 21/21, control_step_riscv 0x00210A55, plus the
+/// full *_riscv_differential.py set — see the flip PR).
+/// `SYNTH_RV_SHIFT_FOLD=0` restores the prior goldens (asserted by
+/// `frozen_fixtures_rv32_shift_fold_escape_hatch_restores_old_bytes`). Prior
+/// goldens were control_step 780e427a…/492, signed_div_const 15fa429d…/88.
 #[test]
 fn frozen_fixtures_rv32_text_is_bit_identical_oracle_001() {
+    let cases = [
+        (
+            "control_step.wasm",
+            "6ac5d7f94f3e17b0314aa2549e24b172b50dc0df110130c80a94e19d62c7b75b",
+            484usize,
+        ),
+        (
+            "signed_div_const.wasm",
+            "15fa429d5ef5474f8b65fdd9c81b3da4c70176fb077df25131e2ec3988eb999e",
+            88,
+        ),
+    ];
+    assert_frozen(&cases, "riscv", "rv32imac");
+}
+
+/// ESCAPE-HATCH GATE for the SYNTH_RV_SHIFT_FOLD flip (#242 flag-audit
+/// flip-wave): `SYNTH_RV_SHIFT_FOLD=0` ALONE must restore the pre-flip RV32
+/// goldens byte-for-byte — the rollback proof, and a tripwire against
+/// `fold_const_shift` leaking into the opt-out lowering. signed_div_const is
+/// fold-inert, so its pin is identical in both configurations — it guards
+/// that the opt-out stays a no-op there.
+#[test]
+fn frozen_fixtures_rv32_shift_fold_escape_hatch_restores_old_bytes() {
     let cases = [
         (
             "control_step.wasm",
@@ -468,7 +678,49 @@ fn frozen_fixtures_rv32_text_is_bit_identical_oracle_001() {
             88,
         ),
     ];
-    assert_frozen(&cases, "riscv", "rv32imac");
+    for &(wasm, golden, golden_len) in &cases {
+        let path = fixture(wasm);
+        let elf = format!("/tmp/frozenbytes_rv32_shiftfold_off_{wasm}.elf");
+        let out = Command::new(synth())
+            .env_remove("SYNTH_RV_LOCAL_PROMO")
+            .env_remove("SYNTH_RV_CMP_SELECT")
+            .env("SYNTH_RV_SHIFT_FOLD", "0")
+            .args([
+                "compile",
+                path.to_str().unwrap(),
+                "-o",
+                &elf,
+                "-b",
+                "riscv",
+                "--target",
+                "rv32imac",
+                "--all-exports",
+                "--relocatable",
+            ])
+            .output()
+            .expect("run synth");
+        assert!(out.status.success(), "compile failed for {wasm}");
+        let bytes = std::fs::read(&elf).expect("read elf");
+        let obj = object::File::parse(&*bytes).expect("parse elf");
+        let data = obj
+            .section_by_name(".text")
+            .expect(".text")
+            .data()
+            .expect("read .text");
+        assert_eq!(
+            data.len(),
+            golden_len,
+            "{wasm}: SYNTH_RV_SHIFT_FOLD=0 must restore the pre-flip length"
+        );
+        let hex: String = Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            hex, golden,
+            "{wasm}: SYNTH_RV_SHIFT_FOLD=0 must restore the pre-flip bytes (rollback broken)"
+        );
+    }
 }
 
 /// The RV32 flip-wave ESCAPE HATCH (#472): `SYNTH_RV_CMP_SELECT=0` must
@@ -476,6 +728,10 @@ fn frozen_fixtures_rv32_text_is_bit_identical_oracle_001() {
 /// a tripwire against the fusion path leaking into the opt-out lowering.
 /// signed_div_const is fusion-inert (no selects), so its pin is identical in
 /// both configurations — it guards that the opt-out stays a no-op there.
+///
+/// COMPOSITION NOTE: since the #242 flag-audit flip-wave, rolling back to
+/// these bytes also requires opting out of the LATER shift-fold lever
+/// (`SYNTH_RV_SHIFT_FOLD=0`), which fires on control_step.
 #[test]
 fn frozen_fixtures_rv32_cmp_select_escape_hatch_restores_old_bytes() {
     let cases = [
@@ -496,6 +752,7 @@ fn frozen_fixtures_rv32_cmp_select_escape_hatch_restores_old_bytes() {
         let out = Command::new(synth())
             .env_remove("SYNTH_RV_LOCAL_PROMO")
             .env("SYNTH_RV_CMP_SELECT", "0")
+            .env("SYNTH_RV_SHIFT_FOLD", "0")
             .args([
                 "compile",
                 path.to_str().unwrap(),

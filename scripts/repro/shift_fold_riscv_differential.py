@@ -55,9 +55,10 @@ CASES = {
 
 
 def compile_elf(out, fold):
+    # DEFAULT-ON since the #242 flag-audit flip-wave: "fold" is the shipped
+    # default, else the `SYNTH_RV_SHIFT_FOLD=0` opt-out (pre-flip lowering).
     env = {"PATH": "/usr/bin:/bin"}
-    if fold:
-        env["SYNTH_RV_SHIFT_FOLD"] = "1"
+    env["SYNTH_RV_SHIFT_FOLD"] = "1" if fold else "0"
     r = subprocess.run(
         [SYNTH, "compile", WAT, "-o", out, "-b", "riscv", "-t", "rv32imac",
          "--all-exports", "--relocatable"],
