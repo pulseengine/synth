@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.0] - 2026-07-03
+
+**Three more levers ship default-on (RV32 shift-fold, dead-frame-elim,
+uxth-fold — all evidence-gated, exactly additive); the below-native lever and
+the verified-selector DSL get their designs.**
+
+### Changed (byte-changing, deliberate — affected anchors refrozen)
+
+- **`SYNTH_RV_SHIFT_FOLD` default-ON (#611).** Was opt-in all along (the
+  "v0.11.x default-on" belief conflated it with ARM's flag — gale's #242 datum
+  was right): control_step −8 B (gale's exact esp32c3 number), corpus 0 grow /
+  20 shrink.
+- **`SYNTH_DEAD_FRAME_ELIM` default-ON (#611):** 0 grow / 58 shrink across both
+  ARM paths.
+- **`SYNTH_UXTH_FOLD` default-ON (#611):** 0 grow / 13 shrink; the combined ARM
+  sweep is exactly additive (71 = 58 + 13). Per-flag `=0` escape hatches
+  CI-gated to the prior bytes; 55/56 differentials on the new defaults before
+  pinning.
+
+### Added
+
+- **North-Star designs traced (#609):** `VCR-PERF-002` — proof-carrying
+  specialization (#494): loom's `wsc.facts` invariants become premises for
+  per-elision obligations discharged certificate-checked by the ordeal-backed
+  validator; phased toward gale's 0.45×→0.7× floor. `VCR-SEL-001` first
+  increment scoped: the 6-op auto-discharge i32 ALU class + `rotl`, delegation
+  behind `SYNTH_SEL_DSL`, mirror-pinned byte-equality migration.
+
 ## [0.29.0] - 2026-07-03
 
 **const-CSE ships default-on (hazard retired, branch-geometry sound); i64
