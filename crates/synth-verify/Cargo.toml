@@ -8,10 +8,13 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Z3 SMT translation validation for the Synth compiler"
+description = "SMT translation validation for the Synth compiler (ordeal QF_BV engine; optional Z3 differential oracle)"
 
 [features]
-default = ["z3-solver", "arm"]
+default = ["arm"]
+# Optional Z3 backend: differential oracle against the default ordeal engine
+# (enable + set SYNTH_SOLVER_DIFF=1 to cross-check every query). Pulls in
+# z3-sys (C++ build) — no longer on the default build path.
 z3-solver = ["z3"]
 arm = ["synth-synthesis"]
 
@@ -24,7 +27,10 @@ synth-opt = { path = "../synth-opt", version = "0.26.0" }
 # ARM synthesis (optional, behind 'arm' feature)
 synth-synthesis = { path = "../synth-synthesis", version = "0.26.0", optional = true }
 
-# SMT solver for formal verification
+# Default SMT engine: pure-Rust, certificate-checked QF_BV solver (#553)
+ordeal = "0.4"
+
+# Z3: optional differential oracle (feature `z3-solver`) — no longer default
 z3 = { version = "0.19", features = ["static-link-z3"], optional = true }
 
 # Error handling
@@ -46,4 +52,4 @@ criterion = "0.8"
 
 [[example]]
 name = "verification_report"
-required-features = ["z3-solver", "arm"]
+required-features = ["arm"]

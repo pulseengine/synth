@@ -108,14 +108,14 @@
 //!   bit-counting ops, sits outside the #76 binary-op core and is deferred to
 //!   keep this change focused and reviewable.
 
-#![cfg(all(feature = "z3-solver", feature = "arm"))]
+#![cfg(feature = "arm")]
 
+use crate::solver::{CheckOutcome, new_solver};
+use crate::term::{BV, Bool};
 use synth_core::WasmOp;
 use synth_synthesis::rules::Condition;
 use synth_synthesis::{ArmOp, Operand2, Reg};
 use thiserror::Error;
-use z3::ast::{BV, Bool};
-use z3::{SatResult, Solver};
 
 /// A concrete selection produced by the instruction selector.
 ///
@@ -172,7 +172,7 @@ pub struct Witness {
     pub solver_result: SolverResultKind,
 }
 
-/// Solver result kind (mirrors `z3::SatResult` but without the lifetime).
+/// Solver result kind (mirrors [`crate::solver::CheckOutcome`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SolverResultKind {
     /// `Unsat` of the negated equivalence — selection is correct.
@@ -237,7 +237,7 @@ fn k32(v: i64) -> BV {
 
 /// Boolean → 32-bit `0`/`1` bitvector (WASM comparison result encoding).
 fn bool_to_i32(b: &Bool) -> BV {
-    b.ite(&k32(1), &k32(0))
+    b.ite(k32(1), k32(0))
 }
 
 /// 64-bit value as a pair of 32-bit limbs: `lo` is bits 0..=31, `hi` is
@@ -288,7 +288,7 @@ impl I64Pair {
 /// then folded into the high limb: `hi = a_hi + b_hi + carry`.
 fn i64_add(a: &I64Pair, b: &I64Pair) -> I64Pair {
     let lo = a.lo.bvadd(&b.lo);
-    let carry = lo.bvult(&a.lo).ite(&k32(1), &k32(0));
+    let carry = lo.bvult(&a.lo).ite(k32(1), k32(0));
     let hi = a.hi.bvadd(&b.hi).bvadd(&carry);
     I64Pair { lo, hi }
 }
@@ -300,7 +300,7 @@ fn i64_add(a: &I64Pair, b: &I64Pair) -> I64Pair {
 /// subtracted from the high limb: `hi = a_hi - b_hi - borrow`.
 fn i64_sub(a: &I64Pair, b: &I64Pair) -> I64Pair {
     let lo = a.lo.bvsub(&b.lo);
-    let borrow = a.lo.bvult(&b.lo).ite(&k32(1), &k32(0));
+    let borrow = a.lo.bvult(&b.lo).ite(k32(1), k32(0));
     let hi = a.hi.bvsub(&b.hi).bvsub(&borrow);
     I64Pair { lo, hi }
 }
@@ -346,8 +346,8 @@ fn i64_shl(a: &I64Pair, s: &BV) -> I64Pair {
     let lo_big = k32(0);
     let hi_big = a.lo.bvshl(s.bvsub(k32(32)));
 
-    let lo = s_is_zero.ite(&a.lo, &s_lt_32.ite(&lo_small, &lo_big));
-    let hi = s_is_zero.ite(&a.hi, &s_lt_32.ite(&hi_small, &hi_big));
+    let lo = s_is_zero.ite(&a.lo, s_lt_32.ite(&lo_small, &lo_big));
+    let hi = s_is_zero.ite(&a.hi, s_lt_32.ite(&hi_small, &hi_big));
     I64Pair { lo, hi }
 }
 
@@ -366,8 +366,8 @@ fn i64_shr_u(a: &I64Pair, s: &BV) -> I64Pair {
     let lo_big = a.hi.bvlshr(s.bvsub(k32(32)));
     let hi_big = k32(0);
 
-    let lo = s_is_zero.ite(&a.lo, &s_lt_32.ite(&lo_small, &lo_big));
-    let hi = s_is_zero.ite(&a.hi, &s_lt_32.ite(&hi_small, &hi_big));
+    let lo = s_is_zero.ite(&a.lo, s_lt_32.ite(&lo_small, &lo_big));
+    let hi = s_is_zero.ite(&a.hi, s_lt_32.ite(&hi_small, &hi_big));
     I64Pair { lo, hi }
 }
 
@@ -391,8 +391,8 @@ fn i64_shr_s(a: &I64Pair, s: &BV) -> I64Pair {
     let lo_big = a.hi.bvashr(s.bvsub(k32(32)));
     let hi_big = sign.clone();
 
-    let lo = s_is_zero.ite(&a.lo, &s_lt_32.ite(&lo_small, &lo_big));
-    let hi = s_is_zero.ite(&a.hi, &s_lt_32.ite(&hi_small, &hi_big));
+    let lo = s_is_zero.ite(&a.lo, s_lt_32.ite(&lo_small, &lo_big));
+    let hi = s_is_zero.ite(&a.hi, s_lt_32.ite(&hi_small, &hi_big));
     I64Pair { lo, hi }
 }
 
@@ -550,9 +550,10 @@ impl Default for Z3ArmValidator {
 }
 
 impl Z3ArmValidator {
-    /// Construct a fresh validator. Z3 0.19 uses thread-local contexts, so
-    /// callers should wrap any sequence of `validate` calls in
-    /// [`crate::with_z3_context`].
+    /// Construct a fresh validator. Callers should wrap any sequence of
+    /// `validate` calls in [`crate::with_verification_context`] (a no-op for
+    /// the default ordeal engine; configures Z3's thread-local context when
+    /// the differential oracle is compiled in).
     pub fn new() -> Self {
         Self
     }
@@ -820,7 +821,7 @@ impl Z3ArmValidator {
                 }
                 // ADC: add with the carry flag (i64 high limb).
                 ArmOp::Adc { rd, rn, op2 } => {
-                    let c = flags.c.ite(&k32(1), &k32(0));
+                    let c = flags.c.ite(k32(1), k32(0));
                     regs[idx(rd)] = regs[idx(rn)].bvadd(&eval_op2(&regs, op2)?).bvadd(&c);
                 }
                 // SUBS: subtract and set carry. ARM convention: C = 1 means
@@ -833,7 +834,7 @@ impl Z3ArmValidator {
                 }
                 // SBC: subtract with borrow. Rd = Rn - op2 - (1 - C).
                 ArmOp::Sbc { rd, rn, op2 } => {
-                    let borrow = flags.c.ite(&k32(0), &k32(1));
+                    let borrow = flags.c.ite(k32(0), k32(1));
                     regs[idx(rd)] = regs[idx(rn)].bvsub(&eval_op2(&regs, op2)?).bvsub(&borrow);
                 }
                 ArmOp::Mul { rd, rn, rm } => {
@@ -1126,7 +1127,7 @@ impl Validator<WasmOp, ArmOp> for Z3ArmValidator {
         self.arity(&sel.wasm)
             .ok_or_else(|| ValidationError::UnsupportedOp(sel.wasm.clone()))?;
 
-        let solver = Solver::new();
+        let mut solver = new_solver();
 
         // Symbolic operands. Each operand is a limb pair; for i32 ops only the
         // `.lo` limb is meaningful and the `.hi` limb is left unconstrained
@@ -1143,7 +1144,7 @@ impl Validator<WasmOp, ArmOp> for Z3ArmValidator {
         // For division / remainder, restrict to non-trapping inputs so the
         // value-domain equivalence is the property actually being proved.
         if Self::is_div_rem(&sel.wasm) {
-            solver.assert(self.div_rem_precondition(&sel.wasm, &a, &b));
+            solver.assert(&self.div_rem_precondition(&sel.wasm, &a, &b));
         }
 
         let wasm_result = self
@@ -1164,35 +1165,35 @@ impl Validator<WasmOp, ArmOp> for Z3ArmValidator {
         solver.assert(&differ);
 
         match solver.check() {
-            SatResult::Unsat => Ok(Witness {
+            CheckOutcome::Unsat => Ok(Witness {
                 wasm_op_label: label,
                 arm_op_count: sel.arm.len(),
                 solver_result: SolverResultKind::Unsat,
             }),
-            SatResult::Sat => {
-                let description = match solver.get_model() {
-                    Some(model) => {
-                        let mut parts = Vec::new();
-                        for (name, bv) in [
-                            ("a_lo", &a.lo),
-                            ("a_hi", &a.hi),
-                            ("b_lo", &b.lo),
-                            ("b_hi", &b.hi),
-                        ] {
-                            if let Some(v) = model.eval(bv, true).and_then(|v| v.as_i64()) {
-                                parts.push(format!("{name}={v}"));
-                            }
-                        }
-                        parts.join(", ")
+            CheckOutcome::Sat => {
+                // Model readback: report the differing inputs.
+                let mut parts = Vec::new();
+                for (name, bv) in [
+                    ("a_lo", &a.lo),
+                    ("a_hi", &a.hi),
+                    ("b_lo", &b.lo),
+                    ("b_hi", &b.hi),
+                ] {
+                    if let Some(v) = solver.value(bv) {
+                        parts.push(format!("{name}={v}"));
                     }
-                    None => "no model available".to_string(),
+                }
+                let description = if parts.is_empty() {
+                    "no model available".to_string()
+                } else {
+                    parts.join(", ")
                 };
                 Err(ValidationError::Counterexample {
                     wasm_op_label: label,
                     description,
                 })
             }
-            SatResult::Unknown => Err(ValidationError::SolverUnknown(label)),
+            CheckOutcome::Unknown(_) => Err(ValidationError::SolverUnknown(label)),
         }
     }
 }
@@ -1200,7 +1201,7 @@ impl Validator<WasmOp, ArmOp> for Z3ArmValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::with_z3_context;
+    use crate::with_verification_context;
 
     // ---- helpers ----------------------------------------------------------
 
@@ -1264,7 +1265,7 @@ mod tests {
     /// certifies; a wrong selector picking `SUB` is rejected.
     #[test]
     fn i32_add_certifies() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = Z3ArmValidator::new();
 
             let correct = CertifiedSelection::new(
@@ -1302,7 +1303,7 @@ mod tests {
     /// Unsupported ops return a structured error, not a panic.
     #[test]
     fn unsupported_op_returns_structured_error() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = Z3ArmValidator::new();
             // `Drop` is not in the i32/i64 arithmetic surface.
             let sel = CertifiedSelection::<WasmOp, ArmOp>::new(WasmOp::Drop, vec![]);
@@ -1340,7 +1341,7 @@ mod tests {
 
     #[test]
     fn i32_arith_logic_certifies() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             assert_certifies(
                 WasmOp::I32Add,
                 dp_r0_r0_r1(|rd, rn, op2| ArmOp::Add { rd, rn, op2 }),
@@ -1376,7 +1377,7 @@ mod tests {
 
     #[test]
     fn i32_shifts_certify() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             // WASM masks the shift count mod 32. The faithful lowering masks
             // R1 with #31 first, then does the register shift.
             let mask_then = |shift: ArmOp| {
@@ -1447,7 +1448,7 @@ mod tests {
 
     #[test]
     fn i32_comparisons_certify() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             // Each comparison lowers to CMP + SetCond with the matching ARM
             // condition code. Signed: LT/LE/GT/GE; unsigned: LO/LS/HI/HS.
             assert_certifies(WasmOp::I32Eq, i32_cmp(Condition::EQ));
@@ -1465,7 +1466,7 @@ mod tests {
 
     #[test]
     fn i32_eqz_certifies() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             // i32.eqz: (a == 0). CMP R0, #0 then SetCond EQ.
             assert_certifies(
                 WasmOp::I32Eqz,
@@ -1487,7 +1488,7 @@ mod tests {
 
     #[test]
     fn i32_div_certify() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             // div_s / div_u map directly onto SDIV / UDIV (bvsdiv / bvudiv);
             // no symbolic multiply, so the equivalence is solver-tractable.
             // The non-trapping precondition excludes divisor 0 (and, for
@@ -1518,7 +1519,7 @@ mod tests {
     /// silently certifying or hanging.
     #[test]
     fn i32_rem_is_scoped_out() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = Z3ArmValidator::new();
             for op in [WasmOp::I32RemS, WasmOp::I32RemU] {
                 let sel = CertifiedSelection::<WasmOp, ArmOp>::new(op.clone(), vec![]);
@@ -1534,7 +1535,7 @@ mod tests {
 
     #[test]
     fn i64_add_certifies() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             // i64.add register-pair lowering:
             //   ADDS R0, R0, R2   ; lo = a_lo + b_lo, sets carry
             //   ADC  R1, R1, R3   ; hi = a_hi + b_hi + carry
@@ -1558,7 +1559,7 @@ mod tests {
 
     #[test]
     fn i64_sub_certifies() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             // i64.sub register-pair lowering:
             //   SUBS R0, R0, R2   ; lo = a_lo - b_lo, sets borrow (C)
             //   SBC  R1, R1, R3   ; hi = a_hi - b_hi - borrow
@@ -1590,7 +1591,7 @@ mod tests {
     /// `ArmOp` level the validator inspects.
     #[test]
     fn i64_mul_certifies() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             assert_certifies(
                 WasmOp::I64Mul,
                 vec![ArmOp::I64Mul {
@@ -1607,7 +1608,7 @@ mod tests {
 
     #[test]
     fn i64_logic_certifies() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             assert_certifies(
                 WasmOp::I64And,
                 i64_logic(|rd, rn, op2| ArmOp::And { rd, rn, op2 }),
@@ -1640,14 +1641,14 @@ mod tests {
         native: fn(&BV, &BV) -> BV,
         label: &str,
     ) {
-        let solver = Solver::new();
+        let mut solver = new_solver();
         let a = I64Pair {
             lo: sym32("sa_lo"),
             hi: sym32("sa_hi"),
         };
         // Symbolic amount, already reduced mod 64 (the masked count).
         let amt = sym32("samt");
-        solver.assert(amt.bvult(k32(64)));
+        solver.assert(&amt.bvult(k32(64)));
 
         let limb = limb_fn(&a, &amt);
         let limb64 = limb.hi.concat(&limb.lo);
@@ -1657,17 +1658,17 @@ mod tests {
         let amt64 = k32(0).concat(&amt);
         let truth = native(&a64, &amt64);
 
-        solver.assert(limb64.eq(&truth).not());
+        solver.assert(&limb64.eq(&truth).not());
         assert_eq!(
             solver.check(),
-            SatResult::Unsat,
+            CheckOutcome::Unsat,
             "{label} limb reference must equal the native 64-bit shift for all inputs"
         );
     }
 
     #[test]
     fn i64_shift_references_match_native() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             prove_shift_reference(i64_shl, |x, s| x.bvshl(s), "i64.shl");
             prove_shift_reference(i64_shr_u, |x, s| x.bvlshr(s), "i64.shr_u");
             prove_shift_reference(i64_shr_s, |x, s| x.bvashr(s), "i64.shr_s");
@@ -1676,7 +1677,7 @@ mod tests {
 
     #[test]
     fn i64_shifts_certify() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             // Composite pseudo-op lowering: shift the (R0:R1) pair by R2.
             assert_certifies(
                 WasmOp::I64Shl,
@@ -1716,7 +1717,7 @@ mod tests {
 
     #[test]
     fn i64_rotates_certify() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             assert_certifies(
                 WasmOp::I64Rotl,
                 vec![ArmOp::I64Rotl {
@@ -1748,8 +1749,8 @@ mod tests {
     /// closes the loop: it shows the *helper itself* is the right relation.
     #[test]
     fn i64_compare_references_match_native() {
-        with_z3_context(|| {
-            let solver = Solver::new();
+        with_verification_context(|| {
+            let mut solver = new_solver();
             let a = I64Pair {
                 lo: sym32("ca_lo"),
                 hi: sym32("ca_hi"),
@@ -1765,10 +1766,10 @@ mod tests {
             let lt_u_wrong = i64_lt_u(&a, &b).eq(a64.bvult(&b64)).not();
             // i64_lt_s must equal native signed 64-bit less-than.
             let lt_s_wrong = i64_lt_s(&a, &b).eq(a64.bvslt(&b64)).not();
-            solver.assert(Bool::or(&[&lt_u_wrong, &lt_s_wrong]));
+            solver.assert(&Bool::or(&[&lt_u_wrong, &lt_s_wrong]));
             assert_eq!(
                 solver.check(),
-                SatResult::Unsat,
+                CheckOutcome::Unsat,
                 "i64 lexicographic compare references must match native 64-bit comparisons"
             );
         });
@@ -1776,7 +1777,7 @@ mod tests {
 
     #[test]
     fn i64_comparisons_certify() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             // Each i64 comparison lowers to a single I64SetCond pseudo-op
             // over the register pairs (R0:R1) and (R2:R3).
             assert_certifies(WasmOp::I64Eq, i64_cmp(Condition::EQ));
@@ -1794,7 +1795,7 @@ mod tests {
 
     #[test]
     fn i64_eqz_certifies() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             // i64.eqz: 1 iff the whole register pair is zero.
             assert_certifies(
                 WasmOp::I64Eqz,
@@ -1815,7 +1816,7 @@ mod tests {
     /// produce a carry, e.g. `a_lo = b_lo = 0x8000_0000`).
     #[test]
     fn wrong_i64_add_lowering_rejected() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = Z3ArmValidator::new();
             let wrong = CertifiedSelection::new(
                 WasmOp::I64Add,
@@ -1850,7 +1851,7 @@ mod tests {
     /// validator must reject it.
     #[test]
     fn wrong_i32_lt_s_lowering_rejected() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = Z3ArmValidator::new();
             let wrong = CertifiedSelection::new(
                 WasmOp::I32LtS,
@@ -1882,7 +1883,7 @@ mod tests {
     /// low-limb shift.
     #[test]
     fn wrong_i64_shl_lowering_rejected() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = Z3ArmValidator::new();
             let wrong = CertifiedSelection::new(
                 WasmOp::I64Shl,
@@ -1909,7 +1910,7 @@ mod tests {
     /// rather than silently certifying.
     #[test]
     fn i64_div_is_scoped_out() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let validator = Z3ArmValidator::new();
             for op in [
                 WasmOp::I64DivS,

@@ -4,8 +4,8 @@
 //! Each WASM operation is translated to a mathematical formula that precisely
 //! captures its behavior.
 
+use crate::term::{BV, Bool};
 use synth_core::WasmOp;
-use z3::ast::{BV, Bool};
 
 /// WASM semantics encoder
 ///
@@ -984,39 +984,39 @@ impl WasmSemantics {
         let top_16_zero = top_16.eq(&zero);
 
         // If top 16 are zero, add 16 to count and shift focus to bottom 16
-        count = top_16_zero.ite(&count.bvadd(BV::from_i64(16, 32)), &count);
-        remaining = top_16_zero.ite(&remaining.bvshl(BV::from_i64(16, 32)), &remaining);
+        count = top_16_zero.ite(count.bvadd(BV::from_i64(16, 32)), &count);
+        remaining = top_16_zero.ite(remaining.bvshl(BV::from_i64(16, 32)), &remaining);
 
         // Check top 8 bits (of the 16 we're examining)
         let mask_8 = BV::from_u64(0xFF000000, 32);
         let top_8 = remaining.bvand(&mask_8);
         let top_8_zero = top_8.eq(&zero);
 
-        count = top_8_zero.ite(&count.bvadd(BV::from_i64(8, 32)), &count);
-        remaining = top_8_zero.ite(&remaining.bvshl(BV::from_i64(8, 32)), &remaining);
+        count = top_8_zero.ite(count.bvadd(BV::from_i64(8, 32)), &count);
+        remaining = top_8_zero.ite(remaining.bvshl(BV::from_i64(8, 32)), &remaining);
 
         // Check top 4 bits
         let mask_4 = BV::from_u64(0xF0000000, 32);
         let top_4 = remaining.bvand(&mask_4);
         let top_4_zero = top_4.eq(&zero);
 
-        count = top_4_zero.ite(&count.bvadd(BV::from_i64(4, 32)), &count);
-        remaining = top_4_zero.ite(&remaining.bvshl(BV::from_i64(4, 32)), &remaining);
+        count = top_4_zero.ite(count.bvadd(BV::from_i64(4, 32)), &count);
+        remaining = top_4_zero.ite(remaining.bvshl(BV::from_i64(4, 32)), &remaining);
 
         // Check top 2 bits
         let mask_2 = BV::from_u64(0xC0000000, 32);
         let top_2 = remaining.bvand(&mask_2);
         let top_2_zero = top_2.eq(&zero);
 
-        count = top_2_zero.ite(&count.bvadd(BV::from_i64(2, 32)), &count);
-        remaining = top_2_zero.ite(&remaining.bvshl(BV::from_i64(2, 32)), &remaining);
+        count = top_2_zero.ite(count.bvadd(BV::from_i64(2, 32)), &count);
+        remaining = top_2_zero.ite(remaining.bvshl(BV::from_i64(2, 32)), &remaining);
 
         // Check top bit
         let mask_1 = BV::from_u64(0x80000000, 32);
         let top_1 = remaining.bvand(&mask_1);
         let top_1_zero = top_1.eq(&zero);
 
-        count = top_1_zero.ite(&count.bvadd(BV::from_i64(1, 32)), &count);
+        count = top_1_zero.ite(count.bvadd(BV::from_i64(1, 32)), &count);
 
         // Return 32 if all zeros, otherwise return count
         all_zero.ite(&result_if_zero, &count)
@@ -1042,39 +1042,39 @@ impl WasmSemantics {
         let bottom_16 = remaining.bvand(&mask_16);
         let bottom_16_zero = bottom_16.eq(&zero);
 
-        count = bottom_16_zero.ite(&count.bvadd(BV::from_i64(16, 32)), &count);
-        remaining = bottom_16_zero.ite(&remaining.bvlshr(BV::from_i64(16, 32)), &remaining);
+        count = bottom_16_zero.ite(count.bvadd(BV::from_i64(16, 32)), &count);
+        remaining = bottom_16_zero.ite(remaining.bvlshr(BV::from_i64(16, 32)), &remaining);
 
         // Check bottom 8 bits
         let mask_8 = BV::from_u64(0x000000FF, 32);
         let bottom_8 = remaining.bvand(&mask_8);
         let bottom_8_zero = bottom_8.eq(&zero);
 
-        count = bottom_8_zero.ite(&count.bvadd(BV::from_i64(8, 32)), &count);
-        remaining = bottom_8_zero.ite(&remaining.bvlshr(BV::from_i64(8, 32)), &remaining);
+        count = bottom_8_zero.ite(count.bvadd(BV::from_i64(8, 32)), &count);
+        remaining = bottom_8_zero.ite(remaining.bvlshr(BV::from_i64(8, 32)), &remaining);
 
         // Check bottom 4 bits
         let mask_4 = BV::from_u64(0x0000000F, 32);
         let bottom_4 = remaining.bvand(&mask_4);
         let bottom_4_zero = bottom_4.eq(&zero);
 
-        count = bottom_4_zero.ite(&count.bvadd(BV::from_i64(4, 32)), &count);
-        remaining = bottom_4_zero.ite(&remaining.bvlshr(BV::from_i64(4, 32)), &remaining);
+        count = bottom_4_zero.ite(count.bvadd(BV::from_i64(4, 32)), &count);
+        remaining = bottom_4_zero.ite(remaining.bvlshr(BV::from_i64(4, 32)), &remaining);
 
         // Check bottom 2 bits
         let mask_2 = BV::from_u64(0x00000003, 32);
         let bottom_2 = remaining.bvand(&mask_2);
         let bottom_2_zero = bottom_2.eq(&zero);
 
-        count = bottom_2_zero.ite(&count.bvadd(BV::from_i64(2, 32)), &count);
-        remaining = bottom_2_zero.ite(&remaining.bvlshr(BV::from_i64(2, 32)), &remaining);
+        count = bottom_2_zero.ite(count.bvadd(BV::from_i64(2, 32)), &count);
+        remaining = bottom_2_zero.ite(remaining.bvlshr(BV::from_i64(2, 32)), &remaining);
 
         // Check bottom bit
         let mask_1 = BV::from_u64(0x00000001, 32);
         let bottom_1 = remaining.bvand(&mask_1);
         let bottom_1_zero = bottom_1.eq(&zero);
 
-        count = bottom_1_zero.ite(&count.bvadd(BV::from_i64(1, 32)), &count);
+        count = bottom_1_zero.ite(count.bvadd(BV::from_i64(1, 32)), &count);
 
         // Return 32 if all zeros, otherwise return count
         all_zero.ite(&result_if_zero, &count)
@@ -1134,12 +1134,11 @@ impl WasmSemantics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::with_z3_context;
-    use z3::ast::Ast; // needed for .simplify()
+    use crate::with_verification_context;
 
     #[test]
     fn test_wasm_add_encoding() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
             let a = BV::new_const("a", 32);
             let b = BV::new_const("b", 32);
@@ -1150,7 +1149,7 @@ mod tests {
 
     #[test]
     fn test_wasm_sub_encoding() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
             let a = BV::new_const("a", 32);
             let b = BV::new_const("b", 32);
@@ -1161,7 +1160,7 @@ mod tests {
 
     #[test]
     fn test_wasm_const_encoding() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
             let result = encoder.encode_op(&WasmOp::I32Const(42), &[]);
             assert_eq!(result.simplify().as_i64(), Some(42));
@@ -1170,7 +1169,7 @@ mod tests {
 
     #[test]
     fn test_wasm_comparison() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
             let a = BV::from_i64(5, 32);
             let b = BV::from_i64(10, 32);
@@ -1181,7 +1180,7 @@ mod tests {
 
     #[test]
     fn test_wasm_bitwise_ops() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
             let a = BV::from_i64(0b1010, 32);
             let b = BV::from_i64(0b1100, 32);
@@ -1199,7 +1198,7 @@ mod tests {
 
     #[test]
     fn test_wasm_shift_ops() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
             let value = BV::from_i64(8, 32);
             let shift = BV::from_i64(2, 32);
@@ -1214,7 +1213,7 @@ mod tests {
 
     #[test]
     fn test_wasm_shift_modulo() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
             let value = BV::from_i64(0xFF, 32);
             let shift = BV::from_i64(33, 32);
@@ -1225,7 +1224,7 @@ mod tests {
 
     #[test]
     fn test_wasm_rem_ops() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
             let a = BV::from_i64(17, 32);
             let b = BV::from_i64(5, 32);
@@ -1240,7 +1239,7 @@ mod tests {
 
     #[test]
     fn test_wasm_rotation_ops() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
             let value = BV::from_i64(0x12345678, 32);
             let rotate = BV::from_i64(8, 32);
@@ -1255,7 +1254,7 @@ mod tests {
 
     #[test]
     fn test_wasm_clz_comprehensive() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
 
             let zero = BV::from_i64(0, 32);
@@ -1325,7 +1324,7 @@ mod tests {
 
     #[test]
     fn test_wasm_ctz_comprehensive() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
 
             assert_eq!(
@@ -1396,7 +1395,7 @@ mod tests {
 
     #[test]
     fn test_wasm_popcnt() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
 
             assert_eq!(
@@ -1446,7 +1445,7 @@ mod tests {
 
     #[test]
     fn test_wasm_select() {
-        with_z3_context(|| {
+        with_verification_context(|| {
             let encoder = WasmSemantics::new();
 
             let val1 = BV::from_i64(10, 32);

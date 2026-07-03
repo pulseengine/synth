@@ -5,13 +5,24 @@
 //!
 //! # Architecture
 //!
-//! The verification system uses Z3 SMT solver to prove that synthesized native code
-//! has semantically equivalent behavior to the input WASM code.
+//! The verification system proves that synthesized native code has
+//! semantically equivalent behavior to the input WASM code, discharging the
+//! QF_BV queries through a thin solver trait ([`solver::BvSolver`], #553):
+//!
+//! - **Default engine:** [`ordeal`] — pure Rust, certificate-checked
+//!   (every `Unsat` verdict carries an LRAT proof validated by the trusted
+//!   `ordeal-lrat` checker). No C++ toolchain required.
+//! - **Differential oracle** (feature `z3-solver`): Z3, the former engine.
+//!   With both backends compiled in and `SYNTH_SOLVER_DIFF=1`, every query
+//!   runs through both — a verdict disagreement is a hard error; an ordeal
+//!   `Unknown` falls through to Z3's verdict.
 //!
 //! ## Backend-Agnostic Traits
 //!
 //! `SourceSemantics` and `TargetSemantics` traits allow any backend to provide
-//! SMT semantics. The ARM semantics are one implementation, behind the `arm` feature.
+//! SMT semantics. The ARM semantics are one implementation, behind the `arm`
+//! feature. All semantics encode into the solver-agnostic [`term::BV`] /
+//! [`term::Bool`] terms.
 //!
 //! ## Translation Validation
 //!
@@ -20,46 +31,69 @@
 //! - φ_target: Semantics of generated target operations
 //! - Prove: ∀inputs. φ_wasm(inputs) ⟺ φ_target(inputs)
 
+// Solver-agnostic terms + the thin solver trait (always available)
+pub mod solver;
+pub mod term;
+
 // Verification traits (always available)
-#[cfg(feature = "z3-solver")]
 pub mod traits;
 
-// ARM semantics (behind arm + z3-solver features)
-#[cfg(all(feature = "z3-solver", feature = "arm"))]
-pub mod arm_semantics;
-
-// WASM semantics (z3-solver only — source language for all backends)
-#[cfg(feature = "z3-solver")]
+// WASM semantics — source language for all backends (always available)
 pub mod wasm_semantics;
 
+// ARM semantics (behind the arm feature)
+#[cfg(feature = "arm")]
+pub mod arm_semantics;
+
 // Translation validator (requires arm for the existing concrete implementation)
-#[cfg(all(feature = "z3-solver", feature = "arm"))]
+#[cfg(feature = "arm")]
 pub mod translation_validator;
 
 // Validator-pattern prototype (issue #76 — CompCert-style certifying
 // validator scaffolding; see docs/validator-pattern.md).
-#[cfg(all(feature = "z3-solver", feature = "arm"))]
+#[cfg(feature = "arm")]
 pub mod validator_pattern;
 
-// Property-based testing (always available)
+// Property-based testing (requires arm: exercises the ARM synthesis rules)
+#[cfg(feature = "arm")]
 pub mod properties;
 
+#[cfg(feature = "arm")]
 pub use properties::CompilerProperties;
 
-#[cfg(all(feature = "z3-solver", feature = "arm"))]
+#[cfg(feature = "arm")]
 pub use arm_semantics::{ArmSemantics, ArmState};
-#[cfg(all(feature = "z3-solver", feature = "arm"))]
+pub use solver::{BvSolver, CheckOutcome, OrdealSolver, new_solver};
+pub use term::{BV, Bool};
+#[cfg(feature = "arm")]
 pub use translation_validator::{TranslationValidator, ValidationResult, VerificationError};
-#[cfg(all(feature = "z3-solver", feature = "arm"))]
+#[cfg(feature = "arm")]
 pub use validator_pattern::{
     CertifiedSelection, SolverResultKind, ValidationError as PatternValidationError, Validator,
     Witness, Z3ArmValidator,
 };
-#[cfg(feature = "z3-solver")]
 pub use wasm_semantics::WasmSemantics;
 
-#[cfg(feature = "z3-solver")]
-use z3::{Config, Solver};
+/// Run verification operations in a configured context.
+///
+/// With the default (ordeal) engine this is a plain call — the pure-Rust
+/// solver needs no global context. With the `z3-solver` feature compiled in,
+/// it additionally configures the Z3 thread-local context (30-second timeout,
+/// model generation) so the differential oracle is ready.
+pub fn with_verification_context<F, R>(f: F) -> R
+where
+    F: FnOnce() -> R + Send + Sync,
+    R: Send + Sync,
+{
+    #[cfg(feature = "z3-solver")]
+    {
+        with_z3_context(f)
+    }
+    #[cfg(not(feature = "z3-solver"))]
+    {
+        f()
+    }
+}
 
 /// Run verification operations with a configured Z3 context.
 ///
@@ -71,22 +105,33 @@ where
     F: FnOnce() -> R + Send + Sync,
     R: Send + Sync,
 {
-    let mut cfg = Config::new();
+    let mut cfg = z3::Config::new();
     cfg.set_timeout_msec(30000); // 30 second timeout
     cfg.set_model_generation(true);
     z3::with_z3_config(&cfg, f)
 }
 
-/// Create a Z3 solver with default configuration
+/// Create a Z3 solver with default configuration (differential-oracle use)
 #[cfg(feature = "z3-solver")]
-pub fn create_solver() -> Solver {
-    Solver::new()
+pub fn create_solver() -> z3::Solver {
+    z3::Solver::new()
 }
 
-#[cfg(all(test, feature = "z3-solver"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_default_solver_decides() {
+        with_verification_context(|| {
+            let mut solver = new_solver();
+            let x = BV::new_const("x", 32);
+            solver.assert(&x.eq(&x).not());
+            assert_eq!(solver.check(), CheckOutcome::Unsat);
+        });
+    }
+
+    #[cfg(feature = "z3-solver")]
     #[test]
     fn test_z3_context_creation() {
         with_z3_context(|| {

@@ -2,10 +2,10 @@
 //!
 //! This example generates a comprehensive report of all verified synthesis rules,
 //! showing which WASM->ARM transformations have been formally proven correct.
-//! Requires both `z3-solver` and `arm` features.
+//! Requires the `arm` feature (default ordeal solver; optional Z3 differential oracle).
 
 use synth_synthesis::{ArmOp, Operand2, Pattern, Reg, Replacement, SynthesisRule, WasmOp};
-use synth_verify::{TranslationValidator, ValidationResult, with_z3_context};
+use synth_verify::{TranslationValidator, ValidationResult, with_verification_context};
 
 fn create_rule(name: &str, wasm_op: WasmOp, arm_op: ArmOp) -> SynthesisRule {
     SynthesisRule {
@@ -27,7 +27,7 @@ fn main() {
     println!("                    Synth Compiler - Phase 1");
     println!("======================================================================\n");
 
-    with_z3_context(|| {
+    with_verification_context(|| {
         let mut validator = TranslationValidator::new();
         validator.set_timeout(10000); // 10 second timeout per rule
 

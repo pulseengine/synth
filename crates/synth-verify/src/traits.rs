@@ -4,9 +4,11 @@
 //! instruction set. The translation validator is generic over source and
 //! target semantics.
 //!
-//! Z3 0.19 uses thread-local context — no lifetime parameters needed.
+//! Semantics encode into the solver-agnostic [`crate::term::BV`] terms, so
+//! implementations are independent of the SMT engine behind
+//! [`crate::solver::BvSolver`].
 
-use z3::ast::BV;
+use crate::term::BV;
 
 /// Encodes source (WASM) operation semantics as SMT formulas
 pub trait SourceSemantics {

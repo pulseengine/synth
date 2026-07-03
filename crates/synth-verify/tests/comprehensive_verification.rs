@@ -1,14 +1,16 @@
 //! Comprehensive Verification Test Suite for All Synthesis Rules
 //!
 //! This module systematically verifies all WASM→ARM synthesis rules.
-//! Requires both `z3-solver` and `arm` features.
-#![cfg(all(feature = "z3-solver", feature = "arm"))]
+//! Requires the `arm` feature; runs on the default (ordeal) solver, and adds
+//! the Z3 differential oracle when built with `--features z3-solver` and
+//! `SYNTH_SOLVER_DIFF=1`.
+#![cfg(feature = "arm")]
 
 use synth_synthesis::{ArmOp, Operand2, Pattern, Reg, Replacement, SynthesisRule, WasmOp};
 use synth_verify::{
-    ArmSemantics, ArmState, TranslationValidator, ValidationResult, WasmSemantics, with_z3_context,
+    ArmSemantics, ArmState, BV, TranslationValidator, ValidationResult, WasmSemantics,
+    with_verification_context,
 };
-use z3::ast::{Ast, BV};
 
 /// Helper to create a test synthesis rule
 fn create_rule(name: &str, wasm_op: WasmOp, arm_op: ArmOp) -> SynthesisRule {
@@ -31,7 +33,7 @@ fn create_rule(name: &str, wasm_op: WasmOp, arm_op: ArmOp) -> SynthesisRule {
 
 #[test]
 fn verify_i32_add() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = create_rule(
@@ -53,7 +55,7 @@ fn verify_i32_add() {
 
 #[test]
 fn verify_i32_sub() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = create_rule(
@@ -75,7 +77,7 @@ fn verify_i32_sub() {
 
 #[test]
 fn verify_i32_mul() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = create_rule(
@@ -97,7 +99,7 @@ fn verify_i32_mul() {
 
 #[test]
 fn verify_i32_div_s() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = create_rule(
@@ -119,7 +121,7 @@ fn verify_i32_div_s() {
 
 #[test]
 fn verify_i32_div_u() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = create_rule(
@@ -142,7 +144,7 @@ fn verify_i32_div_u() {
 #[test]
 fn test_remainder_sequences_concrete() {
     // Test remainder sequences with concrete values before formal verification
-    with_z3_context(|| {
+    with_verification_context(|| {
         let wasm_encoder = WasmSemantics::new();
         let arm_encoder = ArmSemantics::new();
 
@@ -254,7 +256,7 @@ fn verify_i32_rem_s() {
     //
     // This proves ∀a,b. WASM_REM_S(a, b) = a - (a/b) * b
 
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -313,7 +315,7 @@ fn verify_i32_rem_u() {
     //
     // This proves ∀a,b. WASM_REM_U(a, b) = a - (a/b) * b
 
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -367,7 +369,7 @@ fn verify_i32_rem_u() {
 
 #[test]
 fn verify_i32_and() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = create_rule(
@@ -389,7 +391,7 @@ fn verify_i32_and() {
 
 #[test]
 fn verify_i32_or() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = create_rule(
@@ -411,7 +413,7 @@ fn verify_i32_or() {
 
 #[test]
 fn verify_i32_xor() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = create_rule(
@@ -440,7 +442,7 @@ fn verify_i32_shl_parameterized() {
     // Verify WASM I32Shl with all constant shift amounts (0-31)
     // For each n in 0..32: ∀x. WASM_SHL(x, n) ≡ ARM_LSL(x, n)
 
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let result = validator.verify_parameterized_range(
@@ -473,7 +475,7 @@ fn verify_i32_shr_u_parameterized() {
     // Verify WASM I32ShrU (logical shift right) with all constant shift amounts
     // For each n in 0..32: ∀x. WASM_SHR_U(x, n) ≡ ARM_LSR(x, n)
 
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let result = validator.verify_parameterized_range(
@@ -506,7 +508,7 @@ fn verify_i32_shr_s_parameterized() {
     // Verify WASM I32ShrS (arithmetic shift right) with all constant shift amounts
     // For each n in 0..32: ∀x. WASM_SHR_S(x, n) ≡ ARM_ASR(x, n)
 
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let result = validator.verify_parameterized_range(
@@ -559,7 +561,7 @@ fn test_arm_ror_semantics() {
     // by testing concrete values. Full symbolic verification requires
     // parameterized testing framework (Phase 1A).
 
-    with_z3_context(|| {
+    with_verification_context(|| {
         let encoder = ArmSemantics::new();
         let mut state = ArmState::new_symbolic();
 
@@ -599,7 +601,7 @@ fn verify_i32_rotr_parameterized() {
     // Verify WASM I32Rotr with all constant shift amounts (0-31)
     // For each n in 0..32: ∀x. WASM_ROTR(x, n) ≡ ARM_ROR(x, n)
 
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let result = validator.verify_parameterized_range(
@@ -632,7 +634,7 @@ fn verify_i32_rotl_transformation() {
     // Verify WASM I32Rotl(x, n) ≡ ARM ROR(x, 32-n) for all n in 0..32
     // This proves the transformation is correct
 
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let result = validator.verify_parameterized_range(
@@ -665,7 +667,7 @@ fn verify_i32_rotl_transformation() {
 
 #[test]
 fn verify_i32_clz() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // ARM has CLZ instruction - direct mapping!
@@ -688,7 +690,7 @@ fn verify_i32_clz() {
 fn test_ctz_sequence_concrete() {
     // First, test that the CTZ sequence works correctly with concrete values
     // This builds confidence before formal verification
-    with_z3_context(|| {
+    with_verification_context(|| {
         let wasm_encoder = WasmSemantics::new();
         let arm_encoder = ArmSemantics::new();
 
@@ -781,7 +783,7 @@ fn verify_i32_ctz() {
     // This proves that the two-instruction sequence is semantically equivalent
     // to WASM's I32Ctz operation for ALL possible inputs.
 
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -820,7 +822,7 @@ fn verify_i32_ctz() {
 
 #[test]
 fn verify_i32_eq() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // i32.eq uses CMP + SetCond EQ
@@ -857,7 +859,7 @@ fn verify_i32_eq() {
 
 #[test]
 fn verify_i32_ne() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -892,7 +894,7 @@ fn verify_i32_ne() {
 
 #[test]
 fn verify_i32_lt_s() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -927,7 +929,7 @@ fn verify_i32_lt_s() {
 
 #[test]
 fn verify_i32_le_s() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -962,7 +964,7 @@ fn verify_i32_le_s() {
 
 #[test]
 fn verify_i32_gt_s() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -997,7 +999,7 @@ fn verify_i32_gt_s() {
 
 #[test]
 fn verify_i32_ge_s() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -1032,7 +1034,7 @@ fn verify_i32_ge_s() {
 
 #[test]
 fn verify_i32_lt_u() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -1067,7 +1069,7 @@ fn verify_i32_lt_u() {
 
 #[test]
 fn verify_i32_le_u() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -1102,7 +1104,7 @@ fn verify_i32_le_u() {
 
 #[test]
 fn verify_i32_gt_u() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -1137,7 +1139,7 @@ fn verify_i32_gt_u() {
 
 #[test]
 fn verify_i32_ge_u() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rule = SynthesisRule {
@@ -1172,7 +1174,7 @@ fn verify_i32_ge_u() {
 
 #[test]
 fn verify_i32_eqz() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // i32.eqz uses CMP with immediate #0 + SetCond EQ
@@ -1209,7 +1211,7 @@ fn verify_i32_eqz() {
 
 #[test]
 fn verify_i32_popcnt() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // i32.popcnt uses ARM Popcnt pseudo-instruction
@@ -1234,7 +1236,7 @@ fn verify_i32_popcnt() {
 
 #[test]
 fn verify_select() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Select operation: select(val1, val2, cond) = cond ? val1 : val2
@@ -1271,7 +1273,7 @@ fn verify_select() {
 
 #[test]
 fn verify_local_get() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // LocalGet loads a local variable
@@ -1301,7 +1303,7 @@ fn verify_local_get() {
 
 #[test]
 fn verify_local_set() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // LocalSet stores to a local variable
@@ -1331,7 +1333,7 @@ fn verify_local_set() {
 
 #[test]
 fn verify_local_tee() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // LocalTee stores and returns the value
@@ -1362,7 +1364,7 @@ fn verify_local_tee() {
 
 #[test]
 fn verify_global_get() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // GlobalGet loads a global variable
@@ -1392,7 +1394,7 @@ fn verify_global_get() {
 
 #[test]
 fn verify_global_set() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // GlobalSet stores to a global variable
@@ -1422,7 +1424,7 @@ fn verify_global_set() {
 
 #[test]
 fn verify_nop() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Nop does nothing
@@ -1448,7 +1450,7 @@ fn verify_nop() {
 
 #[test]
 fn verify_block() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Block is a structure marker
@@ -1469,7 +1471,7 @@ fn verify_block() {
 
 #[test]
 fn verify_loop() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Loop is a structure marker
@@ -1490,7 +1492,7 @@ fn verify_loop() {
 
 #[test]
 fn verify_end() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // End is a structure marker
@@ -1511,7 +1513,7 @@ fn verify_end() {
 
 #[test]
 fn verify_if() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // If is a structure marker with condition
@@ -1546,7 +1548,7 @@ fn verify_if() {
 
 #[test]
 fn verify_else() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Else is a structure marker
@@ -1571,7 +1573,7 @@ fn verify_else() {
 
 #[test]
 fn batch_verify_all_arithmetic() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rules = vec![
@@ -1638,7 +1640,7 @@ fn batch_verify_all_arithmetic() {
 
 #[test]
 fn batch_verify_all_bitwise() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         let rules = vec![
@@ -1688,7 +1690,7 @@ fn batch_verify_all_bitwise() {
 
 #[test]
 fn generate_verification_report() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Test all directly mappable operations
@@ -1820,7 +1822,7 @@ fn generate_verification_report() {
 
 #[test]
 fn verify_i32_const() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Test various constant values
@@ -1864,7 +1866,7 @@ fn verify_i32_const() {
 
 #[test]
 fn verify_br_table() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Test various br_table configurations
@@ -1915,7 +1917,7 @@ fn verify_br_table() {
 
 #[test]
 fn verify_br_table_empty() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Empty targets list - all indices go to default
@@ -1951,7 +1953,7 @@ fn verify_br_table_empty() {
 
 #[test]
 fn verify_call() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Test various function indices
@@ -1979,7 +1981,7 @@ fn verify_call() {
 
 #[test]
 fn verify_call_indirect() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Test various type indices
@@ -2021,7 +2023,7 @@ fn verify_call_indirect() {
 
 #[test]
 fn verify_unreachable() {
-    with_z3_context(|| {
+    with_verification_context(|| {
         let validator = TranslationValidator::new();
 
         // Unreachable instruction - should trap
