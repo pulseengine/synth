@@ -2918,18 +2918,16 @@ impl OptimizerBridge {
                               local_to_reg: &HashMap<u32, Reg>,
                               param_reserved_regs: &[Reg]|
          -> (Reg, Reg) {
-            const CANDIDATES: &[(Reg, Reg)] = &[
-                (Reg::R4, Reg::R5),
-                (Reg::R6, Reg::R7),
-                (Reg::R8, Reg::R9),
-                (Reg::R10, Reg::R11),
-            ];
+            // Candidate list shared with the #587 pair-spill pre-step
+            // (`SPILL_I64_PAIR_CANDIDATES`): the evictor frees pairs from
+            // EXACTLY the set this allocator searches, so the two can never
+            // drift (the estimator↔encoder mirror-pinning lesson, #511).
             let is_in_use = |r: Reg| -> bool {
                 vreg_to_arm.values().any(|&v| v == r)
                     || local_to_reg.values().any(|&v| v == r)
                     || param_reserved_regs.contains(&r)
             };
-            for &(lo, hi) in CANDIDATES {
+            for &(lo, hi) in &SPILL_I64_PAIR_CANDIDATES {
                 if !is_in_use(lo) && !is_in_use(hi) {
                     return (lo, hi);
                 }
@@ -3158,23 +3156,41 @@ impl OptimizerBridge {
         let mut cse_seen_len = 0usize;
 
         // VCR-RA-001 allocation-time spill-on-exhaustion (#242, closes #496 for
-        // straight-line i32 functions). Opt-in (`SYNTH_SPILL_ON_EXHAUST=1`);
-        // off ⇒ byte-identical (no new state is read, the pre-step below is
-        // skipped, and exhaustion keeps declining to the direct selector).
-        // Active only when EVERY opcode is modeled (no i64 pairs, no control
-        // flow, no calls, no non-param locals — see
-        // `spill_on_exhaust_supported` for the honest v1 scope); otherwise the
-        // #496 decline stands for the whole function.
-        let spill_on_exhaust = self.spill_on_exhaust_enabled()
-            && instructions
-                .iter()
-                .all(|i| spill_on_exhaust_supported(&i.opcode, num_params));
+        // straight-line i32 functions; #587 extends it to i64 register PAIRS).
+        // Opt-in (`SYNTH_SPILL_ON_EXHAUST=1`); off ⇒ byte-identical (no new
+        // state is read, the pre-step below is skipped, and exhaustion keeps
+        // declining to the direct selector). Active only when EVERY opcode is
+        // modeled (no control flow, no calls, no non-param locals, only the
+        // i64 subset whose lowering the pair model covers — see
+        // `spill_on_exhaust_supported` / `spill_on_exhaust_scope_ok` for the
+        // honest scope); otherwise the #496 decline stands for the whole
+        // function.
+        //
+        // #587: `pair_partner` maps each i64 half vreg to (partner, is_lo),
+        // built from the IR pair DEFS. Pairs are evicted and reloaded as
+        // coherent units into 8-byte-aligned slot pairs (the #325 direct-path
+        // convention); a half is never spilled alone by the pre-step. If the
+        // map is ambiguous (a vreg re-used across two pairs), the lever
+        // declines for the whole function — never wrong code.
+        let spill_pairs: Option<HashMap<u32, (u32, bool)>> = if self.spill_on_exhaust_enabled()
+            && spill_on_exhaust_scope_ok(instructions, num_params)
+        {
+            spill_pair_partner_map(instructions)
+        } else {
+            None
+        };
+        let spill_on_exhaust = spill_pairs.is_some();
+        let pair_partner: HashMap<u32, (u32, bool)> = spill_pairs.unwrap_or_default();
         // Belady next-use table: for each vreg, the (sorted) instruction
         // positions where it is read. "Farthest next use" picks the victim.
+        // i64 sources contribute BOTH halves (#587).
         let use_positions: HashMap<u32, Vec<usize>> = if spill_on_exhaust {
             let mut m: HashMap<u32, Vec<usize>> = HashMap::new();
             for (pos, i) in instructions.iter().enumerate() {
-                for v in spill_i32_sources(&i.opcode) {
+                for v in spill_i32_sources(&i.opcode)
+                    .into_iter()
+                    .chain(spill_i64_half_sources(&i.opcode))
+                {
                     m.entry(v).or_default().push(pos);
                 }
             }
@@ -3243,7 +3259,8 @@ impl OptimizerBridge {
             // to the direct selector exactly as with the flag off — the lever
             // degrades to the status quo, never to a miscompile.
             if spill_on_exhaust {
-                let srcs = spill_i32_sources(&inst.opcode);
+                let mut srcs = spill_i32_sources(&inst.opcode);
+                srcs.extend(spill_i64_half_sources(&inst.opcode));
                 // Registers the current instruction's operands occupy (or are
                 // being reloaded into): never evict these.
                 let mut operand_regs: Vec<Reg> = srcs
@@ -3254,6 +3271,67 @@ impl OptimizerBridge {
                     if !spilled_vregs.contains_key(v) {
                         continue;
                     }
+                    // #587: an i64 half whose partner is also spilled reloads
+                    // as a COHERENT pair into a legal even pair (lo→even reg,
+                    // hi→odd reg), from the 8-byte-aligned slot pair the pair
+                    // evictor wrote. A half spilled ALONE (only possible via
+                    // the Const handler's own flag-off eviction of a
+                    // to-be-extended i32) takes the single path below — its
+                    // partner is untouched, and i64 lowerings read lo/hi
+                    // registers independently (adjacency is a DEST-only
+                    // constraint).
+                    if let Some(&(partner, is_lo)) = pair_partner.get(v)
+                        && spilled_vregs.contains_key(&partner)
+                    {
+                        let (v_lo, v_hi) = if is_lo { (*v, partner) } else { (partner, *v) };
+                        let pair = find_free_spill_pair(
+                            &vreg_to_arm,
+                            &local_to_reg,
+                            &param_reserved_regs,
+                            &operand_regs,
+                        )
+                        .or_else(|| {
+                            spill_evict_pair_farthest(
+                                spill_idx,
+                                &operand_regs,
+                                &use_positions,
+                                &local_vregs,
+                                &premapped_vregs,
+                                &pair_partner,
+                                &local_to_reg,
+                                &param_reserved_regs,
+                                &mut vreg_to_arm,
+                                &mut spilled_vregs,
+                                &mut next_spill_offset,
+                                &mut arm_instrs,
+                            )
+                        });
+                        let Some((p_lo, p_hi)) = pair else {
+                            // No sound eviction — decline (#496), exactly as
+                            // with the flag off. Never wrong code.
+                            r12_exhausted.set(true);
+                            break;
+                        };
+                        let slot_lo = spilled_vregs
+                            .remove(&v_lo)
+                            .expect("pair halves spill together (#587 invariant)");
+                        let slot_hi = spilled_vregs
+                            .remove(&v_hi)
+                            .expect("pair halves spill together (#587 invariant)");
+                        arm_instrs.push(ArmOp::Ldr {
+                            rd: p_lo,
+                            addr: crate::rules::MemAddr::imm(Reg::SP, slot_lo),
+                        });
+                        arm_instrs.push(ArmOp::Ldr {
+                            rd: p_hi,
+                            addr: crate::rules::MemAddr::imm(Reg::SP, slot_hi),
+                        });
+                        vreg_to_arm.insert(v_lo, p_lo);
+                        vreg_to_arm.insert(v_hi, p_hi);
+                        operand_regs.push(p_lo);
+                        operand_regs.push(p_hi);
+                        continue;
+                    }
                     // A free pool register, by `alloc_i32_scratch`'s in-use
                     // rule (every mapped vreg counts, dead or not).
                     let free = SPILL_ON_EXHAUST_POOL.iter().copied().find(|r| {
@@ -3262,21 +3340,43 @@ impl OptimizerBridge {
                             && !param_reserved_regs.contains(r)
                             && !operand_regs.contains(r)
                     });
-                    let rd = free.or_else(|| {
-                        spill_evict_farthest(
-                            spill_idx,
-                            &operand_regs,
-                            &use_positions,
-                            &local_vregs,
-                            &premapped_vregs,
-                            &local_to_reg,
-                            &param_reserved_regs,
-                            &mut vreg_to_arm,
-                            &mut spilled_vregs,
-                            &mut next_spill_offset,
-                            &mut arm_instrs,
-                        )
-                    });
+                    let rd = free
+                        .or_else(|| {
+                            spill_evict_farthest(
+                                spill_idx,
+                                &operand_regs,
+                                &use_positions,
+                                &local_vregs,
+                                &premapped_vregs,
+                                &pair_partner,
+                                &local_to_reg,
+                                &param_reserved_regs,
+                                &mut vreg_to_arm,
+                                &mut spilled_vregs,
+                                &mut next_spill_offset,
+                                &mut arm_instrs,
+                            )
+                        })
+                        .or_else(|| {
+                            // #587: no single victim (the pool may be wall-to-
+                            // wall i64 halves) — evicting a whole pair frees
+                            // two registers; reload into its lo half.
+                            spill_evict_pair_farthest(
+                                spill_idx,
+                                &operand_regs,
+                                &use_positions,
+                                &local_vregs,
+                                &premapped_vregs,
+                                &pair_partner,
+                                &local_to_reg,
+                                &param_reserved_regs,
+                                &mut vreg_to_arm,
+                                &mut spilled_vregs,
+                                &mut next_spill_offset,
+                                &mut arm_instrs,
+                            )
+                            .map(|(lo, _)| lo)
+                        });
                     let Some(rd) = rd else {
                         // Nothing evictable — leave the vreg spilled; the
                         // handler's R12 placeholder path flags exhaustion and
@@ -3302,22 +3402,87 @@ impl OptimizerBridge {
                             && !operand_regs.contains(r)
                     });
                     if pool_full {
-                        // Ignore a None result: the handler then declines as
-                        // with the flag off.
-                        let _ = spill_evict_farthest(
+                        let freed = spill_evict_farthest(
                             spill_idx,
                             &operand_regs,
                             &use_positions,
                             &local_vregs,
                             &premapped_vregs,
+                            &pair_partner,
                             &local_to_reg,
                             &param_reserved_regs,
                             &mut vreg_to_arm,
                             &mut spilled_vregs,
                             &mut next_spill_offset,
                             &mut arm_instrs,
-                        );
+                        )
+                        .or_else(|| {
+                            // #587: free a whole pair when no single victim
+                            // exists (pool saturated by i64 halves).
+                            spill_evict_pair_farthest(
+                                spill_idx,
+                                &operand_regs,
+                                &use_positions,
+                                &local_vregs,
+                                &premapped_vregs,
+                                &pair_partner,
+                                &local_to_reg,
+                                &param_reserved_regs,
+                                &mut vreg_to_arm,
+                                &mut spilled_vregs,
+                                &mut next_spill_offset,
+                                &mut arm_instrs,
+                            )
+                            .map(|(lo, _)| lo)
+                        });
+                        // For most handlers a None is fine: `alloc_i32_scratch`
+                        // flags exhaustion itself and the function declines as
+                        // with the flag off. `Const` is the exception — its own
+                        // allocator falls back to R9/R10/R11/R3, which is only
+                        // sound while exhausted functions decline; with i64
+                        // pairs legitimately parked in R9-R11 (#587) that
+                        // fallback could clobber a live pair half, so decline
+                        // loudly instead. Gated on pair presence so flag-on
+                        // i32-only behavior is unchanged.
+                        if freed.is_none()
+                            && !pair_partner.is_empty()
+                            && matches!(&inst.opcode, Opcode::Const { .. })
+                        {
+                            r12_exhausted.set(true);
+                        }
                     }
+                }
+                // #587: pre-free a legal even pair for handlers that call
+                // `alloc_i64_pair` for their destination (i64 producers, and
+                // the i64 comparisons whose i32 result binds the lo half of a
+                // freshly allocated pair). If eviction finds no victim, fall
+                // through: `alloc_i64_pair`'s #496 fallback flags exhaustion
+                // and the function declines — the lever degrades to the
+                // status quo, never to a miscompile.
+                let needs_pair = match &inst.opcode {
+                    // A skip-folded i64 const (#94) emits nothing and
+                    // allocates nothing.
+                    Opcode::I64Const { dest_lo, .. } => !skip_const_dest_lo.contains(&dest_lo.0),
+                    op => spill_needs_pair_alloc(op),
+                };
+                if needs_pair
+                    && find_free_spill_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[])
+                        .is_none()
+                {
+                    let _ = spill_evict_pair_farthest(
+                        spill_idx,
+                        &operand_regs,
+                        &use_positions,
+                        &local_vregs,
+                        &premapped_vregs,
+                        &pair_partner,
+                        &local_to_reg,
+                        &param_reserved_regs,
+                        &mut vreg_to_arm,
+                        &mut spilled_vregs,
+                        &mut next_spill_offset,
+                        &mut arm_instrs,
+                    );
                 }
             }
 
@@ -5834,7 +5999,26 @@ impl OptimizerBridge {
         // any callee-saved pair (R4:R5..R10:R11), and we need an explicit move.
         // The order matters: copy hi → R1 first, then lo → R0, so we don't
         // clobber the lo value if the source happens to be R1.
-        if is_i64_result {
+        if spill_on_exhaust
+            && is_i64_result
+            && let Some(vl) = last_result_vreg
+            && let Some(vh) = last_result_vreg_hi
+            && let (Some(&slot_lo), Some(&slot_hi)) =
+                (spilled_vregs.get(&vl), spilled_vregs.get(&vh))
+        {
+            // VCR-RA #587: the final i64 result pair was evicted AFTER its def
+            // (the epilogue read is invisible to the linear next-use table,
+            // which is why pair eviction always STRs both halves). Reload the
+            // pair from its 8-byte slot straight into the AAPCS return pair.
+            arm_instrs.push(ArmOp::Ldr {
+                rd: Reg::R0,
+                addr: crate::rules::MemAddr::imm(Reg::SP, slot_lo),
+            });
+            arm_instrs.push(ArmOp::Ldr {
+                rd: Reg::R1,
+                addr: crate::rules::MemAddr::imm(Reg::SP, slot_hi),
+            });
+        } else if is_i64_result {
             // Resolve the lo half from vreg_to_arm.
             let lo_reg = last_result_vreg.and_then(|v| vreg_to_arm.get(&v).copied());
             // Resolve the hi half: prefer an explicit vreg id, else fall back to
@@ -6020,14 +6204,34 @@ const SPILL_ON_EXHAUST_POOL: [crate::rules::Reg; 5] = [
     crate::rules::Reg::R8,
 ];
 
+/// The CONSECUTIVE even-aligned register pairs `alloc_i64_pair` searches, in
+/// search order. The #587 pair-spill pre-step frees and reloads pairs from
+/// exactly this list — sharing the const (instead of mirroring it) pins the
+/// two against drift. R9/R10/R11 appear here because `alloc_i64_pair` has
+/// always handed them out; functions whose lowering RESERVES them (globals
+/// base R9, memory-size R10 — see `spill_on_exhaust_scope_ok`) decline the
+/// lever wholesale.
+const SPILL_I64_PAIR_CANDIDATES: [(crate::rules::Reg, crate::rules::Reg); 4] = [
+    (crate::rules::Reg::R4, crate::rules::Reg::R5),
+    (crate::rules::Reg::R6, crate::rules::Reg::R7),
+    (crate::rules::Reg::R8, crate::rules::Reg::R9),
+    (crate::rules::Reg::R10, crate::rules::Reg::R11),
+];
+
 /// Whether the allocation-time spill pre-step models `op`. ONE unsupported
 /// opcode disables the pre-step for the whole function, preserving the #496
 /// decline-to-direct-selector behaviour for those shapes. Deliberately narrow
-/// for v1 (honest scope):
+/// (honest scope):
 ///
-/// - **no i64 family**: i64 values live in register PAIRS tracked as two
-///   separate vregs; spilling one half without the pair model is the #518
-///   class of bug. Pair exhaustion (`alloc_i64_pair`) keeps declining.
+/// - **i64 family (#587)**: only lowerings whose register discipline the pair
+///   model covers — pair-allocating producers (`I64Const`/`I64Add`/`I64Sub`/
+///   `I64And`/`I64Or`/`I64Xor`/`I64Mul`), the pair-allocating comparisons +
+///   `I64Eqz`, the i32↔i64 conversions, and PARAM `I64Load`. Excluded: i64
+///   shifts/rotates (their encoders clobber the shift-amount pair in place,
+///   so a spilled-then-reloaded amount would re-materialize a value the
+///   flag-off path treats as consumed), div/rem, `I64Clz`/`Ctz`/`Popcnt`
+///   (their hi half is a physical reg with no IR vreg), the narrowing
+///   extends, and non-param i64 locals. All of these keep the #496 decline.
 /// - **no control flow** (`Branch`/`CondBranch`): the Belady next-use table is
 ///   linear — a back-edge would make "next use" wrong and a reload could be
 ///   skipped on a re-entered path. (`Label` alone is fine: with no branches it
@@ -6039,6 +6243,10 @@ const SPILL_ON_EXHAUST_POOL: [crate::rules::Reg; 5] = [
 ///   which is pinned to R11, outside the pool): non-param locals are pinned to
 ///   R4-R7 by `local_to_reg`, and the pre-pass premapping interacts with the
 ///   pool in ways v1 does not model.
+///
+/// Per-function constraints (pair-map unambiguity, no R9/R10 reservations
+/// alongside i64) live in `spill_on_exhaust_scope_ok` /
+/// `spill_pair_partner_map`.
 fn spill_on_exhaust_supported(op: &Opcode, num_params: usize) -> bool {
     let param_local = |addr: u32| (addr as usize) < num_params || addr == 255;
     match op {
@@ -6089,10 +6297,313 @@ fn spill_on_exhaust_supported(op: &Opcode, num_params: usize) -> bool {
         | Opcode::Return { .. } => true,
         Opcode::Load { addr, .. } | Opcode::Store { addr, .. } => param_local(*addr),
         Opcode::TeeStore { addr, .. } => param_local(*addr),
-        // Everything else — i64 family, Branch/CondBranch, Call, the i64<->i32
-        // conversions — is out of v1 scope: keep the #496 decline.
+        // #587: the modeled i64 subset (see doc comment above).
+        Opcode::I64Const { .. }
+        | Opcode::I64Add { .. }
+        | Opcode::I64Sub { .. }
+        | Opcode::I64And { .. }
+        | Opcode::I64Or { .. }
+        | Opcode::I64Xor { .. }
+        | Opcode::I64Mul { .. }
+        | Opcode::I64Eq { .. }
+        | Opcode::I64Ne { .. }
+        | Opcode::I64LtS { .. }
+        | Opcode::I64LtU { .. }
+        | Opcode::I64LeS { .. }
+        | Opcode::I64LeU { .. }
+        | Opcode::I64GtS { .. }
+        | Opcode::I64GtU { .. }
+        | Opcode::I64GeS { .. }
+        | Opcode::I64GeU { .. }
+        | Opcode::I64Eqz { .. }
+        | Opcode::I64ExtendI32U { .. }
+        | Opcode::I64ExtendI32S { .. }
+        | Opcode::I32WrapI64 { .. } => true,
+        // PARAM i64 loads bind the AAPCS pair (R0:R1 / R2:R3, outside every
+        // spill pool) — mirror the handler's classification EXACTLY.
+        // Non-param i64 locals allocate a pinned pair the model does not
+        // cover: decline.
+        Opcode::I64Load { addr, .. } => {
+            (*addr == 0 && num_params >= 2) || (*addr == 1 && num_params >= 4)
+        }
+        // Everything else — the unmodeled i64 remainder (shifts/rotates,
+        // div/rem, clz/ctz/popcnt, narrowing extends), Branch/CondBranch,
+        // Call — is out of scope: keep the #496 decline.
         _ => false,
     }
+}
+
+/// Function-level scope gate for the spill-on-exhaustion lever (#587): every
+/// opcode must be modeled (`spill_on_exhaust_supported`), and if the function
+/// touches i64 at all, it must not ALSO reserve R9/R10 by convention
+/// (`global.get`/`global.set` address globals off R9; `memory.size` reads
+/// R10): `alloc_i64_pair` — and therefore the pair evictor/reloader — hands
+/// out (R8,R9) and (R10,R11), which would collide with those bases.
+fn spill_on_exhaust_scope_ok(instructions: &[Instruction], num_params: usize) -> bool {
+    if !instructions
+        .iter()
+        .all(|i| spill_on_exhaust_supported(&i.opcode, num_params))
+    {
+        return false;
+    }
+    let has_i64 = instructions.iter().any(|i| {
+        spill_pair_def(&i.opcode).is_some() || !spill_i64_half_sources(&i.opcode).is_empty()
+    });
+    !has_i64
+        || !instructions.iter().any(|i| {
+            matches!(
+                &i.opcode,
+                Opcode::GlobalGet { .. } | Opcode::GlobalSet { .. } | Opcode::MemorySize { .. }
+            )
+        })
+}
+
+/// The (lo, hi) vreg pair `op` DEFINES, when its lowering binds an i64 value
+/// to a register pair. Param `I64Load` is included: its halves live in
+/// R0:R1/R2:R3 (outside every candidate pair, so never evicted), but mapping
+/// them keeps the pair model total over i64 values.
+fn spill_pair_def(op: &Opcode) -> Option<(u32, u32)> {
+    match op {
+        Opcode::I64Const {
+            dest_lo, dest_hi, ..
+        }
+        | Opcode::I64Load {
+            dest_lo, dest_hi, ..
+        }
+        | Opcode::I64Add {
+            dest_lo, dest_hi, ..
+        }
+        | Opcode::I64Sub {
+            dest_lo, dest_hi, ..
+        }
+        | Opcode::I64And {
+            dest_lo, dest_hi, ..
+        }
+        | Opcode::I64Or {
+            dest_lo, dest_hi, ..
+        }
+        | Opcode::I64Xor {
+            dest_lo, dest_hi, ..
+        }
+        | Opcode::I64Mul {
+            dest_lo, dest_hi, ..
+        }
+        | Opcode::I64ExtendI32U {
+            dest_lo, dest_hi, ..
+        }
+        | Opcode::I64ExtendI32S {
+            dest_lo, dest_hi, ..
+        } => Some((dest_lo.0, dest_hi.0)),
+        _ => None,
+    }
+}
+
+/// Build the half-vreg → (partner, is_lo) map from the IR pair defs (#587).
+/// `None` when the map would be ambiguous — a vreg re-used across two
+/// different pairs (or a degenerate lo==hi def): reloading such a pair could
+/// pick the wrong partner, so the lever declines for the whole function.
+/// (The extend convention `dest_lo == src` re-uses ONE vreg across an i32 and
+/// its later i64-lo life, which is fine — ambiguity only arises from two
+/// conflicting PAIR memberships.)
+fn spill_pair_partner_map(
+    instructions: &[Instruction],
+) -> Option<std::collections::HashMap<u32, (u32, bool)>> {
+    let mut m: std::collections::HashMap<u32, (u32, bool)> = std::collections::HashMap::new();
+    for i in instructions {
+        if let Some((lo, hi)) = spill_pair_def(&i.opcode) {
+            if lo == hi {
+                return None;
+            }
+            for (v, entry) in [(lo, (hi, true)), (hi, (lo, false))] {
+                match m.insert(v, entry) {
+                    Some(prev) if prev != entry => return None,
+                    _ => {}
+                }
+            }
+        }
+    }
+    Some(m)
+}
+
+/// The i64 half vregs (and conversion i32 sources) `op`'s lowering reads from
+/// registers — the pair-side complement of [`spill_i32_sources`]. Feeds the
+/// Belady next-use table and the pre-step's reinstatement loop. Exhaustive
+/// over the i64 opcodes [`spill_on_exhaust_supported`] admits.
+fn spill_i64_half_sources(op: &Opcode) -> Vec<u32> {
+    match op {
+        Opcode::I64Add {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64Sub {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64And {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64Or {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64Xor {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64Mul {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64Eq {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64Ne {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64LtS {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64LtU {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64LeS {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64LeU {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64GtS {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64GtU {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64GeS {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        }
+        | Opcode::I64GeU {
+            src1_lo,
+            src1_hi,
+            src2_lo,
+            src2_hi,
+            ..
+        } => vec![src1_lo.0, src1_hi.0, src2_lo.0, src2_hi.0],
+        Opcode::I64Eqz { src_lo, src_hi, .. } => vec![src_lo.0, src_hi.0],
+        Opcode::I64ExtendI32U { src, .. } | Opcode::I64ExtendI32S { src, .. } => vec![src.0],
+        // Wrap reads only the lo half; if the pair was spilled, the
+        // reinstatement loop finds the partner through `pair_partner`.
+        Opcode::I32WrapI64 { src_lo, .. } => vec![src_lo.0],
+        _ => Vec::new(),
+    }
+}
+
+/// Whether `op`'s handler calls `alloc_i64_pair` for its destination — the
+/// i64 producers AND the i64 comparisons/`I64Eqz` (whose i32 result binds the
+/// lo half of a freshly allocated pair). Used by the pre-step to guarantee a
+/// free candidate pair BEFORE the handler runs, so `alloc_i64_pair` never
+/// reaches its (R4,R5) exhaustion fallback. The call site refines `I64Const`
+/// with the #94 skip-set (a folded const allocates nothing). Param `I64Load`
+/// binds AAPCS registers and allocates nothing.
+fn spill_needs_pair_alloc(op: &Opcode) -> bool {
+    matches!(
+        op,
+        Opcode::I64Const { .. }
+            | Opcode::I64Add { .. }
+            | Opcode::I64Sub { .. }
+            | Opcode::I64And { .. }
+            | Opcode::I64Or { .. }
+            | Opcode::I64Xor { .. }
+            | Opcode::I64Mul { .. }
+            | Opcode::I64Eq { .. }
+            | Opcode::I64Ne { .. }
+            | Opcode::I64LtS { .. }
+            | Opcode::I64LtU { .. }
+            | Opcode::I64LeS { .. }
+            | Opcode::I64LeU { .. }
+            | Opcode::I64GtS { .. }
+            | Opcode::I64GtU { .. }
+            | Opcode::I64GeS { .. }
+            | Opcode::I64GeU { .. }
+            | Opcode::I64Eqz { .. }
+            | Opcode::I64ExtendI32U { .. }
+            | Opcode::I64ExtendI32S { .. }
+    )
+}
+
+/// A candidate pair that is free by `alloc_i64_pair`'s in-use rule (every
+/// mapped vreg counts, dead or not) and clear of `avoid` (operands of the
+/// current instruction, including registers being reloaded into).
+fn find_free_spill_pair(
+    vreg_to_arm: &std::collections::HashMap<u32, crate::rules::Reg>,
+    local_to_reg: &std::collections::HashMap<u32, crate::rules::Reg>,
+    param_reserved_regs: &[crate::rules::Reg],
+    avoid: &[crate::rules::Reg],
+) -> Option<(crate::rules::Reg, crate::rules::Reg)> {
+    let in_use = |r: crate::rules::Reg| -> bool {
+        vreg_to_arm.values().any(|&u| u == r)
+            || local_to_reg.values().any(|&u| u == r)
+            || param_reserved_regs.contains(&r)
+            || avoid.contains(&r)
+    };
+    SPILL_I64_PAIR_CANDIDATES
+        .iter()
+        .copied()
+        .find(|&(lo, hi)| !in_use(lo) && !in_use(hi))
 }
 
 /// The i32 SOURCE vregs `op`'s lowering reads from registers. Used to (a)
@@ -6214,12 +6725,13 @@ fn spill_i32_scratch_dest(op: &Opcode) -> Option<u32> {
 /// Spill the live pool vreg with the FARTHEST next use (Belady) to a fresh
 /// frame slot, freeing its register. Returns the freed register, or `None`
 /// when no vreg is evictable (everything in the pool is pinned: locals,
-/// premapped param/local vregs, aliased registers, or `avoid`-listed operands
-/// of the current instruction) — the caller then leaves `alloc_i32_scratch`
-/// to its flag-off exhaustion fallback, which flags the function for the #496
-/// decline. Every victim gets a `STR` (never drop-without-store): the victim
-/// may be the function's final result, read by the epilogue after the last
-/// instruction, which the linear next-use table cannot see.
+/// premapped param/local vregs, aliased registers, i64 pair halves, or
+/// `avoid`-listed operands of the current instruction) — the caller then
+/// leaves `alloc_i32_scratch` to its flag-off exhaustion fallback, which
+/// flags the function for the #496 decline. Every victim gets a `STR` (never
+/// drop-without-store): the victim may be the function's final result, read
+/// by the epilogue after the last instruction, which the linear next-use
+/// table cannot see.
 #[allow(clippy::too_many_arguments)]
 fn spill_evict_farthest(
     cur_idx: usize,
@@ -6227,6 +6739,7 @@ fn spill_evict_farthest(
     use_positions: &std::collections::HashMap<u32, Vec<usize>>,
     local_vregs: &std::collections::HashSet<u32>,
     premapped_vregs: &std::collections::HashSet<u32>,
+    pair_partner: &std::collections::HashMap<u32, (u32, bool)>,
     local_to_reg: &std::collections::HashMap<u32, crate::rules::Reg>,
     param_reserved_regs: &[crate::rules::Reg],
     vreg_to_arm: &mut std::collections::HashMap<u32, crate::rules::Reg>,
@@ -6244,6 +6757,11 @@ fn spill_evict_farthest(
             SPILL_ON_EXHAUST_POOL.contains(&r)
                 && !local_vregs.contains(&v)
                 && !premapped_vregs.contains(&v)
+                // #587 pair guard: i64 halves are only ever spilled as
+                // coherent pairs (8-byte slot pair, `spill_evict_pair_farthest`)
+                // — a half spilled alone here would break the pair-reload
+                // invariant (the #518 class of bug).
+                && !pair_partner.contains_key(&v)
                 && !local_to_reg.values().any(|&u| u == r)
                 && !param_reserved_regs.contains(&r)
                 && !avoid.contains(&r)
@@ -6274,6 +6792,177 @@ fn spill_evict_farthest(
     spilled_vregs.insert(victim, offset);
     vreg_to_arm.remove(&victim);
     Some(victim_reg)
+}
+
+/// What one candidate-pair eviction displaces (#587): a coherent i64 PAIR
+/// (both halves, wherever their registers are — sources need no adjacency,
+/// only dests do), or an independent i32 single.
+enum SpillEvictUnit {
+    Pair(u32, u32), // (lo vreg, hi vreg)
+    Single(u32),
+}
+
+/// Free one legal even pair from `SPILL_I64_PAIR_CANDIDATES` by evicting what
+/// occupies it — either (a) a live i64 PAIR, or (b) up to two independent
+/// singles — choosing the candidate whose displaced values have the FARTHEST
+/// soonest-next-use (pair-aware Belady: the cost of an eviction is dominated
+/// by the value needed soonest, so maximize that minimum). Deterministic
+/// tie-break: first candidate in the fixed search order wins.
+///
+/// Returns the freed `(lo, hi)` pair, or `None` when no candidate is fully
+/// evictable (pinned locals/params/aliases/avoid-listed operands, or a
+/// half-defined pair) — the caller then falls through to the #496 decline.
+///
+/// Pair victims get an 8-byte-aligned slot pair (lo at `off`, hi at `off+4` —
+/// the #325 direct-path pair-spill convention) and BOTH halves are STR'd;
+/// singles get the usual 4-byte slot. Never drop-without-store, for the same
+/// epilogue-read reason as the single evictor.
+#[allow(clippy::too_many_arguments)]
+fn spill_evict_pair_farthest(
+    cur_idx: usize,
+    avoid: &[crate::rules::Reg],
+    use_positions: &std::collections::HashMap<u32, Vec<usize>>,
+    local_vregs: &std::collections::HashSet<u32>,
+    premapped_vregs: &std::collections::HashSet<u32>,
+    pair_partner: &std::collections::HashMap<u32, (u32, bool)>,
+    local_to_reg: &std::collections::HashMap<u32, crate::rules::Reg>,
+    param_reserved_regs: &[crate::rules::Reg],
+    vreg_to_arm: &mut std::collections::HashMap<u32, crate::rules::Reg>,
+    spilled_vregs: &mut std::collections::HashMap<u32, i32>,
+    next_spill_offset: &mut i32,
+    arm_instrs: &mut Vec<ArmOp>,
+) -> Option<(crate::rules::Reg, crate::rules::Reg)> {
+    use crate::rules::Reg;
+    let next_use = |v: u32| -> usize {
+        use_positions
+            .get(&v)
+            .and_then(|ps| ps.iter().find(|&&p| p >= cur_idx))
+            .copied()
+            .unwrap_or(usize::MAX)
+    };
+    // Deterministic occupant lookup (sorted by vreg id; only the aliased case
+    // has >1 occupant and that disqualifies the candidate anyway).
+    let occupants = |map: &std::collections::HashMap<u32, Reg>, r: Reg| -> Vec<u32> {
+        let mut o: Vec<u32> = map
+            .iter()
+            .filter(|&(_, &u)| u == r)
+            .map(|(&v, _)| v)
+            .collect();
+        o.sort_unstable();
+        o
+    };
+    // A register may be displaced at all?
+    let reg_pinned = |r: Reg| -> bool {
+        local_to_reg.values().any(|&u| u == r)
+            || param_reserved_regs.contains(&r)
+            || avoid.contains(&r)
+    };
+    let vreg_pinned = |v: u32| -> bool { local_vregs.contains(&v) || premapped_vregs.contains(&v) };
+
+    let mut best: Option<(usize, usize, Vec<SpillEvictUnit>)> = None;
+    'cand: for (ci, &(p_lo, p_hi)) in SPILL_I64_PAIR_CANDIDATES.iter().enumerate() {
+        let mut units: Vec<SpillEvictUnit> = Vec::new();
+        for r in [p_lo, p_hi] {
+            if reg_pinned(r) {
+                continue 'cand;
+            }
+            let occ = occupants(vreg_to_arm, r);
+            match occ.as_slice() {
+                [] => {}
+                [v] => {
+                    let v = *v;
+                    if vreg_pinned(v) {
+                        continue 'cand;
+                    }
+                    if let Some(&(partner, is_lo)) = pair_partner.get(&v) {
+                        // Whole-pair unit: the partner half (wherever it
+                        // lives) must be displaceable too. A half-defined
+                        // pair (partner not yet mapped — the extend
+                        // convention re-uses the i32 src vreg as dest_lo
+                        // before dest_hi exists) is conservatively pinned.
+                        let Some(&pr) = vreg_to_arm.get(&partner) else {
+                            continue 'cand;
+                        };
+                        if vreg_pinned(partner)
+                            || reg_pinned(pr)
+                            || occupants(vreg_to_arm, pr).len() != 1
+                        {
+                            continue 'cand;
+                        }
+                        let (v_lo, v_hi) = if is_lo { (v, partner) } else { (partner, v) };
+                        // Both candidate registers may hold the same pair —
+                        // one unit, not two.
+                        if !units
+                            .iter()
+                            .any(|u| matches!(u, SpillEvictUnit::Pair(l, _) if *l == v_lo))
+                        {
+                            units.push(SpillEvictUnit::Pair(v_lo, v_hi));
+                        }
+                    } else {
+                        units.push(SpillEvictUnit::Single(v));
+                    }
+                }
+                // Aliased register (const-CSE): never evict — the other
+                // alias would read a reused register (spill-bijection
+                // hazard, same guard as the single evictor).
+                _ => continue 'cand,
+            }
+        }
+        // Pair-aware Belady key: the soonest next use across everything this
+        // eviction displaces (usize::MAX for dead values or an already-free
+        // register). Strict `>` keeps the FIRST best candidate — fixed array
+        // order, fully deterministic.
+        let key = units
+            .iter()
+            .flat_map(|u| match u {
+                SpillEvictUnit::Pair(l, h) => vec![*l, *h],
+                SpillEvictUnit::Single(v) => vec![*v],
+            })
+            .map(next_use)
+            .min()
+            .unwrap_or(usize::MAX);
+        if best.as_ref().is_none_or(|(bk, _, _)| key > *bk) {
+            best = Some((key, ci, units));
+        }
+    }
+    let (_, ci, units) = best?;
+    let (p_lo, p_hi) = SPILL_I64_PAIR_CANDIDATES[ci];
+    for unit in units {
+        match unit {
+            SpillEvictUnit::Pair(v_lo, v_hi) => {
+                // #325 pair-slot convention: 8-byte aligned, lo then hi.
+                *next_spill_offset = (*next_spill_offset + 7) & !7;
+                let off = *next_spill_offset;
+                *next_spill_offset += 8;
+                let r_lo = vreg_to_arm[&v_lo];
+                let r_hi = vreg_to_arm[&v_hi];
+                arm_instrs.push(ArmOp::Str {
+                    rd: r_lo,
+                    addr: crate::rules::MemAddr::imm(Reg::SP, off),
+                });
+                arm_instrs.push(ArmOp::Str {
+                    rd: r_hi,
+                    addr: crate::rules::MemAddr::imm(Reg::SP, off + 4),
+                });
+                spilled_vregs.insert(v_lo, off);
+                spilled_vregs.insert(v_hi, off + 4);
+                vreg_to_arm.remove(&v_lo);
+                vreg_to_arm.remove(&v_hi);
+            }
+            SpillEvictUnit::Single(v) => {
+                let off = *next_spill_offset;
+                *next_spill_offset += 4;
+                let r = vreg_to_arm[&v];
+                arm_instrs.push(ArmOp::Str {
+                    rd: r,
+                    addr: crate::rules::MemAddr::imm(Reg::SP, off),
+                });
+                spilled_vregs.insert(v, off);
+                vreg_to_arm.remove(&v);
+            }
+        }
+    }
+    Some((p_lo, p_hi))
 }
 
 impl Default for OptimizerBridge {
@@ -7804,7 +8493,8 @@ mod tests {
             },
             2
         ));
-        assert!(!spill_on_exhaust_supported(
+        // #587: the modeled i64 subset is IN scope now...
+        assert!(spill_on_exhaust_supported(
             &Opcode::I64Add {
                 dest_lo: vr(0),
                 dest_hi: vr(1),
@@ -7812,6 +8502,36 @@ mod tests {
                 src1_hi: vr(3),
                 src2_lo: vr(4),
                 src2_hi: vr(5)
+            },
+            2
+        ));
+        // ... but the unmodeled i64 remainder (shifts: encoder clobbers the
+        // amount pair in place) keeps declining.
+        assert!(!spill_on_exhaust_supported(
+            &Opcode::I64Shl {
+                dest_lo: vr(0),
+                dest_hi: vr(1),
+                src1_lo: vr(2),
+                src1_hi: vr(3),
+                src2_lo: vr(4),
+                src2_hi: vr(5)
+            },
+            2
+        ));
+        // Param i64 loads are in scope; non-param i64 locals are not.
+        assert!(spill_on_exhaust_supported(
+            &Opcode::I64Load {
+                dest_lo: vr(0),
+                dest_hi: vr(1),
+                addr: 0
+            },
+            2
+        ));
+        assert!(!spill_on_exhaust_supported(
+            &Opcode::I64Load {
+                dest_lo: vr(0),
+                dest_hi: vr(1),
+                addr: 2
             },
             2
         ));
@@ -7834,14 +8554,21 @@ mod tests {
             2
         ));
         // A single unsupported opcode disables the lever for the whole
-        // function: pressure IR + one i64 op must still decline flag-on.
+        // function: pressure IR + one unmodeled i64 op (a shift) must still
+        // decline flag-on.
         let mut ir = pressure_ir();
         ir.insert(
             ir.len() - 1,
-            inst(Opcode::I64Const {
+            // Sources re-use already-defined vregs so the handler (which
+            // still RUNS — the decline is only flagged at end of build)
+            // resolves them; only the scope gating is under test here.
+            inst(Opcode::I64Shl {
                 dest_lo: vr(100),
                 dest_hi: vr(101),
-                value: 1,
+                src1_lo: vr(0),
+                src1_hi: vr(1),
+                src2_lo: vr(2),
+                src2_hi: vr(3),
             }),
         );
         let mut bridge = OptimizerBridge::new();
@@ -7850,5 +8577,275 @@ mod tests {
             .ir_to_arm(&ir, 2)
             .expect_err("unsupported opcode must keep the #496 decline");
         assert!(err.to_string().contains("#496"), "got: {err}");
+    }
+
+    // ---- #587: i64 register-PAIR exhaustion — pair-aware Belady eviction ----
+
+    /// Five simultaneously-live i64 constants (5 pairs over the 4 candidate
+    /// pairs) folded by non-commutative ops — the pair-exhaustion pressure
+    /// shape. `num_params = 0` so no AAPCS registers are reserved.
+    fn pressure_i64_ir() -> Vec<Instruction> {
+        let ops = vec![
+            Opcode::I64Const {
+                dest_lo: vr(0),
+                dest_hi: vr(1),
+                value: 0x1111_1111_2222_2222,
+            },
+            Opcode::I64Const {
+                dest_lo: vr(2),
+                dest_hi: vr(3),
+                value: 0x3333_3333_4444_4444,
+            },
+            Opcode::I64Const {
+                dest_lo: vr(4),
+                dest_hi: vr(5),
+                value: 0x5555_5555_6666_6666,
+            },
+            Opcode::I64Const {
+                dest_lo: vr(6),
+                dest_hi: vr(7),
+                value: 0x7777_7777_8888_8888,
+            },
+            // 5th live pair: even-pair exhaustion happens HERE.
+            Opcode::I64Const {
+                dest_lo: vr(8),
+                dest_hi: vr(9),
+                value: 0x0123_4567_89AB_CDEF,
+            },
+            Opcode::I64Add {
+                dest_lo: vr(10),
+                dest_hi: vr(11),
+                src1_lo: vr(6),
+                src1_hi: vr(7),
+                src2_lo: vr(8),
+                src2_hi: vr(9),
+            },
+            Opcode::I64Sub {
+                dest_lo: vr(12),
+                dest_hi: vr(13),
+                src1_lo: vr(4),
+                src1_hi: vr(5),
+                src2_lo: vr(10),
+                src2_hi: vr(11),
+            },
+            Opcode::I64Xor {
+                dest_lo: vr(14),
+                dest_hi: vr(15),
+                src1_lo: vr(2),
+                src1_hi: vr(3),
+                src2_lo: vr(12),
+                src2_hi: vr(13),
+            },
+            Opcode::I64Add {
+                dest_lo: vr(16),
+                dest_hi: vr(17),
+                src1_lo: vr(0),
+                src1_hi: vr(1),
+                src2_lo: vr(14),
+                src2_hi: vr(15),
+            },
+        ];
+        ops.into_iter().map(inst).collect()
+    }
+
+    #[test]
+    fn test_587_i64_pair_pressure_declines_flag_off() {
+        // RED baseline: pair exhaustion declines to the direct selector
+        // (#496) flag-off — never the (R4,R5) aliasing fallback.
+        let mut bridge = OptimizerBridge::new();
+        bridge.set_spill_on_exhaust(false);
+        let err = bridge
+            .ir_to_arm(&pressure_i64_ir(), 0)
+            .expect_err("5 live pairs over 4 candidates must decline flag-off");
+        assert!(err.to_string().contains("#496"), "got: {err}");
+    }
+
+    #[test]
+    fn test_587_i64_pair_pressure_compiles_flag_on() {
+        // GREEN: flag-on, pair-aware Belady eviction keeps the function on
+        // the optimized path.
+        let mut bridge = OptimizerBridge::new();
+        bridge.set_spill_on_exhaust(true);
+        let arm = bridge
+            .ir_to_arm(&pressure_i64_ir(), 0)
+            .expect("flag-on: pair exhaustion spills instead of declining");
+        // Spill slots must exist, and every reload must read a written slot.
+        let mut written: std::collections::HashSet<i32> = std::collections::HashSet::new();
+        let mut spill_stores = 0usize;
+        for op in &arm {
+            match op {
+                ArmOp::Str { addr, .. } if addr.base == Reg::SP => {
+                    written.insert(addr.offset);
+                    spill_stores += 1;
+                }
+                ArmOp::Ldr { addr, .. } if addr.base == Reg::SP => {
+                    assert!(
+                        written.contains(&addr.offset),
+                        "LDR [SP, #{}] reads a slot never written: {arm:#?}",
+                        addr.offset
+                    );
+                }
+                _ => {}
+            }
+        }
+        assert!(spill_stores >= 2, "pair pressure must spill: {arm:#?}");
+        // Pair slots are 8-byte aligned lo/hi couples (#325 convention):
+        // every written offset belongs to an (8k, 8k+4) couple.
+        for off in &written {
+            let base = off & !7;
+            assert!(
+                written.contains(&base) && written.contains(&(base + 4)),
+                "slot #{off} is not part of an 8-aligned pair couple: {written:?}"
+            );
+        }
+        // No R12 borrow may ship (no memory ops in this IR, so no legitimate
+        // R12 use exists either).
+        for op in &arm {
+            if let ArmOp::Str { rd, .. } | ArmOp::Ldr { rd, .. } | ArmOp::Mov { rd, .. } = op {
+                assert_ne!(*rd, Reg::R12, "R12 borrow shipped flag-on: {arm:#?}");
+            }
+        }
+        // Frame prologue/epilogue must bracket the body.
+        assert!(
+            matches!(
+                arm.first(),
+                Some(ArmOp::Sub {
+                    rd: Reg::SP,
+                    rn: Reg::SP,
+                    ..
+                })
+            ),
+            "spill frame prologue missing: {arm:#?}"
+        );
+    }
+
+    #[test]
+    fn test_587_i64_below_pressure_flag_is_noop() {
+        // Two live pairs never exhaust the 4 candidates: flag on/off must be
+        // byte-identical (the pre-step only acts at the pressure edge).
+        let ops = vec![
+            Opcode::I64Const {
+                dest_lo: vr(0),
+                dest_hi: vr(1),
+                value: 42,
+            },
+            Opcode::I64Const {
+                dest_lo: vr(2),
+                dest_hi: vr(3),
+                value: 7,
+            },
+            Opcode::I64Add {
+                dest_lo: vr(4),
+                dest_hi: vr(5),
+                src1_lo: vr(0),
+                src1_hi: vr(1),
+                src2_lo: vr(2),
+                src2_hi: vr(3),
+            },
+        ];
+        let ir: Vec<Instruction> = ops.into_iter().map(inst).collect();
+        let mut on = OptimizerBridge::new();
+        on.set_spill_on_exhaust(true);
+        let mut off = OptimizerBridge::new();
+        off.set_spill_on_exhaust(false);
+        assert_eq!(
+            on.ir_to_arm(&ir, 0).expect("compiles"),
+            off.ir_to_arm(&ir, 0).expect("compiles"),
+            "below the pressure edge the lever must be a no-op"
+        );
+    }
+
+    #[test]
+    fn test_587_two_singles_evicted_to_free_a_pair() {
+        // Case (b) of the pair evictor: freeing a legal even pair by
+        // displacing TWO independent i32 singles. Four singles fill R4-R7 and
+        // two i64 pairs fill (R8,R9)/(R10,R11); the third i64 const finds no
+        // free candidate. Next-uses are arranged so the pairs and the R6/R7
+        // singles are needed SOON and the R4/R5 singles LAST — pair-aware
+        // Belady must free (R4,R5) by evicting its two singles.
+        let mut ops = vec![Opcode::Load {
+            dest: vr(0),
+            addr: 0,
+        }];
+        // v1..v4 live i32 derivations (fill R4..R7).
+        for k in 0..4u32 {
+            ops.push(Opcode::Add {
+                dest: vr(1 + k),
+                src1: vr(0),
+                src2: vr(0),
+            });
+        }
+        ops.push(Opcode::I64Const {
+            dest_lo: vr(20),
+            dest_hi: vr(21),
+            value: 0x0102_0304_0506_0708,
+        }); // A → (R8,R9)
+        ops.push(Opcode::I64Const {
+            dest_lo: vr(22),
+            dest_hi: vr(23),
+            value: 0x1122_3344_5566_7788,
+        }); // B → (R10,R11)
+        ops.push(Opcode::I64Const {
+            dest_lo: vr(24),
+            dest_hi: vr(25),
+            value: 0x0A0B_0C0D_0E0F_1011,
+        }); // C: no free candidate — two-singles eviction fires HERE
+        ops.push(Opcode::I64Add {
+            dest_lo: vr(26),
+            dest_hi: vr(27),
+            src1_lo: vr(20),
+            src1_hi: vr(21),
+            src2_lo: vr(24),
+            src2_hi: vr(25),
+        }); // A soon
+        ops.push(Opcode::I64Xor {
+            dest_lo: vr(28),
+            dest_hi: vr(29),
+            src1_lo: vr(22),
+            src1_hi: vr(23),
+            src2_lo: vr(26),
+            src2_hi: vr(27),
+        }); // B soon
+        // R6/R7 singles next...
+        ops.push(Opcode::Xor {
+            dest: vr(30),
+            src1: vr(3),
+            src2: vr(0),
+        });
+        ops.push(Opcode::Xor {
+            dest: vr(31),
+            src1: vr(4),
+            src2: vr(0),
+        });
+        // ... and the R4/R5 singles LAST (farthest combined next use).
+        ops.push(Opcode::Xor {
+            dest: vr(32),
+            src1: vr(1),
+            src2: vr(0),
+        });
+        ops.push(Opcode::Xor {
+            dest: vr(33),
+            src1: vr(2),
+            src2: vr(0),
+        });
+        let ir: Vec<Instruction> = ops.into_iter().map(inst).collect();
+        let mut bridge = OptimizerBridge::new();
+        bridge.set_spill_on_exhaust(true);
+        let arm = bridge
+            .ir_to_arm(&ir, 1)
+            .expect("two-singles eviction frees a legal even pair");
+        // The first two spill stores are the two-singles eviction of R4+R5
+        // (v1 and v2, the farthest combined next use).
+        let store_regs: Vec<Reg> = arm
+            .iter()
+            .filter_map(|op| match op {
+                ArmOp::Str { rd, addr } if addr.base == Reg::SP => Some(*rd),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            store_regs.len() >= 2 && store_regs[0] == Reg::R4 && store_regs[1] == Reg::R5,
+            "freeing (R4,R5) must displace its two singles first; got STRs {store_regs:?}: {arm:#?}"
+        );
     }
 }
