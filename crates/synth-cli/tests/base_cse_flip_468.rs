@@ -116,13 +116,23 @@ fn func_sizes(elf: &[u8]) -> HashMap<String, usize> {
 /// — the two corpus fixtures the planner fires on. Default goldens pinned
 /// AFTER the execution differentials passed on the new default bytes;
 /// opt-out goldens captured from the parent (pre-flip) commit's default.
+///
+/// CORRECTNESS RE-PIN (#499): the redundant_base_materialization opt-out
+/// golden originally pinned MISCOMPILED bytes — the flag-off spill frame
+/// (`sub sp,#24`) was never deallocated before `pop {…,pc}` (PC read from a
+/// spill slot; base_cse_differential.py tolerated it as "known #499"). The
+/// fix adds the `add sp,#24` teardown (+4 B) and, with a balanced epilogue,
+/// frame-slot DCE now removes the dead spill stores the mis-paired `pop`
+/// previously appeared to read (−20 B): 342 → 326 B. New opt-out bytes
+/// execution-validated (spill_frame_499_differential.py +
+/// base_cse_differential.py, unicorn vs wasmtime) before re-pinning.
 const GOLDENS: [(&str, &str, usize, &str, usize); 2] = [
     (
         "scripts/repro/redundant_base_materialization.wat",
         "a0f684bcfaaece182b55fdb2e98b94d54bbeab72243764ff354ed67b79a56aef",
         224,
-        "130ef8c690cc65619395b7cdd30ad57e7c8adbfc7476a8cc255bedbe07272876",
-        342,
+        "b44084bebcc57701b39510d365a7e066d62f9bfae5a6f93a7860fe6e87f90a05",
+        326,
     ),
     (
         "scripts/repro/volatile_segment_543.wat",
