@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-07-03
+
+**RV32 cmp→select ships default-on; three encoder miscompiles fixed (Thumb
+call_indirect dispatch, i64 pair right-shift, A32 symbol metadata).**
+
+### Changed (byte-changing, deliberate — RV32 anchor refrozen)
+
+- **`SYNTH_RV_CMP_SELECT` default-ON (#472/#601).** control_step_decide −12 B;
+  corpus 14 shrink / 0 grow (now a cargo gate); opt-out `=0` CI-gated to the
+  old bytes. `SYNTH_RV_LOCAL_PROMO` **held honestly**: its per-function no-grow
+  gate fails (the profitability model doesn't price per-return epilogue
+  restores) — follow-up named at the flag site.
+
+### Fixed
+
+- **Thumb-2 `call_indirect` dispatched table entry 0 for every index
+  (#597/#602).** The `LSL #2` landed in the type field (`ASR #32`) — a one-bit
+  field error (`<<4` vs `<<6`). Multi-entry differential added; buggy byte pin
+  replaced after execution validation.
+- **i64 pair right-shifts miscompiled on the `-n` path (#599/#602).** The
+  single-function CLI never plumbed `params_i64` (the #518 mechanism), so the
+  shift-amount constant clobbered the param's live hi register. 7/9 wrong →
+  9/9 vs wasmtime.
+- **A32 objects no longer carry the Thumb bit on `STT_FUNC` symbols
+  (#598/#602);** Thumb outputs bit-identical.
+
 ## [0.27.0] - 2026-07-03
 
 **base-CSE ships default-on; two shipped miscompiles fixed; synth-verify goes
