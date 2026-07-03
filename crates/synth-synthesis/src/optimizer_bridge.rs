@@ -454,8 +454,10 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         ArmOp::I64Shl { .. } | ArmOp::I64ShrU { .. } => 38,
         // I64ShrS: same as ShrU but large block is 8 bytes (ASR+ASR vs LSR+MOV) = 40
         ArmOp::I64ShrS { .. } => 40,
-        // I64Rotl/Rotr: PUSH(2) + AND(4) + SUBS(4) + BPL(2) + small_block(30) + B(2) + large_block(30) + POP(2) = 74 bytes
-        ArmOp::I64Rotl { .. } | ArmOp::I64Rotr { .. } => 74,
+        // I64Rotl/Rotr (#610): fixed-ABI wrapper (PUSH r0-r3(2) + 3×STR(12) +
+        // 3×POP(6) + 2×MOV(4) + 4×restore(8) = 32) + core (AND(4) + SUBS(4) +
+        // BPL(2) + small(30) + B(2) + large(30) = 70) = 102 bytes.
+        ArmOp::I64Rotl { .. } | ArmOp::I64Rotr { .. } => 102,
         // I64Clz: CMP.W(4) + BEQ(2) + CLZ.W(4) + B(2) + NOP(2) + CLZ.W(4) + ADD.W(4) + MOV(2) = 24 bytes
         ArmOp::I64Clz { .. } => 24,
         // I64Ctz: CMP.W(4) + BEQ(2) + RBIT.W(4) + CLZ.W(4) + B(2) + NOP(2) + RBIT.W(4) + CLZ.W(4) + ADD.W(4) + MOV(2) = 32 bytes
@@ -469,13 +471,14 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         // I64Extend32S: MOV (lo passthrough) + ASR (sign-fill hi) = 6 bytes
         // (#498: measured 6, was an 8-byte over-estimate).
         ArmOp::I64Extend32S { .. } => 6,
-        // I64 division: PUSH + init + binary long-division loop + MOV + POP.
-        // #498: exact measured sizes (were ~80-150 guesses).
-        ArmOp::I64DivU { .. } => 74,
-        ArmOp::I64RemU { .. } => 78,
+        // I64 division: #610 fixed-ABI wrapper (PUSH r0-r3(2) + 4×STR(16) +
+        // 4×POP(8) + zero-trap(8) + 2×MOV(4) + 4×restore(8) = 46) around the
+        // pre-#610 cores (74/78/126/124, the #498 exact measurements).
+        ArmOp::I64DivU { .. } => 120,
+        ArmOp::I64RemU { .. } => 124,
         // Signed versions have additional negation logic.
-        ArmOp::I64DivS { .. } => 126,
-        ArmOp::I64RemS { .. } => 124,
+        ArmOp::I64DivS { .. } => 172,
+        ArmOp::I64RemS { .. } => 170,
         // AND/OR/XOR: encoder always uses 32-bit Thumb-2 (.W) encoding
         ArmOp::And { .. } | ArmOp::Orr { .. } | ArmOp::Eor { .. } => 4,
         // LDR/STR with high base register or large offset need 32-bit

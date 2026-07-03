@@ -665,6 +665,42 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/i64_spill_pool_587_differential.py
 
+  i64-rot-div-610-oracle:
+    name: i64 rotl/rotr/div/rem expansion oracle
+    # VCR-ORACLE-001 (#242, #610): EXECUTE the i64 rotl/rotr/div_u/rem_u (+
+    # div_s/rem_s) encoder expansions under unicorn and diff vs wasmtime.
+    # Pre-#610 these compiled without error and returned 0 for EVERY input:
+    # the rot expansions restored saved scratch OVER the result (`POP {R4}`
+    # with rd_lo == R4) and the div/rem expansions ignored their register
+    # operands outright (hardcoded R0:R1/R2:R3). Now wrapped in the fixed-ABI
+    # marshal/restore; divide-by-zero traps (UDF #0) like the i32 guard.
+    # Vectors: rot-by-0 identity, rot 32/63/>=64, div by 1/self/0(trap),
+    # high-bit patterns, _hi twins for the upper result half.
+    # Isolated job: emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run i64 rot/div/rem expansion oracle (#610)
+        run: python scripts/repro/i64_rot_div_610_differential.py target/debug/synth
+
   br-table-507-oracle:
     name: optimized-path br_table oracle
     # VCR-ORACLE-001 (#242, #507): EXECUTE br_table dispatch compiled via the
