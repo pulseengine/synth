@@ -1343,9 +1343,9 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 
 [[package]]
 name = "ordeal"
-version = "0.4.1"
+version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfc06ff17705108d56b0e8972d57c352dea633b2286fa1b14e11ee8ace15d5a5"
+checksum = "bd007fec40946ed7c9863ba532a20e3a40233900b081908d3f9450542d520f4b"
 dependencies = [
  "ordeal-lrat",
 ]
