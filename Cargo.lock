@@ -1808,19 +1808,22 @@ dependencies = [
 
 [[package]]
 name = "scry-sai-bits"
-version = "2.6.0"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "006b1058f05801e38a59c633534649d44a815ea7113c218d886e0560e6012c00"
+checksum = "0408db937bc95e5a9f1a5e8755ca0e255473c8168afdad6da95fcaf7f74c3725"
 
 [[package]]
 name = "scry-sai-core"
-version = "2.6.0"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b02d7053b71516f1f7e35b3b35a07e804a9229933efa372bbc730879cc9b7a0d"
+checksum = "6fc788257df6e4938611d1420f01eacda5d244ec40e598c13eefd750b63e871c"
 dependencies = [
  "scry-sai-bits",
+ "scry-sai-float",
+ "scry-sai-handle",
  "scry-sai-interval",
  "scry-sai-octagon",
+ "scry-sai-pentagon",
  "scry-sai-provenance",
  "scry-sai-taint",
  "sha2 0.10.9",
@@ -1828,28 +1831,46 @@ dependencies = [
 ]
 
 [[package]]
-name = "scry-sai-interval"
-version = "2.6.0"
+name = "scry-sai-float"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d4532b75b75570dd7092c7f18dd5ab8e0a921adbd00b83185c3855be4ddde07"
+checksum = "d17c4f0068b5458e7a60439ec792a54c8256af2c90fdff0e517873af04e22c2a"
+
+[[package]]
+name = "scry-sai-handle"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ce923d324abf84a7cb5c96b95edf7d6ceed4f37812b1b46846442e39b22bb1f2"
+
+[[package]]
+name = "scry-sai-interval"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c0164d3ba995ba974d76fd3d07fd02238e1a9ad34a86c80bb665d8607083da9"
 
 [[package]]
 name = "scry-sai-octagon"
-version = "2.6.0"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3460128de7a67fdfd8d93ad676eeeebccf2baee3ee720edab8fe963024544d10"
+checksum = "e0489d52e250bcf639f5b6fe204b2a2f581b6d36cb525b146a76e57c2a9f6c4e"
+
+[[package]]
+name = "scry-sai-pentagon"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f5513ba458bfd0a1d12bec9d4756bd6cdb2fe0117af420895a1a80558af3552"
 
 [[package]]
 name = "scry-sai-provenance"
-version = "2.6.0"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a024c296d8ec3baf850f9bddb922df89b81fcc00efe67ff74b63e51412c4384f"
+checksum = "39c51a235f2aeeeff4e7d10d90f2561a4bb102f43a9b539ba360e008b2a138a3"
 
 [[package]]
 name = "scry-sai-taint"
-version = "2.6.0"
+version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4edbdc5bd261f33c1bab959c2013ad6bf2fd8ecf5771da5b5eda9b7c6e56579f"
+checksum = "b7b7e84626b84b17a3f5b8c5e443a7bba00f0612cd86e464f66d2718a1b5a491"
 
 [[package]]
 name = "semver"

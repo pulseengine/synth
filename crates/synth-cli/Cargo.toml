@@ -92,4 +92,4 @@ gimli = { version = "0.34", default-features = false, features = ["read", "std"]
 # resolved call_indirect target set (FEAT-043); consumed surface unchanged
 # (msgq_put Bytes(32) bound unchanged), now re-verified with a gap-observability
 # assertion (value-domain gaps ⇒ the finite bound is sound).
-scry-sai-core = "2.0"
+scry-sai-core = "3.0"
