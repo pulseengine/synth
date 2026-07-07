@@ -37,11 +37,11 @@ an existing tag).
    (with `README.md` + `LICENSE`), and uploaded as a workflow artifact.
 
    The build uses only the `riscv` feature (the workspace default). The
-   `verify` feature is **not** enabled — it pulls `z3-sys`, which vendors
-   and compiles Z3 from source (slow, needs network, large C++ build). The
-   CLI degrades gracefully: `synth verify` without the feature prints
-   "rebuild with `--features verify`". This keeps the release build fast and
-   free of the `libz3-dev` / temp-disk issues documented in `ci.yml`.
+   `verify` feature is **not** enabled — historically it pulled `z3-sys`
+   (vendored C++ Z3 build); since #553 it is pure Rust (ordeal engine), so
+   enabling it in release builds is now feasible but remains a deliberate
+   follow-up decision. The CLI degrades gracefully: `synth verify` without
+   the feature fails loudly with "rebuild with `--features verify`".
 
 2. **`create-release`** — collects all archives, then:
    - Generates a CycloneDX 1.5 JSON SBOM for the synth toolchain via

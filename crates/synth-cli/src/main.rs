@@ -1383,7 +1383,7 @@ fn compile_command(
             }
             #[cfg(not(feature = "verify"))]
             {
-                println!("\nVerification requested but z3-solver not available.");
+                println!("\nVerification requested but not compiled into this binary.");
                 println!("Rebuild with: cargo build --features verify");
             }
         } else {
@@ -1752,7 +1752,7 @@ fn run_verification(wasm_ops: &[WasmOp], func_name: &str) -> Result<()> {
 
     println!("  Verifying {} instruction selection rules...", rules.len());
 
-    let (verified, failed, unknown) = synth_verify::with_z3_context(|| {
+    let (verified, failed, unknown) = synth_verify::with_verification_context(|| {
         let validator = synth_verify::TranslationValidator::new();
         let mut verified = 0u32;
         let mut failed = 0u32;
@@ -3969,7 +3969,7 @@ fn verify_command(wasm_input: PathBuf, elf_input: PathBuf, backend_name: &str) -
 
         #[cfg(not(feature = "verify"))]
         {
-            // This binary was built without the `verify` feature, so no Z3
+            // This binary was built without the `verify` feature, so no SMT
             // translation validation can run. Returning Ok here would make
             // `synth verify` exit success-shaped while doing nothing — a
             // script or CI step gating on `synth verify` would silently
@@ -3977,7 +3977,7 @@ fn verify_command(wasm_input: PathBuf, elf_input: PathBuf, backend_name: &str) -
             // with a non-zero exit instead.
             anyhow::bail!(
                 "this `synth` binary was built without the `verify` feature — \
-                 Z3 translation validation is unavailable.\n  \
+                 SMT translation validation is unavailable.\n  \
                  Rebuild with verification support:\n    \
                  cargo build --features verify\n  \
                  (or `cargo install --path crates/synth-cli --features verify`)"
