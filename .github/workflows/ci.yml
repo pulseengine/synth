@@ -12,12 +12,11 @@ env:
 jobs:
   test:
     name: Test
-    # NOTE: moved back to ubuntu-latest from [self-hosted, linux, x64, rust-cpu]
-    # because z3-sys's C++ build was exhausting the smithy runners' temp disk
-    # ("No space left on device" while compiling z3 AST sources). The Test job
-    # builds the entire workspace including synth-verify (which depends on z3),
-    # so the disk pressure is real. Once the smithy runners get a bigger /tmp
-    # we can move this back.
+    # NOTE: stays on ubuntu-latest for now. It originally moved here from
+    # [self-hosted, linux, x64, rust-cpu] because z3-sys's C++ build exhausted
+    # the smithy runners' temp disk — that pressure is gone (#553: synth-verify
+    # defaults to the pure-Rust ordeal engine, z3 is behind the off-by-default
+    # `z3-solver` feature), so moving back is a possible follow-up.
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -Dwarnings
@@ -35,17 +34,17 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
       - name: Run tests
-        # Exclude synth-verify: it is the only crate that pulls in z3-sys, which
-        # compiles all of Z3 from source and intermittently exhausts the runner's
-        # disk ("No space left on device" building libz3.a) — the recurring #306
-        # instability. Z3/synth-verify is already covered by the dedicated `Z3
-        # Verification` job, and the sibling jobs already exclude it, so this drops
-        # a redundant heavyweight build without losing coverage.
-        run: cargo test --workspace --exclude synth-verify
+        # Full workspace, synth-verify included (#553 steps 3/4): with ordeal as
+        # the default solver there is no z3-sys / C++ build on the default
+        # feature set, so the long-standing `--exclude synth-verify` (the #306
+        # disk-exhaustion workaround) is gone. The z3-solver feature path is
+        # covered by the dedicated `Z3 Verification` differential job below.
+        run: cargo test --workspace
 
   clippy:
     name: Clippy
-    # Same reasoning as Test — z3-sys build exhausts the smithy runner's /tmp.
+    # Same runner note as Test — the z3-sys disk pressure that forced
+    # ubuntu-latest is gone (#553); moving back to smithy is a follow-up.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -99,10 +98,18 @@ jobs:
 
   verify:
     name: Z3 Verification
+    # #553 steps 3/4: this is now the ONLY job that builds z3 (feature
+    # `z3-solver`) — the trusted-reference differential oracle, not the default
+    # engine. SYNTH_SOLVER_DIFF=1 routes every query through BOTH engines
+    # (ordeal + Z3); any decided-verdict disagreement is a hard error. Do not
+    # delete this job: it is the standing cross-check that keeps the pure-Rust
+    # default honest.
     # Stays on ubuntu-latest: needs `sudo apt-get install -y libz3-dev`
     # (smithy runners have no sudo). Move once libz3-dev is added to
     # the smithy toolchains role.
     runs-on: ubuntu-latest
+    env:
+      SYNTH_SOLVER_DIFF: "1"
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -118,9 +125,9 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Install Z3
         run: sudo apt-get update && sudo apt-get install -y libz3-dev
-      - name: Run verification tests
+      - name: Run verification tests (differential ordeal vs Z3)
         run: cargo test -p synth-verify --features z3-solver,arm
-      - name: Run comprehensive verification
+      - name: Run comprehensive verification (differential ordeal vs Z3)
         run: cargo test -p synth-verify --test comprehensive_verification --features z3-solver,arm
 
   coverage:
@@ -145,9 +152,11 @@ jobs:
         with:
           tool: cargo-llvm-cov
       - name: Generate coverage (LCOV)
+        # synth-verify is no longer excluded (#553): the default feature set is
+        # pure Rust (ordeal), so its tests run under llvm-cov like any crate.
         run: |
           cargo llvm-cov --workspace --lcov --output-path lcov.info \
-            --exclude synth-verify --exclude synth-qemu \
+            --exclude synth-qemu \
             --exclude synth-backend-awsm --exclude synth-backend-wasker
       - name: Upload to Codecov
         uses: codecov/codecov-action@v7

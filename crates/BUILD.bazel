@@ -164,15 +164,16 @@ rust_library(
     ],
 )
 
-# Verification (Z3 SMT + property-based testing)
-# Features: z3-solver (SMT proofs), arm (ARM semantics via synth-synthesis)
+# Verification (SMT translation validation + property-based testing)
+# Default feature set (#553): pure-Rust ordeal QF_BV engine + arm semantics —
+# no z3-sys / C++ build in the Bazel graph. The Z3 differential oracle
+# (feature z3-solver) is cargo-only, exercised by CI's `Z3 Verification` job.
 rust_library(
     name = "synth-verify",
     srcs = glob(["synth-verify/src/**/*.rs"]),
     crate_root = "synth-verify/src/lib.rs",
     edition = "2024",
     rustc_flags = [
-        "--cfg", "feature=\"z3-solver\"",
         "--cfg", "feature=\"arm\"",
     ],
     deps = [
@@ -182,11 +183,11 @@ rust_library(
         ":synth-synthesis",
         "@crates//:anyhow",
         "@crates//:chrono",
+        "@crates//:ordeal",
         "@crates//:proptest",
         "@crates//:serde",
         "@crates//:serde_json",
         "@crates//:thiserror",
-        "@crates//:z3",
     ],
 )
 

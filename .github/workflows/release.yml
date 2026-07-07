@@ -31,12 +31,12 @@ env:
 jobs:
   # ── Cross-platform binary builds ──────────────────────────────────────
   # synth-cli builds with `--features riscv` only (the workspace default).
-  # The `verify` feature (Z3 / z3-sys) is intentionally NOT enabled here:
-  # z3-sys vendors and compiles z3 from source, needs network + a large
-  # C++ build, and the CLI degrades gracefully without it (`synth verify`
-  # prints "rebuild with --features verify"). Keeping it out makes the
-  # release build fast, hermetic, and free of the libz3-dev / temp-disk
-  # problems documented in ci.yml.
+  # The `verify` feature is intentionally NOT enabled here. Historically it
+  # pulled z3-sys (vendored C++ Z3 build — slow, network-hungry); since #553
+  # it is pure Rust (ordeal engine), so enabling it is now feasible but is a
+  # deliberate follow-up decision, not a build constraint. The CLI degrades
+  # gracefully without it (`synth verify` fails loudly with "rebuild with
+  # --features verify").
   build-binaries:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}

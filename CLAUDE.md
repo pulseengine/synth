@@ -34,7 +34,7 @@ bazel test //tests/...             # Renode ARM Cortex-M4 emulation tests
 | `synth-synthesis` | WASM→ARM instruction selection, peephole optimizer, pattern matcher |
 | `synth-cfg` | Control flow graph construction and analysis |
 | `synth-opt` | IR-level optimization passes (CSE, constant folding, DCE) |
-| `synth-verify` | Z3 SMT translation validation |
+| `synth-verify` | SMT translation validation (pure-Rust ordeal engine; optional Z3 differential oracle behind `z3-solver`) |
 | `synth-analysis` | SSA, control flow analysis, call graph |
 | `synth-abi` | WebAssembly Component Model ABI (lift/lower) |
 | `synth-memory` | Portable memory abstraction (Zephyr, Linux, bare-metal) |

@@ -40,8 +40,10 @@ synth-backend-awsm = { path = "../synth-backend-awsm", version = "0.30.2", optio
 synth-backend-wasker = { path = "../synth-backend-wasker", version = "0.30.2", optional = true }
 synth-backend-riscv = { path = "../synth-backend-riscv", version = "0.30.2", optional = true }
 
-# Optional verification (requires z3)
-synth-verify = { path = "../synth-verify", version = "0.30.2", optional = true, features = ["z3-solver", "arm"] }
+# Optional translation validation — pure-Rust ordeal engine by default (#553),
+# no C++ toolchain needed. For the Z3 differential oracle build with
+# `--features verify,synth-verify/z3-solver` (+ SYNTH_SOLVER_DIFF=1 at runtime).
+synth-verify = { path = "../synth-verify", version = "0.30.2", optional = true, features = ["arm"] }
 
 # Optional PulseEngine WASM optimizer
 # Uncomment when loom crate is available:
