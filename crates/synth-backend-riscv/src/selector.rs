@@ -196,14 +196,16 @@ pub fn select_with_result_types(
     // selector (and its unit tests) work off a plain bool. Flag off by default →
     // `compute_local_promotion` is never consulted → byte-identical baseline.
     //
-    // HELD from the RV32 flip-wave (honest blocker, the #592 const-CSE
-    // pattern): the lever fails the per-function no-grow gate — its own WAR
-    // fixtures grow (war_set 56→64 B, war_tee 60→68 B) and promo-ALONE grows
-    // control_step 504→508 B. The profitability model ("≥2 accesses repay
-    // save/restore") under-charges: it prices neither the per-RETURN restore
-    // (`lw s_i` duplicated into every epilogue) nor the WAR-snapshot `mv`s.
-    // Flip when the decision function models both and the corpus no-grow gate
-    // holds at function granularity.
+    // Still opt-in, but the #601 no-grow blocker is FIXED: profitability is now
+    // MEASURED, not modeled — `select_inner` lowers the function with and
+    // without promotion (and over every candidate subset) and keeps a promoted
+    // lowering only when its emitted byte size is <= the unpromoted baseline.
+    // The v1 "≥2 accesses repay save/restore" estimate under-charged (it priced
+    // neither the per-RETURN `lw s_i` restore `preserve_callee_saved` duplicates
+    // into every epilogue nor the WAR-snapshot `mv`s), growing war_set 56→64 B,
+    // war_tee 60→68 B and control_step_decide +4 B. The measured decision prices
+    // every cost by construction (#511 lesson: emitted bytes, not a side table).
+    // Corpus gate: `rv32_local_promo_no_grow_corpus_472` (synth-cli tests).
     let promote_locals = std::env::var_os("SYNTH_RV_LOCAL_PROMO").is_some();
     // #472: cmp→select fusion (the VCR-SEL-004 lever, ported from ARM). Same
     // read-once discipline; DEFAULT-ON since the RV32 flip-wave (no function
@@ -227,6 +229,20 @@ pub fn select_with_result_types(
 /// Shared selection pipeline. `promote_locals` drives the #472 local-promotion
 /// lever and `cmp_select_fuse` the #472 cmp→select fusion; the public entry
 /// point derives both from the env, unit tests pass them explicitly.
+///
+/// MEASURED PROFITABILITY (the #601 flip blocker's fix): with `promote_locals`
+/// set, this does NOT trust `compute_local_promotion`'s access-count heuristic.
+/// It lowers the function unpromoted (the baseline — byte-identical to
+/// flag-off), then over every non-empty SUBSET of the candidate locals (≤ 3,
+/// the s8/s9/s10 budget → ≤ 7 attempts), and keeps the smallest lowering by
+/// emitted byte size, ties going to the most-promoted attempt (same bytes,
+/// fewer frame memory ops → cycles). A promoted lowering wins only when
+/// `emitted_byte_size(promoted) <= emitted_byte_size(baseline)` — strict
+/// no-grow, priced on the ACTUAL emitted sequence, so the per-return epilogue
+/// restores, WAR-snapshot `mv`s, zero-inits and frame `addi` interactions are
+/// all charged by construction (#511: measure emitted bytes, don't trust a
+/// side model). Subsets matter: one local's win must not smuggle another
+/// local's loss past the gate.
 fn select_inner(
     wasm_ops: &[WasmOp],
     num_params: u32,
@@ -236,10 +252,113 @@ fn select_inner(
     promote_locals: bool,
     cmp_select_fuse: bool,
 ) -> Result<RiscVSelection, SelectorError> {
+    // The unpromoted lowering. With the flag off this IS the result (single
+    // run, byte-identical baseline); with the flag on it is the size bar every
+    // promoted attempt must meet — and the fallback when none does. If it
+    // fails, fail exactly like flag-off would (the flag must never change
+    // WHICH functions compile).
+    let baseline = select_attempt(
+        wasm_ops,
+        num_params,
+        options,
+        func_ret_i64,
+        type_ret_i64,
+        false,
+        None,
+        cmp_select_fuse,
+    );
+    if !promote_locals {
+        return baseline.map(|(sel, _)| sel);
+    }
+    let (baseline, _) = baseline?;
+    // Discover the candidate set from a full-promotion attempt.
+    let candidates: Vec<u32> = match select_attempt(
+        wasm_ops,
+        num_params,
+        options,
+        func_ret_i64,
+        type_ret_i64,
+        true,
+        None,
+        cmp_select_fuse,
+    ) {
+        Ok((_, promoted)) => promoted,
+        Err(_) => Vec::new(),
+    };
+    if candidates.is_empty() {
+        return Ok(baseline);
+    }
+    let mut best = baseline;
+    let mut best_size = emitted_byte_size(&best.ops);
+    let mut best_promoted = 0usize;
+    debug_assert!(candidates.len() <= 3, "s8/s9/s10 budget");
+    for mask in 1u32..(1u32 << candidates.len()) {
+        let subset: std::collections::HashSet<u32> = candidates
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| mask & (1 << i) != 0)
+            .map(|(_, &idx)| idx)
+            .collect();
+        let promoted_count = subset.len();
+        let Ok((sel, _)) = select_attempt(
+            wasm_ops,
+            num_params,
+            options,
+            func_ret_i64,
+            type_ret_i64,
+            true,
+            Some(&subset),
+            cmp_select_fuse,
+        ) else {
+            continue;
+        };
+        let size = emitted_byte_size(&sel.ops);
+        if size < best_size || (size == best_size && promoted_count > best_promoted) {
+            best = sel;
+            best_size = size;
+            best_promoted = promoted_count;
+        }
+    }
+    Ok(best)
+}
+
+/// Emitted `.text` byte size of a lowered op sequence. MUST agree with
+/// `elf_builder::assemble_function` pass 1: `Label` emits nothing, `Call`
+/// expands to an `auipc + jalr` pair (8 B), everything else is one 4-byte
+/// RV32I word (no compressed encodings). The mirror is pinned by
+/// `emitted_byte_size_matches_assembled_text` in `elf_builder.rs` — the #511
+/// estimator↔encoder drift lesson.
+pub(crate) fn emitted_byte_size(ops: &[RiscVOp]) -> usize {
+    ops.iter()
+        .map(|op| match op {
+            RiscVOp::Label { .. } => 0,
+            RiscVOp::Call { .. } => 8,
+            _ => 4,
+        })
+        .sum()
+}
+
+/// One full selection run. `promo_allow` (with `promote_locals`) restricts
+/// promotion to a subset of the candidate locals — the probe knob of
+/// `select_inner`'s measured decision; `None` promotes every mapped candidate.
+/// Returns the lowering plus the locals actually promoted (sorted), which
+/// seeds the subset enumeration.
+#[allow(clippy::too_many_arguments)]
+fn select_attempt(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+    options: SelectorOptions,
+    func_ret_i64: &[bool],
+    type_ret_i64: &[bool],
+    promote_locals: bool,
+    promo_allow: Option<&std::collections::HashSet<u32>>,
+    cmp_select_fuse: bool,
+) -> Result<(RiscVSelection, Vec<u32>), SelectorError> {
     let mut ctx = Selector::new_with_options(num_params, options);
     ctx.func_ret_i64 = func_ret_i64.to_vec();
     ctx.type_ret_i64 = type_ret_i64.to_vec();
     ctx.promote_locals = promote_locals;
+    ctx.promo_allow = promo_allow.cloned();
     ctx.cmp_select_fuse = cmp_select_fuse;
     ctx.compute_local_layout(wasm_ops, num_params); // #223 / #312
     // #472: zero-init any promoted local whose first access is a read (#457).
@@ -304,7 +423,9 @@ fn select_inner(
     // (including s11 = __linear_memory_base). These functions are leaves, so no
     // `ra`/caller-saved preservation is needed (non-leaf is a follow-up).
     preserve_callee_saved(&mut ctx.out, local_frame_bytes);
-    Ok(RiscVSelection { ops: ctx.out })
+    let mut promoted: Vec<u32> = ctx.promoted.keys().copied().collect();
+    promoted.sort_unstable();
+    Ok((RiscVSelection { ops: ctx.out }, promoted))
 }
 
 /// The destination register an op writes, if any (for the callee-saved scan).
@@ -703,7 +824,13 @@ fn fold_const_addr(out: &mut Vec<RiscVOp>) -> usize {
 ///   `local.set` at op i dominates every `local.get` at j>i without a dominator
 ///   analysis (a `br_if` only skips forward; no loop header sits at depth 0). A
 ///   local touched inside any control-flow region is declined.
-/// - **Cost gate.** >= 2 accesses (one access can't repay the s-reg save/restore).
+/// - **Cost gate.** >= 2 accesses (one access can't repay the s-reg
+///   save/restore). This is only a cheap CANDIDATE filter — actual
+///   profitability is MEASURED by `select_inner`, which lowers every candidate
+///   subset and keeps a promoted lowering only when its emitted byte size is
+///   <= the unpromoted baseline (the #601 no-grow blocker's fix; per-return
+///   epilogue restores and WAR-snapshot `mv`s are priced on the real emitted
+///   sequence, not estimated here).
 ///
 /// Budget: `s8`, `s9`, `s10` (x24..x26) — callee-saved, OUTSIDE the `temps`
 /// pool (t0..t6, s1..s6) and the div core's fixed file (s1..s3 + s7 move
@@ -995,6 +1122,10 @@ struct Selector {
     /// #472: promoted locals whose FIRST access is a read — they rely on the
     /// wasm zero-init and get an `addi s_i, zero, 0` at function entry (#457).
     promoted_zero_init: std::collections::HashSet<u32>,
+    /// #472 measured profitability: when `Some`, only these local indices may
+    /// keep their promotion mapping — the subset probe `select_inner` uses to
+    /// find the smallest lowering. `None` = every mapped candidate promotes.
+    promo_allow: Option<std::collections::HashSet<u32>>,
     /// #472: whether local promotion is enabled for this function. Set by the
     /// public entry point from `SYNTH_RV_LOCAL_PROMO` (still opt-in — held
     /// from the flip-wave on the no-grow blocker documented there); the env is
@@ -1051,6 +1182,7 @@ impl Selector {
             type_ret_i64: Vec::new(),
             promoted: std::collections::HashMap::new(),
             promoted_zero_init: std::collections::HashSet::new(),
+            promo_allow: None,
             promote_locals: false,
             cmp_select_fuse: false,
             pending_cmp: None,
@@ -1075,7 +1207,15 @@ impl Selector {
         // source of truth: the layout skips exactly the promoted locals, so a
         // frame slot is reserved iff the local is NOT register-resident.
         if self.promote_locals {
-            let (map, zero_init) = compute_local_promotion(wasm_ops, num_params, &self.i64_locals);
+            let (mut map, mut zero_init) =
+                compute_local_promotion(wasm_ops, num_params, &self.i64_locals);
+            // #472 measured profitability: the subset probe. A local outside
+            // the allow-set falls back to the frame path below — its slot is
+            // reserved again because `promoted` no longer contains it.
+            if let Some(allow) = &self.promo_allow {
+                map.retain(|idx, _| allow.contains(idx));
+                zero_init.retain(|idx| map.contains_key(idx));
+            }
             self.promoted = map;
             self.promoted_zero_init = zero_init;
         }
@@ -7836,6 +7976,168 @@ mod tests {
                 }
             )),
             "epilogue must restore s8: {on:?}"
+        );
+    }
+
+    /// The `$war_set` shape from `rv32_local_promotion_472.wat` — the fixture
+    /// that GREW under the v1 access-count model (56→64 B, the #601 flip
+    /// blocker): one WAR write (costs a snapshot `mv`) + a save/restore pair,
+    /// against only two reads. The measured decision must decline and return
+    /// the flag-off bytes exactly.
+    fn war_set_ops() -> Vec<WasmOp> {
+        vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalSet(1), // x = a
+            WasmOp::LocalGet(1), // push OLD x
+            WasmOp::I32Const(100),
+            WasmOp::LocalSet(1), // x = 100 — WAR: must snapshot the pushed old x
+            WasmOp::LocalGet(1), // push NEW x
+            WasmOp::I32Add,
+            WasmOp::End,
+        ]
+    }
+
+    /// #601 blocker, fixed: when every candidate subset MEASURES larger than
+    /// the unpromoted baseline, the flag-on lowering IS the baseline —
+    /// byte-identical, strict no-grow.
+    #[test]
+    fn local_promotion_declines_when_promotion_measures_larger_472() {
+        let ops = war_set_ops();
+        let off = s_promo(&ops, 1, false);
+        let on = s_promo(&ops, 1, true);
+        assert_eq!(
+            emitted_byte_size(&on),
+            emitted_byte_size(&off),
+            "war_set-shape must not grow under the measured model"
+        );
+        assert_eq!(
+            on, off,
+            "declined promotion must fall back to the exact unpromoted lowering"
+        );
+        assert!(
+            !writes_reg(&on, Reg::S8),
+            "no s-register promotion may survive the decline: {on:?}"
+        );
+    }
+
+    /// Same blocker class, the other under-charged cost: a SECOND return site
+    /// duplicates the epilogue `lw s8` (`preserve_callee_saved` restores
+    /// before every `ret`), flipping a promotion that would otherwise be
+    /// break-even into a net grow. Must decline, byte-identical to flag-off.
+    #[test]
+    fn local_promotion_prices_per_return_restores_472() {
+        // x = p0; if (x) return x; return x + x — accesses at depth 0, two rets.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalSet(1),
+            WasmOp::LocalGet(1),
+            WasmOp::If,
+            WasmOp::Return,
+            WasmOp::End,
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let off = s_promo(&ops, 1, false);
+        let on = s_promo(&ops, 1, true);
+        assert!(
+            emitted_byte_size(&on) <= emitted_byte_size(&off),
+            "flag-on may never exceed flag-off: on={} off={}",
+            emitted_byte_size(&on),
+            emitted_byte_size(&off)
+        );
+    }
+
+    /// The WAR-snapshot machinery (`snapshot_aliases`) keeps unit coverage
+    /// even though the measured gate declines the war_set shape end-to-end:
+    /// FORCE the promotion via `select_attempt` and check the snapshot `mv`
+    /// (`addi tmp, s8, 0`) rescues the earlier read before the s-reg is
+    /// overwritten.
+    #[test]
+    fn local_promotion_forced_war_snapshot_still_sound_472() {
+        let ops = war_set_ops();
+        let (sel, promoted) = select_attempt(
+            &ops,
+            1,
+            SelectorOptions::wasm_compliant(),
+            &[],
+            &[],
+            true,
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(promoted, vec![1], "local 1 must promote under force");
+        assert!(
+            writes_reg(&sel.ops, Reg::S8),
+            "forced promotion must use s8: {:?}",
+            sel.ops
+        );
+        assert!(
+            sel.ops.iter().any(|op| matches!(
+                op,
+                RiscVOp::Addi {
+                    rs1: Reg::S8,
+                    imm: 0,
+                    rd,
+                } if *rd != Reg::S8 && *rd != Reg::ZERO
+            )),
+            "WAR write must snapshot the live alias of s8 first: {:?}",
+            sel.ops
+        );
+    }
+
+    /// The subset probe: pair a genuinely profitable local (many reads) with a
+    /// WAR-losing local in ONE function. All-or-nothing would either grow
+    /// (promote both) or leave bytes on the table (promote neither); the
+    /// measured subset enumeration must promote at most the winning subset and
+    /// never exceed the baseline.
+    #[test]
+    fn local_promotion_subset_probe_mixed_locals_472() {
+        let mut ops = vec![
+            // local 1: the war_set loser.
+            WasmOp::LocalGet(0),
+            WasmOp::LocalSet(1),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Const(100),
+            WasmOp::LocalSet(1),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::Drop,
+            // local 2: the accum-style winner — one write, many reads.
+            WasmOp::LocalGet(0),
+            WasmOp::LocalSet(2),
+        ];
+        for _ in 0..7 {
+            ops.push(WasmOp::LocalGet(2));
+            ops.push(WasmOp::I32Add);
+        }
+        // seed value for the add chain
+        ops.insert(10, WasmOp::LocalGet(2));
+        ops.push(WasmOp::End);
+        let off = s_promo(&ops, 1, false);
+        let on = s_promo(&ops, 1, true);
+        assert!(
+            emitted_byte_size(&on) <= emitted_byte_size(&off),
+            "no-grow must hold on the mixed function: on={} off={}",
+            emitted_byte_size(&on),
+            emitted_byte_size(&off)
+        );
+        assert!(
+            emitted_byte_size(&on) < emitted_byte_size(&off),
+            "the winning local must still be promoted (subset, not all-or-nothing)"
+        );
+        // Candidate mapping is ascending: local 1 → s8 (the WAR loser),
+        // local 2 → s9 (the winner). The probe must keep the winner and drop
+        // the loser — all-or-nothing would either write both or neither.
+        assert!(
+            writes_reg(&on, Reg::S9),
+            "winning local 2 must be promoted (s9): {on:?}"
+        );
+        assert!(
+            !writes_reg(&on, Reg::S8),
+            "losing local 1 must be excluded by the subset probe (s8): {on:?}"
         );
     }
 
