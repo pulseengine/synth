@@ -150,7 +150,964 @@ impl ArmEncoder {
         bytes
     }
 
+    /// #615: A32 (ARM-mode) expansions for the multi-instruction ops that the
+    /// Thumb-2 encoder expands but the A32 arm previously encoded as a single
+    /// literal NOP (`0xE1A00000`) — i64 mul / shifts / rotates / comparisons /
+    /// eqz, plus i64 const/load/store/extend/wrap and the i32 SetCond /
+    /// SelectMove pseudo-ops. Each expansion mirrors its Thumb-2 twin's
+    /// register contract and semantics exactly (A32 conditional execution
+    /// replaces the IT blocks). Returns `Ok(None)` for ops this helper does
+    /// not handle; the caller's match encodes or loudly rejects those.
+    fn encode_arm_expanded(&self, op: &ArmOp) -> Result<Option<Vec<u8>>> {
+        use synth_synthesis::Condition;
+
+        /// A32 condition-field bits (instruction bits [31:28]).
+        fn cond_bits(cond: &Condition) -> u32 {
+            match cond {
+                Condition::EQ => 0x0,
+                Condition::NE => 0x1,
+                Condition::HS => 0x2, // CS: unsigned >=
+                Condition::LO => 0x3, // CC: unsigned <
+                Condition::HI => 0x8, // unsigned >
+                Condition::LS => 0x9, // unsigned <=
+                Condition::GE => 0xA,
+                Condition::LT => 0xB,
+                Condition::GT => 0xC,
+                Condition::LE => 0xD,
+            }
+        }
+        fn w(b: &mut Vec<u8>, word: u32) {
+            b.extend_from_slice(&word.to_le_bytes());
+        }
+        /// MOV<cond> rd, #imm (rotated-immediate form; only 0/1 used here).
+        fn mov_cond_imm(b: &mut Vec<u8>, cond: u32, rd: u32, imm: u32) {
+            w(b, (cond << 28) | 0x03A0_0000 | (rd << 12) | imm);
+        }
+        /// After a flag-setting pair: MOV<cond> rd,#1 ; MOV<!cond> rd,#0.
+        fn set_cond(b: &mut Vec<u8>, cond: &Condition, rd: u32) {
+            mov_cond_imm(b, cond_bits(cond), rd, 1);
+            mov_cond_imm(b, cond_bits(&cond.invert()), rd, 0);
+        }
+        /// CMP rn, rm (register form).
+        fn cmp_reg(b: &mut Vec<u8>, rn: u32, rm: u32) {
+            w(b, 0xE150_0000 | (rn << 16) | rm);
+        }
+        /// SBCS rd, rn, rm — the 64-bit compare idiom's high-word subtract.
+        fn sbcs(b: &mut Vec<u8>, rd: u32, rn: u32, rm: u32) {
+            w(b, 0xE0D0_0000 | (rn << 16) | (rd << 12) | rm);
+        }
+        /// MOVW rd, #imm16.
+        fn movw(b: &mut Vec<u8>, rd: u32, v: u32) {
+            w(
+                b,
+                0xE300_0000 | (((v >> 12) & 0xF) << 16) | (rd << 12) | (v & 0xFFF),
+            );
+        }
+        /// MOVT rd, #imm16.
+        fn movt(b: &mut Vec<u8>, rd: u32, v: u32) {
+            w(
+                b,
+                0xE340_0000 | (((v >> 12) & 0xF) << 16) | (rd << 12) | (v & 0xFFF),
+            );
+        }
+        /// Register-controlled shift: MOV rd, rn, <LSL|LSR|ASR> rs.
+        /// `ty`: 0=LSL, 1=LSR, 2=ASR. A32 uses the bottom byte of rs;
+        /// amounts of 32 or more yield 0 (LSL/LSR) or all-sign (ASR) — same
+        /// semantics the Thumb-2 expansions rely on.
+        fn shift_reg(b: &mut Vec<u8>, ty: u32, rd: u32, rn: u32, rs: u32) {
+            w(b, 0xE1A0_0010 | (rd << 12) | (rs << 8) | (ty << 5) | rn);
+        }
+        const LSL: u32 = 0;
+        const LSR: u32 = 1;
+        const ASR: u32 = 2;
+        /// Immediate-shift move: MOV rd, rn, <LSL|LSR|ASR> #imm.
+        fn shift_imm(b: &mut Vec<u8>, ty: u32, rd: u32, rn: u32, imm: u32) {
+            w(
+                b,
+                0xE1A0_0000 | (rd << 12) | ((imm & 0x1F) << 7) | (ty << 5) | rn,
+            );
+        }
+        /// Data-processing register form: `base | rn<<16 | rd<<12 | rm`.
+        /// `base` carries cond/opcode/S (e.g. 0xE090_0000 = ADDS).
+        fn dp_reg(b: &mut Vec<u8>, base: u32, rd: u32, rn: u32, rm: u32) {
+            w(b, base | (rn << 16) | (rd << 12) | rm);
+        }
+        /// ORR rd, rd, rm, LSR #31 — the carry-propagation idiom of the
+        /// shift-subtract division loop (bring rm's MSB into rd's bit 0).
+        fn orr_lsr31(b: &mut Vec<u8>, rd: u32, rm: u32) {
+            w(
+                b,
+                0xE180_0000 | (rd << 16) | (rd << 12) | (31 << 7) | (1 << 5) | rm,
+            );
+        }
+        /// 64-bit two's-complement negate of the lo:hi pair (MVN/MVN/ADDS/ADC).
+        fn negate64(b: &mut Vec<u8>, lo: u32, hi: u32) {
+            w(b, 0xE1E0_0000 | (lo << 12) | lo); //           MVN  lo, lo
+            w(b, 0xE1E0_0000 | (hi << 12) | hi); //           MVN  hi, hi
+            w(b, 0xE290_0001 | (lo << 16) | (lo << 12)); //   ADDS lo, lo, #1
+            w(b, 0xE2A0_0000 | (hi << 16) | (hi << 12)); //   ADC  hi, hi, #0
+        }
+        /// TST x, x ; BPL +4-instructions — the "skip the negate64 when the
+        /// sign bit is clear" guard of the signed div/rem arms.
+        fn skip_negate_if_positive(b: &mut Vec<u8>, x: u32) {
+            w(b, 0xE110_0000 | (x << 16) | x); // TST x, x
+            w(b, 0x5A00_0003); //                 BPL +4 insns (past negate64)
+        }
+        /// The 64-iteration shift-subtract division loop — A32 transcription
+        /// of the Thumb-2 #610 core: dividend R0:R1, divisor R2:R3, quotient
+        /// R4:R5, remainder R6:R7, loop counter in `counter` (R12 or R8).
+        fn div_loop(b: &mut Vec<u8>, counter: u32) {
+            w(b, 0xE3A0_0040 | (counter << 12)); // MOV counter, #64
+            let loop_start = b.len();
+            // quotient <<= 1
+            shift_imm(b, LSL, 5, 5, 1);
+            orr_lsr31(b, 5, 4);
+            shift_imm(b, LSL, 4, 4, 1);
+            // remainder <<= 1, OR in dividend MSB
+            shift_imm(b, LSL, 7, 7, 1);
+            orr_lsr31(b, 7, 6);
+            shift_imm(b, LSL, 6, 6, 1);
+            orr_lsr31(b, 6, 1);
+            // dividend <<= 1
+            shift_imm(b, LSL, 1, 1, 1);
+            orr_lsr31(b, 1, 0);
+            shift_imm(b, LSL, 0, 0, 1);
+            // if remainder >= divisor (64-bit unsigned): subtract, set q bit
+            w(b, 0xE157_0003); // CMP R7, R3      (high words)
+            w(b, 0x8A00_0002); // BHI .subtract   (+2 insns)
+            w(b, 0x3A00_0004); // BLO .next       (+4 insns)
+            w(b, 0xE156_0002); // CMP R6, R2      (low words, highs equal)
+            w(b, 0x3A00_0002); // BLO .next       (+2 insns)
+            w(b, 0xE056_6002); // .subtract: SUBS R6, R6, R2
+            w(b, 0xE0C7_7003); //            SBC  R7, R7, R3
+            w(b, 0xE384_4001); //            ORR  R4, R4, #1
+            // .next: decrement and loop
+            w(b, 0xE250_0001 | (counter << 16) | (counter << 12)); // SUBS counter, #1
+            let diff = (loop_start as i64) - (b.len() as i64 + 8);
+            w(b, 0x1A00_0000 | (((diff / 4) as u32) & 0x00FF_FFFF)); // BNE loop
+        }
+        /// 32-bit population count on working register `x` — A32 transcription
+        /// of the Thumb-2 I64Popcnt per-word core (mul-based fold): `c` is the
+        /// constant register, R12 the shifted temp. Both are clobbered.
+        fn popcnt_word(b: &mut Vec<u8>, x: u32, c: u32) {
+            // x = x - ((x >> 1) & 0x55555555)
+            shift_imm(b, LSR, 12, x, 1);
+            movw(b, c, 0x5555);
+            movt(b, c, 0x5555);
+            dp_reg(b, 0xE000_0000, 12, 12, c); // AND R12, R12, c
+            dp_reg(b, 0xE040_0000, x, x, 12); //  SUB x, x, R12
+            // x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
+            movw(b, c, 0x3333);
+            movt(b, c, 0x3333);
+            dp_reg(b, 0xE000_0000, 12, x, c); //  AND R12, x, c
+            shift_imm(b, LSR, x, x, 2);
+            dp_reg(b, 0xE000_0000, x, x, c); //   AND x, x, c
+            dp_reg(b, 0xE080_0000, x, x, 12); //  ADD x, x, R12
+            // x = (x + (x >> 4)) & 0x0F0F0F0F
+            shift_imm(b, LSR, 12, x, 4);
+            dp_reg(b, 0xE080_0000, x, x, 12); //  ADD x, x, R12
+            movw(b, c, 0x0F0F);
+            movt(b, c, 0x0F0F);
+            dp_reg(b, 0xE000_0000, x, x, c); //   AND x, x, c
+            // x = (x * 0x01010101) >> 24
+            movw(b, c, 0x0101);
+            movt(b, c, 0x0101);
+            w(b, 0xE000_0090 | (x << 16) | (c << 8) | x); // MUL x, x, c
+            shift_imm(b, LSR, x, x, 24);
+        }
+
+        let mut b: Vec<u8> = Vec::new();
+        match op {
+            // SetCond: materialize a flags-predicate as 0/1 — the A32 twin of
+            // the Thumb `ITE cond; MOV rd,#1; MOV rd,#0`.
+            ArmOp::SetCond { rd, cond } => {
+                set_cond(&mut b, cond, reg_to_bits(rd));
+            }
+
+            // SelectMove: conditional register move (Thumb: IT cond; MOV).
+            ArmOp::SelectMove { rd, rm, cond } => {
+                w(
+                    &mut b,
+                    (cond_bits(cond) << 28)
+                        | 0x01A0_0000
+                        | (reg_to_bits(rd) << 12)
+                        | reg_to_bits(rm),
+                );
+            }
+
+            // I64SetCond: compare two i64 register pairs, 0/1 into rd.
+            // EQ/NE: CMP lo,lo; CMPEQ hi,hi (only if lows equal); set.
+            // Ordered: CMP lo,lo; SBCS rd,hi,hi; set — with the same
+            // operand-swap + condition mapping as the Thumb-2 arm.
+            ArmOp::I64SetCond {
+                rd,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
+                cond,
+            } => {
+                let rd_b = reg_to_bits(rd);
+                let (n_lo, n_hi, m_lo, m_hi) = (
+                    reg_to_bits(rn_lo),
+                    reg_to_bits(rn_hi),
+                    reg_to_bits(rm_lo),
+                    reg_to_bits(rm_hi),
+                );
+                match cond {
+                    Condition::EQ | Condition::NE => {
+                        cmp_reg(&mut b, n_lo, m_lo);
+                        // CMP<EQ> rn_hi, rm_hi — compare highs only if lows equal.
+                        w(&mut b, 0x0150_0000 | (n_hi << 16) | m_hi);
+                        set_cond(&mut b, cond, rd_b);
+                    }
+                    // (swap operands?, condition after SBCS) per the Thumb arm:
+                    // LT/GE/LO/HS compare (rn, rm); GT/LE/HI/LS swap to (rm, rn).
+                    Condition::LT => {
+                        cmp_reg(&mut b, n_lo, m_lo);
+                        sbcs(&mut b, rd_b, n_hi, m_hi);
+                        set_cond(&mut b, &Condition::LT, rd_b);
+                    }
+                    Condition::GE => {
+                        cmp_reg(&mut b, n_lo, m_lo);
+                        sbcs(&mut b, rd_b, n_hi, m_hi);
+                        set_cond(&mut b, &Condition::GE, rd_b);
+                    }
+                    Condition::GT => {
+                        cmp_reg(&mut b, m_lo, n_lo);
+                        sbcs(&mut b, rd_b, m_hi, n_hi);
+                        set_cond(&mut b, &Condition::LT, rd_b);
+                    }
+                    Condition::LE => {
+                        cmp_reg(&mut b, m_lo, n_lo);
+                        sbcs(&mut b, rd_b, m_hi, n_hi);
+                        set_cond(&mut b, &Condition::GE, rd_b);
+                    }
+                    Condition::LO => {
+                        cmp_reg(&mut b, n_lo, m_lo);
+                        sbcs(&mut b, rd_b, n_hi, m_hi);
+                        set_cond(&mut b, &Condition::LO, rd_b);
+                    }
+                    Condition::HS => {
+                        cmp_reg(&mut b, n_lo, m_lo);
+                        sbcs(&mut b, rd_b, n_hi, m_hi);
+                        set_cond(&mut b, &Condition::HS, rd_b);
+                    }
+                    Condition::HI => {
+                        cmp_reg(&mut b, m_lo, n_lo);
+                        sbcs(&mut b, rd_b, m_hi, n_hi);
+                        set_cond(&mut b, &Condition::LO, rd_b);
+                    }
+                    Condition::LS => {
+                        cmp_reg(&mut b, m_lo, n_lo);
+                        sbcs(&mut b, rd_b, m_hi, n_hi);
+                        set_cond(&mut b, &Condition::HS, rd_b);
+                    }
+                }
+            }
+
+            // I64SetCondZ: ORRS rd, lo, hi sets Z iff the pair is zero.
+            ArmOp::I64SetCondZ { rd, rn_lo, rn_hi } => {
+                let rd_b = reg_to_bits(rd);
+                w(
+                    &mut b,
+                    0xE190_0000 | (reg_to_bits(rn_lo) << 16) | (rd_b << 12) | reg_to_bits(rn_hi),
+                );
+                set_cond(&mut b, &Condition::EQ, rd_b);
+            }
+
+            // i64 comparison wrappers: delegate to I64SetCond/Z, mirroring the
+            // Thumb-2 delegation arms.
+            ArmOp::I64Eqz { rd, rnlo, rnhi } => {
+                return self
+                    .encode_arm(&ArmOp::I64SetCondZ {
+                        rd: *rd,
+                        rn_lo: *rnlo,
+                        rn_hi: *rnhi,
+                    })
+                    .map(Some);
+            }
+            ArmOp::I64Eq {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64Ne {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64LtS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64LtU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64LeS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64LeU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64GtS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64GtU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64GeS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64GeU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                let cond = match op {
+                    ArmOp::I64Eq { .. } => Condition::EQ,
+                    ArmOp::I64Ne { .. } => Condition::NE,
+                    ArmOp::I64LtS { .. } => Condition::LT,
+                    ArmOp::I64LtU { .. } => Condition::LO,
+                    ArmOp::I64LeS { .. } => Condition::LE,
+                    ArmOp::I64LeU { .. } => Condition::LS,
+                    ArmOp::I64GtS { .. } => Condition::GT,
+                    ArmOp::I64GtU { .. } => Condition::HI,
+                    ArmOp::I64GeS { .. } => Condition::GE,
+                    _ => Condition::HS,
+                };
+                return self
+                    .encode_arm(&ArmOp::I64SetCond {
+                        rd: *rd,
+                        rn_lo: *rnlo,
+                        rn_hi: *rnhi,
+                        rm_lo: *rmlo,
+                        rm_hi: *rmhi,
+                        cond,
+                    })
+                    .map(Some);
+            }
+
+            // I64Mul: cross products into R12, then UMULL — same sequence and
+            // ordering as the Thumb-2 arm (R12 is encoder scratch, #212).
+            ArmOp::I64Mul {
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
+            } => {
+                let (dl, dh) = (reg_to_bits(rd_lo), reg_to_bits(rd_hi));
+                let (nl, nh) = (reg_to_bits(rn_lo), reg_to_bits(rn_hi));
+                let (ml, mh) = (reg_to_bits(rm_lo), reg_to_bits(rm_hi));
+                // MUL R12, rn_lo, rm_hi   (R12 = a_lo * b_hi)
+                w(&mut b, 0xE000_0090 | (12 << 16) | (mh << 8) | nl);
+                // MLA R12, rn_hi, rm_lo, R12  (R12 += a_hi * b_lo)
+                w(
+                    &mut b,
+                    0xE020_0090 | (12 << 16) | (12 << 12) | (ml << 8) | nh,
+                );
+                // UMULL rd_lo, rd_hi, rn_lo, rm_lo
+                w(
+                    &mut b,
+                    0xE080_0090 | (dh << 16) | (dl << 12) | (ml << 8) | nl,
+                );
+                // ADD rd_hi, rd_hi, R12
+                w(&mut b, 0xE080_0000 | (dh << 16) | (dh << 12) | 12);
+            }
+
+            // I64Shl / I64ShrU / I64ShrS: same small/large-shift structure as
+            // the Thumb-2 arms (rm_hi is the scratch register; amounts are
+            // masked to 6 bits; register-controlled shifts >= 32 yield 0,
+            // which the small path relies on for n = 0).
+            ArmOp::I64Shl {
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
+            } => {
+                let (dl, dh) = (reg_to_bits(rd_lo), reg_to_bits(rd_hi));
+                let (nl, nh) = (reg_to_bits(rn_lo), reg_to_bits(rn_hi));
+                let (ml, mh) = (reg_to_bits(rm_lo), reg_to_bits(rm_hi));
+                w(&mut b, 0xE200_003F | (ml << 16) | (ml << 12)); // AND  ml, ml, #63
+                w(&mut b, 0xE250_0020 | (ml << 16) | (mh << 12)); // SUBS mh, ml, #32
+                w(&mut b, 0x5A00_0005); //                            BPL  .large
+                w(&mut b, 0xE260_0020 | (ml << 16) | (mh << 12)); // RSB  mh, ml, #32
+                shift_reg(&mut b, LSR, mh, nl, mh); //               mh = lo >> (32-n)
+                shift_reg(&mut b, LSL, dh, nh, ml); //               dh = hi << n
+                w(&mut b, 0xE180_0000 | (dh << 16) | (dh << 12) | mh); // ORR dh, dh, mh
+                shift_reg(&mut b, LSL, dl, nl, ml); //               dl = lo << n
+                w(&mut b, 0xEA00_0001); //                            B    .done
+                shift_reg(&mut b, LSL, dh, nl, mh); //               .large: dh = lo << (n-32)
+                w(&mut b, 0xE3A0_0000 | (dl << 12)); //              MOV  dl, #0
+            }
+            ArmOp::I64ShrU {
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
+            } => {
+                let (dl, dh) = (reg_to_bits(rd_lo), reg_to_bits(rd_hi));
+                let (nl, nh) = (reg_to_bits(rn_lo), reg_to_bits(rn_hi));
+                let (ml, mh) = (reg_to_bits(rm_lo), reg_to_bits(rm_hi));
+                w(&mut b, 0xE200_003F | (ml << 16) | (ml << 12)); // AND  ml, ml, #63
+                w(&mut b, 0xE250_0020 | (ml << 16) | (mh << 12)); // SUBS mh, ml, #32
+                w(&mut b, 0x5A00_0005); //                            BPL  .large
+                w(&mut b, 0xE260_0020 | (ml << 16) | (mh << 12)); // RSB  mh, ml, #32
+                shift_reg(&mut b, LSL, mh, nh, mh); //               mh = hi << (32-n)
+                shift_reg(&mut b, LSR, dl, nl, ml); //               dl = lo >> n
+                w(&mut b, 0xE180_0000 | (dl << 16) | (dl << 12) | mh); // ORR dl, dl, mh
+                shift_reg(&mut b, LSR, dh, nh, ml); //               dh = hi >> n
+                w(&mut b, 0xEA00_0001); //                            B    .done
+                shift_reg(&mut b, LSR, dl, nh, mh); //               .large: dl = hi >> (n-32)
+                w(&mut b, 0xE3A0_0000 | (dh << 12)); //              MOV  dh, #0
+            }
+            ArmOp::I64ShrS {
+                rd_lo,
+                rd_hi,
+                rn_lo,
+                rn_hi,
+                rm_lo,
+                rm_hi,
+            } => {
+                let (dl, dh) = (reg_to_bits(rd_lo), reg_to_bits(rd_hi));
+                let (nl, nh) = (reg_to_bits(rn_lo), reg_to_bits(rn_hi));
+                let (ml, mh) = (reg_to_bits(rm_lo), reg_to_bits(rm_hi));
+                w(&mut b, 0xE200_003F | (ml << 16) | (ml << 12)); // AND  ml, ml, #63
+                w(&mut b, 0xE250_0020 | (ml << 16) | (mh << 12)); // SUBS mh, ml, #32
+                w(&mut b, 0x5A00_0005); //                            BPL  .large
+                w(&mut b, 0xE260_0020 | (ml << 16) | (mh << 12)); // RSB  mh, ml, #32
+                shift_reg(&mut b, LSL, mh, nh, mh); //               mh = hi << (32-n)
+                shift_reg(&mut b, LSR, dl, nl, ml); //               dl = lo >> n
+                w(&mut b, 0xE180_0000 | (dl << 16) | (dl << 12) | mh); // ORR dl, dl, mh
+                shift_reg(&mut b, ASR, dh, nh, ml); //               dh = hi >> n (arith)
+                w(&mut b, 0xEA00_0001); //                            B    .done
+                shift_reg(&mut b, ASR, dl, nh, mh); //               .large: dl = hi >> (n-32)
+                w(&mut b, 0xE1A0_0040 | (dh << 12) | (31 << 7) | nh); // ASR dh, nh, #31
+            }
+
+            // I64Rotl / I64Rotr: the #610 fixed-ABI wrapper (A32 form) around
+            // the same fixed-register core as the Thumb-2 arms — value in
+            // R0:R1, amount in R2, scratch R3 + R12.
+            ArmOp::I64Rotl {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                shift,
+            } => {
+                emit_a32_i64_fixed_abi_entry(&mut b, &[rnlo, rnhi, shift]);
+                for word in [
+                    0xE202_203Fu32, // AND  R2, R2, #63   (mask amount mod 64)
+                    0xE252_3020,    // SUBS R3, R2, #32   (R3 = n-32, sets N)
+                    0x5A00_0007,    // BPL  .large        (n >= 32)
+                    // --- small rotation (n < 32) ---
+                    0xE262_3020, // RSB  R3, R2, #32   (R3 = 32-n)
+                    0xE1A0_C330, // LSR  R12, R0, R3   (lo >> (32-n))
+                    0xE1A0_3331, // LSR  R3, R1, R3    (hi >> (32-n))
+                    0xE1A0_1211, // LSL  R1, R1, R2    (hi << n)
+                    0xE181_100C, // ORR  R1, R1, R12   (new_hi)
+                    0xE1A0_0210, // LSL  R0, R0, R2    (lo << n)
+                    0xE180_0003, // ORR  R0, R0, R3    (new_lo)
+                    0xEA00_0007, // B    .done
+                    // --- large rotation (n >= 32), R3 = m = n-32 ---
+                    0xE263_2020, // RSB  R2, R3, #32   (R2 = 32-m = 64-n)
+                    0xE1A0_C231, // LSR  R12, R1, R2   (hi >> (64-n))
+                    0xE1A0_2230, // LSR  R2, R0, R2    (lo >> (64-n))
+                    0xE1A0_0310, // LSL  R0, R0, R3    (lo << m)
+                    0xE1A0_1311, // LSL  R1, R1, R3    (hi << m)
+                    0xE180_C00C, // ORR  R12, R0, R12  (new_hi = (lo<<m)|(hi>>(64-n)))
+                    0xE181_0002, // ORR  R0, R1, R2    (new_lo = (hi<<m)|(lo>>(64-n)))
+                    0xE1A0_100C, // MOV  R1, R12       (new_hi into place)
+                ] {
+                    w(&mut b, word);
+                }
+                emit_a32_i64_fixed_abi_exit(&mut b, rdlo, rdhi)?;
+            }
+            ArmOp::I64Rotr {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                shift,
+            } => {
+                emit_a32_i64_fixed_abi_entry(&mut b, &[rnlo, rnhi, shift]);
+                for word in [
+                    0xE202_203Fu32, // AND  R2, R2, #63   (mask amount mod 64)
+                    0xE252_3020,    // SUBS R3, R2, #32   (R3 = n-32, sets N)
+                    0x5A00_0007,    // BPL  .large        (n >= 32)
+                    // --- small rotation (n < 32) ---
+                    0xE262_3020, // RSB  R3, R2, #32   (R3 = 32-n)
+                    0xE1A0_C311, // LSL  R12, R1, R3   (hi << (32-n))
+                    0xE1A0_3310, // LSL  R3, R0, R3    (lo << (32-n))
+                    0xE1A0_0230, // LSR  R0, R0, R2    (lo >> n)
+                    0xE180_000C, // ORR  R0, R0, R12   (new_lo)
+                    0xE1A0_1231, // LSR  R1, R1, R2    (hi >> n)
+                    0xE181_1003, // ORR  R1, R1, R3    (new_hi)
+                    0xEA00_0007, // B    .done
+                    // --- large rotation (n >= 32), R3 = m = n-32 ---
+                    0xE263_2020, // RSB  R2, R3, #32   (R2 = 32-m = 64-n)
+                    0xE1A0_C210, // LSL  R12, R0, R2   (lo << (64-n))
+                    0xE1A0_2211, // LSL  R2, R1, R2    (hi << (64-n))
+                    0xE1A0_1331, // LSR  R1, R1, R3    (hi >> m)
+                    0xE181_C00C, // ORR  R12, R1, R12  (new_lo = (hi>>m)|(lo<<(64-n)))
+                    0xE1A0_1330, // LSR  R1, R0, R3    (lo >> m)
+                    0xE181_1002, // ORR  R1, R1, R2    (new_hi = (lo>>m)|(hi<<(64-n)))
+                    0xE1A0_000C, // MOV  R0, R12       (new_lo into place)
+                ] {
+                    w(&mut b, word);
+                }
+                emit_a32_i64_fixed_abi_exit(&mut b, rdlo, rdhi)?;
+            }
+
+            // I64Clz: CLZ(hi), or 32 + CLZ(lo) when hi == 0. Conditional
+            // execution replaces the Thumb branches; like the Thumb arm, the
+            // high word of the result pair (rnhi) is cleared last.
+            ArmOp::I64Clz { rd, rnlo, rnhi } => {
+                let (rd_b, lo, hi) = (reg_to_bits(rd), reg_to_bits(rnlo), reg_to_bits(rnhi));
+                w(&mut b, 0xE350_0000 | (hi << 16)); //              CMP   rnhi, #0
+                w(&mut b, 0x116F_0F10 | (rd_b << 12) | hi); //       CLZNE rd, rnhi
+                w(&mut b, 0x016F_0F10 | (rd_b << 12) | lo); //       CLZEQ rd, rnlo
+                w(&mut b, 0x0280_0020 | (rd_b << 16) | (rd_b << 12)); // ADDEQ rd, rd, #32
+                w(&mut b, 0xE3A0_0000 | (hi << 12)); //              MOV   rnhi, #0
+            }
+
+            // I64Ctz: CLZ(RBIT(lo)), or 32 + CLZ(RBIT(hi)) when lo == 0.
+            // RBIT/CLZ leave the flags intact, so the CMP's Z survives to the
+            // conditional ADD.
+            ArmOp::I64Ctz { rd, rnlo, rnhi } => {
+                let (rd_b, lo, hi) = (reg_to_bits(rd), reg_to_bits(rnlo), reg_to_bits(rnhi));
+                w(&mut b, 0xE350_0000 | (lo << 16)); //              CMP    rnlo, #0
+                w(&mut b, 0x16FF_0F30 | (rd_b << 12) | lo); //       RBITNE rd, rnlo
+                w(&mut b, 0x06FF_0F30 | (rd_b << 12) | hi); //       RBITEQ rd, rnhi
+                w(&mut b, 0xE16F_0F10 | (rd_b << 12) | rd_b); //     CLZ    rd, rd
+                w(&mut b, 0x0280_0020 | (rd_b << 16) | (rd_b << 12)); // ADDEQ rd, rd, #32
+                w(&mut b, 0xE3A0_0000 | (hi << 12)); //              MOV    rnhi, #0
+            }
+
+            // I64Const: MOVW/MOVT per half (MOVT elided when the half fits in
+            // 16 bits, mirroring the Thumb-2 arm).
+            ArmOp::I64Const { rdlo, rdhi, value } => {
+                let lo32 = *value as u32;
+                let hi32 = (*value >> 32) as u32;
+                movw(&mut b, reg_to_bits(rdlo), lo32 & 0xFFFF);
+                if lo32 > 0xFFFF {
+                    movt(&mut b, reg_to_bits(rdlo), lo32 >> 16);
+                }
+                movw(&mut b, reg_to_bits(rdhi), hi32 & 0xFFFF);
+                if hi32 > 0xFFFF {
+                    movt(&mut b, reg_to_bits(rdhi), hi32 >> 16);
+                }
+            }
+
+            // I64Ldr / I64Str: two word accesses at [base, #off] / #off+4.
+            // A register offset is materialized into IP once (the #206/#372
+            // hazard: dropping it would read the wrong address).
+            ArmOp::I64Ldr { rdlo, rdhi, addr } | ArmOp::I64Str { rdlo, rdhi, addr } => {
+                let base = if let Some(rm) = addr.offset_reg {
+                    // ADD ip, base, rm
+                    w(
+                        &mut b,
+                        0xE080_0000
+                            | (reg_to_bits(&addr.base) << 16)
+                            | (12 << 12)
+                            | reg_to_bits(&rm),
+                    );
+                    12
+                } else {
+                    reg_to_bits(&addr.base)
+                };
+                if addr.offset < 0 || addr.offset > 0xFFB {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "i64 load/store offset {} out of the A32 imm12 range (0..=4091) — materialize the offset into a register",
+                        addr.offset
+                    )));
+                }
+                let off = addr.offset as u32;
+                let opc: u32 = if matches!(op, ArmOp::I64Ldr { .. }) {
+                    0xE590_0000 // LDR
+                } else {
+                    0xE580_0000 // STR
+                };
+                w(&mut b, opc | (base << 16) | (reg_to_bits(rdlo) << 12) | off);
+                w(
+                    &mut b,
+                    opc | (base << 16) | (reg_to_bits(rdhi) << 12) | (off + 4),
+                );
+            }
+
+            // I64ExtendI32S: rdlo = rn; rdhi = rdlo >> 31 (arithmetic).
+            ArmOp::I64ExtendI32S { rdlo, rdhi, rn } => {
+                if rdlo != rn {
+                    w(
+                        &mut b,
+                        0xE1A0_0000 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rn),
+                    );
+                }
+                w(
+                    &mut b,
+                    0xE1A0_0040 | (reg_to_bits(rdhi) << 12) | (31 << 7) | reg_to_bits(rdlo),
+                );
+            }
+
+            // I64ExtendI32U: rdlo = rn; rdhi = 0.
+            ArmOp::I64ExtendI32U { rdlo, rdhi, rn } => {
+                if rdlo != rn {
+                    w(
+                        &mut b,
+                        0xE1A0_0000 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rn),
+                    );
+                }
+                w(&mut b, 0xE3A0_0000 | (reg_to_bits(rdhi) << 12));
+            }
+
+            // I64Extend8S / I64Extend16S: SXTB/SXTH then sign-fill the high word.
+            ArmOp::I64Extend8S { rdlo, rdhi, rnlo } => {
+                w(
+                    &mut b,
+                    0xE6AF_0070 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rnlo),
+                );
+                w(
+                    &mut b,
+                    0xE1A0_0040 | (reg_to_bits(rdhi) << 12) | (31 << 7) | reg_to_bits(rdlo),
+                );
+            }
+            ArmOp::I64Extend16S { rdlo, rdhi, rnlo } => {
+                w(
+                    &mut b,
+                    0xE6BF_0070 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rnlo),
+                );
+                w(
+                    &mut b,
+                    0xE1A0_0040 | (reg_to_bits(rdhi) << 12) | (31 << 7) | reg_to_bits(rdlo),
+                );
+            }
+            ArmOp::I64Extend32S { rdlo, rdhi, rnlo } => {
+                if rdlo != rnlo {
+                    w(
+                        &mut b,
+                        0xE1A0_0000 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rnlo),
+                    );
+                }
+                w(
+                    &mut b,
+                    0xE1A0_0040 | (reg_to_bits(rdhi) << 12) | (31 << 7) | reg_to_bits(rnlo),
+                );
+            }
+
+            // I32WrapI64: take the low word. When rd == rnlo this is a genuine
+            // no-op (the one case where a NOP word is the correct encoding).
+            ArmOp::I32WrapI64 { rd, rnlo } => {
+                w(
+                    &mut b,
+                    0xE1A0_0000 | (reg_to_bits(rd) << 12) | reg_to_bits(rnlo),
+                );
+            }
+
+            // I64Add / I64Sub: the classic pair — ADDS lo + ADC hi (SUBS/SBC).
+            // The selector emits these as separate Adds/Adc ops; the fused
+            // variants are verification-constructed, but they encode for real.
+            ArmOp::I64Add {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                dp_reg(
+                    &mut b,
+                    0xE090_0000, // ADDS
+                    reg_to_bits(rdlo),
+                    reg_to_bits(rnlo),
+                    reg_to_bits(rmlo),
+                );
+                dp_reg(
+                    &mut b,
+                    0xE0A0_0000, // ADC
+                    reg_to_bits(rdhi),
+                    reg_to_bits(rnhi),
+                    reg_to_bits(rmhi),
+                );
+            }
+            ArmOp::I64Sub {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                dp_reg(
+                    &mut b,
+                    0xE050_0000, // SUBS
+                    reg_to_bits(rdlo),
+                    reg_to_bits(rnlo),
+                    reg_to_bits(rmlo),
+                );
+                dp_reg(
+                    &mut b,
+                    0xE0C0_0000, // SBC
+                    reg_to_bits(rdhi),
+                    reg_to_bits(rnhi),
+                    reg_to_bits(rmhi),
+                );
+            }
+
+            // I64And / I64Or / I64Xor: two independent word ops.
+            ArmOp::I64And {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64Or {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64Xor {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                let base = match op {
+                    ArmOp::I64And { .. } => 0xE000_0000, // AND
+                    ArmOp::I64Or { .. } => 0xE180_0000,  // ORR
+                    _ => 0xE020_0000,                    // EOR
+                };
+                dp_reg(
+                    &mut b,
+                    base,
+                    reg_to_bits(rdlo),
+                    reg_to_bits(rnlo),
+                    reg_to_bits(rmlo),
+                );
+                dp_reg(
+                    &mut b,
+                    base,
+                    reg_to_bits(rdhi),
+                    reg_to_bits(rnhi),
+                    reg_to_bits(rmhi),
+                );
+            }
+
+            // I64DivU: binary long division — A32 transcription of the Thumb-2
+            // #610/#613 arm (fixed-ABI marshal, zero-divisor trap, 64-round
+            // shift-subtract core, quotient to R0:R1, result to rd pair).
+            ArmOp::I64DivU {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                emit_a32_i64_fixed_abi_entry(&mut b, &[rnlo, rnhi, rmlo, rmhi]);
+                emit_a32_i64_divisor_zero_trap(&mut b);
+                w(&mut b, 0xE92D_00F0); // PUSH {R4-R7}
+                for r in 4..8u32 {
+                    w(&mut b, 0xE3A0_0000 | (r << 12)); // MOV Rr, #0
+                }
+                div_loop(&mut b, 12); // counter in R12 (encoder scratch)
+                w(&mut b, 0xE1A0_0004); // MOV R0, R4 (quotient lo)
+                w(&mut b, 0xE1A0_1005); // MOV R1, R5 (quotient hi)
+                w(&mut b, 0xE8BD_00F0); // POP {R4-R7}
+                emit_a32_i64_fixed_abi_exit(&mut b, rdlo, rdhi)?;
+            }
+
+            // I64DivS: sign-extract, unsigned core, conditional negate —
+            // A32 transcription of the Thumb-2 arm.
+            ArmOp::I64DivS {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                emit_a32_i64_fixed_abi_entry(&mut b, &[rnlo, rnhi, rmlo, rmhi]);
+                emit_a32_i64_divisor_zero_trap(&mut b);
+                w(&mut b, 0xE92D_0FF0); // PUSH {R4-R11}
+                w(&mut b, 0xE021_9003); // EOR R9, R1, R3 (result sign in MSB)
+                skip_negate_if_positive(&mut b, 1);
+                negate64(&mut b, 0, 1);
+                skip_negate_if_positive(&mut b, 3);
+                negate64(&mut b, 2, 3);
+                for r in 4..8u32 {
+                    w(&mut b, 0xE3A0_0000 | (r << 12)); // MOV Rr, #0
+                }
+                div_loop(&mut b, 8); // counter in R8 (saved above)
+                w(&mut b, 0xE1A0_0004); // MOV R0, R4
+                w(&mut b, 0xE1A0_1005); // MOV R1, R5
+                skip_negate_if_positive(&mut b, 9);
+                negate64(&mut b, 0, 1);
+                w(&mut b, 0xE8BD_0FF0); // POP {R4-R11}
+                emit_a32_i64_fixed_abi_exit(&mut b, rdlo, rdhi)?;
+            }
+
+            // I64RemU: same core as I64DivU, returns the remainder (R6:R7).
+            ArmOp::I64RemU {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                emit_a32_i64_fixed_abi_entry(&mut b, &[rnlo, rnhi, rmlo, rmhi]);
+                emit_a32_i64_divisor_zero_trap(&mut b);
+                w(&mut b, 0xE92D_01F0); // PUSH {R4-R8}
+                for r in 4..8u32 {
+                    w(&mut b, 0xE3A0_0000 | (r << 12)); // MOV Rr, #0
+                }
+                div_loop(&mut b, 8);
+                w(&mut b, 0xE1A0_0006); // MOV R0, R6 (remainder lo)
+                w(&mut b, 0xE1A0_1007); // MOV R1, R7 (remainder hi)
+                w(&mut b, 0xE8BD_01F0); // POP {R4-R8}
+                emit_a32_i64_fixed_abi_exit(&mut b, rdlo, rdhi)?;
+            }
+
+            // I64RemS: remainder takes the DIVIDEND's sign (WASM semantics).
+            ArmOp::I64RemS {
+                rdlo,
+                rdhi,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
+                emit_a32_i64_fixed_abi_entry(&mut b, &[rnlo, rnhi, rmlo, rmhi]);
+                emit_a32_i64_divisor_zero_trap(&mut b);
+                w(&mut b, 0xE92D_0FF0); // PUSH {R4-R11}
+                w(&mut b, 0xE1A0_9001); // MOV R9, R1 (dividend sign)
+                skip_negate_if_positive(&mut b, 1);
+                negate64(&mut b, 0, 1);
+                skip_negate_if_positive(&mut b, 3);
+                negate64(&mut b, 2, 3);
+                for r in 4..8u32 {
+                    w(&mut b, 0xE3A0_0000 | (r << 12)); // MOV Rr, #0
+                }
+                div_loop(&mut b, 8);
+                w(&mut b, 0xE1A0_0006); // MOV R0, R6
+                w(&mut b, 0xE1A0_1007); // MOV R1, R7
+                skip_negate_if_positive(&mut b, 9);
+                negate64(&mut b, 0, 1);
+                w(&mut b, 0xE8BD_0FF0); // POP {R4-R11}
+                emit_a32_i64_fixed_abi_exit(&mut b, rdlo, rdhi)?;
+            }
+
+            // Popcnt (i32): bit-twiddle expansion (no native A32 popcount),
+            // mirroring the Thumb-2 arm's register contract (R11 + R12 as
+            // scratch, shift-add fold, final AND #0x3F).
+            ArmOp::Popcnt { rd, rm } => {
+                let rd_b = reg_to_bits(rd);
+                if rd != rm {
+                    w(&mut b, 0xE1A0_0000 | (rd_b << 12) | reg_to_bits(rm)); // MOV rd, rm
+                }
+                // x = x - ((x >> 1) & 0x55555555)
+                movw(&mut b, 12, 0x5555);
+                movt(&mut b, 12, 0x5555);
+                shift_imm(&mut b, LSR, 11, rd_b, 1);
+                dp_reg(&mut b, 0xE000_0000, 11, 11, 12); // AND R11, R11, R12
+                dp_reg(&mut b, 0xE040_0000, rd_b, rd_b, 11); // SUB rd, rd, R11
+                // x = (x & 0x33333333) + ((x >> 2) & 0x33333333)
+                movw(&mut b, 12, 0x3333);
+                movt(&mut b, 12, 0x3333);
+                dp_reg(&mut b, 0xE000_0000, 11, rd_b, 12); // AND R11, rd, R12
+                shift_imm(&mut b, LSR, rd_b, rd_b, 2);
+                dp_reg(&mut b, 0xE000_0000, rd_b, rd_b, 12); // AND rd, rd, R12
+                dp_reg(&mut b, 0xE080_0000, rd_b, rd_b, 11); // ADD rd, rd, R11
+                // x = (x + (x >> 4)) & 0x0F0F0F0F
+                shift_imm(&mut b, LSR, 11, rd_b, 4);
+                dp_reg(&mut b, 0xE080_0000, rd_b, rd_b, 11); // ADD rd, rd, R11
+                movw(&mut b, 12, 0x0F0F);
+                movt(&mut b, 12, 0x0F0F);
+                dp_reg(&mut b, 0xE000_0000, rd_b, rd_b, 12); // AND rd, rd, R12
+                // x += x >> 8; x += x >> 16; x &= 0x3F
+                shift_imm(&mut b, LSR, 11, rd_b, 8);
+                dp_reg(&mut b, 0xE080_0000, rd_b, rd_b, 11);
+                shift_imm(&mut b, LSR, 11, rd_b, 16);
+                dp_reg(&mut b, 0xE080_0000, rd_b, rd_b, 11);
+                w(&mut b, 0xE200_003F | (rd_b << 16) | (rd_b << 12)); // AND rd, rd, #63
+            }
+
+            // I64Popcnt: POPCNT(lo) + POPCNT(hi) — A32 transcription of the
+            // Thumb-2 arm (R3/R4/R5 saved, mul-based per-word fold, high
+            // result word rnhi cleared last, mirroring the Thumb contract).
+            ArmOp::I64Popcnt { rd, rnlo, rnhi } => {
+                let hi = reg_to_bits(rnhi);
+                w(&mut b, 0xE92D_0038); // PUSH {R3, R4, R5}
+                w(&mut b, 0xE1A0_4000 | reg_to_bits(rnlo)); // MOV R4, rnlo
+                w(&mut b, 0xE1A0_5000 | hi); //                MOV R5, rnhi
+                popcnt_word(&mut b, 4, 3);
+                popcnt_word(&mut b, 5, 3);
+                dp_reg(&mut b, 0xE080_0000, reg_to_bits(rd), 4, 5); // ADD rd, R4, R5
+                w(&mut b, 0xE8BD_0038); // POP {R3, R4, R5}
+                w(&mut b, 0xE3A0_0000 | (hi << 12)); // MOV rnhi, #0 (i64 hi word)
+            }
+
+            _ => return Ok(None),
+        }
+        Ok(Some(b))
+    }
+
     fn encode_arm(&self, op: &ArmOp) -> Result<Vec<u8>> {
+        // #615: A32 multi-instruction expansions (i64 arithmetic/shift/rotate/
+        // compare, SetCond/SelectMove, popcnt, ...). These ops were literal
+        // NOPs on the A32 path — user-reachable via `--target cortex-r5` —
+        // so the value silently vanished. Mirror of the #594 CallIndirect
+        // early-return: if the expansion helper covers the op, its bytes are
+        // the encoding.
+        if let Some(bytes) = self.encode_arm_expanded(op)? {
+            return Ok(bytes);
+        }
         // #206: ARM32 register-offset loads/stores. `encode_mem_addr` only
         // returns the 12-bit immediate, so the immediate-form arms below
         // silently DROP `addr.offset_reg` — a runtime address index vanished,
@@ -740,72 +1697,32 @@ impl ArmEncoder {
                 0xE7F000F0 | ((imm8 & 0xF0) << 4) | (imm8 & 0x0F)
             }
 
-            // Pseudo-instructions for verification - encode as NOP
-            // These are used in formal verification but not actual code generation
-            ArmOp::Popcnt { .. } => {
-                // Population count pseudo-instruction
-                // Not a real ARM instruction, would be expanded to actual code
-                0xE1A00000 // NOP for now
+            // #615: handled by the `encode_arm_expanded` early return at the
+            // top of this function — a real MOV{cond}/MOV pair now, never a
+            // silent NOP again.
+            ArmOp::Popcnt { .. } | ArmOp::SetCond { .. } | ArmOp::SelectMove { .. } => {
+                unreachable!("handled by encode_arm_expanded (#615)")
             }
 
-            ArmOp::SetCond { .. } => {
-                // Condition evaluation pseudo-instruction
-                // Not a real ARM instruction, would be expanded to actual code
-                0xE1A00000 // NOP for now
-            }
-
-            ArmOp::SelectMove { .. } => {
-                // Conditional move pseudo-instruction for ARM32
-                // Would use MOV{cond} instruction
-                0xE1A00000 // NOP for now
-            }
-
-            ArmOp::Select { .. } => {
-                // Select pseudo-instruction
-                // Not a real ARM instruction, would be expanded to conditional moves
-                0xE1A00000 // NOP for now
-            }
-
-            ArmOp::LocalGet { .. } => {
-                // Local variable get pseudo-instruction
-                // Not a real ARM instruction, would be expanded to memory access
-                0xE1A00000 // NOP for now
-            }
-
-            ArmOp::LocalSet { .. } => {
-                // Local variable set pseudo-instruction
-                // Not a real ARM instruction, would be expanded to memory access
-                0xE1A00000 // NOP for now
-            }
-
-            ArmOp::LocalTee { .. } => {
-                // Local variable tee pseudo-instruction
-                // Not a real ARM instruction, would be expanded to memory access
-                0xE1A00000 // NOP for now
-            }
-
-            ArmOp::GlobalGet { .. } => {
-                // Global variable get pseudo-instruction
-                // Not a real ARM instruction, would be expanded to memory access
-                0xE1A00000 // NOP for now
-            }
-
-            ArmOp::GlobalSet { .. } => {
-                // Global variable set pseudo-instruction
-                // Not a real ARM instruction, would be expanded to memory access
-                0xE1A00000 // NOP for now
-            }
-
-            ArmOp::BrTable { .. } => {
-                // Branch table pseudo-instruction
-                // Not a real ARM instruction, would be expanded to jump table
-                0xE1A00000 // NOP for now
-            }
-
-            ArmOp::Call { .. } => {
-                // Function call pseudo-instruction
-                // Not a real ARM instruction, would be expanded to BL
-                0xE1A00000 // NOP for now
+            // Verification-only pseudo-ops: `synth-verify`'s ArmSemantics
+            // models these, but NO codegen path constructs them (the selector
+            // lowers select/locals/globals/br_table/call to real instruction
+            // sequences before the encoder). Encoding one as a NOP silently
+            // dropped the operation (#615 class); a typed Err keeps the
+            // encoder total (Ok-or-Err, the `encoder_no_panic` contract)
+            // while making any future reachability LOUD.
+            ArmOp::Select { .. }
+            | ArmOp::LocalGet { .. }
+            | ArmOp::LocalSet { .. }
+            | ArmOp::LocalTee { .. }
+            | ArmOp::GlobalGet { .. }
+            | ArmOp::GlobalSet { .. }
+            | ArmOp::BrTable { .. }
+            | ArmOp::Call { .. } => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "verification-only pseudo-op {op:?} reached the A32 encoder — \
+                     codegen lowers it before encoding; refusing to emit a silent NOP (#615)"
+                )));
             }
 
             // #594: CallIndirect is expanded to a real multi-instruction
@@ -815,40 +1732,44 @@ impl ArmEncoder {
                 unreachable!("CallIndirect handled by encode_arm_call_indirect (#594)")
             }
 
-            // i64 pseudo-instructions (Phase 2) - encode as NOP for now
-            // Real compiler would expand these to multi-instruction sequences
-            ArmOp::I64Add { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64Sub { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64DivS { .. } => 0xE1A00000,       // NOP
-            ArmOp::I64DivU { .. } => 0xE1A00000,       // NOP
-            ArmOp::I64RemS { .. } => 0xE1A00000,       // NOP
-            ArmOp::I64RemU { .. } => 0xE1A00000,       // NOP
-            ArmOp::I64Clz { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64Ctz { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64Popcnt { .. } => 0xE1A00000,     // NOP
-            ArmOp::I64And { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64Or { .. } => 0xE1A00000,         // NOP
-            ArmOp::I64Xor { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64Eqz { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64Eq { .. } => 0xE1A00000,         // NOP
-            ArmOp::I64Ne { .. } => 0xE1A00000,         // NOP
-            ArmOp::I64LtS { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64LtU { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64LeS { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64LeU { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64GtS { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64GtU { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64GeS { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64GeU { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64Const { .. } => 0xE1A00000,      // NOP
-            ArmOp::I64Ldr { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64Str { .. } => 0xE1A00000,        // NOP
-            ArmOp::I64ExtendI32S { .. } => 0xE1A00000, // NOP
-            ArmOp::I64ExtendI32U { .. } => 0xE1A00000, // NOP
-            ArmOp::I64Extend8S { .. } => 0xE1A00000,   // NOP (Thumb-2 only)
-            ArmOp::I64Extend16S { .. } => 0xE1A00000,  // NOP (Thumb-2 only)
-            ArmOp::I64Extend32S { .. } => 0xE1A00000,  // NOP (Thumb-2 only)
-            ArmOp::I32WrapI64 { .. } => 0xE1A00000,    // NOP
+            // #615: every i64 op (and I32WrapI64) is expanded to a real A32
+            // multi-instruction sequence by `encode_arm_expanded` — the
+            // "encode as NOP for now" era ended with the value silently
+            // vanishing on `--target cortex-r5`.
+            ArmOp::I64Add { .. }
+            | ArmOp::I64Sub { .. }
+            | ArmOp::I64DivS { .. }
+            | ArmOp::I64DivU { .. }
+            | ArmOp::I64RemS { .. }
+            | ArmOp::I64RemU { .. }
+            | ArmOp::I64Clz { .. }
+            | ArmOp::I64Ctz { .. }
+            | ArmOp::I64Popcnt { .. }
+            | ArmOp::I64And { .. }
+            | ArmOp::I64Or { .. }
+            | ArmOp::I64Xor { .. }
+            | ArmOp::I64Eqz { .. }
+            | ArmOp::I64Eq { .. }
+            | ArmOp::I64Ne { .. }
+            | ArmOp::I64LtS { .. }
+            | ArmOp::I64LtU { .. }
+            | ArmOp::I64LeS { .. }
+            | ArmOp::I64LeU { .. }
+            | ArmOp::I64GtS { .. }
+            | ArmOp::I64GtU { .. }
+            | ArmOp::I64GeS { .. }
+            | ArmOp::I64GeU { .. }
+            | ArmOp::I64Const { .. }
+            | ArmOp::I64Ldr { .. }
+            | ArmOp::I64Str { .. }
+            | ArmOp::I64ExtendI32S { .. }
+            | ArmOp::I64ExtendI32U { .. }
+            | ArmOp::I64Extend8S { .. }
+            | ArmOp::I64Extend16S { .. }
+            | ArmOp::I64Extend32S { .. }
+            | ArmOp::I32WrapI64 { .. } => {
+                unreachable!("handled by encode_arm_expanded (#615)")
+            }
 
             // f32 VFP single-precision instructions
             ArmOp::F32Add { sd, sn, sm } => encode_vfp_3reg(0xEE300A00, sd, sn, sm)?,
@@ -1024,7 +1945,8 @@ impl ArmEncoder {
             ArmOp::I32TruncF64U { rd, dm } => {
                 return self.encode_arm_i32_trunc_f64(rd, dm, false);
             }
-            // Multi-instruction sequences - only meaningful in Thumb-2 mode
+            // #615: multi-instruction i64 sequences — expanded to real A32 by
+            // `encode_arm_expanded`, no longer "Thumb-2 only" NOPs.
             ArmOp::I64SetCond { .. }
             | ArmOp::I64SetCondZ { .. }
             | ArmOp::I64Mul { .. }
@@ -1032,7 +1954,9 @@ impl ArmEncoder {
             | ArmOp::I64ShrS { .. }
             | ArmOp::I64ShrU { .. }
             | ArmOp::I64Rotl { .. }
-            | ArmOp::I64Rotr { .. } => 0xE1A00000, // NOP (Thumb-2 only)
+            | ArmOp::I64Rotr { .. } => {
+                unreachable!("handled by encode_arm_expanded (#615)")
+            }
 
             // MVE instructions — Thumb-2 only (Cortex-M55 is always Thumb-2)
             ArmOp::MveLoad { .. }
@@ -1075,7 +1999,16 @@ impl ArmEncoder {
             | ArmOp::MveExtractLaneF32 { .. }
             | ArmOp::MveReplaceLaneF32 { .. }
             | ArmOp::MveDivF32 { .. }
-            | ArmOp::MveSqrtF32 { .. } => 0xE1A00000, // NOP (MVE = Thumb-2 only)
+            | ArmOp::MveSqrtF32 { .. } => {
+                // MVE (Helium) is a Thumb-2-only extension (Cortex-M55); there
+                // is no A32 encoding. The selector only emits MVE ops for
+                // Thumb targets — a NOP here silently dropped the vector op
+                // if that invariant ever broke (#615 class). Err keeps the
+                // encoder total and the failure loud.
+                return Err(synth_core::Error::synthesis(format!(
+                    "MVE op {op:?} has no A32 (ARM-mode) encoding — MVE is Thumb-2 only (#615)"
+                )));
+            }
         };
 
         // ARM32 instructions are little-endian
@@ -6961,6 +7894,79 @@ fn emit_i64_divisor_zero_trap(bytes: &mut Vec<u8>) {
     bytes.extend_from_slice(&0xDE00u16.to_le_bytes()); // UDF #0 — divide by zero
 }
 
+// ======================================================================
+// #615 — A32 (ARM-mode) twins of the #610 i64 fixed-ABI wrappers above.
+// Identical register contract, A32 encodings: the multi-instruction i64
+// cores (rotl/rotr, div/rem) compute in fixed low registers (value/dividend
+// R0:R1, amount R2 / divisor R2:R3, result to R0:R1); the wrappers marshal
+// the selector-assigned operand registers in and the result out, saving and
+// restoring the caller-visible R0-R3 around the core.
+// ======================================================================
+
+/// A32 steps 1+2: `STMDB SP!, {R0-R3}`, then marshal `srcs` into `R0..R<n>`
+/// via individual stack pushes (`STR src, [SP, #-4]!` in reverse order, then
+/// `LDR Ri, [SP], #4`). Every source is read before any fixed register is
+/// written, so arbitrary source/target permutations are safe.
+fn emit_a32_i64_fixed_abi_entry(bytes: &mut Vec<u8>, srcs: &[&Reg]) {
+    debug_assert!(srcs.len() <= 4);
+    let w = |bytes: &mut Vec<u8>, word: u32| bytes.extend_from_slice(&word.to_le_bytes());
+    // PUSH {R0-R3} — save the caller-visible low registers.
+    w(bytes, 0xE92D_000F);
+    // STR src, [SP, #-4]! — push in reverse so srcs[0] ends up on top.
+    for src in srcs.iter().rev() {
+        w(bytes, 0xE52D_0004 | (reg_to_bits(src) << 12));
+    }
+    // LDR Ri, [SP], #4 — Ri := srcs[i].
+    for i in 0..srcs.len() as u32 {
+        w(bytes, 0xE49D_0004 | (i << 12));
+    }
+}
+
+/// A32 steps 4+5: move the core's R0:R1 result into the selector's rd pair,
+/// then restore the R0-R3 saved by [`emit_a32_i64_fixed_abi_entry`], skipping
+/// any register the result now lives in (its saved caller word is discarded).
+fn emit_a32_i64_fixed_abi_exit(bytes: &mut Vec<u8>, rdlo: &Reg, rdhi: &Reg) -> Result<()> {
+    let lo = reg_to_bits(rdlo);
+    let hi = reg_to_bits(rdhi);
+    if lo == 1 && hi == 0 {
+        // A fully swapped pair would clobber one half in either MOV order.
+        // Selector pairs are consecutive (lo, lo+1), so this cannot occur.
+        return Err(synth_core::Error::synthesis(
+            "i64 expansion: swapped result pair (rd_lo=R1, rd_hi=R0) is unsupported (#610)",
+        ));
+    }
+    let w = |bytes: &mut Vec<u8>, word: u32| bytes.extend_from_slice(&word.to_le_bytes());
+    let mov = |bytes: &mut Vec<u8>, rd: u32, rm: u32| w(bytes, 0xE1A0_0000 | (rd << 12) | rm);
+    if hi == 0 {
+        // rd_hi is R0: read R0 into rd_lo BEFORE overwriting R0 with R1.
+        mov(bytes, lo, 0);
+        mov(bytes, hi, 1);
+    } else {
+        // rd_lo may be R1: read R1 into rd_hi BEFORE overwriting R1 with R0.
+        mov(bytes, hi, 1);
+        mov(bytes, lo, 0);
+    }
+    for i in 0..4u32 {
+        if i == lo || i == hi {
+            // The result lives here — drop the saved caller word.
+            w(bytes, 0xE28D_D004); // ADD SP, SP, #4
+        } else {
+            w(bytes, 0xE49D_0004 | (i << 12)); // LDR Ri, [SP], #4
+        }
+    }
+    Ok(())
+}
+
+/// A32 zero-divisor trap, emitted after marshaling when the divisor pair is
+/// in R2:R3: `ORRS R12, R2, R3` sets Z iff the divisor is zero; `BNE` skips a
+/// `UDF #0` (WASM div/rem-by-zero must trap, matching the Thumb-2 twin).
+fn emit_a32_i64_divisor_zero_trap(bytes: &mut Vec<u8>) {
+    let w = |bytes: &mut Vec<u8>, word: u32| bytes.extend_from_slice(&word.to_le_bytes());
+    w(bytes, 0xE192_C003); // ORRS R12, R2, R3
+    w(bytes, 0x1A00_0000); // BNE +1 insn (skip the UDF)
+    w(bytes, 0xE7F0_00F0); // UDF #0 — divide by zero
+}
+
 /// Fallible form of the `verify_reg_bits` contract. PC (R15) is not a valid
 /// data operand for the Thumb-2 encodings that use this guard (SDIV/UDIV/MLS/…
 /// are UNPREDICTABLE with PC). Synth's own codegen never emits PC there, but
@@ -10168,8 +11174,10 @@ mod tests {
     }
 
     #[test]
-    fn test_encode_mve_arm32_nop() {
-        // MVE instructions on ARM32 encoder should produce NOP (only Thumb-2 supported)
+    fn test_encode_mve_arm32_loud_err() {
+        // #615: MVE (Helium) is Thumb-2-only. The ARM32 encoder used to emit
+        // a silent NOP here (dropping the vector op); it must now be a typed
+        // Err so a broken "MVE implies Thumb" invariant fails loudly.
         let encoder = ArmEncoder::new_arm32();
         let op = ArmOp::MveAddI {
             qd: QReg::Q0,
@@ -10177,10 +11185,12 @@ mod tests {
             qm: QReg::Q2,
             size: MveSize::S32,
         };
-        let code = encoder.encode(&op).unwrap();
-        assert_eq!(code.len(), 4, "ARM32 MVE should be 4 bytes (NOP)");
-        // NOP in ARM32 is 0xE1A00000 (MOV R0, R0)
-        let instr = u32::from_le_bytes([code[0], code[1], code[2], code[3]]);
-        assert_eq!(instr, 0xE1A00000, "ARM32 MVE should encode as NOP");
+        let err = encoder
+            .encode(&op)
+            .expect_err("ARM32 MVE must be a loud Err, not a silent NOP (#615)");
+        assert!(
+            err.to_string().contains("Thumb-2 only"),
+            "unexpected error message: {err}"
+        );
     }
 }
