@@ -198,11 +198,17 @@ impl ArmEncoder {
         }
         /// MOVW rd, #imm16.
         fn movw(b: &mut Vec<u8>, rd: u32, v: u32) {
-            w(b, 0xE300_0000 | (((v >> 12) & 0xF) << 16) | (rd << 12) | (v & 0xFFF));
+            w(
+                b,
+                0xE300_0000 | (((v >> 12) & 0xF) << 16) | (rd << 12) | (v & 0xFFF),
+            );
         }
         /// MOVT rd, #imm16.
         fn movt(b: &mut Vec<u8>, rd: u32, v: u32) {
-            w(b, 0xE340_0000 | (((v >> 12) & 0xF) << 16) | (rd << 12) | (v & 0xFFF));
+            w(
+                b,
+                0xE340_0000 | (((v >> 12) & 0xF) << 16) | (rd << 12) | (v & 0xFFF),
+            );
         }
         /// Register-controlled shift: MOV rd, rn, <LSL|LSR|ASR> rs.
         /// `ty`: 0=LSL, 1=LSR, 2=ASR. A32 uses the bottom byte of rs; amounts
@@ -216,7 +222,10 @@ impl ArmEncoder {
         const ASR: u32 = 2;
         /// Immediate-shift move: MOV rd, rn, <LSL|LSR|ASR> #imm.
         fn shift_imm(b: &mut Vec<u8>, ty: u32, rd: u32, rn: u32, imm: u32) {
-            w(b, 0xE1A0_0000 | (rd << 12) | ((imm & 0x1F) << 7) | (ty << 5) | rn);
+            w(
+                b,
+                0xE1A0_0000 | (rd << 12) | ((imm & 0x1F) << 7) | (ty << 5) | rn,
+            );
         }
         /// Data-processing register form: `base | rn<<16 | rd<<12 | rm`.
         /// `base` carries cond/opcode/S (e.g. 0xE090_0000 = ADDS).
@@ -226,7 +235,10 @@ impl ArmEncoder {
         /// ORR rd, rd, rm, LSR #31 — the carry-propagation idiom of the
         /// shift-subtract division loop (bring rm's MSB into rd's bit 0).
         fn orr_lsr31(b: &mut Vec<u8>, rd: u32, rm: u32) {
-            w(b, 0xE180_0000 | (rd << 16) | (rd << 12) | (31 << 7) | (1 << 5) | rm);
+            w(
+                b,
+                0xE180_0000 | (rd << 16) | (rd << 12) | (31 << 7) | (1 << 5) | rm,
+            );
         }
         /// 64-bit two's-complement negate of the lo:hi pair (MVN/MVN/ADDS/ADC).
         fn negate64(b: &mut Vec<u8>, lo: u32, hi: u32) {
@@ -316,7 +328,10 @@ impl ArmEncoder {
             ArmOp::SelectMove { rd, rm, cond } => {
                 w(
                     &mut b,
-                    (cond_bits(cond) << 28) | 0x01A0_0000 | (reg_to_bits(rd) << 12) | reg_to_bits(rm),
+                    (cond_bits(cond) << 28)
+                        | 0x01A0_0000
+                        | (reg_to_bits(rd) << 12)
+                        | reg_to_bits(rm),
                 );
             }
 
@@ -412,16 +427,76 @@ impl ArmEncoder {
                     })
                     .map(Some);
             }
-            ArmOp::I64Eq { rd, rnlo, rnhi, rmlo, rmhi }
-            | ArmOp::I64Ne { rd, rnlo, rnhi, rmlo, rmhi }
-            | ArmOp::I64LtS { rd, rnlo, rnhi, rmlo, rmhi }
-            | ArmOp::I64LtU { rd, rnlo, rnhi, rmlo, rmhi }
-            | ArmOp::I64LeS { rd, rnlo, rnhi, rmlo, rmhi }
-            | ArmOp::I64LeU { rd, rnlo, rnhi, rmlo, rmhi }
-            | ArmOp::I64GtS { rd, rnlo, rnhi, rmlo, rmhi }
-            | ArmOp::I64GtU { rd, rnlo, rnhi, rmlo, rmhi }
-            | ArmOp::I64GeS { rd, rnlo, rnhi, rmlo, rmhi }
-            | ArmOp::I64GeU { rd, rnlo, rnhi, rmlo, rmhi } => {
+            ArmOp::I64Eq {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64Ne {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64LtS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64LtU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64LeS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64LeU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64GtS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64GtU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64GeS {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            }
+            | ArmOp::I64GeU {
+                rd,
+                rnlo,
+                rnhi,
+                rmlo,
+                rmhi,
+            } => {
                 let cond = match op {
                     ArmOp::I64Eq { .. } => Condition::EQ,
                     ArmOp::I64Ne { .. } => Condition::NE,
@@ -462,9 +537,15 @@ impl ArmEncoder {
                 // MUL R12, rn_lo, rm_hi   (R12 = a_lo * b_hi)
                 w(&mut b, 0xE000_0090 | (12 << 16) | (mh << 8) | nl);
                 // MLA R12, rn_hi, rm_lo, R12  (R12 += a_hi * b_lo)
-                w(&mut b, 0xE020_0090 | (12 << 16) | (12 << 12) | (ml << 8) | nh);
+                w(
+                    &mut b,
+                    0xE020_0090 | (12 << 16) | (12 << 12) | (ml << 8) | nh,
+                );
                 // UMULL rd_lo, rd_hi, rn_lo, rm_lo
-                w(&mut b, 0xE080_0090 | (dh << 16) | (dl << 12) | (ml << 8) | nl);
+                w(
+                    &mut b,
+                    0xE080_0090 | (dh << 16) | (dl << 12) | (ml << 8) | nl,
+                );
                 // ADD rd_hi, rd_hi, R12
                 w(&mut b, 0xE080_0000 | (dh << 16) | (dh << 12) | 12);
             }
@@ -665,7 +746,10 @@ impl ArmEncoder {
                     // ADD ip, base, rm
                     w(
                         &mut b,
-                        0xE080_0000 | (reg_to_bits(&addr.base) << 16) | (12 << 12) | reg_to_bits(&rm),
+                        0xE080_0000
+                            | (reg_to_bits(&addr.base) << 16)
+                            | (12 << 12)
+                            | reg_to_bits(&rm),
                     );
                     12
                 } else {
@@ -684,13 +768,19 @@ impl ArmEncoder {
                     0xE580_0000 // STR
                 };
                 w(&mut b, opc | (base << 16) | (reg_to_bits(rdlo) << 12) | off);
-                w(&mut b, opc | (base << 16) | (reg_to_bits(rdhi) << 12) | (off + 4));
+                w(
+                    &mut b,
+                    opc | (base << 16) | (reg_to_bits(rdhi) << 12) | (off + 4),
+                );
             }
 
             // I64ExtendI32S: rdlo = rn; rdhi = rdlo >> 31 (arithmetic).
             ArmOp::I64ExtendI32S { rdlo, rdhi, rn } => {
                 if rdlo != rn {
-                    w(&mut b, 0xE1A0_0000 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rn));
+                    w(
+                        &mut b,
+                        0xE1A0_0000 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rn),
+                    );
                 }
                 w(
                     &mut b,
@@ -701,21 +791,30 @@ impl ArmEncoder {
             // I64ExtendI32U: rdlo = rn; rdhi = 0.
             ArmOp::I64ExtendI32U { rdlo, rdhi, rn } => {
                 if rdlo != rn {
-                    w(&mut b, 0xE1A0_0000 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rn));
+                    w(
+                        &mut b,
+                        0xE1A0_0000 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rn),
+                    );
                 }
                 w(&mut b, 0xE3A0_0000 | (reg_to_bits(rdhi) << 12));
             }
 
             // I64Extend8S / I64Extend16S: SXTB/SXTH then sign-fill the high word.
             ArmOp::I64Extend8S { rdlo, rdhi, rnlo } => {
-                w(&mut b, 0xE6AF_0070 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rnlo));
+                w(
+                    &mut b,
+                    0xE6AF_0070 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rnlo),
+                );
                 w(
                     &mut b,
                     0xE1A0_0040 | (reg_to_bits(rdhi) << 12) | (31 << 7) | reg_to_bits(rdlo),
                 );
             }
             ArmOp::I64Extend16S { rdlo, rdhi, rnlo } => {
-                w(&mut b, 0xE6BF_0070 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rnlo));
+                w(
+                    &mut b,
+                    0xE6BF_0070 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rnlo),
+                );
                 w(
                     &mut b,
                     0xE1A0_0040 | (reg_to_bits(rdhi) << 12) | (31 << 7) | reg_to_bits(rdlo),
@@ -723,7 +822,10 @@ impl ArmEncoder {
             }
             ArmOp::I64Extend32S { rdlo, rdhi, rnlo } => {
                 if rdlo != rnlo {
-                    w(&mut b, 0xE1A0_0000 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rnlo));
+                    w(
+                        &mut b,
+                        0xE1A0_0000 | (reg_to_bits(rdlo) << 12) | reg_to_bits(rnlo),
+                    );
                 }
                 w(
                     &mut b,
@@ -734,7 +836,10 @@ impl ArmEncoder {
             // I32WrapI64: take the low word. When rd == rnlo this is a genuine
             // no-op (the one case where a NOP word is the correct encoding).
             ArmOp::I32WrapI64 { rd, rnlo } => {
-                w(&mut b, 0xE1A0_0000 | (reg_to_bits(rd) << 12) | reg_to_bits(rnlo));
+                w(
+                    &mut b,
+                    0xE1A0_0000 | (reg_to_bits(rd) << 12) | reg_to_bits(rnlo),
+                );
             }
 
             // I64Add / I64Sub: the classic pair — ADDS lo + ADC hi (SUBS/SBC).
