@@ -211,9 +211,9 @@ impl ArmEncoder {
             );
         }
         /// Register-controlled shift: MOV rd, rn, <LSL|LSR|ASR> rs.
-        /// `ty`: 0=LSL, 1=LSR, 2=ASR. A32 uses the bottom byte of rs; amounts
-        /// >= 32 yield 0 (LSL/LSR) or all-sign (ASR) — same semantics the
-        /// Thumb-2 expansions rely on.
+        /// `ty`: 0=LSL, 1=LSR, 2=ASR. A32 uses the bottom byte of rs;
+        /// amounts of 32 or more yield 0 (LSL/LSR) or all-sign (ASR) — same
+        /// semantics the Thumb-2 expansions rely on.
         fn shift_reg(b: &mut Vec<u8>, ty: u32, rd: u32, rn: u32, rs: u32) {
             w(b, 0xE1A0_0010 | (rd << 12) | (rs << 8) | (ty << 5) | rn);
         }
