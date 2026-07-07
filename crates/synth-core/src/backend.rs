@@ -6,6 +6,7 @@
 use crate::target::TargetSpec;
 use crate::wasm_decoder::DecodedModule;
 use crate::wasm_op::WasmOp;
+use crate::wsc_facts::WscFact;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -201,6 +202,33 @@ pub struct CompileConfig {
     /// with or without this code (the frozen-codegen gate holds). See rivet
     /// `VCR-DMA-001`.
     pub volatile_segments: Vec<VolatileRange>,
+
+    /// VCR-PERF-002 Phase 1 (#494) — proven invariants forwarded by loom in
+    /// the `wsc.facts` custom section (encoding:
+    /// `docs/design/wsc-facts-encoding.md`; program:
+    /// `docs/design/proof-carrying-specialization.md`), whole-module table
+    /// keyed by `(func_index, value_id)`. The compile driver copies the
+    /// current function's slice into [`current_func_facts`] (the
+    /// `func_params_i64` → `current_func_params_i64` pattern), because
+    /// `compile_function` carries no function index.
+    ///
+    /// PHASE-1 CONTRACT: threaded but NOT consumed — no codegen path reads
+    /// facts, so emitted bytes are unchanged whether or not the module
+    /// carries the section (locked by `wsc_facts_ingestion_494.rs`). Phase 2
+    /// turns each fact into a premise for a flag-gated (`SYNTH_FACT_SPEC`),
+    /// per-elision ordeal-validated specialization; the facts-absent compile
+    /// stays byte-identical by construction (empty ⇒ every gate vacuous).
+    ///
+    /// [`current_func_facts`]: CompileConfig::current_func_facts
+    pub wsc_facts: Vec<WscFact>,
+    /// VCR-PERF-002 Phase 1 (#494): the `wsc.facts` invariants of the function
+    /// CURRENTLY being compiled (`fact.func_index == func.index`), set per
+    /// function by the driver loops like [`current_func_params_i64`]. This is
+    /// the field a Phase-2 selector pass will read its premises from. Empty →
+    /// no facts → no specialization may ever fire (the fail-safe default).
+    ///
+    /// [`current_func_params_i64`]: CompileConfig::current_func_params_i64
+    pub current_func_facts: Vec<WscFact>,
 }
 
 /// #543 — an integrator-marked volatile linear-memory segment (the DMA transfer
@@ -255,6 +283,11 @@ impl Default for CompileConfig {
             // #543 Phase 1: no volatile segments unless the CLI flag names them.
             // Empty ⇒ inert ⇒ emitted bytes unchanged.
             volatile_segments: Vec::new(),
+            // VCR-PERF-002 Phase 1 (#494): no facts unless the module carries
+            // a parseable `wsc.facts` section. Empty ⇒ inert (and Phase 1 has
+            // no consumer anyway) ⇒ emitted bytes unchanged.
+            wsc_facts: Vec::new(),
+            current_func_facts: Vec::new(),
         }
     }
 }
