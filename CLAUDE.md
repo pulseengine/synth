@@ -2,7 +2,7 @@
 
 ## What This Is
 
-Synth is a WebAssembly-to-ARM Cortex-M and RISC-V (RV32IMAC) compiler with mechanized correctness proofs in Rocq (formerly Coq). It produces bare-metal ELF binaries for embedded targets.
+Synth is a WebAssembly-to-ARM Cortex-M (Thumb-2), Cortex-R5 (A32), RISC-V (RV32IMAC), and AArch64 (host-native, integer subset) compiler with mechanized correctness proofs in Rocq (formerly Coq). It produces bare-metal ELF binaries for embedded targets.
 
 Part of [PulseEngine](https://github.com/pulseengine): synth (compiler) + [loom](https://github.com/pulseengine/loom) (WASM optimizer) + [meld](https://github.com/pulseengine/meld) (platform).
 
@@ -10,7 +10,7 @@ Part of [PulseEngine](https://github.com/pulseengine): synth (compiler) + [loom]
 
 ```bash
 # Rust — primary build
-cargo test --workspace             # 895+ tests
+cargo test --workspace             # full workspace test suite (no C++ toolchain needed since v0.27.0 — ordeal replaced the default Z3 engine)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 
@@ -27,14 +27,15 @@ bazel test //tests/...             # Renode ARM Cortex-M4 emulation tests
 | `synth-cli` | CLI entry point (`synth compile`, `synth verify`, `synth disasm`) |
 | `synth-core` | Shared types, error handling, `Backend` trait, WASM decoder |
 | `synth-frontend` | WASM Component Model parser and validator |
-| `synth-backend` | ARM Thumb-2 encoder, ELF builder, vector table, linker scripts, MPU |
+| `synth-backend` | ARM Thumb-2 (Cortex-M) + A32 (Cortex-R5) encoder, ELF builder, vector table, linker scripts, MPU |
 | `synth-backend-riscv` | RISC-V RV32IMAC backend (selector, encoder, relocatable ELF) — qemu_riscv32 / ESP32-C3 |
+| `synth-backend-aarch64` | AArch64 (A64) host-native backend — integer subset, `-b aarch64` |
 | `synth-backend-awsm` | aWsm backend integration (WASM→native via aWsm) |
 | `synth-backend-wasker` | Wasker backend integration (WASM→Rust transpiler) |
 | `synth-synthesis` | WASM→ARM instruction selection, peephole optimizer, pattern matcher |
 | `synth-cfg` | Control flow graph construction and analysis |
 | `synth-opt` | IR-level optimization passes (CSE, constant folding, DCE) |
-| `synth-verify` | SMT translation validation (pure-Rust ordeal engine; optional Z3 differential oracle behind `z3-solver`) |
+| `synth-verify` | SMT translation validation — ordeal (pure-Rust QF_BV) default; Z3 = feature-gated differential oracle |
 | `synth-analysis` | SSA, control flow analysis, call graph |
 | `synth-abi` | WebAssembly Component Model ABI (lift/lower) |
 | `synth-memory` | Portable memory abstraction (Zephyr, Linux, bare-metal) |
@@ -88,11 +89,13 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 291 Qed / 9 Admitted
-(+2 `admit.` tactics) across `coq/Synth/`. Proofs are tiered: T1 (result-
-correspondence), T2 (existence-only), T3 (admitted). The remaining admits are
-division/trap-guard and i64 boundary lemmas tracked in `coq/STATUS.md`.
-All i32 operations (arithmetic, division, comparison, bit-manip, shift/rotate) have T1 proofs.
+See `coq/STATUS.md` for the complete coverage matrix. Current: 298 Qed / 9 Admitted
+(+2 `admit.` tactics) across `coq/Synth/` — STATUS.md's 291 headline recount predates
+the 7 Qed VCR-SEL-001 pilot lemmas in `Synth/VcrSelPilot.v` (#386). Proofs are tiered:
+T1 (result-correspondence), T2 (existence-only), T3 (admitted). Remaining admits:
+4 i32 division trap guards (exec_program model gap, #73), 2 Compilation.v,
+1 CorrectnessSimple.v, 2 ArmRefinement.v — 0 i64 admits.
+All i32 AND i64 operations have T1 proofs (i64 T1 parity since v0.11.0).
 
 ## North Star (roadmap)
 
@@ -106,20 +109,27 @@ phased, parallelizable **VCR-\*** rivet program (epic #242,
 `artifacts/verified-codegen-roadmap.yaml`), built incrementally — behavior
 frozen and oracle-gated every step:
 
-- **Track A (core):** `VCR-RA-001` SSA allocator with spilling (step 1 landed,
-  PR #243: def/use + liveness in `crates/synth-synthesis/src/liveness.rs`) →
-  `VCR-SEL-001` Rocq-discharged verified selector DSL.
+- **Track A (core):** `VCR-RA-001` allocator with Belady spilling — **verified,
+  default-on since v0.24.0** (`SYNTH_SPILL_REALLOC`; `SYNTH_SPILL_ON_EXHAUST`
+  built flag-off, silicon-gated #580). Next: `VCR-SEL-001` Rocq-discharged
+  verified selector DSL (increment 1 in review, PR #623, `SYNTH_SEL_DSL`) and
+  `VCR-PERF-002` proof-carrying specialization (#494, 0.45× floor; phase 1 in
+  review, PR #624).
 - **Track B (semantics):** `VCR-ISA-001` Sail-generated Rocq ISA model;
-  `VCR-WASM-001` WasmCert-Coq source semantics.
-- **Track C (validation, now):** `VCR-ORACLE-001` coverage-guided,
-  theorem-linked differential oracle.
+  `VCR-WASM-001` WasmCert-Coq source semantics — both still proposed.
+- **Track C (validation):** the differential oracles are CI-gated jobs
+  (cmp-select, RV32 shift-fold/const-addr-fold, callee-saved, spill-frame,
+  symtab-based frozen-fixture differentials).
 - **Gate `VCR-VER-001`:** a previously load-bearing greedy-fix becomes
   revertable, full differential bit-identical, cycles equal-or-better.
 
-Silicon target (gale #209, G474RE): `flat_flight` 315 cyc vs 99 native (3.18×),
-61 % redundant const materializations, 17 spills — const-CSE + liveness-based
-spilling, pays on ARM and RISC-V at once. See the README "Roadmap — North Star"
-section for the full table.
+Shipped default-on levers (v0.13–v0.30, each evidence-gated with a CI-pinned
+opt-out): cmp→select fusion (ARM+RV32), i32 local promotion, immediate-shift
+folds (ARM+RV32), base-CSE, const-CSE (gale-confirmed gust_mix 90→86 B),
+dead-frame-elim, uxth-fold. The gale #209 numbers that motivated Track A
+(flat_flight 315 cyc vs 99 native, 61 % redundant consts, 17 spills) are
+historical — flat_flight sits at its Belady optimum (frame traffic 0) since
+v0.24.0. See the README "Roadmap — North Star" section for the full table.
 
 ## Conventions
 

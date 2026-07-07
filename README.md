@@ -30,9 +30,9 @@
 
 &nbsp;
 
-Synth is an ahead-of-time compiler from WebAssembly to ARM Cortex-M machine code. It produces bare-metal ELF binaries targeting embedded microcontrollers. The compiler handles i32, i64 (via register pairs), f32 (via VFP), control flow, and memory operations. Mechanized correctness proofs in [Rocq](https://rocq-prover.org/) cover the i32 instruction selection; i64/float/SIMD proofs are not yet done.
+Synth is an ahead-of-time compiler from WebAssembly to ARM Cortex-M machine code, with additional backends for ARM Cortex-R5 (A32, `--target cortex-r5`), RISC-V RV32IMAC (qemu_riscv32 / ESP32-C3), and AArch64 (host-native, integer subset, `-b aarch64`). It produces bare-metal ELF binaries targeting embedded microcontrollers. The compiler handles i32, i64 (via register pairs), control flow, and memory operations; scalar float ops are rejected loudly rather than miscompiled (#369, #554). Mechanized correctness proofs in [Rocq](https://rocq-prover.org/) cover the i32 and i64 instruction selection with result-correspondence (T1) proofs; float/SIMD selection has existence-only (T2) proofs.
 
-**This is pre-release software.** It has not been tested on real hardware. The generated ARM code passes unit tests and compiles 227/257 WebAssembly spec test files, but execution on Cortex-M silicon is unverified. Use at your own risk.
+**This is pre-release software.** Generated code is validated by unit tests, Renode/QEMU emulation, execution differentials against wasmtime, and — for specific fixtures — cycle- and correctness-gated runs on real Cortex-M silicon (NUCLEO-G474RE, STM32F100, via the gale test loop). Broad hardware validation is still missing. Use at your own risk.
 
 Part of [PulseEngine](https://github.com/pulseengine) -- a WebAssembly toolchain for safety-critical embedded systems:
 
@@ -49,17 +49,9 @@ Part of [PulseEngine](https://github.com/pulseengine) -- a WebAssembly toolchain
 Synth's pitch is that **functional safety is a certification problem, not a
 processor problem**: the right unit of evidence is verifiable code
 generation from a small, well-defined source language (WASM) to a small,
-well-defined target ISA (Thumb-2 / RV32), not a verified silicon core. That
-framing has external academic validation in
-[Andreasyan et al., 2026](https://arxiv.org/abs/2604.17391) — *"RISC-V
-Functional Safety for Autonomous Automotive Systems: An Analytical Framework
-and Research Roadmap for ML-Assisted Certification"* — which argues that
-"the strongest outcome is not a faster core, but an ASIL-D-ready
-certifiable RISC-V platform," and positions the certification workflow
-(diagnostic coverage, ISO 26262 / ISO 21448 / ISO/SAE 21434 alignment) as
-the primary deliverable. Synth contributes the codegen half of that
-workflow: a compiler whose lowering steps come with mechanized proofs and
-an explicit
+well-defined target ISA (Thumb-2 / RV32), not a verified silicon core.
+Synth contributes the codegen half of that workflow: a compiler whose
+lowering steps come with mechanized proofs and an explicit
 [Spectre / speculative-execution policy](docs/spectre-policy.md) per
 lowering rule.
 
@@ -95,7 +87,7 @@ synth compile examples/wat/simple_add.wat --cortex-m -o firmware.elf
 synth disasm firmware.elf
 ```
 
-To use Z3 translation validation, rebuild with the `verify` feature (requires Z3 on your system):
+Translation validation (`synth verify`, `--verify`) is feature-gated in the CLI. Since v0.27.0 the default verification engine is [ordeal](https://github.com/pulseengine/ordeal), a pure-Rust QF_BV solver — `synth-verify` itself no longer needs a C++ toolchain. The CLI `verify` feature currently also enables the feature-gated Z3 differential oracle (statically linked):
 
 ```bash
 cargo build --release -p synth-cli --features verify
@@ -107,9 +99,8 @@ synth verify examples/wat/simple_add.wat firmware.elf
 | Category | Status | Notes |
 |----------|--------|-------|
 | i32 arithmetic, bitwise, comparison, shift/rotate | **Tested** | Full Rocq T1 proofs, Renode execution tests |
-| i64 arithmetic (register pairs) | **Tested** | ADDS/ADC, SUBS/SBC, UMULL; unit tests only |
-| f32 via VFP | Implemented | Requires FPU-equipped target (M4F, M7); Rocq T2 existence proofs |
-| f64 via VFP | Not implemented | Decoded but rejected by instruction selector |
+| i64 (register pairs): arithmetic, shifts, rotates, div/rem, compare | **Tested** | full pair lowering — right shifts fixed v0.28.0 (#599), rot/div/rem v0.30.1 (#610), A32 completeness v0.30.2 (#615); differential vs wasmtime |
+| f32/f64 via VFP | Not implemented | Decoded → loud reject, never silent miscompile (#369, #554); VFP encoder exists as a disconnected prototype |
 | WASM SIMD via ARM Helium MVE | Experimental | Cortex-M55 only; encoding untested on hardware |
 | Control flow (block, loop, if/else, br, br_table) | **Tested** | Renode execution tests, complex test suite |
 | Function calls (direct, indirect) | Implemented | Unit tests; inter-function calls not Renode-tested |
@@ -118,17 +109,17 @@ synth verify examples/wat/simple_add.wat firmware.elf
 | ELF output with vector table | Implemented | Thumb bit set on symbols; not linked on real hardware |
 | Linker scripts (STM32, nRF52840, generic) | Implemented | Generated, not tested with real boards |
 | Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
-| Rocq mechanized proofs | 291 Qed / 9 Admitted | i32 T1 proofs; division/constant proofs re-admitted for trap guard alignment |
-| Z3 translation validation | 53 tests passing | Covers i32 arithmetic and comparison rules |
+| Rocq mechanized proofs | 298 Qed / 9 Admitted | i32 + i64 T1 proofs; division proofs re-admitted for trap guard alignment |
+| SMT translation validation | ordeal (pure-Rust QF_BV) default | v0.27.0 (#553); Z3 demoted to feature-gated differential oracle — 141/141 agreement |
 | WebAssembly spec test suite | 227/257 compile | Compilation only — not executed on emulator |
 
 ### What doesn't work yet
 
-- **No real hardware testing** — all testing is unit tests and Renode emulation
+- **Narrow hardware coverage** — silicon validation is fixture-scoped (gale's NUCLEO-G474RE / STM32F100 cycle and correctness gates); there is no broad board matrix
 - **No multi-memory** — fused components from meld need single-memory mode
 - **No WASI on embedded** — kiln-builtins crate doesn't exist yet
 - **No component model execution** — components compile but can't run without kiln-builtins + cabi_realloc
-- **Register allocator is naive** — wrapping allocation with reserved register exclusion, no graph coloring
+- **Spill-on-exhaustion is opt-in** — Belady spilling is default-on (v0.24.0, VCR-RA-001), but replacing the register-exhaustion decline with allocation-time spilling (`SYNTH_SPILL_ON_EXHAUST`, #580) is held for silicon numbers
 - **No tail call optimization** — return_call compiles but doesn't optimize the call frame
 - **SIMD/Helium is untested** — MVE instruction encoding implemented but never run on M55 silicon or emulator
 
@@ -203,7 +194,7 @@ Per the [PulseEngine Verification Guide](https://pulseengine.eu/guides/VERIFICAT
 
 | Track | Status | Coverage |
 |-------|--------|----------|
-| **Rocq** | Partial | 291 Qed / 9 Admitted — division proofs re-admitted for trap guard alignment |
+| **Rocq** | Partial | 298 Qed / 9 Admitted — division proofs re-admitted for trap guard alignment |
 | **Kani** | Starting | 18 bounded model checking harnesses for ARM encoder |
 | **Verus** | Starting | 8 spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` |
 | **Lean** | Not started | — |
@@ -215,15 +206,16 @@ See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 thr
 Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM semantics for each operation. The proof suite lives in `coq/Synth/` and covers ARM instruction semantics, WASM stack-machine semantics, and per-operation correctness theorems.
 
 ```
-291 Qed / 9 Admitted
-  T1: 35 result-correspondence (ARM output = WASM result)  — i32 only
-  T2: 142 existence-only (ARM execution succeeds, no result claim)
-  T3: 10 admitted (4 division trap guards, 1 constant encoding, 2 examples,
-                    2 ArmRefinement Sail, 1 Integers.v Rocq 9 migration)
-  Infrastructure: 56 (integer properties, state lemmas, flag lemmas, semantics helpers)
+298 Qed / 9 Admitted (+2 admit. tactics)
+  T1 result-correspondence (ARM output = WASM result): all i32 ops and all
+     i64 ops — i64 T1 parity since v0.11.0, 0 i64 admits (coq/STATUS.md)
+  T2 existence-only: f32/f64 and remaining categories
+  T3 admitted (9): 4 i32 division trap guards (exec_program model gap, #73),
+     2 Compilation.v, 1 CorrectnessSimple.v, 2 ArmRefinement.v
+  + 7 Qed VCR-SEL-001 pilot lemmas (Synth/VcrSelPilot.v, #386)
 ```
 
-Only i32 arithmetic/bitwise operations have full T1 (result-correspondence) proofs. Division proofs were re-admitted after updating Compilation.v to emit trap guard sequences (CMP+BCondOffset+UDF) matching the actual compiler — the sequential exec_program model needs PC-relative branching support to verify these. The i64, f32, f64, and SIMD instruction selection has T2 existence proofs but not T1 result-correspondence.
+i32 and i64 operations have full T1 (result-correspondence) proofs; i64 parity landed in v0.11.0. Division proofs were re-admitted after updating Compilation.v to emit trap guard sequences (CMP+BCondOffset+UDF) matching the actual compiler — the sequential exec_program model needs PC-relative branching support to verify these. The f32, f64, and SIMD instruction selection has T2 existence proofs but not T1 result-correspondence.
 
 Build the proofs:
 
@@ -237,9 +229,9 @@ cd coq && make proofs
 
 See [coq/STATUS.md](coq/STATUS.md) for the per-file coverage matrix.
 
-### Z3 SMT translation validation
+### SMT translation validation (ordeal, with Z3 as differential oracle)
 
-The `synth-verify` crate encodes WASM and ARM semantics as Z3 formulas and checks per-rule equivalence. The `--verify` CLI flag invokes this after compilation; `synth verify` provides standalone validation. 53 Z3 verification tests pass in CI.
+The `synth-verify` crate encodes WASM and ARM semantics as QF_BV formulas and checks per-rule equivalence. Since v0.27.0 (#553/#595) the default engine is [ordeal](https://github.com/pulseengine/ordeal), a pure-Rust QF_BV solver (139/139 validator tests, ~2 s; no C++ toolchain required); Z3 is demoted to a feature-gated (`z3-solver`) differential oracle — 141/141 cases, zero disagreements with ordeal. The `--verify` CLI flag invokes validation after compilation; `synth verify` provides standalone validation.
 
 ## Roadmap — North Star
 
@@ -249,16 +241,28 @@ The recurring greedy fixes (the reciprocal-multiply cost-gate, the register-exha
 
 The one-sentence version: moving synth's correctness from *"we patched every bug we found"* to *"the structure makes the bug unrepresentable."*
 
+**Historical motivation** (gale, #209, on NUCLEO-G474RE, mid-2026): the fully-composed `flat_flight` ran **315 cyc vs 99 native (3.18×)** with **61 % redundant constant materializations** and **17 stack spills**. Those numbers set the allocator track's agenda; the v0.19–v0.30 arc has since retired them.
+
+### Shipped (v0.19.0 → v0.30.2, 2026-07)
+
+- **`VCR-RA-001` — allocator with liveness-based Belady spilling: `verified`, default-on since v0.24.0** (`SYNTH_SPILL_REALLOC`). `flat_flight` reaches its Belady optimum — 412→388 B, hot-segment frame traffic 3 ld + 3 st → **0** — with every re-pinned fixture execution-proven vs wasmtime first.
+- **const-CSE default-on** (v0.29.0, #604) — the redundant-materialization datum retired; gale-confirmed on its kernel (`gust_mix` 90→86 B loom-inlined, direct-compile `func_1` 70→66 B).
+- **The lever ladder, all default-on and evidence-gated** with CI-pinned `=0`/escape-hatch opt-outs: cmp→select fusion (ARM v0.13.0, RV32 v0.28.0), i32 local promotion (v0.14.0, with the v0.15.1 never-cause-a-compile-failure fallback), immediate-shift folding (ARM v0.15.0, RV32 v0.30.0), base-CSE into R11 (v0.27.0), dead-frame-elim + uxth-fold (v0.30.0).
+- **i64 completeness arc**: direct-path i64 stack params + pair spill-pool growth (#503, v0.29.0), pair right-shifts (#599, v0.28.0), rotl/rotr/div/rem silent-zero fix (#610, v0.30.1), and the A32 (`cortex-r5`) i64 family — previously silently encoding to NOP — rebuilt with a **221-variant no-wildcard tripwire** so no silent-NOP arm can regrow (#615, v0.30.2).
+- **Verification substrate**: [ordeal](https://github.com/pulseengine/ordeal) (pure-Rust QF_BV) is the default translation-validation engine since v0.27.0; Z3 demoted to a feature-gated differential oracle (141/141 agreement). Track C's differential oracles are CI-gated jobs (cmp-select, RV32 shift-fold/const-addr-fold, callee-saved, spill-frame, control_step/flight_seam symtab-based fixtures, …).
+
+### In flight / next
+
 | Track | Item | What it does | Status |
 |-------|------|--------------|--------|
-| **A — codegen core** | `VCR-RA-001` | SSA register allocator with spilling — kills the exhaustion hard-fail that *forces* the cost-gates | step 1 landed ([#243](https://github.com/pulseengine/synth/pull/243): def/use + liveness primitive) |
-| | `VCR-SEL-001` | Rocq-discharged verified selector DSL — *"ISLE with a proof-assistant backend"*; a missing lowering rule becomes an enumerable coverage gap, not a silent miscompile | proposed |
+| **A — codegen core** | `VCR-SEL-001` | Rocq-discharged verified selector DSL — *"ISLE with a proof-assistant backend"*; a missing lowering rule becomes an enumerable coverage gap, not a silent miscompile | increment 1 in review ([PR #623](https://github.com/pulseengine/synth/pull/623): 6-op i32 ALU class + `rotl` behind `SYNTH_SEL_DSL`); 7 Qed pilot lemmas in `coq/Synth/Synth/VcrSelPilot.v` |
+| | `VCR-PERF-002` | Proof-carrying specialization (#494): loom's `wsc.facts` invariants become premises for per-elision proof obligations, certificate-checked by the ordeal-backed validator — toward gale's measured **0.45× (below-native) floor** | design traced (v0.30.0); phase 1 (facts ingestion) in review ([PR #624](https://github.com/pulseengine/synth/pull/624)) |
+| | `SYNTH_SPILL_ON_EXHAUST` | Replace the register-exhaustion decline with allocation-time Belady spilling (#580) — the last piece of the exhaustion hard-fail | built, flag-off; default-on held for silicon cycle numbers |
 | **B — authoritative semantics** | `VCR-ISA-001` | Re-base ARM/RISC-V semantics on Sail-generated Rocq (the official ISA spec) | proposed |
 | | `VCR-WASM-001` | Anchor WASM source semantics on WasmCert-Coq | proposed |
-| **C — validation (now)** | `VCR-ORACLE-001` | Coverage-guided, theorem-linked differential oracle | proposed |
 | **Gate** | `VCR-VER-001` | Success = a previously load-bearing greedy-fix becomes *revertable*, with the full differential bit-identical and cycles equal-or-better | proposed |
 
-**Silicon target for Track A** (gale, #209, on NUCLEO-G474RE): the fully-composed `flat_flight` is 588 B / 180 instrs, **315 cyc vs 99 native (3.18×)** — with **61 % redundant constant materializations** (the int8 saturation clamps `#0x7e`/`#0x7f` re-materialized 6× each) and **17 stack spills**. Both levers — const-CSE/rematerialization-avoidance and liveness-based spill allocation — sit squarely on the allocator track and pay off on ARM *and* RISC-V at once.
+Honest open items: the RV32 local-promotion flip is held on a failed no-grow gate (#601); f32/f64 remain loud-reject (#369); SIMD/Helium is untested on hardware.
 
 **What it buys us:** synth stops being a real-ish compiler held together by oracle-gated patches and becomes a genuinely best-in-class *verified* compiler — and the verified selector DSL is the part that is potentially novel/publishable, not just catching up to Cranelift.
 
@@ -269,13 +273,15 @@ The one-sentence version: moving synth's correctness from *"we patched every bug
 | `synth-cli` | CLI entry point (`synth compile`, `synth verify`, `synth disasm`) |
 | `synth-core` | Shared types, error handling, `Backend` trait, WASM decoder |
 | `synth-frontend` | WASM Component Model parser and validator |
-| `synth-backend` | ARM Thumb-2 encoder, ELF builder, vector table, linker scripts, MPU |
+| `synth-backend` | ARM Thumb-2 (Cortex-M) + A32 (Cortex-R5) encoder, ELF builder, vector table, linker scripts, MPU |
+| `synth-backend-riscv` | RISC-V RV32IMAC backend (selector, encoder, relocatable ELF) — qemu_riscv32 / ESP32-C3 |
+| `synth-backend-aarch64` | AArch64 (A64) host-native backend — integer subset, `-b aarch64` |
 | `synth-backend-awsm` | aWsm backend integration (WASM-to-native via aWsm) |
 | `synth-backend-wasker` | Wasker backend integration (WASM-to-Rust transpiler) |
 | `synth-synthesis` | WASM-to-ARM instruction selection, peephole optimizer, pattern matcher |
 | `synth-cfg` | Control flow graph construction and analysis |
 | `synth-opt` | IR-level optimization passes (CSE, constant folding, DCE) |
-| `synth-verify` | Z3 SMT translation validation |
+| `synth-verify` | SMT translation validation — ordeal (pure-Rust QF_BV) default, Z3 feature-gated differential oracle |
 | `synth-analysis` | SSA, control flow analysis, call graph |
 | `synth-abi` | WebAssembly Component Model ABI (lift/lower) |
 | `synth-memory` | Portable memory abstraction (Zephyr, Linux, bare-metal) |
@@ -286,7 +292,7 @@ The one-sentence version: moving synth's correctness from *"we patched every bug
 ## Testing
 
 ```bash
-# Run all Rust tests (895 tests across workspace)
+# Run all Rust tests
 cargo test --workspace
 
 # Lint
