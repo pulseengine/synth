@@ -118,7 +118,9 @@ fn append_wsc_facts_section(mut wasm: Vec<u8>, payload: &[u8]) -> Vec<u8> {
 /// Fixture wat → wasm bytes (the exact bytes the CLI would produce from .wat).
 fn fixture_wasm() -> Vec<u8> {
     let wat = std::fs::read(fixture(FIXTURE)).expect("read fixture wat");
-    wat::parse_bytes(&wat).expect("fixture wat must parse").into_owned()
+    wat::parse_bytes(&wat)
+        .expect("fixture wat must parse")
+        .into_owned()
 }
 
 /// Compile a `.wasm` byte blob on the shipped default config (optimized ARM
