@@ -20,12 +20,12 @@ arm = ["synth-synthesis"]
 
 [dependencies]
 # Core dependencies (always required)
-synth-core = { path = "../synth-core", version = "0.30.1" }
-synth-cfg = { path = "../synth-cfg", version = "0.30.1" }
-synth-opt = { path = "../synth-opt", version = "0.30.1" }
+synth-core = { path = "../synth-core", version = "0.30.2" }
+synth-cfg = { path = "../synth-cfg", version = "0.30.2" }
+synth-opt = { path = "../synth-opt", version = "0.30.2" }
 
 # ARM synthesis (optional, behind 'arm' feature)
-synth-synthesis = { path = "../synth-synthesis", version = "0.30.1", optional = true }
+synth-synthesis = { path = "../synth-synthesis", version = "0.30.2", optional = true }
 
 # Default SMT engine: pure-Rust, certificate-checked QF_BV solver (#553)
 ordeal = "0.4"

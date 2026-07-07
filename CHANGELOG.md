@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.30.2] - 2026-07-07
+
+**Every A32 (cortex-r5) i64 op computed real results — the entire family was
+silently encoding to NOP (#615). The silent-NOP class (#594 → #610 → #615)
+ends here: a 221-variant no-wildcard tripwire guarantees no arm can regrow.**
+
+### Fixed
+
+- **A32 i64 mul/shifts/rotates/all-10-comparisons/eqz/clz/ctz/popcnt/div/rem/
+  const/load/store/extends — plus i32 `SetCond`/`SelectMove`/`Popcnt` — encoded
+  as the literal NOP word on `--target cortex-r5` (#615).** Verification-era
+  "NOP for now" arms became user-reachable when cortex-r5 landed; operations
+  vanished and functions returned register garbage with no diagnostic. All now
+  expand via `encode_arm_expanded` mirroring each Thumb-2 twin's register
+  contract (A32 conditional execution replaces IT blocks; div/rem get A32
+  fixed-ABI wrappers with the zero-divisor `UDF` trap). Ops no A32 target can
+  legally reach (verification-only pseudo-ops, Thumb-only MVE) are typed `Err`
+  — loud, never NOP. Evidence: 24/24 clang bit-exact encoding cross-checks,
+  branch-offset audit, 352-case ARM-mode unicorn-vs-wasmtime differential
+  (pre-fix: 254 mismatches; post-fix: 0), frozen anchors 9/9 byte-identical
+  (Thumb path untouched).
+
+### Added
+
+- **Structural tripwire `a32_no_silent_nop_615.rs`:** exhaustive no-wildcard
+  match over all 221 `ArmOp` variants — a new variant fails compilation until
+  classified; the A32 encoding may never be the bare NOP word outside the
+  documented genuine-no-op allowlist.
+
+### Changed
+
+- deps: rivet 0.24.0, ordeal 0.4.2, scry-sai-core 3.0.0 (dependabot).
+
 ## [0.30.1] - 2026-07-03
 
 **i64 rotl/rotr/div_u/rem_u (+div_s/rem_s) computed real results — were
