@@ -1,6 +1,7 @@
 # VCR-PERF-002 — Proof-carrying specialization design (#494)
 
-Status: **design** (no code yet). Tracks `VCR-PERF-002` in
+Status: **Phase 1 implemented** (fact ingestion, codegen-neutral — see
+"Phasing"; Phases 2/3 remain design). Tracks `VCR-PERF-002` in
 `artifacts/verified-codegen-roadmap.yaml`, epic #242, GitHub #494 part (a).
 Cross-repo contract: loom#240 / loom#231 (`wsc.facts`), gale PR
 pulseengine/gale#121 (`gust_floor_bench`, the measured floor).
@@ -29,8 +30,12 @@ act on it *soundly*. Target: **≤0.70× of native**, kill-criterion per #494.
 
 Per loom#231: a custom section **`wsc.facts`** (sibling of
 `wsc.transformation.attestation`), carrying invariants loom's Z3 translation
-validator already discharges, keyed by `(function index, value id)`. Fact
-kinds, in silicon-payoff order:
+validator already discharges, keyed by `(function index, value id)`. The
+concrete binary encoding (schema v1 — version byte first, LEB128 fields,
+length-prefixed unknown-kind-skippable records; resolves loom#231 open
+questions 1/2) is specified in the sibling document
+[`wsc-facts-encoding.md`](wsc-facts-encoding.md). Fact kinds, in
+silicon-payoff order:
 
 1. **value-range** — `v ∈ [lo, hi]` (drives the clamp elision above)
 2. **shift-bound** — shift amount `< 32`/`< 64` (bare `lsl/lsr`, no mask)
@@ -93,7 +98,13 @@ bounds adversarial queries to a clean conservative decline.
    `CompileConfig` / the selector. **Zero codegen change**; byte-identical,
    frozen-safe. Schema versioned, unknown-kind-tolerant. Co-designed with
    loom's emitter (loom#231 open questions 1/2 resolve here: keying + binary
-   encoding).
+   encoding). **IMPLEMENTED** — encoding: `wsc-facts-encoding.md` (schema v1);
+   parser: `crates/synth-core/src/wsc_facts.rs` (total, fail-safe), wired
+   into `decode_wasm_module` and threaded to `CompileConfig::wsc_facts` /
+   `current_func_facts`; neutrality gate:
+   `crates/synth-cli/tests/wsc_facts_ingestion_494.rs` (facts-present compile
+   byte-identical to facts-stripped, malformed/wrong-version ignored
+   end-to-end).
 2. **Single-elision prototype** — value-range ⇒ dead conditional-branch
    elision (the `gust_mix` clamp shape), behind `SYNTH_FACT_SPEC`, with the
    per-elision obligation + a red/green in-bounds differential oracle.

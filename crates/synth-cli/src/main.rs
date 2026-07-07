@@ -18,6 +18,7 @@ use synth_core::SafetyManifest;
 use synth_core::backend::{Backend, BackendRegistry, CompileConfig, SafetyBounds, VolatileRange};
 use synth_core::target::TargetSpec;
 use synth_core::wasm_decoder::ImportEntry;
+use synth_core::wsc_facts::WscFact;
 use synth_synthesis::{
     FunctionOps, WasmGlobal, WasmMemory, WasmOp, decode_wasm_functions, decode_wasm_module,
 };
@@ -1142,6 +1143,11 @@ fn compile_command(
     let mut func_ret_i64: Vec<bool> = Vec::new(); // #311: call-result pair tagging
     let mut type_ret_i64: Vec<bool> = Vec::new(); // #311: call_indirect results
     let mut current_func_block_arity: Vec<(u8, u8)> = Vec::new(); // #509: value-carrying branches
+    // VCR-PERF-002 Phase 1 (#494): loom `wsc.facts` premises — whole-module
+    // table + this function's slice. Threaded to the CompileConfig; NOT yet
+    // consumed by any codegen path (Phase 2 is the gated elision).
+    let mut wsc_facts: Vec<WscFact> = Vec::new();
+    let mut current_func_facts: Vec<WscFact> = Vec::new();
     let (wasm_ops, func_name): (Vec<WasmOp>, String) = match (&input, &demo) {
         (Some(path), _) => {
             info!("Compiling WASM file: {}", path.display());
@@ -1175,6 +1181,10 @@ fn compile_command(
             func_ret_i64 = module.func_ret_i64;
             type_ret_i64 = module.type_ret_i64;
             let module_func_params_i64 = module.func_params_i64;
+            // VCR-PERF-002 Phase 1 (#494): whatever facts loom forwarded
+            // (empty for a section-less module — the overwhelmingly common
+            // case — and for any malformed section, per the fail-safe rule).
+            wsc_facts = module.wsc_facts;
 
             // Capture the WASM bytes + imports for the SBOM (the bytes synth
             // actually compiles, after WAT decode and any Loom pass).
@@ -1219,6 +1229,14 @@ fn compile_command(
                 current_func_params_i64 = p.clone();
             }
             current_func_block_arity = func.block_arity.clone();
+            // VCR-PERF-002 Phase 1 (#494): THIS function's facts slice, the
+            // `current_func_params_i64` pattern (`compile_function` carries no
+            // function index, so the driver filters by `func_index` up front).
+            current_func_facts = wsc_facts
+                .iter()
+                .filter(|f| f.func_index == func.index)
+                .cloned()
+                .collect();
 
             // #554: an op the decoder DROPPED (`_ => None`, e.g. scalar `f32.*`)
             // is recorded in `func.unsupported` but is already gone from
@@ -1294,6 +1312,11 @@ fn compile_command(
         func_ret_i64,
         type_ret_i64,
         current_func_block_arity,
+        // VCR-PERF-002 Phase 1 (#494): threaded but not yet consumed (inert
+        // plumbing, like volatile_segments was in #543 Phase 1). Phase 2 reads
+        // `current_func_facts` in the selector behind SYNTH_FACT_SPEC.
+        wsc_facts,
+        current_func_facts,
         ..CompileConfig::default()
     };
 
@@ -1974,6 +1997,7 @@ fn compile_all_exports(
         all_func_ret_i64, // #311: per-function returns-i64 (pair tagging)
         all_type_ret_i64, // #311: per-type returns-i64 (call_indirect)
         all_func_params_i64, // #359: per-function declared param widths (stack-arg ABI)
+        all_wsc_facts, // VCR-PERF-002 Phase 1 (#494): loom wsc.facts premises
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
@@ -2070,6 +2094,7 @@ fn compile_all_exports(
             Vec::new(), // #311: WAST runs the fixture suite; i32-only
             Vec::new(),
             Vec::new(), // #359: WAST fixture suite is i32-only — no stack params
+            Vec::new(), // #494: facts are a loom-emitted-.wasm channel; WAST fixtures carry none
         )
     } else {
         let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
@@ -2133,6 +2158,7 @@ fn compile_all_exports(
             module.func_ret_i64,
             module.type_ret_i64,
             module.func_params_i64,
+            module.wsc_facts,
         )
     };
 
@@ -2210,6 +2236,12 @@ fn compile_all_exports(
         // Phase-2 back-off (const-CSE + #468 base-CSE decline inside these ranges)
         // lives on the optimized path this config feeds. See VCR-DMA-001.
         volatile_segments,
+        // VCR-PERF-002 Phase 1 (#494): the module's loom-forwarded `wsc.facts`
+        // premises — threaded but not yet consumed (inert plumbing, the #543
+        // Phase-1 pattern). The per-function slice is filtered into
+        // `current_func_facts` in the compile loop below; Phase 2 reads it in
+        // the selector behind SYNTH_FACT_SPEC.
+        wsc_facts: all_wsc_facts.clone(),
         ..CompileConfig::default()
     };
 
@@ -2254,6 +2286,14 @@ fn compile_all_exports(
                 fc.current_func_params_i64 = p.clone();
             }
             fc.current_func_block_arity = func.block_arity.clone();
+            // VCR-PERF-002 Phase 1 (#494): THIS function's wsc.facts slice
+            // (`compile_function` carries no function index — the same reason
+            // `current_func_params_i64` exists). Not yet consumed.
+            fc.current_func_facts = all_wsc_facts
+                .iter()
+                .filter(|f| f.func_index == func.index)
+                .cloned()
+                .collect();
             fc
         };
         // #369: the decoder flagged a value-affecting op it cannot lower (e.g.

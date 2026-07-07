@@ -120,6 +120,15 @@ pub struct DecodedModule {
     /// reachable function performs a `call_indirect`. Empty for modules with no
     /// element section (every leaf/direct-call module), keeping output identical.
     pub elem_func_indices: Vec<u32>,
+    /// VCR-PERF-002 Phase 1 (#494): proven invariants from loom's `wsc.facts`
+    /// custom section, keyed by `(function index, value id)` — see
+    /// `docs/design/wsc-facts-encoding.md` (schema v1) and
+    /// [`crate::wsc_facts::parse_wsc_facts`]. FAIL-SAFE by contract (loom#231
+    /// Q4): a missing/unparseable section or unknown version yields the empty
+    /// vec, unknown fact kinds are skipped — never a decode error. Phase 1 is
+    /// ingestion only: NO codegen path consumes these yet, so emitted bytes
+    /// are unchanged whether or not a module carries the section.
+    pub wsc_facts: Vec<crate::wsc_facts::WscFact>,
 }
 
 /// Decode a WASM binary and extract functions, memory, and data segments
@@ -150,6 +159,10 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // conventionally trails the code section, so the entries are not yet
     // available when each `CodeSectionEntry` is decoded.
     let mut name_section_names: HashMap<u32, String> = HashMap::new();
+    // VCR-PERF-002 Phase 1 (#494): facts from loom's `wsc.facts` custom
+    // section. `None` until (and unless) the first such section is seen —
+    // duplicates are ignored (one prover, one section; encoding doc rule).
+    let mut wsc_facts: Option<Vec<crate::wsc_facts::WscFact>> = None;
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
@@ -375,6 +388,31 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 if let wasmparser::KnownCustom::Name(reader) = c.as_known() {
                     parse_name_section_func_names(reader, &mut name_section_names);
                 }
+                // VCR-PERF-002 Phase 1 (#494): loom's `wsc.facts` section.
+                // `parse_wsc_facts` is TOTAL (fail-safe skew, loom#231 Q4):
+                // any malformed payload decodes to the empty fact list WITH a
+                // stderr diagnostic, never an error — facts are optional
+                // accelerators and must not be able to change a compilation
+                // outcome. First section wins.
+                if c.name() == crate::wsc_facts::WSC_FACTS_SECTION_NAME && wsc_facts.is_none() {
+                    let parsed = crate::wsc_facts::parse_wsc_facts(c.data());
+                    if let Some(reason) = &parsed.section_ignored {
+                        eprintln!(
+                            "warning: ignoring unparseable `wsc.facts` custom section \
+                             ({reason}) — facts are optional accelerators, compilation \
+                             is unaffected (#494 fail-safe skew rule)"
+                        );
+                    } else if parsed.records_skipped > 0 {
+                        eprintln!(
+                            "warning: skipped {} unknown/undecodable `wsc.facts` \
+                             record(s) (likely a newer loom emitter); {} known fact(s) \
+                             kept, compilation is unaffected (#494 fail-safe skew rule)",
+                            parsed.records_skipped,
+                            parsed.facts.len()
+                        );
+                    }
+                    wsc_facts = Some(parsed.facts);
+                }
             }
             _ => {}
         }
@@ -395,6 +433,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         func_params_i64,
         globals,
         elem_func_indices,
+        wsc_facts: wsc_facts.unwrap_or_default(),
     })
 }
 

@@ -15,6 +15,7 @@ pub mod target;
 pub mod wasm_decoder;
 pub mod wasm_op;
 pub mod wasm_stack_check;
+pub mod wsc_facts;
 
 pub use backend::*;
 pub use component::*;
@@ -28,3 +29,4 @@ pub use wasm_decoder::{
     decode_wasm_module,
 };
 pub use wasm_op::WasmOp;
+pub use wsc_facts::{FactKind, WSC_FACTS_SECTION_NAME, WscFact, WscFactsParse, parse_wsc_facts};
