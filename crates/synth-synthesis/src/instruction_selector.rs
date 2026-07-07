@@ -1933,6 +1933,22 @@ pub struct InstructionSelector {
     /// compiles with the default pool keeps its frame byte-identical by
     /// construction.
     i64_spill_slots: usize,
+    /// VCR-SEL-001 increment 1 (#242): serve the migrated `select_default`
+    /// arms (the tier-A i32 ALU six + `i32.rotl`) from the generated,
+    /// Rocq-proved rule table [`crate::sel_dsl::generated`] instead of the
+    /// hand-written lowering. Default OFF (read from `SYNTH_SEL_DSL`) — OFF
+    /// keeps every arm on its original hand-written body, byte-identical by
+    /// construction. The two implementations are mirror-pinned per op
+    /// (`sel_dsl_mirror_pin_generated_rules_match_handwritten_arms_242`).
+    /// See `docs/design/vcr-sel-001-first-increment.md`.
+    sel_dsl: bool,
+}
+
+/// `SYNTH_SEL_DSL` (VCR-SEL-001, #242): opt-IN lever, default OFF. Set (to
+/// anything but `0`) ⇒ the migrated `select_default` arms delegate to the
+/// generated rule table.
+fn sel_dsl_from_env() -> bool {
+    std::env::var("SYNTH_SEL_DSL").is_ok_and(|v| v != "0")
 }
 
 impl InstructionSelector {
@@ -1965,6 +1981,7 @@ impl InstructionSelector {
             param_backing_on_exhaustion: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
+            sel_dsl: sel_dsl_from_env(),
         }
     }
 
@@ -1997,6 +2014,7 @@ impl InstructionSelector {
             param_backing_on_exhaustion: false,
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
+            sel_dsl: sel_dsl_from_env(),
         }
     }
 
@@ -2043,6 +2061,16 @@ impl InstructionSelector {
     /// bit-identical. See the `local_promote` field and [`compute_local_promotion`].
     pub fn set_local_promote(&mut self, enabled: bool) {
         self.local_promote = enabled;
+    }
+
+    /// VCR-SEL-001 increment 1 (#242): serve the migrated `select_default`
+    /// arms from the generated, Rocq-proved rule table instead of the
+    /// hand-written lowering. Off ⇒ hand-written path, byte-identical by
+    /// construction. See the `sel_dsl` field; default comes from
+    /// `SYNTH_SEL_DSL` — this setter exists so the mirror-pin tests can flip
+    /// the lever without racing on the process environment.
+    pub fn set_sel_dsl(&mut self, enabled: bool) {
+        self.sel_dsl = enabled;
     }
 
     /// Enable relocatable host-link mode (#197): import calls emit a direct
@@ -2291,37 +2319,80 @@ impl InstructionSelector {
         let rm = self.regs.alloc_reg();
 
         let instrs = match wasm_op {
-            I32Add => vec![ArmOp::Add {
-                rd,
-                rn,
-                op2: Operand2::Reg(rm),
-            }],
+            // VCR-SEL-001 increment 1 (#242): the tier-A i32 ALU arms (and
+            // I32Rotl below) are migrated to the Rocq-proved rule table —
+            // behind `SYNTH_SEL_DSL` (default OFF) they delegate to
+            // `crate::sel_dsl::generated::rule_*`; OFF keeps the original
+            // hand-written body, byte-identical by construction. The two are
+            // mirror-pinned per op, and every `rule_*` has its 1:1 Qed theorem
+            // in coq/Synth/Synth/VcrSelRules.v.
+            I32Add => {
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i32_add(rd, rn, rm)
+                } else {
+                    vec![ArmOp::Add {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }]
+                }
+            }
 
-            I32Sub => vec![ArmOp::Sub {
-                rd,
-                rn,
-                op2: Operand2::Reg(rm),
-            }],
+            I32Sub => {
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i32_sub(rd, rn, rm)
+                } else {
+                    vec![ArmOp::Sub {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }]
+                }
+            }
 
-            I32Mul => vec![ArmOp::Mul { rd, rn, rm }],
+            I32Mul => {
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i32_mul(rd, rn, rm)
+                } else {
+                    vec![ArmOp::Mul { rd, rn, rm }]
+                }
+            }
 
-            I32And => vec![ArmOp::And {
-                rd,
-                rn,
-                op2: Operand2::Reg(rm),
-            }],
+            I32And => {
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i32_and(rd, rn, rm)
+                } else {
+                    vec![ArmOp::And {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }]
+                }
+            }
 
-            I32Or => vec![ArmOp::Orr {
-                rd,
-                rn,
-                op2: Operand2::Reg(rm),
-            }],
+            I32Or => {
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i32_or(rd, rn, rm)
+                } else {
+                    vec![ArmOp::Orr {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }]
+                }
+            }
 
-            I32Xor => vec![ArmOp::Eor {
-                rd,
-                rn,
-                op2: Operand2::Reg(rm),
-            }],
+            I32Xor => {
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i32_xor(rd, rn, rm)
+                } else {
+                    vec![ArmOp::Eor {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }]
+                }
+            }
 
             // Shifts: WASM pops both value (rn) and shift amount (rm) from stack
             I32Shl => vec![ArmOp::LslReg { rd, rn, rm }],
@@ -2333,14 +2404,23 @@ impl InstructionSelector {
                 // Rotate left by N = Rotate right by (32 - N)
                 // RSB rtmp, rm, #32; ROR rd, rn, rtmp
                 let rtmp = self.regs.alloc_reg();
-                vec![
-                    ArmOp::Rsb {
-                        rd: rtmp,
-                        rn: rm,
-                        imm: 32,
-                    },
-                    ArmOp::RorReg { rd, rn, rm: rtmp },
-                ]
+                if self.sel_dsl {
+                    // Tier-B rule: carries the explicit `rs <> rn` scratch
+                    // non-aliasing side condition (hypothesis of
+                    // rule_i32_rotl_correct) — Ok-or-Err, never a silent
+                    // misassemble.
+                    crate::sel_dsl::generated::rule_i32_rotl(rd, rn, rm, rtmp)
+                        .map_err(synth_core::Error::synthesis)?
+                } else {
+                    vec![
+                        ArmOp::Rsb {
+                            rd: rtmp,
+                            rn: rm,
+                            imm: 32,
+                        },
+                        ArmOp::RorReg { rd, rn, rm: rtmp },
+                    ]
+                }
             }
 
             I32Rotr => vec![ArmOp::RorReg { rd, rn, rm }],
@@ -11170,6 +11250,49 @@ mod tests {
         match &arm_instrs[0].op {
             ArmOp::Add { .. } => {}
             _ => panic!("Expected Add instruction"),
+        }
+    }
+
+    /// VCR-SEL-001 increment 1 (#242) — gate 1, the #511/#513 mirror-pinning
+    /// pattern: for EVERY rule in the DSL table, lower its op through BOTH the
+    /// hand-written `select_default` arm (flag OFF) and the generated
+    /// Rocq-proved rule (flag ON) from identical selector state, and assert
+    /// the emitted `ArmOp` sequences are EQUAL. Same-ArmOps ⇒ same encoded
+    /// bytes, so the two must-agree implementations are pinned before the
+    /// `SYNTH_SEL_DSL` flag can matter — increment 1 migrates structure,
+    /// never bytes. Uses `set_sel_dsl` (not the env var) so parallel tests
+    /// never race on the process environment.
+    #[test]
+    fn sel_dsl_mirror_pin_generated_rules_match_handwritten_arms_242() {
+        for rule in crate::sel_dsl::RULES {
+            let ops = vec![rule.op.clone()];
+
+            // Empty rule set ⇒ the pattern matcher never fires and every op
+            // takes the select_default path under test.
+            let mut handwritten = InstructionSelector::new(vec![]);
+            handwritten.set_sel_dsl(false);
+            let baseline: Vec<ArmOp> = handwritten
+                .select(&ops)
+                .unwrap_or_else(|e| panic!("{}: hand-written arm failed: {e}", rule.name))
+                .into_iter()
+                .map(|i| i.op)
+                .collect();
+
+            let mut dsl = InstructionSelector::new(vec![]);
+            dsl.set_sel_dsl(true);
+            let generated: Vec<ArmOp> = dsl
+                .select(&ops)
+                .unwrap_or_else(|e| panic!("{}: generated rule failed: {e}", rule.name))
+                .into_iter()
+                .map(|i| i.op)
+                .collect();
+
+            assert_eq!(
+                baseline, generated,
+                "{}: generated rule diverges from the hand-written arm — \
+                 increment 1 migrates structure, never bytes",
+                rule.name
+            );
         }
     }
 

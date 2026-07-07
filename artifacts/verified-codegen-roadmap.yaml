@@ -377,7 +377,28 @@ artifacts:
       six ALU arms + rotl are served from the DSL with their seven Qed theorems,
       fixtures bit-identical, and deleting a hand-written arm body becomes a
       no-op — the first structural (not additive) step of the migration.
-    status: approved
+
+      INCREMENT 1 LANDED (2026-07-07, flag-off): the checked-in rule table
+      (crates/synth-synthesis/src/sel_dsl/mod.rs RULES, 7 rules: tier-A six +
+      rotl with SideCondition::NotAlias(Rs, Rn)) + generator emitting committed
+      plain-Rust lowerings (sel_dsl/generated.rs, pinned rustfmt-stable by
+      generated_lowering_is_up_to_date); select_default's seven arms delegate
+      behind SYNTH_SEL_DSL (default OFF ⇒ original hand-written body,
+      byte-identical by construction). Rocq: coq/Synth/Synth/VcrSelRules.v —
+      7 Qed / 0 Admitted, 1:1 rule<->theorem naming, tier-A discharged by
+      synth_binop_proof_poly verbatim, rotl by the pilot's stepped proof with
+      the rs<>rn hypothesis. Coverage gate wired: //coq:verify_proofs is now a
+      test_suite = rocq_proofs + vcr_sel_rules_coverage (manifest
+      coq/vcr_sel_rules.manifest pinned to RULES by a cargo test; missing
+      theorem or non-Qed proof fails the //coq gate CI runs). Gate 1 evidence:
+      per-op mirror-pin
+      (sel_dsl_mirror_pin_generated_rules_match_handwritten_arms_242) asserts
+      hand-written ≡ generated ArmOp sequences for all 7 rules; frozen
+      byte-gate green with the flag OFF (by construction) AND with
+      SYNTH_SEL_DSL=1. NOT yet done (hence not verified): the default flip and
+      its full-differential re-freeze ritual; select_with_stack/optimizer_bridge
+      migration; div/rem (VCR-ISA-001-gated).
+    status: implemented
     tags: [codegen, selector, isle, verified-dsl, rocq, track-a, novel, release-v0.12.1]
     links:
       - type: derives-from

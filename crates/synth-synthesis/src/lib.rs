@@ -9,6 +9,7 @@ pub mod parallel_move;
 pub mod pattern_matcher;
 pub mod peephole;
 pub mod rules;
+pub mod sel_dsl;
 pub mod wasm_decoder;
 
 pub use control_flow::{

@@ -196,6 +196,17 @@ rocq_library(
     deps = _CORRECTNESS_FULL_DEPS + [":tactics", ":arm_flag_lemmas"],
 )
 
+# VCR-SEL-001 increment 1: the WIRED rule table's Rocq obligations — one
+# universally-quantified T1 theorem per rule in
+# crates/synth-synthesis/src/sel_dsl (naming 1:1: rule_X <-> rule_X_correct).
+# Coverage-gated by :vcr_sel_rules_coverage below.
+rocq_library(
+    name = "vcr_sel_rules",
+    srcs = ["Synth/Synth/VcrSelRules.v"],
+    include_path = "Synth",
+    deps = _CORRECTNESS_FULL_DEPS + [":tactics", ":arm_flag_lemmas"],
+)
+
 # Master index: imports all correctness proofs
 rocq_library(
     name = "correctness_complete",
@@ -216,8 +227,42 @@ rocq_library(
 # ─── Tests ────────────────────────────────────────────────────────────────────
 
 rocq_proof_test(
+    name = "rocq_proofs",
+    deps = [
+        ":correctness_complete",
+        ":extraction",
+        ":arm_refinement",
+        ":vcr_sel_pilot",
+        ":vcr_sel_rules",
+    ],
+)
+
+# VCR-SEL-001 (#242) coverage gate: every rule in the DSL table
+# (coq/vcr_sel_rules.manifest, pinned 1:1 to sel_dsl::RULES by a cargo test)
+# must have its 1:1-named theorem in VcrSelRules.v, and the file must carry no
+# Admitted/admit — so (with :rocq_proofs compiling it) every rule theorem is
+# Qed. A rule without its Qed cannot merge.
+sh_test(
+    name = "vcr_sel_rules_coverage",
+    srcs = ["check_vcr_sel_rules_coverage.sh"],
+    args = [
+        "$(location Synth/Synth/VcrSelRules.v)",
+        "$(location vcr_sel_rules.manifest)",
+    ],
+    data = [
+        "Synth/Synth/VcrSelRules.v",
+        "vcr_sel_rules.manifest",
+    ],
+)
+
+# The name CI runs (`bazel test //coq:verify_proofs`): the full proof
+# compilation PLUS the VCR-SEL-001 rule-coverage gate.
+test_suite(
     name = "verify_proofs",
-    deps = [":correctness_complete", ":extraction", ":arm_refinement", ":vcr_sel_pilot"],
+    tests = [
+        ":rocq_proofs",
+        ":vcr_sel_rules_coverage",
+    ],
 )
 
 # Validate proofs (lightweight — counts Admitted)

@@ -377,6 +377,20 @@ All fully proved (Qed); no new axioms.
 | Base.v | 4 | 0 | Infra |
 | StateMonad.v | 3 | 0 | Infra |
 | WasmValues.v | 2 | 0 | Infra |
+| VcrSelPilot.v | 7 | 0 | T1 (register-polymorphic; VCR-SEL-001 go/abandon measurement, post-recount) |
+| VcrSelRules.v | 7 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1 rule table, 1:1 rule<->theorem, coverage-gated by `//coq:vcr_sel_rules_coverage`, post-recount) |
+
+## VCR-SEL-001 increment 1 (2026-07-07): VcrSelRules.v
+
+The wired selector-DSL rule table's obligations: one universally-quantified
+T1 theorem per rule in `crates/synth-synthesis/src/sel_dsl` — the tier-A six
+(`rule_i32_{add,sub,mul,and,or,xor}_correct`, discharged by
+`synth_binop_proof_poly` verbatim) plus `rule_i32_rotl_correct` (stepped
+proof with the explicit `rs <> rn` scratch non-aliasing hypothesis the rule
+table carries as a side condition). **7 Qed / 0 Admitted**, same T1 bound as
+the pilot ("the ARM sequence computes the named result", not WASM
+refinement). These 14 Qed (pilot + rules) post-date and are NOT in the
+2026-06-04 recount above.
 
 ## Phase History
 

@@ -1,6 +1,10 @@
 # VCR-SEL-001 — First increment scope (Rocq-discharged selector DSL)
 
-Status: **design** (no code yet). Scopes the first wired increment of
+Status: **implemented, flag-off** (2026-07-07 — rule table + committed
+generated lowerings in `crates/synth-synthesis/src/sel_dsl/`, 7 Qed in
+`coq/Synth/Synth/VcrSelRules.v`, coverage gate `//coq:vcr_sel_rules_coverage`,
+per-op mirror-pin; the default flip and its re-freeze ritual remain owed).
+Scopes the first wired increment of
 `VCR-SEL-001` in `artifacts/verified-codegen-roadmap.yaml`, epic #242.
 Evidence base: the pilot measurement `coq/Synth/Synth/VcrSelPilot.v`
 (2026-06-20, 7 Qed / 0 Admitted, built green via `//coq:vcr_sel_pilot`).
