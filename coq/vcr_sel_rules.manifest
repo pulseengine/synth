@@ -1,0 +1,12 @@
+# VCR-SEL-001 (#242) rule manifest — one rule name per line, 1:1 with
+# crates/synth-synthesis/src/sel_dsl/mod.rs RULES (pinned by the cargo test
+# sel_dsl::tests::manifest_matches_rule_table) and with the Qed theorems
+# `<name>_correct` in coq/Synth/Synth/VcrSelRules.v (checked by
+# //coq:vcr_sel_rules_coverage — a rule without its Qed cannot merge).
+rule_i32_add
+rule_i32_sub
+rule_i32_mul
+rule_i32_and
+rule_i32_or
+rule_i32_xor
+rule_i32_rotl
