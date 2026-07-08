@@ -529,6 +529,51 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/call_indirect_650_differential.py
 
+  call-indirect-664-nullslot-oracle:
+    name: null-funcref-slot call_indirect oracle (Thumb-2 + A32)
+    # VCR-ORACLE-001 (#242, #664): a table with null (uninitialized funcref)
+    # slots no longer poisons the closed world — the type check verifies the
+    # INITIALIZED slots only, and the null-slot trap (WASM Core §4.4.8:
+    # calling an uninitialized element traps) is discharged at RUNTIME: the
+    # layout contract links null slots as ZERO words and the dispatch
+    # null-checks the loaded pointer (`cmp ip,#0; bne ok; udf`) between the
+    # #642 bounds guard and the BLX. EXECUTE the sparse-table fixture (4
+    # slots, only 1 and 3 initialized — the falcon fused-component shape)
+    # under unicorn on BOTH ISAs vs the wasmtime oracle: initialized slots
+    # must match, null AND OOB indices must stop at a UDF. Non-vacuous red: a
+    # build without the null check BLXes address 0 and faults (not a udf).
+    # On <= v0.35.0 this is red at compile: the null slot rejected every type
+    # and the function loud-declined (capability upgrade — red = "declines
+    # today", green = sound sparse-table dispatch). Fully-initialized tables
+    # stay byte-identical by construction (null_check=false emits the
+    # pre-#664 bytes), pinned by the frozen-fixture job and the
+    # #642/#650/#594/#597 oracles.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run null-funcref-slot call_indirect oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/call_indirect_664_differential.py
+
   block-brif-483-oracle:
     name: optimized-path block/br_if lowering oracle
     # VCR-ORACLE-001 (#242, #483): EXECUTE optimized-path functions with forward

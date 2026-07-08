@@ -546,6 +546,14 @@ pub enum ArmOp {
         /// (offset <= 4095 — the LDR imm12 range — enforced by the
         /// selector's loud decline).
         table_byte_offset: u32,
+        /// #664: the dispatched table contains null (uninitialized funcref)
+        /// slots, which the layout contract requires the runtime/harness to
+        /// link as ZERO words. WASM Core §4.4.8 requires a `call_indirect`
+        /// reaching one to TRAP, so the encoder inserts a null check on the
+        /// loaded pointer (`CMP ip, #0; BNE ok; UDF #0`) between the table
+        /// load and the `BLX`. `false` (every slot verifiably initialized)
+        /// keeps the pre-#664 expansion byte-identical BY CONSTRUCTION.
+        null_check: bool,
     },
 
     // ========================================================================
