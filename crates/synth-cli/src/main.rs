@@ -38,6 +38,90 @@ mod sign;
 /// collide with a real path the user would pass.
 const SBOM_DEFAULT_SENTINEL: &str = "\u{0}sbom-default\u{0}";
 
+// =============================================================================
+// VCR-PERF-002 Phase 2 (#494): proof-carrying specialization (fact-spec)
+// =============================================================================
+
+/// `SYNTH_FACT_SPEC` — default OFF (silicon-gated, the design doc's Phase-3
+/// flip criterion). When set (any value but `0`) AND the module carried a
+/// parseable `wsc.facts` section, the driver runs the per-function fact-spec
+/// pass before selection. Frozen fixtures carry no facts section, so they are
+/// bit-identical trivially even with the flag on.
+fn fact_spec_enabled() -> bool {
+    std::env::var("SYNTH_FACT_SPEC").is_ok_and(|v| v != "0")
+}
+
+/// One function's rewritten stream + side-tables, when the Phase-2 pass
+/// admitted at least one certificate-backed elision.
+struct SpecializedFn {
+    ops: Vec<WasmOp>,
+    block_arity: Vec<(u8, u8)>,
+    /// Indices into the ORIGINAL op stream that survived — for filtering
+    /// parallel side-tables (`op_offsets` feeding `.debug_line`).
+    #[cfg_attr(not(feature = "verify"), allow(dead_code))]
+    kept: Vec<usize>,
+}
+
+/// Run the fact-spec pass (value-range facts ⇒ dead conditional-branch
+/// elision, `docs/design/proof-carrying-specialization.md`) for one function.
+/// Every elision was individually discharged by the ordeal-backed solver
+/// (UNSAT(P ∧ cond ≠ 0), certificate-checked) BEFORE this returns; admits and
+/// declines are logged per function. Returns `Some` only when the op stream
+/// actually changed — `None` means the general lowering proceeds untouched.
+fn maybe_fact_spec(
+    func_name: &str,
+    ops: &[WasmOp],
+    block_arity: &[(u8, u8)],
+    facts: &[WscFact],
+) -> Option<SpecializedFn> {
+    if !fact_spec_enabled() || facts.is_empty() {
+        return None;
+    }
+    #[cfg(feature = "verify")]
+    {
+        let r = synth_verify::fact_spec::specialize_function(func_name, ops, block_arity, facts);
+        // Loud by contract: every decline names its site and reason; every
+        // admit carries the certificate line (the evidence trail).
+        for line in &r.declined {
+            eprintln!("fact-spec: DECLINE {line}");
+        }
+        for line in &r.admitted {
+            eprintln!("fact-spec: ADMIT {line}");
+        }
+        if r.changed() {
+            eprintln!(
+                "fact-spec: '{func_name}' specialized — {} elision(s) admitted, \
+                 {} declined ({} → {} ops)",
+                r.admitted.len(),
+                r.declined.len(),
+                ops.len(),
+                r.ops.len()
+            );
+            return Some(SpecializedFn {
+                ops: r.ops,
+                block_arity: r.block_arity,
+                kept: r.kept,
+            });
+        }
+        None
+    }
+    #[cfg(not(feature = "verify"))]
+    {
+        let _ = (func_name, ops, block_arity, facts);
+        // Decline loudly (the design doc's rule): without the solver the
+        // obligation cannot be discharged, so no elision may fire — but the
+        // user asked for specialization, so say why nothing happens.
+        eprintln!(
+            "warning: SYNTH_FACT_SPEC is set but this synth was built without the \
+             'verify' feature — the per-elision proof obligation (#494) cannot be \
+             discharged, so every elision is DECLINED and the general lowering is \
+             emitted. Rebuild with `--features verify` to enable fact-based \
+             specialization."
+        );
+        None
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "synth")]
 #[command(about = "WebAssembly-to-ARM Cortex-M AOT compiler")]
@@ -1294,6 +1378,20 @@ fn compile_command(
         }
     };
 
+    // VCR-PERF-002 Phase 2 (#494): fact-spec — behind SYNTH_FACT_SPEC and a
+    // per-elision ordeal obligation. No-op unless the module carried facts,
+    // the flag is on, AND at least one elision was certificate-admitted.
+    let mut wasm_ops = wasm_ops;
+    if let Some(spec) = maybe_fact_spec(
+        &func_name,
+        &wasm_ops,
+        &current_func_block_arity,
+        &current_func_facts,
+    ) {
+        wasm_ops = spec.ops;
+        current_func_block_arity = spec.block_arity;
+    }
+
     info!("WASM operations: {:?}", wasm_ops);
 
     // Build compile config from CLI flags
@@ -2278,7 +2376,7 @@ fn compile_all_exports(
         // direct selector can land a value carried by br/br_if/br_table in the
         // target block's designated result register (and the optimized path can
         // detect-and-decline the shape).
-        let func_config = {
+        let mut func_config = {
             let mut fc = config.clone();
             if let Some(p) = all_func_params_i64.get(func.index as usize)
                 && !p.is_empty()
@@ -2312,7 +2410,30 @@ fn compile_all_exports(
             skipped_funcs.push((name.clone(), format!("unsupported operator: {reason}")));
             continue;
         }
-        let compiled = match backend.compile_function(&name, &func.ops, &func_config) {
+        // VCR-PERF-002 Phase 2 (#494): fact-spec — behind SYNTH_FACT_SPEC and
+        // a per-elision ordeal obligation. When an elision was admitted, the
+        // rewritten stream feeds the backend and the parallel side-tables
+        // (blocktype arity, DWARF op offsets) are filtered in lockstep.
+        let spec = maybe_fact_spec(
+            &name,
+            &func.ops,
+            &func_config.current_func_block_arity,
+            &func_config.current_func_facts,
+        );
+        let (ops_for_compile, op_offsets_for_elf): (&[WasmOp], Vec<u32>) = match &spec {
+            Some(s) => {
+                func_config.current_func_block_arity = s.block_arity.clone();
+                (
+                    &s.ops,
+                    s.kept
+                        .iter()
+                        .filter_map(|&i| func.op_offsets.get(i).copied())
+                        .collect(),
+                )
+            }
+            None => (&func.ops, func.op_offsets.clone()),
+        };
+        let compiled = match backend.compile_function(&name, ops_for_compile, &func_config) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!(
@@ -2344,7 +2465,9 @@ fn compile_all_exports(
             relocations: compiled.relocations,
             // VCR-DBG-001 step 4: carry the op-offset side table + the backend's
             // line_map so `--debug-line` can compose ARM text addr → source.
-            op_offsets: func.op_offsets.clone(),
+            // (#494: filtered to surviving ops when fact-spec rewrote the stream,
+            // so the table stays index-aligned with what the backend consumed.)
+            op_offsets: op_offsets_for_elf,
             line_map: compiled.line_map,
         });
 
@@ -3970,11 +4093,11 @@ fn verify_command(wasm_input: PathBuf, elf_input: PathBuf, backend_name: &str) -
             let file_bytes = std::fs::read(&wasm_input)
                 .context(format!("Failed to read: {}", wasm_input.display()))?;
 
-            let wasm_bytes = if wasm_input.extension().map_or(false, |ext| ext == "wat") {
+            let wasm_bytes = if wasm_input.extension().is_some_and(|ext| ext == "wat") {
                 wat::parse_bytes(&file_bytes)
                     .context("Failed to parse WAT file")?
                     .into_owned()
-            } else if wasm_input.extension().map_or(false, |ext| ext == "wast") {
+            } else if wasm_input.extension().is_some_and(|ext| ext == "wast") {
                 let contents =
                     String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
                 extract_module_from_wast(&contents)?

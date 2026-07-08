@@ -41,6 +41,12 @@ pub mod traits;
 // WASM semantics — source language for all backends (always available)
 pub mod wasm_semantics;
 
+// Proof-carrying specialization (VCR-PERF-002 / #494 Phase 2): value-range
+// facts ⇒ dead conditional-branch elision, each site behind a per-elision
+// ordeal obligation. Backend-agnostic (rewrites the WasmOp stream), so it is
+// always available like `wasm_semantics`.
+pub mod fact_spec;
+
 // ARM semantics (behind the arm feature)
 #[cfg(feature = "arm")]
 pub mod arm_semantics;
@@ -63,6 +69,7 @@ pub use properties::CompilerProperties;
 
 #[cfg(feature = "arm")]
 pub use arm_semantics::{ArmSemantics, ArmState};
+pub use fact_spec::{FactSpecResult, specialize_function};
 pub use solver::{BvSolver, CheckOutcome, OrdealSolver, new_solver};
 pub use term::{BV, Bool};
 #[cfg(feature = "arm")]

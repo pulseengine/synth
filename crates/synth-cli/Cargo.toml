@@ -14,6 +14,16 @@ description = "CLI for Synth, the WebAssembly-to-ARM Cortex-M AOT compiler"
 name = "synth"
 path = "src/main.rs"
 
+# VCR-PERF-002 Phase 2 (#494): the fact-spec end-to-end gate needs the synth
+# binary built WITH the ordeal-backed solver (feature `verify`), so it is a
+# dedicated test target the fact-spec CI job runs via
+# `cargo test -p synth-cli --features verify --test fact_spec_clamp_494`.
+# Plain `cargo test --workspace` skips it (required-features unmet); the pass
+# itself is unit-tested unconditionally in synth-verify.
+[[test]]
+name = "fact_spec_clamp_494"
+required-features = ["verify"]
+
 [features]
 default = ["riscv"]
 awsm = ["synth-backend-awsm"]

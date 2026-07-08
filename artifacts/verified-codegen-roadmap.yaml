@@ -1654,12 +1654,37 @@ artifacts:
       byte-identical to facts-stripped; malformed/wrong-version sections
       ignored end-to-end; non-vacuity decode guard) + parser unit tests (all
       six kinds, unknown-kind skip, truncation/version/overrun => ignored).
-      Phases 2/3 NOT implemented — no elision, no SYNTH_FACT_SPEC lever yet;
-      status stays short of implemented until the full requirement (the
-      elision + gale-measured kill-criterion) has evidence.
       Phase 2 — single-elision prototype: value-range => dead conditional-branch
       elision (the gust_mix clamp shape), flag-gated, per-elision validator
-      obligation + in-bounds differential red/green oracle.
+      obligation + in-bounds differential red/green oracle. IMPLEMENTED
+      (2026-07-08): crates/synth-verify/src/fact_spec.rs — backend-agnostic
+      WasmOp-stream rewrite; at every no-else `if` the pass discharges
+      UNSAT(P ∧ cond ≠ 0) through the ordeal-backed BvSolver BEFORE emission
+      (this implies the general/specialized equivalence obligation for a
+      no-else if, whose not-taken path is the identity by wasm blocktype
+      validation); Unsat => admit + per-function certificate log line; Sat
+      (with model counterexample) / Unknown / untracked shape / impure
+      condition slice => DECLINE LOUDLY, general lowering emitted. Driver gate
+      maybe_fact_spec in synth-cli (both compile paths; SYNTH_FACT_SPEC
+      default OFF; requires the `verify` feature — absent it the flag declines
+      loudly). div/rem deliberately untracked (a deleted condition slice must
+      be effect-free under ALL inputs, not just P-admissible ones — trap-guard
+      elision is the separate divisor-nonzero fact, out of phase-2 scope).
+      Oracles: synth-verify fact_spec unit gates (admit/decline matrix,
+      declined-region havoc soundness, tee-impurity non-erasability,
+      block-arity ordinal repair, out-of-range value_id vacuity); synth-cli
+      tests/fact_spec_clamp_494.rs (flag/fact byte-identity matrix,
+      certificate evidence trail, wrong-bound Sat loud-decline); in-bounds
+      execution differential scripts/repro/fact_spec_clamp_494_differential.py
+      (specialized ≡ wasmtime ≡ unspecialized over the proven bound
+      [524,1524] ONLY; non-vacuity: exactly 2 ADMITs + .text shrink required)
+      — all CI-gated by the fact-spec-oracle job. The gust_mix clamp fixture
+      collapses 20 -> 6 ops (both clamp comparisons + branches + bodies gone);
+      measured cortex-m4 codegen 84 B/23 insns -> 14 B/6 insns (vs the 6 B
+      add+bx measured floor: residual const-materialization + reg-shuffle +
+      callee-saved frame — allocator/peephole residue, a Phase-3 datum).
+      Phase 3 NOT started — the requirement's kill-criterion is gale-measured;
+      status stays at implemented (not verified) until Phase 3 reports.
       Phase 3 — measurement vs the 0.45x floor: gale re-measures gust_mix on
       gust_floor_bench (qemu -icount) and STM32F100 silicon (DWT CYCCNT);
       kill-criterion unchanged from #494: shipped dissolved lane <1.0x then
@@ -1667,10 +1692,11 @@ artifacts:
       floor (0.45x) gives the target 0.25x of headroom — if the productized
       elision cannot land inside it, the premise-to-selector plumbing (not the
       idea) is at fault and the phase re-plans.
-    # approved (not implemented): Phase 1 of 3 landed with its oracle; the
-    # requirement's substance (the elision + kill-criterion) is Phases 2/3 —
-    # never strengthen a traceability claim beyond the evidence.
-    status: approved
+    # implemented (not verified): Phases 1+2 of 3 landed with their oracles —
+    # the elision exists, certificate-gated and differential-tested. The
+    # requirement's kill-criterion (Phase 3, gale-measured 0.70x vs native)
+    # has NO evidence yet — never strengthen a traceability claim beyond it.
+    status: implemented
     tags: [codegen, perf, proof-carrying, specialization, wsc-facts, loom-integration, ordeal, beat-llvm, synth-494, gale-121]
     links:
       - type: derives-from

@@ -1,7 +1,8 @@
 # VCR-PERF-002 — Proof-carrying specialization design (#494)
 
-Status: **Phase 1 implemented** (fact ingestion, codegen-neutral — see
-"Phasing"; Phases 2/3 remain design). Tracks `VCR-PERF-002` in
+Status: **Phases 1–2 implemented** (fact ingestion + the single-elision
+prototype behind `SYNTH_FACT_SPEC` — see "Phasing"; Phase 3, the gale
+measurement vs the 0.45× floor, remains). Tracks `VCR-PERF-002` in
 `artifacts/verified-codegen-roadmap.yaml`, epic #242, GitHub #494 part (a).
 Cross-repo contract: loom#240 / loom#231 (`wsc.facts`), gale PR
 pulseengine/gale#121 (`gust_floor_bench`, the measured floor).
@@ -108,6 +109,19 @@ bounds adversarial queries to a clean conservative decline.
 2. **Single-elision prototype** — value-range ⇒ dead conditional-branch
    elision (the `gust_mix` clamp shape), behind `SYNTH_FACT_SPEC`, with the
    per-elision obligation + a red/green in-bounds differential oracle.
+   **IMPLEMENTED** — pass: `crates/synth-verify/src/fact_spec.rs`
+   (backend-agnostic `WasmOp`-stream rewrite; the discharged obligation is
+   `UNSAT(P ∧ cond ≠ 0)`, which implies the general/specialized equivalence
+   above for a no-`else` `if` — see the module docs for the
+   over-approximation discipline and why `div/rem` stay untracked). Driver
+   gate: `maybe_fact_spec` in `synth-cli/src/main.rs` (both compile paths;
+   requires the `verify` feature — without it the flag declines loudly).
+   Oracles: `crates/synth-cli/tests/fact_spec_clamp_494.rs` (flag/fact
+   matrix, certificate trail, wrong-bound Sat decline) +
+   `scripts/repro/fact_spec_clamp_494_differential.py` (in-bounds execution
+   sweep, specialized ≡ wasmtime ≡ unspecialized on [524,1524]), both CI-run
+   by the `fact-spec-oracle` job. Fixture:
+   `scripts/repro/fact_spec_clamp_494.wat`.
 3. **Measurement vs the 0.45× floor** — gale re-measures `gust_mix` on
    `gust_floor_bench` (qemu `-icount`) and STM32F100 silicon (DWT CYCCNT).
    Kill-criterion (#494, unchanged): shipped dissolved lane **<1.0× then
