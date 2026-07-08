@@ -919,7 +919,32 @@ artifacts:
       form with the full differential staying bit-identical and cycles
       equal-or-better — the exact condition the audit checks each cycle. Success
       is measured by those reversions becoming possible, not by new patches.
-    status: proposed
+
+      GATE DEMONSTRATED (2026-07-08, evidence: scripts/repro/vcr_ver_001_gate.md).
+      TWO reversals, one complete and one revertable-behind-flag:
+      (1) the v0.11.20 reciprocal-mult COST-GATE — load-bearing when added
+      (v0.11.19 hard-failed control_step's 4x const div_u) — was DELETED
+      outright in PR #322 once the #320 spill retry covered its case: full
+      differential bit-identical (+-0 B, the fallback was dead on the whole
+      frozen suite), cycles trivially equal, no new cost-gate since — the
+      pass-criteria met literally.
+      (2) the #496 exhaustion hard-DECLINE is revertable behind
+      SYNTH_SPILL_ON_EXHAUST (#580, default off = fix stays): flag-on the
+      original red case stays green (r12_spill_496 differential PASS incl.
+      0x00210A55/0x07FDF307; all five pressure differentials PASS on the
+      reversal bytes), frozen pinned goldens 10/10 in BOTH flag states, the
+      three result anchors' default-path bytes byte-identical flag-on (locked
+      by vcr_ver_001_gate_242.rs), declines 14->8 across the corpus. HONEST
+      HOLD: the weighted cycle proxy REGRESSES on i32 shapes (+30.4%
+      spill_on_exhaust_242, +32.4% spill_rung_581, +8.0% high_pressure_i32,
+      +120% signed_div_const whose 34-B direct lowering becomes a 76-B
+      optimized-path compile; i64 shapes improve -5.5%/-1.4%) — the decline
+      remains load-bearing FOR CYCLES, not correctness. Missing capability
+      (VCR-RA follow-on): post-exhaustion code quality on the optimized path
+      (allocation-time spill placement/coalescing; frame-slot-DCE/stack-fwd
+      do not reach allocation-time slots). The default-on flip stays a
+      separate later PR gated on closing that gap + gale G474RE cycles (#580).
+    status: implemented
     tags: [verification, audit, regression, frozen-fixtures]
     links:
       - type: verifies
