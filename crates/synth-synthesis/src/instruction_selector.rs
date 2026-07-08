@@ -4970,6 +4970,120 @@ impl InstructionSelector {
         Ok(instrs)
     }
 
+    /// #651: compute the masked effective address for `--safety-bounds mask`.
+    ///
+    /// WASM defines the effective address of a memory access as
+    /// `operand + offset` evaluated in 33-bit arithmetic (both are u32). The
+    /// previous lowering masked the OPERAND and added the static offset
+    /// afterwards — `(operand & R10) + offset` — so any non-zero offset
+    /// escaped the bound by up to ~4 GiB. (It also ANDed with R10 = memory
+    /// SIZE in bytes rather than `size - 1`, which is not a mask at all: for
+    /// the default 64 KiB memory it kept only bit 16.) This emits
+    ///
+    /// ```text
+    /// masked = min((operand + offset) & (size - 1), size - access_size)
+    /// ```
+    ///
+    /// derived entirely from R10 (the startup-code contract: R10 = linear-
+    /// memory size in bytes, shared with `memory.size`), using R12 (IP, the
+    /// reserved encoder scratch — #212) as the only temporary:
+    ///
+    /// ```text
+    ///  ADD  addr, addr, #offset             ; fold the static offset first
+    /// (MOVW/MOVT R12, #offset; ADD reg      ;  — materialized when > 0xFF)
+    ///  SUB  R12, R10, #1                    ; R12 = size-1 (the mask)
+    ///  AND  addr, addr, R12                 ; addr = ea & (size-1)
+    /// [SUB  R12, R12, #(access_size-1)      ; R12 = size - access_size
+    ///  CMP  addr, R12                       ; clamp the START so the access's
+    ///  IT HI; MOVHI addr, R12]              ; FINAL byte stays in-bounds
+    /// ```
+    ///
+    /// Soundness of ADD-then-AND (large offsets do NOT need to decline): the
+    /// wasm effective address `ea = operand + offset < 2^33`; the ARM ADD
+    /// computes `ea mod 2^32`, and since every set bit of `size - 1 < 2^32`
+    /// lies below bit 32, `(ea mod 2^32) & (size-1) == ea & (size-1)` — the
+    /// u33 carry is annihilated by the AND either way.
+    ///
+    /// Final-byte bound (the #640-shaped `offset + access_size - 1` rule):
+    /// the AND bounds only the FIRST byte to `[0, size)`; a multi-byte access
+    /// starting in the last `access_size - 1` bytes would still overhang the
+    /// bound, so the CMP/IT-HI clamp caps the start at `size - access_size`,
+    /// giving `start + access_size - 1 <= size - 1` unconditionally. The
+    /// clamp never alters a wasm-defined access: `ea & (size-1) > size -
+    /// access_size` for an in-range `ea` implies `ea + access_size - 1 >=
+    /// size`, which wasm semantics trap — the mask profile deliberately
+    /// replaces that trap with a deterministic in-bounds access
+    /// (wrap-not-trap, design doc §3.1 path C). A 1-byte access can never
+    /// overhang, so the clamp is skipped for `access_size == 1`.
+    ///
+    /// The profile's contract requires a power-of-two memory size (enforced
+    /// loudly by the ARM backend, mirroring the RISC-V backend): with a
+    /// non-power-of-two size, `AND (size-1)` would remap in-bounds addresses.
+    fn mask_effective_address(addr_reg: Reg, offset: i32, access_size: u32) -> Vec<ArmOp> {
+        let mut ops = Vec::new();
+        let off = offset as u32;
+        if off != 0 {
+            // Fold the static offset into the operand BEFORE masking. ADD's
+            // Thumb-2 T3 and A32 modified-immediate forms both encode values
+            // <= 0xFF directly; wider offsets are materialized via MOVW/MOVT
+            // into the R12 scratch (the same shape the encoder itself uses
+            // for wide reg+imm addressing).
+            if off <= 0xFF {
+                ops.push(ArmOp::Add {
+                    rd: addr_reg,
+                    rn: addr_reg,
+                    op2: Operand2::Imm(offset),
+                });
+            } else {
+                ops.push(ArmOp::Movw {
+                    rd: Reg::R12,
+                    imm16: (off & 0xFFFF) as u16,
+                });
+                if off > 0xFFFF {
+                    ops.push(ArmOp::Movt {
+                        rd: Reg::R12,
+                        imm16: (off >> 16) as u16,
+                    });
+                }
+                ops.push(ArmOp::Add {
+                    rd: addr_reg,
+                    rn: addr_reg,
+                    op2: Operand2::Reg(Reg::R12),
+                });
+            }
+        }
+        // R12 = size - 1: R10 holds the SIZE in bytes (the `memory.size`
+        // contract), so the mask is derived per access instead of repurposing
+        // R10 itself.
+        ops.push(ArmOp::Sub {
+            rd: Reg::R12,
+            rn: Reg::R10,
+            op2: Operand2::Imm(1),
+        });
+        ops.push(ArmOp::And {
+            rd: addr_reg,
+            rn: addr_reg,
+            op2: Operand2::Reg(Reg::R12),
+        });
+        if access_size > 1 {
+            ops.push(ArmOp::Sub {
+                rd: Reg::R12,
+                rn: Reg::R12,
+                op2: Operand2::Imm(access_size as i32 - 1),
+            });
+            ops.push(ArmOp::Cmp {
+                rn: addr_reg,
+                op2: Operand2::Reg(Reg::R12),
+            });
+            ops.push(ArmOp::SelectMove {
+                rd: addr_reg,
+                rm: Reg::R12,
+                cond: Condition::HI,
+            });
+        }
+        ops
+    }
+
     /// Generate a load with optional bounds checking
     /// R10 = memory size, R11 = memory base
     /// Bounds check verifies addr + offset + access_size - 1 < memory_size
@@ -4991,9 +5105,19 @@ impl InstructionSelector {
     ) -> Vec<ArmOp> {
         contracts::memory::verify_access_size(access_size);
 
+        // #651: masking folds the static offset into the masked effective
+        // address (see `mask_effective_address`), so the memory op itself
+        // must use offset 0 — otherwise the offset would be re-added AFTER
+        // the mask and escape the bound.
+        let mem_offset = if self.bounds_check == BoundsCheckConfig::Masking {
+            0
+        } else {
+            offset
+        };
+
         let load_op = ArmOp::Ldr {
             rd,
-            addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
+            addr: MemAddr::reg_imm(Reg::R11, addr_reg, mem_offset),
         };
 
         match self.bounds_check {
@@ -5032,20 +5156,18 @@ impl InstructionSelector {
                 ]
             }
             BoundsCheckConfig::Masking => {
-                vec![
-                    ArmOp::And {
-                        rd: addr_reg,
-                        rn: addr_reg,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    load_op,
-                ]
+                // #651: mask the EFFECTIVE address (operand + offset) and
+                // clamp so the access's final byte stays inside the bound;
+                // the load itself uses offset 0 (folded above).
+                let mut ops = Self::mask_effective_address(addr_reg, offset, access_size);
+                ops.push(load_op);
+                ops
             }
         }
     }
 
     /// Generate a store with optional bounds checking
-    /// R10 = memory size (or mask for masking mode), R11 = memory base
+    /// R10 = memory size in bytes (masking derives `size-1` per access, #651), R11 = memory base
     /// Bounds check verifies addr + offset + access_size - 1 < memory_size
     ///
     /// # Contract (Verus-style)
@@ -5065,9 +5187,19 @@ impl InstructionSelector {
     ) -> Vec<ArmOp> {
         contracts::memory::verify_access_size(access_size);
 
+        // #651: masking folds the static offset into the masked effective
+        // address (see `mask_effective_address`), so the memory op itself
+        // must use offset 0 — otherwise the offset would be re-added AFTER
+        // the mask and escape the bound.
+        let mem_offset = if self.bounds_check == BoundsCheckConfig::Masking {
+            0
+        } else {
+            offset
+        };
+
         let store_op = ArmOp::Str {
             rd: value_reg,
-            addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
+            addr: MemAddr::reg_imm(Reg::R11, addr_reg, mem_offset),
         };
 
         match self.bounds_check {
@@ -5103,20 +5235,18 @@ impl InstructionSelector {
                 ]
             }
             BoundsCheckConfig::Masking => {
-                vec![
-                    ArmOp::And {
-                        rd: addr_reg,
-                        rn: addr_reg,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    store_op,
-                ]
+                // #651: mask the EFFECTIVE address (operand + offset) and
+                // clamp so the access's final byte stays inside the bound;
+                // the store itself uses offset 0 (folded above).
+                let mut ops = Self::mask_effective_address(addr_reg, offset, access_size);
+                ops.push(store_op);
+                ops
             }
         }
     }
 
     /// Generate an i64 (8-byte) load with optional bounds checking.
-    /// R10 = memory size (or mask for masking mode), R11 = memory base.
+    /// R10 = memory size in bytes (masking derives `size-1` per access, #651), R11 = memory base.
     /// Result is loaded into R0 (low) and R1 (high).
     ///
     /// # Contract (Verus-style)
@@ -5130,10 +5260,20 @@ impl InstructionSelector {
         let access_size: u32 = 8;
         contracts::memory::verify_access_size(access_size);
 
+        // #651: masking folds the static offset into the masked effective
+        // address (see `mask_effective_address`), so the memory op itself
+        // must use offset 0 — otherwise the offset would be re-added AFTER
+        // the mask and escape the bound.
+        let mem_offset = if self.bounds_check == BoundsCheckConfig::Masking {
+            0
+        } else {
+            offset
+        };
+
         let load_op = ArmOp::I64Ldr {
             rdlo: Reg::R0,
             rdhi: Reg::R1,
-            addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
+            addr: MemAddr::reg_imm(Reg::R11, addr_reg, mem_offset),
         };
 
         match self.bounds_check {
@@ -5172,20 +5312,18 @@ impl InstructionSelector {
                 ]
             }
             BoundsCheckConfig::Masking => {
-                vec![
-                    ArmOp::And {
-                        rd: addr_reg,
-                        rn: addr_reg,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    load_op,
-                ]
+                // #651: mask the EFFECTIVE address (operand + offset) and
+                // clamp so the access's final byte stays inside the bound;
+                // the load itself uses offset 0 (folded above).
+                let mut ops = Self::mask_effective_address(addr_reg, offset, access_size);
+                ops.push(load_op);
+                ops
             }
         }
     }
 
     /// Generate an i64 (8-byte) store with optional bounds checking.
-    /// R10 = memory size (or mask for masking mode), R11 = memory base.
+    /// R10 = memory size in bytes (masking derives `size-1` per access, #651), R11 = memory base.
     /// Value is stored from R0 (low) and R1 (high).
     ///
     /// # Contract (Verus-style)
@@ -5199,10 +5337,20 @@ impl InstructionSelector {
         let access_size: u32 = 8;
         contracts::memory::verify_access_size(access_size);
 
+        // #651: masking folds the static offset into the masked effective
+        // address (see `mask_effective_address`), so the memory op itself
+        // must use offset 0 — otherwise the offset would be re-added AFTER
+        // the mask and escape the bound.
+        let mem_offset = if self.bounds_check == BoundsCheckConfig::Masking {
+            0
+        } else {
+            offset
+        };
+
         let store_op = ArmOp::I64Str {
             rdlo: Reg::R0,
             rdhi: Reg::R1,
-            addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
+            addr: MemAddr::reg_imm(Reg::R11, addr_reg, mem_offset),
         };
 
         match self.bounds_check {
@@ -5238,20 +5386,18 @@ impl InstructionSelector {
                 ]
             }
             BoundsCheckConfig::Masking => {
-                vec![
-                    ArmOp::And {
-                        rd: addr_reg,
-                        rn: addr_reg,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    store_op,
-                ]
+                // #651: mask the EFFECTIVE address (operand + offset) and
+                // clamp so the access's final byte stays inside the bound;
+                // the store itself uses offset 0 (folded above).
+                let mut ops = Self::mask_effective_address(addr_reg, offset, access_size);
+                ops.push(store_op);
+                ops
             }
         }
     }
 
     /// Generate an i64 (8-byte) load with optional bounds checking into specified registers.
-    /// R10 = memory size (or mask for masking mode), R11 = memory base.
+    /// R10 = memory size in bytes (masking derives `size-1` per access, #651), R11 = memory base.
     /// Result is loaded into the specified register pair (rdlo, rdhi).
     fn generate_i64_load_into_regs(
         &self,
@@ -5263,10 +5409,20 @@ impl InstructionSelector {
         let access_size: u32 = 8;
         contracts::memory::verify_access_size(access_size);
 
+        // #651: masking folds the static offset into the masked effective
+        // address (see `mask_effective_address`), so the memory op itself
+        // must use offset 0 — otherwise the offset would be re-added AFTER
+        // the mask and escape the bound.
+        let mem_offset = if self.bounds_check == BoundsCheckConfig::Masking {
+            0
+        } else {
+            offset
+        };
+
         let load_op = ArmOp::I64Ldr {
             rdlo,
             rdhi,
-            addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
+            addr: MemAddr::reg_imm(Reg::R11, addr_reg, mem_offset),
         };
 
         match self.bounds_check {
@@ -5301,20 +5457,18 @@ impl InstructionSelector {
                 ]
             }
             BoundsCheckConfig::Masking => {
-                vec![
-                    ArmOp::And {
-                        rd: addr_reg,
-                        rn: addr_reg,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    load_op,
-                ]
+                // #651: mask the EFFECTIVE address (operand + offset) and
+                // clamp so the access's final byte stays inside the bound;
+                // the load itself uses offset 0 (folded above).
+                let mut ops = Self::mask_effective_address(addr_reg, offset, access_size);
+                ops.push(load_op);
+                ops
             }
         }
     }
 
     /// Generate an i64 (8-byte) store with optional bounds checking from specified registers.
-    /// R10 = memory size (or mask for masking mode), R11 = memory base.
+    /// R10 = memory size in bytes (masking derives `size-1` per access, #651), R11 = memory base.
     /// Value is stored from the specified register pair (rdlo, rdhi).
     fn generate_i64_store_from_regs(
         &self,
@@ -5326,10 +5480,20 @@ impl InstructionSelector {
         let access_size: u32 = 8;
         contracts::memory::verify_access_size(access_size);
 
+        // #651: masking folds the static offset into the masked effective
+        // address (see `mask_effective_address`), so the memory op itself
+        // must use offset 0 — otherwise the offset would be re-added AFTER
+        // the mask and escape the bound.
+        let mem_offset = if self.bounds_check == BoundsCheckConfig::Masking {
+            0
+        } else {
+            offset
+        };
+
         let store_op = ArmOp::I64Str {
             rdlo,
             rdhi,
-            addr: MemAddr::reg_imm(Reg::R11, addr_reg, offset),
+            addr: MemAddr::reg_imm(Reg::R11, addr_reg, mem_offset),
         };
 
         match self.bounds_check {
@@ -5364,14 +5528,12 @@ impl InstructionSelector {
                 ]
             }
             BoundsCheckConfig::Masking => {
-                vec![
-                    ArmOp::And {
-                        rd: addr_reg,
-                        rn: addr_reg,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    store_op,
-                ]
+                // #651: mask the EFFECTIVE address (operand + offset) and
+                // clamp so the access's final byte stays inside the bound;
+                // the store itself uses offset 0 (folded above).
+                let mut ops = Self::mask_effective_address(addr_reg, offset, access_size);
+                ops.push(store_op);
+                ops
             }
         }
     }
@@ -5394,7 +5556,17 @@ impl InstructionSelector {
     ) -> Vec<ArmOp> {
         contracts::memory::verify_access_size(access_size);
 
-        let addr = MemAddr::reg_imm(Reg::R11, addr_reg, offset);
+        // #651: masking folds the static offset into the masked effective
+        // address (see `mask_effective_address`), so the memory op itself
+        // must use offset 0 — otherwise the offset would be re-added AFTER
+        // the mask and escape the bound.
+        let mem_offset = if self.bounds_check == BoundsCheckConfig::Masking {
+            0
+        } else {
+            offset
+        };
+
+        let addr = MemAddr::reg_imm(Reg::R11, addr_reg, mem_offset);
         let load_op = match (access_size, sign_extend) {
             (1, false) => ArmOp::Ldrb { rd, addr },
             (1, true) => ArmOp::Ldrsb { rd, addr },
@@ -5435,14 +5607,12 @@ impl InstructionSelector {
                 ]
             }
             BoundsCheckConfig::Masking => {
-                vec![
-                    ArmOp::And {
-                        rd: addr_reg,
-                        rn: addr_reg,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    load_op,
-                ]
+                // #651: mask the EFFECTIVE address (operand + offset) and
+                // clamp so the access's final byte stays inside the bound;
+                // the load itself uses offset 0 (folded above).
+                let mut ops = Self::mask_effective_address(addr_reg, offset, access_size);
+                ops.push(load_op);
+                ops
             }
         }
     }
@@ -5463,7 +5633,17 @@ impl InstructionSelector {
     ) -> Vec<ArmOp> {
         contracts::memory::verify_access_size(access_size);
 
-        let addr = MemAddr::reg_imm(Reg::R11, addr_reg, offset);
+        // #651: masking folds the static offset into the masked effective
+        // address (see `mask_effective_address`), so the memory op itself
+        // must use offset 0 — otherwise the offset would be re-added AFTER
+        // the mask and escape the bound.
+        let mem_offset = if self.bounds_check == BoundsCheckConfig::Masking {
+            0
+        } else {
+            offset
+        };
+
+        let addr = MemAddr::reg_imm(Reg::R11, addr_reg, mem_offset);
         let store_op = match access_size {
             1 => ArmOp::Strb {
                 rd: value_reg,
@@ -5511,14 +5691,12 @@ impl InstructionSelector {
                 ]
             }
             BoundsCheckConfig::Masking => {
-                vec![
-                    ArmOp::And {
-                        rd: addr_reg,
-                        rn: addr_reg,
-                        op2: Operand2::Reg(Reg::R10),
-                    },
-                    store_op,
-                ]
+                // #651: mask the EFFECTIVE address (operand + offset) and
+                // clamp so the access's final byte stays inside the bound;
+                // the store itself uses offset 0 (folded above).
+                let mut ops = Self::mask_effective_address(addr_reg, offset, access_size);
+                ops.push(store_op);
+                ops
             }
         }
     }
@@ -12662,7 +12840,9 @@ mod tests {
 
     #[test]
     fn test_bounds_check_masking() {
-        // With BoundsCheckConfig::Masking, loads should generate AND + LDR
+        // #651: Masking derives the mask from R10 (SUB R12, R10, #1), ANDs
+        // the effective address, clamps the start so the final byte stays
+        // in-bounds, then does the STR with offset 0.
         let db = RuleDatabase::new();
         let mut selector =
             InstructionSelector::with_bounds_check(db.rules().to_vec(), BoundsCheckConfig::Masking);
@@ -12673,24 +12853,140 @@ mod tests {
         }];
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
-        // Should be: AND addr, addr, R10; STR
-        assert_eq!(arm_instrs.len(), 2);
+        // offset == 0, access_size == 4:
+        // SUB R12,R10,#1; AND addr,addr,R12; SUB R12,R12,#3; CMP; IT HI MOV; STR
+        assert_eq!(arm_instrs.len(), 6);
 
-        // First: AND to mask address
         match &arm_instrs[0].op {
+            ArmOp::Sub {
+                rd: Reg::R12,
+                rn: Reg::R10,
+                op2: Operand2::Imm(1),
+            } => {}
+            other => panic!("Expected SUB R12, R10, #1 (mask = size-1), got {other:?}"),
+        }
+        match &arm_instrs[1].op {
             ArmOp::And {
-                rn: _,
-                op2: Operand2::Reg(Reg::R10),
+                op2: Operand2::Reg(Reg::R12),
                 ..
             } => {}
-            other => panic!("Expected And with R10, got {:?}", other),
+            other => panic!("Expected And with R12 (= size-1), got {other:?}"),
         }
+        match &arm_instrs[2].op {
+            ArmOp::Sub {
+                rd: Reg::R12,
+                rn: Reg::R12,
+                op2: Operand2::Imm(3),
+            } => {}
+            other => panic!("Expected SUB R12, R12, #3 (size - access_size), got {other:?}"),
+        }
+        match &arm_instrs[3].op {
+            ArmOp::Cmp {
+                op2: Operand2::Reg(Reg::R12),
+                ..
+            } => {}
+            other => panic!("Expected CMP addr, R12, got {other:?}"),
+        }
+        match &arm_instrs[4].op {
+            ArmOp::SelectMove {
+                rm: Reg::R12,
+                cond: Condition::HI,
+                ..
+            } => {}
+            other => panic!("Expected IT HI; MOV addr, R12 clamp, got {other:?}"),
+        }
+        match &arm_instrs[5].op {
+            ArmOp::Str { addr, .. } => {
+                assert_eq!(addr.offset, 0, "masked store must use offset 0");
+            }
+            other => panic!("Expected Str instruction, got {other:?}"),
+        }
+    }
 
-        // Second: The actual STR
-        match &arm_instrs[1].op {
-            ArmOp::Str { .. } => {}
-            other => panic!("Expected Str instruction, got {:?}", other),
+    /// #651: a non-zero static offset must be folded into the address BEFORE
+    /// the AND — `(addr + offset) & (size-1)` — never added after the mask.
+    #[test]
+    fn test_masking_folds_offset_before_and_651() {
+        let db = RuleDatabase::new();
+        let mut selector =
+            InstructionSelector::with_bounds_check(db.rules().to_vec(), BoundsCheckConfig::Masking);
+
+        // Large offset (gale's repro shape: offset=0xffff0000): must be
+        // materialized (MOVW/MOVT R12) and ADDed before the SUB/AND.
+        let wasm_ops = vec![WasmOp::I32Load {
+            offset: 0xffff_0000,
+            align: 4,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+        let ops: Vec<&ArmOp> = arm_instrs.iter().map(|i| &i.op).collect();
+
+        let add_pos = ops
+            .iter()
+            .position(|op| matches!(op, ArmOp::Add { .. }))
+            .expect("offset must be ADDed into the address");
+        let and_pos = ops
+            .iter()
+            .position(|op| matches!(op, ArmOp::And { .. }))
+            .expect("mask AND must be present");
+        assert!(
+            add_pos < and_pos,
+            "#651: the static offset must be folded BEFORE the mask AND \
+             (got ADD at {add_pos}, AND at {and_pos})"
+        );
+        // MOVW/MOVT materialization of the wide offset precedes the ADD.
+        assert!(
+            matches!(
+                ops[0],
+                ArmOp::Movw {
+                    rd: Reg::R12,
+                    imm16: 0
+                }
+            ) && matches!(
+                ops[1],
+                ArmOp::Movt {
+                    rd: Reg::R12,
+                    imm16: 0xffff
+                }
+            ),
+            "wide offset must be materialized via MOVW/MOVT R12, got {:?} {:?}",
+            ops[0],
+            ops[1]
+        );
+        // The load itself must NOT re-add the offset after the mask.
+        match ops.last().unwrap() {
+            ArmOp::Ldr { addr, .. } => {
+                assert_eq!(
+                    addr.offset, 0,
+                    "#651: masked load must use offset 0 — a non-zero MemAddr \
+                     offset re-adds the offset AFTER the mask and escapes the bound"
+                );
+            }
+            other => panic!("Expected Ldr, got {other:?}"),
         }
+    }
+
+    /// #651: a byte access can never overhang the bound, so the final-byte
+    /// clamp (SUB/CMP/SelectMove) is skipped for access_size == 1.
+    #[test]
+    fn test_masking_no_clamp_for_byte_access_651() {
+        let db = RuleDatabase::new();
+        let mut selector =
+            InstructionSelector::with_bounds_check(db.rules().to_vec(), BoundsCheckConfig::Masking);
+
+        let wasm_ops = vec![WasmOp::I32Load8U {
+            offset: 0,
+            align: 1,
+        }];
+        let arm_instrs = selector.select(&wasm_ops).unwrap();
+        // SUB R12,R10,#1; AND; LDRB — no CMP/SelectMove clamp.
+        assert_eq!(arm_instrs.len(), 3);
+        assert!(
+            !arm_instrs
+                .iter()
+                .any(|i| matches!(i.op, ArmOp::SelectMove { .. } | ArmOp::Cmp { .. })),
+            "byte access needs no final-byte clamp"
+        );
+        assert!(matches!(arm_instrs[2].op, ArmOp::Ldrb { .. }));
     }
 
     // =========================================================================
