@@ -537,11 +537,49 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         | ArmOp::Ldrsb { .. } => 4,
         // BL is always 32-bit
         ArmOp::Bl { .. } => 4,
-        // MOV with high register (R8-R15) or large immediate needs MOVW (4 bytes)
+        // Branches: 2-byte short forms when the halfword displacement fits
+        // (B.N imm11 / B<cond>.N imm8), 4-byte `.w` otherwise — mirrors the
+        // encoder's range test exactly (#498). In production `ir_to_arm` sizes
+        // these on the offset-0 PLACEHOLDER (pre-resolution) and its resolution
+        // pass declines any displacement that outgrows the short form, so the
+        // 2-byte estimate is the only one that ever feeds `byte_offsets`; the
+        // far arms keep the estimator a faithful per-op encoder mirror for the
+        // post-resolution consumers (`resolved_branch_geometry`) and the
+        // agreement oracle.
+        ArmOp::BOffset { offset } => {
+            if (-1024..=1022).contains(offset) {
+                2
+            } else {
+                4
+            }
+        }
+        ArmOp::BCondOffset { offset, .. } => {
+            if (-128..=127).contains(offset) {
+                2
+            } else {
+                4
+            }
+        }
+        // MOV immediate, mirroring the encoder's three-way split (#498):
+        //   - 0..=255 into a low register: 2-byte MOVS
+        //   - 16-bit range (or a high rd): 4-byte MOVW
+        //   - negative / above 0xFFFF: 8-byte MOVW+MOVT pair (the encoder's
+        //     old signed `imm <= 255` test emitted a wrong-value 2-byte
+        //     MOVS #(imm&0xFF) here — fixed encoder-side alongside this arm;
+        //     no emitter produces this shape today, both paths materialize
+        //     wide constants as explicit Movw/Movt or Movw+Mvn upstream)
         ArmOp::Mov {
             rd,
             op2: Operand2::Imm(v),
-        } if reg_num(rd) > 7 || *v > 255 || *v < 0 => 4,
+        } => {
+            if (*v as u32) > 0xFFFF {
+                8
+            } else if reg_num(rd) > 7 || *v > 255 {
+                4
+            } else {
+                2
+            }
+        }
         ArmOp::Mov { .. } => 2,
         // SUB/ADD with high registers need 32-bit encoding
         ArmOp::Sub {
@@ -2119,36 +2157,52 @@ impl OptimizerBridge {
 
                 // Br: unconditional branch to label. No stack effect at IR
                 // level (the wasm validator handles unreachable stack after Br).
+                //
+                // #500: a branch whose depth reaches the FUNCTION level (depth
+                // >= block_stack.len(), i.e. `br N` targeting the implicit
+                // function body) has no label to land on — the old
+                // `saturating_sub` silently clamped it onto the OUTERMOST
+                // block's end (code after that block still executed) or, with
+                // no open blocks, onto the bogus id 0. Both are the
+                // unresolved/misresolved-forward-branch miscompile class.
+                // Decline to the direct selector, whose function-end label
+                // lowering handles function-level branches.
                 WasmOp::Br(depth) => {
-                    let target_idx = block_stack.len().saturating_sub(1 + *depth as usize);
-                    if target_idx < block_stack.len() {
-                        let (_block_type, target_inst) = block_stack[target_idx];
-                        Opcode::Branch {
-                            target: target_inst,
-                        }
-                    } else {
-                        Opcode::Branch { target: 0 }
+                    let Some(target_idx) = block_stack.len().checked_sub(1 + *depth as usize)
+                    else {
+                        return Err(synth_core::Error::validation(
+                            "optimized lowering path does not support a function-level \
+                             `br` (depth reaches the implicit function body); the \
+                             direct instruction selector lowers it — issue #500",
+                        ));
+                    };
+                    let (_block_type, target_inst) = block_stack[target_idx];
+                    Opcode::Branch {
+                        target: target_inst,
                     }
                 }
 
                 // BrIf: pops cond (i32). The value beneath remains on the
                 // wasm stack — slot_stack reflects that: pop 1 only.
+                // Function-level depth declines like `Br` above (#500).
                 WasmOp::BrIf(depth) => {
                     let cond_v = slot_stack.pop().ok_or_else(|| {
                         synth_core::Error::validation(
                             "wasm stack underflow in wasm_to_ir (slot_stack pop on empty)",
                         )
                     })?;
-                    let target_idx = block_stack.len().saturating_sub(1 + *depth as usize);
-                    let target = if target_idx < block_stack.len() {
-                        let (_block_type, target_inst) = block_stack[target_idx];
-                        target_inst
-                    } else {
-                        0
+                    let Some(target_idx) = block_stack.len().checked_sub(1 + *depth as usize)
+                    else {
+                        return Err(synth_core::Error::validation(
+                            "optimized lowering path does not support a function-level \
+                             `br_if` (depth reaches the implicit function body); the \
+                             direct instruction selector lowers it — issue #500",
+                        ));
                     };
+                    let (_block_type, target_inst) = block_stack[target_idx];
                     Opcode::CondBranch {
                         cond: OptReg(cond_v),
-                        target,
+                        target: target_inst,
                     }
                 }
 
@@ -2398,6 +2452,30 @@ impl OptimizerBridge {
                 // with the wasm op index for any downstream pass that
                 // relies on positional alignment.
                 WasmOp::Nop | WasmOp::Unreachable | WasmOp::Return => {
+                    // #500: `return` is representable here only as a Nop
+                    // placeholder — the real epilogue is emitted once at the
+                    // function end, and the callee-saved push/pop frame is
+                    // wrapped around the body AFTER this lowering, so a
+                    // mid-body `bx lr` would skip the pop. The placeholder is
+                    // therefore correct ONLY in tail position (everything
+                    // after it structural `End`s/`Nop`s). A non-tail `return`
+                    // used to be silently dropped — execution fell THROUGH
+                    // into the code after it (`early_ret(1)` also stored the
+                    // post-return value; red in
+                    // `cf_shapes_500_differential.py`). Decline it to the
+                    // direct selector, whose `Return` arm deallocates the
+                    // frame and returns correctly mid-function.
+                    if matches!(wasm_op, WasmOp::Return)
+                        && wasm_ops[wasm_idx + 1..]
+                            .iter()
+                            .any(|op| !matches!(op, WasmOp::End | WasmOp::Nop))
+                    {
+                        return Err(synth_core::Error::validation(
+                            "optimized lowering path does not support a non-tail \
+                             `return`; the direct instruction selector lowers it — \
+                             issue #500",
+                        ));
+                    }
                     instructions.push(Instruction {
                         id: inst_id,
                         opcode: Opcode::Nop,
@@ -2585,6 +2663,27 @@ impl OptimizerBridge {
 
         // Preprocess: convert if-else patterns to select
         let preprocessed = self.preprocess_wasm_ops(wasm_ops);
+
+        // #500: a real `if`/`else` that SURVIVES the select-idiom preprocessing
+        // has no IR lowering — `wasm_to_ir` dropped `WasmOp::If`/`Else` to
+        // `Opcode::Nop`, so BOTH arms executed unconditionally (the condition
+        // was never even tested; `real_ifelse(1)` stored the else-arm's value —
+        // a silent miscompile, red in `cf_shapes_500_differential.py`). Decline
+        // to the direct selector, whose label-form `If`/`Else`/`End` lowering
+        // is correct. Same honest-degradation pattern as #120/#372/#374. The
+        // check runs on the PREPROCESSED stream so the select-idiom shapes
+        // (patterns 1–3) stay on the optimized path.
+        if preprocessed
+            .iter()
+            .any(|op| matches!(op, WasmOp::If | WasmOp::Else))
+        {
+            return Err(Error::UnsupportedInstruction(
+                "optimized lowering path does not support a non-select `if`/`else` \
+                 (WasmOp::If survived preprocessing); the direct instruction \
+                 selector lowers it — issue #500"
+                    .to_string(),
+            ));
+        }
 
         // Convert to IR
         let (mut instructions, mut cfg) = self.wasm_to_ir(&preprocessed)?;
@@ -5949,28 +6048,65 @@ impl OptimizerBridge {
         byte_offsets.push(current_offset); // End marker for target lookups
 
         for (branch_arm_idx, target_ir_idx, is_conditional) in pending_branches {
-            // Find where the target label is in ARM instructions
-            if let Some(&target_arm_idx) = ir_to_arm_idx.get(&target_ir_idx) {
-                // Calculate the Thumb branch displacement
-                // Formula: imm8 = (target_addr - (branch_addr + 4)) / 2
-                // This is because PC points to branch_addr + 4 during execution
-                let branch_byte_pos = byte_offsets[branch_arm_idx] as i32;
-                let target_byte_pos = byte_offsets[target_arm_idx] as i32;
+            // Find where the target label is in ARM instructions.
+            //
+            // #500: a MISSING target used to be skipped silently, leaving the
+            // offset-0 placeholder in the stream — `br_if` landed on the very
+            // next instruction, mid-shape (the #483-class miscompile, broadened
+            // by #500 to the if/else and sequential-block shapes). Any branch
+            // whose target id never got a label is a lowering bug or an
+            // unsupported shape; decline LOUDLY so the backend falls back to
+            // the direct selector instead of emitting wrong code.
+            let Some(&target_arm_idx) = ir_to_arm_idx.get(&target_ir_idx) else {
+                return Err(Error::synthesis(format!(
+                    "optimized path: branch at ARM index {branch_arm_idx} targets \
+                     IR id {target_ir_idx}, but no label with that id was emitted — \
+                     unresolvable forward-branch shape (#500); falling back to \
+                     direct selector"
+                )));
+            };
+            // Calculate the Thumb branch displacement
+            // Formula: imm8 = (target_addr - (branch_addr + 4)) / 2
+            // This is because PC points to branch_addr + 4 during execution
+            let branch_byte_pos = byte_offsets[branch_arm_idx] as i32;
+            let target_byte_pos = byte_offsets[target_arm_idx] as i32;
 
-                // Halfword offset is the raw encoded value for imm8
-                let halfword_offset = (target_byte_pos - branch_byte_pos - 4) / 2;
+            // Halfword offset is the raw encoded value for imm8
+            let halfword_offset = (target_byte_pos - branch_byte_pos - 4) / 2;
 
-                // Patch the branch instruction
-                if is_conditional {
-                    arm_instrs[branch_arm_idx] = ArmOp::BCondOffset {
-                        cond: crate::rules::Condition::NE,
-                        offset: halfword_offset,
-                    };
-                } else {
-                    arm_instrs[branch_arm_idx] = ArmOp::BOffset {
-                        offset: halfword_offset,
-                    };
-                }
+            // #498: `byte_offsets` sized this branch as the 2-byte short form
+            // (the estimator runs on the offset-0 placeholder). If the resolved
+            // displacement only fits the 4-byte `.w` encoding, the encoder would
+            // emit 2 extra bytes the offset table never accounted for — shifting
+            // every subsequent instruction and corrupting THIS displacement and
+            // any branch spanning it. That was a silent latent miscompile for
+            // large functions; decline to the direct selector (whose label-form
+            // resolution re-runs after layout) instead.
+            let fits_short = if is_conditional {
+                // 16-bit B<cond> (T1): imm8, -256..+254 bytes = -128..=127 hw
+                (-128..=127).contains(&halfword_offset)
+            } else {
+                // 16-bit B (T2): imm11, -2048..+2044 bytes = -1024..=1022 hw
+                (-1024..=1022).contains(&halfword_offset)
+            };
+            if !fits_short {
+                return Err(Error::synthesis(format!(
+                    "optimized path: resolved branch displacement {halfword_offset} \
+                     halfwords exceeds the 2-byte Thumb short form the offset table \
+                     assumed (#498 far-branch); falling back to direct selector"
+                )));
+            }
+
+            // Patch the branch instruction
+            if is_conditional {
+                arm_instrs[branch_arm_idx] = ArmOp::BCondOffset {
+                    cond: crate::rules::Condition::NE,
+                    offset: halfword_offset,
+                };
+            } else {
+                arm_instrs[branch_arm_idx] = ArmOp::BOffset {
+                    offset: halfword_offset,
+                };
             }
         }
 

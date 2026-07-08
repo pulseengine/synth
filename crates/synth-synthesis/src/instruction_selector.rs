@@ -8311,34 +8311,91 @@ impl InstructionSelector {
                 Br(depth) => {
                     // Branch to the Nth enclosing block/loop
                     // block_labels + if_labels are combined into the block_labels stack
-                    let target_idx = block_labels.len().saturating_sub(1 + *depth as usize);
-                    if target_idx < block_labels.len() {
-                        // #509: land a carried value in the target block's
-                        // designated result register BEFORE the jump (no-op for
-                        // void targets and plain loop back-edges).
-                        edge_value_move(
-                            &mut block_labels,
-                            target_idx,
-                            &mut stack,
-                            &mut next_temp,
-                            &mut instructions,
-                            &mut spill,
-                            &live_params,
-                            idx,
-                        )?;
-                        // Loop: branch back to start; block: forward to end.
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::B {
-                                label: block_labels[target_idx].label.clone(),
-                            },
-                            source_line: Some(idx),
-                        });
-                    } else {
-                        // Depth exceeds stack — branch to function return
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Bx { rm: Reg::LR },
-                            source_line: Some(idx),
-                        });
+                    //
+                    // #500: `checked_sub`, not `saturating_sub`. The old clamp
+                    // sent a FUNCTION-LEVEL `br` (depth reaching the implicit
+                    // function body, e.g. `br 1` inside one block) to
+                    // `block_labels[0]` — the OUTERMOST block's end — so code
+                    // after that block still executed (`br_func(1)` also stored
+                    // the post-block value; red in
+                    // `cf_shapes_500_differential.py`). And the old
+                    // depth-exceeds-EMPTY-stack arm emitted a bare `bx lr`,
+                    // skipping the frame dealloc + callee-saved pop. A
+                    // function-level `br` IS a `return` — lower it exactly like
+                    // the `Return` arm below.
+                    match block_labels.len().checked_sub(1 + *depth as usize) {
+                        Some(target_idx) => {
+                            // #509: land a carried value in the target block's
+                            // designated result register BEFORE the jump (no-op for
+                            // void targets and plain loop back-edges).
+                            edge_value_move(
+                                &mut block_labels,
+                                target_idx,
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            // Loop: branch back to start; block: forward to end.
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::B {
+                                    label: block_labels[target_idx].label.clone(),
+                                },
+                                source_line: Some(idx),
+                            });
+                        }
+                        None => {
+                            // Function-level branch == return: result to R0,
+                            // deallocate the frame, pop callee-saved + PC
+                            // (mirrors the `Return` arm; the push-trim post-pass
+                            // rewrites this Pop symmetrically with the prologue).
+                            if !stack.is_empty() {
+                                let val = pop_operand(
+                                    &mut stack,
+                                    &mut next_temp,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &live_params,
+                                    idx,
+                                )?;
+                                if val != Reg::R0 {
+                                    instructions.push(ArmInstruction {
+                                        op: ArmOp::Mov {
+                                            rd: Reg::R0,
+                                            op2: Operand2::Reg(val),
+                                        },
+                                        source_line: Some(idx),
+                                    });
+                                    cf.add_instruction();
+                                }
+                            }
+                            if layout.frame_size > 0 {
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Add {
+                                        rd: Reg::SP,
+                                        rn: Reg::SP,
+                                        op2: Operand2::Imm(layout.frame_size),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                cf.add_instruction();
+                            }
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Pop {
+                                    regs: vec![
+                                        Reg::R4,
+                                        Reg::R5,
+                                        Reg::R6,
+                                        Reg::R7,
+                                        Reg::R8,
+                                        Reg::PC,
+                                    ],
+                                },
+                                source_line: Some(idx),
+                            });
+                        }
                     }
                     cf.add_instruction();
                 }
@@ -8361,43 +8418,138 @@ impl InstructionSelector {
                     // wasm `br_if : [t*] i32 -> [t*]`), and the mov on the
                     // not-taken path is dead — R_res is reserved for the
                     // block's extent and only meaningful at its join.
-                    let target_idx = block_labels.len().saturating_sub(1 + *depth as usize);
-                    if target_idx < block_labels.len() {
-                        let mut edge_reserved = live_params.clone();
-                        edge_reserved.push(cond_reg);
-                        edge_value_move(
-                            &mut block_labels,
-                            target_idx,
-                            &mut stack,
-                            &mut next_temp,
-                            &mut instructions,
-                            &mut spill,
-                            &edge_reserved,
-                            idx,
-                        )?;
-                    }
+                    //
+                    // #500: `checked_sub`, not `saturating_sub` — the old clamp
+                    // sent a FUNCTION-LEVEL `br_if` to the outermost block's
+                    // end (or, with no open blocks, silently emitted a lone
+                    // CMP with no branch at all). A function-level `br_if` is
+                    // a CONDITIONAL return: the whole return sequence sits
+                    // inside the taken region (behind a BEQ over it), so the
+                    // fall-through path — where the operand stack stays live —
+                    // executes none of it.
+                    match block_labels.len().checked_sub(1 + *depth as usize) {
+                        Some(target_idx) => {
+                            let mut edge_reserved = live_params.clone();
+                            edge_reserved.push(cond_reg);
+                            edge_value_move(
+                                &mut block_labels,
+                                target_idx,
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &edge_reserved,
+                                idx,
+                            )?;
 
-                    // CMP cond_reg, #0
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp {
-                            rn: cond_reg,
-                            op2: Operand2::Imm(0),
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                            // CMP cond_reg, #0
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Cmp {
+                                    rn: cond_reg,
+                                    op2: Operand2::Imm(0),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
 
-                    // BNE target_label (branch if non-zero)
-                    if target_idx < block_labels.len() {
-                        instructions.push(ArmInstruction {
-                            op: ArmOp::Bcc {
-                                cond: Condition::NE,
-                                label: block_labels[target_idx].label.clone(),
-                            },
-                            source_line: Some(idx),
-                        });
+                            // BNE target_label (branch if non-zero)
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Bcc {
+                                    cond: Condition::NE,
+                                    label: block_labels[target_idx].label.clone(),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                        None => {
+                            // PEEK the would-be result BEFORE the CMP (a spilled
+                            // top may need a reload, which must not sit between
+                            // CMP and Bcc). The stack is NOT popped: on the
+                            // fall-through path the value stays live.
+                            let val = if stack.is_empty() {
+                                None
+                            } else {
+                                let mut peek_reserved = live_params.clone();
+                                peek_reserved.push(cond_reg);
+                                Some(peek_operand(
+                                    &mut stack,
+                                    &mut next_temp,
+                                    &mut instructions,
+                                    &mut spill,
+                                    &peek_reserved,
+                                    idx,
+                                )?)
+                            };
+                            let skip = self.alloc_label("brif_fnret_skip");
+
+                            // CMP cond_reg, #0
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Cmp {
+                                    rn: cond_reg,
+                                    op2: Operand2::Imm(0),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+
+                            // BEQ over the return sequence (not taken → return)
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Bcc {
+                                    cond: Condition::EQ,
+                                    label: skip.clone(),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+
+                            // Taken region: result to R0, frame dealloc, pop+PC
+                            // (mirrors the `Return` arm).
+                            if let Some(val) = val
+                                && val != Reg::R0
+                            {
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Mov {
+                                        rd: Reg::R0,
+                                        op2: Operand2::Reg(val),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                cf.add_instruction();
+                            }
+                            if layout.frame_size > 0 {
+                                instructions.push(ArmInstruction {
+                                    op: ArmOp::Add {
+                                        rd: Reg::SP,
+                                        rn: Reg::SP,
+                                        op2: Operand2::Imm(layout.frame_size),
+                                    },
+                                    source_line: Some(idx),
+                                });
+                                cf.add_instruction();
+                            }
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Pop {
+                                    regs: vec![
+                                        Reg::R4,
+                                        Reg::R5,
+                                        Reg::R6,
+                                        Reg::R7,
+                                        Reg::R8,
+                                        Reg::PC,
+                                    ],
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Label { name: skip },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                     }
-                    cf.add_instruction();
                 }
 
                 BrTable { targets, default } => {
