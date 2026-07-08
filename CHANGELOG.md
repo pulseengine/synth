@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.1] - 2026-07-08
+
+**Two more gale-filed silent miscompiles fixed same-day: call_indirect gets
+its WASM-mandated bounds + type guards (#642 — the CFI hole), and i64
+globals stop truncating to 32 bits (#643).**
+
+### Fixed
+
+- **call_indirect emitted no bounds-check and no type-check (#642, PR #646,
+  both ISAs).** An OOB or wrong-typed index performed an uncontrolled
+  indirect branch (the differential's decoy function actually got called on
+  ≤v0.33.0). Now: runtime bounds guard (`CMP idx, #table_size; BLO; UDF` —
+  the immediate is sound because table.grow/set loud-skip, so the table is
+  provably fixed-size) + compile-time closed-world type verification per
+  expected type (structural signature equality over every table slot;
+  null/heterogeneous/passive/computed → loud decline — the unchecked branch
+  is unrepresentable). New CI oracle job; 6/6 OOB decoy-calls → 12/12
+  correct-or-trap.
+- **i64 global.set/get truncated to 32 bits (#643, PR #645).** Width-naive
+  `idx*4` slot layout dropped the high word. Now type-aware slot layout
+  (offset = sum of earlier widths — i32-only modules bit-identical by
+  construction), pair lowering on the direct path, honest decline routing
+  on the optimized path, loud refusal under --native-pointer-abi, and an
+  i32-after-i64 layout-shift canary in the differential (7 divergences → 0).
+  RV32 was already sound (globals loud-skip).
+
 ## [0.33.0] - 2026-07-08
 
 **The correctness wave: four MORE live optimized-path miscompiles closed
