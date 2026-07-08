@@ -20,7 +20,8 @@ use synth_core::target::TargetSpec;
 use synth_core::wasm_decoder::ImportEntry;
 use synth_core::wsc_facts::WscFact;
 use synth_synthesis::{
-    FunctionOps, WasmGlobal, WasmMemory, WasmOp, decode_wasm_functions, decode_wasm_module,
+    FunctionOps, GlobalInit, WasmGlobal, WasmMemory, WasmOp, decode_wasm_functions,
+    decode_wasm_module,
 };
 use tracing::{Level, info, warn};
 use wast::parser::{self, ParseBuffer};
@@ -1254,6 +1255,9 @@ fn compile_command(
     // #643: per-global slot widths (8 for i64/f64) — type-aware globals-table
     // layout + register-pair global accesses. Empty for the demo path.
     let mut global_widths: Vec<u32> = Vec::new();
+    // #649: initial R9 globals-table contents for the self-contained image
+    // (both words of an i64 init). Empty for the demo path.
+    let mut startup_globals_words: Vec<u32> = Vec::new();
     let mut current_func_block_arity: Vec<(u8, u8)> = Vec::new(); // #509: value-carrying branches
     // VCR-PERF-002 Phase 1 (#494): loom `wsc.facts` premises — whole-module
     // table + this function's slice. Threaded to the CompileConfig; NOT yet
@@ -1307,6 +1311,9 @@ fn compile_command(
                 }
                 global_widths[i] = g.slot_bytes;
             }
+            // #649: capture the initial globals-table contents so the
+            // self-contained image's startup can materialize them.
+            startup_globals_words = globals_table_words(&module.globals);
             let module_func_params_i64 = module.func_params_i64;
             let module_func_arg_counts = module.func_arg_counts;
             // VCR-PERF-002 Phase 1 (#494): whatever facts loom forwarded
@@ -1500,7 +1507,7 @@ fn compile_command(
     } else if matches!(target_spec.family, synth_core::target::ArchFamily::RiscV) {
         build_riscv_elf(&code, &func_name)?
     } else if cortex_m {
-        build_cortex_m_elf(&code, &func_name, target_spec)?
+        build_cortex_m_elf(&code, &func_name, target_spec, &startup_globals_words)?
     } else {
         build_simple_elf(&code, &func_name)?
     };
@@ -2059,9 +2066,41 @@ fn identify_stack_pointer_global(globals: &[WasmGlobal], linmem_bytes: u32) -> O
     globals
         .iter()
         .filter(|g| g.mutable)
-        .filter_map(|g| g.init_i32.map(|v| (g.index, v)))
+        // #649: only an `i32.const` init can be a wasm stack pointer (the SP is
+        // an i32 address); i64 inits are ordinary data globals, never promoted.
+        .filter_map(|g| match g.init {
+            Some(GlobalInit::I32(v)) => Some((g.index, v)),
+            _ => None,
+        })
         .filter(|&(_, v)| v > 0 && (v as u32) <= linmem_bytes)
         .max_by_key(|&(_, v)| v)
+}
+
+/// #649: the initial CONTENTS of the R9 globals table for the self-contained
+/// Cortex-M image, as little-endian words in the #643 summed-width layout —
+/// global `i`'s offset is the sum of earlier globals' `slot_bytes` (an i64
+/// global occupies two consecutive words, low word first; every later global
+/// shifts accordingly). Slots whose init was not captured (f32/f64 — the
+/// GI-FPU-001 loud-skip lane — or a non-const init expr) stay ZERO: their
+/// access-side handling is responsible, and we never fabricate a value.
+fn globals_table_words(globals: &[WasmGlobal]) -> Vec<u32> {
+    let mut words: Vec<u32> = Vec::new();
+    for g in globals {
+        let n = (g.slot_bytes.max(4) / 4) as usize;
+        let base = words.len();
+        words.resize(base + n, 0);
+        match g.init {
+            Some(GlobalInit::I32(v)) => words[base] = v as u32,
+            Some(GlobalInit::I64(v)) => {
+                words[base] = v as u32;
+                if n > 1 {
+                    words[base + 1] = ((v as u64) >> 32) as u32;
+                }
+            }
+            None => {}
+        }
+    }
+    words
 }
 
 fn reachable_from_exports(
@@ -2156,7 +2195,7 @@ fn compile_all_exports(
         type_arg_counts,
         all_data_segments, // #237: active data segments, for --native-pointer-abi
         stack_pointer_global_opt, // #237: (index, init) of the SP global, if any
-        all_globals, // #237: every defined global (index, init) — slot region under --native-pointer-abi
+        all_globals, // #237/#649: every defined global's full decl (init + width) — native-abi slots + image-materialized R9 table
         all_global_widths, // #643: per-global slot widths (8 for i64/f64) — type-aware R9 table layout
         all_func_ret_i64,  // #311: per-function returns-i64 (pair tagging)
         all_type_ret_i64,  // #311: per-type returns-i64 (call_indirect)
@@ -2255,7 +2294,7 @@ fn compile_all_exports(
             merged_type_arg_counts,
             Vec::new(), // #237: data segments not threaded for WAST (single-module .wasm path covers it)
             None,       // #237: SP-global promotion is single-module .wasm only
-            Vec::new(), // #237: globals slot region is single-module .wasm only
+            Vec::new(), // #237/#649: globals decls (slot region + init materialization) are single-module .wasm only
             Vec::new(), // #643: WAST fixture suite is i32-only — legacy 4-byte global slots
             Vec::new(), // #311: WAST runs the fixture suite; i32-only
             Vec::new(),
@@ -2296,13 +2335,6 @@ fn compile_all_exports(
         // linmem extent gates the "plausible stack top" heuristic.
         let linmem_bytes = memories.first().map(|m| m.initial_bytes()).unwrap_or(0);
         let sp_global = identify_stack_pointer_global(&module.globals, linmem_bytes);
-        // #237: every defined global gets a materialized slot under the
-        // native-pointer ABI (init defaults to 0 for non-i32.const inits).
-        let globals: Vec<(u32, i32)> = module
-            .globals
-            .iter()
-            .map(|g| (g.index, g.init_i32.unwrap_or(0)))
-            .collect();
         // #643: per-global slot widths (4 = i32/f32, 8 = i64/f64, 16 = v128),
         // indexed by global index — the selector lays the R9 globals table out
         // by summing these, giving i64 globals room for both words and
@@ -2353,7 +2385,11 @@ fn compile_all_exports(
             type_arg_counts,
             data_segs,
             sp_global,
-            globals,
+            // #237/#649: the full global declarations — the native-pointer ABI
+            // derives its (index, i32-init) slot pairs from these, and the
+            // self-contained Cortex-M image materializes the width-aware
+            // (both-words for i64) R9 globals table from them.
+            module.globals,
             global_widths,
             module.func_ret_i64,
             module.type_ret_i64,
@@ -2734,7 +2770,23 @@ fn compile_all_exports(
             // #237: used-extent sizing + globals slots, native-pointer ABI only.
             if native_pointer_abi {
                 Some(NativeGlobalsLayout {
-                    globals: all_globals.clone(),
+                    // #649: the native-abi `__synth_globals` region stays
+                    // 4-byte i32 slots — wide (i64/f64/v128) globals were
+                    // REFUSED up front (#643 bail above), so only `i32.const`
+                    // inits can land here. f32 slots (captured as `None` —
+                    // the GI-FPU-001 loud-skip lane) stay zero.
+                    globals: all_globals
+                        .iter()
+                        .map(|g| {
+                            (
+                                g.index,
+                                match g.init {
+                                    Some(GlobalInit::I32(v)) => v,
+                                    _ => 0,
+                                },
+                            )
+                        })
+                        .collect(),
                     sp_init: stack_pointer_global_opt.map(|(_, v)| v).unwrap_or(0),
                     shadow_stack_size,
                 })
@@ -2747,7 +2799,15 @@ fn compile_all_exports(
             !matches!(target_spec.isa, synth_core::target::IsaVariant::Arm32),
         )?
     } else if cortex_m {
-        build_multi_func_cortex_m_elf(&compiled_funcs, &all_memories, target_spec)?
+        // #649: the self-contained image materializes the R9 globals table —
+        // startup writes every global's captured init (both words for i64)
+        // into RAM just above linear memory and points R9 at it.
+        build_multi_func_cortex_m_elf(
+            &compiled_funcs,
+            &all_memories,
+            target_spec,
+            &globals_table_words(&all_globals),
+        )?
     } else {
         build_multi_func_simple_elf(&compiled_funcs)?
     };
@@ -3792,6 +3852,10 @@ fn build_multi_func_cortex_m_elf(
     funcs: &[ElfFunction],
     memories: &[WasmMemory],
     target: &TargetSpec,
+    // #649: initial R9 globals-table contents (little-endian words, #643
+    // summed-width layout). Empty = no globals: startup, RAM sizing and the
+    // NoBits region are BYTE-IDENTICAL to the pre-#649 output.
+    globals_words: &[u32],
 ) -> Result<Vec<u8>> {
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
@@ -3801,15 +3865,28 @@ fn build_multi_func_cortex_m_elf(
     let linear_memory_pages = memories.first().map(|m| m.initial_pages).unwrap_or(1);
     let linear_memory_size = linear_memory_pages * 64 * 1024; // 64KB per page
 
+    // #649: the R9 globals table lives immediately above linear memory. The
+    // startup materializer addresses it with `STR.W [R9, #imm12]` (max 4095).
+    let globals_table_bytes = (globals_words.len() as u32) * 4;
+    if globals_table_bytes > 4096 {
+        anyhow::bail!(
+            "globals table ({} bytes) exceeds the startup materializer's \
+             STR.W #imm12 range (4096 bytes) — refusing to emit a partial \
+             table (#649)",
+            globals_table_bytes
+        );
+    }
+
     // RAM layout:
     // 0x2000_0000: Linear memory (R11 points here)
-    // 0x2000_0000 + linear_memory_size: Stack base
+    // 0x2000_0000 + linear_memory_size: R9 globals table (#649, if any)
+    // above that: Stack base
     // ram_base + ram_size: Stack top (grows down)
     //
-    // Auto-scale RAM: linear memory + 8KB stack, rounded up to next 64KB boundary.
-    // Minimum 128KB for backwards compatibility.
+    // Auto-scale RAM: linear memory + globals table + 8KB stack, rounded up to
+    // next 64KB boundary. Minimum 128KB for backwards compatibility.
     let min_stack_size: u32 = 8 * 1024;
-    let needed = linear_memory_size + min_stack_size;
+    let needed = linear_memory_size + globals_table_bytes + min_stack_size;
     let ram_size: u32 = std::cmp::max(128 * 1024, (needed + 0xFFFF) & !0xFFFF);
 
     let stack_top = ram_base + ram_size;
@@ -3831,7 +3908,7 @@ fn build_multi_func_cortex_m_elf(
     let vector_table_size: u32 = 128;
 
     let startup_addr = flash_base + vector_table_size;
-    let startup_code = generate_minimal_startup(linear_memory_size);
+    let startup_code = generate_minimal_startup(linear_memory_size, globals_words);
     let startup_size = startup_code.len() as u32;
 
     let default_handler_addr = startup_addr + startup_size;
@@ -3960,11 +4037,13 @@ fn build_multi_func_cortex_m_elf(
         flash_image.push(0);
     }
 
-    // Startup code - patch literal pool to point to FIRST function
-    // Literal pool is at offset 24 (after R10/R11 init + LDR/BLX/B/padding)
+    // Startup code - patch literal pool to point to FIRST function.
+    // The literal pool is the LAST word of the startup blob (#649: the blob
+    // grows with the globals-table materializer, so no fixed offset 24).
     let mut patched_startup = startup_code.clone();
     let first_func_addr = funcs_base | 1; // Thumb bit
-    patched_startup[24..28].copy_from_slice(&first_func_addr.to_le_bytes());
+    let lit = patched_startup.len() - 4;
+    patched_startup[lit..].copy_from_slice(&first_func_addr.to_le_bytes());
     flash_image.extend_from_slice(&patched_startup);
 
     // Default handler
@@ -4018,11 +4097,15 @@ fn build_multi_func_cortex_m_elf(
     // Add linear memory section (BSS-like, no file data)
     // This section tells the loader about the RAM region for WASM linear memory
     if linear_memory_size > 0 {
+        // #649: cover the R9 globals table (just above linear memory) too, so
+        // a loader that maps by program header reserves it. 0 when no globals
+        // — the region stays byte-identical.
+        let ram_region_size = linear_memory_size + globals_table_bytes;
         // Program header for linear memory (READ | WRITE, no EXEC)
         // Use load_nobits since there's no file data, just memory allocation
         let ram_phdr = ProgramHeader::load_nobits(
             ram_base,
-            linear_memory_size,
+            ram_region_size,
             ProgramFlags::READ | ProgramFlags::WRITE,
         );
         elf_builder.add_program_header(ram_phdr);
@@ -4032,7 +4115,7 @@ fn build_multi_func_cortex_m_elf(
             .with_flags(SectionFlags::ALLOC | SectionFlags::WRITE)
             .with_addr(ram_base)
             .with_align(4)
-            .with_size(linear_memory_size);
+            .with_size(ram_region_size);
 
         elf_builder.add_section(linear_memory_section);
 
@@ -4438,7 +4521,14 @@ fn build_simple_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
 }
 
 /// Build a complete Cortex-M ELF with vector table and startup code
-fn build_cortex_m_elf(code: &[u8], func_name: &str, target: &TargetSpec) -> Result<Vec<u8>> {
+fn build_cortex_m_elf(
+    code: &[u8],
+    func_name: &str,
+    target: &TargetSpec,
+    // #649: initial R9 globals-table contents (see `globals_table_words`).
+    // Empty = no globals: output byte-identical to the pre-#649 builder.
+    globals_words: &[u32],
+) -> Result<Vec<u8>> {
     // Memory layout for generic Cortex-M (works with QEMU/Renode)
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
@@ -4448,12 +4538,24 @@ fn build_cortex_m_elf(code: &[u8], func_name: &str, target: &TargetSpec) -> Resu
     // Default linear memory size (1 WASM page = 64KB) for single-function mode
     let linear_memory_size: u32 = 64 * 1024;
 
+    // #649: R9 globals table just above linear memory (0x2001_0000); the
+    // stack grows down from 0x2002_0000, leaving it 64KB of headroom. The
+    // startup materializer addresses the table with STR.W #imm12 (max 4095).
+    if globals_words.len() * 4 > 4096 {
+        anyhow::bail!(
+            "globals table ({} bytes) exceeds the startup materializer's \
+             STR.W #imm12 range (4096 bytes) — refusing to emit a partial \
+             table (#649)",
+            globals_words.len() * 4
+        );
+    }
+
     // Calculate addresses
     let vector_table_addr = flash_base;
     let vector_table_size: u32 = 128; // 32 entries * 4 bytes
 
     let startup_addr = flash_base + vector_table_size;
-    let startup_code = generate_minimal_startup(linear_memory_size);
+    let startup_code = generate_minimal_startup(linear_memory_size, globals_words);
     let startup_size = startup_code.len() as u32;
 
     let default_handler_addr = startup_addr + startup_size;
@@ -4506,11 +4608,13 @@ fn build_cortex_m_elf(code: &[u8], func_name: &str, target: &TargetSpec) -> Resu
         flash_image.push(0);
     }
 
-    // Startup code (patch the literal pool with actual function address)
-    // Literal pool is at offset 24 (after R10/R11 init + LDR/BLX/B/padding)
+    // Startup code (patch the literal pool with actual function address).
+    // The literal pool is the LAST word of the startup blob (#649: the blob
+    // grows with the globals-table materializer, so no fixed offset 24).
     let mut patched_startup = startup_code.clone();
     let func_addr_thumb = code_addr | 1; // Thumb bit
-    patched_startup[24..28].copy_from_slice(&func_addr_thumb.to_le_bytes());
+    let lit = patched_startup.len() - 4;
+    patched_startup[lit..].copy_from_slice(&func_addr_thumb.to_le_bytes());
     flash_image.extend_from_slice(&patched_startup);
 
     // Default handler
@@ -4603,11 +4707,19 @@ fn build_cortex_m_elf(code: &[u8], func_name: &str, target: &TargetSpec) -> Resu
 ///
 /// # Arguments
 /// * `memory_size` - Size of linear memory in bytes (for R10 bounds checking)
+/// * `globals_words` - #649: initial R9 globals-table contents (little-endian
+///   words, #643 summed-width layout). When non-empty, startup points R9 at
+///   `0x2000_0000 + memory_size` and stores every word there BEFORE calling
+///   the user function — this is where `i64.const`/`i32.const` global
+///   initializers reach the running image (they exist nowhere else in a
+///   self-contained ELF; a zeroed table silently dropped every nonzero init).
+///   Empty (no globals) emits the historical 28-byte blob, byte-identical.
 ///
 /// # Memory Register Setup
 /// * R10 = memory_size (for bounds checking)
 /// * R11 = 0x20000000 (linear memory base)
-fn generate_minimal_startup(memory_size: u32) -> Vec<u8> {
+/// * R9  = 0x20000000 + memory_size (globals table; only when globals exist)
+fn generate_minimal_startup(memory_size: u32, globals_words: &[u32]) -> Vec<u8> {
     // This startup code:
     // 1. Initializes R10 with memory size (for bounds checking)
     // 2. Initializes R11 with linear memory base (0x20000000) for WASM memory access
@@ -4629,46 +4741,49 @@ fn generate_minimal_startup(memory_size: u32) -> Vec<u8> {
     let r10_movw = encode_thumb2_movw(10, (memory_size & 0xFFFF) as u16);
     let r10_movt = encode_thumb2_movt(10, (memory_size >> 16) as u16);
 
-    vec![
-        // MOVW R10, #(memory_size & 0xFFFF)
-        r10_movw[0],
-        r10_movw[1],
-        r10_movw[2],
-        r10_movw[3],
-        // MOVT R10, #(memory_size >> 16)
-        r10_movt[0],
-        r10_movt[1],
-        r10_movt[2],
-        r10_movt[3],
-        // MOVW R11, #0x0000 - Thumb-2 32-bit encoding
-        0x40,
-        0xF2,
-        0x00,
-        0x0B,
-        // MOVT R11, #0x2000 - Thumb-2 32-bit encoding
-        0xC2,
-        0xF2,
-        0x00,
-        0x0B,
-        // LDR r0, [pc, #4] - Thumb 16-bit encoding: 0x4801
-        // PC = current_addr + 4, literal at PC+4
-        0x01,
-        0x48,
-        // BLX r0 - Thumb encoding: 0x4780
-        0x80,
-        0x47,
-        // B . (branch to self) - Thumb encoding: 0xe7fe
-        0xfe,
-        0xe7,
-        // Padding for alignment (to make literal pool 4-byte aligned)
-        0x00,
-        0x00,
-        // Literal pool placeholder at offset 24 (will be patched with func_addr | 1)
-        0x91,
-        0x00,
-        0x00,
-        0x00,
-    ]
+    let mut code: Vec<u8> = Vec::new();
+    // MOVW R10, #(memory_size & 0xFFFF) / MOVT R10, #(memory_size >> 16)
+    code.extend_from_slice(&r10_movw);
+    code.extend_from_slice(&r10_movt);
+    // MOVW R11, #0x0000 / MOVT R11, #0x2000 - Thumb-2 32-bit encodings
+    code.extend_from_slice(&[0x40, 0xF2, 0x00, 0x0B]);
+    code.extend_from_slice(&[0xC2, 0xF2, 0x00, 0x0B]);
+
+    // #649: materialize the R9 globals table. R9 = table base; each captured
+    // init word is stored via the R12 scratch (IP — reserved to the encoder,
+    // never live here: this runs before any user code). Every insn is 4 bytes,
+    // so the LDR-literal alignment below is undisturbed.
+    if !globals_words.is_empty() {
+        let base = 0x2000_0000u32.wrapping_add(memory_size);
+        // MOVW/MOVT R9, #base
+        code.extend_from_slice(&encode_thumb2_movw(9, (base & 0xFFFF) as u16));
+        code.extend_from_slice(&encode_thumb2_movt(9, (base >> 16) as u16));
+        for (i, w) in globals_words.iter().enumerate() {
+            // MOVW/MOVT R12, #word
+            code.extend_from_slice(&encode_thumb2_movw(12, (w & 0xFFFF) as u16));
+            code.extend_from_slice(&encode_thumb2_movt(12, (w >> 16) as u16));
+            // STR.W R12, [R9, #i*4] — T3: 1111 1000 1100 Rn | Rt imm12.
+            // Callers reject tables past the #imm12 range (4095) up front.
+            let off = (i as u16) * 4;
+            let hw1: u16 = 0xF8C0 | 9; // Rn = R9
+            let hw2: u16 = (12 << 12) | off; // Rt = R12
+            code.extend_from_slice(&hw1.to_le_bytes());
+            code.extend_from_slice(&hw2.to_le_bytes());
+        }
+    }
+
+    // LDR r0, [pc, #4] - Thumb 16-bit encoding: 0x4801
+    // (PC = LDR addr + 4, already 4-aligned; literal sits at PC+4 = LDR+8)
+    code.extend_from_slice(&[0x01, 0x48]);
+    // BLX r0 - Thumb encoding: 0x4780
+    code.extend_from_slice(&[0x80, 0x47]);
+    // B . (branch to self) - Thumb encoding: 0xe7fe
+    code.extend_from_slice(&[0xfe, 0xe7]);
+    // Padding for alignment (to make literal pool 4-byte aligned)
+    code.extend_from_slice(&[0x00, 0x00]);
+    // Literal pool placeholder — LAST word, patched with func_addr | 1
+    code.extend_from_slice(&[0x91, 0x00, 0x00, 0x00]);
+    code
 }
 
 /// Encode Thumb-2 MOVW instruction (move 16-bit immediate to low half of register)
@@ -5558,7 +5673,8 @@ mod tests {
             0x1e, 0xff, 0x2f, 0xe1, // BX lr (ARM encoding)
         ];
 
-        let elf_data = build_cortex_m_elf(&code, "test_func", &TargetSpec::cortex_m3()).unwrap();
+        let elf_data =
+            build_cortex_m_elf(&code, "test_func", &TargetSpec::cortex_m3(), &[]).unwrap();
 
         // Verify ELF magic
         assert_eq!(&elf_data[0..4], b"\x7fELF", "Invalid ELF magic");
@@ -5578,7 +5694,7 @@ mod tests {
     fn test_vector_table_structure() {
         let code = vec![0x00, 0x80, 0x80, 0xe0]; // ADD r0, r0, r1
 
-        let elf_data = build_cortex_m_elf(&code, "test", &TargetSpec::cortex_m3()).unwrap();
+        let elf_data = build_cortex_m_elf(&code, "test", &TargetSpec::cortex_m3(), &[]).unwrap();
 
         // Find .text section (it starts after ELF headers)
         // For simplicity, look for the vector table pattern
@@ -5632,7 +5748,7 @@ mod tests {
     fn test_startup_code_patching() {
         let code = vec![0x00, 0x80, 0x80, 0xe0];
 
-        let elf_data = build_cortex_m_elf(&code, "patched", &TargetSpec::cortex_m3()).unwrap();
+        let elf_data = build_cortex_m_elf(&code, "patched", &TargetSpec::cortex_m3(), &[]).unwrap();
 
         // With the new startup code layout (28 bytes with R10/R11 init):
         // - Startup: 0x80 (28 bytes)
@@ -5663,7 +5779,7 @@ mod tests {
     fn test_minimal_startup_generation() {
         // Test with 64KB memory size (0x10000)
         let memory_size: u32 = 64 * 1024;
-        let startup = generate_minimal_startup(memory_size);
+        let startup = generate_minimal_startup(memory_size, &[]);
 
         // Should be 28 bytes:
         // MOVW R10 + MOVT R10 + MOVW R11 + MOVT R11 + LDR + BLX + B + padding + literal
@@ -5692,6 +5808,74 @@ mod tests {
         // Bytes 20-21: B . = 0xe7fe
         assert_eq!(startup[20], 0xfe);
         assert_eq!(startup[21], 0xe7);
+    }
+
+    /// #649: the startup globals-table materializer — R9 points just above
+    /// linear memory and every captured init word (BOTH words of an i64) is
+    /// stored before the user function runs. The pre/post scaffolding stays
+    /// byte-identical to the historical 28-byte blob.
+    #[test]
+    fn test_startup_globals_materializer_649() {
+        let memory_size: u32 = 64 * 1024;
+        // i64 0x123456789ABCDEF0 (lo, hi) followed by an i32 canary.
+        let words = [0x9ABCDEF0u32, 0x12345678, 0x0C0FFEE1];
+        let startup = generate_minimal_startup(memory_size, &words);
+        let empty = generate_minimal_startup(memory_size, &[]);
+
+        // 16 scaffold + 8 (R9 movw/movt) + 3 * 12 (movw/movt/str) + 12 tail
+        assert_eq!(startup.len(), 16 + 8 + 36 + 12, "materializer size");
+        // R10/R11 init unchanged.
+        assert_eq!(&startup[..16], &empty[..16], "R10/R11 scaffold unchanged");
+        // R9 = 0x2001_0000 (ram_base + 64KB linear memory).
+        assert_eq!(&startup[16..20], &encode_thumb2_movw(9, 0x0000));
+        assert_eq!(&startup[20..24], &encode_thumb2_movt(9, 0x2001));
+        // First word: MOVW/MOVT R12, #0x9ABCDEF0; STR.W R12, [R9, #0].
+        assert_eq!(&startup[24..28], &encode_thumb2_movw(12, 0xDEF0));
+        assert_eq!(&startup[28..32], &encode_thumb2_movt(12, 0x9ABC));
+        assert_eq!(&startup[32..36], &[0xC9, 0xF8, 0x00, 0xC0]);
+        // Second word (the i64 HIGH word — the #649 payload): STR at #4.
+        assert_eq!(&startup[36..40], &encode_thumb2_movw(12, 0x5678));
+        assert_eq!(&startup[40..44], &encode_thumb2_movt(12, 0x1234));
+        assert_eq!(&startup[44..48], &[0xC9, 0xF8, 0x04, 0xC0]);
+        // i32 canary after the i64: STR at #8 (the #643 layout shift).
+        assert_eq!(&startup[56..60], &[0xC9, 0xF8, 0x08, 0xC0]);
+        // Tail (LDR/BLX/B/pad/literal) identical to the no-globals blob.
+        assert_eq!(&startup[60..], &empty[16..], "call scaffold unchanged");
+        // No globals => byte-identical historical 28-byte blob.
+        assert_eq!(empty.len(), 28);
+    }
+
+    /// #649: `globals_table_words` lays inits out by the #643 summed-width
+    /// rule — i64 takes two words (lo first), an uncaptured (float) init
+    /// leaves its slot zeroed, later globals shift accordingly.
+    #[test]
+    fn test_globals_table_words_layout_649() {
+        let globals = vec![
+            WasmGlobal {
+                index: 0,
+                init: Some(GlobalInit::I64(0x123456789ABCDEF0u64 as i64)),
+                mutable: true,
+                slot_bytes: 8,
+            },
+            WasmGlobal {
+                index: 1,
+                init: Some(GlobalInit::I32(7)),
+                mutable: true,
+                slot_bytes: 4,
+            },
+            // f64: init not captured (GI-FPU-001 loud-skip lane) — zero slot.
+            WasmGlobal {
+                index: 2,
+                init: None,
+                mutable: true,
+                slot_bytes: 8,
+            },
+        ];
+        assert_eq!(
+            globals_table_words(&globals),
+            vec![0x9ABCDEF0, 0x12345678, 7, 0, 0]
+        );
+        assert!(globals_table_words(&[]).is_empty());
     }
 
     #[test]
