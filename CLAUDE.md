@@ -120,8 +120,13 @@ frozen and oracle-gated every step:
 - **Track C (validation):** the differential oracles are CI-gated jobs
   (cmp-select, RV32 shift-fold/const-addr-fold, callee-saved, spill-frame,
   symtab-based frozen-fixture differentials).
-- **Gate `VCR-VER-001`:** a previously load-bearing greedy-fix becomes
-  revertable, full differential bit-identical, cycles equal-or-better.
+- **Gate `VCR-VER-001`:** DEMONSTRATED (implemented, evidence in
+  `scripts/repro/vcr_ver_001_gate.md`) — the v0.11.20 reciprocal-mult
+  cost-gate was deleted outright (PR #322, differential bit-identical); the
+  #496 exhaustion decline is revertable behind `SYNTH_SPILL_ON_EXHAUST`
+  (red case green, anchors byte-identical, declines 14→8) with the flip
+  held on a measured i32-shape cycle regression (missing capability:
+  post-exhaustion code quality on the optimized path).
 
 Shipped default-on levers (v0.13–v0.30, each evidence-gated with a CI-pinned
 opt-out): cmp→select fusion (ARM+RV32), i32 local promotion, immediate-shift
