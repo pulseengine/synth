@@ -524,6 +524,49 @@ mod tests {
         assert_eq!(u16::from_le_bytes([elf[16], elf[17]]), 1);
     }
 
+    /// MIRROR PIN (#511 estimator↔encoder lesson): the selector's
+    /// `emitted_byte_size` must agree with `assemble_function`'s pass-1 sizing
+    /// (Label 0 B, Call 8 B, everything else 4 B) on a sequence exercising all
+    /// three size classes. `select_inner`'s measured local-promotion decision
+    /// (#472) compares functions by `emitted_byte_size`, so drift here would
+    /// silently corrupt the no-grow guarantee.
+    #[test]
+    fn emitted_byte_size_matches_assembled_text() {
+        let builder = RiscVElfBuilder::new_relocatable();
+        let encoder = RiscVEncoder::new_rv32();
+        let ops = vec![
+            RiscVOp::Label { name: "f".into() },
+            nop_op(),
+            RiscVOp::Branch {
+                cond: crate::riscv_op::Branch::Ne,
+                rs1: Reg::A0,
+                rs2: Reg::ZERO,
+                label: "f".into(),
+            },
+            RiscVOp::Call { label: "f".into() },
+            RiscVOp::Lw {
+                rd: Reg::S8,
+                rs1: Reg::SP,
+                imm: 4,
+            },
+            RiscVOp::Jalr {
+                rd: Reg::ZERO,
+                rs1: Reg::RA,
+                imm: 0,
+            },
+        ];
+        let f = RiscVElfFunction {
+            name: "f".into(),
+            ops: ops.clone(),
+        };
+        let assembled = builder.assemble_function(&encoder, &f).unwrap();
+        assert_eq!(
+            assembled.len(),
+            crate::selector::emitted_byte_size(&ops),
+            "emitted_byte_size drifted from the ELF builder's sizing"
+        );
+    }
+
     #[test]
     fn jal_with_label_resolution() {
         let builder = RiscVElfBuilder::new_relocatable();
