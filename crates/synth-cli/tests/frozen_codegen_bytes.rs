@@ -58,14 +58,17 @@ fn fixture(name: &str) -> std::path::PathBuf {
 /// of its `.text` and the section length. The default-changing opt-out flags
 /// (`SYNTH_NO_CMP_SELECT_FUSE` — v0.13.0 cmp→select; `SYNTH_NO_LOCAL_PROMOTE` —
 /// v0.14.0 local promotion; `SYNTH_RV_CMP_SELECT` — #472 RV32 cmp→select,
-/// `=0` opts out; `SYNTH_CONST_CSE` — #242 const-CSE, `=0` opts out) and the
-/// still-opt-in lever (`SYNTH_RV_LOCAL_PROMO`) are explicitly removed so a
-/// flag set in the environment can never silently re-freeze the gate — it
-/// locks the SHIPPED lowering, which since v0.14.0 INCLUDES cmp→select fusion
-/// AND local promotion on ARM (both default-on), since the #472 flip-wave
-/// includes RV32 cmp→select fusion, and since the #242 const-CSE flip includes
-/// the post-hoc `apply_const_cse` passes on ARM (both paths). The `object`
-/// crate reads `.text` arch-agnostically (ARM Thumb-2 and RV32 alike).
+/// `=0` opts out; `SYNTH_CONST_CSE` — #242 const-CSE, `=0` opts out;
+/// `SYNTH_RV_LOCAL_PROMO` — #472/#601 RV32 local promotion, `=0` opts out)
+/// are explicitly removed so a flag set in the environment can never silently
+/// re-freeze the gate — it locks the SHIPPED lowering, which since v0.14.0
+/// INCLUDES cmp→select fusion AND local promotion on ARM (both default-on),
+/// since the #472 flip-wave includes RV32 cmp→select fusion, since the #601
+/// measured-profitability flip includes RV32 local promotion (byte-neutral on
+/// these goldens — the measured gate declines everywhere in them, verified at
+/// flip time), and since the #242 const-CSE flip includes the post-hoc
+/// `apply_const_cse` passes on ARM (both paths). The `object` crate reads
+/// `.text` arch-agnostically (ARM Thumb-2 and RV32 alike).
 fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
     let path = fixture(wasm);
     let elf = format!("/tmp/frozenbytes_{backend}_{wasm}.elf");
@@ -624,10 +627,17 @@ fn frozen_fixtures_uxth_fold_escape_hatch_restores_old_bytes() {
 /// goldens (main @ 57206a1, 2026-06-23) were control_step 6e734c4c…/504,
 /// signed_div_const 15fa429d…/88.
 ///
-/// `SYNTH_RV_LOCAL_PROMO` (#472's second lever) did NOT flip — HELD on a
-/// per-function no-grow blocker (its own WAR fixtures grow; see the env read
-/// in `synth-backend-riscv/src/selector.rs`) — so these goldens are the
-/// promo-UNSET bytes and `text_sha256` env-removes it for hygiene.
+/// `SYNTH_RV_LOCAL_PROMO` (#472's second lever) flipped DEFAULT-ON with the
+/// #601 measured-profitability fix (profitability is measured per candidate
+/// subset against the unpromoted baseline — strict no-grow by construction).
+/// These goldens are UNCHANGED by that flip: the measured gate declines
+/// promotion everywhere in control_step and signed_div_const, so the promo-ON
+/// bytes are bit-identical to the promo-UNSET bytes pinned here (verified by
+/// hash at flip time; `frozen_fixtures_rv32_local_promo_escape_hatch_is_noop`
+/// locks the opt-out side). Execution differentials were re-run green on the
+/// flag-ON bytes BEFORE the flip (all 11 `*_riscv_differential.py`; corpus
+/// no-grow gate `rv32_local_promo_no_grow_corpus_472`: 10 shrink / 0 grow
+/// across 67 fixtures — see the flip PR).
 ///
 /// Goldens RE-FROZEN for the SYNTH_RV_SHIFT_FOLD flip (#242 flag-audit
 /// flip-wave; gale re-measured the fold still off and worth −8 B toward the
@@ -681,8 +691,11 @@ fn frozen_fixtures_rv32_shift_fold_escape_hatch_restores_old_bytes() {
     for &(wasm, golden, golden_len) in &cases {
         let path = fixture(wasm);
         let elf = format!("/tmp/frozenbytes_rv32_shiftfold_off_{wasm}.elf");
+        // COMPOSITION (#601 promo flip): local promotion is default-on but
+        // byte-neutral on these fixtures; pin it off anyway so the rollback
+        // stays an exact pre-flip composition, not a byte-neutrality bet.
         let out = Command::new(synth())
-            .env_remove("SYNTH_RV_LOCAL_PROMO")
+            .env("SYNTH_RV_LOCAL_PROMO", "0")
             .env_remove("SYNTH_RV_CMP_SELECT")
             .env("SYNTH_RV_SHIFT_FOLD", "0")
             .args([
@@ -731,7 +744,9 @@ fn frozen_fixtures_rv32_shift_fold_escape_hatch_restores_old_bytes() {
 ///
 /// COMPOSITION NOTE: since the #242 flag-audit flip-wave, rolling back to
 /// these bytes also requires opting out of the LATER shift-fold lever
-/// (`SYNTH_RV_SHIFT_FOLD=0`), which fires on control_step.
+/// (`SYNTH_RV_SHIFT_FOLD=0`), which fires on control_step; since the #601
+/// promo flip, `SYNTH_RV_LOCAL_PROMO=0` is pinned too (byte-neutral here,
+/// pinned for exactness).
 #[test]
 fn frozen_fixtures_rv32_cmp_select_escape_hatch_restores_old_bytes() {
     let cases = [
@@ -749,8 +764,10 @@ fn frozen_fixtures_rv32_cmp_select_escape_hatch_restores_old_bytes() {
     for &(wasm, golden, golden_len) in &cases {
         let path = fixture(wasm);
         let elf = format!("/tmp/frozenbytes_rv32_cmpsel_off_{wasm}.elf");
+        // COMPOSITION (#601 promo flip): see the shift-fold hatch — promo is
+        // pinned off so the rollback composition stays exact.
         let out = Command::new(synth())
-            .env_remove("SYNTH_RV_LOCAL_PROMO")
+            .env("SYNTH_RV_LOCAL_PROMO", "0")
             .env("SYNTH_RV_CMP_SELECT", "0")
             .env("SYNTH_RV_SHIFT_FOLD", "0")
             .args([
@@ -787,6 +804,74 @@ fn frozen_fixtures_rv32_cmp_select_escape_hatch_restores_old_bytes() {
         assert_eq!(
             hex, golden,
             "{wasm}: SYNTH_RV_CMP_SELECT=0 must restore the pre-flip bytes (rollback broken)"
+        );
+    }
+}
+
+/// ESCAPE-HATCH GATE for the SYNTH_RV_LOCAL_PROMO flip (#472/#601):
+/// `SYNTH_RV_LOCAL_PROMO=0` ALONE (every other lever at the shipped default)
+/// must restore the pre-flip RV32 goldens byte-for-byte. Both pinned fixtures
+/// are promo-NEUTRAL — the measured profitability gate declines promotion
+/// everywhere in them, so pre-flip bytes == the current default goldens and
+/// this doubles as the tripwire that (a) the opt-out stays a genuine no-op
+/// here and (b) no promotion machinery leaks into the `=0` lowering. The
+/// fixtures where the lever genuinely fires are locked by the corpus gate in
+/// `rv32_local_promo_flip_472.rs` (default-vs-opt-out, no-grow + non-vacuity).
+#[test]
+fn frozen_fixtures_rv32_local_promo_escape_hatch_is_noop() {
+    let cases = [
+        (
+            "control_step.wasm",
+            "6ac5d7f94f3e17b0314aa2549e24b172b50dc0df110130c80a94e19d62c7b75b",
+            484usize,
+        ),
+        (
+            "signed_div_const.wasm",
+            "15fa429d5ef5474f8b65fdd9c81b3da4c70176fb077df25131e2ec3988eb999e",
+            88,
+        ),
+    ];
+    for &(wasm, golden, golden_len) in &cases {
+        let path = fixture(wasm);
+        let elf = format!("/tmp/frozenbytes_rv32_promo_off_{wasm}.elf");
+        let out = Command::new(synth())
+            .env("SYNTH_RV_LOCAL_PROMO", "0")
+            .env_remove("SYNTH_RV_CMP_SELECT")
+            .env_remove("SYNTH_RV_SHIFT_FOLD")
+            .args([
+                "compile",
+                path.to_str().unwrap(),
+                "-o",
+                &elf,
+                "-b",
+                "riscv",
+                "--target",
+                "rv32imac",
+                "--all-exports",
+                "--relocatable",
+            ])
+            .output()
+            .expect("run synth");
+        assert!(out.status.success(), "compile failed for {wasm}");
+        let bytes = std::fs::read(&elf).expect("read elf");
+        let obj = object::File::parse(&*bytes).expect("parse elf");
+        let data = obj
+            .section_by_name(".text")
+            .expect(".text")
+            .data()
+            .expect("read .text");
+        assert_eq!(
+            data.len(),
+            golden_len,
+            "{wasm}: SYNTH_RV_LOCAL_PROMO=0 must restore the pre-flip length"
+        );
+        let hex: String = Sha256::digest(data)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(
+            hex, golden,
+            "{wasm}: SYNTH_RV_LOCAL_PROMO=0 must restore the pre-flip bytes (rollback broken)"
         );
     }
 }

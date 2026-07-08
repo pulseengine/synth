@@ -193,20 +193,27 @@ pub fn select_with_result_types(
     type_ret_i64: &[bool],
 ) -> Result<RiscVSelection, SelectorError> {
     // #472: read the local-promotion flag exactly once, here, so the rest of the
-    // selector (and its unit tests) work off a plain bool. Flag off by default →
-    // `compute_local_promotion` is never consulted → byte-identical baseline.
+    // selector (and its unit tests) work off a plain bool.
     //
-    // Still opt-in, but the #601 no-grow blocker is FIXED: profitability is now
-    // MEASURED, not modeled — `select_inner` lowers the function with and
-    // without promotion (and over every candidate subset) and keeps a promoted
-    // lowering only when its emitted byte size is <= the unpromoted baseline.
-    // The v1 "≥2 accesses repay save/restore" estimate under-charged (it priced
-    // neither the per-RETURN `lw s_i` restore `preserve_callee_saved` duplicates
-    // into every epilogue nor the WAR-snapshot `mv`s), growing war_set 56→64 B,
-    // war_tee 60→68 B and control_step_decide +4 B. The measured decision prices
-    // every cost by construction (#511 lesson: emitted bytes, not a side table).
-    // Corpus gate: `rv32_local_promo_no_grow_corpus_472` (synth-cli tests).
-    let promote_locals = std::env::var_os("SYNTH_RV_LOCAL_PROMO").is_some();
+    // DEFAULT-ON (#601 closes; the SYNTH_RV_CMP_SELECT flip template): the
+    // no-grow blocker that HELD this lever out of the RV32 flip-wave is fixed —
+    // profitability is now MEASURED, not modeled. `select_inner` lowers the
+    // function with and without promotion (and over every candidate subset)
+    // and keeps a promoted lowering only when its emitted byte size is <= the
+    // unpromoted baseline. The v1 "≥2 accesses repay save/restore" estimate
+    // under-charged (it priced neither the per-RETURN `lw s_i` restore
+    // `preserve_callee_saved` duplicates into every epilogue nor the
+    // WAR-snapshot `mv`s), growing war_set 56→64 B, war_tee 60→68 B and
+    // control_step_decide +4 B. The measured decision prices every cost by
+    // construction (#511 lesson: emitted bytes, not a side table). Flip-time
+    // full-corpus numbers: 10 functions shrink / 0 grow across the 67
+    // RV32-compiling repro fixtures (accum −68 B, flight_algo −32 B,
+    // controller_step_decide −24 B); the frozen RV32 goldens are byte-neutral
+    // (the measured gate declines everywhere in them). Corpus gate:
+    // `rv32_local_promo_no_grow_corpus_472`; `SYNTH_RV_LOCAL_PROMO=0` opts out
+    // → `compute_local_promotion` is never consulted → the pre-flip baseline
+    // (CI-gated escape hatch in frozen_codegen_bytes.rs).
+    let promote_locals = !std::env::var("SYNTH_RV_LOCAL_PROMO").is_ok_and(|v| v == "0");
     // #472: cmp→select fusion (the VCR-SEL-004 lever, ported from ARM). Same
     // read-once discipline; DEFAULT-ON since the RV32 flip-wave (no function
     // grows across the RV32 corpus, control_step −12 B, execution
@@ -1114,9 +1121,9 @@ struct Selector {
     /// `Unsupported` in this selector.
     type_ret_i64: Vec<bool>,
     /// #472 (VCR-RA RV32 local promotion): non-parameter i32 locals promoted
-    /// into callee-saved s-registers (`s8`/`s9`/`s10`). Empty unless
-    /// `SYNTH_RV_LOCAL_PROMO` is set — with the flag off the frame path is
-    /// taken for every local and codegen is byte-identical to the baseline.
+    /// into callee-saved s-registers (`s8`/`s9`/`s10`). Empty under the
+    /// `SYNTH_RV_LOCAL_PROMO=0` opt-out — the frame path is then taken for
+    /// every local and codegen is byte-identical to the pre-flip baseline.
     /// See [`compute_local_promotion`].
     promoted: std::collections::HashMap<u32, Reg>,
     /// #472: promoted locals whose FIRST access is a read — they rely on the
@@ -1127,9 +1134,9 @@ struct Selector {
     /// find the smallest lowering. `None` = every mapped candidate promotes.
     promo_allow: Option<std::collections::HashSet<u32>>,
     /// #472: whether local promotion is enabled for this function. Set by the
-    /// public entry point from `SYNTH_RV_LOCAL_PROMO` (still opt-in — held
-    /// from the flip-wave on the no-grow blocker documented there); the env is
-    /// read exactly once so the decision function stays pure and unit-testable.
+    /// public entry point from `SYNTH_RV_LOCAL_PROMO` (default-on since the
+    /// #601 measured-profitability fix, `=0` opts out); the env is read
+    /// exactly once so the decision function stays pure and unit-testable.
     promote_locals: bool,
     /// #472 (VCR-SEL-004 port): whether cmp→select fusion is enabled. Set by
     /// the public entry point from `SYNTH_RV_CMP_SELECT` (default-on, `=0`
@@ -1200,12 +1207,14 @@ impl Selector {
         use std::collections::BTreeSet;
         self.i64_locals =
             synth_synthesis::infer_i64_locals(wasm_ops, &self.func_ret_i64, &self.type_ret_i64);
-        // #472: VCR-RA local promotion — flag-gated (SYNTH_RV_LOCAL_PROMO). With
-        // the flag unset the map is empty, every local falls to the frame path
-        // below, and codegen is byte-identical to the pre-lever baseline (the
-        // frozen RV32 fixtures compile without it). The promoted set is the ONE
-        // source of truth: the layout skips exactly the promoted locals, so a
-        // frame slot is reserved iff the local is NOT register-resident.
+        // #472: VCR-RA local promotion — default-on (SYNTH_RV_LOCAL_PROMO=0
+        // opts out). Under the opt-out the map is empty, every local falls to
+        // the frame path below, and codegen is byte-identical to the pre-lever
+        // baseline (the frozen RV32 goldens are promo-byte-neutral anyway —
+        // the measured gate declines everywhere in them). The promoted set is
+        // the ONE source of truth: the layout skips exactly the promoted
+        // locals, so a frame slot is reserved iff the local is NOT
+        // register-resident.
         if self.promote_locals {
             let (mut map, mut zero_init) =
                 compute_local_promotion(wasm_ops, num_params, &self.i64_locals);
@@ -7913,30 +7922,32 @@ mod tests {
         ]
     }
 
-    /// Flag OFF must be byte-identical to the default `select()` path, and must
-    /// keep the local on the frame (frame `lw`s, no promoted s-register).
-    /// (Local promotion is still OPT-IN — HELD from the RV32 flip-wave on the
-    /// no-grow blocker documented at the env read in
-    /// [`select_with_result_types`].)
+    /// The env-unset default `select()` path must equal the flag-ON lowering
+    /// (local promotion is DEFAULT-ON since the #601 measured-profitability
+    /// flip — on this shape promotion measures no larger than the baseline
+    /// and ties prefer the promoted lowering), while the explicit opt-out arm
+    /// must keep the local on the frame (frame `lw`s, no promoted
+    /// s-register) — the `SYNTH_RV_LOCAL_PROMO=0` rollback contract.
     #[test]
-    fn local_promotion_flag_off_is_identical_and_frame_backed_472() {
+    fn local_promotion_default_is_promoted_and_opt_out_frame_backed_472() {
         let ops = promotable_ops();
-        // select() reads the env; promotion is opt-in, cmp→select is
-        // default-on (flip-wave) — promotable_ops has no select, so fusion is
-        // a no-op here and the env-unset default is the unpromoted lowering.
+        // select() reads the env; promotion and cmp→select fusion are both
+        // default-on — promotable_ops has no select, so fusion is a no-op
+        // here and the env-unset default is the PROMOTED lowering.
         let default = s(&ops, 1);
-        let off = s_promo(&ops, 1, false);
+        let on = s_promo(&ops, 1, true);
         assert_eq!(
-            default, off,
-            "flag-off must equal the default select() path"
+            default, on,
+            "the default select() path must equal the flag-on lowering"
         );
+        let off = s_promo(&ops, 1, false);
         assert!(
             count_lw_any_sp(&off) >= 3,
-            "local must stay frame-backed (>=3 lw): {off:?}"
+            "opt-out must stay frame-backed (>=3 lw): {off:?}"
         );
         assert!(
             !writes_reg(&off, Reg::S8),
-            "no promotion register may be written with the flag off: {off:?}"
+            "no promotion register may be written under the opt-out: {off:?}"
         );
     }
 
