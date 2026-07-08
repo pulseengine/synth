@@ -12,6 +12,7 @@
 //! 5. ARM encoding with branch resolution
 
 use crate::Condition;
+use crate::instruction_selector::BoundsCheckConfig;
 use crate::rules::ArmOp;
 use synth_cfg::{Cfg, CfgBuilder};
 use synth_core::WasmOp;
@@ -44,6 +45,52 @@ fn fold_mem_offset(base: u32, offset: u32) -> (u32, i32) {
     } else {
         (base, offset as i32)
     }
+}
+
+/// #377: inline software bounds guard for an optimized-path linear-memory
+/// access — the mirror of the direct selector's check shape
+/// (`generate_load_with_bounds_check`): trap unless
+/// `addr + offset + access_size - 1 < R10` (R10 = memory size in bytes,
+/// initialized by startup code).
+///
+/// ```text
+/// ADD  R12, Raddr, #(offset + access_size - 1)   ; end address (wasm space)
+/// CMP  R12, R10
+/// BLO  +0                                        ; in-bounds: skip the UDF
+/// UDF  #0                                        ; out-of-bounds: trap
+/// ```
+///
+/// The trap is an inline `UDF` (the #374 bulk-memory / div-by-zero pattern),
+/// NOT a `Bhs Trap_Handler` label branch — the label form resolves to an
+/// offset-0 fallthrough no-op in a self-contained image (the second half of
+/// #377). `BLO +0` targets `branch_byte + 4`, exactly skipping the 2-byte UDF —
+/// the same pre-resolved numeric-guard geometry as the DivS/DivU zero traps,
+/// which every downstream pass (`resolved_branch_geometry*`) already maps.
+///
+/// R12 is free here: it is the encoder scratch (never allocator-assigned), and
+/// every access sequence below re-materializes its base into R12 AFTER this
+/// guard runs.
+fn push_software_bounds_guard(
+    arm_instrs: &mut Vec<ArmOp>,
+    r_addr: crate::rules::Reg,
+    offset: u32,
+    access_size: u32,
+) {
+    use crate::rules::{Operand2, Reg};
+    arm_instrs.push(ArmOp::Add {
+        rd: Reg::R12,
+        rn: r_addr,
+        op2: Operand2::Imm((offset + access_size - 1) as i32),
+    });
+    arm_instrs.push(ArmOp::Cmp {
+        rn: Reg::R12,
+        op2: Operand2::Reg(Reg::R10),
+    });
+    arm_instrs.push(ArmOp::BCondOffset {
+        cond: Condition::LO,
+        offset: 0,
+    });
+    arm_instrs.push(ArmOp::Udf { imm: 0 });
 }
 
 /// The linear-memory base the optimized (absolute) path materializes.
@@ -538,6 +585,19 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
             rn,
             op2: Operand2::Reg(rm),
         } if reg_num(rd) > 7 || reg_num(rn) > 7 || reg_num(rm) > 7 => 4,
+        // #377: ADD rd, rn, #imm with a HIGH rd — always the 32-bit ADD.W form
+        // (the encoder's 16-bit `ADDS #imm3` requires rd AND rn low AND
+        // imm <= 7). The software bounds guard's end-address compute
+        // (`ADD R12, Raddr, #off+size-1`) is this shape; without this arm it
+        // fell to the `_ => 2` default and drifted every spanning branch by 2
+        // bytes. Scoped to high-rd so pre-existing low-reg imm-ADD sizing is
+        // untouched (the low-reg imm > 7 form remains a known gap of the
+        // `_ => 2` default — no optimized-path site emits it).
+        ArmOp::Add {
+            rd,
+            op2: Operand2::Imm(_),
+            ..
+        } if reg_num(rd) > 7 => 4,
         // Most 16-bit Thumb instructions (MOV low, CMP low, B, etc.)
         _ => 2,
     }
@@ -564,6 +624,14 @@ pub struct OptimizerBridge {
     /// marked (a constant cannot be classified address-vs-data at that level —
     /// conservative v1). Empty (the default) ⇒ byte-identical behavior.
     volatile_segments: Vec<synth_core::backend::VolatileRange>,
+    /// #377: the `--safety-bounds` mode, threaded from the backend. Pre-fix the
+    /// optimized path ignored it entirely — `software`/`mask` were silent
+    /// no-ops on the path that lowers the bulk of a flight loop's i32
+    /// loads/stores. `Software` now emits an inline guard before every
+    /// `MemLoad`/`MemStore`/`MemLoadSubword`/`MemStoreSubword`; `Masking`
+    /// declines the function to the direct selector (which implements it);
+    /// `None`/`Mpu` emit no inline guard (byte-identical to before).
+    bounds_check: BoundsCheckConfig,
 }
 
 impl OptimizerBridge {
@@ -574,6 +642,7 @@ impl OptimizerBridge {
             num_imports: 0,
             spill_on_exhaust: None,
             volatile_segments: Vec::new(),
+            bounds_check: BoundsCheckConfig::None,
         }
     }
 
@@ -584,7 +653,13 @@ impl OptimizerBridge {
             num_imports: 0,
             spill_on_exhaust: None,
             volatile_segments: Vec::new(),
+            bounds_check: BoundsCheckConfig::None,
         }
+    }
+
+    /// #377: set the `--safety-bounds` mode (see [`OptimizerBridge::bounds_check`]).
+    pub fn set_bounds_check(&mut self, bounds_check: BoundsCheckConfig) {
+        self.bounds_check = bounds_check;
     }
 
     /// Set the number of imported functions (see [`OptimizerBridge::num_imports`]).
@@ -2762,6 +2837,33 @@ impl OptimizerBridge {
             ));
         }
 
+        // #377: `--safety-bounds mask` — the masking transform mutates the
+        // address register in place (`AND addr, addr, R10`), which is unsound
+        // here: a vreg's ARM register may be read again later (the optimized
+        // path is not single-use), and the access sequence has no second
+        // scratch to mask into (R12 already carries the materialized base).
+        // Decline to the direct selector, which implements masking. Honest
+        // degradation (the #359/#188/#518 pattern) — the flag is always
+        // honored, never silently dropped.
+        if self.bounds_check == BoundsCheckConfig::Masking
+            && instructions.iter().any(|inst| {
+                matches!(
+                    inst.opcode,
+                    Opcode::MemLoad { .. }
+                        | Opcode::MemStore { .. }
+                        | Opcode::MemLoadSubword { .. }
+                        | Opcode::MemStoreSubword { .. }
+                )
+            })
+        {
+            return Err(synth_core::Error::synthesis(
+                "optimized path declines linear-memory accesses under \
+                 --safety-bounds mask (in-place AND is unsound on this path — \
+                 see #377); falling back to direct selector"
+                    .to_string(),
+            ));
+        }
+
         let mut arm_instrs = Vec::new();
         let mut vreg_to_arm: HashMap<u32, Reg> = HashMap::new();
 
@@ -2812,12 +2914,19 @@ impl OptimizerBridge {
         // DMA ranges — an access inside a marked window is excluded from the
         // fold set (it keeps its verbatim per-access materialize-and-access
         // codegen), while accesses outside still fold.
-        let base_cse: Option<BaseCsePlan> =
-            if !std::env::var("SYNTH_BASE_CSE").is_ok_and(|v| v == "0") {
-                plan_base_cse(instructions, &self.volatile_segments)
-            } else {
-                None
-            };
+        // #377: base-CSE is disabled while software bounds checks are active.
+        // The folded arm replaces the dynamic-address materialization with a
+        // direct `[R11,#imm]` access, so the per-access guard below (which
+        // reads the address REGISTER) would have nothing to check against —
+        // supporting a const-end compare is possible but not worth the second
+        // code shape; safety mode trades the size win for uniform checking.
+        let base_cse: Option<BaseCsePlan> = if self.bounds_check == BoundsCheckConfig::Software {
+            None
+        } else if !std::env::var("SYNTH_BASE_CSE").is_ok_and(|v| v == "0") {
+            plan_base_cse(instructions, &self.volatile_segments)
+        } else {
+            None
+        };
         if base_cse.is_some() {
             param_reserved_regs.push(BASE_CSE_REG);
         }
@@ -5528,6 +5637,12 @@ impl OptimizerBridge {
                         );
                         vreg_to_arm.insert(dest.0, rd);
 
+                        // #377: --safety-bounds software — guard BEFORE the base
+                        // materialization (R12 still free).
+                        if self.bounds_check == BoundsCheckConfig::Software {
+                            push_software_bounds_guard(&mut arm_instrs, r_addr, *offset, 4);
+                        }
+
                         // Linear memory base 0x20000100 (SRAM, above stack area).
                         // #382: fold a large static offset (> imm12) into the
                         // compile-time-constant base so the access immediate is 0.
@@ -5577,6 +5692,11 @@ impl OptimizerBridge {
                     } else {
                         let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
                         let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs)?;
+
+                        // #377: --safety-bounds software guard (see MemLoad).
+                        if self.bounds_check == BoundsCheckConfig::Software {
+                            push_software_bounds_guard(&mut arm_instrs, r_addr, *offset, 4);
+                        }
 
                         // Linear memory base 0x20000100 (SRAM, above stack area).
                         // #382: fold a large static offset (> imm12) into the
@@ -5646,6 +5766,11 @@ impl OptimizerBridge {
                         );
                         vreg_to_arm.insert(dest.0, rd);
 
+                        // #377: --safety-bounds software guard (see MemLoad).
+                        if self.bounds_check == BoundsCheckConfig::Software {
+                            push_software_bounds_guard(&mut arm_instrs, r_addr, *offset, *width);
+                        }
+
                         // #382: fold a large static offset (> imm12) into the
                         // compile-time-constant base so the access immediate is 0.
                         let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
@@ -5698,6 +5823,11 @@ impl OptimizerBridge {
                     } else {
                         let r_addr = get_arm_reg(addr, &vreg_to_arm, &spilled_vregs)?;
                         let r_src = get_arm_reg(src, &vreg_to_arm, &spilled_vregs)?;
+
+                        // #377: --safety-bounds software guard (see MemLoad).
+                        if self.bounds_check == BoundsCheckConfig::Software {
+                            push_software_bounds_guard(&mut arm_instrs, r_addr, *offset, *width);
+                        }
 
                         // #382: fold a large static offset (> imm12) into the
                         // compile-time-constant base so the access immediate is 0.
@@ -7247,6 +7377,211 @@ mod tests {
 
         // Should have run optimizations
         assert!(stats.passes_run > 0);
+    }
+
+    // ─── #377: --safety-bounds on the OPTIMIZED path ────────────────────────
+
+    /// Lower `wasm_ops` through the full optimized path with the given bounds
+    /// mode.
+    fn lower_with_bounds(
+        wasm_ops: &[WasmOp],
+        num_params: usize,
+        bounds: BoundsCheckConfig,
+    ) -> Result<Vec<ArmOp>> {
+        let mut bridge = OptimizerBridge::with_config(OptimizationConfig::all());
+        bridge.set_bounds_check(bounds);
+        let (ir, _cfg, _stats) = bridge.optimize_full(wasm_ops)?;
+        bridge.ir_to_arm(&ir, num_params)
+    }
+
+    /// The #377 guard shape: `ADD R12,addr,#end; CMP R12,R10; BLO +0; UDF #0`
+    /// immediately before the access. Returns how many complete guards appear.
+    fn count_guards(ops: &[ArmOp]) -> usize {
+        use crate::rules::{Operand2, Reg};
+        ops.windows(4)
+            .filter(|w| {
+                matches!(
+                    &w[0],
+                    ArmOp::Add {
+                        rd: Reg::R12,
+                        op2: Operand2::Imm(_),
+                        ..
+                    }
+                ) && matches!(
+                    &w[1],
+                    ArmOp::Cmp {
+                        rn: Reg::R12,
+                        op2: Operand2::Reg(Reg::R10)
+                    }
+                ) && matches!(
+                    &w[2],
+                    ArmOp::BCondOffset {
+                        cond: Condition::LO,
+                        offset: 0
+                    }
+                ) && matches!(&w[3], ArmOp::Udf { imm: 0 })
+            })
+            .count()
+    }
+
+    /// #377: every one of the four optimized-path memory opcodes gets the
+    /// software guard (previously: byte-identical to `none` — a silent no-op).
+    #[test]
+    fn optimized_path_software_bounds_guards_all_memory_shapes_377() {
+        // (LocalGet addr, [value]) → i32.store / i32.load / i32.store16 / i32.load8_u
+        let cases: Vec<(Vec<WasmOp>, usize)> = vec![
+            (
+                vec![
+                    WasmOp::LocalGet(0),
+                    WasmOp::LocalGet(1),
+                    WasmOp::I32Store {
+                        offset: 4,
+                        align: 2,
+                    },
+                ],
+                2,
+            ),
+            (
+                vec![
+                    WasmOp::LocalGet(0),
+                    WasmOp::I32Load {
+                        offset: 0,
+                        align: 2,
+                    },
+                ],
+                1,
+            ),
+            (
+                vec![
+                    WasmOp::LocalGet(0),
+                    WasmOp::LocalGet(1),
+                    WasmOp::I32Store16 {
+                        offset: 0,
+                        align: 1,
+                    },
+                ],
+                2,
+            ),
+            (
+                vec![
+                    WasmOp::LocalGet(0),
+                    WasmOp::I32Load8U {
+                        offset: 0,
+                        align: 0,
+                    },
+                ],
+                1,
+            ),
+        ];
+        for (ops, num_params) in cases {
+            let none = lower_with_bounds(&ops, num_params, BoundsCheckConfig::None).unwrap();
+            let sw = lower_with_bounds(&ops, num_params, BoundsCheckConfig::Software).unwrap();
+            assert_eq!(count_guards(&none), 0, "no guard under None: {ops:?}");
+            assert_eq!(
+                count_guards(&sw),
+                1,
+                "exactly one guard under Software: {ops:?} → {sw:?}"
+            );
+            assert!(
+                sw.len() == none.len() + 4,
+                "guard adds exactly 4 ops: {ops:?}"
+            );
+        }
+    }
+
+    /// #377: the guard end-offset is `offset + access_size - 1` (the last byte
+    /// of the access, mirroring the direct selector's check).
+    #[test]
+    fn optimized_path_software_guard_uses_end_of_access_377() {
+        use crate::rules::{Operand2, Reg};
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Store {
+                offset: 4,
+                align: 2,
+            },
+        ];
+        let sw = lower_with_bounds(&ops, 2, BoundsCheckConfig::Software).unwrap();
+        assert!(
+            sw.iter().any(|op| matches!(
+                op,
+                ArmOp::Add {
+                    rd: Reg::R12,
+                    op2: Operand2::Imm(7),
+                    ..
+                }
+            )),
+            "end offset must be 4 (offset) + 4 (size) - 1 = 7: {sw:?}"
+        );
+    }
+
+    /// #377: `Mpu` emits no inline guard on the optimized path — identical to
+    /// `None` (hardware enforcement is external; path parity with the direct
+    /// selector's `is_passthrough` handling).
+    #[test]
+    fn optimized_path_mpu_is_passthrough_377() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        let none = lower_with_bounds(&ops, 2, BoundsCheckConfig::None).unwrap();
+        let mpu = lower_with_bounds(&ops, 2, BoundsCheckConfig::Mpu).unwrap();
+        assert_eq!(none, mpu, "Mpu must be codegen-identical to None");
+    }
+
+    /// #377: `Masking` DECLINES memory-accessing functions to the direct
+    /// selector (in-place AND is unsound on this path) — never a silent no-op.
+    #[test]
+    fn optimized_path_masking_declines_memory_access_377() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        let err = lower_with_bounds(&ops, 2, BoundsCheckConfig::Masking).unwrap_err();
+        assert!(
+            err.to_string().contains("#377"),
+            "masking must decline with the #377 message, got: {err}"
+        );
+        // ...but a function with NO memory access stays on the optimized path.
+        let pure = vec![WasmOp::LocalGet(0), WasmOp::I32Const(1), WasmOp::I32Add];
+        assert!(lower_with_bounds(&pure, 1, BoundsCheckConfig::Masking).is_ok());
+    }
+
+    /// #377: with bounds checks OFF the lowering is untouched — the flag-off
+    /// stream (and thus every frozen fixture, none of which set
+    /// `--safety-bounds`) is byte-identical to a bridge that never heard of
+    /// bounds modes.
+    #[test]
+    fn optimized_path_none_is_byte_identical_377() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Store {
+                offset: 4,
+                align: 2,
+            },
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        let default_bridge = {
+            let bridge = OptimizerBridge::with_config(OptimizationConfig::all());
+            let (ir, _cfg, _stats) = bridge.optimize_full(&ops).unwrap();
+            bridge.ir_to_arm(&ir, 2).unwrap()
+        };
+        let explicit_none = lower_with_bounds(&ops, 2, BoundsCheckConfig::None).unwrap();
+        assert_eq!(default_bridge, explicit_none);
     }
 
     #[test]

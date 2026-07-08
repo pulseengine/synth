@@ -134,6 +134,35 @@ fn cases() -> Vec<Case> {
                 op2: Operand2::Reg(Reg::R8),
             },
         ),
+        // #377: the software bounds guard's end-address compute
+        // (`ADD R12, Raddr, #off+size-1`) — high rd forces the 32-bit ADD.W
+        // regardless of the immediate. Previously an estimator hole (`_ => 2`).
+        agree(
+            "Add_imm_hi_small",
+            Add {
+                rd: Reg::R12,
+                rn: r0,
+                op2: Operand2::Imm(3),
+            },
+        ),
+        agree(
+            "Add_imm_hi_large",
+            Add {
+                rd: Reg::R12,
+                rn: Reg::R4,
+                op2: Operand2::Imm(0x103),
+            },
+        ),
+        // Low-reg small-imm ADD stays 16-bit (`ADDS #imm3`) — pin that the new
+        // high-rd arm did not disturb it.
+        agree(
+            "Add_imm_lo_small",
+            Add {
+                rd: r0,
+                rn: Reg::R1,
+                op2: Operand2::Imm(7),
+            },
+        ),
         agree(
             "Sub_lo",
             Sub {

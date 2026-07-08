@@ -262,7 +262,7 @@ enum Commands {
         /// Accepted values:
         /// - `none`     — no inline check, no MPU/PMP setup (fastest, unsafe)
         /// - `mpu`      — rely on ARM MPU / RV32 PMP hardware enforcement
-        /// - `software` — emit CMP/BHS (ARM) or BGEU+EBREAK (RV32) per access
+        /// - `software` — emit CMP + inline UDF trap (ARM) or BGEU+EBREAK (RV32) per access
         /// - `mask`     — AND addr with `mem_size - 1` (requires power-of-two size)
         #[arg(long, value_name = "MODE")]
         safety_bounds: Option<String>,
