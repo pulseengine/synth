@@ -649,7 +649,8 @@ fn representatives() -> Vec<ArmOp> {
             rd: Reg::R0,
             type_idx: 0,
             table_index_reg: Reg::R2,
-            table_size: 4, // #642: bounds-guard immediate
+            table_size: 4,        // #642: bounds-guard immediate
+            table_byte_offset: 0, // #650: table 0 of the contiguous R11 region
         },
         I64Add {
             rdlo: dl,

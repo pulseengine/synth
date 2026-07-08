@@ -137,10 +137,20 @@ impl ArmEncoder {
     /// BLX r12                ; indirect call
     /// ```
     ///
+    /// #650, `table_byte_offset != 0` (a non-zero table of the contiguous
+    /// R11 region): the pointer load becomes
+    /// `ADD r12, r11, r12; LDR r12, [r12, #offset]` — offset 0 keeps the
+    /// single-load form (single-table modules byte-identical by
+    /// construction).
+    ///
     /// The §4.4.8 type check is discharged at COMPILE time by the selector's
     /// closed-world verification (the raw code-pointer table carries no
     /// runtime type ids) — see the #642 selector guard.
-    fn encode_arm_call_indirect(table_index_reg: &Reg, table_size: u32) -> Vec<u8> {
+    fn encode_arm_call_indirect(
+        table_index_reg: &Reg,
+        table_size: u32,
+        table_byte_offset: u32,
+    ) -> Vec<u8> {
         let idx = reg_to_bits(table_index_reg);
         let mut bytes = Vec::with_capacity(32);
         // MOVW r12, #(size & 0xFFFF) — cond=E 0011 0000 imm4 Rd imm12.
@@ -166,9 +176,25 @@ impl ArmEncoder {
         // imm5=2/LSL: cond=E, opcode=1101, S=0, Rd=r12.
         let mov: u32 = 0xE1A0C000 | (2 << 7) | idx;
         bytes.extend_from_slice(&mov.to_le_bytes());
-        // LDR r12, [r11, r12] — register offset, P=1 U=1 B=0 W=0 L=1.
-        let ldr: u32 = 0xE79BC00C;
-        bytes.extend_from_slice(&ldr.to_le_bytes());
+        if table_byte_offset == 0 {
+            // Table 0 (base = R11 itself): the pre-#650 single-load form.
+            // LDR r12, [r11, r12] — register offset, P=1 U=1 B=0 W=0 L=1.
+            let ldr: u32 = 0xE79BC00C;
+            bytes.extend_from_slice(&ldr.to_le_bytes());
+        } else {
+            // #650: fold the table's compile-time base offset into the
+            // pointer load via the LDR imm12 form.
+            assert!(
+                table_byte_offset <= 4095,
+                "call_indirect table base offset {table_byte_offset} exceeds \
+                 LDR imm12 — the selector must have declined this (#650)"
+            );
+            // ADD r12, r11, r12 — data-processing ADD (register).
+            bytes.extend_from_slice(&0xE08BC00Cu32.to_le_bytes());
+            // LDR r12, [r12, #offset] — immediate offset, P=1 U=1 L=1.
+            let ldr: u32 = 0xE59CC000 | (table_byte_offset & 0xFFF);
+            bytes.extend_from_slice(&ldr.to_le_bytes());
+        }
         // BLX r12 — cond=E, 0001 0010 1111 1111 1111 0011, Rm=r12.
         let blx: u32 = 0xE12FFF3C;
         bytes.extend_from_slice(&blx.to_le_bytes());
@@ -1184,10 +1210,15 @@ impl ArmEncoder {
         if let ArmOp::CallIndirect {
             table_index_reg,
             table_size,
+            table_byte_offset,
             ..
         } = op
         {
-            return Ok(Self::encode_arm_call_indirect(table_index_reg, *table_size));
+            return Ok(Self::encode_arm_call_indirect(
+                table_index_reg,
+                *table_size,
+                *table_byte_offset,
+            ));
         }
         let instr: u32 = match op {
             // Data processing instructions
@@ -3672,11 +3703,15 @@ impl ArmEncoder {
             // table_index_reg contains the table index
             // Generates (#642): MOVW ip,#size [; MOVT]; CMP idx,ip; BLO +1;
             //                   UDF #0; LSL R12,idx,#2; LDR R12,[R11,R12]; BLX R12
+            // #650, table_byte_offset != 0 (a non-zero table in the contiguous
+            // R11 region): the pointer load becomes
+            //                   ADD R12,R11,R12; LDR R12,[R12,#offset]
             ArmOp::CallIndirect {
                 rd: _,
                 type_idx: _,
                 table_index_reg,
                 table_size,
+                table_byte_offset,
             } => {
                 let idx_reg = reg_to_bits(table_index_reg);
                 let mut bytes = Vec::new();
@@ -3741,13 +3776,38 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&hw1.to_le_bytes());
                 bytes.extend_from_slice(&hw2.to_le_bytes());
 
-                // LDR R12, [R11, R12] - load function pointer
-                // Thumb-2 LDR (register): 1111 1000 0101 Rn | Rt 0000 00 imm2 Rm
-                // Rn=R11, Rt=R12, Rm=R12, imm2=00 (no shift)
-                let ldr_hw1: u16 = 0xF85B; // LDR.W Rt, [R11, Rm]
-                let ldr_hw2: u16 = 0xC00C; // Rt=R12, imm2=00, Rm=R12
-                bytes.extend_from_slice(&ldr_hw1.to_le_bytes());
-                bytes.extend_from_slice(&ldr_hw2.to_le_bytes());
+                if *table_byte_offset == 0 {
+                    // Table 0 (base = R11 itself): the pre-#650 single-load
+                    // form — a single-table module's bytes stay identical BY
+                    // CONSTRUCTION.
+                    // LDR R12, [R11, R12] - load function pointer
+                    // Thumb-2 LDR (register): 1111 1000 0101 Rn | Rt 0000 00 imm2 Rm
+                    // Rn=R11, Rt=R12, Rm=R12, imm2=00 (no shift)
+                    let ldr_hw1: u16 = 0xF85B; // LDR.W Rt, [R11, Rm]
+                    let ldr_hw2: u16 = 0xC00C; // Rt=R12, imm2=00, Rm=R12
+                    bytes.extend_from_slice(&ldr_hw1.to_le_bytes());
+                    bytes.extend_from_slice(&ldr_hw2.to_le_bytes());
+                } else {
+                    // #650: table N of the contiguous R11 region — fold the
+                    // compile-time base offset into the pointer load via the
+                    // LDR imm12 form (R12 stays the only scratch, per the
+                    // #212 convention).
+                    assert!(
+                        *table_byte_offset <= 4095,
+                        "call_indirect table base offset {table_byte_offset} exceeds \
+                         LDR imm12 — the selector must have declined this (#650)"
+                    );
+                    // ADD.W R12, R11, R12 — T3 ADD (register):
+                    // 11101011000 S=0 Rn=1011 | 0 imm3=000 Rd=1100 imm2=00 type=00 Rm=1100
+                    bytes.extend_from_slice(&0xEB0Bu16.to_le_bytes());
+                    bytes.extend_from_slice(&0x0C0Cu16.to_le_bytes());
+                    // LDR.W R12, [R12, #offset] — T3 LDR (immediate):
+                    // 1111 1000 1101 Rn=1100 | Rt=1100 imm12
+                    bytes.extend_from_slice(&0xF8DCu16.to_le_bytes());
+                    bytes.extend_from_slice(
+                        &((0xC000u16) | (*table_byte_offset as u16 & 0x0FFF)).to_le_bytes(),
+                    );
+                }
 
                 // BLX R12 (call function indirectly)
                 // BLX Rm (16-bit): 0100 0111 1 Rm 000
@@ -8820,6 +8880,7 @@ mod tests {
                 type_idx: 0,
                 table_index_reg: Reg::R0,
                 table_size: 4,
+                table_byte_offset: 0,
             })
             .unwrap();
         assert_eq!(
@@ -8865,6 +8926,7 @@ mod tests {
                 type_idx: 0,
                 table_index_reg: Reg::R4,
                 table_size: 4,
+                table_byte_offset: 0,
             })
             .unwrap();
         let cmp = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
@@ -8885,6 +8947,7 @@ mod tests {
                 type_idx: 0,
                 table_index_reg: Reg::R0,
                 table_size: 0x0002_0003,
+                table_byte_offset: 0,
             })
             .unwrap();
         assert_eq!(bytes.len(), 32, "MOVT arm adds one word: {bytes:02x?}");
@@ -8919,6 +8982,7 @@ mod tests {
                 type_idx: 0,
                 table_index_reg: Reg::R0,
                 table_size: 4,
+                table_byte_offset: 0,
             })
             .unwrap();
         assert_eq!(
@@ -8950,6 +9014,7 @@ mod tests {
                 type_idx: 0,
                 table_index_reg: Reg::R4,
                 table_size: 4,
+                table_byte_offset: 0,
             })
             .unwrap();
         assert_eq!(&bytes[4..6], &[0x64, 0x45], "cmp r4, ip: {bytes:02x?}");
@@ -8973,6 +9038,7 @@ mod tests {
                 type_idx: 0,
                 table_index_reg: Reg::R8,
                 table_size: 3,
+                table_byte_offset: 0,
             })
             .unwrap();
         // cmp r8, ip — T2: 0x4500 | N(1)<<7 | Rm(12)<<3 | Rn(0) = 0x45E0
@@ -8984,6 +9050,7 @@ mod tests {
                 type_idx: 0,
                 table_index_reg: Reg::R0,
                 table_size: 0x0002_0003,
+                table_byte_offset: 0,
             })
             .unwrap();
         // movw ip,#3 then movt ip,#2 — the size must not be truncated.
@@ -8992,6 +9059,105 @@ mod tests {
             &[0x40, 0xF2, 0x03, 0x0C, 0xC0, 0xF2, 0x02, 0x0C],
             "movw ip,#3; movt ip,#2: {bytes:02x?}"
         );
+    }
+
+    /// #650: a non-zero table base offset (table N of the contiguous R11
+    /// region) routes the Thumb-2 pointer load through
+    /// `add.w ip, r11, ip; ldr.w ip, [ip, #offset]` — and offset 0 keeps the
+    /// pre-#650 single-load bytes IDENTICAL (the by-construction pin).
+    #[test]
+    fn test_encode_thumb_call_indirect_table_offset_650() {
+        use synth_synthesis::{ArmOp, Reg};
+        let enc = ArmEncoder::new_thumb2();
+        // falcon's fused-component shape: table 0 has 7 entries, so table 1
+        // sits at byte offset 28.
+        let bytes = enc
+            .encode(&ArmOp::CallIndirect {
+                rd: Reg::R0,
+                type_idx: 0,
+                table_index_reg: Reg::R1,
+                table_size: 41,
+                table_byte_offset: 28,
+            })
+            .unwrap();
+        assert_eq!(
+            bytes,
+            vec![
+                // #642 bounds guard against TABLE 1's OWN size (41)
+                0x40, 0xF2, 0x29, 0x0C, // movw ip, #41
+                0x61, 0x45, // cmp r1, ip
+                0x00, 0xD3, // blo .+4 (skip the udf)
+                0x00, 0xDE, // udf #0 — OOB trap (WASM §4.4.8)
+                // dispatch through table 1's base (R11 + 28)
+                0x4F, 0xEA, 0x81, 0x0C, // mov.w ip, r1, lsl #2
+                0x0B, 0xEB, 0x0C, 0x0C, // add.w ip, r11, ip
+                0xDC, 0xF8, 0x1C, 0xC0, // ldr.w ip, [ip, #28]
+                0xE0, 0x47, // blx ip
+            ],
+            "Thumb-2 table-1 dispatch (#650): {bytes:02x?}"
+        );
+
+        // Offset 0 must stay the #597-pinned single-load form (no add.w, no
+        // imm-form ldr) — single-table byte identity by construction.
+        let zero = enc
+            .encode(&ArmOp::CallIndirect {
+                rd: Reg::R0,
+                type_idx: 0,
+                table_index_reg: Reg::R1,
+                table_size: 41,
+                table_byte_offset: 0,
+            })
+            .unwrap();
+        assert_eq!(
+            &zero[10..],
+            &[
+                0x4F, 0xEA, 0x81, 0x0C, // mov.w ip, r1, lsl #2
+                0x5B, 0xF8, 0x0C, 0xC0, // ldr.w ip, [r11, ip]
+                0xE0, 0x47, // blx ip
+            ],
+            "offset 0 keeps the pre-#650 dispatch bytes: {zero:02x?}"
+        );
+    }
+
+    /// #650: the A32 twin — `add r12, r11, r12; ldr r12, [r12, #offset]` for
+    /// a non-zero table base offset; offset 0 keeps the #594/#642 form.
+    #[test]
+    fn test_encode_arm32_call_indirect_table_offset_650() {
+        use synth_synthesis::{ArmOp, Reg};
+        let enc = ArmEncoder::new_arm32();
+        let bytes = enc
+            .encode(&ArmOp::CallIndirect {
+                rd: Reg::R0,
+                type_idx: 0,
+                table_index_reg: Reg::R1,
+                table_size: 41,
+                table_byte_offset: 28,
+            })
+            .unwrap();
+        let words: Vec<u32> = bytes
+            .chunks_exact(4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .collect();
+        assert_eq!(words[0], 0xE300_C029, "MOVW r12,#41: {:#010x}", words[0]);
+        assert_eq!(words[1], 0xE151_000C, "CMP r1,r12: {:#010x}", words[1]);
+        assert_eq!(words[2], 0x3A00_0000, "BLO +1 insn: {:#010x}", words[2]);
+        assert_eq!(words[3], 0xE7F0_00F0, "UDF: {:#010x}", words[3]);
+        assert_eq!(
+            words[4], 0xE1A0_C101,
+            "MOV r12,r1,LSL#2: {:#010x}",
+            words[4]
+        );
+        assert_eq!(
+            words[5], 0xE08B_C00C,
+            "ADD r12,r11,r12 (#650): {:#010x}",
+            words[5]
+        );
+        assert_eq!(
+            words[6], 0xE59C_C01C,
+            "LDR r12,[r12,#28] (#650): {:#010x}",
+            words[6]
+        );
+        assert_eq!(words[7], 0xE12F_FF3C, "BLX r12: {:#010x}", words[7]);
     }
 
     /// #178/#180 regression: the Thumb `Add`/`Adds`/`Subs` reg-forms used the

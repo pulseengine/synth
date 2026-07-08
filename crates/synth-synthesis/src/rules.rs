@@ -526,15 +526,26 @@ pub enum ArmOp {
         rd: Reg,
         type_idx: u32,
         table_index_reg: Reg,
-        /// #642: compile-time size of table 0 in entries. The encoder emits a
-        /// bounds guard (`CMP idx, size; BLO ok; UDF #0`) before the table
-        /// load — WASM Core §4.4.8 requires `index >= table.size` to TRAP,
-        /// not perform an uncontrolled indirect branch. The size is a
-        /// compile-time immediate because the raw code-pointer table synth
-        /// targets has no runtime size field, and the table cannot change
-        /// size at runtime (`table.grow`/`table.set` are unsupported ops →
-        /// their functions loud-skip at decode).
+        /// #642: compile-time size of the DISPATCHED table in entries. The
+        /// encoder emits a bounds guard (`CMP idx, size; BLO ok; UDF #0`)
+        /// before the table load — WASM Core §4.4.8 requires
+        /// `index >= table.size` to TRAP, not perform an uncontrolled
+        /// indirect branch. The size is a compile-time immediate because the
+        /// raw code-pointer table synth targets has no runtime size field,
+        /// and the table cannot change size at runtime (`table.grow`/
+        /// `table.set` are unsupported ops → their functions loud-skip at
+        /// decode).
         table_size: u32,
+        /// #650: byte offset of the dispatched table's base within the
+        /// contiguous R11 table region — tables are linked back-to-back in
+        /// declaration order, so table N sits at `sum(size(0..N)) * 4`, a
+        /// compile-time constant (tables are provably fixed-size, see
+        /// `table_size`). `0` for table 0 keeps the pre-#650 expansion
+        /// byte-identical BY CONSTRUCTION; a non-zero offset routes the
+        /// pointer load through `ADD ip, r11, ip; LDR ip, [ip, #offset]`
+        /// (offset <= 4095 — the LDR imm12 range — enforced by the
+        /// selector's loud decline).
+        table_byte_offset: u32,
     },
 
     // ========================================================================

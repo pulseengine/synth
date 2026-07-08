@@ -489,6 +489,46 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/call_indirect_642_differential.py
 
+  call-indirect-650-multitable-oracle:
+    name: multi-table call_indirect oracle (Thumb-2 + A32)
+    # VCR-ORACLE-001 (#242, #650): tables are ONE contiguous region of 4-byte
+    # code pointers at R11 (table N at sum(size(0..N))*4, a compile-time
+    # constant -- tables are provably fixed-size, #642). EXECUTE a TWO-table
+    # fixture with OVERLAPPING indices and DISTINCT functions under unicorn on
+    # BOTH ISAs vs the wasmtime oracle: dispatch through both tables must
+    # match, OOB on EITHER table must stop at a UDF (bounds guard against THAT
+    # table's own size), and the aliasing canary (table0[1] != table1[1])
+    # catches a backend that drops the table index. On <= v0.33.1 this is red
+    # at compile: table-1 call_indirect loud-declined (capability upgrade --
+    # red = "declines today", green = correct dispatch). Single-table modules
+    # stay byte-identical by construction (offset 0 = the pre-#650 expansion),
+    # pinned by the frozen-fixture job and the #642/#594/#597 oracles.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run multi-table call_indirect oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/call_indirect_650_differential.py
+
   block-brif-483-oracle:
     name: optimized-path block/br_if lowering oracle
     # VCR-ORACLE-001 (#242, #483): EXECUTE optimized-path functions with forward
