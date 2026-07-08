@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.0] - 2026-07-08
+
+**Proof-carrying specialization fires for the first time (#494 phase 2,
+VCR-PERF-002): a loom-proven value range makes clamp branches provably dead,
+and synth deletes them — every elision admitted only on an ordeal
+LRAT-certificate UNSAT, discharged before emission.**
+
+### Added
+
+- **`SYNTH_FACT_SPEC` value-range clamp elision (#629, default OFF).**
+  Backend-agnostic WasmOp-stream pass: symbolic QF_BV walk attaches wsc.facts
+  value-range premises, and every no-else `if…end` whose condition is UNSAT
+  under the premises (BvSolver/ordeal, certificate-checked) is deleted along
+  with its proven-pure condition slice. Sat (with counterexample model),
+  Unknown, budget-exceeded, impure slice, or untracked op → loud decline to
+  the general lowering; declined regions havoc their locals. Evidence:
+  gust_mix under the proven bound `ch ∈ [524,1524]` collapses **84 B/28 insns
+  → 14 B/6 insns**; 1001/1001 in-bounds differential (specialized ≡ wasmtime ≡
+  unspecialized); wrong-bound red demonstrated (forced admit → 3000/4001
+  mismatches; unforced → Sat counterexample + byte-identical decline). New
+  CI job `fact-spec-oracle` gates the differential. Facts-absent and flag-off
+  compiles are byte-identical by construction; frozen anchors 10/10.
+  Phase 3 = gale silicon re-measure vs the 0.45× floor (#494 kill-criterion).
+
 ## [0.31.0] - 2026-07-08
 
 **The first Rocq-verified selector rules land (VCR-SEL-001 increment 1); the
