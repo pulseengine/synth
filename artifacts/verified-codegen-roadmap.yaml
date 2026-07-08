@@ -559,6 +559,32 @@ artifacts:
       model supplies natively) is the precondition. This also gates VCR-SEL-001
       coverage of the control-flow op class (div/rem) — straight-line and
       scratch-using ops generalize without it, control-flow ops do not.
+
+      FEASIBILITY SPIKE DONE (2026-07-08, docs/design/vcr-isa-001-spike.md):
+      the 2026-06-10 gate is answered. Tool: VERIFIED alive (Sail 0.20 via
+      nixpkgs ships --coq, bbv|stdpp styles; coq-sail maintained). Generated
+      ARM model IMPORT: REFUTED as a build path — sail-arm arm-v9.4-a covers
+      all of T32/A32 (instrs32.sail) but its Coq snapshot is a single 42 MB
+      armv9.v pinned to stdpp-unstable + git-pinned coq-sail-stdpp (the 2019
+      v8.5 snapshot needed ~40 GB RAM on Coq 8.9.1) — incompatible with the
+      hermetic Rocq 9 Bazel toolchain and CI. WORKING ALTERNATIVE LANDED:
+      per-instruction transcribe-and-bridge — coq/Synth/ARM/SailArmBridge.v
+      (in //coq:verify_proofs, 23 Qed / 0 Admitted) hand-transcribes
+      AddWithCarry + the AArch32 ADD/CMP register-form execute clauses from
+      sail-arm @ 1bf2e5574ba9 with file:line provenance, and proves
+      ArmSemantics.v's ADD/ADDS/CMP ≡ the transcription on registers AND all
+      four NZCV flags (the six hand-written compute_*_flag definitions equal
+      ASL's AddWithCarry outputs — the foundation under every CMP-based
+      comparison lowering). Abstraction gaps documented in-file: shift_n=0,
+      d<>15 (no PC — the executor gap above is NOT closed by the bridge and
+      stays this item's core prerequisite), no IT blocks, bits(32) as Z mod
+      2^32. Measured cost: flag machinery proven once (~230 lines incl.
+      reusable mod-case/testbit/NOT helpers + blast tactics); remaining
+      AddWithCarry family (SUB/SUBS/CMN/RSB) near-free, ~0.5-1 day per
+      remaining straight-line op class; memory ops widest gap (byte-addressed
+      Sail memory vs Z->I32 model). RISC-V half unmeasured — sail-riscv's
+      maintained Coq export may admit the import path there; re-evaluate
+      separately.
     status: proposed
     tags: [semantics, sail, isa, trust, rocq, track-b, unblocks-admits]
     links:
@@ -578,6 +604,13 @@ artifacts:
         bounded feasibility SPIKE (can the Sail RV32 Rocq export build + one
         instruction's semantics be related to ArmSemantics/RiscvSemantics?)
         must precede any release commitment.
+        GATE ANSWERED for the ARM half (spike 2026-07-08, evidence
+        docs/design/vcr-isa-001-spike.md + coq/Synth/ARM/SailArmBridge.v):
+        one instruction family bridged end-to-end with Qed proofs; criterion
+        for the item REVISED accordingly — re-discharge is per-instruction
+        transcribe-and-bridge against provenance-pinned Sail source, not
+        against an imported generated model. RV32 export build remains
+        unmeasured (the spike's ARM no-go on import does not transfer).
 
   - id: VCR-WASM-001
     type: sw-req

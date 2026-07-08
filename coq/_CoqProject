@@ -17,6 +17,7 @@ Synth/ARM/ArmInstructions.v
 Synth/ARM/ArmSemantics.v
 Synth/ARM/ArmFlagLemmas.v
 Synth/ARM/ArmRefinement.v
+Synth/ARM/SailArmBridge.v
 
 # WebAssembly semantics
 Synth/WASM/WasmValues.v
