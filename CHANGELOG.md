@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-07-08
+
+**The North-Star acceleration wave: the verified selector DSL enters the i64
+pair family (27 rules / 27 Qed — ~40% of integer-compute ops DSL-served),
+Track B unblocks with Sail/ASL bridge lemmas proving our flag semantics
+equal to ARM's own spec, and the VCR-VER-001 falsification gate is
+demonstrated — a formerly load-bearing greedy fix is reversed.**
+
+### Added
+
+- **VCR-SEL-001 increment 3 (#661, epic #242):** rules for i64
+  add/sub/and/or/xor + eqz — pair-result T1 theorems (both words proven),
+  with the #632 clobber class encoded as explicit pair-aliasing hypotheses
+  in the theorems AND runtime Err in the generated lowerings. 27/27 Qed,
+  no model extension needed; anchors green even with SYNTH_SEL_DSL=1
+  (migration byte-invisible). Held out honestly: mul/div/shifts/rotates
+  and binary i64 comparisons (increment 4).
+- **VCR-ISA-001 spike (#660):** GO on transcribe-and-bridge —
+  coq/Synth/ARM/SailArmBridge.v (23 Qed) proves our ADD/ADDS/CMP semantics
+  AND all four NZCV flag computations equal to hand-transcribed sail-arm
+  (ASL-derived) definitions with file:line provenance. Importing the
+  generated 42 MB Coq model is NO-GO (stdpp-unstable pins, historic ~40 GB
+  RAM); measured cost ~0.5–1 day per remaining op class. Full report in
+  docs/design/vcr-isa-001-spike.md.
+- **VCR-VER-001 demonstrated (#659):** the #209 reciprocal-mult cost-gate
+  reversal (deleted in PR #322 once spill-retry subsumed it) is now
+  recorded as the gate's passing instance; the #496 decline-on-exhaustion
+  reversal is correctness-complete behind its flag but cycle-regressive on
+  i32 shapes — the named missing capability (post-exhaustion code quality:
+  allocation-time spill slots unreached by frame-slot-DCE/stack-fwd) is the
+  next allocator lever. Evidence: scripts/repro/vcr_ver_001_gate.md.
+
+### Fixed
+
+- **RV32 bounds/mask soundness (#655, PR #658):** offset folded before the
+  mask (the #651 twin), final-byte clamp, and — audit finding — i64
+  loads/stores had NO guard at all in either bounds mode; both now guard
+  the full 8-byte access. Differential: 10 red → all green.
+
 ## [0.34.0] - 2026-07-08
 
 **Multi-table call_indirect ships (falcon's fused-component blocker); float

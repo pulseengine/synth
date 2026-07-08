@@ -11,6 +11,6 @@ categories.workspace = true
 description = "AArch64 (A64) host-native backend for synth — integer subset (milestone 1, #538)"
 
 [dependencies]
-synth-core = { path = "../synth-core", version = "0.34.0" }
+synth-core = { path = "../synth-core", version = "0.35.0" }
 thiserror.workspace = true
 tracing.workspace = true

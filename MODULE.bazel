@@ -7,7 +7,7 @@ module(
     name = "synth",
     # Kept in lockstep with [workspace.package] version in Cargo.toml.
     # Both are bumped pre-tag — see docs/release-process.md.
-    version = "0.34.0",
+    version = "0.35.0",
 )
 
 # Bazel dependencies
