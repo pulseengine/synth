@@ -79,6 +79,12 @@ pub fn select(ops: &[WasmOp], num_params: u32) -> Result<Vec<u32>, SelectError> 
                 }
                 stack.push(dst);
             }
+            // #665: wasm `unreachable` traps unconditionally (WASM §4.4.5) —
+            // emit `brk #0`, the A64 analogue of Thumb-2 `udf #0` / RV32
+            // `ebreak`. It pushes nothing; everything after it is
+            // wasm-validated dead code, and the trailing `End` epilogue after
+            // the trap is harmless.
+            WasmOp::Unreachable => words.push(enc::brk(0)),
             WasmOp::I32Add => binop(&mut words, &mut stack, enc::add)?,
             WasmOp::I32Sub => binop(&mut words, &mut stack, enc::sub)?,
             WasmOp::I32Mul => binop(&mut words, &mut stack, enc::mul)?,

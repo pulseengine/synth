@@ -1553,7 +1553,16 @@ impl Selector {
                 self.bin_with_zero_trap(op, |rd, rs1, rs2| RiscVOp::Divu { rd, rs1, rs2 })?
             }
             I32RemS => {
-                self.bin_with_signed_div_traps(op, |rd, rs1, rs2| RiscVOp::Rem { rd, rs1, rs2 })?
+                // #666: rem_s carries ONLY the zero-divisor guard. WASM §4.3.2
+                // defines irem_s(INT_MIN, -1) = 0 (no trap) — the INT_MIN/-1
+                // overflow trap belongs to div_s alone. The div_s guard was
+                // wrongly shared here, so rem_s(INT_MIN,-1) spuriously
+                // ebreak'd. RISC-V M-ext `rem` already returns 0 for the
+                // overflow case (RISC-V unprivileged spec §7.2, "the remainder
+                // of an overflowing signed division is zero"), so the bare
+                // instruction is exactly wasm-correct. Twin of the ARM #633
+                // fix-guard (test_633_i64_rems_has_no_overflow_guard).
+                self.bin_with_zero_trap(op, |rd, rs1, rs2| RiscVOp::Rem { rd, rs1, rs2 })?
             }
             I32RemU => {
                 self.bin_with_zero_trap(op, |rd, rs1, rs2| RiscVOp::Remu { rd, rs1, rs2 })?
@@ -2130,8 +2139,12 @@ impl Selector {
     }
 
     /// Variant of `bin_with_zero_trap` that also guards `INT_MIN / -1`, which
-    /// `div`/`rem` would silently return as `INT_MIN` / `0` respectively — WASM
-    /// semantics require a trap. See `docs/binary-safety-design.md` §3.3.
+    /// `div` would silently return as `INT_MIN` — WASM `idiv_s` semantics
+    /// require a trap. See `docs/binary-safety-design.md` §3.3.
+    ///
+    /// `div_s` ONLY — never `rem_s` (#666): WASM `irem_s(INT_MIN, -1)` is
+    /// defined as 0 (no trap), and RISC-V `rem` already returns 0 for that
+    /// case, so `rem_s` takes plain [`Self::bin_with_zero_trap`].
     ///
     /// Sequence:
     /// ```text
@@ -6213,8 +6226,15 @@ mod tests {
         assert_eq!(bne_count, 1, "only zero-divisor guard expected for div_u");
     }
 
+    /// #666 fix-guard twin (RV32 analogue of the ARM #633 pin,
+    /// `test_633_i64_rems_has_no_overflow_guard`): i32 `rem_s` must carry ONLY
+    /// the zero-divisor guard — WASM §4.3.2 defines `irem_s(INT_MIN, -1) = 0`
+    /// (no trap), and RISC-V M-ext `rem` already returns 0 for that case, so
+    /// the INT_MIN/-1 `ebreak` belongs to `div_s` alone. This test previously
+    /// pinned the BUG (asserting rem_s got the overflow guard too, which made
+    /// `rem_s(INT_MIN, -1)` spuriously trap).
     #[test]
-    fn rv32_signed_rem_also_gets_overflow_guard() {
+    fn rv32_signed_rem_carries_only_zero_guard_666() {
         let opts = SelectorOptions::wasm_compliant();
         let out = s_with_opts(
             &[
@@ -6235,8 +6255,38 @@ mod tests {
                 }
             )
         });
-        assert!(bne_count >= 3);
-        assert!(count(&out, |op| matches!(op, RiscVOp::Rem { .. })) == 1);
+        assert_eq!(
+            bne_count, 1,
+            "rem_s must emit only the zero-divisor BNE (no INT_MIN/-1 guard): {out:?}"
+        );
+        assert_eq!(
+            count(&out, |op| matches!(op, RiscVOp::Ebreak)),
+            1,
+            "rem_s must emit exactly one ebreak (the zero-divisor trap): {out:?}"
+        );
+        assert_eq!(count(&out, |op| matches!(op, RiscVOp::Rem { .. })), 1);
+    }
+
+    /// #666 twin, other direction: `div_s` KEEPS both guards under
+    /// wasm-compliant options — removing the rem_s over-trap must not weaken
+    /// the div_s overflow trap.
+    #[test]
+    fn rv32_signed_div_still_carries_both_guards_666() {
+        let opts = SelectorOptions::wasm_compliant();
+        let out = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(1),
+                WasmOp::I32DivS,
+                WasmOp::End,
+            ],
+            2,
+            opts,
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Ebreak)) >= 2,
+            "div_s keeps the zero-divisor AND INT_MIN/-1 ebreaks: {out:?}"
+        );
     }
 
     /// Two-arg call: top-of-stack args move to a0 and a1 in source order.

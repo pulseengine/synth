@@ -1042,7 +1042,7 @@ pub struct FunctionOps {
     /// function (diagnostic + symbol absent → link error names it) instead —
     /// the #180/#185 "unsupported op must Err, never silently continue"
     /// contract. `None` once every op decoded or was intentionally ignorable
-    /// (Nop/Unreachable).
+    /// (Nop).
     pub unsupported: Option<String>,
     /// #509: blocktype arity side-table — `(param_count, result_count)` of the
     /// k-th `Block`/`Loop`/`If` op in `ops`, in order of appearance.
@@ -1135,7 +1135,7 @@ fn decode_function_body(
             op_offsets.push(offset as u32);
         } else if unsupported.is_none() && !is_intentionally_ignored(&op) {
             // The op was DROPPED by `convert_operator` (`_ => None`) and is not
-            // an intentional no-op (Nop/Unreachable) — record it so the
+            // an intentional no-op (Nop) — record it so the
             // function is loud-skipped rather than silently miscompiled (#369).
             unsupported = Some(format!("{op:?}"));
         }
@@ -1148,9 +1148,13 @@ fn decode_function_body(
 /// carry no value-affecting semantics for our backend, so dropping them is
 /// correct (NOT a silent miscompile). Everything else that decodes to `None`
 /// is an unsupported op that must loud-skip its function (#369).
+///
+/// #665: `Unreachable` is NOT on this list — it traps (WASM §4.4.5), so it
+/// decodes to `WasmOp::Unreachable` and every backend lowers it to a trap
+/// instruction (or loud-declines). Only `Nop` is genuinely ignorable.
 fn is_intentionally_ignored(op: &wasmparser::Operator) -> bool {
     use wasmparser::Operator::*;
-    matches!(op, Nop | Unreachable)
+    matches!(op, Nop)
 }
 
 /// Convert a wasmparser Operator to our WasmOp enum
@@ -1338,8 +1342,16 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         // End is needed for control flow pattern matching
         End => Some(WasmOp::End),
 
-        // Nop/Unreachable - skip these
-        Nop | Unreachable => None,
+        // #665: `unreachable` MUST reach the backends — WASM Core §4.4.5
+        // requires it to trap unconditionally. It was previously dropped here
+        // (treated like Nop), so every backend compiled it to a no-op and
+        // control FELL THROUGH panic!/abort/unreachable-default guards with
+        // undefined register state. The selector arms (ARM: UDF #0, RV32:
+        // ebreak) already existed; they just never received the op.
+        Unreachable => Some(WasmOp::Unreachable),
+
+        // Nop - skip (genuinely no semantics)
+        Nop => None,
 
         // Drop is needed for br_if pattern matching
         Drop => Some(WasmOp::Drop),
