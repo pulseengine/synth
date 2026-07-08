@@ -3240,90 +3240,162 @@ impl InstructionSelector {
                 }]
             }
 
-            // i64 arithmetic: ADDS/ADC for add, SUBS/SBC for sub
+            // i64 arithmetic: ADDS/ADC for add, SUBS/SBC for sub.
+            // VCR-SEL-001 increment 3 (#242): the i64 pair arms delegate to
+            // the Rocq-proved pair rules behind SYNTH_SEL_DSL (default OFF),
+            // byte-identical by construction — the fixed R0:R1 += R2:R3
+            // in-place shape satisfies all three pair aliasing side
+            // conditions (rd_hi≠rd_lo, rd_lo≠rn_hi, rd_lo≠rm_hi), so the
+            // Err arm is unreachable here but stays loud, never silent.
             I64Add => {
-                vec![
-                    ArmOp::Adds {
-                        rd: Reg::R0,
-                        rn: Reg::R0,
-                        op2: Operand2::Reg(Reg::R2),
-                    },
-                    ArmOp::Adc {
-                        rd: Reg::R1,
-                        rn: Reg::R1,
-                        op2: Operand2::Reg(Reg::R3),
-                    },
-                ]
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i64_add(
+                        Reg::R0,
+                        Reg::R1,
+                        Reg::R0,
+                        Reg::R1,
+                        Reg::R2,
+                        Reg::R3,
+                    )
+                    .map_err(synth_core::Error::synthesis)?
+                } else {
+                    vec![
+                        ArmOp::Adds {
+                            rd: Reg::R0,
+                            rn: Reg::R0,
+                            op2: Operand2::Reg(Reg::R2),
+                        },
+                        ArmOp::Adc {
+                            rd: Reg::R1,
+                            rn: Reg::R1,
+                            op2: Operand2::Reg(Reg::R3),
+                        },
+                    ]
+                }
             }
 
             I64Sub => {
-                vec![
-                    ArmOp::Subs {
-                        rd: Reg::R0,
-                        rn: Reg::R0,
-                        op2: Operand2::Reg(Reg::R2),
-                    },
-                    ArmOp::Sbc {
-                        rd: Reg::R1,
-                        rn: Reg::R1,
-                        op2: Operand2::Reg(Reg::R3),
-                    },
-                ]
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i64_sub(
+                        Reg::R0,
+                        Reg::R1,
+                        Reg::R0,
+                        Reg::R1,
+                        Reg::R2,
+                        Reg::R3,
+                    )
+                    .map_err(synth_core::Error::synthesis)?
+                } else {
+                    vec![
+                        ArmOp::Subs {
+                            rd: Reg::R0,
+                            rn: Reg::R0,
+                            op2: Operand2::Reg(Reg::R2),
+                        },
+                        ArmOp::Sbc {
+                            rd: Reg::R1,
+                            rn: Reg::R1,
+                            op2: Operand2::Reg(Reg::R3),
+                        },
+                    ]
+                }
             }
 
             // i64 bitwise: operate on each half independently
             I64And => {
-                vec![
-                    ArmOp::And {
-                        rd: Reg::R0,
-                        rn: Reg::R0,
-                        op2: Operand2::Reg(Reg::R2),
-                    },
-                    ArmOp::And {
-                        rd: Reg::R1,
-                        rn: Reg::R1,
-                        op2: Operand2::Reg(Reg::R3),
-                    },
-                ]
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i64_and(
+                        Reg::R0,
+                        Reg::R1,
+                        Reg::R0,
+                        Reg::R1,
+                        Reg::R2,
+                        Reg::R3,
+                    )
+                    .map_err(synth_core::Error::synthesis)?
+                } else {
+                    vec![
+                        ArmOp::And {
+                            rd: Reg::R0,
+                            rn: Reg::R0,
+                            op2: Operand2::Reg(Reg::R2),
+                        },
+                        ArmOp::And {
+                            rd: Reg::R1,
+                            rn: Reg::R1,
+                            op2: Operand2::Reg(Reg::R3),
+                        },
+                    ]
+                }
             }
 
             I64Or => {
-                vec![
-                    ArmOp::Orr {
-                        rd: Reg::R0,
-                        rn: Reg::R0,
-                        op2: Operand2::Reg(Reg::R2),
-                    },
-                    ArmOp::Orr {
-                        rd: Reg::R1,
-                        rn: Reg::R1,
-                        op2: Operand2::Reg(Reg::R3),
-                    },
-                ]
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i64_or(
+                        Reg::R0,
+                        Reg::R1,
+                        Reg::R0,
+                        Reg::R1,
+                        Reg::R2,
+                        Reg::R3,
+                    )
+                    .map_err(synth_core::Error::synthesis)?
+                } else {
+                    vec![
+                        ArmOp::Orr {
+                            rd: Reg::R0,
+                            rn: Reg::R0,
+                            op2: Operand2::Reg(Reg::R2),
+                        },
+                        ArmOp::Orr {
+                            rd: Reg::R1,
+                            rn: Reg::R1,
+                            op2: Operand2::Reg(Reg::R3),
+                        },
+                    ]
+                }
             }
 
             I64Xor => {
-                vec![
-                    ArmOp::Eor {
-                        rd: Reg::R0,
-                        rn: Reg::R0,
-                        op2: Operand2::Reg(Reg::R2),
-                    },
-                    ArmOp::Eor {
-                        rd: Reg::R1,
-                        rn: Reg::R1,
-                        op2: Operand2::Reg(Reg::R3),
-                    },
-                ]
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i64_xor(
+                        Reg::R0,
+                        Reg::R1,
+                        Reg::R0,
+                        Reg::R1,
+                        Reg::R2,
+                        Reg::R3,
+                    )
+                    .map_err(synth_core::Error::synthesis)?
+                } else {
+                    vec![
+                        ArmOp::Eor {
+                            rd: Reg::R0,
+                            rn: Reg::R0,
+                            op2: Operand2::Reg(Reg::R2),
+                        },
+                        ArmOp::Eor {
+                            rd: Reg::R1,
+                            rn: Reg::R1,
+                            op2: Operand2::Reg(Reg::R3),
+                        },
+                    ]
+                }
             }
 
-            // i64 comparisons: compare register pairs, result 0/1 in R0
+            // i64 comparisons: compare register pairs, result 0/1 in R0.
+            // i64.eqz is increment 3's SetCondZ-shape rule (no side
+            // conditions — the pseudo-op reads both halves before writing).
             I64Eqz => {
-                vec![ArmOp::I64SetCondZ {
-                    rd: Reg::R0,
-                    rn_lo: Reg::R0,
-                    rn_hi: Reg::R1,
-                }]
+                if self.sel_dsl {
+                    crate::sel_dsl::generated::rule_i64_eqz(Reg::R0, Reg::R0, Reg::R1)
+                } else {
+                    vec![ArmOp::I64SetCondZ {
+                        rd: Reg::R0,
+                        rn_lo: Reg::R0,
+                        rn_hi: Reg::R1,
+                    }]
+                }
             }
 
             I64Eq => {
@@ -10211,27 +10283,48 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    // ADDS dst_lo, a_lo, b_lo  (sets carry flag)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Adds {
-                            rd: dst_lo,
-                            rn: a_lo,
-                            op2: Operand2::Reg(b_lo),
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // VCR-SEL-001 increment 3 (#242): behind SYNTH_SEL_DSL
+                    // (default OFF) the ADDS+ADC pair comes from the
+                    // generated Rocq-proved rule — byte-identical to the
+                    // hand-written emission below (mirror-pinned). The pair
+                    // aliasing side conditions hold by construction here:
+                    // alloc_consecutive_pair avoids every operand half and a
+                    // consecutive pair never self-aliases.
+                    if self.sel_dsl {
+                        let rule_ops = crate::sel_dsl::generated::rule_i64_add(
+                            dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                        )
+                        .map_err(synth_core::Error::synthesis)?;
+                        for rule_op in rule_ops {
+                            instructions.push(ArmInstruction {
+                                op: rule_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                    } else {
+                        // ADDS dst_lo, a_lo, b_lo  (sets carry flag)
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Adds {
+                                rd: dst_lo,
+                                rn: a_lo,
+                                op2: Operand2::Reg(b_lo),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
 
-                    // ADC dst_hi, a_hi, b_hi  (adds with carry)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Adc {
-                            rd: dst_hi,
-                            rn: a_hi,
-                            op2: Operand2::Reg(b_hi),
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                        // ADC dst_hi, a_hi, b_hi  (adds with carry)
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Adc {
+                                rd: dst_hi,
+                                rn: a_hi,
+                                op2: Operand2::Reg(b_hi),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
 
                     stack.push(StackVal::i64(dst_lo));
                 }
@@ -10269,27 +10362,43 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    // SUBS dst_lo, a_lo, b_lo  (sets borrow flag)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Subs {
-                            rd: dst_lo,
-                            rn: a_lo,
-                            op2: Operand2::Reg(b_lo),
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // VCR-SEL-001 increment 3 (#242): same delegation as
+                    // I64Add — the SUBS+SBC pair rule, byte-identical.
+                    if self.sel_dsl {
+                        let rule_ops = crate::sel_dsl::generated::rule_i64_sub(
+                            dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                        )
+                        .map_err(synth_core::Error::synthesis)?;
+                        for rule_op in rule_ops {
+                            instructions.push(ArmInstruction {
+                                op: rule_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                    } else {
+                        // SUBS dst_lo, a_lo, b_lo  (sets borrow flag)
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Subs {
+                                rd: dst_lo,
+                                rn: a_lo,
+                                op2: Operand2::Reg(b_lo),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
 
-                    // SBC dst_hi, a_hi, b_hi  (subtracts with borrow)
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Sbc {
-                            rd: dst_hi,
-                            rn: a_hi,
-                            op2: Operand2::Reg(b_hi),
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                        // SBC dst_hi, a_hi, b_hi  (subtracts with borrow)
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Sbc {
+                                rd: dst_hi,
+                                rn: a_hi,
+                                op2: Operand2::Reg(b_hi),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
 
                     stack.push(StackVal::i64(dst_lo));
                 }
@@ -10335,6 +10444,27 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
+                    // VCR-SEL-001 increment 3 (#242): behind SYNTH_SEL_DSL
+                    // (default OFF) the per-half bitwise pair comes from the
+                    // generated Rocq-proved rule — byte-identical to the
+                    // hand-written emission below (mirror-pinned; side
+                    // conditions hold by construction, see I64Add).
+                    if self.sel_dsl {
+                        let rule_ops = crate::sel_dsl::i64_pair_rule(
+                            op, dst_lo, dst_hi, a_lo, a_hi, b_lo, b_hi,
+                        )
+                        .expect("i64 bitwise op has a pair rule")
+                        .map_err(synth_core::Error::synthesis)?;
+                        for rule_op in rule_ops {
+                            instructions.push(ArmInstruction {
+                                op: rule_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                        stack.push(StackVal::i64(dst_lo));
+                        continue;
+                    }
                     let (lo_op, hi_op) = match op {
                         I64Or => (
                             ArmOp::Orr {
@@ -10632,15 +10762,29 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::I64SetCondZ {
-                            rd: dst,
-                            rn_lo: src_lo,
-                            rn_hi: src_hi,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // VCR-SEL-001 increment 3 (#242): the SetCondZ-shape rule
+                    // behind SYNTH_SEL_DSL (default OFF) — single identical
+                    // pseudo-op, byte-identical by construction.
+                    if self.sel_dsl {
+                        for rule_op in crate::sel_dsl::generated::rule_i64_eqz(dst, src_lo, src_hi)
+                        {
+                            instructions.push(ArmInstruction {
+                                op: rule_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                    } else {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I64SetCondZ {
+                                rd: dst,
+                                rn_lo: src_lo,
+                                rn_hi: src_hi,
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
 
                     // I64Eqz produces an i32 result (single register)
                     stack.push(StackVal::i32(dst));
@@ -12202,7 +12346,7 @@ mod tests {
         }
     }
 
-    /// VCR-SEL-001 increments 1+2 (#242) — gate 1, the #511/#513
+    /// VCR-SEL-001 increments 1+2+3 (#242) — gate 1, the #511/#513
     /// mirror-pinning pattern: for every rule delegated in `select_default`
     /// (`Delegation::SelectDefault`/`Both`), lower its op through BOTH the
     /// hand-written `select_default` arm (flag OFF) and the generated
@@ -12211,7 +12355,10 @@ mod tests {
     /// bytes, so the two must-agree implementations are pinned before the
     /// `SYNTH_SEL_DSL` flag can matter — the migration moves structure,
     /// never bytes. Uses `set_sel_dsl` (not the env var) so parallel tests
-    /// never race on the process environment.
+    /// never race on the process environment. Since increment 3 this loop
+    /// also pins the six i64 pair rules: `select_default`'s fixed
+    /// `R0:R1 op= R2:R3` arms are in-place instances of the pair rules
+    /// (the single-op probe is exactly that shape).
     ///
     /// Comparison rules (`Delegation::SelectWithStack`) are NOT probed here:
     /// `select_default`'s comparison arms are a blind bare-`Cmp` lowering
@@ -12257,8 +12404,9 @@ mod tests {
                 rule.name
             );
         }
-        // Non-vacuity: increment 1's seven + increment 2's four shifts.
-        assert_eq!(probed, 11, "unexpected select_default-delegated rule count");
+        // Non-vacuity: increment 1's seven + increment 2's four shifts +
+        // increment 3's six i64 pair-family rules.
+        assert_eq!(probed, 17, "unexpected select_default-delegated rule count");
     }
 
     /// VCR-SEL-001 increment 2 (#242) — gate 1 for the rules delegated in
@@ -12279,6 +12427,12 @@ mod tests {
         let mut probed = 0;
         for rule in crate::sel_dsl::RULES {
             if rule.delegation == Delegation::SelectDefault {
+                continue;
+            }
+            // The i64 pair rules (increment 3) need i64-typed probes and a
+            // pair-shaped emission window — pinned by the dedicated
+            // `sel_dsl_mirror_pin_i64_pair_rules_select_with_stack_242`.
+            if rule.name.starts_with("rule_i64_") {
                 continue;
             }
             probed += 1;
@@ -12374,6 +12528,181 @@ mod tests {
             probed, 14,
             "unexpected select_with_stack-delegated rule count"
         );
+    }
+
+    /// VCR-SEL-001 increment 3 (#242) — gate 1 for the i64 pair-family rules
+    /// in `select_with_stack` (all `Delegation::Both`; their `select_default`
+    /// half is pinned by the loop above). Each binary rule is probed with
+    /// `i64.const; i64.const; <op>` so the selector allocates real register
+    /// pairs; `i64.eqz` with a single constant. OFF vs ON full-sequence
+    /// equality, plus the RMW-vacuity-proof window check: extract the SIX
+    /// registers the hand-written arm chose from the OFF sequence and assert
+    /// the emission window equals the generated rule's output for exactly
+    /// those registers — proving the delegation fired and satisfied the pair
+    /// aliasing side conditions with the selector's own assignment.
+    #[test]
+    fn sel_dsl_mirror_pin_i64_pair_rules_select_with_stack_242() {
+        use synth_core::WasmOp;
+        let mut probed = 0;
+        for rule in crate::sel_dsl::RULES {
+            if !rule.name.starts_with("rule_i64_") {
+                continue;
+            }
+            probed += 1;
+            let ops = if matches!(rule.op, WasmOp::I64Eqz) {
+                vec![WasmOp::I64Const(0x1_0000_0005), rule.op.clone()]
+            } else {
+                vec![
+                    WasmOp::I64Const(0x1_0000_0005),
+                    WasmOp::I64Const(0x2_0000_0007),
+                    rule.op.clone(),
+                ]
+            };
+
+            let mut handwritten = InstructionSelector::new(vec![]);
+            handwritten.set_sel_dsl(false);
+            let baseline: Vec<ArmOp> = handwritten
+                .select_with_stack(&ops, 0)
+                .unwrap_or_else(|e| panic!("{}: hand-written arm failed: {e}", rule.name))
+                .into_iter()
+                .map(|i| i.op)
+                .collect();
+
+            let mut dsl = InstructionSelector::new(vec![]);
+            dsl.set_sel_dsl(true);
+            let generated: Vec<ArmOp> = dsl
+                .select_with_stack(&ops, 0)
+                .unwrap_or_else(|e| panic!("{}: generated rule failed: {e}", rule.name))
+                .into_iter()
+                .map(|i| i.op)
+                .collect();
+
+            assert_eq!(
+                baseline, generated,
+                "{}: SYNTH_SEL_DSL=1 diverges from the hand-written \
+                 select_with_stack arm — the migration moves structure, never bytes",
+                rule.name
+            );
+
+            // Non-vacuity: locate the hand-written emission window, extract
+            // the registers the selector chose, and check the window equals
+            // the rule's own output for them.
+            let (window, rule_ops) = if matches!(rule.op, WasmOp::I64Eqz) {
+                let i = baseline
+                    .iter()
+                    .position(|o| matches!(o, ArmOp::I64SetCondZ { .. }))
+                    .unwrap_or_else(|| panic!("{}: no I64SetCondZ in probe output", rule.name));
+                let (rd, rn_lo, rn_hi) = match &baseline[i] {
+                    ArmOp::I64SetCondZ { rd, rn_lo, rn_hi } => (*rd, *rn_lo, *rn_hi),
+                    _ => unreachable!(),
+                };
+                (
+                    baseline[i..i + 1].to_vec(),
+                    crate::sel_dsl::generated::rule_i64_eqz(rd, rn_lo, rn_hi),
+                )
+            } else {
+                // The pair window is the two-instruction sequence starting at
+                // the first lo-half data-processing op (the probe's constant
+                // materializations are I64Const pseudo-ops, never Adds/Subs/
+                // And/Orr/Eor, so the first match is the rule window).
+                let i = baseline
+                    .iter()
+                    .position(|o| {
+                        matches!(
+                            o,
+                            ArmOp::Adds { .. }
+                                | ArmOp::Subs { .. }
+                                | ArmOp::And { .. }
+                                | ArmOp::Orr { .. }
+                                | ArmOp::Eor { .. }
+                        )
+                    })
+                    .unwrap_or_else(|| panic!("{}: no pair lo-half op in probe output", rule.name));
+                assert!(
+                    baseline.len() >= i + 2,
+                    "{}: probe output too short for a pair window",
+                    rule.name
+                );
+                let (rd_lo, rn_lo, rm_lo) = match &baseline[i] {
+                    ArmOp::Adds {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }
+                    | ArmOp::Subs {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }
+                    | ArmOp::And {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }
+                    | ArmOp::Orr {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }
+                    | ArmOp::Eor {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    } => (*rd, *rn, *rm),
+                    other => panic!("{}: unexpected lo-half op {other:?}", rule.name),
+                };
+                let (rd_hi, rn_hi, rm_hi) = match &baseline[i + 1] {
+                    ArmOp::Adc {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }
+                    | ArmOp::Sbc {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }
+                    | ArmOp::And {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }
+                    | ArmOp::Orr {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    }
+                    | ArmOp::Eor {
+                        rd,
+                        rn,
+                        op2: Operand2::Reg(rm),
+                    } => (*rd, *rn, *rm),
+                    other => panic!("{}: unexpected hi-half op {other:?}", rule.name),
+                };
+                (
+                    baseline[i..i + 2].to_vec(),
+                    crate::sel_dsl::i64_pair_rule(
+                        &rule.op, rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi,
+                    )
+                    .unwrap_or_else(|| panic!("{}: pair dispatch missing", rule.name))
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "{}: selector-chosen registers violate a pair side \
+                                 condition: {e}",
+                            rule.name
+                        )
+                    }),
+                )
+            };
+            assert_eq!(
+                window, rule_ops,
+                "{}: the hand-written emission window does not equal the \
+                 generated rule's output for the same registers",
+                rule.name
+            );
+        }
+        // Five binary pair rules + i64.eqz.
+        assert_eq!(probed, 6, "unexpected i64 pair rule count");
     }
 
     /// VCR-SEL-001 increment 2 (#242): the #258 imm-fold comparison peephole

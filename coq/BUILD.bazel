@@ -204,7 +204,14 @@ rocq_library(
     name = "vcr_sel_rules",
     srcs = ["Synth/Synth/VcrSelRules.v"],
     include_path = "Synth",
-    deps = _CORRECTNESS_FULL_DEPS + [":tactics", ":arm_flag_lemmas"],
+    # :correctness_tactics provides CorrectnessI64 — increment 3's i64 pair
+    # theorems import its halves-distribute combine lemmas rather than
+    # duplicating them.
+    deps = _CORRECTNESS_FULL_DEPS + [
+        ":tactics",
+        ":arm_flag_lemmas",
+        ":correctness_tactics",
+    ],
 )
 
 # Master index: imports all correctness proofs

@@ -1,7 +1,8 @@
-//! VCR-SEL-001 increments 1+2 (#242) — the Rocq-discharged selector rule DSL.
+//! VCR-SEL-001 increments 1+2+3 (#242) — the Rocq-discharged selector rule DSL.
 //!
-//! Scope: `docs/design/vcr-sel-001-first-increment.md` (increment 1) and
-//! `docs/design/vcr-sel-001-increment-2.md` (increment 2). This module is the
+//! Scope: `docs/design/vcr-sel-001-first-increment.md` (increment 1),
+//! `docs/design/vcr-sel-001-increment-2.md` (increment 2) and
+//! `docs/design/vcr-sel-001-increment-3.md` (increment 3). This module is the
 //! **checked-in rule table**: a declarative `op → parameterized ARM sequence`
 //! (registers as variables, side conditions explicit) for:
 //!
@@ -14,7 +15,16 @@
 //!   i32 comparisons (`eq/ne/lt_s/lt_u/gt_s/gt_u/le_s/le_u/ge_s/ge_u`, the
 //!   CMP+SetCond shape — no side conditions either: the flags transfer through
 //!   NZCV, not a register, so every rd/rn/rm aliasing is admitted by the
-//!   universal quantifier).
+//!   universal quantifier);
+//! - increment 3: the i64 register-pair family — `i64.add/sub/and/or/xor`
+//!   (the two-instruction pair shapes ADDS+ADC / SUBS+SBC / AND×2 / ORR×2 /
+//!   EOR×2, an i64 value living in a (lo, hi) register pair) plus `i64.eqz`
+//!   (the single-instruction `I64SetCondZ` shape). The pair shapes carry
+//!   THREE explicit aliasing side conditions each — the low-half instruction
+//!   writes `rd_lo` before the high-half instruction reads `rn_hi`/`rm_hi`,
+//!   so a rule format that could not state "the destination must not be
+//!   clobbered before use" is exactly how #632-class bugs happen. Each pair
+//!   theorem proves BOTH result words.
 //!
 //! The table is turned into plain Rust lowering functions by
 //! [`generate_lowering_source`] and the output is **committed to the tree** at
@@ -53,6 +63,18 @@ pub enum RegVar {
     Rm,
     /// Scratch register (tier-B shapes only).
     Rs,
+    /// Destination pair, low word (i64 pair rules).
+    RdLo,
+    /// Destination pair, high word (i64 pair rules).
+    RdHi,
+    /// First operand pair, low word (i64 pair rules).
+    RnLo,
+    /// First operand pair, high word (i64 pair rules).
+    RnHi,
+    /// Second operand pair, low word (i64 pair rules).
+    RmLo,
+    /// Second operand pair, high word (i64 pair rules).
+    RmHi,
 }
 
 impl RegVar {
@@ -64,6 +86,12 @@ impl RegVar {
             RegVar::Rn => "rn",
             RegVar::Rm => "rm",
             RegVar::Rs => "rs",
+            RegVar::RdLo => "rd_lo",
+            RegVar::RdHi => "rd_hi",
+            RegVar::RnLo => "rn_lo",
+            RegVar::RnHi => "rn_hi",
+            RegVar::RmLo => "rm_lo",
+            RegVar::RmHi => "rm_hi",
         }
     }
 }
@@ -181,6 +209,20 @@ pub enum TemplateOp {
     CmpReg { rn: RegVar, rm: RegVar },
     /// `ArmOp::SetCond { rd, cond }` — rd = if cond over current NZCV {1} else {0}
     SetCond { rd: RegVar, cond: CondCode },
+    /// `ArmOp::Adds { rd, rn, op2: Reg(rm) }` — ADD setting flags (C = carry-out)
+    AddsReg { rd: RegVar, rn: RegVar, rm: RegVar },
+    /// `ArmOp::Adc { rd, rn, op2: Reg(rm) }` — ADD with carry-in from C
+    AdcReg { rd: RegVar, rn: RegVar, rm: RegVar },
+    /// `ArmOp::Subs { rd, rn, op2: Reg(rm) }` — SUB setting flags (C = no-borrow)
+    SubsReg { rd: RegVar, rn: RegVar, rm: RegVar },
+    /// `ArmOp::Sbc { rd, rn, op2: Reg(rm) }` — SUB with borrow-in from NOT(C)
+    SbcReg { rd: RegVar, rn: RegVar, rm: RegVar },
+    /// `ArmOp::I64SetCondZ { rd, rn_lo, rn_hi }` — rd = if (rn_hi:rn_lo) == 0 {1} else {0}
+    I64SetCondZ {
+        rd: RegVar,
+        rn_lo: RegVar,
+        rn_hi: RegVar,
+    },
 }
 
 /// One declarative lowering rule: `op → parameterized ARM sequence`.
@@ -213,7 +255,33 @@ impl SelRule {
     }
 }
 
-use RegVar::{Rd, Rm, Rn, Rs};
+use RegVar::{Rd, RdHi, RdLo, Rm, RmHi, RmLo, Rn, RnHi, RnLo, Rs};
+
+/// The three aliasing side conditions every two-instruction i64 pair rule
+/// carries (increment 3 — the #632 lesson made explicit): the low-half
+/// instruction writes `rd_lo` BEFORE the high-half instruction reads
+/// `rn_hi`/`rm_hi` and writes `rd_hi`, so
+///
+/// - `rd_hi` must not alias `rd_lo` (the high write would destroy the low
+///   result word),
+/// - `rd_lo` must not alias `rn_hi` (the low write would clobber operand 1's
+///   high half before it is read),
+/// - `rd_lo` must not alias `rm_hi` (same for operand 2).
+///
+/// In-place lowering (`rd_lo = rn_lo`, `rd_hi = rn_hi` — `select_default`'s
+/// fixed `R0:R1 += R2:R3` shape) satisfies all three; so does
+/// `select_with_stack`'s `alloc_consecutive_pair` destination (avoids every
+/// operand half, and a consecutive pair is never self-aliased). Each is a
+/// hypothesis of the paired Rocq theorem and a runtime `Err` in the generated
+/// lowering.
+const I64_PAIR_SIDE_CONDITIONS: &[SideCondition] = &[
+    SideCondition::NotAlias(RdHi, RdLo),
+    SideCondition::NotAlias(RdLo, RnHi),
+    SideCondition::NotAlias(RdLo, RmHi),
+];
+
+/// The parameter order shared by every binary i64 pair rule.
+const I64_PAIR_PARAMS: &[RegVar] = &[RdLo, RdHi, RnLo, RnHi, RmLo, RmHi];
 
 /// The increment-1 rule table: the tier-A six + tier-B `i32.rotl`.
 ///
@@ -529,6 +597,132 @@ pub const RULES: &[SelRule] = &[
         delegation: Delegation::SelectWithStack,
         doc: "`i32.ge_u`: rd = if rn >= rm (unsigned) {1} else {0}",
     },
+    // ---- increment 3: the i64 register-pair family. An i64 value lives in
+    // a (lo, hi) register pair; each binary rule is parameterized over SIX
+    // registers and emits the two-instruction pair shape. All carry the
+    // three explicit aliasing side conditions (I64_PAIR_SIDE_CONDITIONS) —
+    // the low-half instruction writes rd_lo before the high-half
+    // instruction reads rn_hi/rm_hi. Delegated in BOTH selectors:
+    // select_default's fixed R0:R1 += R2:R3 arms and select_with_stack's
+    // allocated-pair arms are instances of the same rule (both satisfy the
+    // side conditions — see I64_PAIR_SIDE_CONDITIONS). ----
+    SelRule {
+        name: "rule_i64_add",
+        op: WasmOp::I64Add,
+        params: I64_PAIR_PARAMS,
+        side_conditions: I64_PAIR_SIDE_CONDITIONS,
+        seq: &[
+            TemplateOp::AddsReg {
+                rd: RdLo,
+                rn: RnLo,
+                rm: RmLo,
+            },
+            TemplateOp::AdcReg {
+                rd: RdHi,
+                rn: RnHi,
+                rm: RmHi,
+            },
+        ],
+        delegation: Delegation::Both,
+        doc: "`i64.add`: (rd_hi:rd_lo) = (rn_hi:rn_lo) + (rm_hi:rm_lo), carry via ADDS+ADC",
+    },
+    SelRule {
+        name: "rule_i64_sub",
+        op: WasmOp::I64Sub,
+        params: I64_PAIR_PARAMS,
+        side_conditions: I64_PAIR_SIDE_CONDITIONS,
+        seq: &[
+            TemplateOp::SubsReg {
+                rd: RdLo,
+                rn: RnLo,
+                rm: RmLo,
+            },
+            TemplateOp::SbcReg {
+                rd: RdHi,
+                rn: RnHi,
+                rm: RmHi,
+            },
+        ],
+        delegation: Delegation::Both,
+        doc: "`i64.sub`: (rd_hi:rd_lo) = (rn_hi:rn_lo) - (rm_hi:rm_lo), borrow via SUBS+SBC",
+    },
+    SelRule {
+        name: "rule_i64_and",
+        op: WasmOp::I64And,
+        params: I64_PAIR_PARAMS,
+        side_conditions: I64_PAIR_SIDE_CONDITIONS,
+        seq: &[
+            TemplateOp::AndReg {
+                rd: RdLo,
+                rn: RnLo,
+                rm: RmLo,
+            },
+            TemplateOp::AndReg {
+                rd: RdHi,
+                rn: RnHi,
+                rm: RmHi,
+            },
+        ],
+        delegation: Delegation::Both,
+        doc: "`i64.and`: (rd_hi:rd_lo) = (rn_hi:rn_lo) & (rm_hi:rm_lo), per-half AND",
+    },
+    SelRule {
+        name: "rule_i64_or",
+        op: WasmOp::I64Or,
+        params: I64_PAIR_PARAMS,
+        side_conditions: I64_PAIR_SIDE_CONDITIONS,
+        seq: &[
+            TemplateOp::OrrReg {
+                rd: RdLo,
+                rn: RnLo,
+                rm: RmLo,
+            },
+            TemplateOp::OrrReg {
+                rd: RdHi,
+                rn: RnHi,
+                rm: RmHi,
+            },
+        ],
+        delegation: Delegation::Both,
+        doc: "`i64.or`: (rd_hi:rd_lo) = (rn_hi:rn_lo) | (rm_hi:rm_lo), per-half ORR",
+    },
+    SelRule {
+        name: "rule_i64_xor",
+        op: WasmOp::I64Xor,
+        params: I64_PAIR_PARAMS,
+        side_conditions: I64_PAIR_SIDE_CONDITIONS,
+        seq: &[
+            TemplateOp::EorReg {
+                rd: RdLo,
+                rn: RnLo,
+                rm: RmLo,
+            },
+            TemplateOp::EorReg {
+                rd: RdHi,
+                rn: RnHi,
+                rm: RmHi,
+            },
+        ],
+        delegation: Delegation::Both,
+        doc: "`i64.xor`: (rd_hi:rd_lo) = (rn_hi:rn_lo) ^ (rm_hi:rm_lo), per-half EOR",
+    },
+    // i64.eqz — the SetCondZ shape: single pseudo-op, reads both operand
+    // halves before writing the single i32 result register, so NO side
+    // conditions (every rd/rn_lo/rn_hi aliasing is admitted by the
+    // universal quantifier in rule_i64_eqz_correct).
+    SelRule {
+        name: "rule_i64_eqz",
+        op: WasmOp::I64Eqz,
+        params: &[Rd, RnLo, RnHi],
+        side_conditions: &[],
+        seq: &[TemplateOp::I64SetCondZ {
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.eqz`: rd = if (rn_hi:rn_lo) == 0 {1} else {0}",
+    },
 ];
 
 /// Dispatch an i32 comparison op to its generated Rocq-proved rule
@@ -573,6 +767,31 @@ pub fn i32_shift_rule(
     })
 }
 
+/// Dispatch a binary i64 pair-family op (`add/sub/and/or/xor`) to its
+/// generated Rocq-proved rule (increment 3). `None` for ops outside the
+/// family (the caller's hand-written arm keeps ownership); `Some(Err(_))`
+/// when the register assignment violates a pair aliasing side condition —
+/// a loud error, never a silent misassemble.
+#[allow(clippy::too_many_arguments)]
+pub fn i64_pair_rule(
+    op: &WasmOp,
+    rd_lo: crate::rules::Reg,
+    rd_hi: crate::rules::Reg,
+    rn_lo: crate::rules::Reg,
+    rn_hi: crate::rules::Reg,
+    rm_lo: crate::rules::Reg,
+    rm_hi: crate::rules::Reg,
+) -> Option<Result<Vec<crate::rules::ArmOp>, &'static str>> {
+    Some(match op {
+        WasmOp::I64Add => generated::rule_i64_add(rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64Sub => generated::rule_i64_sub(rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64And => generated::rule_i64_and(rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64Or => generated::rule_i64_or(rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64Xor => generated::rule_i64_xor(rd_lo, rd_hi, rn_lo, rn_hi, rm_lo, rm_hi),
+        _ => return None,
+    })
+}
+
 /// Render a struct field, using field-init shorthand when the bound variable
 /// name matches the field name (keeps the generated file rustfmt/clippy-clean).
 fn field(name: &str, var: RegVar) -> String {
@@ -609,6 +828,16 @@ fn template_expr(t: &TemplateOp, indent: usize) -> String {
         TemplateOp::AndReg { rd, rn, rm } => dp_reg_expr("And", rd, rn, rm, indent),
         TemplateOp::OrrReg { rd, rn, rm } => dp_reg_expr("Orr", rd, rn, rm, indent),
         TemplateOp::EorReg { rd, rn, rm } => dp_reg_expr("Eor", rd, rn, rm, indent),
+        TemplateOp::AddsReg { rd, rn, rm } => dp_reg_expr("Adds", rd, rn, rm, indent),
+        TemplateOp::AdcReg { rd, rn, rm } => dp_reg_expr("Adc", rd, rn, rm, indent),
+        TemplateOp::SubsReg { rd, rn, rm } => dp_reg_expr("Subs", rd, rn, rm, indent),
+        TemplateOp::SbcReg { rd, rn, rm } => dp_reg_expr("Sbc", rd, rn, rm, indent),
+        TemplateOp::I64SetCondZ { rd, rn_lo, rn_hi } => format!(
+            "ArmOp::I64SetCondZ {{ {}, {}, {} }}",
+            field("rd", rd),
+            field("rn_lo", rn_lo),
+            field("rn_hi", rn_hi)
+        ),
         TemplateOp::Mul { rd, rn, rm } => format!(
             "ArmOp::Mul {{ {}, {}, {} }}",
             field("rd", rd),
@@ -680,17 +909,18 @@ pub fn generate_lowering_source() -> String {
         "//! GENERATED FILE — DO NOT EDIT BY HAND.\n\
          //!\n\
          //! Emitted by `crate::sel_dsl::generate_lowering_source()` from the declarative\n\
-         //! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2, #242,\n\
+         //! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3, #242,\n\
          //! `docs/design/vcr-sel-001-first-increment.md` +\n\
-         //! `docs/design/vcr-sel-001-increment-2.md`). Pinned up-to-date by the\n\
+         //! `docs/design/vcr-sel-001-increment-2.md` +\n\
+         //! `docs/design/vcr-sel-001-increment-3.md`). Pinned up-to-date by the\n\
          //! `generated_lowering_is_up_to_date` test; regenerate with\n\
          //! `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.\n\
          //!\n\
          //! Every function here carries a 1:1 Rocq T1 theorem in\n\
          //! `coq/Synth/Synth/VcrSelRules.v` (all Qed — coverage-gated by\n\
          //! `//coq:vcr_sel_rules_coverage`): the emitted sequence computes the op's\n\
-         //! result in `rd` for EVERY register assignment satisfying the stated side\n\
-         //! conditions.\n\n\
+         //! result in `rd` (both words of the pair for the i64 pair rules) for EVERY\n\
+         //! register assignment satisfying the stated side conditions.\n\n\
          use crate::rules::{ArmOp, Condition, Operand2, Reg};\n",
     );
 
@@ -718,26 +948,34 @@ pub fn generate_lowering_source() -> String {
                 b.rust_name()
             ));
         }
-        if rule.side_conditions.is_empty() {
-            out.push_str(&format!(
-                "pub fn {}({params}) -> Vec<ArmOp> {{\n",
-                rule.name
-            ));
+        let ret = if rule.side_conditions.is_empty() {
+            "Vec<ArmOp>"
         } else {
-            out.push_str(&format!(
-                "pub fn {}({params}) -> Result<Vec<ArmOp>, &'static str> {{\n",
-                rule.name
-            ));
-            for sc in rule.side_conditions {
-                let SideCondition::NotAlias(a, b) = sc;
-                out.push_str(&format!(
-                    "    if {a} == {b} {{\n        return Err(\"{name}: side condition violated: \
-                     scratch {a} must not alias {b}\");\n    }}\n",
-                    a = a.rust_name(),
-                    b = b.rust_name(),
-                    name = rule.name
-                ));
+            "Result<Vec<ArmOp>, &'static str>"
+        };
+        // Emit the signature in whichever of rustfmt's two shapes it would
+        // settle on (the committed file must be a rustfmt fixpoint): one line
+        // when it fits max_width, otherwise one parameter per line.
+        let one_line = format!("pub fn {}({params}) -> {ret} {{\n", rule.name);
+        if one_line.len() <= 101 {
+            // <= 100 chars + '\n'
+            out.push_str(&one_line);
+        } else {
+            out.push_str(&format!("pub fn {}(\n", rule.name));
+            for p in rule.params {
+                out.push_str(&format!("    {}: Reg,\n", p.rust_name()));
             }
+            out.push_str(&format!(") -> {ret} {{\n"));
+        }
+        for sc in rule.side_conditions {
+            let SideCondition::NotAlias(a, b) = sc;
+            out.push_str(&format!(
+                "    if {a} == {b} {{\n        return Err(\"{name}: side condition violated: \
+                 {a} must not alias {b}\");\n    }}\n",
+                a = a.rust_name(),
+                b = b.rust_name(),
+                name = rule.name
+            ));
         }
         let (open, close) = if rule.side_conditions.is_empty() {
             ("vec![", "]")
@@ -862,5 +1100,55 @@ mod tests {
         // Satisfying assignment lowers to RSB scratch + ROR.
         let ops = generated::rule_i32_rotl(Reg::R0, Reg::R1, Reg::R2, Reg::R3).unwrap();
         assert_eq!(ops.len(), 2);
+    }
+
+    /// Increment 3: every i64 pair rule enforces all three aliasing side
+    /// conditions as a loud Err (the #632 lesson: the rule format must be
+    /// able to state "the destination must not be clobbered before use" —
+    /// and the generated lowering must refuse an assignment that violates
+    /// it, never silently misassemble).
+    #[test]
+    fn i64_pair_side_conditions_are_enforced() {
+        use crate::rules::Reg;
+        use synth_core::WasmOp;
+        for op in [
+            WasmOp::I64Add,
+            WasmOp::I64Sub,
+            WasmOp::I64And,
+            WasmOp::I64Or,
+            WasmOp::I64Xor,
+        ] {
+            // rd_hi aliases rd_lo: the high write destroys the low result.
+            assert!(
+                i64_pair_rule(&op, Reg::R0, Reg::R0, Reg::R1, Reg::R2, Reg::R3, Reg::R4)
+                    .unwrap()
+                    .is_err(),
+                "{op:?}: rd_hi == rd_lo must be rejected"
+            );
+            // rd_lo aliases rn_hi: the low write clobbers operand 1's high
+            // half before the second instruction reads it.
+            assert!(
+                i64_pair_rule(&op, Reg::R2, Reg::R3, Reg::R1, Reg::R2, Reg::R4, Reg::R5)
+                    .unwrap()
+                    .is_err(),
+                "{op:?}: rd_lo == rn_hi must be rejected"
+            );
+            // rd_lo aliases rm_hi: same for operand 2.
+            assert!(
+                i64_pair_rule(&op, Reg::R5, Reg::R6, Reg::R1, Reg::R2, Reg::R4, Reg::R5)
+                    .unwrap()
+                    .is_err(),
+                "{op:?}: rd_lo == rm_hi must be rejected"
+            );
+            // The in-place shape select_default emits (R0:R1 += R2:R3)
+            // satisfies all three and lowers to the two-instruction pair.
+            let ops = i64_pair_rule(&op, Reg::R0, Reg::R1, Reg::R0, Reg::R1, Reg::R2, Reg::R3)
+                .unwrap()
+                .unwrap();
+            assert_eq!(ops.len(), 2, "{op:?}: pair rule must emit two instructions");
+        }
+        // i64.eqz has no side conditions — single-instruction shape.
+        let ops = generated::rule_i64_eqz(Reg::R0, Reg::R0, Reg::R1);
+        assert_eq!(ops.len(), 1);
     }
 }
