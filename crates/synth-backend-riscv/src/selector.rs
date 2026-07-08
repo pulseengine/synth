@@ -48,8 +48,13 @@ pub enum RvBoundsMode {
         /// `>=` this triggers the trap.
         mem_size: u32,
     },
-    /// AND-mask: `andi addr, addr, (mem_size - 1)` — power-of-two only.
-    /// Wraps on OOB rather than trapping; matches the ARM "Masking" mode.
+    /// AND-mask of the EFFECTIVE address (#655, mirroring ARM PR #654):
+    /// `masked = min((operand + offset) & (mem_size - 1), mem_size - access_size)`
+    /// — the static offset is folded BEFORE the AND (so it cannot escape the
+    /// bound) and the start is clamped so the access's FINAL byte stays inside
+    /// the memory. Power-of-two sizes only (enforced at compile time in
+    /// `build_options`). Wraps on OOB rather than trapping; matches the ARM
+    /// "Masking" mode.
     Mask {
         /// Must be `mem_size - 1`, where `mem_size` is a power of two.
         mask: u32,
@@ -2344,30 +2349,45 @@ impl Selector {
     // ────────── Memory ──────────
 
     /// Emit the per-access safety guard before a load/store, returning a
-    /// (possibly rewritten) address register. The returned register is what
-    /// later code uses as the effective wasm-side address.
+    /// (possibly rewritten) address register **and the residual static offset**
+    /// the caller must use in the subsequent access's addressing mode. Modes
+    /// that consume the offset into the guarded address (Mask) return `0` so
+    /// nothing is re-added after the bound is applied; pass-through modes
+    /// return `offset` unchanged.
     ///
     /// Behaviour by mode:
     /// - `None` / `Pmp`: pass-through (no instructions emitted; PMP handles
-    ///   faults via hardware).
+    ///   faults via hardware). Returns `(addr, offset)`.
     /// - `Software { mem_size }`: emit
     ///   `addi guard, addr, +(offset + access_size - 1)`
     ///   `lui/addi mlim, mem_size`
     ///   `bgeu guard, mlim, Ltrap`
     ///   `j Lok ; Ltrap: ebreak ; Lok:`
     ///   The check guards the last byte of the access, matching the ARM
-    ///   software-bounds-check from §3.1.
-    /// - `Mask { mask }`: emit `andi rd, addr, mask` (when `mask` fits in 12 bits)
-    ///   or `lui/addi mtmp, mask; and rd, addr, mtmp` otherwise. The result is
-    ///   the masked address; the caller uses *that* for the subsequent access.
+    ///   software-bounds-check from §3.1. Returns `(addr, offset)` — the
+    ///   access itself is unchanged, the guard traps first when OOB.
+    /// - `Mask { mask }` (#655, the #651 class — RISC-V twin of ARM PR #654):
+    ///   compute `masked = min((operand + offset) & mask, size - access_size)`
+    ///   and return `(masked, 0)`. The static offset is folded BEFORE the AND
+    ///   (a post-mask offset escapes the bound by up to ~4 GiB), and the start
+    ///   is clamped so the access's FINAL byte stays inside the memory (the
+    ///   AND bounds only the first byte; a multi-byte access starting in the
+    ///   last `access_size - 1` bytes would overhang).
+    ///
+    ///   u33 soundness of ADD-then-AND: `ea = operand + offset < 2^33` (both
+    ///   u32). The RV `add` computes `ea mod 2^32`; every set bit of `mask`
+    ///   (= size-1 < 2^32) lies below bit 32, so
+    ///   `(ea mod 2^32) & mask == ea & mask` — the u33 carry is annihilated
+    ///   by the AND either way. Arbitrary 32-bit offsets are handled exactly;
+    ///   no decline needed.
     fn emit_bounds_check(
         &mut self,
         addr: Reg,
         offset: u32,
         access_size: u32,
-    ) -> Result<Reg, SelectorError> {
+    ) -> Result<(Reg, u32), SelectorError> {
         match self.options.bounds {
-            RvBoundsMode::None | RvBoundsMode::Pmp => Ok(addr),
+            RvBoundsMode::None | RvBoundsMode::Pmp => Ok((addr, offset)),
             RvBoundsMode::Software { mem_size } => {
                 let end_byte = offset.checked_add(access_size.saturating_sub(1)).ok_or(
                     SelectorError::ImmediateTooLarge {
@@ -2419,14 +2439,41 @@ impl Selector {
                 self.out.push(RiscVOp::Label { name: trap_label });
                 self.out.push(RiscVOp::Ebreak);
                 self.out.push(RiscVOp::Label { name: ok_label });
-                Ok(addr)
+                Ok((addr, offset))
             }
             RvBoundsMode::Mask { mask } => {
                 let masked = self.alloc_temp();
+                // 1. Fold the static offset FIRST: ea = operand + offset.
+                //    Masking the operand alone would let any non-zero static
+                //    offset escape the bound when the caller re-adds it (#655).
+                let ea = if offset == 0 {
+                    addr
+                } else {
+                    if offset < 2048 {
+                        self.out.push(RiscVOp::Addi {
+                            rd: masked,
+                            rs1: addr,
+                            imm: offset as i32,
+                        });
+                    } else {
+                        let otmp = self.alloc_temp();
+                        emit_load_imm(&mut self.out, otmp, offset as i32);
+                        self.out.push(RiscVOp::Add {
+                            rd: masked,
+                            rs1: addr,
+                            rs2: otmp,
+                        });
+                    }
+                    masked
+                };
+                // 2. AND with mask = size-1 (the size-vs-size-1 audit: the
+                //    mask is built as `mem_size - 1` in `build_options`, and
+                //    the power-of-two contract is enforced there at compile
+                //    time — a non-power-of-two size declines loudly).
                 if mask <= 0x7FF {
                     self.out.push(RiscVOp::Andi {
                         rd: masked,
-                        rs1: addr,
+                        rs1: ea,
                         imm: mask as i32,
                     });
                 } else {
@@ -2434,18 +2481,51 @@ impl Selector {
                     emit_load_imm(&mut self.out, mtmp, mask as i32);
                     self.out.push(RiscVOp::And {
                         rd: masked,
-                        rs1: addr,
+                        rs1: ea,
                         rs2: mtmp,
                     });
                 }
-                Ok(masked)
+                // 3. Clamp the start to size - access_size so the access's
+                //    FINAL byte (start + access_size - 1) stays inside the
+                //    bound — mirrors #654's CMP/IT-HI clamp and #640's
+                //    `offset + access_size - 1` software-guard rule. Skipped
+                //    for byte accesses (a single byte cannot overhang). The
+                //    clamp never alters a wasm-defined access: a masked start
+                //    above size - access_size for an in-range ea implies
+                //    `ea + access_size - 1 >= size`, which wasm traps — the
+                //    mask profile deliberately replaces that trap with a
+                //    deterministic in-bounds access (wrap-not-trap, design
+                //    doc §3.1 path C).
+                if access_size > 1 {
+                    // = size - access_size; saturate for the pathological
+                    // mem_size < access_size case (every access clamps to 0).
+                    let limit_val = mask.saturating_sub(access_size - 1);
+                    let limit = self.alloc_temp();
+                    emit_load_imm(&mut self.out, limit, limit_val as i32);
+                    let ok_label = self.fresh_label("Lmask_ok");
+                    // bgeu limit, masked, Lmask_ok → start is in bounds,
+                    // skip the clamp; otherwise masked = limit.
+                    self.out.push(RiscVOp::Branch {
+                        cond: Branch::Geu,
+                        rs1: limit,
+                        rs2: masked,
+                        label: ok_label.clone(),
+                    });
+                    self.out.push(RiscVOp::Addi {
+                        rd: masked,
+                        rs1: limit,
+                        imm: 0,
+                    });
+                    self.out.push(RiscVOp::Label { name: ok_label });
+                }
+                Ok((masked, 0))
             }
         }
     }
 
     fn lower_load_word(&mut self, op: &WasmOp, offset: u32) -> Result<(), SelectorError> {
         let addr = self.pop_i32(op)?;
-        let addr = self.emit_bounds_check(addr, offset, 4)?;
+        let (addr, offset) = self.emit_bounds_check(addr, offset, 4)?;
         let dst = self.alloc_temp();
         // tmp = base + addr
         let tmp = self.alloc_temp();
@@ -2475,7 +2555,7 @@ impl Selector {
             LoadKind::I8S | LoadKind::I8U => 1,
             LoadKind::I16S | LoadKind::I16U => 2,
         };
-        let addr = self.emit_bounds_check(addr, offset, access_size)?;
+        let (addr, offset) = self.emit_bounds_check(addr, offset, access_size)?;
         let dst = self.alloc_temp();
         let tmp = self.alloc_temp();
         self.out.push(RiscVOp::Add {
@@ -2524,7 +2604,7 @@ impl Selector {
             StoreKind::Half => 2,
             StoreKind::Word => 4,
         };
-        let addr = self.emit_bounds_check(addr, offset, access_size)?;
+        let (addr, offset) = self.emit_bounds_check(addr, offset, access_size)?;
         let tmp = self.alloc_temp();
         self.out.push(RiscVOp::Add {
             rd: tmp,
@@ -3093,6 +3173,9 @@ impl Selector {
     /// memory layout, matching wasm's spec (lo at lower address).
     fn lower_i64_load(&mut self, op: &WasmOp, offset: u32) -> Result<(), SelectorError> {
         let addr = self.pop_i32(op)?;
+        // #655 audit: i64 accesses were emitted with NO guard in Software and
+        // Mask modes — guard the full 8-byte access like the i32 lowerings.
+        let (addr, offset) = self.emit_bounds_check(addr, offset, 8)?;
         let tmp = self.alloc_temp();
         let lo = self.alloc_temp();
         let hi = self.alloc_temp();
@@ -3129,6 +3212,11 @@ impl Selector {
     fn lower_i64_store(&mut self, op: &WasmOp, offset: u32) -> Result<(), SelectorError> {
         let (lo, hi) = self.pop_i64(op)?;
         let addr = self.pop_i32(op)?;
+        // #655 audit: i64 accesses were emitted with NO guard in Software and
+        // Mask modes — guard the full 8-byte access like the i32 lowerings.
+        // (Popped operands are op-pinned, so the guard's scratch allocations
+        // cannot land on lo/hi/addr.)
+        let (addr, offset) = self.emit_bounds_check(addr, offset, 8)?;
         let tmp = self.alloc_temp();
         self.out.push(RiscVOp::Add {
             rd: tmp,
@@ -5871,6 +5959,167 @@ mod tests {
                 op,
                 RiscVOp::And { .. } | RiscVOp::Andi { .. }
             )) >= 1
+        );
+    }
+
+    /// #655 (the #651 class, RISC-V twin): in Mask mode the static offset must
+    /// be folded BEFORE the AND — the access's own immediate must be 0, so
+    /// nothing is re-added after the bound is applied. The pre-fix lowering
+    /// emitted `and masked, addr, mask` then `lw dst, offset(base+masked)`,
+    /// letting the offset escape the bound.
+    #[test]
+    fn rv32_mask_folds_offset_before_and_655() {
+        let opts = SelectorOptions {
+            bounds: RvBoundsMode::Mask { mask: 0xFFFF },
+            signed_div_overflow_trap: true,
+        };
+        let out = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Load {
+                    offset: 0x7FF,
+                    align: 2,
+                },
+                WasmOp::End,
+            ],
+            1,
+            opts,
+        );
+        // The word load's immediate must be 0 — the offset was consumed by
+        // the masked effective-address computation.
+        let lw_imms: Vec<i32> = out
+            .iter()
+            .filter_map(|op| match op {
+                RiscVOp::Lw { imm, .. } => Some(*imm),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            lw_imms,
+            vec![0],
+            "mask mode must consume the static offset (residual imm 0), got {lw_imms:?}"
+        );
+        // An offset-folding add must appear BEFORE the mask AND.
+        let and_pos = out
+            .iter()
+            .position(|op| matches!(op, RiscVOp::And { .. } | RiscVOp::Andi { .. }))
+            .expect("mask AND expected");
+        let addi_pos = out
+            .iter()
+            .position(|op| matches!(op, RiscVOp::Addi { imm: 0x7FF, .. }))
+            .expect("offset fold (addi +0x7FF) expected");
+        assert!(
+            addi_pos < and_pos,
+            "offset must be folded before the AND (addi at {addi_pos}, and at {and_pos})"
+        );
+    }
+
+    /// #655: multi-byte accesses in Mask mode must clamp the start to
+    /// `size - access_size` (bgeu + copy) so the FINAL byte stays in bounds;
+    /// byte accesses cannot overhang and must NOT pay the clamp.
+    #[test]
+    fn rv32_mask_clamps_final_byte_for_multibyte_only_655() {
+        let opts = SelectorOptions {
+            bounds: RvBoundsMode::Mask { mask: 0xFFFF },
+            signed_div_overflow_trap: true,
+        };
+        let word = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Load {
+                    offset: 0,
+                    align: 2,
+                },
+                WasmOp::End,
+            ],
+            1,
+            opts,
+        );
+        assert!(
+            count(&word, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Geu,
+                    ..
+                }
+            )) >= 1,
+            "word access must emit the final-byte clamp (bgeu), got: {word:?}"
+        );
+        let byte = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Load8U {
+                    offset: 0,
+                    align: 0,
+                },
+                WasmOp::End,
+            ],
+            1,
+            opts,
+        );
+        assert_eq!(
+            count(&byte, |op| matches!(op, RiscVOp::Branch { .. })),
+            0,
+            "byte access cannot overhang — no clamp branch expected, got: {byte:?}"
+        );
+    }
+
+    /// #655 audit: i64 load/store were emitted with NO guard in Software and
+    /// Mask modes. Both must now guard the full 8-byte access.
+    #[test]
+    fn rv32_i64_load_store_guarded_655() {
+        let sw = SelectorOptions {
+            bounds: RvBoundsMode::Software { mem_size: 0x10000 },
+            signed_div_overflow_trap: true,
+        };
+        let load = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I64Load {
+                    offset: 0,
+                    align: 3,
+                },
+                WasmOp::Drop,
+                WasmOp::End,
+            ],
+            1,
+            sw,
+        );
+        assert!(
+            count(&load, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Geu,
+                    ..
+                }
+            )) >= 1
+                && count(&load, |op| matches!(op, RiscVOp::Ebreak)) >= 1,
+            "software mode must guard i64.load (bgeu + ebreak), got: {load:?}"
+        );
+        let mask = SelectorOptions {
+            bounds: RvBoundsMode::Mask { mask: 0xFFFF },
+            signed_div_overflow_trap: true,
+        };
+        let store = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::LocalGet(0),
+                WasmOp::I64ExtendI32U,
+                WasmOp::I64Store {
+                    offset: 0,
+                    align: 3,
+                },
+                WasmOp::End,
+            ],
+            1,
+            mask,
+        );
+        assert!(
+            count(&store, |op| matches!(
+                op,
+                RiscVOp::And { .. } | RiscVOp::Andi { .. }
+            )) >= 1,
+            "mask mode must mask i64.store's effective address, got: {store:?}"
         );
     }
 
