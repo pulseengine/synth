@@ -611,7 +611,12 @@ fn compile_wasm_to_arm(
         && wasm_ops
             .iter()
             .any(|op| matches!(op, WasmOp::GlobalGet(_) | WasmOp::GlobalSet(_)));
-    let arm_instrs = if config.no_optimize
+    // VCR-VER-001 (#242): `post_exhaust` scopes the post-exhaustion cleanup
+    // extensions to functions whose bytes the #580 spill-on-exhaustion
+    // machinery actually shaped (bridge-reported). Everything else — the
+    // direct path, non-exhausted optimized functions — stays byte-identical
+    // flag-on (the `vcr_ver_001_gate_242` lock's contract).
+    let (arm_instrs, post_exhaust) = if config.no_optimize
         || config.relocatable
         || has_br_table
         || has_value_carry
@@ -625,7 +630,7 @@ fn compile_wasm_to_arm(
         if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
             eprintln!("[path-debug] direct (pre-gate)");
         }
-        select_direct()?
+        (select_direct()?, false)
     } else {
         let opt_config = if config.loom_compat {
             OptimizationConfig::loom_compat()
@@ -664,13 +669,16 @@ fn compile_wasm_to_arm(
                 if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
                     eprintln!("[path-debug] optimized (ir_to_arm ok)");
                 }
-                arm_ops
-                    .into_iter()
-                    .map(|op| ArmInstruction {
-                        op,
-                        source_line: None,
-                    })
-                    .collect()
+                (
+                    arm_ops
+                        .into_iter()
+                        .map(|op| ArmInstruction {
+                            op,
+                            source_line: None,
+                        })
+                        .collect(),
+                    bridge.spill_on_exhaust_fired(),
+                )
             }
             // Issue #120: the optimized path declines modules it cannot lower
             // (notably scalar f32/f64 ops — the IR has no float opcodes). Fall
@@ -681,7 +689,7 @@ fn compile_wasm_to_arm(
                 if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
                     eprintln!("[path-debug] direct (fallback: {e})");
                 }
-                select_direct()?
+                (select_direct()?, false)
             }
         }
     };
@@ -745,7 +753,17 @@ fn compile_wasm_to_arm(
             Reg::R7,
             Reg::R8,
         ];
-        let (out, stats) = synth_synthesis::liveness::reallocate_function(&arm_instrs, &POOL);
+        // VCR-VER-001 (#242): on a function the spill-on-exhaustion machinery
+        // shaped, the terminal segment gets relaxed live-out pinning (only
+        // R0/R1 are observable past `bx lr` at this pre-prologue position) so
+        // the colourer can lower R4-R8-homed tails into caller-saved R0-R3 —
+        // shrinking the `push {r4-r8,lr}` the #580 exhaustion shapes pay for.
+        // `post_exhaust == false` selects the shipping pass bit for bit.
+        let (out, stats) = synth_synthesis::liveness::reallocate_function_post_exhaust(
+            &arm_instrs,
+            &POOL,
+            post_exhaust,
+        );
         if std::env::var("SYNTH_REALLOC_STATS").is_ok() {
             eprintln!(
                 "[range-realloc] {} segments: {} reallocated, {} declined ({} validator-rejected), {} need spill (step 4)",
@@ -956,13 +974,57 @@ fn compile_wasm_to_arm(
     // and restores the pre-flip bytes (CI-gated by
     // `frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes`). Any
     // other value (or unset) runs the pass.
+    // VCR-VER-001 post-exhaustion extensions (#242, the PR #659 verdict): with
+    // `SYNTH_SPILL_ON_EXHAUST` active the #580 allocation-time Belady spill
+    // keeps exhausted functions on the optimized path, and its slots present
+    // shapes the shipping pass structurally cannot fire on (fresh-monotonic
+    // slots defeat the overwrite-only DCE; the eviction store's source is
+    // redefined immediately, defeating store→reload forwarding; R2/R3 are
+    // never touched again, so the rename-target deadness proof declines them).
+    // `post_exhaust` (bridge-scoped, see above) enables const
+    // rematerialization of spilled constants, R2/R3 exit-dead rename targets,
+    // and per-pair pressure commit — see `apply_spill_realloc_post_exhaust`.
+    // Flag off (the default): `false` selects the shipping behavior bit for
+    // bit.
     let arm_instrs = if !std::env::var("SYNTH_SPILL_REALLOC").is_ok_and(|v| v == "0") {
-        let (out, n) = synth_synthesis::liveness::apply_spill_realloc(&arm_instrs);
+        let (out, n) =
+            synth_synthesis::liveness::apply_spill_realloc_post_exhaust(&arm_instrs, post_exhaust);
         let (out, d) = synth_synthesis::liveness::eliminate_dead_frame_stores(&out);
-        let (out, u) = synth_synthesis::liveness::eliminate_unread_frame_stores(&out);
+        let (mut out, u) = synth_synthesis::liveness::eliminate_unread_frame_stores(&out);
+        let (mut tn, mut td, mut tu) = (n, d, u);
+        // Post-exhaustion only: iterate the triple to a bounded fixpoint. Each
+        // dissolved spill pair frees registers and removes stores, exposing
+        // rename windows and holder chains the previous iteration could not
+        // prove — the allocation-time Belady slots (#580) routinely need two
+        // or three rounds where the shipping single round suffices for the
+        // default path's slots. Every iteration is individually gate-proven
+        // (value-trace equality, pool pressure, strict shrink), so iterating
+        // composes soundly; the bound keeps compile time deterministic.
+        if post_exhaust {
+            let mut progress = n + d + u > 0;
+            for _ in 0..3 {
+                if !progress {
+                    break;
+                }
+                let (o, n) =
+                    synth_synthesis::liveness::apply_spill_realloc_post_exhaust(&out, true);
+                let (o, d) = synth_synthesis::liveness::eliminate_dead_frame_stores(&o);
+                let (o, u) = synth_synthesis::liveness::eliminate_unread_frame_stores(&o);
+                progress = n + d + u > 0;
+                (tn, td, tu) = (tn + n, td + d, tu + u);
+                out = o;
+            }
+            // The cleanup can leave the spill frame with zero surviving
+            // accesses (every reload rematerialized/dissolved, every store
+            // swept) — the balanced `sub sp,#K`/`add sp,#K` is then pure
+            // overhead. `elide_dead_frame` proves that and removes the pair;
+            // its early run (post-realloc) could not, because the spill
+            // traffic was still in the stream at that point.
+            out = synth_synthesis::liveness::elide_dead_frame(&out).unwrap_or(out);
+        }
         if std::env::var("SYNTH_FUSE_STATS").is_ok() {
             eprintln!(
-                "[spill-realloc] {n} reload(s) forwarded/eliminated, {d} newly-dead frame store(s) removed, {u} unread-slot store(s) removed"
+                "[spill-realloc] {tn} reload(s) forwarded/eliminated, {td} newly-dead frame store(s) removed, {tu} unread-slot store(s) removed"
             );
         }
         out

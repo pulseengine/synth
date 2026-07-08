@@ -686,6 +686,13 @@ pub struct OptimizerBridge {
     /// declines the function to the direct selector (which implements it);
     /// `None`/`Mpu` emit no inline guard (byte-identical to before).
     bounds_check: BoundsCheckConfig,
+    /// VCR-VER-001 (#242): whether the LAST `ir_to_arm` call's output was
+    /// actually shaped by the spill-on-exhaustion machinery (a pre-step
+    /// reinstate/evict fired, or a constant-divisor guard was elided). The
+    /// backend scopes the post-exhaustion cleanup extensions to exactly these
+    /// functions, so a flag-on compile leaves every untouched function
+    /// byte-identical (the `vcr_ver_001_gate_242` lock's contract).
+    spill_on_exhaust_fired: std::cell::Cell<bool>,
 }
 
 impl OptimizerBridge {
@@ -697,6 +704,7 @@ impl OptimizerBridge {
             spill_on_exhaust: None,
             volatile_segments: Vec::new(),
             bounds_check: BoundsCheckConfig::None,
+            spill_on_exhaust_fired: std::cell::Cell::new(false),
         }
     }
 
@@ -708,7 +716,14 @@ impl OptimizerBridge {
             spill_on_exhaust: None,
             volatile_segments: Vec::new(),
             bounds_check: BoundsCheckConfig::None,
+            spill_on_exhaust_fired: std::cell::Cell::new(false),
         }
+    }
+
+    /// VCR-VER-001 (#242): did the last [`OptimizerBridge::ir_to_arm`] output
+    /// get shaped by the spill-on-exhaustion machinery? See the field doc.
+    pub fn spill_on_exhaust_fired(&self) -> bool {
+        self.spill_on_exhaust_fired.get()
     }
 
     /// #377: set the `--safety-bounds` mode (see [`OptimizerBridge::bounds_check`]).
@@ -2934,6 +2949,38 @@ impl OptimizerBridge {
     /// it always was — it just no longer kills the process. Callers in the
     /// fuzz/AOT pipeline propagate the `Err` instead of crashing.
     pub fn ir_to_arm(&self, instructions: &[Instruction], num_params: usize) -> Result<Vec<ArmOp>> {
+        self.spill_on_exhaust_fired.set(false);
+        let (out, acted, guards_elided) = self.ir_to_arm_impl(instructions, num_params, true)?;
+        // VCR-VER-001 scoping (#242): constant-divisor guard elision is part
+        // of the post-exhaustion QUALITY story — it exists so a function that
+        // only compiles on this path *because of the spill lever* is not worse
+        // than its direct lowering. A function the exhaustion machinery never
+        // touched must stay byte-identical flag-on (the `vcr_ver_001_gate_242`
+        // contract), so if guards were elided but no pre-step action fired,
+        // rebuild without elision. (One extra lowering pass for exactly the
+        // functions in that corner; allocation is deterministic, so the
+        // rebuild differs only by the reinstated guards.)
+        if guards_elided > 0 && !acted {
+            let (out, acted, _) = self.ir_to_arm_impl(instructions, num_params, false)?;
+            self.spill_on_exhaust_fired.set(acted);
+            return Ok(out);
+        }
+        self.spill_on_exhaust_fired.set(acted || guards_elided > 0);
+        Ok(out)
+    }
+
+    /// The lowering behind [`OptimizerBridge::ir_to_arm`]. Returns the ARM
+    /// stream plus two VCR-VER-001 facts: whether the spill-on-exhaustion
+    /// pre-step ACTED (reinstated a spilled source / evicted for a dest or
+    /// pair — i.e. flag-on-only behavior shaped the bytes), and how many
+    /// constant-divisor trap guards were elided (`elide_div_guards` gates the
+    /// elision; `false` keeps every guard, byte-identical to shipping).
+    fn ir_to_arm_impl(
+        &self,
+        instructions: &[Instruction],
+        num_params: usize,
+        elide_div_guards: bool,
+    ) -> Result<(Vec<ArmOp>, bool, usize)> {
         use crate::rules::{ArmOp, Operand2, Reg};
         use std::collections::HashMap;
 
@@ -3457,6 +3504,55 @@ impl OptimizerBridge {
         };
         let spill_on_exhaust = spill_pairs.is_some();
         let pair_partner: HashMap<u32, (u32, bool)> = spill_pairs.unwrap_or_default();
+        // VCR-VER-001 post-exhaustion quality (#242, the PR #659 verdict):
+        // single-def `Const` values, consulted by the DivS/DivU/RemS/RemU
+        // handlers to elide trap guards a constant divisor makes unreachable
+        // (divide-by-zero when c ≠ 0; the DivS INT_MIN/-1 overflow when
+        // c ∉ {0, -1}) — the direct selector's #209 Opt-1a guard elision,
+        // which the optimized path lacked and which is what made a spilled
+        // `signed_div_const` compile WORSE than its direct lowering (34→76 B).
+        // Gated on `spill_on_exhaust` twice over: (a) flag off ⇒ empty map ⇒
+        // byte-identical, and (b) the scope gate has already proven every
+        // opcode is in the modeled i32 subset, so `spill_i32_def` enumerates
+        // EVERY def and a multi-defined vreg can never smuggle in a stale
+        // constant (only the first def of a vreg may register a value).
+        // VCR-VER-001 (#242): tracks whether flag-on-only machinery actually
+        // shaped this function's bytes (pre-step reinstate/evict) and how many
+        // divisor guards were elided — the wrapper's scoping facts.
+        let mut exhaust_acted = false;
+        let mut guards_elided = 0usize;
+        let exhaust_const_vals: HashMap<u32, i32> = if spill_on_exhaust && elide_div_guards {
+            let mut vals = HashMap::new();
+            let mut defined = std::collections::HashSet::new();
+            let mut total = true; // every op's defs enumerable, or no map at all
+            for inst in instructions.iter() {
+                let Some(defs) = spill_exhaust_defs(&inst.opcode) else {
+                    total = false;
+                    break;
+                };
+                for d in defs {
+                    if !defined.insert(d) {
+                        vals.remove(&d); // redefined: never trust the value
+                    } else if let Opcode::Const { dest, value } = &inst.opcode
+                        && dest.0 == d
+                    {
+                        vals.insert(d, *value);
+                    }
+                }
+            }
+            if total { vals } else { HashMap::new() }
+        } else {
+            HashMap::new()
+        };
+        // NOTE (VCR-VER-001, measured dead end): widening the reload pool
+        // with caller-saved R2/R3 was tried and REVERTED — reload targets in
+        // R2/R3 consume exactly the exit-dead rename targets the post-hoc
+        // spill-rechoice pass (`apply_spill_realloc_post_exhaust`) needs, and
+        // eviction COUNT is dest-driven (R4-R8 only), so the net effect was
+        // strictly worse (spill_rung_581 +8.8% → +14.7% on the cycle proxy).
+        // The genuine allocation-time fix is dest allocation over the full
+        // R0-R8 pool — `alloc_i32_scratch`'s fixed R4-R8 pool is the
+        // residual named in scripts/repro/vcr_ver_001_gate.md.
         // Belady next-use table: for each vreg, the (sorted) instruction
         // positions where it is read. "Farthest next use" picks the victim.
         // i64 sources contribute BOTH halves (#587).
@@ -3573,6 +3669,7 @@ impl OptimizerBridge {
                         vreg_to_arm.insert(v_hi, p_hi);
                         operand_regs.push(p_lo);
                         operand_regs.push(p_hi);
+                        exhaust_acted = true;
                         continue;
                     }
                     // A free pool register, by `alloc_i32_scratch`'s in-use
@@ -3586,6 +3683,7 @@ impl OptimizerBridge {
                     let rd = free
                         .or_else(|| {
                             spill_evict_farthest(
+                                &SPILL_ON_EXHAUST_POOL,
                                 spill_idx,
                                 &operand_regs,
                                 &use_positions,
@@ -3634,6 +3732,7 @@ impl OptimizerBridge {
                     });
                     vreg_to_arm.insert(*v, rd);
                     operand_regs.push(rd);
+                    exhaust_acted = true;
                 }
                 if let Some(d) = spill_i32_scratch_dest(&inst.opcode)
                     && !vreg_to_arm.contains_key(&d)
@@ -3646,6 +3745,7 @@ impl OptimizerBridge {
                     });
                     if pool_full {
                         let freed = spill_evict_farthest(
+                            &SPILL_ON_EXHAUST_POOL,
                             spill_idx,
                             &operand_regs,
                             &use_positions,
@@ -3693,6 +3793,7 @@ impl OptimizerBridge {
                         {
                             r12_exhausted.set(true);
                         }
+                        exhaust_acted |= freed.is_some();
                     }
                 }
                 // #587: pre-free a legal even pair for handlers that call
@@ -3712,7 +3813,7 @@ impl OptimizerBridge {
                     && find_free_spill_pair(&vreg_to_arm, &local_to_reg, &param_reserved_regs, &[])
                         .is_none()
                 {
-                    let _ = spill_evict_pair_farthest(
+                    let freed_pair = spill_evict_pair_farthest(
                         spill_idx,
                         &operand_regs,
                         &use_positions,
@@ -3726,6 +3827,7 @@ impl OptimizerBridge {
                         &mut next_spill_offset,
                         &mut arm_instrs,
                     );
+                    exhaust_acted |= freed_pair.is_some();
                 }
             }
 
@@ -4000,52 +4102,71 @@ impl OptimizerBridge {
                     );
                     vreg_to_arm.insert(dest.0, rd);
 
+                    // VCR-VER-001 (#242): a single-def constant divisor makes
+                    // the trap conditions statically decidable — elide the
+                    // guards a nonzero (and, for overflow, non-minus-one)
+                    // constant can never fire (the direct selector's #209
+                    // Opt-1a elision; empty map ⇒ both guards stay, flag-off
+                    // byte-identical).
+                    let divisor = exhaust_const_vals.get(&src2.0).copied();
+                    let elide_zero = matches!(divisor, Some(c) if c != 0);
+                    let elide_ovf = matches!(divisor, Some(c) if c != 0 && c != -1);
+
                     // Trap check 1: divide by zero
-                    arm_instrs.push(ArmOp::Cmp {
-                        rn: rm,
-                        op2: Operand2::Imm(0),
-                    });
-                    arm_instrs.push(ArmOp::BCondOffset {
-                        cond: Condition::NE,
-                        offset: 0,
-                    });
-                    arm_instrs.push(ArmOp::Udf { imm: 0 });
+                    if elide_zero {
+                        guards_elided += 1;
+                    } else {
+                        arm_instrs.push(ArmOp::Cmp {
+                            rn: rm,
+                            op2: Operand2::Imm(0),
+                        });
+                        arm_instrs.push(ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 0,
+                        });
+                        arm_instrs.push(ArmOp::Udf { imm: 0 });
+                    }
 
                     // Trap check 2: signed overflow (INT_MIN / -1)
-                    // Load INT_MIN (0x80000000) into R12
-                    arm_instrs.push(ArmOp::Movw {
-                        rd: Reg::R12,
-                        imm16: 0,
-                    });
-                    arm_instrs.push(ArmOp::Movt {
-                        rd: Reg::R12,
-                        imm16: 0x8000,
-                    });
-                    // CMP dividend, INT_MIN
-                    arm_instrs.push(ArmOp::Cmp {
-                        rn,
-                        op2: Operand2::Reg(Reg::R12),
-                    });
-                    // BNE.N +3 (skip overflow check if dividend != INT_MIN)
-                    // Skip 8 bytes: CMN.W(4) + BNE(2) + UDF(2)
-                    // Branch target = PC + (imm8 << 1) = B+4 + 6 = B+10 (SDIV)
-                    arm_instrs.push(ArmOp::BCondOffset {
-                        cond: Condition::NE,
-                        offset: 3,
-                    });
-                    // CMN divisor, #1 (check if divisor == -1: -1 + 1 = 0 sets Z flag)
-                    // CMN.W is 4 bytes
-                    arm_instrs.push(ArmOp::Cmn {
-                        rn: rm,
-                        op2: Operand2::Imm(1),
-                    });
-                    // BNE.N +0 (skip UDF if divisor != -1)
-                    arm_instrs.push(ArmOp::BCondOffset {
-                        cond: Condition::NE,
-                        offset: 0,
-                    });
-                    // UDF #1 (trap on overflow)
-                    arm_instrs.push(ArmOp::Udf { imm: 1 });
+                    if elide_ovf {
+                        guards_elided += 1;
+                    }
+                    if !elide_ovf {
+                        // Load INT_MIN (0x80000000) into R12
+                        arm_instrs.push(ArmOp::Movw {
+                            rd: Reg::R12,
+                            imm16: 0,
+                        });
+                        arm_instrs.push(ArmOp::Movt {
+                            rd: Reg::R12,
+                            imm16: 0x8000,
+                        });
+                        // CMP dividend, INT_MIN
+                        arm_instrs.push(ArmOp::Cmp {
+                            rn,
+                            op2: Operand2::Reg(Reg::R12),
+                        });
+                        // BNE.N +3 (skip overflow check if dividend != INT_MIN)
+                        // Skip 8 bytes: CMN.W(4) + BNE(2) + UDF(2)
+                        // Branch target = PC + (imm8 << 1) = B+4 + 6 = B+10 (SDIV)
+                        arm_instrs.push(ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 3,
+                        });
+                        // CMN divisor, #1 (check if divisor == -1: -1 + 1 = 0 sets Z flag)
+                        // CMN.W is 4 bytes
+                        arm_instrs.push(ArmOp::Cmn {
+                            rn: rm,
+                            op2: Operand2::Imm(1),
+                        });
+                        // BNE.N +0 (skip UDF if divisor != -1)
+                        arm_instrs.push(ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 0,
+                        });
+                        // UDF #1 (trap on overflow)
+                        arm_instrs.push(ArmOp::Udf { imm: 1 });
+                    }
 
                     arm_instrs.push(ArmOp::Sdiv { rd, rn, rm });
                     last_result_vreg = Some(dest.0);
@@ -4062,16 +4183,21 @@ impl OptimizerBridge {
                     );
                     vreg_to_arm.insert(dest.0, rd);
 
-                    // Trap check: divide by zero
-                    arm_instrs.push(ArmOp::Cmp {
-                        rn: rm,
-                        op2: Operand2::Imm(0),
-                    });
-                    arm_instrs.push(ArmOp::BCondOffset {
-                        cond: Condition::NE,
-                        offset: 0,
-                    });
-                    arm_instrs.push(ArmOp::Udf { imm: 0 });
+                    // Trap check: divide by zero. VCR-VER-001 (#242): elided
+                    // for a single-def nonzero constant divisor (see DivS).
+                    if matches!(exhaust_const_vals.get(&src2.0), Some(c) if *c != 0) {
+                        guards_elided += 1;
+                    } else {
+                        arm_instrs.push(ArmOp::Cmp {
+                            rn: rm,
+                            op2: Operand2::Imm(0),
+                        });
+                        arm_instrs.push(ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 0,
+                        });
+                        arm_instrs.push(ArmOp::Udf { imm: 0 });
+                    }
 
                     arm_instrs.push(ArmOp::Udiv { rd, rn, rm });
                     last_result_vreg = Some(dest.0);
@@ -4089,16 +4215,22 @@ impl OptimizerBridge {
                     );
                     vreg_to_arm.insert(dest.0, rd);
 
-                    // Trap check: divide by zero (rem_s doesn't trap on INT_MIN % -1)
-                    arm_instrs.push(ArmOp::Cmp {
-                        rn: rm,
-                        op2: Operand2::Imm(0),
-                    });
-                    arm_instrs.push(ArmOp::BCondOffset {
-                        cond: Condition::NE,
-                        offset: 0,
-                    });
-                    arm_instrs.push(ArmOp::Udf { imm: 0 });
+                    // Trap check: divide by zero (rem_s doesn't trap on INT_MIN % -1).
+                    // VCR-VER-001 (#242): elided for a single-def nonzero
+                    // constant divisor (see DivS).
+                    if matches!(exhaust_const_vals.get(&src2.0), Some(c) if *c != 0) {
+                        guards_elided += 1;
+                    } else {
+                        arm_instrs.push(ArmOp::Cmp {
+                            rn: rm,
+                            op2: Operand2::Imm(0),
+                        });
+                        arm_instrs.push(ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 0,
+                        });
+                        arm_instrs.push(ArmOp::Udf { imm: 0 });
+                    }
 
                     // Use MLS: rd = ra - rn * rm, where ra = dividend, result of div in temp
                     arm_instrs.push(ArmOp::Sdiv {
@@ -4126,16 +4258,21 @@ impl OptimizerBridge {
                     );
                     vreg_to_arm.insert(dest.0, rd);
 
-                    // Trap check: divide by zero
-                    arm_instrs.push(ArmOp::Cmp {
-                        rn: rm,
-                        op2: Operand2::Imm(0),
-                    });
-                    arm_instrs.push(ArmOp::BCondOffset {
-                        cond: Condition::NE,
-                        offset: 0,
-                    });
-                    arm_instrs.push(ArmOp::Udf { imm: 0 });
+                    // Trap check: divide by zero. VCR-VER-001 (#242): elided
+                    // for a single-def nonzero constant divisor (see DivS).
+                    if matches!(exhaust_const_vals.get(&src2.0), Some(c) if *c != 0) {
+                        guards_elided += 1;
+                    } else {
+                        arm_instrs.push(ArmOp::Cmp {
+                            rn: rm,
+                            op2: Operand2::Imm(0),
+                        });
+                        arm_instrs.push(ArmOp::BCondOffset {
+                            cond: Condition::NE,
+                            offset: 0,
+                        });
+                        arm_instrs.push(ArmOp::Udf { imm: 0 });
+                    }
 
                     arm_instrs.push(ArmOp::Udiv {
                         rd: Reg::R12,
@@ -6505,7 +6642,7 @@ impl OptimizerBridge {
             ));
         }
 
-        Ok(arm_instrs)
+        Ok((arm_instrs, exhaust_acted, guards_elided))
     }
 }
 
@@ -6995,6 +7132,51 @@ fn spill_i32_sources(op: &Opcode) -> Vec<u32> {
 /// `Const` has its own, larger pool with eviction; `Load`/`Call` bind fixed
 /// registers). Used by the pre-step to free a pool register BEFORE the handler
 /// runs, so `alloc_i32_scratch` never reaches its R12 exhaustion fallback.
+/// EVERY vreg `op` defines, total over the spill-on-exhaust modeled subset
+/// ([`spill_on_exhaust_supported`]) — or `None` for anything outside it.
+/// Used by the VCR-VER-001 single-def `Const` scan: the divisor-guard elision
+/// must see every def (a missed redefinition could smuggle a stale constant),
+/// so a single `None` disables the whole map — decline-to-empty, never a
+/// wrong value.
+fn spill_exhaust_defs(op: &Opcode) -> Option<Vec<u32>> {
+    // i32 scratch dests + the local-backed `Load`/`TeeStore` dests.
+    if let Opcode::Load { dest, .. } | Opcode::TeeStore { dest, .. } = op {
+        return Some(vec![dest.0]);
+    }
+    if let Some(d) = spill_i32_scratch_dest(op) {
+        return Some(vec![d]);
+    }
+    // i64 pair defs (I64Const/Load/Add/.../Extend).
+    if let Some((lo, hi)) = spill_pair_def(op) {
+        return Some(vec![lo, hi]);
+    }
+    match op {
+        // i64 ops with an i32 destination.
+        Opcode::I64Eq { dest, .. }
+        | Opcode::I64Ne { dest, .. }
+        | Opcode::I64LtS { dest, .. }
+        | Opcode::I64LtU { dest, .. }
+        | Opcode::I64LeS { dest, .. }
+        | Opcode::I64LeU { dest, .. }
+        | Opcode::I64GtS { dest, .. }
+        | Opcode::I64GtU { dest, .. }
+        | Opcode::I64GeS { dest, .. }
+        | Opcode::I64GeU { dest, .. }
+        | Opcode::I64Eqz { dest, .. }
+        | Opcode::I32WrapI64 { dest, .. } => Some(vec![dest.0]),
+        // Modeled ops that define no vreg.
+        Opcode::Nop
+        | Opcode::Label { .. }
+        | Opcode::Store { .. }
+        | Opcode::MemStore { .. }
+        | Opcode::MemStoreSubword { .. }
+        | Opcode::GlobalSet { .. }
+        | Opcode::Return { .. } => Some(vec![]),
+        // Anything else: not enumerable here — disable the const map.
+        _ => None,
+    }
+}
+
 fn spill_i32_scratch_dest(op: &Opcode) -> Option<u32> {
     match op {
         Opcode::Add { dest, .. }
@@ -7058,6 +7240,7 @@ fn spill_i32_scratch_dest(op: &Opcode) -> Option<u32> {
 /// table cannot see.
 #[allow(clippy::too_many_arguments)]
 fn spill_evict_farthest(
+    pool: &[crate::rules::Reg],
     cur_idx: usize,
     avoid: &[crate::rules::Reg],
     use_positions: &std::collections::HashMap<u32, Vec<usize>>,
@@ -7073,12 +7256,15 @@ fn spill_evict_farthest(
 ) -> Option<crate::rules::Reg> {
     use crate::rules::Reg;
     // Deterministic candidate order: sort by vreg id (HashMap iteration order
-    // must never influence emitted bytes).
+    // must never influence emitted bytes). `pool` is the register set whose
+    // freeing helps the caller: the widened reload pool for source
+    // reinstatement, exactly `SPILL_ON_EXHAUST_POOL` for dest pre-freeing
+    // (`alloc_i32_scratch` cannot draw from R2/R3 — VCR-VER-001).
     let mut candidates: Vec<(u32, Reg)> = vreg_to_arm
         .iter()
         .map(|(&v, &r)| (v, r))
         .filter(|&(v, r)| {
-            SPILL_ON_EXHAUST_POOL.contains(&r)
+            pool.contains(&r)
                 && !local_vregs.contains(&v)
                 && !premapped_vregs.contains(&v)
                 // #587 pair guard: i64 halves are only ever spilled as
@@ -9377,6 +9563,209 @@ mod tests {
         assert!(
             store_regs.len() >= 2 && store_regs[0] == Reg::R4 && store_regs[1] == Reg::R5,
             "freeing (R4,R5) must displace its two singles first; got STRs {store_regs:?}: {arm:#?}"
+        );
+    }
+
+    // ---- VCR-VER-001: constant-divisor trap-guard elision (#242) ----
+
+    /// `p0 / C` as IR: a single-def Const divisor feeding a DivS/DivU.
+    fn const_div_ir(div: bool, signed: bool, c: i32) -> Vec<Instruction> {
+        let ops = vec![
+            Opcode::Load {
+                dest: vr(0),
+                addr: 0,
+            },
+            Opcode::Const {
+                dest: vr(1),
+                value: c,
+            },
+            match (div, signed) {
+                (true, true) => Opcode::DivS {
+                    dest: vr(2),
+                    src1: vr(0),
+                    src2: vr(1),
+                },
+                (true, false) => Opcode::DivU {
+                    dest: vr(2),
+                    src1: vr(0),
+                    src2: vr(1),
+                },
+                (false, true) => Opcode::RemS {
+                    dest: vr(2),
+                    src1: vr(0),
+                    src2: vr(1),
+                },
+                (false, false) => Opcode::RemU {
+                    dest: vr(2),
+                    src1: vr(0),
+                    src2: vr(1),
+                },
+            },
+        ];
+        ops.into_iter().map(inst).collect()
+    }
+
+    fn udf_count(arm: &[ArmOp]) -> usize {
+        arm.iter()
+            .filter(|op| matches!(op, ArmOp::Udf { .. }))
+            .count()
+    }
+
+    /// `const_div_ir` under REGISTER PRESSURE: six pad constants live across
+    /// the division exhaust the R4-R8 pool, so the flag-on pre-step must act
+    /// (the population the guard elision is scoped to).
+    fn pressure_div_ir(div: bool, signed: bool, c: i32) -> Vec<Instruction> {
+        let mut ops = vec![Opcode::Load {
+            dest: vr(0),
+            addr: 0,
+        }];
+        for i in 0..6u32 {
+            ops.push(Opcode::Const {
+                dest: vr(1 + i),
+                value: (11 * (i + 1)) as i32,
+            });
+        }
+        ops.push(Opcode::Const {
+            dest: vr(7),
+            value: c,
+        });
+        ops.push(match (div, signed) {
+            (true, true) => Opcode::DivS {
+                dest: vr(8),
+                src1: vr(0),
+                src2: vr(7),
+            },
+            (true, false) => Opcode::DivU {
+                dest: vr(8),
+                src1: vr(0),
+                src2: vr(7),
+            },
+            (false, true) => Opcode::RemS {
+                dest: vr(8),
+                src1: vr(0),
+                src2: vr(7),
+            },
+            (false, false) => Opcode::RemU {
+                dest: vr(8),
+                src1: vr(0),
+                src2: vr(7),
+            },
+        });
+        // Fold the pads + the quotient so everything is live across the div.
+        let mut acc = 8u32;
+        for i in 0..6u32 {
+            ops.push(Opcode::Add {
+                dest: vr(9 + i),
+                src1: vr(acc),
+                src2: vr(1 + i),
+            });
+            acc = 9 + i;
+        }
+        ops.into_iter().map(inst).collect()
+    }
+
+    #[test]
+    fn test_242_div_const_guards_elided_on_exhausted_function() {
+        // Nonzero, non-minus-one constant divisor UNDER PRESSURE (the spill
+        // machinery fires): both DivS guards go.
+        let mut bridge = OptimizerBridge::new();
+        bridge.set_spill_on_exhaust(true);
+        let arm = bridge
+            .ir_to_arm(&pressure_div_ir(true, true, 1000), 1)
+            .unwrap();
+        assert!(
+            bridge.spill_on_exhaust_fired(),
+            "precondition: the pressure shape must exercise the machinery"
+        );
+        assert_eq!(udf_count(&arm), 0, "no trap guard may survive: {arm:#?}");
+        assert!(
+            arm.iter().any(|op| matches!(op, ArmOp::Sdiv { .. })),
+            "the division itself must remain"
+        );
+        // DivU / RemS / RemU: the zero guard goes too.
+        for (div, signed) in [(true, false), (false, true), (false, false)] {
+            let arm = bridge
+                .ir_to_arm(&pressure_div_ir(div, signed, 7), 1)
+                .unwrap();
+            assert_eq!(udf_count(&arm), 0, "div={div} signed={signed}: {arm:#?}");
+        }
+    }
+
+    #[test]
+    fn test_242_div_const_guards_kept_flag_off() {
+        // Flag off: byte-identical to shipping — every guard stays.
+        let mut bridge = OptimizerBridge::new();
+        bridge.set_spill_on_exhaust(false);
+        let arm = bridge
+            .ir_to_arm(&const_div_ir(true, true, 1000), 1)
+            .unwrap();
+        assert_eq!(udf_count(&arm), 2, "flag-off keeps both DivS guards");
+        assert!(!bridge.spill_on_exhaust_fired());
+    }
+
+    #[test]
+    fn test_242_div_const_guards_kept_on_untouched_function_flag_on() {
+        // THE SCOPING CONTRACT (`vcr_ver_001_gate_242`): a function the
+        // exhaustion machinery never touches must stay byte-identical flag-on
+        // — the wrapper detects elision-without-action and rebuilds with the
+        // guards in place.
+        let mut on = OptimizerBridge::new();
+        on.set_spill_on_exhaust(true);
+        let arm_on = on.ir_to_arm(&const_div_ir(true, true, 1000), 1).unwrap();
+        assert!(!on.spill_on_exhaust_fired(), "no pressure: nothing fired");
+        let mut off = OptimizerBridge::new();
+        off.set_spill_on_exhaust(false);
+        let arm_off = off.ir_to_arm(&const_div_ir(true, true, 1000), 1).unwrap();
+        assert_eq!(arm_on, arm_off, "flag-on must be byte-identical here");
+        assert_eq!(udf_count(&arm_on), 2);
+    }
+
+    #[test]
+    fn test_242_div_const_guards_kept_for_trapping_constants() {
+        let mut bridge = OptimizerBridge::new();
+        bridge.set_spill_on_exhaust(true);
+        // C = 0 always traps: both guards stay (the zero guard IS the trap).
+        let arm = bridge
+            .ir_to_arm(&pressure_div_ir(true, true, 0), 1)
+            .unwrap();
+        assert_eq!(udf_count(&arm), 2, "zero divisor keeps every guard");
+        // C = -1: zero guard elided, INT_MIN/-1 overflow guard MUST stay.
+        let arm = bridge
+            .ir_to_arm(&pressure_div_ir(true, true, -1), 1)
+            .unwrap();
+        assert_eq!(udf_count(&arm), 1, "-1 divisor keeps the overflow guard");
+        assert!(
+            arm.iter().any(|op| matches!(op, ArmOp::Udf { imm: 1 })),
+            "the surviving guard is the overflow trap"
+        );
+        // RemS by -1 never overflows: zero guard elided, nothing else exists.
+        let arm = bridge
+            .ir_to_arm(&pressure_div_ir(false, true, -1), 1)
+            .unwrap();
+        assert_eq!(udf_count(&arm), 0, "rem_s by -1 needs no guard");
+    }
+
+    #[test]
+    fn test_242_div_const_map_distrusts_redefined_vreg() {
+        // The divisor vreg is redefined after the Const — the single-def scan
+        // must poison it and KEEP the guards (a stale constant here would be
+        // a silent unsoundness, the #582 class).
+        let mut ops = const_div_ir(true, true, 1000);
+        ops.insert(
+            2,
+            inst(Opcode::Add {
+                dest: vr(1), // redefines the "constant" vreg
+                src1: vr(0),
+                src2: vr(0),
+            }),
+        );
+        let mut bridge = OptimizerBridge::new();
+        bridge.set_spill_on_exhaust(true);
+        let arm = bridge.ir_to_arm(&ops, 1).unwrap();
+        assert_eq!(
+            udf_count(&arm),
+            2,
+            "redefined divisor vreg: every guard must stay: {arm:#?}"
         );
     }
 }
