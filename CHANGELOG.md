@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.34.0] - 2026-07-08
+
+**Multi-table call_indirect ships (falcon's fused-component blocker); float
+and i64 global initializers actually reach the image; the mask bounds mode
+becomes sound. Six gale filings closed same-day across two waves.**
+
+### Added
+
+- **Multi-table call_indirect (#650, PR #653).** Tables form one contiguous
+  region at R11 (table N at a compile-time constant offset — sound because
+  tables are provably fixed-size per #646); the dispatch folds the offset
+  via R12; the #642 bounds guard checks the dispatched table's own size and
+  the closed-world type verification runs per (table, expected-type).
+  Single-table modules are byte-identical BY CONSTRUCTION (offset-0 emits
+  the literal pre-#650 sequence — verified by whole-ELF cmp across three
+  targets). New CI oracle: two-table aliasing canary + per-table OOB traps,
+  26/26 (both ISAs).
+
+### Fixed
+
+- **Global initializers never reached the self-contained image (#649,
+  PR #652; float side GI-FPU-001, PR #648).** The decoder only captured
+  i32.const inits, and the default Cortex-M image never materialized the
+  globals table at all — R9 was uninitialized and reads returned
+  vector-table garbage. Now the startup stub sets R9 and stores every init
+  word (width-aware #645 layout, i64 = two words); float-typed globals
+  loud-skip (GI-FPU-001). New oracle executes the image's real reset path
+  in unicorn: 4 divergences → 0. Sibling filed: #655 (RV32 mask-order twin).
+- **--safety-bounds mask applied the mask before the static offset (#651,
+  PR #654)** — the offset escaped the bound; AND the old mask used the
+  memory SIZE (not size-1), remapping in-bounds accesses to 0. All 8 mask
+  sites now share one helper: min((operand + offset) & (size-1),
+  size - access_size), with the u33-soundness argument documented and
+  large offsets materialized (no decline). Mini-interpreter oracle: 8/8
+  FAIL → 8/8 ok. Non-power-of-two memories decline loudly under mask.
+
 ## [0.33.1] - 2026-07-08
 
 **Two more gale-filed silent miscompiles fixed same-day: call_indirect gets
