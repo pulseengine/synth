@@ -479,6 +479,9 @@ impl ArmSemantics {
                 rd,
                 type_idx,
                 table_index_reg,
+                // #642: the bounds guard is a control-flow effect (trap), not
+                // modeled by the symbolic call result.
+                table_size: _,
             } => {
                 // Indirect function call through table
                 let _table_index = state.get_reg(table_index_reg).clone();

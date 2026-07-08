@@ -1998,6 +1998,7 @@ fn verify_call_indirect() {
                     rd: Reg::R0,
                     type_idx,
                     table_index_reg: Reg::R1,
+                    table_size: 4, // #642: bounds-guard immediate
                 },
             );
 
