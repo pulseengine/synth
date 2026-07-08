@@ -1251,6 +1251,9 @@ fn compile_command(
     let mut current_func_param_count: Option<u32> = None;
     let mut func_ret_i64: Vec<bool> = Vec::new(); // #311: call-result pair tagging
     let mut type_ret_i64: Vec<bool> = Vec::new(); // #311: call_indirect results
+    // #643: per-global slot widths (8 for i64/f64) — type-aware globals-table
+    // layout + register-pair global accesses. Empty for the demo path.
+    let mut global_widths: Vec<u32> = Vec::new();
     let mut current_func_block_arity: Vec<(u8, u8)> = Vec::new(); // #509: value-carrying branches
     // VCR-PERF-002 Phase 1 (#494): loom `wsc.facts` premises — whole-module
     // table + this function's slice. Threaded to the CompileConfig; NOT yet
@@ -1289,6 +1292,15 @@ fn compile_command(
                 .context("Failed to decode WASM module (signature tables)")?;
             func_ret_i64 = module.func_ret_i64;
             type_ret_i64 = module.type_ret_i64;
+            // #643: capture the declared global slot widths (indexed by
+            // global index; gaps default to the 4-byte legacy width).
+            for g in &module.globals {
+                let i = g.index as usize;
+                if global_widths.len() <= i {
+                    global_widths.resize(i + 1, 4);
+                }
+                global_widths[i] = g.slot_bytes;
+            }
             let module_func_params_i64 = module.func_params_i64;
             let module_func_arg_counts = module.func_arg_counts;
             // VCR-PERF-002 Phase 1 (#494): whatever facts loom forwarded
@@ -1447,6 +1459,8 @@ fn compile_command(
         current_func_param_count,
         func_ret_i64,
         type_ret_i64,
+        // #643: type-aware globals-table layout (8-byte i64/f64 slots).
+        global_widths,
         current_func_block_arity,
         // VCR-PERF-002 Phase 1 (#494): threaded but not yet consumed (inert
         // plumbing, like volatile_segments was in #543 Phase 1). Phase 2 reads
@@ -2134,10 +2148,11 @@ fn compile_all_exports(
         all_data_segments, // #237: active data segments, for --native-pointer-abi
         stack_pointer_global_opt, // #237: (index, init) of the SP global, if any
         all_globals, // #237: every defined global (index, init) — slot region under --native-pointer-abi
-        all_func_ret_i64, // #311: per-function returns-i64 (pair tagging)
-        all_type_ret_i64, // #311: per-type returns-i64 (call_indirect)
+        all_global_widths, // #643: per-global slot widths (8 for i64/f64) — type-aware R9 table layout
+        all_func_ret_i64,  // #311: per-function returns-i64 (pair tagging)
+        all_type_ret_i64,  // #311: per-type returns-i64 (call_indirect)
         all_func_params_i64, // #359: per-function declared param widths (stack-arg ABI)
-        all_wsc_facts, // VCR-PERF-002 Phase 1 (#494): loom wsc.facts premises
+        all_wsc_facts,     // VCR-PERF-002 Phase 1 (#494): loom wsc.facts premises
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
@@ -2231,6 +2246,7 @@ fn compile_all_exports(
             Vec::new(), // #237: data segments not threaded for WAST (single-module .wasm path covers it)
             None,       // #237: SP-global promotion is single-module .wasm only
             Vec::new(), // #237: globals slot region is single-module .wasm only
+            Vec::new(), // #643: WAST fixture suite is i32-only — legacy 4-byte global slots
             Vec::new(), // #311: WAST runs the fixture suite; i32-only
             Vec::new(),
             Vec::new(), // #359: WAST fixture suite is i32-only — no stack params
@@ -2270,6 +2286,32 @@ fn compile_all_exports(
             .iter()
             .map(|g| (g.index, g.init_i32.unwrap_or(0)))
             .collect();
+        // #643: per-global slot widths (4 = i32/f32, 8 = i64/f64, 16 = v128),
+        // indexed by global index — the selector lays the R9 globals table out
+        // by summing these, giving i64 globals room for both words and
+        // shifting every later global's offset accordingly.
+        let global_widths: Vec<u32> = {
+            let mut widths = Vec::new();
+            for g in &module.globals {
+                let i = g.index as usize;
+                if widths.len() <= i {
+                    widths.resize(i + 1, 4);
+                }
+                widths[i] = g.slot_bytes;
+            }
+            widths
+        };
+        // #643: the native-pointer ABI materializes `__synth_globals` as
+        // 4-byte i32 slots (`idx * 4`); a wide (i64/f64/v128) global has no
+        // consistent slot there. Refuse up front — an honest error beats the
+        // silent high-word truncation this replaced.
+        if native_pointer_abi && global_widths.iter().any(|&w| w > 4) {
+            anyhow::bail!(
+                "--native-pointer-abi does not support i64/f64/v128 globals \
+                 (the `__synth_globals` slot region is 4-byte i32 slots) — \
+                 refusing to truncate them to 32 bits (#643)"
+            );
+        }
         // #235: compile not just the exports but every internal (non-imported)
         // function reachable from them via `call`. A loom-dissolved export can
         // retain a non-inlinable callee (e.g. a panic helper from an overflow
@@ -2295,6 +2337,7 @@ fn compile_all_exports(
             data_segs,
             sp_global,
             globals,
+            global_widths,
             module.func_ret_i64,
             module.type_ret_i64,
             module.func_params_i64,
@@ -2368,6 +2411,9 @@ fn compile_all_exports(
         stack_pointer_global: stack_pointer_global_opt,
         func_ret_i64: all_func_ret_i64.clone(),
         type_ret_i64: all_type_ret_i64.clone(),
+        // #643: per-global slot widths — i64/f64 globals get 8-byte slots and
+        // register-pair accesses; later globals' offsets shift accordingly.
+        global_widths: all_global_widths.clone(),
         // #359: indexed declared param widths (per full function index) — the
         // source of truth for the AAPCS stack-argument refusal. The per-function
         // `current_func_params_i64` is derived from this in the compile loop.

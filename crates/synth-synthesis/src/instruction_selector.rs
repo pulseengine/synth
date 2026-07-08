@@ -1889,6 +1889,14 @@ pub struct InstructionSelector {
     /// path refuses (Ok-or-Err) when any param is 64-bit. Empty ⇒ assume i32
     /// (the legacy path; every function with <=4 i32 params is byte-identical).
     params_i64: Vec<bool>,
+    /// #643: byte width of each defined global's storage slot, indexed by
+    /// global index — 4 for i32/f32, 8 for i64/f64, 16 for v128. The globals
+    /// table (R9-relative) is laid out by SUMMING these widths, NOT `idx * 4`:
+    /// an i64 global's value is a register pair stored at `[R9, off]` /
+    /// `[R9, off+4]`, and every LATER global's offset shifts with the wider
+    /// slot. Empty ⇒ every global assumed 4 bytes (the legacy layout;
+    /// hand-built op streams and i32-only modules stay byte-identical).
+    global_widths: Vec<u32>,
     /// #509: blocktype-arity side-table of the function being compiled —
     /// `(param_count, result_count)` of the k-th `Block`/`Loop`/`If` in the op
     /// stream (ordinal-keyed: rewrites like the #539 memory.grow fold shift op
@@ -2017,6 +2025,7 @@ impl InstructionSelector {
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
             params_i64: Vec::new(),
+            global_widths: Vec::new(),
             block_arity: Vec::new(),
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
@@ -2052,6 +2061,7 @@ impl InstructionSelector {
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
             params_i64: Vec::new(),
+            global_widths: Vec::new(),
             block_arity: Vec::new(),
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
@@ -2199,6 +2209,32 @@ impl InstructionSelector {
     /// Empty ⇒ every block treated as void (the legacy lowering).
     pub fn set_block_arity(&mut self, block_arity: Vec<(u8, u8)>) {
         self.block_arity = block_arity;
+    }
+
+    /// #643: register the module's per-global slot widths (4 = i32/f32,
+    /// 8 = i64/f64, 16 = v128) so global accesses use the type-aware summed
+    /// layout and i64 globals get a register-PAIR store/load. Empty ⇒ every
+    /// global assumed 4 bytes (the legacy `idx * 4` layout).
+    pub fn set_global_widths(&mut self, global_widths: Vec<u32>) {
+        self.global_widths = global_widths;
+    }
+
+    /// #643: byte width of global `idx`'s slot (4 when unknown — the legacy
+    /// assumption for hand-built op streams without a widths table).
+    fn global_slot_width(&self, idx: u32) -> u32 {
+        self.global_widths.get(idx as usize).copied().unwrap_or(4)
+    }
+
+    /// #643: byte offset of global `idx` in the R9 globals table — the SUM of
+    /// all earlier globals' slot widths. Equals `idx * 4` exactly when no
+    /// earlier global is wider than 4 bytes (so i32-only modules and every
+    /// existing fixture keep their addresses bit-identical). Slots are laid
+    /// out densely; an i64 slot is two word-aligned words (`off`, `off+4`) —
+    /// word alignment is all the paired `LDR`/`STR` lowering requires.
+    fn global_slot_offset(&self, idx: u32) -> i32 {
+        (0..idx as usize)
+            .map(|i| self.global_widths.get(i).copied().unwrap_or(4) as i32)
+            .sum()
     }
 
     pub fn set_native_pointer_stack(&mut self, sp_index: u32, sp_init: i32) {
@@ -2989,18 +3025,41 @@ impl InstructionSelector {
             GlobalGet(index) => {
                 // WASM globals are stored in a globals table in memory.
                 // R9 is the dedicated globals base register (set up by runtime startup).
-                // Each i32 global occupies 4 bytes: globals_base + index * 4.
+                // #643: slot offsets are the SUM of earlier globals' widths
+                // (i64/f64 slots are 8 bytes) — `idx * 4` only when every
+                // earlier global is i32/f32. This blind (0,1)-stack-effect
+                // path has no register-pair representation for the value, so
+                // a 64-bit global access is DECLINED loudly rather than
+                // truncated to one word (`select_with_stack` lowers the pair).
+                if self.global_slot_width(*index) != 4 {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "global.get {index} reads a {}-byte (i64/f64/v128) global — \
+                         the single-register selector path cannot lower a pair; \
+                         refusing to truncate to 32 bits (#643)",
+                        self.global_slot_width(*index)
+                    )));
+                }
                 vec![ArmOp::Ldr {
                     rd,
-                    addr: MemAddr::imm(Reg::R9, (*index as i32) * 4),
+                    addr: MemAddr::imm(Reg::R9, self.global_slot_offset(*index)),
                 }]
             }
             GlobalSet(index) => {
-                // Store value from source register to globals_base + index * 4.
+                // Store value from source register to the global's slot.
                 // R9 is the dedicated globals base register.
+                // #643: type-aware offset + loud decline for 64-bit globals
+                // (see GlobalGet above — storing one word dropped the hi half).
+                if self.global_slot_width(*index) != 4 {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "global.set {index} writes a {}-byte (i64/f64/v128) global — \
+                         the single-register selector path cannot lower a pair; \
+                         refusing to drop the high word (#643)",
+                        self.global_slot_width(*index)
+                    )));
+                }
                 vec![ArmOp::Str {
                     rd,
-                    addr: MemAddr::imm(Reg::R9, (*index as i32) * 4),
+                    addr: MemAddr::imm(Reg::R9, self.global_slot_offset(*index)),
                 }]
             }
             Select => {
@@ -9478,6 +9537,21 @@ impl InstructionSelector {
                 }
 
                 GlobalGet(global_idx) => {
+                    // #643: type-aware slot addressing. The offset is the SUM
+                    // of earlier globals' widths (an i64/f64 slot is 8 bytes),
+                    // NOT `idx * 4` — and an i64 global's value is a register
+                    // PAIR loaded from `[R9, off]` / `[R9, off+4]`. The old
+                    // single-word `idx * 4` lowering silently dropped the high
+                    // word of every i64 global.
+                    let slot_off = self.global_slot_offset(*global_idx);
+                    let slot_width = self.global_slot_width(*global_idx);
+                    if slot_width > 8 {
+                        return Err(synth_core::Error::synthesis(format!(
+                            "global.get {global_idx} (op {idx}) reads a \
+                             {slot_width}-byte (v128) global — no lowering; \
+                             refusing to truncate (#643)"
+                        )));
+                    }
                     // #237 (gale, mutex-on-silicon): under the native-pointer ABI,
                     // globals live in MATERIALIZED slots (`__synth_globals + idx*4`,
                     // emitted into the object's .data with their wasm init values)
@@ -9488,6 +9562,21 @@ impl InstructionSelector {
                     // global is rebased to an absolute pointer on read so address
                     // arithmetic and [r11=0 + addr] accesses see host pointers.
                     if self.native_pointer_abi {
+                        // #643: the materialized `__synth_globals` region is a
+                        // 4-byte-slot layout (i32 inits, `idx * 4` addressing,
+                        // emitted by the CLI). A wide global — or a 4-byte
+                        // global whose offset an earlier wide global shifted —
+                        // has no consistent slot there; decline loudly (the
+                        // CLI refuses such modules before codegen; this guards
+                        // direct `select_with_stack` drivers).
+                        if slot_width != 4 || slot_off != (*global_idx as i32) * 4 {
+                            return Err(synth_core::Error::synthesis(format!(
+                                "global.get {global_idx} (op {idx}): i64/f64 \
+                                 globals are unsupported under the native-pointer \
+                                 ABI's 4-byte `__synth_globals` slot layout — \
+                                 refusing to truncate (#643)"
+                            )));
+                        }
                         let dst = alloc_temp_or_spill(
                             &mut next_temp,
                             &mut stack,
@@ -9538,8 +9627,41 @@ impl InstructionSelector {
                         }
                         continue;
                     }
+                    // #643: an i64/f64 global is a register PAIR — load both
+                    // words from its 8-byte slot. The pair MUST be consecutive
+                    // in ALLOCATABLE_REGS (i64_pair_hi recovers the high reg
+                    // downstream, exactly like I64Load).
+                    if slot_width == 8 {
+                        let (dst_lo, dst_hi) = alloc_consecutive_pair(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[],
+                            &live_params,
+                            idx,
+                        )?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Ldr {
+                                rd: dst_lo,
+                                addr: MemAddr::imm(Reg::R9, slot_off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Ldr {
+                                rd: dst_hi,
+                                addr: MemAddr::imm(Reg::R9, slot_off + 4),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        stack.push(StackVal::i64(dst_lo));
+                        continue;
+                    }
                     // Load global value from globals table (R9 = globals base).
-                    // Each i32 global occupies 4 bytes at offset index * 4.
+                    // i32/f32 globals occupy one 4-byte slot at `slot_off`.
                     let dst = alloc_temp_or_spill(
                         &mut next_temp,
                         &mut stack,
@@ -9551,7 +9673,7 @@ impl InstructionSelector {
                     instructions.push(ArmInstruction {
                         op: ArmOp::Ldr {
                             rd: dst,
-                            addr: MemAddr::imm(Reg::R9, (*global_idx as i32) * 4),
+                            addr: MemAddr::imm(Reg::R9, slot_off),
                         },
                         source_line: Some(idx),
                     });
@@ -9560,6 +9682,68 @@ impl InstructionSelector {
                 }
 
                 GlobalSet(global_idx) => {
+                    // #643: type-aware slot addressing (see GlobalGet above) —
+                    // an i64/f64 global's value is a register PAIR stored to
+                    // `[R9, off]` / `[R9, off+4]`. The old single-word store
+                    // silently discarded the already-materialized high word.
+                    let slot_off = self.global_slot_offset(*global_idx);
+                    let slot_width = self.global_slot_width(*global_idx);
+                    if slot_width > 8 {
+                        return Err(synth_core::Error::synthesis(format!(
+                            "global.set {global_idx} (op {idx}) writes a \
+                             {slot_width}-byte (v128) global — no lowering; \
+                             refusing to truncate (#643)"
+                        )));
+                    }
+                    if slot_width == 8 {
+                        if self.native_pointer_abi {
+                            // 4-byte `__synth_globals` slot layout — see the
+                            // GlobalGet decline above.
+                            return Err(synth_core::Error::synthesis(format!(
+                                "global.set {global_idx} (op {idx}): i64/f64 \
+                                 globals are unsupported under the native-pointer \
+                                 ABI's 4-byte `__synth_globals` slot layout — \
+                                 refusing to drop the high word (#643)"
+                            )));
+                        }
+                        // The operand-stack top must actually BE a pair — a
+                        // width mismatch (invalid wasm / a producer we failed
+                        // to tag) would make i64_pair_hi fabricate a high reg.
+                        if !stack.last().map(StackVal::is_i64).unwrap_or(false) {
+                            return Err(synth_core::Error::synthesis(format!(
+                                "global.set {global_idx} (op {idx}) writes an \
+                                 8-byte global but the operand-stack top is not \
+                                 an i64 pair — refusing to fabricate a high \
+                                 word (#643)"
+                            )));
+                        }
+                        let val_lo = pop_operand(
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &live_params,
+                            idx,
+                        )?;
+                        let val_hi = i64_pair_hi(val_lo)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: val_lo,
+                                addr: MemAddr::imm(Reg::R9, slot_off),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Str {
+                                rd: val_hi,
+                                addr: MemAddr::imm(Reg::R9, slot_off + 4),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        continue;
+                    }
                     // Pop value from stack and store to globals table (R9 = globals base).
                     let val = pop_operand(
                         &mut stack,
@@ -9577,6 +9761,18 @@ impl InstructionSelector {
                     // absolute pointer is rebased back to a wasm offset before the
                     // store (slots hold offsets; no data relocation needed).
                     if self.native_pointer_abi {
+                        // #643: a 4-byte global whose offset an earlier wide
+                        // global shifted has no consistent slot in the CLI's
+                        // `idx * 4` `__synth_globals` layout — decline loudly
+                        // (mirrors the GlobalGet guard above).
+                        if slot_off != (*global_idx as i32) * 4 {
+                            return Err(synth_core::Error::synthesis(format!(
+                                "global.set {global_idx} (op {idx}): the module \
+                                 mixes i64/f64 globals into the native-pointer \
+                                 ABI's 4-byte `__synth_globals` slot layout — \
+                                 refusing an inconsistent offset (#643)"
+                            )));
+                        }
                         let mut reserved = live_params.clone();
                         reserved.push(val);
                         let stored = if let Some((sp_idx, _)) = self.sp_global
@@ -9633,7 +9829,7 @@ impl InstructionSelector {
                     instructions.push(ArmInstruction {
                         op: ArmOp::Str {
                             rd: val,
-                            addr: MemAddr::imm(Reg::R9, (*global_idx as i32) * 4),
+                            addr: MemAddr::imm(Reg::R9, slot_off),
                         },
                         source_line: Some(idx),
                     });
@@ -14975,6 +15171,168 @@ mod tests {
         // Should have ADD for the increment
         let has_add = instrs.iter().any(|i| matches!(&i.op, ArmOp::Add { .. }));
         assert!(has_add, "Should have ADD for i32.add");
+    }
+
+    // =========================================================================
+    // #643: i64 globals — 8-byte slots, register-pair store/load, and the
+    // layout shift of every global behind a wide slot
+    // =========================================================================
+
+    /// `global.get` of an i64 global loads BOTH words — a consecutive register
+    /// pair from `[R9, #0]` and `[R9, #4]` (was: one word, hi silently lost).
+    #[test]
+    fn i64_global_get_loads_pair_643() {
+        let mut selector = fresh_selector();
+        selector.set_global_widths(vec![8]);
+
+        let wasm_ops = vec![WasmOp::GlobalGet(0), WasmOp::Drop];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        let r9_loads: Vec<i32> = instrs
+            .iter()
+            .filter_map(|i| match &i.op {
+                ArmOp::Ldr { addr, .. } if addr.base == Reg::R9 => Some(addr.offset),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            r9_loads,
+            vec![0, 4],
+            "i64 global.get must load lo from [R9,#0] and hi from [R9,#4]"
+        );
+    }
+
+    /// `global.set` of an i64 global stores BOTH words of the popped pair.
+    #[test]
+    fn i64_global_set_stores_pair_643() {
+        let mut selector = fresh_selector();
+        selector.set_global_widths(vec![8]);
+
+        let wasm_ops = vec![
+            WasmOp::I64Const(0x1234_5678_9ABC_DEF0_u64 as i64),
+            WasmOp::GlobalSet(0),
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        let r9_stores: Vec<i32> = instrs
+            .iter()
+            .filter_map(|i| match &i.op {
+                ArmOp::Str { addr, .. } if addr.base == Reg::R9 => Some(addr.offset),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            r9_stores,
+            vec![0, 4],
+            "i64 global.set must store lo to [R9,#0] and hi to [R9,#4]"
+        );
+    }
+
+    /// The layout-shift canary: an i32 global declared AFTER an i64 one sits
+    /// at the SUM of earlier widths ([R9,#8]), not `idx * 4` ([R9,#4]) — a
+    /// pair fix without the offset shift would alias it with the i64's high
+    /// word.
+    #[test]
+    fn i32_global_after_i64_offset_shifts_643() {
+        let mut selector = fresh_selector();
+        selector.set_global_widths(vec![8, 4]);
+
+        let wasm_ops = vec![
+            WasmOp::GlobalGet(1),
+            WasmOp::I32Const(1),
+            WasmOp::I32Add,
+            WasmOp::GlobalSet(1),
+        ];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+
+        assert!(
+            instrs.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Ldr { addr, .. } if addr.base == Reg::R9 && addr.offset == 8
+            )),
+            "i32 global 1 behind an i64 slot must load from [R9,#8]"
+        );
+        assert!(
+            instrs.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Str { addr, .. } if addr.base == Reg::R9 && addr.offset == 8
+            )),
+            "i32 global 1 behind an i64 slot must store to [R9,#8]"
+        );
+        assert!(
+            !instrs.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Ldr { addr, .. } if addr.base == Reg::R9 && addr.offset == 4
+            )),
+            "the legacy idx*4 offset (4) would alias the i64's high word"
+        );
+    }
+
+    /// An empty widths table keeps the legacy `idx * 4` layout bit-identical
+    /// (hand-built op streams; i32-only modules never shift).
+    #[test]
+    fn global_widths_empty_keeps_legacy_layout_643() {
+        let mut selector = fresh_selector();
+        // no set_global_widths call
+        let wasm_ops = vec![WasmOp::GlobalGet(3), WasmOp::Drop];
+        let instrs = selector.select_with_stack(&wasm_ops, 0).unwrap();
+        assert!(
+            instrs.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Ldr { addr, .. } if addr.base == Reg::R9 && addr.offset == 12
+            )),
+            "without a widths table, global 3 keeps the legacy [R9,#12]"
+        );
+    }
+
+    /// The blind single-register path (`select`) cannot represent a pair —
+    /// it must DECLINE an i64 global access loudly, never truncate.
+    #[test]
+    fn i64_global_declined_on_select_default_643() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_global_widths(vec![8]);
+
+        let err = selector.select(&[WasmOp::GlobalGet(0)]).unwrap_err();
+        assert!(
+            err.to_string().contains("#643"),
+            "expected the #643 pair-decline, got: {err}"
+        );
+
+        let mut selector2 = InstructionSelector::new(db.rules().to_vec());
+        selector2.set_global_widths(vec![8]);
+        let err2 = selector2.select(&[WasmOp::GlobalSet(0)]).unwrap_err();
+        assert!(
+            err2.to_string().contains("#643"),
+            "expected the #643 pair-decline, got: {err2}"
+        );
+    }
+
+    /// A v128 global has no lowering — decline loudly on the stack path too.
+    #[test]
+    fn v128_global_declined_643() {
+        let mut selector = fresh_selector();
+        selector.set_global_widths(vec![16]);
+        let err = selector
+            .select_with_stack(&[WasmOp::GlobalGet(0), WasmOp::Drop], 0)
+            .unwrap_err();
+        assert!(err.to_string().contains("#643"), "got: {err}");
+    }
+
+    /// Defensive width check: an 8-byte global.set whose operand-stack top is
+    /// NOT an i64 pair (invalid wasm / untagged producer) must decline rather
+    /// than fabricate a high register via i64_pair_hi.
+    #[test]
+    fn i64_global_set_width_mismatch_declined_643() {
+        let mut selector = fresh_selector();
+        selector.set_global_widths(vec![8]);
+        let err = selector
+            .select_with_stack(&[WasmOp::I32Const(1), WasmOp::GlobalSet(0)], 0)
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("not an i64 pair"),
+            "expected the pair-width decline, got: {err}"
+        );
     }
 
     // =========================================================================
