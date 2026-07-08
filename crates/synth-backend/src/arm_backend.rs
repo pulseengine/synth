@@ -575,6 +575,14 @@ fn compile_wasm_to_arm(
         // from its fold set, and the bridge-level const-CSE declines wholesale
         // while any range is marked. Empty (the default) ⇒ byte-identical.
         bridge.set_volatile_segments(config.volatile_segments.clone());
+        // #377: thread `--safety-bounds` to the bridge. Pre-fix the optimized
+        // path ignored it — `software`/`mask` were SILENT NO-OPS on the path
+        // that lowers the bulk of a flight loop's i32 loads/stores (byte-
+        // identical to `none`, while the safety manifest claimed otherwise).
+        // `Software` now emits the inline guard per access; `Masking` declines
+        // memory-accessing functions to the direct selector; `None`/`Mpu` are
+        // byte-identical to before.
+        bridge.set_bounds_check(bounds_config);
         // `ir_to_arm` now returns `Result` — an `Err` means the optimized path
         // hit an unmapped vreg (issue-#93-class). Treat it identically to an
         // `optimize_full` failure: fall back to the direct selector rather
@@ -1543,6 +1551,118 @@ mod tests {
         assert_eq!(
             l.code, s.code,
             "--bounds-check should produce the same bytes as --safety-bounds=software"
+        );
+    }
+
+    /// #377: `--safety-bounds software` must be enforced on the OPTIMIZED path
+    /// too. Pre-fix, `software` was byte-identical to `none` there (a silent
+    /// no-op while the safety manifest claimed enforcement). The compiled
+    /// bytes must now (a) differ from `none` and (b) contain the inline
+    /// `CMP ip, sl` + `UDF` guard.
+    #[test]
+    fn arm_safety_bounds_software_enforced_on_optimized_path_377() {
+        let backend = ArmBackend::new();
+        // Dynamic-address store+load: the optimized path accepts this shape
+        // (no calls, no i64 params, ≤4 params).
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Store {
+                offset: 4,
+                align: 2,
+            },
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        // no_optimize NOT set — this exercises the optimized path.
+        let cfg_none = CompileConfig::default();
+        let cfg_sw = CompileConfig {
+            safety_bounds: SafetyBounds::Software,
+            ..Default::default()
+        };
+        let n = backend.compile_function("st", &ops, &cfg_none).unwrap();
+        let s = backend.compile_function("st", &ops, &cfg_sw).unwrap();
+        assert_ne!(
+            n.code, s.code,
+            "#377: software bounds must CHANGE optimized-path codegen (was a silent no-op)"
+        );
+        // Thumb-2 `UDF #0` is 0xDE00 (LE bytes: 00 DE); `CMP ip, sl` (T2
+        // high-reg) is 0x45D4 (LE: D4 45). Both must appear — one guard per
+        // access, trap inline.
+        let has_udf = s.code.windows(2).any(|w| w == [0x00, 0xDE]);
+        let has_cmp_ip_sl = s.code.windows(2).any(|w| w == [0xD4, 0x45]);
+        assert!(has_udf, "#377: inline UDF trap missing from optimized path");
+        assert!(
+            has_cmp_ip_sl,
+            "#377: CMP ip, sl bounds compare missing from optimized path"
+        );
+        // And `none` must contain NO UDF (the function has no other trap).
+        assert!(
+            !n.code.windows(2).any(|w| w == [0x00, 0xDE]),
+            "none must not contain a UDF for this function"
+        );
+    }
+
+    /// #377: `mpu` on the optimized path is codegen-passthrough — identical
+    /// bytes to `none` on BOTH paths (hardware enforcement is target-level;
+    /// synth does not emit MPU region programming — tracked separately in
+    /// #377's fix-direction discussion). This pins path-parity for `mpu`.
+    #[test]
+    fn arm_safety_bounds_mpu_optimized_path_parity_377() {
+        let backend = ArmBackend::new();
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I32Load {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        let cfg_none = CompileConfig::default();
+        let cfg_mpu = CompileConfig {
+            safety_bounds: SafetyBounds::Mpu,
+            ..Default::default()
+        };
+        let n = backend.compile_function("ld", &ops, &cfg_none).unwrap();
+        let m = backend.compile_function("ld", &ops, &cfg_mpu).unwrap();
+        assert_eq!(
+            n.code, m.code,
+            "Mpu and None must produce identical bytes on the optimized path too"
+        );
+    }
+
+    /// #377: `mask` on the optimized path declines to the direct selector
+    /// (honest degradation) — the compiled function must equal the
+    /// `--no-optimize` masking bytes, i.e. the flag is honored, never dropped.
+    #[test]
+    fn arm_safety_bounds_mask_optimized_path_declines_to_direct_377() {
+        let backend = ArmBackend::new();
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
+        ];
+        let cfg_mask_opt = CompileConfig {
+            safety_bounds: SafetyBounds::Mask,
+            ..Default::default()
+        };
+        let cfg_mask_direct = CompileConfig {
+            no_optimize: true,
+            safety_bounds: SafetyBounds::Mask,
+            ..Default::default()
+        };
+        let o = backend.compile_function("st", &ops, &cfg_mask_opt).unwrap();
+        let d = backend
+            .compile_function("st", &ops, &cfg_mask_direct)
+            .unwrap();
+        assert_eq!(
+            o.code, d.code,
+            "#377: mask on the optimized path must fall back to the direct selector's masking"
         );
     }
 

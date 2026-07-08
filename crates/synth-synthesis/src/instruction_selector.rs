@@ -23,7 +23,7 @@ pub enum BoundsCheckConfig {
     /// Equivalent to `None` from the selector's point of view but distinguished
     /// here so the safety-manifest can record the intent.
     Mpu,
-    /// Software bounds checking with CMP/BHS before each access
+    /// Software bounds checking with CMP + inline UDF trap before each access
     /// R10 holds the memory size, initialized by startup code
     Software,
     /// Masking: AND address with (memory_size - 1) for power-of-2 sizes
@@ -4859,7 +4859,7 @@ impl InstructionSelector {
                 // Software bounds check: verify last byte of access is in bounds
                 // ADD temp, addr_reg, #(offset + access_size - 1)
                 // CMP temp, R10 (memory size)
-                // BHS Trap_Handler
+                // BLO +0 (skip UDF) / UDF #0 (#377 inline trap)
                 let temp = Reg::R12;
                 let end_offset = offset + (access_size as i32) - 1;
                 vec![
@@ -4872,9 +4872,19 @@ impl InstructionSelector {
                         rn: temp,
                         op2: Operand2::Reg(Reg::R10),
                     },
-                    ArmOp::Bhs {
-                        label: "Trap_Handler".to_string(),
+                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
+                    // The previous `Bhs Trap_Handler` label branch resolved to
+                    // an offset-0 fallthrough NO-OP in a self-contained image
+                    // (the label is external, so `resolve_label_branches`
+                    // leaves the placeholder) — the check ran but never
+                    // trapped. Same inline pattern as the #374 bulk-memory
+                    // and div-by-zero guards; works identically under
+                    // `--relocatable` (UDF → UsageFault → platform handler).
+                    ArmOp::BCondOffset {
+                        cond: Condition::LO,
+                        offset: 0,
                     },
+                    ArmOp::Udf { imm: 0 },
                     load_op,
                 ]
             }
@@ -4933,9 +4943,19 @@ impl InstructionSelector {
                         rn: temp,
                         op2: Operand2::Reg(Reg::R10),
                     },
-                    ArmOp::Bhs {
-                        label: "Trap_Handler".to_string(),
+                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
+                    // The previous `Bhs Trap_Handler` label branch resolved to
+                    // an offset-0 fallthrough NO-OP in a self-contained image
+                    // (the label is external, so `resolve_label_branches`
+                    // leaves the placeholder) — the check ran but never
+                    // trapped. Same inline pattern as the #374 bulk-memory
+                    // and div-by-zero guards; works identically under
+                    // `--relocatable` (UDF → UsageFault → platform handler).
+                    ArmOp::BCondOffset {
+                        cond: Condition::LO,
+                        offset: 0,
                     },
+                    ArmOp::Udf { imm: 0 },
                     store_op,
                 ]
             }
@@ -4979,7 +4999,7 @@ impl InstructionSelector {
                 // Software bounds check: verify last byte of 8-byte access is in bounds
                 // ADD temp, addr_reg, #(offset + 8 - 1)
                 // CMP temp, R10 (memory size)
-                // BHS Trap_Handler
+                // BLO +0 (skip UDF) / UDF #0 (#377 inline trap)
                 let temp = Reg::R12;
                 let end_offset = offset + (access_size as i32) - 1;
                 vec![
@@ -4992,9 +5012,19 @@ impl InstructionSelector {
                         rn: temp,
                         op2: Operand2::Reg(Reg::R10),
                     },
-                    ArmOp::Bhs {
-                        label: "Trap_Handler".to_string(),
+                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
+                    // The previous `Bhs Trap_Handler` label branch resolved to
+                    // an offset-0 fallthrough NO-OP in a self-contained image
+                    // (the label is external, so `resolve_label_branches`
+                    // leaves the placeholder) — the check ran but never
+                    // trapped. Same inline pattern as the #374 bulk-memory
+                    // and div-by-zero guards; works identically under
+                    // `--relocatable` (UDF → UsageFault → platform handler).
+                    ArmOp::BCondOffset {
+                        cond: Condition::LO,
+                        offset: 0,
                     },
+                    ArmOp::Udf { imm: 0 },
                     load_op,
                 ]
             }
@@ -5048,9 +5078,19 @@ impl InstructionSelector {
                         rn: temp,
                         op2: Operand2::Reg(Reg::R10),
                     },
-                    ArmOp::Bhs {
-                        label: "Trap_Handler".to_string(),
+                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
+                    // The previous `Bhs Trap_Handler` label branch resolved to
+                    // an offset-0 fallthrough NO-OP in a self-contained image
+                    // (the label is external, so `resolve_label_branches`
+                    // leaves the placeholder) — the check ran but never
+                    // trapped. Same inline pattern as the #374 bulk-memory
+                    // and div-by-zero guards; works identically under
+                    // `--relocatable` (UDF → UsageFault → platform handler).
+                    ArmOp::BCondOffset {
+                        cond: Condition::LO,
+                        offset: 0,
                     },
+                    ArmOp::Udf { imm: 0 },
                     store_op,
                 ]
             }
@@ -5101,9 +5141,19 @@ impl InstructionSelector {
                         rn: temp,
                         op2: Operand2::Reg(Reg::R10),
                     },
-                    ArmOp::Bhs {
-                        label: "Trap_Handler".to_string(),
+                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
+                    // The previous `Bhs Trap_Handler` label branch resolved to
+                    // an offset-0 fallthrough NO-OP in a self-contained image
+                    // (the label is external, so `resolve_label_branches`
+                    // leaves the placeholder) — the check ran but never
+                    // trapped. Same inline pattern as the #374 bulk-memory
+                    // and div-by-zero guards; works identically under
+                    // `--relocatable` (UDF → UsageFault → platform handler).
+                    ArmOp::BCondOffset {
+                        cond: Condition::LO,
+                        offset: 0,
                     },
+                    ArmOp::Udf { imm: 0 },
                     load_op,
                 ]
             }
@@ -5154,9 +5204,19 @@ impl InstructionSelector {
                         rn: temp,
                         op2: Operand2::Reg(Reg::R10),
                     },
-                    ArmOp::Bhs {
-                        label: "Trap_Handler".to_string(),
+                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
+                    // The previous `Bhs Trap_Handler` label branch resolved to
+                    // an offset-0 fallthrough NO-OP in a self-contained image
+                    // (the label is external, so `resolve_label_branches`
+                    // leaves the placeholder) — the check ran but never
+                    // trapped. Same inline pattern as the #374 bulk-memory
+                    // and div-by-zero guards; works identically under
+                    // `--relocatable` (UDF → UsageFault → platform handler).
+                    ArmOp::BCondOffset {
+                        cond: Condition::LO,
+                        offset: 0,
                     },
+                    ArmOp::Udf { imm: 0 },
                     store_op,
                 ]
             }
@@ -5215,9 +5275,19 @@ impl InstructionSelector {
                         rn: temp,
                         op2: Operand2::Reg(Reg::R10),
                     },
-                    ArmOp::Bhs {
-                        label: "Trap_Handler".to_string(),
+                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
+                    // The previous `Bhs Trap_Handler` label branch resolved to
+                    // an offset-0 fallthrough NO-OP in a self-contained image
+                    // (the label is external, so `resolve_label_branches`
+                    // leaves the placeholder) — the check ran but never
+                    // trapped. Same inline pattern as the #374 bulk-memory
+                    // and div-by-zero guards; works identically under
+                    // `--relocatable` (UDF → UsageFault → platform handler).
+                    ArmOp::BCondOffset {
+                        cond: Condition::LO,
+                        offset: 0,
                     },
+                    ArmOp::Udf { imm: 0 },
                     load_op,
                 ]
             }
@@ -5281,9 +5351,19 @@ impl InstructionSelector {
                         rn: temp,
                         op2: Operand2::Reg(Reg::R10),
                     },
-                    ArmOp::Bhs {
-                        label: "Trap_Handler".to_string(),
+                    // #377: inline UDF trap (BLO +0 skips it when in-bounds).
+                    // The previous `Bhs Trap_Handler` label branch resolved to
+                    // an offset-0 fallthrough NO-OP in a self-contained image
+                    // (the label is external, so `resolve_label_branches`
+                    // leaves the placeholder) — the check ran but never
+                    // trapped. Same inline pattern as the #374 bulk-memory
+                    // and div-by-zero guards; works identically under
+                    // `--relocatable` (UDF → UsageFault → platform handler).
+                    ArmOp::BCondOffset {
+                        cond: Condition::LO,
+                        offset: 0,
                     },
+                    ArmOp::Udf { imm: 0 },
                     store_op,
                 ]
             }
@@ -11872,8 +11952,11 @@ mod tests {
         }];
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
-        // Should be: ADD temp, addr, #(offset+access_size-1); CMP temp, R10; BHS trap; LDR
-        assert_eq!(arm_instrs.len(), 4);
+        // Should be: ADD temp, addr, #(offset+access_size-1); CMP temp, R10;
+        // BLO +0 (skip trap); UDF #0; LDR  (#377: inline trap, not the old
+        // `Bhs Trap_Handler` which fell through as a no-op in self-contained
+        // images)
+        assert_eq!(arm_instrs.len(), 5);
 
         // First: ADD to calculate end-of-access address (offset=4, access_size=4 -> 4+4-1=7)
         match &arm_instrs[0].op {
@@ -11901,16 +11984,24 @@ mod tests {
             other => panic!("Expected Cmp against R10, got {:?}", other),
         }
 
-        // Third: BHS to trap handler
+        // Third: BLO +0 — skips the UDF when in-bounds (#377)
         match &arm_instrs[2].op {
-            ArmOp::Bhs { label } => {
-                assert_eq!(label, "Trap_Handler");
+            ArmOp::BCondOffset { cond, offset } => {
+                assert_eq!(*cond, Condition::LO);
+                assert_eq!(*offset, 0);
             }
-            other => panic!("Expected Bhs to Trap_Handler, got {:?}", other),
+            other => panic!("Expected BCondOffset LO +0, got {:?}", other),
         }
 
-        // Fourth: The actual LDR
+        // Fourth: the inline UDF trap (#377 — a real trap in a self-contained
+        // image, unlike the old external `Bhs Trap_Handler` fallthrough)
         match &arm_instrs[3].op {
+            ArmOp::Udf { imm: 0 } => {}
+            other => panic!("Expected Udf #0, got {:?}", other),
+        }
+
+        // Fifth: The actual LDR
+        match &arm_instrs[4].op {
             ArmOp::Ldr { .. } => {}
             other => panic!("Expected Ldr instruction, got {:?}", other),
         }
@@ -15637,12 +15728,20 @@ mod tests {
         }];
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
-        // With software bounds checking: ADD + CMP + BHS + LDRB
-        assert_eq!(arm_instrs.len(), 4);
+        // With software bounds checking (#377 inline trap):
+        // ADD + CMP + BLO +0 + UDF + LDRB
+        assert_eq!(arm_instrs.len(), 5);
         assert!(matches!(&arm_instrs[0].op, ArmOp::Add { .. }));
         assert!(matches!(&arm_instrs[1].op, ArmOp::Cmp { .. }));
-        assert!(matches!(&arm_instrs[2].op, ArmOp::Bhs { .. }));
-        assert!(matches!(&arm_instrs[3].op, ArmOp::Ldrb { .. }));
+        assert!(matches!(
+            &arm_instrs[2].op,
+            ArmOp::BCondOffset {
+                cond: Condition::LO,
+                offset: 0
+            }
+        ));
+        assert!(matches!(&arm_instrs[3].op, ArmOp::Udf { imm: 0 }));
+        assert!(matches!(&arm_instrs[4].op, ArmOp::Ldrb { .. }));
     }
 
     #[test]
@@ -15659,9 +15758,11 @@ mod tests {
         }];
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
-        // With software bounds checking: ADD + CMP + BHS + STRH
-        assert_eq!(arm_instrs.len(), 4);
-        assert!(matches!(&arm_instrs[3].op, ArmOp::Strh { .. }));
+        // With software bounds checking (#377 inline trap):
+        // ADD + CMP + BLO +0 + UDF + STRH
+        assert_eq!(arm_instrs.len(), 5);
+        assert!(matches!(&arm_instrs[3].op, ArmOp::Udf { imm: 0 }));
+        assert!(matches!(&arm_instrs[4].op, ArmOp::Strh { .. }));
     }
 
     #[test]
