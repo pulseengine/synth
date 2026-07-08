@@ -395,9 +395,42 @@ artifacts:
       (sel_dsl_mirror_pin_generated_rules_match_handwritten_arms_242) asserts
       hand-written ≡ generated ArmOp sequences for all 7 rules; frozen
       byte-gate green with the flag OFF (by construction) AND with
-      SYNTH_SEL_DSL=1. NOT yet done (hence not verified): the default flip and
-      its full-differential re-freeze ritual; select_with_stack/optimizer_bridge
-      migration; div/rem (VCR-ISA-001-gated).
+      SYNTH_SEL_DSL=1.
+
+      INCREMENT 2 LANDED (2026-07-08, flag-off,
+      docs/design/vcr-sel-001-increment-2.md): +14 rules = 21 total, each with
+      its 1:1 Qed (21/21, 0 Admitted, 0 holdout theorems). (a) i32 register
+      shifts shl/shr_s/shr_u + rotr — measured TIER-A (single instruction, NO
+      scratch; the inc-1 side-condition machinery turned out unneeded for
+      shifts, remains exercised by rotl alone), discharged by the same
+      synth_binop_proof_poly; delegated in BOTH selectors (Delegation::Both),
+      byte-identical. (b) The ten i32 comparisons — the CMP+SetCond shape,
+      modeled per the Compilation.v convention as CMP; MOV rd #0; MOVcc rd #1;
+      NO aliasing side conditions (CMP latches NZCV before rd is written, so
+      the universal quantifier admits every aliasing); 7/10 discharged by
+      synth_cmp_binop_proof_poly (synth_cmp_binop_proof generalized to
+      universally-quantified registers) + the same three manual scripts
+      (ne/lt_s/lt_u) as their CorrectnessI32.v ancestors, register-generalized
+      verbatim. DELEGATION HONESTY: comparisons delegate in
+      select_with_stack's reg-reg arm (the load-bearing CMP+SetCond emission,
+      byte-identical by construction; the #258 imm-fold peephole stays
+      hand-written on both flag settings, pinned) because select_default's
+      comparison arms are a blind bare-Cmp lowering that never materializes
+      the 0/1 result — production-unreachable AND unprovable as T1
+      result-correspondence, so they stay hand-written (the increment's
+      documented holdout; this choice also keeps the flip strictly
+      byte-invisible). Mirror-pins:
+      sel_dsl_mirror_pin_generated_rules_match_handwritten_arms_242 (the 11
+      select_default-delegated rules) +
+      sel_dsl_mirror_pin_select_with_stack_rules_byte_identical_242 (the 14
+      select_with_stack-delegated rules, with a non-vacuity window check that
+      the delegation actually fired) +
+      sel_dsl_cmp_imm_fold_path_stays_handwritten_and_byte_identical_242.
+      FLIP EVIDENCE: with all 21 rules mirror-pinned byte-identical, nothing
+      byte-visible remains before the SYNTH_SEL_DSL default-on flip — the
+      flip is a later PR with the standard re-freeze ritual. NOT yet done
+      (hence not verified): that default flip; optimizer_bridge + the
+      remaining select_with_stack families; div/rem (VCR-ISA-001-gated).
     status: implemented
     tags: [codegen, selector, isle, verified-dsl, rocq, track-a, novel, release-v0.12.1]
     links:

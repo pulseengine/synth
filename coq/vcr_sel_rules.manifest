@@ -10,3 +10,17 @@ rule_i32_and
 rule_i32_or
 rule_i32_xor
 rule_i32_rotl
+rule_i32_shl
+rule_i32_shr_s
+rule_i32_shr_u
+rule_i32_rotr
+rule_i32_eq
+rule_i32_ne
+rule_i32_lt_s
+rule_i32_lt_u
+rule_i32_gt_s
+rule_i32_gt_u
+rule_i32_le_s
+rule_i32_le_u
+rule_i32_ge_s
+rule_i32_ge_u
