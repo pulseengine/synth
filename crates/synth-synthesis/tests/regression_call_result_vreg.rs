@@ -57,17 +57,44 @@ fn fib_wasm_ops() -> Vec<WasmOp> {
 /// #188: the optimized path must DECLINE a function containing calls so the
 /// backend falls back to the direct selector. (Previously it lowered the calls
 /// itself without modelling the caller-saved clobber — the miscompile.)
+///
+/// Pinned on a straight-line call sequence (no `if`/`else`): since #500 a real
+/// `if`/`else` declines EARLIER, at `optimize_full` — see the companion test
+/// below — so a call-only stream is what isolates the #188 `ir_to_arm` decline.
 #[test]
 fn optimized_path_declines_functions_with_calls() {
     let bridge = OptimizerBridge::new();
+    // `f(n) = g(n) + n` — a local call, no control flow.
+    let ops = vec![
+        WasmOp::LocalGet(0),
+        WasmOp::Call(1),
+        WasmOp::LocalGet(0),
+        WasmOp::I32Add,
+        WasmOp::End,
+    ];
     let (ir, _cfg, _stats) = bridge
-        .optimize_full(&fib_wasm_ops())
-        .expect("optimize_full should succeed for valid input");
+        .optimize_full(&ops)
+        .expect("optimize_full should succeed for a straight-line local call");
     let res = bridge.ir_to_arm(&ir, /* num_params = */ 1);
     assert!(
         res.is_err(),
         "ir_to_arm must decline call-containing functions (#188) so the backend \
          falls back to the direct selector — got Ok"
+    );
+}
+
+/// #500: a real `if`/`else` that survives the select-idiom preprocessing has no
+/// IR lowering (it used to be Nop'd — BOTH arms executed unconditionally), so
+/// `optimize_full` must decline it up front. The fib body pins this: it reaches
+/// neither the call lowering nor `ir_to_arm`.
+#[test]
+fn optimized_path_declines_real_if_else() {
+    let bridge = OptimizerBridge::new();
+    let res = bridge.optimize_full(&fib_wasm_ops());
+    assert!(
+        res.is_err(),
+        "optimize_full must decline a non-select `if`/`else` (#500) so the \
+         backend falls back to the direct selector — got Ok"
     );
 }
 

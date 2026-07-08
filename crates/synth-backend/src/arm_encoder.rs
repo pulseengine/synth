@@ -2606,14 +2606,32 @@ impl ArmEncoder {
                 let rd_bits = reg_to_bits(rd) as u16;
 
                 if let Operand2::Imm(imm) = op2 {
-                    if *imm <= 255 && rd_bits < 8 {
+                    // #498: the old test here was the SIGNED `*imm <= 255`,
+                    // so a negative immediate (e.g. -1) fell into the 16-bit
+                    // MOVS arm and encoded the wrong VALUE (#(imm & 0xFF) =
+                    // #0xFF). A positive imm above 0xFFFF was equally wrong:
+                    // MOVW truncates to 16 bits. Split on the UNSIGNED value:
+                    // imm8 → MOVS, imm16 → MOVW, anything wider (negative or
+                    // >0xFFFF) → the full-value MOVW+MOVT pair. No emitter
+                    // produces the wide shape today (both selectors
+                    // materialize wide constants as explicit Movw/Movt or
+                    // Movw+Mvn), so this is byte-identical on shipped paths —
+                    // it retires the latent wrong-value encodings the
+                    // `estimator_encoder_agreement` oracle had pinned.
+                    let uimm = *imm as u32;
+                    if uimm <= 255 && rd_bits < 8 {
                         // MOVS Rd, #imm8 (16-bit): 0010 0 Rd imm8
                         let imm_bits = (*imm as u16) & 0xFF;
                         let instr: u16 = 0x2000 | (rd_bits << 8) | imm_bits;
                         Ok(instr.to_le_bytes().to_vec())
+                    } else if uimm <= 0xFFFF {
+                        // Use 32-bit MOVW for 16-bit immediates
+                        self.encode_thumb32_movw(rd, uimm)
                     } else {
-                        // Use 32-bit MOVW for larger immediates
-                        self.encode_thumb32_movw(rd, *imm as u32)
+                        // Full 32-bit value: MOVW low16 + MOVT high16
+                        let mut bytes = self.encode_thumb32_movw(rd, uimm & 0xFFFF)?;
+                        bytes.extend(self.encode_thumb32_movt_raw(reg_to_bits(rd), uimm >> 16)?);
+                        Ok(bytes)
                     }
                 } else if let Operand2::Reg(rm) = op2 {
                     let rm_bits = reg_to_bits(rm) as u16;

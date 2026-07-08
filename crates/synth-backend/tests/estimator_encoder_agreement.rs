@@ -15,20 +15,17 @@
 //! estimator and the real encoder. This oracle pins one against the other for
 //! every op the optimized path emits, at the operand shapes it emits them in.
 //!
-//! ## Scope — the estimator-side gaps are now CLOSED; two survivors remain.
+//! ## Scope — the gap allowlist is EMPTY: every on-path op agrees exactly.
 //!
-//! The #498 estimator-alignment step (this PR) corrected every gap that was a
-//! pure estimator under/over-count against a CORRECT encoder length. Those are
-//! estimator-only edits (`estimate_arm_byte_size` in synth-synthesis) — they do
-//! not change emitted `.text` (verified: frozen anchors bit-identical), only the
-//! branch-displacement bookkeeping the estimator feeds. The oracle now asserts
-//! EXACT agreement for them, so any future drift fails loudly. Two divergences
-//! remain pinned as `KNOWN_GAP` because they are NOT simple table errors:
-//!
-//! - a NEW estimator drift (an added op left at the `_ => 2` default, or a
-//!   changed encoding) fails the agreement assertion loudly, and
-//! - a re-closure of one of the two survivors fails the "gap closed" check,
-//!   forcing the gap to be removed from the list.
+//! The #498 estimator-alignment step corrected every gap that was a pure
+//! estimator under/over-count against a CORRECT encoder length (estimator-only
+//! edits — no emitted `.text` change, only the branch-displacement bookkeeping
+//! the estimator feeds). The follow-up (#498/#500 lane) closed the two former
+//! `KNOWN_GAP` survivors as well, so the oracle now asserts EXACT agreement for
+//! EVERY case: a NEW estimator drift (an added op left at the `_ => 2` default,
+//! or a changed encoding) fails loudly, and a divergence that genuinely cannot
+//! be closed must be reintroduced here as a documented, pinned exception — not
+//! silently tolerated.
 //!
 //! ## Findings recorded here (correct + extend #498's original report)
 //! - #498 claimed `Cmp` high-reg drifts. It does NOT: the 16-bit CMP (T2,
@@ -45,33 +42,29 @@
 //!   `I64Popcnt` (200) and `I64Extend32S` (8) OVER-estimated. CLOSED: pinned to
 //!   the exact encoder lengths (74/78/126/124, 172, 6). (#610 later wrapped the
 //!   div/rem and rot expansions in the fixed-ABI marshal/restore + zero-divisor
-//!   trap — now 120/124/172/170 and 102, still exact-pinned here.)
-//! - SURVIVOR (structural): far branches (`BOffset`/`BCondOffset` with a large
-//!   displacement) need the 4-byte `.w` form but the estimator runs BEFORE
-//!   displacements are known, on a 0-offset placeholder, so it sizes them 2 —
-//!   a chicken-and-egg the single-pass estimator cannot resolve. Making it
-//!   offset-sensitive would either be cosmetic (production always sees offset 0)
-//!   or entangle with the displacement-resolution pass (byte-changing). Left as
-//!   a documented structural gap, not an estimator-table fix.
-//! - SURVIVOR (encoder-side, deferred): `Mov` with a small NEGATIVE immediate:
-//!   estimator sizes 4 (prudent), but the encoder's `if *imm <= 255` is a
-//!   *signed* test and emits a 2-byte `MOVS Rd, #(imm & 0xFF)` — a wrong-value
-//!   0xFF, a latent ENCODER bug for negative imm8. Aligning the estimator DOWN
-//!   to 2 would endorse a buggy encoding; the real fix is encoder-side (emits
-//!   different bytes → frozen-affecting → a separate gated PR). Kept pinned.
+//!   trap — now 120/124 and 102; #633 added the div_s INT64_MIN/-1 overflow
+//!   guard and #632 the popcnt result-carry, so div_s/rem_s/popcnt sit at
+//!   194/170/180 — still exact-pinned here.)
+//! - CLOSED (was the structural survivor): far branches (`BOffset`/
+//!   `BCondOffset` beyond the 2-byte short form) — the estimator is now
+//!   offset-sensitive, mirroring the encoder's exact range split (B.N imm11 /
+//!   B<cond>.N imm8 → 2, `.w` → 4). Production behavior is unchanged: the
+//!   bridge sizes branches on the offset-0 PLACEHOLDER (always short), and its
+//!   resolution pass now DECLINES any displacement that outgrows the short
+//!   form (#498 far-branch guard in `ir_to_arm`) instead of letting the wide
+//!   encoding silently shift the layout — the chicken-and-egg is resolved by
+//!   refusing the egg, loudly.
+//! - CLOSED (was the encoder-side survivor): `Mov` with a negative (or wider
+//!   than 0xFFFF) immediate. The encoder's signed `*imm <= 255` test emitted a
+//!   wrong-VALUE 2-byte `MOVS Rd, #(imm & 0xFF)` for negative imm, and MOVW
+//!   truncated positives above 16 bits. The encoder now splits on the unsigned
+//!   value (imm8 MOVS / imm16 MOVW / full-width MOVW+MOVT = 8 bytes) and the
+//!   estimator mirrors it. No emitter produces the wide shape (both selectors
+//!   materialize wide constants as explicit Movw/Movt or Movw+Mvn), so shipped
+//!   bytes are unchanged — verified by the frozen anchors.
 
 use synth_backend::ArmEncoder;
 use synth_synthesis::{ArmOp, Condition, MemAddr, Operand2, Reg, estimate_arm_byte_size};
-
-/// A documented divergence: the optimized-path estimator and the encoder
-/// disagree on this op's size today. Pinned to the exact measured pair so a
-/// regression (new drift) or a fix (gap closed) both trip the oracle.
-struct Gap {
-    est: usize,
-    enc: usize,
-    /// Why it diverges and which direction the branch lands.
-    _reason: &'static str,
-}
 
 fn mem(base: Reg) -> MemAddr {
     MemAddr {
@@ -82,32 +75,14 @@ fn mem(base: Reg) -> MemAddr {
 }
 
 /// One oracle case: a representative instruction at an operand shape the
-/// optimized path actually emits, and whether agreement is expected (`None`) or
-/// a documented `KNOWN_GAP` (`Some`).
+/// optimized path actually emits. Estimator and encoder must agree exactly.
 struct Case {
     label: &'static str,
     op: ArmOp,
-    gap: Option<Gap>,
 }
 
 fn agree(label: &'static str, op: ArmOp) -> Case {
-    Case {
-        label,
-        op,
-        gap: None,
-    }
-}
-
-fn gap(label: &'static str, op: ArmOp, est: usize, enc: usize, reason: &'static str) -> Case {
-    Case {
-        label,
-        op,
-        gap: Some(Gap {
-            est,
-            enc,
-            _reason: reason,
-        }),
-    }
+    Case { label, op }
 }
 
 /// The agreement cases. Operand shapes mirror what `ir_to_arm` emits: sub-word
@@ -827,40 +802,43 @@ fn cases() -> Vec<Case> {
                 elide_zero_guard: true,
             },
         ),
-        // ===================== REMAINING KNOWN GAPS =====================
-        // Two survivors, NOT simple estimator table errors — kept pinned.
-        // Far branches: the estimator sizes the 0-offset placeholder (it runs
-        // before displacements are resolved) as 2, but a far target needs the
-        // 4-byte form. Chicken-and-egg in the single-pass estimator.
-        gap(
-            "BOffset_far",
-            BOffset { offset: 5000 },
-            2,
-            4,
-            "far B needs T4 (4); estimator _=>2 on the pre-resolution placeholder. Under-estimate.",
-        ),
-        gap(
+        // === Former KNOWN_GAP survivors, now CLOSED (#498/#500 lane) ===
+        // Far branches: estimator now offset-sensitive, mirroring the
+        // encoder's short/`.w` range split. (Production only ever feeds the
+        // short form: the bridge sizes offset-0 placeholders and its
+        // resolution pass declines displacements that outgrow them.)
+        agree("BOffset_far", BOffset { offset: 5000 }),
+        agree(
             "BCondOffset_far",
             BCondOffset {
                 cond: Condition::EQ,
                 offset: 5000,
             },
-            2,
-            4,
-            "far Bcc needs T3 (4); estimator _=>2 on the pre-resolution placeholder. Under-estimate.",
         ),
-        // Negative small immediate: estimator prudently sizes 4; the encoder's
-        // signed `imm <= 255` test wrongly emits a 2-byte MOVS #(imm&0xFF).
-        // Latent ENCODER bug (wrong value), surfaced here. Tracked separately.
-        gap(
+        agree(
+            "BCondOffset_far_neg",
+            BCondOffset {
+                cond: Condition::NE,
+                offset: -200,
+            },
+        ),
+        // Negative / wide MOV immediates: the encoder now emits the
+        // full-value MOVW+MOVT pair (8 bytes) instead of the wrong-value
+        // 2-byte MOVS #(imm&0xFF) (negative) or a truncated MOVW (>0xFFFF);
+        // the estimator mirrors the three-way imm8/imm16/full split.
+        agree(
             "Mov_imm_neg",
             Mov {
                 rd: Reg::R0,
                 op2: Operand2::Imm(-1),
             },
-            4,
-            2,
-            "estimator 4 (prudent); encoder emits wrong-value 2-byte MOVS #0xFF (signed imm<=255 bug).",
+        ),
+        agree(
+            "Mov_imm_wide",
+            Mov {
+                rd: Reg::R0,
+                op2: Operand2::Imm(0x12345),
+            },
         ),
     ]
 }
@@ -1131,9 +1109,10 @@ fn coverage(op: &ArmOp) -> Coverage {
     }
 }
 
-/// The estimator must agree with the encoder for every op the optimized path
-/// emits — or the divergence must be a documented `KNOWN_GAP` pinned to its
-/// exact measured (estimate, encoder) pair.
+/// The estimator must agree with the encoder EXACTLY for every op the
+/// optimized path emits. The gap allowlist is empty (#498 closed); a genuine
+/// new divergence must be fixed in the estimator or reintroduced here as a
+/// documented, pinned exception.
 #[test]
 fn estimator_encoder_agreement() {
     let enc = ArmEncoder::new_thumb2();
@@ -1154,32 +1133,11 @@ fn estimator_encoder_agreement() {
             .unwrap_or_else(|e| panic!("{}: encoder rejected the op: {e:?}", case.label))
             .len();
 
-        match case.gap {
-            None => {
-                if est != real {
-                    surprises.push(format!(
-                        "NEW DRIFT {}: estimator {est} != encoder {real} \
-                         (fix the estimator, or add a documented KNOWN_GAP)",
-                        case.label
-                    ));
-                }
-            }
-            Some(g) => {
-                if (est, real) != (g.est, g.enc) {
-                    surprises.push(format!(
-                        "KNOWN_GAP CHANGED {}: was (est {}, enc {}), now (est {est}, enc {real}) \
-                         — update or remove the gap",
-                        case.label, g.est, g.enc
-                    ));
-                }
-                if est == real {
-                    surprises.push(format!(
-                        "GAP CLOSED {}: estimator and encoder now agree ({est}) \
-                         — remove it from KNOWN_GAP",
-                        case.label
-                    ));
-                }
-            }
+        if est != real {
+            surprises.push(format!(
+                "NEW DRIFT {}: estimator {est} != encoder {real} (fix the estimator)",
+                case.label
+            ));
         }
     }
 
