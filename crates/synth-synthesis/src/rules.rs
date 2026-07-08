@@ -559,6 +559,18 @@ pub enum ArmOp {
         rnhi: Reg,
         rmlo: Reg,
         rmhi: Reg,
+        /// #494 phase 2b (divisor-nonzero fact): the encoder omits the fused
+        /// divide-by-zero trap guard (`ORRS R12, lo, hi; BNE; UDF #0`). May
+        /// be set ONLY when the fact-spec pass discharged
+        /// `UNSAT(P ∧ divisor == 0)` through the certificate-checked solver.
+        /// `false` = today's full-guard expansion, byte-identical.
+        elide_zero_guard: bool,
+        /// #494 phase 2b: the encoder omits the #633/#634 `INT64_MIN / -1`
+        /// OVERFLOW trap guard. A SEPARATE obligation from the zero guard —
+        /// divisor ≠ 0 does NOT imply divisor ≠ -1; this may be set only when
+        /// `UNSAT(P ∧ dividend == INT64_MIN ∧ divisor == -1)` was discharged.
+        /// `false` = guard emitted (the #633 fix stays in force).
+        elide_overflow_guard: bool,
     },
     I64DivU {
         rdlo: Reg,
@@ -567,6 +579,9 @@ pub enum ArmOp {
         rnhi: Reg,
         rmlo: Reg,
         rmhi: Reg,
+        /// #494 phase 2b: omit the divide-by-zero guard (see `I64DivS`).
+        /// div_u has no overflow guard — zero is its only trap.
+        elide_zero_guard: bool,
     },
     I64RemS {
         rdlo: Reg,
@@ -575,6 +590,9 @@ pub enum ArmOp {
         rnhi: Reg,
         rmlo: Reg,
         rmhi: Reg,
+        /// #494 phase 2b: omit the divide-by-zero guard (see `I64DivS`).
+        /// rem_s never carries an overflow guard (`rem_s(INT64_MIN,-1)==0`).
+        elide_zero_guard: bool,
     },
     I64RemU {
         rdlo: Reg,
@@ -583,6 +601,8 @@ pub enum ArmOp {
         rnhi: Reg,
         rmlo: Reg,
         rmhi: Reg,
+        /// #494 phase 2b: omit the divide-by-zero guard (see `I64DivS`).
+        elide_zero_guard: bool,
     },
 
     // i64 Bitwise (register pairs)

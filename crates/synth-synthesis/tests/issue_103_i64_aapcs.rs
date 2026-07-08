@@ -72,6 +72,7 @@ fn rw_sets(op: &ArmOp) -> (Vec<Reg>, Vec<Reg>) {
             rnhi,
             rmlo,
             rmhi,
+            ..
         }
         | ArmOp::I64DivU {
             rdlo,
@@ -80,6 +81,7 @@ fn rw_sets(op: &ArmOp) -> (Vec<Reg>, Vec<Reg>) {
             rnhi,
             rmlo,
             rmhi,
+            ..
         }
         | ArmOp::I64RemS {
             rdlo,
@@ -88,6 +90,7 @@ fn rw_sets(op: &ArmOp) -> (Vec<Reg>, Vec<Reg>) {
             rnhi,
             rmlo,
             rmhi,
+            ..
         }
         | ArmOp::I64RemU {
             rdlo,
@@ -96,6 +99,7 @@ fn rw_sets(op: &ArmOp) -> (Vec<Reg>, Vec<Reg>) {
             rnhi,
             rmlo,
             rmhi,
+            ..
         } => (vec![*rdlo, *rdhi], vec![*rnlo, *rnhi, *rmlo, *rmhi]),
         ArmOp::I64Rotl {
             rdlo,

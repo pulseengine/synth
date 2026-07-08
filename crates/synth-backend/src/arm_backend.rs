@@ -264,6 +264,24 @@ fn compile_wasm_to_arm(
     // cannot grow); a runtime delta that happens to be 0 is the documented
     // follow-up.
     let rewritten = rewrite_memory_grow_zero(wasm_ops);
+    // #494 phase 2b: the fact-spec guard-elision marks are keyed by op index
+    // into the stream the DRIVER handed us. The memory.grow(0) fold above can
+    // only shift indices AT OR AFTER a `memory.grow` — an op the fact-spec
+    // walk never crosses (it stops at the first untracked op, so no mark can
+    // follow one). Defense in depth: if the fold fired at all, drop the marks
+    // loudly rather than risk keying a guard elision to the wrong op.
+    let (fact_div_zero_elide, fact_div_ovf_elide): (&[usize], &[usize]) = if rewritten.len()
+        == wasm_ops.len()
+    {
+        (&config.fact_div_zero_elide, &config.fact_div_ovf_elide)
+    } else {
+        if !config.fact_div_zero_elide.is_empty() || !config.fact_div_ovf_elide.is_empty() {
+            eprintln!(
+                "fact-spec: DECLINE div-guard elision marks dropped — the                      memory.grow(0) fold shifted op indices (#494 defensive gate);                      general lowering emitted"
+            );
+        }
+        (&[], &[])
+    };
     let wasm_ops: &[WasmOp] = &rewritten;
 
     let num_params = count_params(wasm_ops);
@@ -348,6 +366,10 @@ fn compile_wasm_to_arm(
         // which on a dense function leaves the spill allocator with nothing to
         // free → the frame-slot path is the escape that restores compilability).
         selector.set_local_promote(local_promote);
+        // #494 phase 2b: certificate-discharged div/rem trap-guard elision
+        // marks (empty in every compile without SYNTH_FACT_SPEC + facts).
+        selector
+            .set_fact_div_guard_elisions(fact_div_zero_elide.to_vec(), fact_div_ovf_elide.to_vec());
         selector.select_with_stack(wasm_ops, num_params)
     };
     let select_direct = || -> Result<Vec<ArmInstruction>, String> {
@@ -517,11 +539,19 @@ fn compile_wasm_to_arm(
         .iter()
         .take(num_params as usize)
         .any(|&w| w);
+    // #494 phase 2b: div/rem guard-elision marks are consumed by the DIRECT
+    // selector only — the optimized path's IR passes (const-fold/CSE/DCE)
+    // renumber instructions, so an op-index-keyed mark cannot soundly survive
+    // them. Route marked functions direct (the #507/#509 honest-degradation
+    // pattern). Never fires without SYNTH_FACT_SPEC + facts + a discharged
+    // obligation, so every existing compile keeps its path byte-identical.
+    let has_fact_div_elide = !fact_div_zero_elide.is_empty() || !fact_div_ovf_elide.is_empty();
     let arm_instrs = if config.no_optimize
         || config.relocatable
         || has_br_table
         || has_value_carry
         || has_wide_param
+        || has_fact_div_elide
     {
         if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
             eprintln!("[path-debug] direct (pre-gate)");

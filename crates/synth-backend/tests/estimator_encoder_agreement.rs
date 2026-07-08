@@ -692,6 +692,7 @@ fn cases() -> Vec<Case> {
                 rnhi: Reg::R3,
                 rmlo: Reg::R4,
                 rmhi: Reg::R5,
+                elide_zero_guard: false,
             },
         ),
         agree(
@@ -703,6 +704,7 @@ fn cases() -> Vec<Case> {
                 rnhi: Reg::R3,
                 rmlo: Reg::R4,
                 rmhi: Reg::R5,
+                elide_zero_guard: false,
             },
         ),
         agree(
@@ -714,6 +716,8 @@ fn cases() -> Vec<Case> {
                 rnhi: Reg::R3,
                 rmlo: Reg::R4,
                 rmhi: Reg::R5,
+                elide_zero_guard: false,
+                elide_overflow_guard: false,
             },
         ),
         agree(
@@ -725,6 +729,73 @@ fn cases() -> Vec<Case> {
                 rnhi: Reg::R3,
                 rmlo: Reg::R4,
                 rmhi: Reg::R5,
+                elide_zero_guard: false,
+            },
+        ),
+        // #494 phase 2b: the guard-elided forms must track the encoder too —
+        // the zero guard is 8 bytes (ORRS.W + BNE + UDF), the #633 div_s
+        // overflow guard 22 bytes, and they elide INDEPENDENTLY (two separate
+        // proof obligations; divisor-nonzero alone keeps the overflow guard).
+        agree(
+            "I64DivU_zero_elided",
+            I64DivU {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R2,
+                rnhi: Reg::R3,
+                rmlo: Reg::R4,
+                rmhi: Reg::R5,
+                elide_zero_guard: true,
+            },
+        ),
+        agree(
+            "I64RemU_zero_elided",
+            I64RemU {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R2,
+                rnhi: Reg::R3,
+                rmlo: Reg::R4,
+                rmhi: Reg::R5,
+                elide_zero_guard: true,
+            },
+        ),
+        agree(
+            "I64DivS_zero_elided_ovf_retained",
+            I64DivS {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R2,
+                rnhi: Reg::R3,
+                rmlo: Reg::R4,
+                rmhi: Reg::R5,
+                elide_zero_guard: true,
+                elide_overflow_guard: false,
+            },
+        ),
+        agree(
+            "I64DivS_both_elided",
+            I64DivS {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R2,
+                rnhi: Reg::R3,
+                rmlo: Reg::R4,
+                rmhi: Reg::R5,
+                elide_zero_guard: true,
+                elide_overflow_guard: true,
+            },
+        ),
+        agree(
+            "I64RemS_zero_elided",
+            I64RemS {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R2,
+                rnhi: Reg::R3,
+                rmlo: Reg::R4,
+                rmhi: Reg::R5,
+                elide_zero_guard: true,
             },
         ),
         // ===================== REMAINING KNOWN GAPS =====================

@@ -60,26 +60,43 @@ struct SpecializedFn {
     /// parallel side-tables (`op_offsets` feeding `.debug_line`).
     #[cfg_attr(not(feature = "verify"), allow(dead_code))]
     kept: Vec<usize>,
+    /// #494 phase 2b: div/rem sites (indices into `ops`) whose divide-by-zero
+    /// guard was certificate-elided — threaded to
+    /// `CompileConfig::fact_div_zero_elide` for the direct selector.
+    elide_div_zero: Vec<usize>,
+    /// #494 phase 2b: `div_s` sites whose INT_MIN/-1 overflow guard was
+    /// certificate-elided (a SEPARATE obligation — divisor-nonzero alone
+    /// never lands here, #633/#634).
+    elide_div_ovf: Vec<usize>,
 }
 
 /// Run the fact-spec pass (value-range facts ⇒ dead conditional-branch
-/// elision, `docs/design/proof-carrying-specialization.md`) for one function.
-/// Every elision was individually discharged by the ordeal-backed solver
-/// (UNSAT(P ∧ cond ≠ 0), certificate-checked) BEFORE this returns; admits and
-/// declines are logged per function. Returns `Some` only when the op stream
-/// actually changed — `None` means the general lowering proceeds untouched.
+/// elision; #494 phase 2b: divisor-nonzero facts ⇒ div/rem trap-guard
+/// elision marks — `docs/design/proof-carrying-specialization.md`) for one
+/// function. Every elision was individually discharged by the ordeal-backed
+/// solver (certificate-checked) BEFORE this returns; admits and declines are
+/// logged per function. Returns `Some` when the op stream changed OR at
+/// least one guard-elision mark was admitted — `None` means the general
+/// lowering proceeds untouched.
 fn maybe_fact_spec(
     func_name: &str,
     ops: &[WasmOp],
     block_arity: &[(u8, u8)],
     facts: &[WscFact],
+    params_i64: &[bool],
 ) -> Option<SpecializedFn> {
     if !fact_spec_enabled() || facts.is_empty() {
         return None;
     }
     #[cfg(feature = "verify")]
     {
-        let r = synth_verify::fact_spec::specialize_function(func_name, ops, block_arity, facts);
+        let r = synth_verify::fact_spec::specialize_function(
+            func_name,
+            ops,
+            block_arity,
+            facts,
+            params_i64,
+        );
         // Loud by contract: every decline names its site and reason; every
         // admit carries the certificate line (the evidence trail).
         for line in &r.declined {
@@ -88,26 +105,30 @@ fn maybe_fact_spec(
         for line in &r.admitted {
             eprintln!("fact-spec: ADMIT {line}");
         }
-        if r.changed() {
+        if r.changed() || !r.elide_div_zero.is_empty() || !r.elide_div_ovf.is_empty() {
             eprintln!(
                 "fact-spec: '{func_name}' specialized — {} elision(s) admitted, \
-                 {} declined ({} → {} ops)",
+                 {} declined ({} → {} ops, {} zero-guard + {} overflow-guard marks)",
                 r.admitted.len(),
                 r.declined.len(),
                 ops.len(),
-                r.ops.len()
+                r.ops.len(),
+                r.elide_div_zero.len(),
+                r.elide_div_ovf.len(),
             );
             return Some(SpecializedFn {
                 ops: r.ops,
                 block_arity: r.block_arity,
                 kept: r.kept,
+                elide_div_zero: r.elide_div_zero,
+                elide_div_ovf: r.elide_div_ovf,
             });
         }
         None
     }
     #[cfg(not(feature = "verify"))]
     {
-        let _ = (func_name, ops, block_arity, facts);
+        let _ = (func_name, ops, block_arity, facts, params_i64);
         // Decline loudly (the design doc's rule): without the solver the
         // obligation cannot be discharged, so no elision may fire — but the
         // user asked for specialization, so say why nothing happens.
@@ -1382,14 +1403,21 @@ fn compile_command(
     // per-elision ordeal obligation. No-op unless the module carried facts,
     // the flag is on, AND at least one elision was certificate-admitted.
     let mut wasm_ops = wasm_ops;
+    let mut fact_div_zero_elide = Vec::new();
+    let mut fact_div_ovf_elide = Vec::new();
     if let Some(spec) = maybe_fact_spec(
         &func_name,
         &wasm_ops,
         &current_func_block_arity,
         &current_func_facts,
+        &current_func_params_i64,
     ) {
         wasm_ops = spec.ops;
         current_func_block_arity = spec.block_arity;
+        // #494 phase 2b: certificate-discharged div/rem guard-elision marks,
+        // keyed by index into the (possibly rewritten) stream above.
+        fact_div_zero_elide = spec.elide_div_zero;
+        fact_div_ovf_elide = spec.elide_div_ovf;
     }
 
     info!("WASM operations: {:?}", wasm_ops);
@@ -1415,6 +1443,10 @@ fn compile_command(
         // `current_func_facts` in the selector behind SYNTH_FACT_SPEC.
         wsc_facts,
         current_func_facts,
+        // VCR-PERF-002 Phase 2b (#494): div/rem trap-guard elision marks —
+        // empty unless SYNTH_FACT_SPEC + facts + a discharged obligation.
+        fact_div_zero_elide,
+        fact_div_ovf_elide,
         ..CompileConfig::default()
     };
 
@@ -2419,10 +2451,16 @@ fn compile_all_exports(
             &func.ops,
             &func_config.current_func_block_arity,
             &func_config.current_func_facts,
+            &func_config.current_func_params_i64,
         );
         let (ops_for_compile, op_offsets_for_elf): (&[WasmOp], Vec<u32>) = match &spec {
             Some(s) => {
                 func_config.current_func_block_arity = s.block_arity.clone();
+                // #494 phase 2b: certificate-discharged div/rem guard-elision
+                // marks, keyed by index into the rewritten stream the backend
+                // is about to consume.
+                func_config.fact_div_zero_elide = s.elide_div_zero.clone();
+                func_config.fact_div_ovf_elide = s.elide_div_ovf.clone();
                 (
                     &s.ops,
                     s.kept

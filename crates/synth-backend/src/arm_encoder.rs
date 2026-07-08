@@ -948,9 +948,14 @@ impl ArmEncoder {
                 rnhi,
                 rmlo,
                 rmhi,
+                elide_zero_guard,
             } => {
                 emit_a32_i64_fixed_abi_entry(&mut b, &[rnlo, rnhi, rmlo, rmhi]);
-                emit_a32_i64_divisor_zero_trap(&mut b);
+                // #494 phase 2b: elided only under a certificate-discharged
+                // UNSAT(P ∧ divisor == 0) obligation (fact-spec pass).
+                if !elide_zero_guard {
+                    emit_a32_i64_divisor_zero_trap(&mut b);
+                }
                 w(&mut b, 0xE92D_00F0); // PUSH {R4-R7}
                 for r in 4..8u32 {
                     w(&mut b, 0xE3A0_0000 | (r << 12)); // MOV Rr, #0
@@ -971,12 +976,23 @@ impl ArmEncoder {
                 rnhi,
                 rmlo,
                 rmhi,
+                elide_zero_guard,
+                elide_overflow_guard,
             } => {
                 emit_a32_i64_fixed_abi_entry(&mut b, &[rnlo, rnhi, rmlo, rmhi]);
-                emit_a32_i64_divisor_zero_trap(&mut b);
-                // #633: INT64_MIN / -1 overflows — trap like the i32 path
-                // (rem_s stays guard-free: rem_s(INT64_MIN, -1) == 0).
-                emit_a32_i64_divs_overflow_trap(&mut b);
+                // #494 phase 2b: two INDEPENDENT guards, two INDEPENDENT
+                // obligations. The zero guard falls to UNSAT(P ∧ divisor == 0);
+                // the #633 overflow guard falls ONLY to
+                // UNSAT(P ∧ dividend == INT64_MIN ∧ divisor == -1) — a
+                // divisor-nonzero fact alone must keep it.
+                if !elide_zero_guard {
+                    emit_a32_i64_divisor_zero_trap(&mut b);
+                }
+                if !elide_overflow_guard {
+                    // #633: INT64_MIN / -1 overflows — trap like the i32 path
+                    // (rem_s stays guard-free: rem_s(INT64_MIN, -1) == 0).
+                    emit_a32_i64_divs_overflow_trap(&mut b);
+                }
                 w(&mut b, 0xE92D_0FF0); // PUSH {R4-R11}
                 w(&mut b, 0xE021_9003); // EOR R9, R1, R3 (result sign in MSB)
                 skip_negate_if_positive(&mut b, 1);
@@ -1003,9 +1019,12 @@ impl ArmEncoder {
                 rnhi,
                 rmlo,
                 rmhi,
+                elide_zero_guard,
             } => {
                 emit_a32_i64_fixed_abi_entry(&mut b, &[rnlo, rnhi, rmlo, rmhi]);
-                emit_a32_i64_divisor_zero_trap(&mut b);
+                if !elide_zero_guard {
+                    emit_a32_i64_divisor_zero_trap(&mut b);
+                }
                 w(&mut b, 0xE92D_01F0); // PUSH {R4-R8}
                 for r in 4..8u32 {
                     w(&mut b, 0xE3A0_0000 | (r << 12)); // MOV Rr, #0
@@ -1025,9 +1044,12 @@ impl ArmEncoder {
                 rnhi,
                 rmlo,
                 rmhi,
+                elide_zero_guard,
             } => {
                 emit_a32_i64_fixed_abi_entry(&mut b, &[rnlo, rnhi, rmlo, rmhi]);
-                emit_a32_i64_divisor_zero_trap(&mut b);
+                if !elide_zero_guard {
+                    emit_a32_i64_divisor_zero_trap(&mut b);
+                }
                 w(&mut b, 0xE92D_0FF0); // PUSH {R4-R11}
                 w(&mut b, 0xE1A0_9001); // MOV R9, R1 (dividend sign)
                 skip_negate_if_positive(&mut b, 1);
@@ -5280,10 +5302,15 @@ impl ArmEncoder {
                 rnhi,
                 rmlo,
                 rmhi,
+                elide_zero_guard,
             } => {
                 let mut bytes = Vec::new();
                 emit_i64_fixed_abi_entry(&mut bytes, &[rnlo, rnhi, rmlo, rmhi]);
-                emit_i64_divisor_zero_trap(&mut bytes);
+                // #494 phase 2b: elided only under a certificate-discharged
+                // UNSAT(P ∧ divisor == 0) obligation (fact-spec pass).
+                if !elide_zero_guard {
+                    emit_i64_divisor_zero_trap(&mut bytes);
+                }
 
                 // PUSH {R4-R7} - save scratch registers (NO LR — this is inline code)
                 // 16-bit PUSH: 1011 010 M rrrrrrrr where M=0 (no LR), r=R4-R7 = 0xF0
@@ -5412,13 +5439,24 @@ impl ArmEncoder {
                 rnhi,
                 rmlo,
                 rmhi,
+                elide_zero_guard,
+                elide_overflow_guard,
             } => {
                 let mut bytes = Vec::new();
                 emit_i64_fixed_abi_entry(&mut bytes, &[rnlo, rnhi, rmlo, rmhi]);
-                emit_i64_divisor_zero_trap(&mut bytes);
-                // #633: INT64_MIN / -1 overflows — trap like the i32 path
-                // (rem_s stays guard-free: rem_s(INT64_MIN, -1) == 0).
-                emit_i64_divs_overflow_trap(&mut bytes);
+                // #494 phase 2b: two INDEPENDENT guards, two INDEPENDENT
+                // obligations. The zero guard falls to UNSAT(P ∧ divisor == 0);
+                // the #633 overflow guard falls ONLY to
+                // UNSAT(P ∧ dividend == INT64_MIN ∧ divisor == -1) — a
+                // divisor-nonzero fact alone must keep it.
+                if !elide_zero_guard {
+                    emit_i64_divisor_zero_trap(&mut bytes);
+                }
+                if !elide_overflow_guard {
+                    // #633: INT64_MIN / -1 overflows — trap like the i32 path
+                    // (rem_s stays guard-free: rem_s(INT64_MIN, -1) == 0).
+                    emit_i64_divs_overflow_trap(&mut bytes);
+                }
 
                 // PUSH {R4-R11} - save scratch registers (NO LR — inline code)
                 bytes.extend_from_slice(&0xE92Du16.to_le_bytes());
@@ -5545,10 +5583,13 @@ impl ArmEncoder {
                 rnhi,
                 rmlo,
                 rmhi,
+                elide_zero_guard,
             } => {
                 let mut bytes = Vec::new();
                 emit_i64_fixed_abi_entry(&mut bytes, &[rnlo, rnhi, rmlo, rmhi]);
-                emit_i64_divisor_zero_trap(&mut bytes);
+                if !elide_zero_guard {
+                    emit_i64_divisor_zero_trap(&mut bytes);
+                }
 
                 // PUSH {R4-R8} - save scratch registers (NO LR — inline code)
                 bytes.extend_from_slice(&0xE92Du16.to_le_bytes());
@@ -5633,10 +5674,13 @@ impl ArmEncoder {
                 rnhi,
                 rmlo,
                 rmhi,
+                elide_zero_guard,
             } => {
                 let mut bytes = Vec::new();
                 emit_i64_fixed_abi_entry(&mut bytes, &[rnlo, rnhi, rmlo, rmhi]);
-                emit_i64_divisor_zero_trap(&mut bytes);
+                if !elide_zero_guard {
+                    emit_i64_divisor_zero_trap(&mut bytes);
+                }
 
                 // PUSH {R4-R11} - save scratch registers (NO LR — inline code)
                 bytes.extend_from_slice(&0xE92Du16.to_le_bytes());
@@ -9890,6 +9934,7 @@ mod tests {
                     rnhi,
                     rmlo,
                     rmhi,
+                    elide_zero_guard: false,
                 },
                 1 => ArmOp::I64RemU {
                     rdlo,
@@ -9898,6 +9943,7 @@ mod tests {
                     rnhi,
                     rmlo,
                     rmhi,
+                    elide_zero_guard: false,
                 },
                 2 => ArmOp::I64DivS {
                     rdlo,
@@ -9906,6 +9952,8 @@ mod tests {
                     rnhi,
                     rmlo,
                     rmhi,
+                    elide_zero_guard: false,
+                    elide_overflow_guard: false,
                 },
                 _ => ArmOp::I64RemS {
                     rdlo,
@@ -9914,6 +9962,7 @@ mod tests {
                     rnhi,
                     rmlo,
                     rmhi,
+                    elide_zero_guard: false,
                 },
             }
         };
@@ -9951,6 +10000,7 @@ mod tests {
                 rnhi: Reg::R1,
                 rmlo: Reg::R2,
                 rmhi: Reg::R3,
+                elide_zero_guard: false,
             })
             .unwrap();
         let tail: Vec<u16> = code[code.len() - 12..]
@@ -9975,6 +10025,7 @@ mod tests {
             rnhi: Reg::R3,
             rmlo: Reg::R4,
             rmhi: Reg::R5,
+            elide_zero_guard: false,
         });
         assert!(result.is_err(), "swapped rd pair must be rejected loudly");
     }
@@ -10118,6 +10169,8 @@ mod tests {
                 rnhi: Reg::R1,
                 rmlo: Reg::R2,
                 rmhi: Reg::R3,
+                elide_zero_guard: false,
+                elide_overflow_guard: false,
             })
             .unwrap();
         // 26-byte marshal + 8-byte zero-trap, then the 22-byte overflow guard.
@@ -10157,6 +10210,7 @@ mod tests {
                     rnhi: Reg::R1,
                     rmlo: Reg::R2,
                     rmhi: Reg::R3,
+                    elide_zero_guard: false,
                 },
             ),
             (
@@ -10168,6 +10222,8 @@ mod tests {
                     rnhi: Reg::R1,
                     rmlo: Reg::R2,
                     rmhi: Reg::R3,
+                    elide_zero_guard: false,
+                    elide_overflow_guard: false,
                 },
             ),
         ] {
@@ -10184,6 +10240,132 @@ mod tests {
         }
     }
 
+    /// #494 phase 2b: `elide_zero_guard` drops EXACTLY the 8-byte fused
+    /// zero-trap (`ORRS.W R12,R2,R3; BNE; UDF #0`) and nothing else — the
+    /// rest of the expansion is byte-identical (splice check).
+    #[test]
+    fn test_494_i64_zero_guard_elision_is_exact_splice() {
+        let encoder = ArmEncoder::new_thumb2();
+        let mk = |elide_zero_guard: bool| {
+            encoder
+                .encode(&ArmOp::I64DivU {
+                    rdlo: Reg::R4,
+                    rdhi: Reg::R5,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                    rmlo: Reg::R2,
+                    rmhi: Reg::R3,
+                    elide_zero_guard,
+                })
+                .unwrap()
+        };
+        let full = mk(false);
+        let elided = mk(true);
+        assert_eq!(full.len(), elided.len() + 8, "zero guard is 8 bytes");
+        // Marshal prologue (26 B) unchanged, guard (8 B) gone, tail identical.
+        assert_eq!(&full[..26], &elided[..26]);
+        assert_eq!(
+            &full[26..34],
+            &[0x52, 0xEA, 0x03, 0x0C, 0x00, 0xD1, 0x00, 0xDE],
+            "the spliced-out bytes are exactly ORRS.W; BNE; UDF #0"
+        );
+        assert_eq!(&full[34..], &elided[26..]);
+    }
+
+    /// #494 phase 2b two-guard distinction (the #633/#634 synergy): a
+    /// divisor-nonzero fact elides ONLY the zero guard — the INT64_MIN/-1
+    /// OVERFLOW guard is a separate obligation and must survive
+    /// `elide_zero_guard: true`. Pinned on div_s in all flag states.
+    #[test]
+    fn test_494_i64_divs_overflow_guard_retained_when_only_zero_elided() {
+        let encoder = ArmEncoder::new_thumb2();
+        let mk = |zero: bool, ovf: bool| {
+            encoder
+                .encode(&ArmOp::I64DivS {
+                    rdlo: Reg::R4,
+                    rdhi: Reg::R5,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                    rmlo: Reg::R2,
+                    rmhi: Reg::R3,
+                    elide_zero_guard: zero,
+                    elide_overflow_guard: ovf,
+                })
+                .unwrap()
+        };
+        let udf_count = |code: &[u8]| {
+            code.chunks(2)
+                .filter(|c| u16::from_le_bytes([c[0], c[1]]) == 0xDE00)
+                .count()
+        };
+        let full = mk(false, false);
+        let zero_only = mk(true, false);
+        let both = mk(true, true);
+        assert_eq!(udf_count(&full), 2, "baseline: zero trap + overflow trap");
+        assert_eq!(
+            udf_count(&zero_only),
+            1,
+            "divisor-nonzero elides the zero trap ONLY — the #633 overflow \
+             guard must be retained"
+        );
+        // The retained guard is the 22-byte overflow sequence, now right
+        // after the 26-byte marshal prologue.
+        let guard: Vec<u16> = zero_only[26..48]
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(
+            guard,
+            vec![
+                0xEA02, 0x0C03, 0xF11C, 0x0F01, 0xD105, 0x2800, 0xD103, 0xF1B1, 0x4F00, 0xD100,
+                0xDE00,
+            ],
+            "the surviving guard is the INT64_MIN/-1 overflow trap"
+        );
+        assert_eq!(full.len(), zero_only.len() + 8);
+        assert_eq!(zero_only.len(), both.len() + 22);
+        assert_eq!(udf_count(&both), 0, "both obligations discharged ⇒ no UDF");
+    }
+
+    /// #494 phase 2b A32 twin: zero-guard elision is an exact 12-byte splice
+    /// and the A32 overflow guard survives a zero-only elision.
+    #[test]
+    fn test_494_a32_i64_guard_elision() {
+        let encoder = ArmEncoder::new_arm32();
+        let mk = |zero: bool, ovf: bool| {
+            encoder
+                .encode(&ArmOp::I64DivS {
+                    rdlo: Reg::R4,
+                    rdhi: Reg::R5,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                    rmlo: Reg::R2,
+                    rmhi: Reg::R3,
+                    elide_zero_guard: zero,
+                    elide_overflow_guard: ovf,
+                })
+                .unwrap()
+        };
+        let full = mk(false, false);
+        let zero_only = mk(true, false);
+        let both = mk(true, true);
+        // A32 zero guard = 3 words (ORRS/BNE/UDF), overflow guard = 6 words.
+        assert_eq!(full.len(), zero_only.len() + 12);
+        assert_eq!(zero_only.len(), both.len() + 24);
+        let udf_count = |code: &[u8]| {
+            code.chunks(4)
+                .filter(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) == 0xE7F0_00F0)
+                .count()
+        };
+        assert_eq!(udf_count(&full), 2);
+        assert_eq!(
+            udf_count(&zero_only),
+            1,
+            "A32: overflow guard retained under zero-only elision"
+        );
+        assert_eq!(udf_count(&both), 0);
+    }
+
     /// #633: A32 twin — the conditional-execution overflow guard on the
     /// ARM-mode I64DivS, and its absence from I64RemS.
     #[test]
@@ -10196,6 +10378,8 @@ mod tests {
             rnhi: Reg::R1,
             rmlo: Reg::R2,
             rmhi: Reg::R3,
+            elide_zero_guard: false,
+            elide_overflow_guard: false,
         };
         let code = encoder.encode(&mk_divs).unwrap();
         let words: Vec<u32> = code
@@ -10222,6 +10406,7 @@ mod tests {
                 rnhi: Reg::R1,
                 rmlo: Reg::R2,
                 rmhi: Reg::R3,
+                elide_zero_guard: false,
             })
             .unwrap();
         let rems_udfs = rems

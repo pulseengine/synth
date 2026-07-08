@@ -475,13 +475,29 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         // I64 division: #610 fixed-ABI wrapper (PUSH r0-r3(2) + 4×STR(16) +
         // 4×POP(8) + zero-trap(8) + 2×MOV(4) + 4×restore(8) = 46) around the
         // pre-#610 cores (74/78/126/124, the #498 exact measurements).
-        ArmOp::I64DivU { .. } => 120,
-        ArmOp::I64RemU { .. } => 124,
+        // #494 phase 2b: a certificate-discharged divisor-nonzero fact elides
+        // the fused zero-trap (ORRS.W + BNE + UDF = 8 bytes); div_s's #633
+        // overflow guard (22 bytes) is a SEPARATE obligation. Sizes must track
+        // the flags or the estimator↔encoder agreement oracle (#511) drifts.
+        ArmOp::I64DivU {
+            elide_zero_guard, ..
+        } => 120 - if *elide_zero_guard { 8 } else { 0 },
+        ArmOp::I64RemU {
+            elide_zero_guard, ..
+        } => 124 - if *elide_zero_guard { 8 } else { 0 },
         // Signed versions have additional negation logic. div_s also carries
         // the #633 INT64_MIN/-1 overflow guard (+22 bytes); rem_s deliberately
         // does NOT (rem_s(INT64_MIN, -1) == 0, no trap).
-        ArmOp::I64DivS { .. } => 194,
-        ArmOp::I64RemS { .. } => 170,
+        ArmOp::I64DivS {
+            elide_zero_guard,
+            elide_overflow_guard,
+            ..
+        } => {
+            194 - if *elide_zero_guard { 8 } else { 0 } - if *elide_overflow_guard { 22 } else { 0 }
+        }
+        ArmOp::I64RemS {
+            elide_zero_guard, ..
+        } => 170 - if *elide_zero_guard { 8 } else { 0 },
         // AND/OR/XOR: encoder always uses 32-bit Thumb-2 (.W) encoding
         ArmOp::And { .. } | ArmOp::Orr { .. } | ArmOp::Eor { .. } => 4,
         // LDR/STR with high base register or large offset need 32-bit
@@ -5315,6 +5331,10 @@ impl OptimizerBridge {
                         rnhi,
                         rmlo,
                         rmhi,
+                        // #494: the optimized path never consumes fact marks —
+                        // marked functions are routed to the direct selector.
+                        elide_zero_guard: false,
+                        elide_overflow_guard: false,
                     });
                     last_result_vreg = Some(dest_lo.0);
                     last_result_vreg_hi = Some(dest_hi.0);
@@ -5345,6 +5365,7 @@ impl OptimizerBridge {
                         rnhi,
                         rmlo,
                         rmhi,
+                        elide_zero_guard: false,
                     });
                     last_result_vreg = Some(dest_lo.0);
                     last_result_vreg_hi = Some(dest_hi.0);
@@ -5375,6 +5396,7 @@ impl OptimizerBridge {
                         rnhi,
                         rmlo,
                         rmhi,
+                        elide_zero_guard: false,
                     });
                     last_result_vreg = Some(dest_lo.0);
                     last_result_vreg_hi = Some(dest_hi.0);
@@ -5405,6 +5427,7 @@ impl OptimizerBridge {
                         rnhi,
                         rmlo,
                         rmhi,
+                        elide_zero_guard: false,
                     });
                     last_result_vreg = Some(dest_lo.0);
                     last_result_vreg_hi = Some(dest_hi.0);
