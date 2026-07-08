@@ -1380,8 +1380,8 @@ fn compile_command(
                 anyhow::bail!(
                     "function '{}' contains an unsupported operator ({}) the '{}' \
                      backend cannot lower — it was dropped at decode, so refusing \
-                     to emit a silent miscompile (#369, #554). Implement the op or \
-                     compile a function the backend supports.",
+                     to emit a silent miscompile (GI-FPU-001; #369, #554). Implement \
+                     the op or compile a function the backend supports.",
                     name,
                     reason,
                     backend.name()
@@ -2517,7 +2517,7 @@ fn compile_all_exports(
             eprintln!(
                 "warning: skipping function '{name}': contains an unsupported \
                  operator ({reason}) the {} backend cannot lower — emitting no \
-                 code for it rather than a silent miscompile (#369)",
+                 code for it rather than a silent miscompile (GI-FPU-001, #369)",
                 backend.name()
             );
             skipped_funcs.push((name.clone(), format!("unsupported operator: {reason}")));
