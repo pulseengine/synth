@@ -350,6 +350,10 @@ fn compile_wasm_to_arm(
         // imports (rewritten to the wasm field name by build_relocatable_elf)
         // instead of `__meld_dispatch_import`.
         selector.set_relocatable(config.relocatable);
+        // #642: call_indirect guard inputs (compile-time table size for the
+        // bounds guard + closed-world type verdicts). Without them, every
+        // call_indirect lowering declines loudly.
+        selector.set_call_indirect_guards(config.call_indirect_guards.clone());
         // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
         selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
         // #311: i64 call results are register PAIRS — tag them.

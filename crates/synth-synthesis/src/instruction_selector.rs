@@ -2000,6 +2000,13 @@ pub struct InstructionSelector {
     /// (`UNSAT(P ∧ dividend == INT_MIN ∧ divisor == -1)`; divisor ≠ 0 alone
     /// never justifies it, #633/#634). Empty ⇒ guard emitted.
     fact_div_ovf_elide: Vec<usize>,
+    /// #642: `call_indirect` guard inputs — compile-time table size (for the
+    /// encoder's runtime bounds guard) + per-expected-type closed-world type
+    /// verdicts (the compile-time discharge of the §4.4.8 type check). Set
+    /// from `CompileConfig::call_indirect_guards` by the backend; the default
+    /// (no table size, no verdicts) DECLINES every `call_indirect` — an
+    /// unchecked indirect branch is never emitted.
+    call_indirect_guards: synth_core::CallIndirectGuards,
 }
 
 /// `SYNTH_SEL_DSL` (VCR-SEL-001, #242): opt-IN lever, default OFF. Set (to
@@ -2043,6 +2050,7 @@ impl InstructionSelector {
             sel_dsl: sel_dsl_from_env(),
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
+            call_indirect_guards: synth_core::CallIndirectGuards::default(),
         }
     }
 
@@ -2079,6 +2087,7 @@ impl InstructionSelector {
             sel_dsl: sel_dsl_from_env(),
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
+            call_indirect_guards: synth_core::CallIndirectGuards::default(),
         }
     }
 
@@ -2150,6 +2159,14 @@ impl InstructionSelector {
     pub fn set_fact_div_guard_elisions(&mut self, zero: Vec<usize>, ovf: Vec<usize>) {
         self.fact_div_zero_elide = zero;
         self.fact_div_ovf_elide = ovf;
+    }
+
+    /// #642: thread the module's `call_indirect` guard inputs (compile-time
+    /// table size + closed-world type verdicts) — see
+    /// `synth_core::CallIndirectGuards`. Without this, every `call_indirect`
+    /// lowering declines loudly.
+    pub fn set_call_indirect_guards(&mut self, guards: synth_core::CallIndirectGuards) {
+        self.call_indirect_guards = guards;
     }
 
     /// Enable relocatable host-link mode (#197): import calls emit a direct
@@ -2791,14 +2808,50 @@ impl InstructionSelector {
 
             CallIndirect {
                 type_index,
-                table_index: _,
+                table_index,
             } => {
-                // Table index is on top of stack (in rn), call target via table lookup
-                // For now, generate the pseudo-instruction; ARM encoder will expand
+                // Table index is on top of stack (in rn), call target via table lookup.
+                // #642: same guard preconditions as the select_with_stack arm —
+                // WASM §4.4.8 requires OOB/type-mismatch traps, so without a
+                // compile-time table size (for the encoder's bounds guard) and
+                // a verified closed-world type verdict, decline loudly rather
+                // than emit an unchecked indirect branch.
+                let table_size = self.call_indirect_guards.table_size.ok_or_else(|| {
+                    synth_core::Error::synthesis(
+                        "call_indirect: no compile-time table size available for the \
+                         bounds guard — refusing to emit an unchecked indirect branch \
+                         (#642)"
+                            .to_string(),
+                    )
+                })?;
+                if *table_index != 0 {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "call_indirect: table index {table_index} is not supported \
+                         (only table 0 is linked at R11) — #642"
+                    )));
+                }
+                match self
+                    .call_indirect_guards
+                    .type_reject
+                    .get(*type_index as usize)
+                {
+                    Some(None) => {} // closed-world type property verified
+                    other => {
+                        return Err(synth_core::Error::synthesis(format!(
+                            "call_indirect (expected type {type_index}): closed-world \
+                             type check not verified ({}) — refusing to emit an \
+                             unchecked indirect branch (#642)",
+                            other
+                                .and_then(|r| r.as_deref())
+                                .unwrap_or("no verdict for this type index")
+                        )));
+                    }
+                }
                 vec![ArmOp::CallIndirect {
                     rd,
                     type_idx: *type_index,
                     table_index_reg: rn, // Table index from stack
+                    table_size,
                 }]
             }
 
@@ -9057,7 +9110,57 @@ impl InstructionSelector {
                     stack.push(result_reg);
                 }
 
-                CallIndirect { type_index, .. } => {
+                CallIndirect {
+                    type_index,
+                    table_index,
+                } => {
+                    // #642: WASM Core §4.4.8 requires call_indirect to TRAP on
+                    // an out-of-bounds index and on a type mismatch. The
+                    // bounds check needs the compile-time table size (the raw
+                    // code-pointer table has no runtime size field); the type
+                    // check is discharged HERE at compile time via the
+                    // closed-world verdict (every table slot verifiably holds
+                    // a function of the expected signature — the table cannot
+                    // change: table.grow/table.set are unsupported ops that
+                    // loud-skip their functions). If either input is missing,
+                    // DECLINE loudly — never emit an unchecked indirect branch.
+                    let table_size = self.call_indirect_guards.table_size.ok_or_else(|| {
+                        synth_core::Error::synthesis(
+                            "call_indirect: no compile-time table size available for the \
+                             bounds guard (module has no table, or an imported table \
+                             without exact limits) — refusing to emit an unchecked \
+                             indirect branch (#642)"
+                                .to_string(),
+                        )
+                    })?;
+                    if *table_index != 0 {
+                        return Err(synth_core::Error::synthesis(format!(
+                            "call_indirect: table index {table_index} is not supported \
+                             (only table 0 is linked at R11) — #642"
+                        )));
+                    }
+                    match self
+                        .call_indirect_guards
+                        .type_reject
+                        .get(*type_index as usize)
+                    {
+                        Some(None) => {} // closed-world type property verified
+                        Some(Some(reason)) => {
+                            return Err(synth_core::Error::synthesis(format!(
+                                "call_indirect (expected type {type_index}): closed-world \
+                                 type check failed — {reason}; refusing to emit an \
+                                 unchecked indirect branch (#642)"
+                            )));
+                        }
+                        None => {
+                            return Err(synth_core::Error::synthesis(format!(
+                                "call_indirect: no closed-world type verdict for type \
+                                 index {type_index} — refusing to emit an unchecked \
+                                 indirect branch (#642)"
+                            )));
+                        }
+                    }
+
                     // Top of stack is the table index; the call arguments sit
                     // BELOW it on the operand stack.
                     let mut table_idx_reg = pop_operand(
@@ -9162,6 +9265,9 @@ impl InstructionSelector {
                             rd: Reg::R0,
                             type_idx: *type_index,
                             table_index_reg: table_idx_reg,
+                            // #642: the encoder emits `CMP idx, size; BLO ok;
+                            // UDF #0` before the table load.
+                            table_size,
                         },
                         source_line: Some(idx),
                     });
@@ -13134,6 +13240,89 @@ mod tests {
                 "CallIndirect 5th arg must be stored to the outgoing stack: {arm:#?}"
             );
         }
+    }
+
+    /// #642: with the guard inputs threaded (compile-time table size + a
+    /// VERIFIED closed-world type verdict), the CallIndirect lowering emits
+    /// the pseudo-op carrying the table size the encoder turns into the
+    /// `CMP idx, size; BLO ok; UDF #0` bounds guard.
+    #[test]
+    fn test_642_call_indirect_emits_bounds_guarded_dispatch() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(Vec::new(), vec![0]);
+        selector.set_call_indirect_guards(synth_core::CallIndirectGuards {
+            table_size: Some(3),
+            type_reject: vec![None], // type 0 verified
+        });
+        let wasm_ops = vec![
+            WasmOp::I32Const(1), // table index
+            WasmOp::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
+        ];
+        let arm = selector
+            .select_with_stack(&wasm_ops, 0)
+            .expect("verified call_indirect must lower");
+        assert!(
+            arm.iter()
+                .any(|i| matches!(&i.op, ArmOp::CallIndirect { table_size: 3, .. })),
+            "the pseudo-op must carry the compile-time table size: {arm:#?}"
+        );
+    }
+
+    /// #642: WITHOUT guard inputs (no module context — the default), the
+    /// CallIndirect lowering must DECLINE with a typed error, never emit the
+    /// unchecked indirect branch.
+    #[test]
+    fn test_642_call_indirect_declines_without_guards() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(Vec::new(), vec![0]);
+        let wasm_ops = vec![
+            WasmOp::I32Const(0),
+            WasmOp::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
+        ];
+        let err = selector
+            .select_with_stack(&wasm_ops, 0)
+            .expect_err("call_indirect without a table size must decline");
+        assert!(
+            err.to_string().contains("#642"),
+            "the decline names the tracking issue: {err}"
+        );
+    }
+
+    /// #642: a REJECTED closed-world type verdict (heterogeneous table / null
+    /// slot) must decline with the recorded reason — the raw code-pointer
+    /// table cannot be runtime-type-checked.
+    #[test]
+    fn test_642_call_indirect_declines_rejected_type() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(Vec::new(), vec![0]);
+        selector.set_call_indirect_guards(synth_core::CallIndirectGuards {
+            table_size: Some(3),
+            type_reject: vec![Some("table slot 2 is uninitialized".to_string())],
+        });
+        let wasm_ops = vec![
+            WasmOp::I32Const(0),
+            WasmOp::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
+        ];
+        let err = selector
+            .select_with_stack(&wasm_ops, 0)
+            .expect_err("a rejected type verdict must decline");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("#642") && msg.contains("slot 2 is uninitialized"),
+            "the decline carries the closed-world reason: {msg}"
+        );
     }
 
     /// #359: a non-param local AND a >4-arg call coexist — the outgoing-arg area

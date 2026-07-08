@@ -2734,6 +2734,23 @@ impl OptimizerBridge {
             )));
         }
 
+        // #642: `call_indirect` has no IR opcode either — it previously fell
+        // through `wasm_to_ir`'s `_ => Opcode::Nop` fallback. Decline
+        // EXPLICITLY so the backend falls back to the direct selector, which
+        // emits the guarded dispatch (runtime bounds check + compile-time
+        // closed-world type check, WASM Core §4.4.8). Same decline pattern as
+        // #120/#372/#374.
+        if wasm_ops
+            .iter()
+            .any(|op| matches!(op, WasmOp::CallIndirect { .. }))
+        {
+            return Err(Error::UnsupportedInstruction(
+                "optimized lowering path does not support call_indirect; the direct \
+                 instruction selector emits the guarded table dispatch — issue #642"
+                    .to_string(),
+            ));
+        }
+
         // Issue #178/#180: the optimized linear-memory miscompilation was
         // root-caused to the Thumb encoder, NOT this lowering — `ArmOp::Add`
         // (and `Adds`/`Subs`) unconditionally used the 16-bit form, whose 3-bit

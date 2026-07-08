@@ -1260,6 +1260,9 @@ fn compile_command(
     // consumed by any codegen path (Phase 2 is the gated elision).
     let mut wsc_facts: Vec<WscFact> = Vec::new();
     let mut current_func_facts: Vec<WscFact> = Vec::new();
+    // #642: call_indirect guard inputs (compile-time table size + closed-world
+    // type verdicts). Default = decline every call_indirect (demo path).
+    let mut call_indirect_guards = synth_core::CallIndirectGuards::default();
     let (wasm_ops, func_name): (Vec<WasmOp>, String) = match (&input, &demo) {
         (Some(path), _) => {
             info!("Compiling WASM file: {}", path.display());
@@ -1290,6 +1293,9 @@ fn compile_command(
             // conditionally for the SBOM, so the tables never reached the config.
             let module = decode_wasm_module(&wasm_bytes)
                 .context("Failed to decode WASM module (signature tables)")?;
+            // #642: compute the call_indirect guard inputs BEFORE the
+            // module's vectors are moved out below.
+            call_indirect_guards = module.call_indirect_guards();
             func_ret_i64 = module.func_ret_i64;
             type_ret_i64 = module.type_ret_i64;
             // #643: capture the declared global slot widths (indexed by
@@ -1471,6 +1477,9 @@ fn compile_command(
         // empty unless SYNTH_FACT_SPEC + facts + a discharged obligation.
         fact_div_zero_elide,
         fact_div_ovf_elide,
+        // #642: call_indirect guard inputs — the default declines every
+        // call_indirect lowering, so the demo path (no module) stays safe.
+        call_indirect_guards,
         ..CompileConfig::default()
     };
 
@@ -2153,6 +2162,7 @@ fn compile_all_exports(
         all_type_ret_i64,  // #311: per-type returns-i64 (call_indirect)
         all_func_params_i64, // #359: per-function declared param widths (stack-arg ABI)
         all_wsc_facts,     // VCR-PERF-002 Phase 1 (#494): loom wsc.facts premises
+        all_call_indirect_guards, // #642: table size + closed-world type verdicts
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;
@@ -2251,6 +2261,10 @@ fn compile_all_exports(
             Vec::new(),
             Vec::new(), // #359: WAST fixture suite is i32-only — no stack params
             Vec::new(), // #494: facts are a loom-emitted-.wasm channel; WAST fixtures carry none
+            // #642: the multi-module WAST merge has no single table image to
+            // verify — the default guards DECLINE any call_indirect (the WAST
+            // fixture suite carries none), never an unchecked branch.
+            synth_core::CallIndirectGuards::default(),
         )
     } else {
         let wasm_bytes = if path.extension().is_some_and(|ext| ext == "wat") {
@@ -2268,6 +2282,9 @@ fn compile_all_exports(
         let module = decode_wasm_module(&wasm_bytes).context("Failed to decode WASM module")?;
         sbom_wasm_bytes = Some(wasm_bytes);
 
+        // #642: call_indirect guard inputs — computed while the module is
+        // still whole (before its vectors are moved out below).
+        let guards = module.call_indirect_guards();
         let func_arg_counts = module.func_arg_counts;
         let type_arg_counts = module.type_arg_counts;
         let memories = module.memories;
@@ -2342,6 +2359,7 @@ fn compile_all_exports(
             module.type_ret_i64,
             module.func_params_i64,
             module.wsc_facts,
+            guards, // #642
         )
     };
 
@@ -2428,6 +2446,9 @@ fn compile_all_exports(
         // `current_func_facts` in the compile loop below; Phase 2 reads it in
         // the selector behind SYNTH_FACT_SPEC.
         wsc_facts: all_wsc_facts.clone(),
+        // #642: call_indirect guard inputs (compile-time table size for the
+        // bounds guard + closed-world type verdicts). Default = decline.
+        call_indirect_guards: all_call_indirect_guards,
         ..CompileConfig::default()
     };
 

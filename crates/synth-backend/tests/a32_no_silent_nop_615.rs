@@ -649,6 +649,7 @@ fn representatives() -> Vec<ArmOp> {
             rd: Reg::R0,
             type_idx: 0,
             table_index_reg: Reg::R2,
+            table_size: 4, // #642: bounds-guard immediate
         },
         I64Add {
             rdlo: dl,

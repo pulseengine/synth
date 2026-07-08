@@ -270,6 +270,14 @@ pub struct CompileConfig {
     /// divisor-nonzero fact alone NEVER lands here: divisor ≠ 0 does not
     /// exclude -1 (#633/#634 two-guard distinction). Empty ⇒ guard emitted.
     pub fact_div_ovf_elide: Vec<usize>,
+    /// #642: `call_indirect` guard inputs — the compile-time table size for
+    /// the runtime bounds check and the per-expected-type closed-world type
+    /// verdicts — computed from the decoded module by
+    /// [`crate::wasm_decoder::DecodedModule::call_indirect_guards`] and set by
+    /// the driver loops. The default (`table_size: None`, empty verdicts)
+    /// DECLINES every `call_indirect` lowering: an unchecked indirect branch
+    /// is never emitted (WASM Core §4.4.8 requires OOB/type-mismatch traps).
+    pub call_indirect_guards: crate::wasm_decoder::CallIndirectGuards,
 }
 
 /// #543 — an integrator-marked volatile linear-memory segment (the DMA transfer
@@ -339,6 +347,10 @@ impl Default for CompileConfig {
             // every div/rem trap guard is emitted, byte-identical.
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
+            // #642: no guard inputs ⇒ every call_indirect lowering declines
+            // loudly (never an unchecked indirect branch). Driver loops fill
+            // this from the decoded module.
+            call_indirect_guards: crate::wasm_decoder::CallIndirectGuards::default(),
         }
     }
 }

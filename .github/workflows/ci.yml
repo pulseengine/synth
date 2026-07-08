@@ -450,6 +450,45 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/callee_saved_490_differential.py
 
+  call-indirect-642-oracle:
+    name: call_indirect bounds-guard oracle (Thumb-2 + A32)
+    # VCR-ORACLE-001 (#242, #642): call_indirect emitted NO table bounds check
+    # and NO type check — an out-of-bounds index read past the table and BLXed
+    # whatever word lay there (uncontrolled indirect branch) where WASM Core
+    # §4.4.8 mandates a trap. EXECUTE the fixture under unicorn on BOTH ISAs
+    # (Thumb-2 cortex-m3 + A32 cortex-r5, table linked at r11) vs the wasmtime
+    # oracle: in-bounds indices must match; OOB indices must stop AT A UDF.
+    # Non-vacuous red: the words past the table are seeded with a valid decoy
+    # function, so an unguarded build "succeeds" at the OOB call and the
+    # harness fails loudly on the decoy's return value. The type check is
+    # discharged at compile time (closed-world table verification in the
+    # selector); its decline paths are unit-gated in synth-core/synth-synthesis.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run call_indirect bounds-guard oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/call_indirect_642_differential.py
+
   block-brif-483-oracle:
     name: optimized-path block/br_if lowering oracle
     # VCR-ORACLE-001 (#242, #483): EXECUTE optimized-path functions with forward

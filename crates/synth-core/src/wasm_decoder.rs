@@ -79,6 +79,47 @@ impl WasmMemory {
     }
 }
 
+/// #642: one element segment's statically-decoded shape — see
+/// [`DecodedModule::elem_segments`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElemSegmentInfo {
+    /// Const i32 offset of an ACTIVE table-0 segment; `None` = placement not
+    /// statically verifiable (passive/declared segment, non-const offset, or
+    /// a table other than 0).
+    pub offset: Option<u32>,
+    /// The segment's function indices in slot order; `None` = contents not
+    /// statically verifiable (an entry was not a plain `ref.func`).
+    pub funcs: Option<Vec<u32>>,
+}
+
+/// #642: everything the `call_indirect` lowering needs to emit its guards —
+/// computed once per module by [`DecodedModule::call_indirect_guards`] and
+/// threaded to the instruction selector via `CompileConfig`.
+///
+/// WASM Core §4.4.8 requires `call_indirect` to trap when `index >=
+/// table.size` and when the callee's type does not match the instruction's
+/// expected type. synth's table is a raw array of 4-byte code pointers
+/// (linked at R11 by the runtime/harness) with no size field and no type
+/// ids, so:
+///  - the BOUNDS check is emitted at runtime against the compile-time
+///    `table_size` immediate (sound: the table cannot change size —
+///    `table.grow`/`table.set` are unsupported ops whose functions
+///    loud-skip at decode), and
+///  - the TYPE check is discharged at COMPILE time: for expected type `t`,
+///    `type_reject[t]` is `None` only when every slot of the table is
+///    verifiably initialized with a function whose signature structurally
+///    equals type `t` (the closed-world property — no runtime mismatch is
+///    then possible). Otherwise it holds the reason, and the lowering
+///    declines LOUDLY rather than emit an unchecked indirect branch.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CallIndirectGuards {
+    /// Compile-time size of table 0 (entries); `None` = no sound bound known.
+    pub table_size: Option<u32>,
+    /// Per type index: `None` = closed-world type property VERIFIED for this
+    /// expected type; `Some(reason)` = not verifiable (the lowering declines).
+    pub type_reject: Vec<Option<String>>,
+}
+
 /// Decoded WASM module with functions and memory
 #[derive(Debug, Clone)]
 pub struct DecodedModule {
@@ -125,6 +166,29 @@ pub struct DecodedModule {
     /// reachable function performs a `call_indirect`. Empty for modules with no
     /// element section (every leaf/direct-call module), keeping output identical.
     pub elem_func_indices: Vec<u32>,
+    /// #642: compile-time size (in entries) of table 0, from the table section
+    /// or an imported table whose limits pin it exactly (`max == initial`).
+    /// `None` = no table, or an imported table with growable limits — the
+    /// `call_indirect` bounds guard then has no sound immediate and the
+    /// lowering declines. A DEFINED table's size is exact: `table.grow`/
+    /// `table.set` are unsupported ops (their functions loud-skip at decode),
+    /// so nothing synth compiles can resize or retype the table.
+    pub table_size: Option<u32>,
+    /// #642: per element segment, everything the closed-world `call_indirect`
+    /// type check needs. `offset` is the const i32 placement of an ACTIVE
+    /// table-0 segment (`None` = passive/declared/non-const offset/other
+    /// table — statically unverifiable placement); `funcs` are the segment's
+    /// function indices in slot order (`None` = an entry was not a plain
+    /// `ref.func`, e.g. `ref.null` — statically unverifiable contents).
+    pub elem_segments: Vec<ElemSegmentInfo>,
+    /// #642: type index per function, indexed by the FULL function index
+    /// (imports first, then locally-defined ones).
+    pub func_type_indices: Vec<u32>,
+    /// #642: canonical structural signature per type index (params/results
+    /// rendered as a string) — used for the closed-world `call_indirect` type
+    /// check, which must compare SIGNATURES, not raw type indices (a module
+    /// may carry structurally-identical duplicate types).
+    pub type_signatures: Vec<String>,
     /// VCR-PERF-002 Phase 1 (#494): proven invariants from loom's `wsc.facts`
     /// custom section, keyed by `(function index, value id)` — see
     /// `docs/design/wsc-facts-encoding.md` (schema v1) and
@@ -134,6 +198,92 @@ pub struct DecodedModule {
     /// ingestion only: NO codegen path consumes these yet, so emitted bytes
     /// are unchanged whether or not a module carries the section.
     pub wsc_facts: Vec<crate::wsc_facts::WscFact>,
+}
+
+impl DecodedModule {
+    /// #642: compute the `call_indirect` guard inputs — the compile-time table
+    /// size for the runtime bounds check, and the per-expected-type
+    /// closed-world verdict that discharges the type check at compile time.
+    /// See [`CallIndirectGuards`] for the soundness argument.
+    pub fn call_indirect_guards(&self) -> CallIndirectGuards {
+        let n_types = self.type_signatures.len();
+        let reject_all = |table_size: Option<u32>, reason: String| CallIndirectGuards {
+            table_size,
+            type_reject: vec![Some(reason); n_types],
+        };
+
+        let Some(size) = self.table_size else {
+            return reject_all(
+                None,
+                "module has no table with a compile-time-fixed size".to_string(),
+            );
+        };
+
+        // Reconstruct the table image: slot -> initializing function index.
+        let mut slots: Vec<Option<u32>> = vec![None; size as usize];
+        for seg in &self.elem_segments {
+            let (Some(off), Some(funcs)) = (seg.offset, seg.funcs.as_ref()) else {
+                return reject_all(
+                    Some(size),
+                    "element segment is not statically verifiable (passive/declared \
+                     segment, non-const offset, non-zero table, or non-`ref.func` \
+                     entry)"
+                        .to_string(),
+                );
+            };
+            for (k, &f) in funcs.iter().enumerate() {
+                let Some(slot) = slots.get_mut(off as usize + k) else {
+                    return reject_all(
+                        Some(size),
+                        format!(
+                            "element segment (offset {off}, {} entries) writes past the \
+                             declared table size {size}",
+                            funcs.len()
+                        ),
+                    );
+                };
+                *slot = Some(f);
+            }
+        }
+        // An uninitialized slot is a null funcref: calling it must trap, and
+        // the raw code-pointer table has no runtime representation of null to
+        // check against — so it breaks the closed world for EVERY type.
+        if let Some(i) = slots.iter().position(|s| s.is_none()) {
+            return reject_all(
+                Some(size),
+                format!(
+                    "table slot {i} is uninitialized (null funcref) — a \
+                     `call_indirect` reaching it must trap, and the raw \
+                     code-pointer table has no runtime null/type id to check"
+                ),
+            );
+        }
+
+        let type_reject = (0..n_types)
+            .map(|t| {
+                for f in slots.iter().flatten() {
+                    let Some(&fty) = self.func_type_indices.get(*f as usize) else {
+                        return Some(format!(
+                            "table entry references function {f} with no known type"
+                        ));
+                    };
+                    if self.type_signatures.get(fty as usize) != self.type_signatures.get(t) {
+                        return Some(format!(
+                            "table entry (function {f}, type {fty}) has a different \
+                             signature than expected type {t} — a runtime type check \
+                             is not implementable on the raw code-pointer table"
+                        ));
+                    }
+                }
+                None
+            })
+            .collect();
+
+        CallIndirectGuards {
+            table_size: Some(size),
+            type_reject,
+        }
+    }
 }
 
 /// Decode a WASM binary and extract functions, memory, and data segments
@@ -158,6 +308,13 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // #509: (param_count, result_count) per type index, for FuncType blocktypes.
     let mut type_block_arity: Vec<(u8, u8)> = Vec::new();
     let mut elem_func_indices: Vec<u32> = Vec::new();
+    // #642: call_indirect guard inputs — table 0's fixed size, per-segment
+    // static shapes, per-function type index, per-type canonical signature.
+    let mut table_size: Option<u32> = None;
+    let mut saw_table = false;
+    let mut elem_segments: Vec<ElemSegmentInfo> = Vec::new();
+    let mut func_type_indices: Vec<u32> = Vec::new();
+    let mut type_signatures: Vec<String> = Vec::new();
     // #394 Tier-1.x: function index → developer-facing name from the wasm
     // `name` custom section (function-names subsection). Applied to
     // `FunctionOps.debug_name` after the parse loop — the custom section
@@ -217,6 +374,15 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         type_arg_counts.push(count);
                         type_ret_i64.push(ret_i64);
                         type_params_i64.push(params_i64);
+                        // #642: canonical structural signature for the
+                        // closed-world call_indirect type check (compares
+                        // SIGNATURES so duplicate types stay interchangeable).
+                        type_signatures.push(match &sub_ty.composite_type.inner {
+                            wasmparser::CompositeInnerType::Func(f) => {
+                                format!("{:?}->{:?}", f.params(), f.results())
+                            }
+                            other => format!("non-func:{other:?}"),
+                        });
                     }
                 }
             }
@@ -234,6 +400,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             num_imported_funcs += 1;
                             // Record the imported function's arg count at its
                             // full function index (imports come first).
+                            func_type_indices.push(type_idx); // #642
                             func_arg_counts
                                 .push(type_arg_counts.get(type_idx as usize).copied().unwrap_or(0));
                             func_ret_i64.push(
@@ -251,7 +418,21 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             (ImportKind::Function(type_idx), idx)
                         }
                         wasmparser::TypeRef::Memory(_) => (ImportKind::Memory, 0),
-                        wasmparser::TypeRef::Table(_) => (ImportKind::Table, 0),
+                        wasmparser::TypeRef::Table(t) => {
+                            // #642: an imported table 0 only yields a SOUND
+                            // compile-time bound when its limits pin the size
+                            // exactly (max == initial) — a growable import
+                            // could be larger at runtime, and a bounds guard
+                            // against `initial` would trap spec-valid calls.
+                            if !saw_table {
+                                saw_table = true;
+                                table_size = match (u32::try_from(t.initial), t.maximum) {
+                                    (Ok(init), Some(max)) if u64::from(init) == max => Some(init),
+                                    _ => None,
+                                };
+                            }
+                            (ImportKind::Table, 0)
+                        }
                         wasmparser::TypeRef::Global(_) => (ImportKind::Global, 0),
                         _ => continue,
                     };
@@ -270,6 +451,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 // (issue #195).
                 for ty in reader {
                     let type_idx = ty.context("Failed to parse function type index")?;
+                    func_type_indices.push(type_idx); // #642
                     func_arg_counts
                         .push(type_arg_counts.get(type_idx as usize).copied().unwrap_or(0));
                     func_ret_i64.push(
@@ -284,6 +466,20 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             .cloned()
                             .unwrap_or_default(),
                     );
+                }
+            }
+            Payload::TableSection(reader) => {
+                // #642: a DEFINED table's compile-time size is exact — its
+                // initial size is its permanent size, because nothing synth
+                // compiles can resize it (`table.grow` is an unsupported op
+                // whose function loud-skips at decode). Only table 0 matters:
+                // the call_indirect lowering declines non-zero table indices.
+                for table in reader {
+                    let table = table.context("Failed to parse table")?;
+                    if !saw_table {
+                        saw_table = true;
+                        table_size = u32::try_from(table.ty.initial).ok();
+                    }
                 }
             }
             Payload::MemorySection(reader) => {
@@ -351,26 +547,72 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 // form whose `ref.func` entries name the functions.
                 for elem in reader {
                     let elem = elem.context("Failed to parse element segment")?;
+                    // #642: the segment's static placement — a const i32
+                    // offset of an ACTIVE table-0 segment; anything else is
+                    // unverifiable and poisons the closed-world type check.
+                    let seg_offset: Option<u32> = match &elem.kind {
+                        wasmparser::ElementKind::Active {
+                            table_index,
+                            offset_expr,
+                        } if table_index.unwrap_or(0) == 0 => {
+                            let mut ops = offset_expr.get_operators_reader();
+                            match ops.read() {
+                                Ok(wasmparser::Operator::I32Const { value }) => {
+                                    u32::try_from(value).ok()
+                                }
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    let mut seg_funcs: Option<Vec<u32>> = Some(Vec::new());
                     match elem.items {
                         wasmparser::ElementItems::Functions(funcs) => {
                             for f in funcs {
-                                elem_func_indices
-                                    .push(f.context("Failed to parse element func index")?);
+                                let f = f.context("Failed to parse element func index")?;
+                                elem_func_indices.push(f);
+                                if let Some(v) = seg_funcs.as_mut() {
+                                    v.push(f);
+                                }
                             }
                         }
                         wasmparser::ElementItems::Expressions(_, exprs) => {
                             for expr in exprs {
                                 let expr = expr.context("Failed to parse element expr")?;
-                                for op in expr.get_operators_reader() {
-                                    if let wasmparser::Operator::RefFunc { function_index } =
-                                        op.context("Failed to parse element op")?
-                                    {
-                                        elem_func_indices.push(function_index);
+                                // #642: an entry is verifiable only when it is
+                                // a single plain `ref.func` (reader yields the
+                                // op + the implicit `end`). `ref.null` or any
+                                // computed entry poisons the segment.
+                                let mut entry_func: Option<u32> = None;
+                                let mut plain = true;
+                                for (k, op) in expr.get_operators_reader().into_iter().enumerate() {
+                                    match (k, op.context("Failed to parse element op")?) {
+                                        (0, wasmparser::Operator::RefFunc { function_index }) => {
+                                            elem_func_indices.push(function_index);
+                                            entry_func = Some(function_index);
+                                        }
+                                        (_, wasmparser::Operator::End) => {}
+                                        (_, wasmparser::Operator::RefFunc { function_index }) => {
+                                            // Keep the pre-#642 reachability
+                                            // behaviour: every ref.func seen
+                                            // anywhere is a possible target.
+                                            elem_func_indices.push(function_index);
+                                            plain = false;
+                                        }
+                                        _ => plain = false,
                                     }
+                                }
+                                match (plain, entry_func, seg_funcs.as_mut()) {
+                                    (true, Some(f), Some(v)) => v.push(f),
+                                    _ => seg_funcs = None,
                                 }
                             }
                         }
                     }
+                    elem_segments.push(ElemSegmentInfo {
+                        offset: seg_offset,
+                        funcs: seg_funcs,
+                    });
                 }
             }
             Payload::ExportSection(exports) => {
@@ -448,6 +690,10 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         func_params_i64,
         globals,
         elem_func_indices,
+        table_size,
+        elem_segments,
+        func_type_indices,
+        type_signatures,
         wsc_facts: wsc_facts.unwrap_or_default(),
     })
 }
@@ -1866,5 +2112,170 @@ mod tests {
                 "h: loop params captured"
             );
         }
+    }
+
+    /// #642: the decoder captures table 0's compile-time size, per-segment
+    /// element shapes and per-function type indices, and the closed-world
+    /// verdict VERIFIES a fully-covered homogeneous table.
+    #[test]
+    fn test_call_indirect_guards_closed_world_verified_642() {
+        // The #642 repro shape: 3-entry table, fully covered, one signature.
+        let wat = r#"
+            (module
+                (type $bin (func (param i32 i32) (result i32)))
+                (table 3 funcref)
+                (elem (i32.const 0) $add $sub $mul)
+                (func $add (param i32 i32) (result i32)
+                    (i32.add (local.get 0) (local.get 1)))
+                (func $sub (param i32 i32) (result i32)
+                    (i32.sub (local.get 0) (local.get 1)))
+                (func $mul (param i32 i32) (result i32)
+                    (i32.mul (local.get 0) (local.get 1)))
+                (func (export "f") (param i32 i32) (result i32)
+                    (call_indirect (type $bin)
+                        (local.get 0) (i32.const 10) (local.get 1)))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode");
+
+        assert_eq!(module.table_size, Some(3), "table section min size");
+        assert_eq!(
+            module.elem_segments,
+            vec![ElemSegmentInfo {
+                offset: Some(0),
+                funcs: Some(vec![0, 1, 2]),
+            }]
+        );
+        // 2 type-section entries ($bin + the export's (i32 i32)->i32 dedups
+        // to one in practice, but don't assume — just check func 0..2 share
+        // a signature with type 0).
+        assert_eq!(module.func_type_indices.len(), 4);
+
+        let guards = module.call_indirect_guards();
+        assert_eq!(guards.table_size, Some(3));
+        // Type index 0 ($bin) must be VERIFIED: every table entry has its
+        // exact signature.
+        assert_eq!(
+            guards.type_reject.first(),
+            Some(&None),
+            "closed-world type check must verify the homogeneous table: {:?}",
+            guards.type_reject
+        );
+    }
+
+    /// #642: a heterogeneous table (an entry whose signature differs from the
+    /// expected type) must REJECT that expected type — the raw code-pointer
+    /// table cannot be runtime-type-checked, so the lowering has to decline.
+    #[test]
+    fn test_call_indirect_guards_heterogeneous_table_rejects_642() {
+        let wat = r#"
+            (module
+                (type $bin (func (param i32 i32) (result i32)))
+                (type $un (func (param i32) (result i32)))
+                (table 2 funcref)
+                (elem (i32.const 0) $add $neg)
+                (func $add (type $bin)
+                    (i32.add (local.get 0) (local.get 1)))
+                (func $neg (type $un)
+                    (i32.sub (i32.const 0) (local.get 0)))
+                (func (export "f") (param i32 i32) (result i32)
+                    (call_indirect (type $bin)
+                        (local.get 0) (i32.const 10) (local.get 1)))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode");
+        let guards = module.call_indirect_guards();
+        assert_eq!(guards.table_size, Some(2));
+        // BOTH expected types must be rejected: the table holds one function
+        // of each signature, so neither type's closed world holds.
+        assert!(
+            guards.type_reject[0].is_some() && guards.type_reject[1].is_some(),
+            "heterogeneous table must reject every expected type: {:?}",
+            guards.type_reject
+        );
+    }
+
+    /// #642: an uninitialized table slot (elem covers less than the declared
+    /// size) is a null funcref — calling it must trap, which the raw
+    /// code-pointer table cannot express at runtime → reject all types.
+    #[test]
+    fn test_call_indirect_guards_null_slot_rejects_642() {
+        let wat = r#"
+            (module
+                (type $s (func (result i32)))
+                (table 3 funcref)
+                (elem (i32.const 0) $f0 $f1)
+                (func $f0 (result i32) (i32.const 10))
+                (func $f1 (result i32) (i32.const 11))
+                (func (export "run") (param i32) (result i32)
+                    (call_indirect (type $s) (local.get 0)))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode");
+        let guards = module.call_indirect_guards();
+        assert_eq!(guards.table_size, Some(3));
+        assert!(
+            guards.type_reject.iter().all(|r| r.is_some()),
+            "slot 2 is a null funcref — every type must be rejected: {:?}",
+            guards.type_reject
+        );
+        assert!(
+            guards.type_reject[0].as_deref().unwrap().contains("slot 2"),
+            "reason names the uninitialized slot: {:?}",
+            guards.type_reject[0]
+        );
+    }
+
+    /// #642: no table at all → no compile-time bound → table_size None and
+    /// every type rejected (the lowering declines).
+    #[test]
+    fn test_call_indirect_guards_no_table_642() {
+        let wat = r#"
+            (module
+                (func (export "f") (param i32) (result i32) (local.get 0))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode");
+        assert_eq!(module.table_size, None);
+        let guards = module.call_indirect_guards();
+        assert_eq!(guards.table_size, None);
+        assert!(guards.type_reject.iter().all(|r| r.is_some()));
+    }
+
+    /// #642: duplicate-but-structurally-identical types stay interchangeable —
+    /// the closed-world check compares SIGNATURES, not type indices.
+    #[test]
+    fn test_call_indirect_guards_duplicate_types_verified_642() {
+        let wat = r#"
+            (module
+                (type $a (func (result i32)))
+                (type $b (func (result i32)))
+                (table 1 funcref)
+                (elem (i32.const 0) $f)
+                (func $f (type $a) (i32.const 7))
+                (func (export "run") (param i32) (result i32)
+                    (call_indirect (type $b) (local.get 0)))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode");
+        let guards = module.call_indirect_guards();
+        // $f has type $a; the call expects $b — structurally identical, so
+        // BOTH type indices must verify. (A third type — the export's
+        // (i32)->i32 — is correctly rejected: different signature.)
+        assert_eq!(
+            &guards.type_reject[0..2],
+            &[None, None],
+            "structural signature comparison must accept duplicate types: {:?}",
+            guards.type_reject
+        );
+        assert!(
+            guards.type_reject[2].is_some(),
+            "the structurally-different third type must still be rejected"
+        );
     }
 }

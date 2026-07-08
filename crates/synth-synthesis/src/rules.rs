@@ -526,6 +526,15 @@ pub enum ArmOp {
         rd: Reg,
         type_idx: u32,
         table_index_reg: Reg,
+        /// #642: compile-time size of table 0 in entries. The encoder emits a
+        /// bounds guard (`CMP idx, size; BLO ok; UDF #0`) before the table
+        /// load — WASM Core §4.4.8 requires `index >= table.size` to TRAP,
+        /// not perform an uncontrolled indirect branch. The size is a
+        /// compile-time immediate because the raw code-pointer table synth
+        /// targets has no runtime size field, and the table cannot change
+        /// size at runtime (`table.grow`/`table.set` are unsupported ops →
+        /// their functions loud-skip at decode).
+        table_size: u32,
     },
 
     // ========================================================================

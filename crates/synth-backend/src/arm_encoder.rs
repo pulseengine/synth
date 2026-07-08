@@ -127,16 +127,41 @@ impl ArmEncoder {
     /// `i` is a 4-byte code address, R12 is the encoder-scratch register):
     ///
     /// ```text
+    /// MOVW r12, #size        ; #642: table size (compile-time immediate)
+    /// [MOVT r12, #size>>16]  ; only when size exceeds 16 bits
+    /// CMP  idx, r12          ; bounds guard: index >= size must TRAP
+    /// BLO  +1 insn           ; skip the trap when in bounds
+    /// UDF                    ; WASM Core §4.4.8 out-of-bounds trap
     /// MOV r12, idx, LSL #2   ; table byte offset
     /// LDR r12, [r11, r12]    ; load function pointer
     /// BLX r12                ; indirect call
     /// ```
     ///
-    /// Bounds and type-signature checks are not emitted — parity with the
-    /// Thumb-2 path (tracked separately, see #594's note).
-    fn encode_arm_call_indirect(table_index_reg: &Reg) -> Vec<u8> {
+    /// The §4.4.8 type check is discharged at COMPILE time by the selector's
+    /// closed-world verification (the raw code-pointer table carries no
+    /// runtime type ids) — see the #642 selector guard.
+    fn encode_arm_call_indirect(table_index_reg: &Reg, table_size: u32) -> Vec<u8> {
         let idx = reg_to_bits(table_index_reg);
-        let mut bytes = Vec::with_capacity(12);
+        let mut bytes = Vec::with_capacity(32);
+        // MOVW r12, #(size & 0xFFFF) — cond=E 0011 0000 imm4 Rd imm12.
+        let size_lo = table_size & 0xFFFF;
+        let movw: u32 = 0xE300_0000 | ((size_lo >> 12) << 16) | (12 << 12) | (size_lo & 0xFFF);
+        bytes.extend_from_slice(&movw.to_le_bytes());
+        // MOVT r12, #(size >> 16) — only for a table size above 16 bits.
+        let size_hi = table_size >> 16;
+        if size_hi != 0 {
+            let movt: u32 = 0xE340_0000 | ((size_hi >> 12) << 16) | (12 << 12) | (size_hi & 0xFFF);
+            bytes.extend_from_slice(&movt.to_le_bytes());
+        }
+        // CMP idx, r12 — cond=E, opcode=1010, S=1, Rn=idx, Rm=r12.
+        let cmp: u32 = 0xE150_000C | (idx << 16);
+        bytes.extend_from_slice(&cmp.to_le_bytes());
+        // BLO +1 insn (skip the UDF when index < size) — cond=LO(0011),
+        // imm24=0: target = branch + 8.
+        bytes.extend_from_slice(&0x3A00_0000u32.to_le_bytes());
+        // UDF — permanently undefined (same trap idiom as the A32 div-by-zero
+        // guards): call_indirect out-of-bounds trap.
+        bytes.extend_from_slice(&0xE7F0_00F0u32.to_le_bytes());
         // MOV r12, idx, LSL #2 — data-processing MOV, register op2 with
         // imm5=2/LSL: cond=E, opcode=1101, S=0, Rd=r12.
         let mov: u32 = 0xE1A0C000 | (2 << 7) | idx;
@@ -1157,10 +1182,12 @@ impl ArmEncoder {
         // as the Thumb-2 path (R11 = function-pointer table base, R12 scratch):
         //   MOV r12, idx, LSL #2 ; LDR r12, [r11, r12] ; BLX r12
         if let ArmOp::CallIndirect {
-            table_index_reg, ..
+            table_index_reg,
+            table_size,
+            ..
         } = op
         {
-            return Ok(Self::encode_arm_call_indirect(table_index_reg));
+            return Ok(Self::encode_arm_call_indirect(table_index_reg, *table_size));
         }
         let instr: u32 = match op {
             // Data processing instructions
@@ -3643,25 +3670,64 @@ impl ArmEncoder {
 
             // CallIndirect - indirect function call via table lookup
             // table_index_reg contains the table index
-            // Generates: LSL R12, idx, #2; LDR R12, [R12, table_base]; BLX R12
+            // Generates (#642): MOVW ip,#size [; MOVT]; CMP idx,ip; BLO +1;
+            //                   UDF #0; LSL R12,idx,#2; LDR R12,[R11,R12]; BLX R12
             ArmOp::CallIndirect {
                 rd: _,
                 type_idx: _,
                 table_index_reg,
+                table_size,
             } => {
                 let idx_reg = reg_to_bits(table_index_reg);
                 let mut bytes = Vec::new();
 
-                // For now, we generate code that:
-                // 1. Multiplies index by 4 (function pointer size)
-                // 2. Loads function pointer from table (assumes table base in R11)
-                // 3. Calls the function via BLX
+                // The expansion:
+                // 1. Bounds guard (#642): trap (UDF #0, WASM Core §4.4.8) when
+                //    index >= table size. Without it an out-of-bounds index
+                //    reads past the table and BLXes whatever word lies there —
+                //    an uncontrolled indirect branch instead of a trap.
+                // 2. Multiplies index by 4 (function pointer size)
+                // 3. Loads function pointer from table (table base in R11)
+                // 4. Calls the function via BLX
                 //
-                // Table base setup must be done by caller/runtime.
-                // This is a simplified implementation - full support needs:
-                // - Table base address resolution
-                // - Type signature checking
-                // - Bounds checking
+                // Table base setup must be done by caller/runtime. The type
+                // check §4.4.8 also requires is discharged at COMPILE time:
+                // the selector only emits this op after verifying the closed-
+                // world property that every table entry's signature equals the
+                // expected type (the raw code-pointer table carries no runtime
+                // type ids to compare) — see the #642 selector guard.
+
+                // MOVW R12, #(size & 0xFFFF) — Thumb-2 T3:
+                // 11110 i 100100 imm4 | 0 imm3 Rd imm8 (Rd=R12).
+                let size_lo = *table_size & 0xFFFF;
+                let hw1: u16 =
+                    (0xF240 | (((size_lo >> 11) & 1) << 10) | ((size_lo >> 12) & 0xF)) as u16;
+                let hw2: u16 =
+                    ((((size_lo >> 8) & 0x7) << 12) | (12 << 8) | (size_lo & 0xFF)) as u16;
+                bytes.extend_from_slice(&hw1.to_le_bytes());
+                bytes.extend_from_slice(&hw2.to_le_bytes());
+                // MOVT R12, #(size >> 16) — only when the table size exceeds
+                // 16 bits (never in practice, but the guard must not compare
+                // against a truncated size).
+                let size_hi = *table_size >> 16;
+                if size_hi != 0 {
+                    let hw1: u16 =
+                        (0xF2C0 | (((size_hi >> 11) & 1) << 10) | ((size_hi >> 12) & 0xF)) as u16;
+                    let hw2: u16 =
+                        ((((size_hi >> 8) & 0x7) << 12) | (12 << 8) | (size_hi & 0xFF)) as u16;
+                    bytes.extend_from_slice(&hw1.to_le_bytes());
+                    bytes.extend_from_slice(&hw2.to_le_bytes());
+                }
+                // CMP idx, R12 — 16-bit T2 (high-register capable):
+                // 010001 01 N Rm(4) Rn(3), Rn full = N:Rn3.
+                let cmp: u16 = (0x4500 | ((idx_reg & 8) << 4) | (12 << 3) | (idx_reg & 7)) as u16;
+                bytes.extend_from_slice(&cmp.to_le_bytes());
+                // BLO +1 insn (skip the UDF when index < size) — B<cond>.N
+                // imm8=0: target = branch + 4. LO = unsigned lower.
+                bytes.extend_from_slice(&0xD300u16.to_le_bytes());
+                // UDF #0 — call_indirect out-of-bounds trap (same trap idiom as
+                // the div-by-zero guards).
+                bytes.extend_from_slice(&0xDE00u16.to_le_bytes());
 
                 // LSL R12, idx_reg, #2 (multiply index by 4)
                 // Thumb-2 MOV with shift: 11101010 010 S 1111 | 0 imm3 Rd imm2 type Rm
@@ -8740,8 +8806,10 @@ mod tests {
     /// #594 regression: `call_indirect` on the A32 path (`--target cortex-r5`)
     /// was encoded as a literal NOP (0xE1A00000) — the call never happened and
     /// the function silently returned the leftover table-index value. The A32
-    /// encoder must emit the same three-instruction expansion as Thumb-2:
-    /// `MOV r12, idx, LSL #2; LDR r12, [r11, r12]; BLX r12`.
+    /// encoder must emit a real dispatch expansion, since #642 guarded by an
+    /// inline bounds check:
+    /// `MOVW r12, #size; CMP idx, r12; BLO +1; UDF;
+    ///  MOV r12, idx, LSL #2; LDR r12, [r11, r12]; BLX r12`.
     #[test]
     fn test_encode_arm32_call_indirect_is_real_call_594() {
         use synth_synthesis::{ArmOp, Reg};
@@ -8751,22 +8819,37 @@ mod tests {
                 rd: Reg::R0,
                 type_idx: 0,
                 table_index_reg: Reg::R0,
+                table_size: 4,
             })
             .unwrap();
         assert_eq!(
             bytes.len(),
-            12,
-            "expected MOV + LDR + BLX (3 words): {bytes:02x?}"
+            28,
+            "expected MOVW + CMP + BLO + UDF + MOV + LDR + BLX (7 words): {bytes:02x?}"
         );
-        let mov = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
-        let ldr = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
-        let blx = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let words: Vec<u32> = bytes
+            .chunks_exact(4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .collect();
+        // #642 bounds guard: MOVW r12, #4; CMP r0, r12; BLO +1; UDF
+        assert_eq!(words[0], 0xE300_C004, "MOVW r12,#4: {:#010x}", words[0]);
+        assert_eq!(words[1], 0xE150_000C, "CMP r0,r12: {:#010x}", words[1]);
+        assert_eq!(words[2], 0x3A00_0000, "BLO +1 insn: {:#010x}", words[2]);
+        assert_eq!(words[3], 0xE7F0_00F0, "UDF: {:#010x}", words[3]);
         // MOV r12, r0, LSL #2 = 0xE1A0C100
-        assert_eq!(mov, 0xE1A0_C100, "MOV r12,r0,LSL#2: {mov:#010x}");
+        assert_eq!(
+            words[4], 0xE1A0_C100,
+            "MOV r12,r0,LSL#2: {:#010x}",
+            words[4]
+        );
         // LDR r12, [r11, r12] = 0xE79BC00C
-        assert_eq!(ldr, 0xE79B_C00C, "LDR r12,[r11,r12]: {ldr:#010x}");
+        assert_eq!(
+            words[5], 0xE79B_C00C,
+            "LDR r12,[r11,r12]: {:#010x}",
+            words[5]
+        );
         // BLX r12 = 0xE12FFF3C
-        assert_eq!(blx, 0xE12F_FF3C, "BLX r12: {blx:#010x}");
+        assert_eq!(words[6], 0xE12F_FF3C, "BLX r12: {:#010x}", words[6]);
         // The bug: a single NOP word. Must never come back.
         assert!(
             !bytes
@@ -8775,16 +8858,40 @@ mod tests {
             "call_indirect must not contain a NOP (#594): {bytes:02x?}"
         );
 
-        // A non-R0 index register lands in the MOV's Rm field.
+        // A non-R0 index register lands in the MOV's Rm and CMP's Rn fields.
         let bytes = enc
             .encode(&ArmOp::CallIndirect {
                 rd: Reg::R0,
                 type_idx: 0,
                 table_index_reg: Reg::R4,
+                table_size: 4,
             })
             .unwrap();
-        let mov = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let cmp = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        assert_eq!(cmp, 0xE154_000C, "CMP r4,r12: {cmp:#010x}");
+        let mov = u32::from_le_bytes(bytes[16..20].try_into().unwrap());
         assert_eq!(mov, 0xE1A0_C104, "MOV r12,r4,LSL#2: {mov:#010x}");
+    }
+
+    /// #642: a table size above 16 bits must not be silently truncated by the
+    /// MOVW — the A32 guard adds a MOVT for the high half.
+    #[test]
+    fn test_encode_arm32_call_indirect_wide_table_size_642() {
+        use synth_synthesis::{ArmOp, Reg};
+        let enc = ArmEncoder::new_arm32();
+        let bytes = enc
+            .encode(&ArmOp::CallIndirect {
+                rd: Reg::R0,
+                type_idx: 0,
+                table_index_reg: Reg::R0,
+                table_size: 0x0002_0003,
+            })
+            .unwrap();
+        assert_eq!(bytes.len(), 32, "MOVT arm adds one word: {bytes:02x?}");
+        let movw = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let movt = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+        assert_eq!(movw, 0xE300_C003, "MOVW r12,#3: {movw:#010x}");
+        assert_eq!(movt, 0xE340_C002, "MOVT r12,#2: {movt:#010x}");
     }
 
     /// #597 anchor (justified correctness RE-PIN of the #594-era freeze): the
@@ -8811,32 +8918,79 @@ mod tests {
                 rd: Reg::R0,
                 type_idx: 0,
                 table_index_reg: Reg::R0,
+                table_size: 4,
             })
             .unwrap();
         assert_eq!(
             bytes,
-            vec![0x4F, 0xEA, 0x80, 0x0C, 0x5B, 0xF8, 0x0C, 0xC0, 0xE0, 0x47],
-            "Thumb-2 CallIndirect: mov.w ip,r0,LSL#2; ldr.w ip,[r11,ip]; blx ip: {bytes:02x?}"
+            vec![
+                // #642 bounds guard: movw ip,#4; cmp r0,ip; blo +1; udf #0
+                0x40, 0xF2, 0x04, 0x0C, // movw ip, #4
+                0x60, 0x45, // cmp r0, ip
+                0x00, 0xD3, // blo .+4 (skip the udf)
+                0x00, 0xDE, // udf #0 — OOB index trap (WASM §4.4.8)
+                // #597-pinned dispatch
+                0x4F, 0xEA, 0x80, 0x0C, // mov.w ip, r0, lsl #2
+                0x5B, 0xF8, 0x0C, 0xC0, // ldr.w ip, [r11, ip]
+                0xE0, 0x47, // blx ip
+            ],
+            "Thumb-2 CallIndirect: bounds guard + mov.w/ldr.w/blx dispatch: {bytes:02x?}"
         );
-        // The #597 bug bytes (ASR #32 first word) must never come back.
-        assert_ne!(
-            &bytes[0..4],
-            &[0x4F, 0xEA, 0x20, 0x0C],
+        // The #597 bug bytes (ASR #32 dispatch first word) must never come back.
+        assert!(
+            !bytes.windows(4).any(|w| w == [0x4F, 0xEA, 0x20, 0x0C]),
             "mov.w ip, rm, ASR #32 — the #597 type-field bug"
         );
 
-        // A non-R0 index register lands in the mov.w's Rm field (hw2 bits 3:0).
+        // A non-R0 index register lands in the mov.w's Rm field (hw2 bits 3:0)
+        // and the cmp's Rn field.
         let bytes = enc
             .encode(&ArmOp::CallIndirect {
                 rd: Reg::R0,
                 type_idx: 0,
                 table_index_reg: Reg::R4,
+                table_size: 4,
             })
             .unwrap();
+        assert_eq!(&bytes[4..6], &[0x64, 0x45], "cmp r4, ip: {bytes:02x?}");
         assert_eq!(
-            &bytes[0..4],
+            &bytes[10..14],
             &[0x4F, 0xEA, 0x84, 0x0C],
             "mov.w ip, r4, LSL #2: {bytes:02x?}"
+        );
+    }
+
+    /// #642: the Thumb-2 bounds guard for a high-register index (R8 — the top
+    /// of the allocatable pool) uses the high-reg-capable 16-bit CMP (T2) with
+    /// the N bit set; a table size above 16 bits adds a MOVT.
+    #[test]
+    fn test_encode_thumb_call_indirect_guard_shapes_642() {
+        use synth_synthesis::{ArmOp, Reg};
+        let enc = ArmEncoder::new_thumb2();
+        let bytes = enc
+            .encode(&ArmOp::CallIndirect {
+                rd: Reg::R0,
+                type_idx: 0,
+                table_index_reg: Reg::R8,
+                table_size: 3,
+            })
+            .unwrap();
+        // cmp r8, ip — T2: 0x4500 | N(1)<<7 | Rm(12)<<3 | Rn(0) = 0x45E0
+        assert_eq!(&bytes[4..6], &[0xE0, 0x45], "cmp r8, ip: {bytes:02x?}");
+
+        let bytes = enc
+            .encode(&ArmOp::CallIndirect {
+                rd: Reg::R0,
+                type_idx: 0,
+                table_index_reg: Reg::R0,
+                table_size: 0x0002_0003,
+            })
+            .unwrap();
+        // movw ip,#3 then movt ip,#2 — the size must not be truncated.
+        assert_eq!(
+            &bytes[0..8],
+            &[0x40, 0xF2, 0x03, 0x0C, 0xC0, 0xF2, 0x02, 0x0C],
+            "movw ip,#3; movt ip,#2: {bytes:02x?}"
         );
     }
 
