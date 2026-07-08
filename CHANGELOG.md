@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.0] - 2026-07-09
+
+**The certifying validator reaches the shipped bytes: expansion-level
+certification for 20 i64 pseudo-ops — the validator checks the encoder's own
+emitted instruction sequences, so encoder↔validator drift is unrepresentable
+(#667 move 2).**
+
+### Added
+
+- **Expansion-level certifying validation (PR #674, #667/#242).** New
+  `synth-verify/src/expansion_validator.rs`: a Thumb-2 subset decoder (loud
+  Err on unmodeled encodings), a guarded symbolic executor (forward-branch
+  path conditions, IT predication, NZCV, concrete-offset scratch stack), and
+  per-op `UNSAT(wasm ≠ sequence)` via the ordeal BvSolver with LRAT
+  certificates — wired into `synth verify`. Certified on the shipped
+  encoder: I64Mul, the ten I64SetCond + SetCondZ/Eqz, Clz/Ctz/Popcnt,
+  the three shifts, both rotates (through their #610 fixed-ABI wrappers).
+  Red-on-bug-shape proven: the literal #632 popcnt-clobber shape is
+  rejected with a counterexample. Held out loudly: div/rem 64-round loops
+  (backward branches are a decode error — no green-washing); loop support
+  is the named next increment.
+
 ## [0.36.0] - 2026-07-08
 
 **`unreachable` finally traps (it was decode-dropped as an "intentional no-op"
