@@ -1,5 +1,11 @@
 # VCR-ISA-001 Feasibility Spike — Sail/ASL-derived ARM semantics (2026-07-08)
 
+> **Status update (round 2, same day):** the spike's priority list items (1)
+> and (2) — the remaining AddWithCarry family and the flag-free ALU/shift
+> class — plus the MOV/MOVW/MOVT stretch are now landed in the same file.
+> `SailArmBridge.v` stands at **81 Qed / 0 Admitted / 0 new axioms**
+> (was 23). See §6 for the coverage table and measured round-2 cost.
+
 **Verdict: GO — but on the transcribe-and-bridge path, not the import path.**
 Importing the Sail-generated Rocq model wholesale is a no-go at synth's scale
 (measured below). Hand-transcribing the Sail execute semantics per instruction
@@ -127,9 +133,45 @@ needs a deliberate abstraction statement, not a mechanical bridge).
   alive) and REFUTED for the generated-ARM-artifact path, with the working
   alternative landed in-tree.
 
+## 6. Round 2 — coverage table + measured cost (2026-07-08)
+
+Executed per the §5 priority list, items (1) and (2), plus the moves stretch.
+Same pin (sail-arm @ `1bf2e5574ba9`), same pattern: verbatim-quoted execute
+clause with file:line, hand transcription, bridge lemma vs `exec_instr`, Qed.
+
+| Op class | Instructions | Bridge form | Status |
+|---|---|---|---|
+| AddWithCarry family (round 1) | ADD, ADDS, CMP (register) | exact state (reg + all 4 NZCV) | Qed (23) |
+| AddWithCarry family (round 2) | SUB, SUBS, CMN, RSB, **ADC, SBC** (register) | exact state; SUBS = reg + all 4 NZCV; ADC/SBC carry_in = live C flag | Qed |
+| Flag-free ALU | AND, ORR, EOR, MVN (register) | exact state (setflags=false; no ANDS/… in our model) | Qed |
+| Shifts, immediate | LSL/LSR/ASR/ROR #1..31 (via Shift_C + LSL_C/LSR_C/ASR_C/ROR_C transcriptions) | exact state under 1 ≤ shift_n ≤ 31 | Qed |
+| Shifts, register | LSL/LSR/ASR/ROR reg-amount (UInt(R[s]<7:0>)) | exact state under 0 < UInt(R[s]) < 32; amount = 0 bridged on the unsigned view | Qed |
+| Moves | MOV (register), MOVW, MOVT (UInt(imm16) < 2^16) | exact state | Qed |
+| NOT COVERED | MUL/MLA/MLS/UMULL, SDIV/UDIV, CLZ/RBIT (axiomatized our side), loads/stores, branches/PC, IT blocks, RRX, BIC (absent from ArmSemantics.v) | — | future increments |
+
+**Measured round-2 cost:** one working session (~half a day wall-clock) for
+six-plus op classes — well under the §3 estimate of 0.5–1 day *per class*.
+The §3 amortization claim held exactly: SUB/SUBS/CMN/RSB reused the round-1
+AddWithCarry + flag lemmas nearly for free (SUB's flags ARE CMP's flags —
+one `exact`), and ADC/SBC needed only two ~10-line mod-arithmetic lemmas.
+The genuinely new machinery was (a) mod-2^32 distribution over
+`Z.land/Z.lor/Z.lxor` (three testbit-extensionality lemmas) for the ALU
+class, and (b) the `Shift_C` transcription with its four `*_C` primitives
+including the shifter carry-out (transcribed faithfully; unused by the
+bridges because our model has no flag-setting shifts — recorded as gap 5).
+
+**Findings (the bridge earning its keep):** two real divergences between
+ArmSemantics.v and the ASL, both documented in-file as gaps 6-7:
+LSR/ASR #32 (imm5 = 00000 encodes shift 32; our mod-32 model computes a
+shift by 0 where ARM zero/sign-fills) and register-controlled amounts ≥ 32
+(ARM uses the low byte, 32..255 saturate; our model masks mod 32). Neither
+is reachable from Compilation.v (WASM masks shift amounts to 0..31), so they
+are latent model bugs, not miscompiles — exactly the class VCR-ISA-001
+exists to surface.
+
 ## Artifacts
 
-- `coq/Synth/ARM/SailArmBridge.v` — 23 Qed / 0 Admitted, in
-  `//coq:verify_proofs` (green).
+- `coq/Synth/ARM/SailArmBridge.v` — 81 Qed / 0 Admitted / 0 new axioms
+  (round 1: 23), in `//coq:verify_proofs` (green).
 - `coq/BUILD.bazel` `:sail_arm_bridge`, `coq/_CoqProject` entry.
 - This report.

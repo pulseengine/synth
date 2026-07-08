@@ -617,7 +617,24 @@ artifacts:
       Sail memory vs Z->I32 model). RISC-V half unmeasured — sail-riscv's
       maintained Coq export may admit the import path there; re-evaluate
       separately.
-    status: proposed
+
+      ROUND 2 LANDED (2026-07-08, same day): the spike's priority items (1)
+      and (2) + the moves stretch — SailArmBridge.v now 81 Qed / 0 Admitted /
+      0 new axioms covering the FULL AddWithCarry family (ADD/ADDS/CMP +
+      SUB/SUBS/CMN/RSB + ADC/SBC with live-C carry_in — the i64 pair-codegen
+      primitives), flag-free ALU (AND/ORR/EOR/MVN), all four shifts in
+      immediate (1..31) and register (0 < amt < 32; amt = 0 on the unsigned
+      view) forms via a faithful Shift_C transcription incl. shifter
+      carry-out, and MOV/MOVW/MOVT. Measured cost ~0.5 day for six-plus
+      classes (well under the spike's per-class estimate; the flag-machinery
+      amortization held). BONUS FINDING: the bridge surfaced two latent
+      hand-model divergences from the ASL (LSR/ASR #32 and register shift
+      amounts >= 32 — unreachable from Compilation.v since WASM masks to
+      0..31), documented in-file as gaps 6-7 — the exact bug class this item
+      exists to surface. Still open (why not implemented): PC-indexed
+      executor (the trap-guard admits, this item's core motivation),
+      MUL/UMULL/CLZ/RBIT/memory/branches, and the whole RISC-V half.
+    status: approved
     tags: [semantics, sail, isa, trust, rocq, track-b, unblocks-admits]
     links:
       - type: derives-from
@@ -643,6 +660,11 @@ artifacts:
         transcribe-and-bridge against provenance-pinned Sail source, not
         against an imported generated model. RV32 export build remains
         unmeasured (the spike's ARM no-go on import does not transfer).
+        STATUS proposed -> approved (2026-07-08): two landed increments
+        (23 then 81 Qed, //coq:verify_proofs green) validate the revised
+        criterion's method on the i32 straight-line integer core; approved
+        means the approach is committed, NOT that the item is implemented —
+        the PC-executor refactor, memory ops, and the RISC-V half remain.
 
   - id: VCR-WASM-001
     type: sw-req
