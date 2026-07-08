@@ -1,4 +1,4 @@
-(** * VCR-SEL-001 increments 1+2+3: Rocq obligations of the wired selector rule table
+(** * VCR-SEL-001 increments 1+2+3+4: Rocq obligations of the wired selector rule table
 
     One universally-quantified T1 theorem per rule in the checked-in DSL table
     [crates/synth-synthesis/src/sel_dsl/mod.rs] (RULES), naming 1:1:
@@ -681,3 +681,302 @@ Proof.
   rewrite i64_setcondz_bits_spec.
   eexists. split; [reflexivity | apply get_set_reg_eq].
 Qed.
+
+(** ** Increment 4: scratch-using and multi-instruction shapes + the binary
+    [I64SetCond] comparison family.
+
+    i32 bit-manipulation:
+
+    - [rule_i32_clz] — single [CLZ] (tier A, unary);
+    - [rule_i32_ctz] — the TWO-instruction [RBIT rd rm; CLZ rd rd] shape
+      with the scratch=dest trick: instruction 1 writes the bit-reversed
+      value into [rd] itself, instruction 2 reads it back — NO extra
+      scratch register and NO aliasing side condition (every rd/rm
+      aliasing is admitted: RBIT reads [rm] before writing [rd], and the
+      second instruction only reads [rd]). Stepped proof closing with the
+      [I32.clz_rbit] axiom, exactly like the fixed-register ancestor
+      ([i32_ctz_correct], CorrectnessI32.v), register-generalized;
+    - [rule_i32_popcnt] — HONEST TIER NOTE: at the [ArmOp] level the
+      selector emits a single [Popcnt] pseudo-op, which is what the rule
+      mirrors and what this file proves (against the axiomatized
+      [I32.popcnt], like the ancestors). The encoder's shift-and-add
+      expansion BELOW the ArmOp boundary (where the #632 clobber lived)
+      is not modeled here — same pseudo-op-tier honesty as [i64.eqz] and
+      the [I64SetCond] family below.
+
+    The binary i64 comparison family ([rule_i64_eq] .. [rule_i64_ge_u]) —
+    the shape #615 re-implemented on A32 and where cond-mapping bugs
+    live. Both selectors emit ONE [ArmOp::I64SetCond] pseudo-op per
+    comparison; the rules mirror that pseudo-op with the condition the
+    hand-written arms choose (LO=Cond_CC, HS=Cond_CS), and each theorem
+    discharges against the [i64_setcond_bits_spec] axiom — the
+    register-generalized form of the fixed-register ancestors in
+    CorrectnessI64Comparisons.v. No side conditions: the pseudo-op reads
+    all four operand halves before writing [rd], so every aliasing is
+    admitted.
+
+    WHAT THE FLAT EXECUTOR CANNOT EXPRESS (the honest bound): the
+    encoder expands [I64SetCond] to the dual-precision flags-chain
+    [CMP lo,lo; SBCS rd,hi,hi; MOVcc] (ordered conditions, with the
+    GT/LE/HI/LS operand swap) or [CMP lo,lo; CMPEQ hi,hi; MOVcc]
+    (EQ/NE). Verifying THAT expansion (rather than the pseudo-op) needs
+    three things the flat model lacks today: (a) a flag-SETTING SBC
+    ([SBCS] — the model's [SBC] reads C but writes no flags), (b)
+    conditionally-executed flags-writers ([CMPEQ] — the model's only
+    conditional forms are the register-writing [MOVcc] family), and (c)
+    three-operand borrow-aware C/V flag helpers ([compute_c_flag_sub] /
+    [compute_v_flag_sub] are two-operand). That is the same executor gap
+    the VCR-ISA-001 spike hit with [BCondOffset] (a no-op in the flat
+    executor): pseudo-op-tier proofs are the honest ceiling until the
+    Sail-generated model lands. Documented in
+    docs/design/vcr-sel-001-increment-4.md. *)
+
+Definition rule_i32_clz (rd rm : arm_reg) : arm_program := [CLZ rd rm].
+Definition rule_i32_ctz (rd rm : arm_reg) : arm_program := [RBIT rd rm; CLZ rd rd].
+Definition rule_i32_popcnt (rd rm : arm_reg) : arm_program := [POPCNT rd rm].
+
+(** The binary I64SetCond comparison rules — 1:1 with the Rust table.
+    Condition mapping is the hand-written arms' (and Compilation.v's):
+    lt_u -> Cond_CC (LO), gt_u -> Cond_HI, le_u -> Cond_LS,
+    ge_u -> Cond_CS (HS). *)
+Definition rule_i64_eq (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_EQ].
+Definition rule_i64_ne (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_NE].
+Definition rule_i64_lt_s (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_LT].
+Definition rule_i64_lt_u (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_CC].
+Definition rule_i64_gt_s (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_GT].
+Definition rule_i64_gt_u (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_HI].
+Definition rule_i64_le_s (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_LE].
+Definition rule_i64_le_u (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_LS].
+Definition rule_i64_ge_s (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_GE].
+Definition rule_i64_ge_u (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_CS].
+
+(** ** Increment-4 discharge tactics.
+
+    [synth_unop_proof_poly] — verbatim [synth_unop_proof] (Tactics.v)
+    modulo the two register binders and the lowering-unfold target,
+    mirroring how [synth_binop_proof_poly] generalizes
+    [synth_binop_proof]. Closes the single-instruction unary shapes
+    (clz, popcnt).
+
+    [synth_i64_setcond_proof_poly] — the register-generalized form of
+    the CorrectnessI64Comparisons.v ancestors' uniform script: expose
+    the pseudo-op step, substitute the four operand-half reads, reduce
+    the [i64_setcond_bits_spec] axiom on the concrete condition. *)
+
+Ltac synth_unop_proof_poly :=
+  intros wstate astate v stack' rd rm Hstack HR0 Hwasm;
+  unfold rule_i32_clz, rule_i32_popcnt;
+  unfold exec_program, exec_instr;
+  simpl;
+  rewrite HR0;
+  eexists; split;
+  [ reflexivity
+  | simpl; apply get_set_reg_eq ].
+
+Ltac synth_i64_setcond_proof_poly :=
+  intros astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi HR0 HR1 HR2 HR3;
+  unfold rule_i64_eq, rule_i64_ne, rule_i64_lt_s, rule_i64_lt_u,
+         rule_i64_gt_s, rule_i64_gt_u, rule_i64_le_s, rule_i64_le_u,
+         rule_i64_ge_s, rule_i64_ge_u;
+  simpl;
+  rewrite HR0, HR1, HR2, HR3;
+  rewrite i64_setcond_bits_spec; simpl;
+  eexists; split; [reflexivity | apply get_set_reg_eq].
+
+(** ** Increment-4 i32 bit-manipulation theorems — quantified over
+    ARBITRARY rd rm (no side conditions; see the section comment). *)
+
+Theorem rule_i32_clz_correct : forall wstate astate v stack' rd rm,
+  wstate.(stack) = VI32 v :: stack' ->
+  get_reg astate rm = v ->
+  exec_wasm_instr I32Clz wstate =
+    Some (mkWasmState (VI32 (I32.clz v) :: stack')
+            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+  exists astate',
+    exec_program (rule_i32_clz rd rm) astate = Some astate' /\
+    get_reg astate' rd = I32.clz v.
+Proof. synth_unop_proof_poly. Qed.
+
+(** The two-instruction scratch=dest shape: RBIT writes the reversed
+    value into [rd], CLZ reads it back from [rd] — stepped proof closing
+    with [I32.clz_rbit], like [rule_i32_rotl_correct]'s structure but
+    with no aliasing hypothesis needed (the "scratch" IS the dest). *)
+Theorem rule_i32_ctz_correct : forall wstate astate v stack' rd rm,
+  wstate.(stack) = VI32 v :: stack' ->
+  get_reg astate rm = v ->
+  exec_wasm_instr I32Ctz wstate =
+    Some (mkWasmState (VI32 (I32.ctz v) :: stack')
+            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+  exists astate',
+    exec_program (rule_i32_ctz rd rm) astate = Some astate' /\
+    get_reg astate' rd = I32.ctz v.
+Proof.
+  intros wstate astate v stack' rd rm Hstack HR0 Hwasm.
+  unfold rule_i32_ctz.
+  set (s1 := set_reg astate rd (I32.rbit (get_reg astate rm))).
+  set (s2 := set_reg s1 rd (I32.clz (get_reg s1 rd))).
+  exists s2. split.
+  - subst s2 s1. simpl. reflexivity.
+  - subst s2. rewrite get_set_reg_eq.
+    subst s1. rewrite get_set_reg_eq.
+    rewrite HR0. apply I32.clz_rbit.
+Qed.
+
+(** Pseudo-op-tier T1: proves the [POPCNT] ArmOp the selector emits
+    (against the axiomatized [I32.popcnt]); the encoder's shift-and-add
+    expansion below the ArmOp boundary is outside the model. *)
+Theorem rule_i32_popcnt_correct : forall wstate astate v stack' rd rm,
+  wstate.(stack) = VI32 v :: stack' ->
+  get_reg astate rm = v ->
+  exec_wasm_instr I32Popcnt wstate =
+    Some (mkWasmState (VI32 (I32.popcnt v) :: stack')
+            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+  exists astate',
+    exec_program (rule_i32_popcnt rd rm) astate = Some astate' /\
+    get_reg astate' rd = I32.popcnt v.
+Proof. synth_unop_proof_poly. Qed.
+
+(** ** Increment-4 binary I64SetCond theorems — quantified over all FIVE
+    registers (result + two operand pairs), no side conditions.
+    Pseudo-op-tier T1 against [i64_setcond_bits_spec], the
+    register-generalized CorrectnessI64Comparisons.v ancestors. *)
+
+Theorem rule_i64_eq_correct :
+  forall astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi,
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_eq rd rnlo rnhi rmlo rmhi) astate = Some astate' /\
+    get_reg astate' rd =
+      (if I64.eq (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)
+       then I32.one else I32.zero).
+Proof. synth_i64_setcond_proof_poly. Qed.
+
+Theorem rule_i64_ne_correct :
+  forall astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi,
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_ne rd rnlo rnhi rmlo rmhi) astate = Some astate' /\
+    get_reg astate' rd =
+      (if I64.ne (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)
+       then I32.one else I32.zero).
+Proof. synth_i64_setcond_proof_poly. Qed.
+
+Theorem rule_i64_lt_s_correct :
+  forall astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi,
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_lt_s rd rnlo rnhi rmlo rmhi) astate = Some astate' /\
+    get_reg astate' rd =
+      (if I64.lts (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)
+       then I32.one else I32.zero).
+Proof. synth_i64_setcond_proof_poly. Qed.
+
+Theorem rule_i64_lt_u_correct :
+  forall astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi,
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_lt_u rd rnlo rnhi rmlo rmhi) astate = Some astate' /\
+    get_reg astate' rd =
+      (if I64.ltu (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)
+       then I32.one else I32.zero).
+Proof. synth_i64_setcond_proof_poly. Qed.
+
+Theorem rule_i64_gt_s_correct :
+  forall astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi,
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_gt_s rd rnlo rnhi rmlo rmhi) astate = Some astate' /\
+    get_reg astate' rd =
+      (if I64.gts (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)
+       then I32.one else I32.zero).
+Proof. synth_i64_setcond_proof_poly. Qed.
+
+Theorem rule_i64_gt_u_correct :
+  forall astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi,
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_gt_u rd rnlo rnhi rmlo rmhi) astate = Some astate' /\
+    get_reg astate' rd =
+      (if I64.gtu (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)
+       then I32.one else I32.zero).
+Proof. synth_i64_setcond_proof_poly. Qed.
+
+Theorem rule_i64_le_s_correct :
+  forall astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi,
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_le_s rd rnlo rnhi rmlo rmhi) astate = Some astate' /\
+    get_reg astate' rd =
+      (if I64.les (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)
+       then I32.one else I32.zero).
+Proof. synth_i64_setcond_proof_poly. Qed.
+
+Theorem rule_i64_le_u_correct :
+  forall astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi,
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_le_u rd rnlo rnhi rmlo rmhi) astate = Some astate' /\
+    get_reg astate' rd =
+      (if I64.leu (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)
+       then I32.one else I32.zero).
+Proof. synth_i64_setcond_proof_poly. Qed.
+
+Theorem rule_i64_ge_s_correct :
+  forall astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi,
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_ge_s rd rnlo rnhi rmlo rmhi) astate = Some astate' /\
+    get_reg astate' rd =
+      (if I64.ges (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)
+       then I32.one else I32.zero).
+Proof. synth_i64_setcond_proof_poly. Qed.
+
+Theorem rule_i64_ge_u_correct :
+  forall astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi,
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_ge_u rd rnlo rnhi rmlo rmhi) astate = Some astate' /\
+    get_reg astate' rd =
+      (if I64.geu (combine_i32 lo1 hi1) (combine_i32 lo2 hi2)
+       then I32.one else I32.zero).
+Proof. synth_i64_setcond_proof_poly. Qed.

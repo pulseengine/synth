@@ -1,10 +1,11 @@
 //! GENERATED FILE — DO NOT EDIT BY HAND.
 //!
 //! Emitted by `crate::sel_dsl::generate_lowering_source()` from the declarative
-//! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3, #242,
+//! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3+4, #242,
 //! `docs/design/vcr-sel-001-first-increment.md` +
 //! `docs/design/vcr-sel-001-increment-2.md` +
-//! `docs/design/vcr-sel-001-increment-3.md`). Pinned up-to-date by the
+//! `docs/design/vcr-sel-001-increment-3.md` +
+//! `docs/design/vcr-sel-001-increment-4.md`). Pinned up-to-date by the
 //! `generated_lowering_is_up_to_date` test; regenerate with
 //! `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.
 //!
@@ -506,4 +507,165 @@ pub fn rule_i64_xor(
 /// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_eqz_correct` (Qed).
 pub fn rule_i64_eqz(rd: Reg, rn_lo: Reg, rn_hi: Reg) -> Vec<ArmOp> {
     vec![ArmOp::I64SetCondZ { rd, rn_lo, rn_hi }]
+}
+
+/// `i32.clz`: rd = count of leading zero bits of rm
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_clz_correct` (Qed).
+pub fn rule_i32_clz(rd: Reg, rm: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::Clz { rd, rm }]
+}
+
+/// `i32.ctz`: rd = count of trailing zero bits of rm, via RBIT + CLZ (scratch=dest)
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_ctz_correct` (Qed).
+pub fn rule_i32_ctz(rd: Reg, rm: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::Rbit { rd, rm }, ArmOp::Clz { rd, rm: rd }]
+}
+
+/// `i32.popcnt`: rd = count of set bits of rm (pseudo-op, encoder-expanded)
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_popcnt_correct` (Qed).
+pub fn rule_i32_popcnt(rd: Reg, rm: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::Popcnt { rd, rm }]
+}
+
+/// `i64.eq`: rd = if (rn_hi:rn_lo) == (rm_hi:rm_lo) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_eq_correct` (Qed).
+pub fn rule_i64_eq(rd: Reg, rn_lo: Reg, rn_hi: Reg, rm_lo: Reg, rm_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64SetCond {
+        rd,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+        cond: Condition::EQ,
+    }]
+}
+
+/// `i64.ne`: rd = if (rn_hi:rn_lo) != (rm_hi:rm_lo) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_ne_correct` (Qed).
+pub fn rule_i64_ne(rd: Reg, rn_lo: Reg, rn_hi: Reg, rm_lo: Reg, rm_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64SetCond {
+        rd,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+        cond: Condition::NE,
+    }]
+}
+
+/// `i64.lt_s`: rd = if (rn_hi:rn_lo) < (rm_hi:rm_lo) (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_lt_s_correct` (Qed).
+pub fn rule_i64_lt_s(rd: Reg, rn_lo: Reg, rn_hi: Reg, rm_lo: Reg, rm_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64SetCond {
+        rd,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+        cond: Condition::LT,
+    }]
+}
+
+/// `i64.lt_u`: rd = if (rn_hi:rn_lo) < (rm_hi:rm_lo) (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_lt_u_correct` (Qed).
+pub fn rule_i64_lt_u(rd: Reg, rn_lo: Reg, rn_hi: Reg, rm_lo: Reg, rm_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64SetCond {
+        rd,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+        cond: Condition::LO,
+    }]
+}
+
+/// `i64.gt_s`: rd = if (rn_hi:rn_lo) > (rm_hi:rm_lo) (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_gt_s_correct` (Qed).
+pub fn rule_i64_gt_s(rd: Reg, rn_lo: Reg, rn_hi: Reg, rm_lo: Reg, rm_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64SetCond {
+        rd,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+        cond: Condition::GT,
+    }]
+}
+
+/// `i64.gt_u`: rd = if (rn_hi:rn_lo) > (rm_hi:rm_lo) (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_gt_u_correct` (Qed).
+pub fn rule_i64_gt_u(rd: Reg, rn_lo: Reg, rn_hi: Reg, rm_lo: Reg, rm_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64SetCond {
+        rd,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+        cond: Condition::HI,
+    }]
+}
+
+/// `i64.le_s`: rd = if (rn_hi:rn_lo) <= (rm_hi:rm_lo) (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_le_s_correct` (Qed).
+pub fn rule_i64_le_s(rd: Reg, rn_lo: Reg, rn_hi: Reg, rm_lo: Reg, rm_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64SetCond {
+        rd,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+        cond: Condition::LE,
+    }]
+}
+
+/// `i64.le_u`: rd = if (rn_hi:rn_lo) <= (rm_hi:rm_lo) (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_le_u_correct` (Qed).
+pub fn rule_i64_le_u(rd: Reg, rn_lo: Reg, rn_hi: Reg, rm_lo: Reg, rm_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64SetCond {
+        rd,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+        cond: Condition::LS,
+    }]
+}
+
+/// `i64.ge_s`: rd = if (rn_hi:rn_lo) >= (rm_hi:rm_lo) (signed) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_ge_s_correct` (Qed).
+pub fn rule_i64_ge_s(rd: Reg, rn_lo: Reg, rn_hi: Reg, rm_lo: Reg, rm_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64SetCond {
+        rd,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+        cond: Condition::GE,
+    }]
+}
+
+/// `i64.ge_u`: rd = if (rn_hi:rn_lo) >= (rm_hi:rm_lo) (unsigned) {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_ge_u_correct` (Qed).
+pub fn rule_i64_ge_u(rd: Reg, rn_lo: Reg, rn_hi: Reg, rm_lo: Reg, rm_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64SetCond {
+        rd,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+        cond: Condition::HS,
+    }]
 }
