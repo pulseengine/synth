@@ -2630,9 +2630,7 @@ impl ArmEncoder {
                     } else {
                         // Full 32-bit value: MOVW low16 + MOVT high16
                         let mut bytes = self.encode_thumb32_movw(rd, uimm & 0xFFFF)?;
-                        bytes.extend(
-                            self.encode_thumb32_movt_raw(reg_to_bits(rd), uimm >> 16)?,
-                        );
+                        bytes.extend(self.encode_thumb32_movt_raw(reg_to_bits(rd), uimm >> 16)?);
                         Ok(bytes)
                     }
                 } else if let Operand2::Reg(rm) = op2 {

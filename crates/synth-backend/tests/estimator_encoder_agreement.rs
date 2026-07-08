@@ -54,8 +54,8 @@
 //!   form (#498 far-branch guard in `ir_to_arm`) instead of letting the wide
 //!   encoding silently shift the layout — the chicken-and-egg is resolved by
 //!   refusing the egg, loudly.
-//! - CLOSED (was the encoder-side survivor): `Mov` with a negative (or
-//!   >0xFFFF) immediate. The encoder's signed `*imm <= 255` test emitted a
+//! - CLOSED (was the encoder-side survivor): `Mov` with a negative (or wider
+//!   than 0xFFFF) immediate. The encoder's signed `*imm <= 255` test emitted a
 //!   wrong-VALUE 2-byte `MOVS Rd, #(imm & 0xFF)` for negative imm, and MOVW
 //!   truncated positives above 16 bits. The encoder now splits on the unsigned
 //!   value (imm8 MOVS / imm16 MOVW / full-width MOVW+MOVT = 8 bytes) and the
