@@ -60,6 +60,12 @@ pub mod translation_validator;
 #[cfg(feature = "arm")]
 pub mod validator_pattern;
 
+// Expansion-level certifying validation for the i64 pseudo-ops (#667 move 2):
+// decodes the SHIPPED encoder's emitted Thumb-2 bytes and proves them
+// equivalent to the WASM op — see docs/validator-pattern.md.
+#[cfg(feature = "arm")]
+pub mod expansion_validator;
+
 // Property-based testing (requires arm: exercises the ARM synthesis rules)
 #[cfg(feature = "arm")]
 pub mod properties;
@@ -69,6 +75,10 @@ pub use properties::CompilerProperties;
 
 #[cfg(feature = "arm")]
 pub use arm_semantics::{ArmSemantics, ArmState};
+#[cfg(feature = "arm")]
+pub use expansion_validator::{
+    ExpansionError, ExpansionWitness, covered_i64_pseudo_selections, validate_expansion,
+};
 pub use fact_spec::{FactSpecResult, specialize_function};
 pub use solver::{BvSolver, CheckOutcome, OrdealSolver, new_solver};
 pub use term::{BV, Bool};

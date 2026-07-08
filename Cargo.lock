@@ -2081,6 +2081,7 @@ dependencies = [
  "anyhow",
  "synth-core",
  "synth-synthesis",
+ "synth-verify",
  "thiserror",
 ]
 

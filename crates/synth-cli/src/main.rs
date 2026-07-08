@@ -4330,6 +4330,42 @@ fn verify_command(wasm_input: PathBuf, elf_input: PathBuf, backend_name: &str) -
             }
 
             println!("\nAll functions verified successfully.");
+
+            // #667 move 2: certify the i64 pseudo-op EXPANSIONS. The per-rule
+            // validation above covers `(WasmOp, [ArmOp])` selections, but the
+            // i64 pseudo-ops (I64Mul, the I64SetCond family, Clz/Ctz/Popcnt,
+            // the shifts/rotates) are expanded to multi-instruction Thumb-2
+            // sequences INSIDE the encoder — exactly where the #615/#632/#633
+            // miscompiles lived. Here the literal bytes the shipped encoder
+            // emits are decoded and proved equivalent to the WASM op through
+            // the certificate-checked solver (one certificate line per op).
+            // i64 div/rem are held out (64-round loops) — see
+            // docs/validator-pattern.md.
+            if backend_name == "arm" {
+                println!("\n  Certifying i64 pseudo-op expansions (shipped Thumb-2 encoder):");
+                let encoder = synth_backend::ArmEncoder::new_thumb2();
+                let mut failures = 0u32;
+                for (wasm, pseudo) in synth_verify::covered_i64_pseudo_selections() {
+                    let code = encoder
+                        .encode(&pseudo)
+                        .context("shipped encoder failed to expand an i64 pseudo-op")?;
+                    match synth_verify::validate_expansion(&wasm, &pseudo, &code) {
+                        Ok(w) => println!(
+                            "  ✓ {} expansion certified: {} instrs, {} bytes [unsat, LRAT-checked]",
+                            w.wasm_op_label, w.instr_count, w.byte_len
+                        ),
+                        Err(e) => {
+                            println!("  ✗ {wasm:?} expansion FAILED: {e}");
+                            failures += 1;
+                        }
+                    }
+                }
+                if failures > 0 {
+                    anyhow::bail!(
+                        "i64 pseudo-op expansion certification failed for {failures} op(s)"
+                    );
+                }
+            }
         }
 
         #[cfg(not(feature = "verify"))]
