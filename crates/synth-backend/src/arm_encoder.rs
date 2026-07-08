@@ -974,6 +974,9 @@ impl ArmEncoder {
             } => {
                 emit_a32_i64_fixed_abi_entry(&mut b, &[rnlo, rnhi, rmlo, rmhi]);
                 emit_a32_i64_divisor_zero_trap(&mut b);
+                // #633: INT64_MIN / -1 overflows — trap like the i32 path
+                // (rem_s stays guard-free: rem_s(INT64_MIN, -1) == 0).
+                emit_a32_i64_divs_overflow_trap(&mut b);
                 w(&mut b, 0xE92D_0FF0); // PUSH {R4-R11}
                 w(&mut b, 0xE021_9003); // EOR R9, R1, R3 (result sign in MSB)
                 skip_negate_if_positive(&mut b, 1);
@@ -1084,12 +1087,21 @@ impl ArmEncoder {
             ArmOp::I64Popcnt { rd, rnlo, rnhi } => {
                 let hi = reg_to_bits(rnhi);
                 w(&mut b, 0xE92D_0038); // PUSH {R3, R4, R5}
-                w(&mut b, 0xE1A0_4000 | reg_to_bits(rnlo)); // MOV R4, rnlo
+                // #632 audit: route rnlo through R12 so a pair living at
+                // (R3,R4) cannot read a clobbered R4 (sources read before any
+                // scratch register they could occupy is written).
+                w(&mut b, 0xE1A0_C000 | reg_to_bits(rnlo)); // MOV R12, rnlo
                 w(&mut b, 0xE1A0_5000 | hi); //                MOV R5, rnhi
+                w(&mut b, 0xE1A0_400C); //                     MOV R4, R12
                 popcnt_word(&mut b, 4, 3);
                 popcnt_word(&mut b, 5, 3);
-                dp_reg(&mut b, 0xE080_0000, reg_to_bits(rd), 4, 5); // ADD rd, R4, R5
+                // #632: carry the count across the scratch restore in R12 —
+                // rd is allocator-assigned and can land inside {R3,R4,R5};
+                // the old `ADD rd, R4, R5` before the POP was destroyed by
+                // the restore. R12 is never allocatable and never restored.
+                dp_reg(&mut b, 0xE080_0000, 12, 4, 5); // ADD R12, R4, R5
                 w(&mut b, 0xE8BD_0038); // POP {R3, R4, R5}
+                w(&mut b, 0xE1A0_0000 | (reg_to_bits(rd) << 12) | 12); // MOV rd, R12
                 w(&mut b, 0xE3A0_0000 | (hi << 12)); // MOV rnhi, #0 (i64 hi word)
             }
 
@@ -4756,15 +4768,18 @@ impl ArmEncoder {
                 // For simplicity and correctness, use the efficient parallel algorithm
                 // but implement it as a series of inline operations
 
-                // MOV R4, rnlo
-                let d_bit: u32 = 0; // R4 < 8, so high bit is 0
-                let mov: u16 = (0x4600 | (d_bit << 7) | (rn_lo_bits << 3) | (4 & 0x7)) as u16;
+                // Marshal the operand pair into the fixed scratch regs, routing
+                // rnlo through R12 (#632 audit): writing R4 first corrupted the
+                // rnhi read for a pair living at (R3,R4) — every source is read
+                // before any scratch register it could occupy is written.
+                // MOV R12, rnlo
+                let mov: u16 = (0x4600 | (1 << 7) | (rn_lo_bits << 3) | 4) as u16;
                 bytes.extend_from_slice(&mov.to_le_bytes());
-
-                // MOV R5, rnhi
-                let d_bit: u32 = 0; // R5 < 8, so high bit is 0
-                let mov: u16 = (0x4600 | (d_bit << 7) | (rn_hi_bits << 3) | (5 & 0x7)) as u16;
+                // MOV R5, rnhi (R4 untouched so far; rnhi == R5 is a no-op)
+                let mov: u16 = (0x4600 | (rn_hi_bits << 3) | 5) as u16;
                 bytes.extend_from_slice(&mov.to_le_bytes());
+                // MOV R4, R12
+                bytes.extend_from_slice(&0x4664u16.to_le_bytes());
 
                 // --- POPCNT for R4 (lo word) ---
                 // Step 1: x = x - ((x >> 1) & 0x55555555)
@@ -4973,18 +4988,32 @@ impl ArmEncoder {
                 bytes.extend_from_slice(&hw1.to_le_bytes());
                 bytes.extend_from_slice(&hw2.to_le_bytes());
 
-                // ADD rd, R4, R5 (combine lo and hi counts)
-                // ADDS Rd, Rn, Rm (T1): 0001 100 Rm Rn Rd = 0x1800 | (Rm<<6) | (Rn<<3) | Rd
-                let rd_bits_u16 = rd_bits as u16;
-                let instr: u16 = 0x1800 | (5 << 6) | (4 << 3) | rd_bits_u16;
-                bytes.extend_from_slice(&instr.to_le_bytes());
+                // #632: the count must be carried ACROSS the scratch restore
+                // in a register the POP cannot touch. rd is allocator-assigned
+                // (any of R0-R8) and can land inside the {R3,R4,R5} restore set
+                // — the old `ADDS rd, R4, R5; POP {R3,R4,R5}` destroyed the
+                // result one instruction after computing it (0 for every input
+                // under qemu). R12 is encoder scratch: never allocatable (#212)
+                // and never in a restore set, so no choice of rd can collide.
+                // ADD.W R12, R4, R5
+                bytes.extend_from_slice(&0xEB04u16.to_le_bytes());
+                bytes.extend_from_slice(&0x0C05u16.to_le_bytes());
 
                 // POP {R3, R4, R5}
                 bytes.extend_from_slice(&0xBC38u16.to_le_bytes());
 
-                // i64.popcnt returns i64, so clear high word: MOV rnhi, #0 (2 bytes)
-                let mov0: u16 = (0x2000 | (rn_hi_bits << 8)) as u16;
-                bytes.extend_from_slice(&mov0.to_le_bytes());
+                // MOV rd, R12 — after the restore. The 4-bit Rd (D:rd) form is
+                // also total over rd = R8, where the old ADDS T1 3-bit field
+                // silently corrupted the encoding (#178/#180 class).
+                let mov: u16 =
+                    (0x4600 | (((rd_bits >> 3) & 1) << 7) | (12 << 3) | (rd_bits & 7)) as u16;
+                bytes.extend_from_slice(&mov.to_le_bytes());
+
+                // i64.popcnt returns i64, so clear high word: MOV.W rnhi, #0
+                // (T2, 4 bytes — total over rnhi = R8, where the old 16-bit
+                // MOVS encoding overflowed its 3-bit field into CMP R0, #0).
+                bytes.extend_from_slice(&0xF04Fu16.to_le_bytes());
+                bytes.extend_from_slice(&(((rn_hi_bits & 0xF) << 8) as u16).to_le_bytes());
 
                 Ok(bytes)
             }
@@ -5387,6 +5416,9 @@ impl ArmEncoder {
                 let mut bytes = Vec::new();
                 emit_i64_fixed_abi_entry(&mut bytes, &[rnlo, rnhi, rmlo, rmhi]);
                 emit_i64_divisor_zero_trap(&mut bytes);
+                // #633: INT64_MIN / -1 overflows — trap like the i32 path
+                // (rem_s stays guard-free: rem_s(INT64_MIN, -1) == 0).
+                emit_i64_divs_overflow_trap(&mut bytes);
 
                 // PUSH {R4-R11} - save scratch registers (NO LR — inline code)
                 bytes.extend_from_slice(&0xE92Du16.to_le_bytes());
@@ -7894,6 +7926,38 @@ fn emit_i64_divisor_zero_trap(bytes: &mut Vec<u8>) {
     bytes.extend_from_slice(&0xDE00u16.to_le_bytes()); // UDF #0 — divide by zero
 }
 
+/// WASM `i64.div_s(INT64_MIN, -1)` must trap (Core §4.3.2 `idiv_s`: the
+/// quotient +2^63 is unrepresentable), matching the i32 path's overflow
+/// guard — #633: without it the core negated INT64_MIN onto itself and
+/// silently returned INT64_MIN. Emitted after marshaling, when the dividend
+/// pair is in R0:R1 and the divisor pair in R2:R3; R12 is encoder scratch.
+///
+/// div_s ONLY — `i64.rem_s(INT64_MIN, -1)` is defined as 0 and must NOT
+/// trap (`irem_s`), so the I64RemS arm never calls this. 22 bytes,
+/// register-independent (estimator contract, #498/#511).
+fn emit_i64_divs_overflow_trap(bytes: &mut Vec<u8>) {
+    // AND.W R12, R2, R3 — R12 == 0xFFFFFFFF iff divisor == -1
+    bytes.extend_from_slice(&0xEA02u16.to_le_bytes());
+    bytes.extend_from_slice(&0x0C03u16.to_le_bytes());
+    // CMN.W R12, #1 — EQ iff both divisor words are all-ones
+    bytes.extend_from_slice(&0xF11Cu16.to_le_bytes());
+    bytes.extend_from_slice(&0x0F01u16.to_le_bytes());
+    // BNE .no_trap
+    bytes.extend_from_slice(&0xD105u16.to_le_bytes());
+    // CMP R0, #0 — dividend lo word of INT64_MIN
+    bytes.extend_from_slice(&0x2800u16.to_le_bytes());
+    // BNE .no_trap
+    bytes.extend_from_slice(&0xD103u16.to_le_bytes());
+    // CMP.W R1, #0x80000000 — dividend hi word of INT64_MIN
+    bytes.extend_from_slice(&0xF1B1u16.to_le_bytes());
+    bytes.extend_from_slice(&0x4F00u16.to_le_bytes());
+    // BNE .no_trap
+    bytes.extend_from_slice(&0xD100u16.to_le_bytes());
+    // UDF #0 — signed-division overflow
+    bytes.extend_from_slice(&0xDE00u16.to_le_bytes());
+    // .no_trap:
+}
+
 // ======================================================================
 // #615 — A32 (ARM-mode) twins of the #610 i64 fixed-ABI wrappers above.
 // Identical register contract, A32 encodings: the multi-instruction i64
@@ -7965,6 +8029,20 @@ fn emit_a32_i64_divisor_zero_trap(bytes: &mut Vec<u8>) {
     w(bytes, 0xE192_C003); // ORRS R12, R2, R3
     w(bytes, 0x1A00_0000); // BNE +1 insn (skip the UDF)
     w(bytes, 0xE7F0_00F0); // UDF #0 — divide by zero
+}
+
+/// A32 twin of [`emit_i64_divs_overflow_trap`] (#633): trap on
+/// `i64.div_s(INT64_MIN, -1)`. Conditional execution replaces the Thumb
+/// branches — the CMPEQ chain leaves EQ set only when divisor == -1 AND
+/// dividend == INT64_MIN. div_s only; rem_s must keep returning 0.
+fn emit_a32_i64_divs_overflow_trap(bytes: &mut Vec<u8>) {
+    let w = |bytes: &mut Vec<u8>, word: u32| bytes.extend_from_slice(&word.to_le_bytes());
+    w(bytes, 0xE002_C003); // AND   R12, R2, R3 (== 0xFFFFFFFF iff divisor == -1)
+    w(bytes, 0xE37C_0001); // CMN   R12, #1     (EQ iff divisor == -1)
+    w(bytes, 0x0350_0000); // CMPEQ R0, #0      (EQ iff also dividend lo == 0)
+    w(bytes, 0x0351_0102); // CMPEQ R1, #0x80000000 (EQ iff dividend == INT64_MIN)
+    w(bytes, 0x1A00_0000); // BNE +1 insn (skip the UDF)
+    w(bytes, 0xE7F0_00F0); // UDF #0 — signed-division overflow
 }
 
 /// Fallible form of the `verify_reg_bits` contract. PC (R15) is not a valid
@@ -9899,6 +9977,258 @@ mod tests {
             rmhi: Reg::R5,
         });
         assert!(result.is_err(), "swapped rd pair must be rejected loudly");
+    }
+
+    /// #632: the I64Popcnt expansion's own scratch restore (`POP {R3,R4,R5}`)
+    /// must not clobber the result. Pre-fix the total was materialized with
+    /// `ADDS rd, R4, R5` BEFORE the pop, so any allocator-assigned
+    /// rd ∈ {R3,R4,R5} received stale stack garbage. Post-fix the count is
+    /// carried across the restore in R12 (never allocatable, never restored)
+    /// and moved into rd only after the pop — structurally rd-independent.
+    #[test]
+    fn test_632_i64_popcnt_result_survives_scratch_restore() {
+        let encoder = ArmEncoder::new_thumb2();
+        // Every allocatable rd, including the restore set {R3,R4,R5} and R8.
+        for rd in [
+            Reg::R0,
+            Reg::R2,
+            Reg::R3,
+            Reg::R4,
+            Reg::R5,
+            Reg::R6,
+            Reg::R8,
+        ] {
+            let code = encoder
+                .encode(&ArmOp::I64Popcnt {
+                    rd,
+                    rnlo: Reg::R6,
+                    rnhi: Reg::R7,
+                })
+                .unwrap();
+            assert_eq!(code.len(), 180, "register-independent size (estimator pin)");
+            let hw: Vec<u16> = code
+                .chunks(2)
+                .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                .collect();
+            let pop = hw
+                .iter()
+                .position(|&h| h == 0xBC38)
+                .expect("POP {R3,R4,R5} present");
+            // Immediately before the POP: ADD.W R12, R4, R5 (the total lives
+            // in R12, which the POP cannot touch).
+            assert_eq!(
+                &hw[pop - 2..pop],
+                &[0xEB04, 0x0C05],
+                "total must be carried in R12 across the restore"
+            );
+            // Immediately after the POP: MOV rd, R12.
+            let rd_bits = match rd {
+                Reg::R8 => 8u16,
+                Reg::R6 => 6,
+                Reg::R5 => 5,
+                Reg::R4 => 4,
+                Reg::R3 => 3,
+                Reg::R2 => 2,
+                _ => 0,
+            };
+            let expect_mov = 0x4600 | (((rd_bits >> 3) & 1) << 7) | (12 << 3) | (rd_bits & 7);
+            assert_eq!(hw[pop + 1], expect_mov, "MOV rd, R12 after the restore");
+            // No write into rd between the PUSH and the POP (the old
+            // pre-restore ADDS is gone).
+            assert!(
+                !hw[..pop].contains(&(0x1800 | (5 << 6) | (4 << 3) | rd_bits)),
+                "no ADDS rd, R4, R5 before the restore pop"
+            );
+        }
+    }
+
+    /// #632 audit: the entry marshal must be permutation-safe. Pre-fix
+    /// `MOV R4, rnlo; MOV R5, rnhi` read a clobbered R4 when the operand
+    /// pair lived at (R3, R4). Post-fix rnlo routes through R12.
+    #[test]
+    fn test_632_i64_popcnt_marshal_pair_at_r3_r4() {
+        let encoder = ArmEncoder::new_thumb2();
+        let code = encoder
+            .encode(&ArmOp::I64Popcnt {
+                rd: Reg::R0,
+                rnlo: Reg::R3,
+                rnhi: Reg::R4,
+            })
+            .unwrap();
+        let hw: Vec<u16> = code
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        // PUSH {R3,R4,R5}; MOV R12, R3; MOV R5, R4 (rnhi read BEFORE any
+        // write to R4); MOV R4, R12.
+        assert_eq!(hw[0], 0xB438);
+        assert_eq!(hw[1], 0x4600 | (1 << 7) | (3 << 3) | 4, "MOV R12, rnlo");
+        assert_eq!(hw[2], 0x4600 | (4 << 3) | 5, "MOV R5, rnhi");
+        assert_eq!(hw[3], 0x4664, "MOV R4, R12");
+    }
+
+    /// #632: A32 twin — same structural fix on the ARM-mode path
+    /// (`--target cortex-r5`): total carried in R12 across the restore.
+    #[test]
+    fn test_632_a32_i64_popcnt_result_survives_scratch_restore() {
+        let encoder = ArmEncoder::new_arm32();
+        for rd in [Reg::R0, Reg::R3, Reg::R4, Reg::R5, Reg::R8] {
+            let code = encoder
+                .encode(&ArmOp::I64Popcnt {
+                    rd,
+                    rnlo: Reg::R6,
+                    rnhi: Reg::R7,
+                })
+                .unwrap();
+            let words: Vec<u32> = code
+                .chunks(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            let pop = words
+                .iter()
+                .position(|&w| w == 0xE8BD_0038)
+                .expect("POP {R3,R4,R5} present");
+            assert_eq!(words[pop - 1], 0xE084_C005, "ADD R12, R4, R5 before POP");
+            let rd_bits = match rd {
+                Reg::R8 => 8u32,
+                Reg::R5 => 5,
+                Reg::R4 => 4,
+                Reg::R3 => 3,
+                _ => 0,
+            };
+            assert_eq!(
+                words[pop + 1],
+                0xE1A0_0000 | (rd_bits << 12) | 12,
+                "MOV rd, R12 after the restore"
+            );
+        }
+    }
+
+    /// #633: I64DivS must carry the INT64_MIN/-1 overflow guard (mirroring
+    /// the i32 path) right after the zero-divisor guard — dividend in R0:R1,
+    /// divisor in R2:R3 on the #610/#613 fixed-ABI wrapper path.
+    #[test]
+    fn test_633_i64_divs_overflow_guard_emitted() {
+        let encoder = ArmEncoder::new_thumb2();
+        let code = encoder
+            .encode(&ArmOp::I64DivS {
+                rdlo: Reg::R4,
+                rdhi: Reg::R5,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            })
+            .unwrap();
+        // 26-byte marshal + 8-byte zero-trap, then the 22-byte overflow guard.
+        let guard: Vec<u16> = code[34..56]
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        assert_eq!(
+            guard,
+            vec![
+                0xEA02, 0x0C03, // AND.W R12, R2, R3
+                0xF11C, 0x0F01, // CMN.W R12, #1
+                0xD105, // BNE .no_trap
+                0x2800, // CMP R0, #0
+                0xD103, // BNE .no_trap
+                0xF1B1, 0x4F00, // CMP.W R1, #0x80000000
+                0xD100, // BNE .no_trap
+                0xDE00, // UDF #0 — signed-division overflow
+            ],
+            "INT64_MIN/-1 overflow guard after the zero-divisor guard"
+        );
+    }
+
+    /// #633 fix-guard twin: I64RemS must NOT carry the overflow guard —
+    /// rem_s(INT64_MIN, -1) is defined as 0 and must not trap. Exactly one
+    /// UDF (the zero-divisor trap) in the whole expansion.
+    #[test]
+    fn test_633_i64_rems_has_no_overflow_guard() {
+        let encoder = ArmEncoder::new_thumb2();
+        for (is_rem_s, op) in [
+            (
+                true,
+                ArmOp::I64RemS {
+                    rdlo: Reg::R4,
+                    rdhi: Reg::R5,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                    rmlo: Reg::R2,
+                    rmhi: Reg::R3,
+                },
+            ),
+            (
+                false,
+                ArmOp::I64DivS {
+                    rdlo: Reg::R4,
+                    rdhi: Reg::R5,
+                    rnlo: Reg::R0,
+                    rnhi: Reg::R1,
+                    rmlo: Reg::R2,
+                    rmhi: Reg::R3,
+                },
+            ),
+        ] {
+            let code = encoder.encode(&op).unwrap();
+            let udfs = code
+                .chunks(2)
+                .filter(|c| u16::from_le_bytes([c[0], c[1]]) == 0xDE00)
+                .count();
+            let want = if is_rem_s { 1 } else { 2 };
+            assert_eq!(
+                udfs, want,
+                "rem_s: zero-trap only; div_s: zero-trap + overflow trap"
+            );
+        }
+    }
+
+    /// #633: A32 twin — the conditional-execution overflow guard on the
+    /// ARM-mode I64DivS, and its absence from I64RemS.
+    #[test]
+    fn test_633_a32_i64_divs_overflow_guard() {
+        let encoder = ArmEncoder::new_arm32();
+        let mk_divs = ArmOp::I64DivS {
+            rdlo: Reg::R4,
+            rdhi: Reg::R5,
+            rnlo: Reg::R0,
+            rnhi: Reg::R1,
+            rmlo: Reg::R2,
+            rmhi: Reg::R3,
+        };
+        let code = encoder.encode(&mk_divs).unwrap();
+        let words: Vec<u32> = code
+            .chunks(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect();
+        let guard = [
+            0xE002_C003u32, // AND   R12, R2, R3
+            0xE37C_0001,    // CMN   R12, #1
+            0x0350_0000,    // CMPEQ R0, #0
+            0x0351_0102,    // CMPEQ R1, #0x80000000
+            0x1A00_0000,    // BNE +1 insn
+            0xE7F0_00F0,    // UDF #0
+        ];
+        assert!(
+            words.windows(6).any(|w| w == guard),
+            "A32 I64DivS carries the INT64_MIN/-1 overflow guard"
+        );
+        let rems = encoder
+            .encode(&ArmOp::I64RemS {
+                rdlo: Reg::R4,
+                rdhi: Reg::R5,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+            })
+            .unwrap();
+        let rems_udfs = rems
+            .chunks(4)
+            .filter(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) == 0xE7F0_00F0)
+            .count();
+        assert_eq!(rems_udfs, 1, "A32 I64RemS keeps only the zero-divisor trap");
     }
 
     #[test]
