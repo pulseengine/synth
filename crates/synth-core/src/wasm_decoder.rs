@@ -325,6 +325,14 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // section. `None` until (and unless) the first such section is seen —
     // duplicates are ignored (one prover, one section; encoding doc rule).
     let mut wsc_facts: Option<Vec<crate::wsc_facts::WscFact>> = None;
+    // GI-FPU-001 (#369): f32/f64-typed globals in the FULL global index space
+    // (imports first, then defined). `global.get`/`global.set` decode fine
+    // (they are type-agnostic ops), but there is no float lowering: the
+    // f32.const/f64.const initializer is silently dropped (`init_i32: None`
+    // → slot zeroed), so a read returns 0.0 instead of the init — a silent
+    // wrong value. Functions touching a float global loud-skip instead.
+    let mut num_imported_globals = 0u32;
+    let mut float_globals: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
@@ -433,7 +441,19 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             }
                             (ImportKind::Table, 0)
                         }
-                        wasmparser::TypeRef::Global(_) => (ImportKind::Global, 0),
+                        wasmparser::TypeRef::Global(g) => {
+                            // GI-FPU-001 (#369): imported globals come first in
+                            // the global index space — record float-typed ones
+                            // so accesses loud-skip their function.
+                            if matches!(
+                                g.content_type,
+                                wasmparser::ValType::F32 | wasmparser::ValType::F64
+                            ) {
+                                float_globals.insert(num_imported_globals);
+                            }
+                            num_imported_globals += 1;
+                            (ImportKind::Global, 0)
+                        }
                         _ => continue,
                     };
                     imports.push(ImportEntry {
@@ -515,6 +535,17 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         wasmparser::ValType::V128 => 16,
                         _ => 4,
                     };
+                    // GI-FPU-001 (#369): a float-typed global's initializer is
+                    // NOT captured (`init_i32` only decodes `i32.const`), so
+                    // its slot would be silently zeroed — record it so any
+                    // function accessing it loud-skips instead of reading a
+                    // silently-wrong 0.0.
+                    if matches!(
+                        global.ty.content_type,
+                        wasmparser::ValType::F32 | wasmparser::ValType::F64
+                    ) {
+                        float_globals.insert(num_imported_globals + idx as u32);
+                    }
                     globals.push(WasmGlobal {
                         index: idx as u32,
                         init_i32,
@@ -625,7 +656,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
             }
             Payload::CodeSectionEntry(body) => {
                 let (ops, op_offsets, block_arity, unsupported) =
-                    decode_function_body(&body, &type_block_arity)?;
+                    decode_function_body(&body, &type_block_arity, &float_globals)?;
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
 
@@ -737,6 +768,10 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
     let mut name_section_names: HashMap<u32, String> = HashMap::new();
     // #509: (param_count, result_count) per type index, for FuncType blocktypes.
     let mut type_block_arity: Vec<(u8, u8)> = Vec::new();
+    // GI-FPU-001 (#369): float-typed globals (full index space, imports first)
+    // whose accesses must loud-skip — see `decode_wasm_module`.
+    let mut num_imported_globals = 0u32;
+    let mut float_globals: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
@@ -765,8 +800,34 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                 // to individual imports (see the ImportSection handler above).
                 for import in imports.into_imports() {
                     let import = import.context("Failed to parse import")?;
-                    if matches!(import.ty, wasmparser::TypeRef::Func(_)) {
-                        num_imported_funcs += 1;
+                    match import.ty {
+                        wasmparser::TypeRef::Func(_) => num_imported_funcs += 1,
+                        wasmparser::TypeRef::Global(g) => {
+                            // GI-FPU-001 (#369): see `decode_wasm_module` —
+                            // float-typed global accesses must loud-skip.
+                            if matches!(
+                                g.content_type,
+                                wasmparser::ValType::F32 | wasmparser::ValType::F64
+                            ) {
+                                float_globals.insert(num_imported_globals);
+                            }
+                            num_imported_globals += 1;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Payload::GlobalSection(reader) => {
+                // GI-FPU-001 (#369): record f32/f64-typed defined globals so
+                // `decode_function_body` flags accesses (their initializer is
+                // dropped on this path too — same silent-zero hazard).
+                for (idx, global) in reader.into_iter().enumerate() {
+                    let global = global.context("Failed to parse global")?;
+                    if matches!(
+                        global.ty.content_type,
+                        wasmparser::ValType::F32 | wasmparser::ValType::F64
+                    ) {
+                        float_globals.insert(num_imported_globals + idx as u32);
                     }
                 }
             }
@@ -780,7 +841,7 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
             }
             Payload::CodeSectionEntry(body) => {
                 let (ops, op_offsets, block_arity, unsupported) =
-                    decode_function_body(&body, &type_block_arity)?;
+                    decode_function_body(&body, &type_block_arity, &float_globals)?;
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
 
@@ -892,6 +953,7 @@ type DecodedBody = (Vec<WasmOp>, Vec<u32>, Vec<(u8, u8)>, Option<String>);
 fn decode_function_body(
     body: &wasmparser::FunctionBody,
     type_block_arity: &[(u8, u8)],
+    float_globals: &std::collections::HashSet<u32>,
 ) -> Result<DecodedBody> {
     let mut ops = Vec::new();
     // VCR-DBG-001 step 1: parallel to `ops` — the module-relative wasm byte
@@ -916,6 +978,21 @@ fn decode_function_body(
             | wasmparser::Operator::If { blockty } = &op
             {
                 block_arity.push(blocktype_arity(blockty, type_block_arity));
+            }
+            // GI-FPU-001 (#369): `global.get`/`global.set` decode fine (the
+            // ops are type-agnostic), but an f32/f64-typed global has no
+            // float lowering — its const initializer is dropped (slot zeroed),
+            // so a read returns a silently-wrong 0.0. Flag the function for
+            // the same loud-skip the scalar float ops get.
+            if unsupported.is_none()
+                && let WasmOp::GlobalGet(i) | WasmOp::GlobalSet(i) = &wasm_op
+                && float_globals.contains(i)
+            {
+                unsupported = Some(format!(
+                    "{wasm_op:?} on an f32/f64-typed global — float globals \
+                     have no lowering, the initializer would be silently \
+                     zeroed (GI-FPU-001)"
+                ));
             }
             ops.push(wasm_op);
             op_offsets.push(offset as u32);
@@ -1944,6 +2021,102 @@ mod tests {
             iadd.unsupported.is_none(),
             "a pure-integer function must NOT be flagged: {:?}",
             iadd.unsupported
+        );
+    }
+
+    #[test]
+    fn test_369_float_global_access_flags_function_unsupported() {
+        // GI-FPU-001 (#369): `global.get`/`global.set` on an f32/f64-typed
+        // global decode fine (the ops are type-agnostic), but the float
+        // initializer is dropped (`init_i32: None` -> slot zeroed), so a read
+        // returned a silently-wrong 0.0 instead of the init (verified: the
+        // 2.5f bit pattern 0x40200000 was absent from the output ELF). The
+        // access must flag the function for the loud-skip path. Accesses to
+        // integer globals stay clean.
+        let wat = r#"
+            (module
+                (global $fg f32 (f32.const 2.5))
+                (global $dg (mut f64) (f64.const 1.5))
+                (global $ig (mut i32) (i32.const 7))
+                (func (export "fget") (result f32) global.get $fg)
+                (func (export "dset") (param f64) local.get 0 global.set $dg)
+                (func (export "iget") (result i32) global.get $ig))
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+
+        // Both decode entry points must flag (the CLI compiles through both:
+        // decode_wasm_module on the all-exports/module paths,
+        // decode_wasm_functions on the single-function path).
+        let module = decode_wasm_module(&wasm).expect("decode module");
+        for functions in [
+            &module.functions,
+            &decode_wasm_functions(&wasm).expect("decode fns"),
+        ] {
+            let by_name = |n: &str| {
+                functions
+                    .iter()
+                    .find(|f| f.export_name.as_deref() == Some(n))
+                    .unwrap()
+            };
+            let fget = by_name("fget");
+            assert!(
+                fget.unsupported.is_some(),
+                "global.get of an f32 global must flag the function (loud-skip), got {:?}",
+                fget.unsupported
+            );
+            let reason = fget.unsupported.as_deref().unwrap();
+            assert!(
+                reason.contains("GlobalGet") && reason.contains("GI-FPU-001"),
+                "diagnostic should name the op and GI-FPU-001: {reason:?}"
+            );
+            let dset = by_name("dset");
+            assert!(
+                dset.unsupported
+                    .as_deref()
+                    .is_some_and(|r| r.contains("GlobalSet")),
+                "global.set of an f64 global must flag the function, got {:?}",
+                dset.unsupported
+            );
+            assert!(
+                by_name("iget").unsupported.is_none(),
+                "an i32 global access must NOT be flagged: {:?}",
+                by_name("iget").unsupported
+            );
+        }
+    }
+
+    #[test]
+    fn test_369_imported_float_global_shifts_index_space() {
+        // GI-FPU-001 (#369): imported globals come FIRST in the global index
+        // space. An imported f64 global at index 0 must be flagged, and the
+        // defined i32 global at index 1 must NOT be mistaken for it.
+        let wat = r#"
+            (module
+                (import "env" "fg" (global f64))
+                (global $ig i32 (i32.const 3))
+                (func (export "fget") (result f64) global.get 0)
+                (func (export "iget") (result i32) global.get 1))
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let functions = decode_wasm_functions(&wasm).expect("decode");
+        let by_name = |n: &str| {
+            functions
+                .iter()
+                .find(|f| f.export_name.as_deref() == Some(n))
+                .unwrap()
+        };
+        assert!(
+            by_name("fget")
+                .unsupported
+                .as_deref()
+                .is_some_and(|r| r.contains("GI-FPU-001")),
+            "imported f64 global access must flag: {:?}",
+            by_name("fget").unsupported
+        );
+        assert!(
+            by_name("iget").unsupported.is_none(),
+            "defined i32 global at shifted index 1 must NOT flag: {:?}",
+            by_name("iget").unsupported
         );
     }
 
