@@ -86,15 +86,22 @@ impl Backend for ArmBackend {
                 .func_params_i64
                 .get(func.index as usize)
                 .filter(|p| !p.is_empty());
-            let func_config = if params.is_some() || !func.block_arity.is_empty() {
-                Some(CompileConfig {
-                    current_func_params_i64: params.cloned().unwrap_or_default(),
-                    current_func_block_arity: func.block_arity.clone(),
-                    ..config.clone()
-                })
-            } else {
-                None
-            };
+            // #457: THIS function's DECLARED param count (imports-first full
+            // index), so the backend can cap the access-pattern inference that
+            // mistook a read-before-write local for a param. `None` when the
+            // driver supplied no arg-count table (hand-built modules).
+            let declared_params = config.func_arg_counts.get(func.index as usize).copied();
+            let func_config =
+                if params.is_some() || !func.block_arity.is_empty() || declared_params.is_some() {
+                    Some(CompileConfig {
+                        current_func_params_i64: params.cloned().unwrap_or_default(),
+                        current_func_block_arity: func.block_arity.clone(),
+                        current_func_param_count: declared_params,
+                        ..config.clone()
+                    })
+                } else {
+                    None
+                };
             let cfg = func_config.as_ref().unwrap_or(config);
             let compiled = self.compile_function(&name, &func.ops, cfg)?;
             functions.push(compiled);
@@ -284,7 +291,26 @@ fn compile_wasm_to_arm(
     };
     let wasm_ops: &[WasmOp] = &rewritten;
 
-    let num_params = count_params(wasm_ops);
+    // #457: `count_params` INFERS the param count from access patterns (a local
+    // whose first access is a read is assumed to be a param), so a
+    // read-before-write NON-PARAM local — which WASM zero-initializes — was
+    // indistinguishable from a param: it got homed in a parameter register and
+    // read caller garbage instead of 0. When the driver supplied the DECLARED
+    // count (`current_func_param_count`, from the module's type section), cap
+    // the inference with it. `min` (not a plain override) keeps every function
+    // whose inference is <= declared byte-identical: the inferred count can only
+    // EXCEED the declared one via a read-first local index >= the declared count
+    // — i.e. exactly the read-before-write locals this issue is about.
+    let inferred_params = count_params(wasm_ops);
+    let num_params = match config.current_func_param_count {
+        Some(declared) => inferred_params.min(declared),
+        None => inferred_params,
+    };
+    // A read-before-write non-param local exists iff the capped count dropped.
+    // Such locals need the wasm-mandated zero-init, which only the direct
+    // selector emits — the optimized path's `ir_to_arm` maps a non-param
+    // local's vreg onto an r4+ temp with no initialization (caller garbage).
+    let has_rbw_local = num_params < inferred_params;
 
     let bounds_config = match config.effective_safety_bounds() {
         SafetyBounds::None => BoundsCheckConfig::None,
@@ -552,6 +578,9 @@ fn compile_wasm_to_arm(
         || has_value_carry
         || has_wide_param
         || has_fact_div_elide
+        // #457: route read-before-write non-param locals to the direct
+        // selector, whose prologue zero-init lands the wasm-mandated 0.
+        || has_rbw_local
     {
         if std::env::var("SYNTH_PATH_DEBUG").is_ok() {
             eprintln!("[path-debug] direct (pre-gate)");
@@ -1391,6 +1420,71 @@ mod tests {
 
         let no_params = vec![WasmOp::I32Const(5), WasmOp::I32Const(3), WasmOp::I32Add];
         assert_eq!(count_params(&no_params), 0);
+    }
+
+    /// #457: the declared param count caps the access-pattern inference. The
+    /// repro shape `(param i32)(local i32) → p0 + local1` reads local 1 before
+    /// any write, so `count_params` infers 2 — with the declared count (1) the
+    /// local is reclassified onto the zero-inited frame path instead of being
+    /// read from R1 (caller garbage).
+    #[test]
+    fn declared_param_count_caps_inference_457() {
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        // The inference alone still says 2 (the misclassification this caps).
+        assert_eq!(count_params(&ops), 2);
+
+        let backend = ArmBackend::new();
+        let inferred = backend
+            .compile_function("rbw", &ops, &CompileConfig::default())
+            .unwrap();
+        let declared = backend
+            .compile_function(
+                "rbw",
+                &ops,
+                &CompileConfig {
+                    current_func_param_count: Some(1),
+                    ..CompileConfig::default()
+                },
+            )
+            .unwrap();
+        // The cap is consumed: the declared-count compile reclassifies local 1
+        // and must emit different code than the param-misclassified one.
+        assert_ne!(
+            inferred.code, declared.code,
+            "declared param count must reach the selector"
+        );
+        // The zero-init is present: a 16-bit Thumb `movs rN, #0`
+        // (0x2000 | rd<<8 → LE bytes [0x00, 0x20+rd]) somewhere in the body.
+        let has_movs_zero = declared
+            .code
+            .chunks_exact(2)
+            .any(|h| h[0] == 0x00 && (0x20..=0x27).contains(&h[1]));
+        assert!(
+            has_movs_zero,
+            "declared-count compile must zero-init the read-before-write local; code: {:02x?}",
+            declared.code
+        );
+        // A declared count that matches (or exceeds) the inference changes
+        // nothing — byte-identity for every function without rbw locals.
+        let matching = backend
+            .compile_function(
+                "rbw",
+                &ops,
+                &CompileConfig {
+                    current_func_param_count: Some(2),
+                    ..CompileConfig::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            matching.code, inferred.code,
+            "declared >= inferred must stay byte-identical"
+        );
     }
 
     #[test]

@@ -79,10 +79,25 @@ impl Backend for RiscVBackend {
         let mut elf_funcs = Vec::new();
         for func in &exports {
             let name = func.export_name.clone().unwrap();
-            let compiled = compile_function_with_opts(&name, &func.ops, config, opts)?;
+            // #457: THIS function's DECLARED param count (imports-first full
+            // index) caps the access-pattern param inference, so a
+            // read-before-write local gets a zero-inited frame slot instead of
+            // an argument-register home. None when the driver supplied no
+            // arg-count table (hand-built modules) — pure inference, as before.
+            let declared_params = config.func_arg_counts.get(func.index as usize).copied();
+            let func_config = if declared_params.is_some() {
+                Some(CompileConfig {
+                    current_func_param_count: declared_params,
+                    ..config.clone()
+                })
+            } else {
+                None
+            };
+            let cfg = func_config.as_ref().unwrap_or(config);
+            let compiled = compile_function_with_opts(&name, &func.ops, cfg, opts)?;
             elf_funcs.push(RiscVElfFunction {
                 name: compiled.name.clone(),
-                ops: compile_to_riscv_ops(&func.ops, config, opts, &compiled)?,
+                ops: compile_to_riscv_ops(&func.ops, cfg, opts, &compiled)?,
             });
             functions.push(compiled);
         }
@@ -151,7 +166,7 @@ fn compile_function_with_opts(
 ) -> Result<CompiledFunction, BackendError> {
     ensure_supported_target(&config.target)?;
 
-    let num_params = count_params(ops);
+    let num_params = effective_num_params(ops, config);
     // #312: pass the decoder's "returns i64" tables down so call-fed i64
     // locals get 8-byte frame slots and i64 call results the a0:a1 pair.
     let selection = select_with_result_types(
@@ -224,6 +239,22 @@ fn count_params(wasm_ops: &[WasmOp]) -> u32 {
         .unwrap_or(0)
 }
 
+/// #457: cap the access-pattern param inference with the DECLARED count when
+/// the driver supplied one. A read-before-write non-param local (which WASM
+/// zero-initializes) is indistinguishable from a param to `count_params` — it
+/// was homed in an argument register and read caller garbage instead of 0.
+/// `min` (not a plain override) keeps every function whose inference is <= the
+/// declared count byte-identical: the inference can only exceed the declared
+/// count via a read-first local index >= it — exactly the read-before-write
+/// locals. The selector zero-inits the reclassified locals' frame slots.
+fn effective_num_params(ops: &[WasmOp], config: &CompileConfig) -> u32 {
+    let inferred = count_params(ops);
+    match config.current_func_param_count {
+        Some(declared) => inferred.min(declared),
+        None => inferred,
+    }
+}
+
 /// Re-encode the selector's output to flat bytes — the same pipeline the ELF
 /// builder uses, but exposed for `compile_function` (which doesn't return ELF).
 fn encode_function_bytes(f: &RiscVElfFunction) -> Result<Vec<u8>, BackendError> {
@@ -273,7 +304,7 @@ fn compile_to_riscv_ops(
     opts: SelectorOptions,
     _compiled: &CompiledFunction,
 ) -> Result<Vec<crate::riscv_op::RiscVOp>, BackendError> {
-    let num_params = count_params(ops);
+    let num_params = effective_num_params(ops, config);
     let selection = select_with_result_types(
         ops,
         num_params,
@@ -368,6 +399,39 @@ mod tests {
             WasmOp::LocalGet(1), // re-read
         ];
         assert_eq!(count_params(&ops), 1);
+    }
+
+    /// #457: the declared param count caps the inference — a read-before-write
+    /// local (inference: param) is reclassified onto the zero-inited frame
+    /// path. `min`, not override: declared >= inferred changes nothing.
+    #[test]
+    fn effective_num_params_caps_inference_457() {
+        let ops = vec![
+            WasmOp::LocalGet(0), // param
+            WasmOp::LocalGet(1), // read-before-write local → inference says param
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        assert_eq!(count_params(&ops), 2);
+        let unknown = CompileConfig {
+            target: TargetSpec::riscv32imac(),
+            ..Default::default()
+        };
+        assert_eq!(effective_num_params(&ops, &unknown), 2);
+        let declared = CompileConfig {
+            current_func_param_count: Some(1),
+            ..unknown.clone()
+        };
+        assert_eq!(effective_num_params(&ops, &declared), 1);
+        let over_declared = CompileConfig {
+            current_func_param_count: Some(4),
+            ..unknown.clone()
+        };
+        assert_eq!(
+            effective_num_params(&ops, &over_declared),
+            2,
+            "declared >= inferred keeps the inference (byte-identity)"
+        );
     }
 
     #[test]

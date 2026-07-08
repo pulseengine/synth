@@ -156,6 +156,24 @@ pub struct CompileConfig {
     /// driver loop, because `compile_function` is shared across backends and
     /// carries no function index. Empty → assume i32.
     pub current_func_params_i64: Vec<bool>,
+    /// #457: DECLARED parameter count of the function CURRENTLY being compiled,
+    /// from the module's type section (`func_arg_counts[func.index]`). Set per
+    /// function by the driver loops like [`current_func_params_i64`].
+    ///
+    /// The backends otherwise INFER the param count from local-access patterns
+    /// (`count_params`: a local whose first access is a read is assumed to be a
+    /// param) — which cannot distinguish a param from a read-before-write
+    /// non-param local. WASM zero-initializes non-param locals, so such a local
+    /// must read 0; the inference instead homed it in a parameter register and
+    /// read caller garbage (#457). The backends cap the inferred count at this
+    /// declared count when it is present, which reclassifies exactly the
+    /// read-before-write locals (an inferred count can only exceed the declared
+    /// one via a read-first index >= the declared count) and leaves every other
+    /// function's codegen byte-identical.
+    ///
+    /// `None` → declared signature unknown (hand-built op streams, direct
+    /// `compile_function` callers) → pure inference, the legacy behaviour.
+    pub current_func_param_count: Option<u32>,
     /// #509: blocktype-arity side-table of the function CURRENTLY being compiled
     /// — `(param_count, result_count)` of the k-th `Block`/`Loop`/`If` in its op
     /// stream (ordinal-keyed; see [`FunctionOps::block_arity`]). Set per function
@@ -292,6 +310,9 @@ impl Default for CompileConfig {
             type_ret_i64: Vec::new(),
             func_params_i64: Vec::new(),
             current_func_params_i64: Vec::new(),
+            // #457: None ⇒ declared signature unknown ⇒ param-count inference
+            // only (unit tests / hand-built op streams); driver loops fill it.
+            current_func_param_count: None,
             // #509: empty ⇒ legacy void-block lowering (unit tests / hand-built
             // op streams); the driver loops fill it per function.
             current_func_block_arity: Vec::new(),

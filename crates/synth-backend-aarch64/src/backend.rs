@@ -71,9 +71,20 @@ impl Backend for AArch64Backend {
         &self,
         name: &str,
         ops: &[WasmOp],
-        _config: &CompileConfig,
+        config: &CompileConfig,
     ) -> Result<CompiledFunction, BackendError> {
-        let num_params = count_params(ops);
+        // #457: cap the access-pattern inference with the declared count when
+        // the driver supplied one — a read-before-write non-param local (wasm
+        // zero-init) is otherwise indistinguishable from a param and would be
+        // read from an argument register (caller garbage). The reclassified
+        // local then hits the selector's "non-param locals not yet supported"
+        // guard: a LOUD skip instead of a silent miscompile (milestone-1
+        // contract; frame-slot zero-init lands with non-param local support).
+        let inferred = count_params(ops);
+        let num_params = match config.current_func_param_count {
+            Some(declared) => inferred.min(declared),
+            None => inferred,
+        };
         let words = selector::select(ops, num_params)
             .map_err(|e| BackendError::CompilationFailed(e.to_string()))?;
         let code: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -119,7 +130,19 @@ impl Backend for AArch64Backend {
                      (#369, #554)"
                 )));
             }
-            let compiled = self.compile_function(&name, &func.ops, config)?;
+            // #457: THIS function's declared param count (imports-first full
+            // index) caps the param-count inference in `compile_function`.
+            let declared_params = config.func_arg_counts.get(func.index as usize).copied();
+            let func_config = if declared_params.is_some() {
+                Some(CompileConfig {
+                    current_func_param_count: declared_params,
+                    ..config.clone()
+                })
+            } else {
+                None
+            };
+            let cfg = func_config.as_ref().unwrap_or(config);
+            let compiled = self.compile_function(&name, &func.ops, cfg)?;
             elf_funcs.push(ElfFunction {
                 name: compiled.name.clone(),
                 code: compiled.code.clone(),
