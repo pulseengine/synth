@@ -2685,6 +2685,23 @@ pub fn validate_segment_rewrite(
     orig: &[ArmInstruction],
     rewritten: &[ArmInstruction],
 ) -> Result<(), RewriteViolation> {
+    validate_segment_rewrite_exempting(orig, rewritten, &BTreeSet::new())
+}
+
+/// [`validate_segment_rewrite`] with caller-supplied additional exit
+/// exemptions: registers whose EXIT value the caller has proven unobservable,
+/// so their identity equations are not seeded. Used by the VCR-VER-001
+/// post-exhaustion terminal-segment re-allocation (#242): a segment followed
+/// only by `bx lr` — on the optimized path BEFORE `ensure_callee_saved_prologue`
+/// runs — has function-level dead-outs the segment-local seed cannot know
+/// (R2/R3/R12 caller-saved; R4-R8 will be saved/restored by the prologue pass
+/// sized on the REWRITTEN body). The empty set is exactly the shipping
+/// validator.
+pub fn validate_segment_rewrite_exempting(
+    orig: &[ArmInstruction],
+    rewritten: &[ArmInstruction],
+    exempt: &BTreeSet<Reg>,
+) -> Result<(), RewriteViolation> {
     if orig.len() != rewritten.len() {
         return Err(RewriteViolation::LengthMismatch {
             orig: orig.len(),
@@ -2726,6 +2743,7 @@ pub fn validate_segment_rewrite(
         .iter()
         .flat_map(|(eo, _)| eo.defs.iter())
         .filter(|r| !(ends_in_return && aapcs_dead_at_return.contains(r)))
+        .filter(|r| !exempt.contains(r))
         .map(|r| (*r, *r))
         .collect();
 
@@ -3195,6 +3213,34 @@ pub fn reallocate_function(
     instrs: &[ArmInstruction],
     pool: &[Reg],
 ) -> (Vec<ArmInstruction>, ReallocStats) {
+    reallocate_function_post_exhaust(instrs, pool, false)
+}
+
+/// [`reallocate_function`] with the VCR-VER-001 post-exhaustion extension
+/// (#242): TERMINAL-SEGMENT relaxed live-out pinning. `post_exhaust = false`
+/// is the shipping pass bit for bit.
+///
+/// The shipping pass pins, per physical register, the LAST range opened —
+/// segment-local soundness cannot know which live-outs a later segment reads.
+/// For the segment followed by nothing but the `bx lr` return, the live-outs
+/// ARE knowable at function level: R0 (and R1 for an i64 result) carry the
+/// return value; R2/R3/R12 are AAPCS caller-saved; and R4-R8's exit values
+/// are unobservable **at this pipeline position** because
+/// `ensure_callee_saved_prologue` + `shrink_callee_saved_saves` run AFTER
+/// this pass and size the save/restore on the REWRITTEN body (any callee-
+/// saved register the recolored body still clobbers gets pushed/popped; one
+/// it no longer touches needs no save at all). So with `post_exhaust` the
+/// terminal segment pins only R0/R1's last ranges, letting the colourer lower
+/// R4-R8-homed tails into the caller-saved R0-R3 — which is exactly what
+/// shrinks the over-wide `push {r4-r8, lr}` the #580 exhaustion shapes pay
+/// for (a spilled `signed_div_const` fits R0-R3 entirely: no push, no pop).
+/// The VCR-RA-003 validator remains the acceptance gate, run with the same
+/// function-level exemptions ([`validate_segment_rewrite_exempting`]).
+pub fn reallocate_function_post_exhaust(
+    instrs: &[ArmInstruction],
+    pool: &[Reg],
+    post_exhaust: bool,
+) -> (Vec<ArmInstruction>, ReallocStats) {
     use crate::optimizer_bridge::estimate_arm_byte_size;
     let mut stats = ReallocStats::default();
     // #606: resolved numeric branches make join points invisible and byte
@@ -3210,7 +3256,26 @@ pub fn reallocate_function(
             }
             let seg = &instrs[start..end];
             stats.segments += 1;
-            match try_reallocate_segment(seg, pool) {
+            // Post-exhaustion: the terminal segment (followed ONLY by the
+            // `bx lr` return — the optimized-path shape before the prologue
+            // pass runs) gets relaxed live-out pinning, justified above.
+            // Restricted to segments with NO frame reload: when spill traffic
+            // remains, R2/R3 must stay untouched for the downstream
+            // spill-rechoice pass ([`apply_spill_realloc_post_exhaust`]),
+            // whose exit-dead rename targets they are — recoloring tails into
+            // them here starves that pass and nets MORE stack traffic (the
+            // relaxation only pays where the body already fits, e.g. the
+            // spilled `signed_div_const`, whose sole frame access is a dead
+            // store the later sweep deletes).
+            let relaxed_exit = post_exhaust
+                && end < instrs.len()
+                && instrs[end..]
+                    .iter()
+                    .all(|i| matches!(&i.op, ArmOp::Bx { rm: Reg::LR }))
+                && !seg
+                    .iter()
+                    .any(|i| matches!(&i.op, ArmOp::Ldr { addr, .. } if addr.base == Reg::SP));
+            match try_reallocate_segment(seg, pool, relaxed_exit) {
                 SegmentOutcome::Rewritten(new) => {
                     // #606 span byte-freeze: inside a branch→target span the
                     // rewrite must not change the segment's byte size, or the
@@ -3272,8 +3337,24 @@ enum SegmentOutcome {
     ValidatorRejected,
 }
 
-fn try_reallocate_segment(seg: &[ArmInstruction], pool: &[Reg]) -> SegmentOutcome {
+fn try_reallocate_segment(
+    seg: &[ArmInstruction],
+    pool: &[Reg],
+    relaxed_exit: bool,
+) -> SegmentOutcome {
+    let dbg = std::env::var("SYNTH_POSTEX_DEBUG").is_ok();
+    if dbg {
+        eprintln!(
+            "[postex-dbg] realloc segment len={} relaxed={relaxed_exit} first={:?} last={:?}",
+            seg.len(),
+            seg.first().map(|i| &i.op),
+            seg.last().map(|i| &i.op)
+        );
+    }
     let Some(ranges) = straight_line_value_ranges(seg) else {
+        if dbg {
+            eprintln!("[postex-dbg] realloc decline: value_ranges=None");
+        }
         return SegmentOutcome::Declined;
     };
     if ranges.is_empty() {
@@ -3284,7 +3365,10 @@ fn try_reallocate_segment(seg: &[ArmInstruction], pool: &[Reg]) -> SegmentOutcom
 
     // Pins: inputs (def == 0) and per-register last-opened ranges (live-outs)
     // keep their original register. Reserved-register ranges are identity-
-    // assigned outside the colouring.
+    // assigned outside the colouring. With `relaxed_exit` (VCR-VER-001
+    // terminal segment, see `reallocate_function_post_exhaust`) only R0/R1's
+    // last-opened ranges are live-out-pinned — every other register's exit
+    // value is unobservable past the `bx lr` this segment feeds.
     let mut last_opened: BTreeMap<Reg, usize> = BTreeMap::new();
     for r in &ranges {
         last_opened.insert(r.reg, r.vreg); // ranges are in creation order
@@ -3300,7 +3384,9 @@ fn try_reallocate_segment(seg: &[ArmInstruction], pool: &[Reg]) -> SegmentOutcom
             }
             Some(&idx) => {
                 pool_nodes.insert(r.vreg);
-                if r.def == 0 || last_opened.get(&r.reg) == Some(&r.vreg) {
+                let exit_pinned = last_opened.get(&r.reg) == Some(&r.vreg)
+                    && (!relaxed_exit || matches!(r.reg, Reg::R0 | Reg::R1));
+                if r.def == 0 || exit_pinned {
                     pins.insert(r.vreg, idx);
                 }
             }
@@ -3351,22 +3437,54 @@ fn try_reallocate_segment(seg: &[ArmInstruction], pool: &[Reg]) -> SegmentOutcom
 
     // Defense-in-depth: re-check every interference edge against the final
     // assignment, independently of the colourer (cf. verify_allocation).
+    // VCR-VER-001 relaxed-exit segments additionally skip edges where BOTH
+    // endpoints are reserved-register ranges: those are identity-assigned by
+    // construction and never renamed, so two ranges of the same reserved
+    // register (e.g. the SP input/def ranges of a frame `sub sp,sp,#K` at
+    // instruction 0, "interfering" via the co-defined corner) sharing their
+    // register is exactly the original code's behavior — declining on it
+    // rejected every frame-carrying #580 segment wholesale. Pool↔pool and
+    // pool↔reserved edges are still enforced, and the VCR-RA-003 validator
+    // below independently proves the dataflow either way.
     for (n, nbrs) in &adj {
         for m in nbrs {
+            if relaxed_exit && !pool_nodes.contains(n) && !pool_nodes.contains(m) {
+                continue;
+            }
             match (assignment.get(n), assignment.get(m)) {
                 (Some(a), Some(b)) if a != b => {}
-                _ => return SegmentOutcome::Declined,
+                _ => {
+                    if std::env::var("SYNTH_POSTEX_DEBUG").is_ok() {
+                        eprintln!(
+                            "[postex-dbg] realloc edge-recheck decline: {n}~{m} -> {:?}/{:?}",
+                            assignment.get(n),
+                            assignment.get(m)
+                        );
+                    }
+                    return SegmentOutcome::Declined;
+                }
             }
         }
     }
 
+    // With relaxed exit pinning the validator gets the SAME function-level
+    // exemptions the pins used: exit identity is not required of registers
+    // whose value is unobservable past the terminal `bx lr` (R2/R3/R12
+    // caller-saved; R4-R8 saved/restored by the later prologue pass sized on
+    // the rewritten body). Empty set = the shipping validator.
+    let exempt: BTreeSet<Reg> = if relaxed_exit {
+        use Reg::*;
+        BTreeSet::from([R2, R3, R4, R5, R6, R7, R8, R12])
+    } else {
+        BTreeSet::new()
+    };
     match apply_range_coloring(seg, &assignment) {
         // VCR-RA-003: the rewrite is accepted only if the backward-dataflow
         // translation validator can independently prove it preserves the
         // original segment's dataflow (exit live-outs + entry inputs pinned).
         // The edge-recheck above stays as defense in depth; this is the
         // acceptance gate the pass cannot bypass.
-        Some(new) => match validate_segment_rewrite(seg, &new) {
+        Some(new) => match validate_segment_rewrite_exempting(seg, &new, &exempt) {
             Ok(()) => SegmentOutcome::Rewritten(new),
             Err(v) => {
                 if std::env::var("SYNTH_VALIDATOR_DEBUG").is_ok() {
@@ -3375,7 +3493,12 @@ fn try_reallocate_segment(seg: &[ArmInstruction], pool: &[Reg]) -> SegmentOutcom
                 SegmentOutcome::ValidatorRejected
             }
         },
-        None => SegmentOutcome::Declined,
+        None => {
+            if std::env::var("SYNTH_POSTEX_DEBUG").is_ok() {
+                eprintln!("[postex-dbg] realloc decline: apply_range_coloring=None");
+            }
+            SegmentOutcome::Declined
+        }
     }
 }
 
@@ -4451,6 +4574,73 @@ fn sp_slot(addr: &MemAddr) -> Option<i32> {
     (addr.base == Reg::SP && addr.offset_reg.is_none()).then_some(addr.offset)
 }
 
+/// VCR-VER-001 post-exhaustion reach (#242, the PR #659 verdict): which of
+/// {R2, R3} are provably DEAD at program point `at` — i.e. no instruction
+/// reachable from `at` can read the register's current value.
+///
+/// This is the function-level fact [`rename_kill_def`]'s segment-local
+/// deadness proof cannot see: the optimized path's allocation-time Belady
+/// spill (`SYNTH_SPILL_ON_EXHAUST`, #580) draws scratch from R4-R8 only, so
+/// R2/R3 are frequently never touched again after a segment — and a register
+/// never touched again used to be declined as "possibly live-out". At function
+/// scope that conservatism is resolvable: scan forward from `at` and prove no
+/// read precedes a pure redefinition or the function's end.
+///
+/// ONLY R2 and R3 are candidates, deliberately:
+///  - they are AAPCS caller-saved argument registers, so introducing a NEW
+///    write to them (what the rename does) never violates the callee-saved
+///    contract even when the function's push list does not include them
+///    (renaming onto an unsaved R4-R8 would clobber the caller's value);
+///  - they never carry a return value (R0, and R1 for i64, do — a return is a
+///    read of those, invisible to any instruction scan), so "reaches a return"
+///    is proof of deadness for R2/R3 and would NOT be for R0/R1.
+///
+/// The scan is a linear may-reach walk with the #606 discipline: any branch
+/// (label-form, resolved `BOffset`/`BCondOffset`, table, call, non-`bx lr`
+/// indirect) or unmodeled op ⇒ control may reach a read this scan cannot see ⇒
+/// conservative LIVE. A `Label` is a pure marker (a jump INTO it adds no read
+/// on paths leaving `at`) and the scan continues through it. `pop {…, pc}` and
+/// `bx lr` are returns ⇒ DEAD; a plain `Pop`/def containing the candidate is a
+/// pure redefinition ⇒ DEAD; falling off the end ⇒ DEAD.
+fn scratch_dead_at(instrs: &[ArmInstruction], at: usize) -> BTreeSet<Reg> {
+    let mut dead = BTreeSet::new();
+    'cand: for t in [Reg::R2, Reg::R3] {
+        for ins in &instrs[at..] {
+            match &ins.op {
+                // Return: R0/R1 may carry the result; R2/R3 provably do not.
+                ArmOp::Bx { rm: Reg::LR } => {
+                    dead.insert(t);
+                    continue 'cand;
+                }
+                ArmOp::Pop { regs } if regs.contains(&Reg::PC) => {
+                    // `pop {…, pc}` return — same as `bx lr` for R2/R3.
+                    dead.insert(t);
+                    continue 'cand;
+                }
+                // A label is a marker, not an instruction: code after it is
+                // still linearly reachable from `at` and stays in the scan.
+                ArmOp::Label { .. } => {}
+                op => match reg_effect(op) {
+                    Some(eff) => {
+                        if eff.uses.contains(&t) {
+                            continue 'cand; // read reachable → LIVE
+                        }
+                        if eff.defs.contains(&t) {
+                            dead.insert(t); // pure redefinition → DEAD
+                            continue 'cand;
+                        }
+                    }
+                    // Branch / call / unmodeled: a read may be reachable on an
+                    // edge this linear scan cannot follow → conservative LIVE.
+                    None => continue 'cand,
+                },
+            }
+        }
+        dead.insert(t); // fell off the end: nothing left that could read t
+    }
+    dead
+}
+
 /// VCR-RA-001 spill-reload forwarding (#242, spike step): replace or delete a
 /// frame-slot reload whose value is provably already in a register.
 ///
@@ -4507,6 +4697,33 @@ fn sp_slot(addr: &MemAddr) -> Option<i32> {
 /// Pure; DEFAULT-ON via the `arm_backend.rs` wiring (`SYNTH_SPILL_REALLOC=0`
 /// is the opt-out).
 pub fn apply_spill_realloc(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    apply_spill_realloc_post_exhaust(instrs, false)
+}
+
+/// [`apply_spill_realloc`] with the VCR-VER-001 post-exhaustion extensions
+/// (#242, the PR #659 verdict — "post-exhaustion code quality on the optimized
+/// path"). `post_exhaust = false` is byte-for-byte the shipping default-on
+/// pass. `post_exhaust = true` (wired to `SYNTH_SPILL_ON_EXHAUST`, so it is
+/// only ever active alongside the #580 allocation-time Belady spill whose
+/// slots it exists to clean up) additionally enables, per segment:
+///  - stage 1 CONSTANT REMATERIALIZATION: a reload of a slot provably holding
+///    a known single-instruction constant materialization is rewritten to that
+///    materialization (`ldr rd,[sp,#N]` → `movs/movw rd,#C`) when no register
+///    still holds the value — the store then dies and the flag-shared
+///    unread-store sweep removes it (`high_pressure_i32`'s spilled consts);
+///  - stage 2 EXIT-DEAD RENAME TARGETS: [`rename_kill_def`] may rename a
+///    clobbering def onto R2/R3 when [`scratch_dead_at`] proves the register
+///    dead at segment exit — the case the segment-local proof declines as
+///    "never touched again → possibly live-out" even though the bridge's
+///    R4-R8-only scratch pool structurally never touches R2/R3 again;
+///  - stage 2 PER-PAIR pressure commit: the pool-pressure gate (c) is checked
+///    per dissolved pair instead of once at the end, so one pair that would
+///    push the segment past the pool no longer discards every other pair's
+///    sound dissolve.
+pub fn apply_spill_realloc_post_exhaust(
+    instrs: &[ArmInstruction],
+    post_exhaust: bool,
+) -> (Vec<ArmInstruction>, usize) {
     use crate::optimizer_bridge::estimate_arm_byte_size;
     // #606: resolved numeric branches make join points invisible and byte
     // layout load-bearing — decline the whole function if unmappable.
@@ -4520,13 +4737,20 @@ pub fn apply_spill_realloc(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, u
             return;
         }
         let seg = &instrs[start..end];
+        // Post-exhaustion only: registers provably dead at segment EXIT — the
+        // function-level fact stage 2's segment-local rename proof lacks.
+        let exit_dead = if post_exhaust {
+            scratch_dead_at(instrs, end)
+        } else {
+            BTreeSet::new()
+        };
         // Stage 1: slot-value forwarding between reloads.
-        let (mut cur, mut n) = match spill_forward_segment(seg) {
+        let (mut cur, mut n) = match spill_forward_segment(seg, post_exhaust) {
             Some((rewritten, n)) => (rewritten, n),
             None => (seg.to_vec(), 0),
         };
         // Stage 2: Belady spill-plan re-choice on the surviving reloads.
-        if let Some((rewritten, m)) = spill_rechoice_segment(&cur) {
+        if let Some((rewritten, m)) = spill_rechoice_segment(&cur, &exit_dead, post_exhaust) {
             cur = rewritten;
             n += m;
         }
@@ -4566,12 +4790,49 @@ pub fn apply_spill_realloc(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, u
     (out, total)
 }
 
+/// Retarget a single-instruction constant materialization onto `rd`. Only the
+/// two [`const_materialization`] shapes participate (`mov rd,#imm` /
+/// `movw rd,#imm16`) — both are pure full-width defs, so the clone reproduces
+/// the stored word exactly. A `movw` later modified by `movt` never reaches
+/// here: the `movt` kills the tracked shape (it is an RMW def of the register).
+fn retarget_const_shape(op: &ArmOp, rd: Reg) -> Option<ArmOp> {
+    match op {
+        ArmOp::Movw { imm16, .. } => Some(ArmOp::Movw { rd, imm16: *imm16 }),
+        ArmOp::Mov {
+            op2: Operand2::Imm(v),
+            ..
+        } => Some(ArmOp::Mov {
+            rd,
+            op2: Operand2::Imm(*v),
+        }),
+        _ => None,
+    }
+}
+
 /// One segment of [`apply_spill_realloc`]: `Some((rewritten, count))` iff at
 /// least one reload was forwarded/deleted AND every commit gate holds;
 /// `None` ⇒ caller keeps the original segment bytes.
-fn spill_forward_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>, usize)> {
+///
+/// With `post_exhaust` (VCR-VER-001, #242) the pass additionally tracks which
+/// slots hold a KNOWN single-instruction constant (the defining `mov`/`movw`
+/// shape, killed on any redefinition of the source register — including
+/// `Movt`'s RMW — and on every event that already resets the holder sets) and
+/// REMATERIALIZES a reload with no surviving register holder
+/// (`ldr rd,[sp,#N]` → the retargeted materialization). Soundness is the same
+/// by-construction argument as forwarding: the replacement writes `rd` with
+/// the exact word the load would have fetched. Rematerialization never
+/// extends a live range (unlike forwarding it introduces no new read), so the
+/// pressure gate (c) is unaffected.
+fn spill_forward_segment(
+    seg: &[ArmInstruction],
+    post_exhaust: bool,
+) -> Option<(Vec<ArmInstruction>, usize)> {
     // slot #N → set of R0–R8 registers currently holding slot N's value.
     let mut holders: BTreeMap<i32, BTreeSet<Reg>> = BTreeMap::new();
+    // Post-exhaustion const tracking: register → its materializing op shape,
+    // and slot → the shape whose value the slot provably holds.
+    let mut reg_const: BTreeMap<Reg, ArmOp> = BTreeMap::new();
+    let mut slot_const: BTreeMap<i32, ArmOp> = BTreeMap::new();
     // Staged edits: index → Some(op) = replace, None = delete.
     let mut staged: BTreeMap<usize, Option<ArmOp>> = BTreeMap::new();
 
@@ -4606,28 +4867,54 @@ fn spill_forward_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>,
                             set.insert(rd);
                         }
                     }
+                    reg_const.remove(&rd);
+                    if let Some(shape) = slot_const.get(&slot) {
+                        reg_const.insert(rd, shape.clone());
+                    }
                 } else {
                     // Ordinary reload: rd is redefined and now holds slot's value.
                     for set in holders.values_mut() {
                         set.remove(&rd);
                     }
+                    reg_const.remove(&rd);
                     if !is_reserved_reg(rd) {
                         holders.entry(slot).or_default().insert(rd);
+                        // Post-exhaustion rematerialization: the slot holds a
+                        // known constant and no register does — re-derive it
+                        // instead of loading it (the store then goes unread
+                        // and dies in the flag-shared unread-store sweep).
+                        if post_exhaust
+                            && let Some(shape) = slot_const.get(&slot)
+                            && let Some(remat) = retarget_const_shape(shape, rd)
+                        {
+                            staged.insert(i, Some(remat));
+                            reg_const.insert(rd, shape.clone());
+                        }
                     }
                 }
             }
             // Full-word store to a pinnable slot: the slot now holds rd's value.
             ArmOp::Str { rd, addr } if sp_slot(addr).is_some() => {
+                let slot = sp_slot(addr).unwrap();
                 let mut set = BTreeSet::new();
                 if !is_reserved_reg(*rd) {
                     set.insert(*rd);
                 }
-                holders.insert(sp_slot(addr).unwrap(), set);
+                holders.insert(slot, set);
+                match reg_const.get(rd) {
+                    Some(shape) => {
+                        slot_const.insert(slot, shape.clone());
+                    }
+                    None => {
+                        slot_const.remove(&slot);
+                    }
+                }
             }
             // Any [sp] access we cannot pin to a single whole word slot:
             // register offset (unresolvable) or sub-word (partial overlap).
             ArmOp::Ldr { addr, .. } | ArmOp::Str { addr, .. } if addr.base == Reg::SP => {
                 holders.clear();
+                slot_const.clear();
             }
             ArmOp::Ldrb { addr, .. }
             | ArmOp::Ldrsb { addr, .. }
@@ -4638,9 +4925,15 @@ fn spill_forward_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>,
                 if addr.base == Reg::SP =>
             {
                 holders.clear();
+                slot_const.clear();
             }
-            // SP moves + stack memory touched — every slot name is invalidated.
-            ArmOp::Push { .. } | ArmOp::Pop { .. } => holders.clear(),
+            // SP moves + stack memory touched — every slot name is invalidated
+            // (and `Pop` redefines its whole register list: drop reg consts).
+            ArmOp::Push { .. } | ArmOp::Pop { .. } => {
+                holders.clear();
+                slot_const.clear();
+                reg_const.clear();
+            }
             // Register-to-register copy propagates value identity.
             ArmOp::Mov {
                 rd,
@@ -4662,6 +4955,14 @@ fn spill_forward_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>,
                         }
                     }
                 }
+                match reg_const.get(&rm).cloned() {
+                    Some(shape) if !is_reserved_reg(rd) => {
+                        reg_const.insert(rd, shape);
+                    }
+                    _ => {
+                        reg_const.remove(&rd);
+                    }
+                }
             }
             op => {
                 // Segment precondition guarantees Some; `?` stays sound if the
@@ -4669,12 +4970,21 @@ fn spill_forward_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>,
                 let eff = reg_effect(op)?;
                 if eff.defs.contains(&Reg::SP) {
                     holders.clear();
-                } else {
-                    for d in &eff.defs {
-                        for set in holders.values_mut() {
-                            set.remove(d);
-                        }
+                    slot_const.clear();
+                }
+                for d in &eff.defs {
+                    for set in holders.values_mut() {
+                        set.remove(d);
                     }
+                    // Kills the tracked const on ANY def, including `Movt`'s
+                    // RMW of a previously tracked `movw` (its shape alone
+                    // would reproduce only the low half — must not survive).
+                    reg_const.remove(d);
+                }
+                if let Some((rd_c, _)) = const_materialization(op)
+                    && !is_reserved_reg(rd_c)
+                {
+                    reg_const.insert(rd_c, op.clone());
                 }
             }
         }
@@ -4941,8 +5251,17 @@ fn collect_spill_pairs(seg: &[ArmInstruction]) -> Vec<SpillPair> {
 ///    uses), and such a def EXISTS in the segment — so `t`'s incoming value is
 ///    dead at `k` (never read again) and `t`'s exit value is that later def's,
 ///    unchanged by the rename. A `t` never touched again could be live-out:
-///    rejected.
-fn rename_kill_def(scratch: &mut [ArmInstruction], k: usize, r: Reg) -> Option<()> {
+///    rejected — UNLESS the caller proves it dead at segment exit
+///    (`exit_dead`, from [`scratch_dead_at`]: the VCR-VER-001 post-exhaustion
+///    extension, empty outside `SYNTH_SPILL_ON_EXHAUST`). Only R2/R3 ever
+///    appear there (caller-saved, never return-carrying), so the new write the
+///    rename introduces cannot violate the callee-saved contract.
+fn rename_kill_def(
+    scratch: &mut [ArmInstruction],
+    k: usize,
+    r: Reg,
+    exit_dead: &BTreeSet<Reg>,
+) -> Option<()> {
     // The def's live range: reads of `r` strictly after `k`, up to and
     // including any reads AT the next def of `r` (operands are consumed
     // before the write). No next def in the segment ⇒ the value may be
@@ -4990,7 +5309,9 @@ fn rename_kill_def(scratch: &mut [ArmInstruction], k: usize, r: Reg) -> Option<(
                 return true; // pure redefinition → dead in between
             }
         }
-        false // never touched again → possibly live-out → decline
+        // Never touched again in the segment → possibly live-out → decline,
+        // unless the caller's function-level scan proved t dead at exit.
+        exit_dead.contains(&t)
     })?;
 
     let rename: BTreeMap<Reg, Reg> = [(r, target)].into_iter().collect();
@@ -5006,7 +5327,11 @@ fn rename_kill_def(scratch: &mut [ArmInstruction], k: usize, r: Reg) -> Option<(
 /// rename every kill-def of the holder inside the window, then delete the
 /// reload (or fold it to `mov rd,holder` when it targets another register).
 /// `None` ⇒ some kill-def could not be renamed; caller keeps the input.
-fn dissolve_spill_pair(seg: &[ArmInstruction], pair: &SpillPair) -> Option<Vec<ArmInstruction>> {
+fn dissolve_spill_pair(
+    seg: &[ArmInstruction],
+    pair: &SpillPair,
+    exit_dead: &BTreeSet<Reg>,
+) -> Option<Vec<ArmInstruction>> {
     let mut scratch = seg.to_vec();
     // Rename kill-defs left to right; each rename removes that def of the
     // holder, so re-scanning always terminates.
@@ -5014,7 +5339,7 @@ fn dissolve_spill_pair(seg: &[ArmInstruction], pair: &SpillPair) -> Option<Vec<A
     while i < pair.load {
         let eff = reg_effect(&scratch[i].op)?;
         if eff.defs.contains(&pair.holder) {
-            rename_kill_def(&mut scratch, i, pair.holder)?;
+            rename_kill_def(&mut scratch, i, pair.holder, exit_dead)?;
         }
         i += 1;
     }
@@ -5055,7 +5380,15 @@ fn dissolve_spill_pair(seg: &[ArmInstruction], pair: &SpillPair) -> Option<Vec<A
 ///      the #483-class conservatism).
 ///
 /// Returns `Some((rewritten, reloads_dissolved))` or `None` to keep the input.
-fn spill_rechoice_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>, usize)> {
+///
+/// `exit_dead` / `post_exhaust`: the VCR-VER-001 post-exhaustion extensions
+/// (see [`apply_spill_realloc_post_exhaust`]); `(&empty, false)` is the
+/// shipping default behavior, bit for bit.
+fn spill_rechoice_segment(
+    seg: &[ArmInstruction],
+    exit_dead: &BTreeSet<Reg>,
+    post_exhaust: bool,
+) -> Option<(Vec<ArmInstruction>, usize)> {
     use crate::optimizer_bridge::estimate_arm_byte_size;
     // Cheap prefilter: nothing to re-choose without a word [sp,#N] reload.
     if !seg
@@ -5064,13 +5397,34 @@ fn spill_rechoice_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>
     {
         return None;
     }
-    // Guard (d) + baseline for guard (a).
-    let baseline = segment_value_trace(seg)?;
+    // Guard (d) + baseline for guard (a). A rename onto an EXIT-DEAD register
+    // (the post-exhaustion extension) legitimately changes that register's
+    // exit value — [`scratch_dead_at`] proved no reachable instruction can
+    // observe it — so the equality is taken modulo the exit-dead registers'
+    // exit entries (both sides stripped; a no-op when `exit_dead` is empty,
+    // i.e. in the shipping flag-off configuration).
+    let strip = |mut t: SegmentTrace| {
+        for r in exit_dead {
+            t.exit_regs.remove(r);
+        }
+        t
+    };
+    let dbg = std::env::var("SYNTH_POSTEX_DEBUG").is_ok();
+    let baseline = strip(segment_value_trace(seg)?);
     // Only segments where the Belady MIN plan beats the executed traffic.
     let report = segment_spill_choice(seg, ALLOCATABLE_POOL, 0)?;
     if report.belady_reloads + report.belady_spill_stores
         >= report.actual_reloads + report.actual_spill_stores
     {
+        if dbg {
+            eprintln!(
+                "[postex-dbg] prefilter: belady {}+{} >= actual {}+{}",
+                report.belady_reloads,
+                report.belady_spill_stores,
+                report.actual_reloads,
+                report.actual_spill_stores
+            );
+        }
         return None;
     }
 
@@ -5080,9 +5434,30 @@ fn spill_rechoice_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>
     // Back to front: deleting a reload only shifts positions after it, so
     // earlier pairs' recorded positions stay valid.
     for pair in pairs.iter().rev() {
-        if let Some(candidate) = dissolve_spill_pair(&cur, pair)
-            // Guard (a), per pair: value flow provably unchanged.
-            && segment_value_trace(&candidate).as_ref() == Some(&baseline)
+        let candidate = dissolve_spill_pair(&cur, pair, exit_dead);
+        if dbg {
+            let c = &candidate;
+            eprintln!(
+                "[postex-dbg] pair store={} load={} holder={:?} rd={:?}: dissolve={} trace_eq={:?} pressure={:?}",
+                pair.store,
+                pair.load,
+                pair.holder,
+                pair.rd,
+                c.is_some(),
+                c.as_ref()
+                    .map(|c| segment_value_trace(c).map(&strip).as_ref() == Some(&baseline)),
+                c.as_ref().map(|c| pool_peak_pressure(c)),
+            );
+        }
+        if let Some(candidate) = candidate
+            // Guard (a), per pair: value flow provably unchanged (modulo
+            // exit-dead registers' unobservable exit values, above).
+            && segment_value_trace(&candidate).map(&strip).as_ref() == Some(&baseline)
+            // Post-exhaustion: guard (c) PER PAIR — one over-pressure pair
+            // must not discard every other pair's sound dissolve (the final
+            // all-or-nothing check below would).
+            && (!post_exhaust
+                || pool_peak_pressure(&candidate).is_some_and(|p| p <= ALLOCATABLE_POOL))
         {
             cur = candidate;
             dissolved += 1;
@@ -5092,12 +5467,22 @@ fn spill_rechoice_segment(seg: &[ArmInstruction]) -> Option<(Vec<ArmInstruction>
         return None;
     }
     // Guard (b): strictly fewer instructions AND strictly smaller bytes.
+    // Post-exhaustion relaxation: a count-neutral rewrite (every dissolve was
+    // a `ldr`→`mov` fold, no deletion) is accepted when the bytes still
+    // strictly shrink — the fold un-reads the feeding store, which the
+    // flag-shared unread-store sweep then deletes, so the instruction-count
+    // win lands one pass later. Never count growth, never byte growth.
     let bytes = |s: &[ArmInstruction]| {
         s.iter()
             .map(|i| estimate_arm_byte_size(&i.op))
             .sum::<usize>()
     };
-    if cur.len() >= seg.len() || bytes(&cur) >= bytes(seg) {
+    let count_ok = if post_exhaust {
+        cur.len() <= seg.len()
+    } else {
+        cur.len() < seg.len()
+    };
+    if !count_ok || bytes(&cur) >= bytes(seg) {
         return None;
     }
     // Guard (c): the re-chosen residency fits the pool.
@@ -10757,7 +11142,7 @@ mod tests {
             reshuffle_segment(),
             dead_def_segment(),
         ] {
-            if let SegmentOutcome::Rewritten(new) = try_reallocate_segment(&seg, &VPOOL) {
+            if let SegmentOutcome::Rewritten(new) = try_reallocate_segment(&seg, &VPOOL, false) {
                 assert_eq!(
                     validate_segment_rewrite(&seg, &new),
                     Ok(()),
@@ -11155,7 +11540,7 @@ mod tests {
         ] {
             // The pass's own rewrite where it produces one, plus the identity
             // rewrite — both are valid pairs the mutations corrupt.
-            if let SegmentOutcome::Rewritten(new) = try_reallocate_segment(&seg, &VPOOL) {
+            if let SegmentOutcome::Rewritten(new) = try_reallocate_segment(&seg, &VPOOL, false) {
                 corpus.push((seg.clone(), new));
             }
             corpus.push((seg.clone(), seg));
@@ -11877,5 +12262,201 @@ mod tests {
             s.belady_reloads, 1,
             "an out-of-segment slot value must be loaded in the ideal world too"
         );
+    }
+
+    // ---- VCR-VER-001 post-exhaustion extensions (#242, the PR #659 verdict) ----
+
+    /// The allocation-time Belady eviction shape: store a live value, reuse the
+    /// register, reload before the final use — with R2 never touched (the #580
+    /// bridge draws scratch from R4-R8 only). The segment-local rename proof
+    /// declines R2 ("never touched again → possibly live-out"); the
+    /// post-exhaustion function-level scan proves it dead at exit.
+    fn postex_eviction_shape() -> Vec<ArmInstruction> {
+        vec![
+            sp_str(Reg::R4, 4),              // evict v1 (held in r4)
+            movw(Reg::R4, 7),                // the clobbering def (why v1 was evicted)
+            add3(Reg::R5, Reg::R4, Reg::R4), // consume the new value
+            sp_ldr(Reg::R4, 4),              // reload v1
+            // Final use READS r0 (so r0 is a live segment input the old rule
+            // rightly rejects as a rename target — only exit-dead R2/R3 work).
+            add3(Reg::R0, Reg::R0, Reg::R4),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ]
+    }
+
+    #[test]
+    fn postex_exit_dead_rename_dissolves_belady_pair_242() {
+        let seq = postex_eviction_shape();
+        // Shipping behavior (flag off): R2 cannot be proven dead → the pair
+        // survives → bytes unchanged.
+        let (out_off, n_off) = apply_spill_realloc(&seq);
+        assert_eq!(n_off, 0, "flag-off: rename target undecidable, no rewrite");
+        assert_eq!(out_off, seq, "flag-off bytes are bit-identical");
+        // Post-exhaustion: the clobbering def renames onto exit-dead R2, the
+        // reload dissolves, and no [sp] LOAD survives.
+        let (out_on, n_on) = apply_spill_realloc_post_exhaust(&seq, true);
+        assert!(n_on >= 1, "the reload must be dissolved, got {n_on}");
+        assert!(
+            !out_on
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Ldr { addr, .. } if addr.base == Reg::SP)),
+            "no frame reload survives: {out_on:?}"
+        );
+    }
+
+    #[test]
+    fn postex_exit_dead_declines_when_r2_r3_read_later_242() {
+        // Same shape but R2 and R3 are READ after the segment-side window —
+        // the function-level scan must call them live and keep the pair.
+        let mut seq = postex_eviction_shape();
+        seq.insert(
+            5,
+            add3(Reg::R0, Reg::R2, Reg::R3), // reads both candidates before bx lr
+        );
+        let (out_on, n_on) = apply_spill_realloc_post_exhaust(&seq, true);
+        assert_eq!(n_on, 0, "R2/R3 live at exit: nothing may be renamed");
+        assert_eq!(out_on, seq);
+    }
+
+    #[test]
+    fn postex_const_reload_rematerializes_242() {
+        // A spilled CONSTANT: the slot provably holds `movw #42`'s value, no
+        // register still does at the reload → the reload rematerializes and
+        // the whole-function unread-store sweep can then drop the store.
+        let seq = vec![
+            movw(Reg::R4, 42),
+            sp_str(Reg::R4, 8),
+            movw(Reg::R4, 7), // clobber the holder: no register keeps 42
+            add3(Reg::R5, Reg::R4, Reg::R4),
+            sp_ldr(Reg::R6, 8), // reload of the constant
+            add3(Reg::R0, Reg::R6, Reg::R5),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        let (out_off, n_off) = apply_spill_realloc(&seq);
+        // Flag off: stage 1 has no holder to forward from; stage 2 may not
+        // fire either (rename targets undecidable). Bytes unchanged.
+        assert_eq!((out_off.clone(), n_off), (seq.clone(), 0));
+        let (out_on, n_on) = apply_spill_realloc_post_exhaust(&seq, true);
+        assert!(n_on >= 1);
+        assert!(
+            out_on.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::Movw {
+                    rd: Reg::R6,
+                    imm16: 42
+                }
+            )),
+            "the reload becomes a rematerialized movw: {out_on:?}"
+        );
+        assert!(
+            !out_on
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Ldr { addr, .. } if addr.base == Reg::SP)),
+            "no frame reload survives"
+        );
+    }
+
+    #[test]
+    fn postex_remat_blocked_by_movt_rmw_242() {
+        // `movw` then `movt` on the same register: the tracked single-
+        // instruction shape must be killed by the RMW — rematerializing only
+        // the low half would be a wrong value (the #582-class discipline:
+        // never treat a spill of a NON-reproducible value as reproducible).
+        let seq = vec![
+            movw(Reg::R4, 42),
+            ins(ArmOp::Movt {
+                rd: Reg::R4,
+                imm16: 1,
+            }),
+            sp_str(Reg::R4, 8),
+            movw(Reg::R4, 7),
+            add3(Reg::R5, Reg::R4, Reg::R4),
+            sp_ldr(Reg::R6, 8),
+            add3(Reg::R0, Reg::R6, Reg::R5),
+        ];
+        let (out_on, _) = apply_spill_realloc_post_exhaust(&seq, true);
+        assert!(
+            out_on
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Ldr { addr, .. } if addr.base == Reg::SP)),
+            "the reload must SURVIVE: the slot value is movw+movt, not remat-able"
+        );
+        assert!(
+            !out_on
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::Movw { rd: Reg::R6, .. })),
+            "no low-half-only rematerialization may appear"
+        );
+    }
+
+    #[test]
+    fn postex_scratch_dead_at_conservative_on_branches_242() {
+        // A resolved numeric branch after the point: control may reach a read
+        // the linear scan cannot see → both candidates stay live.
+        let seq = vec![
+            movw(Reg::R0, 1),
+            ins(ArmOp::BCondOffset {
+                cond: crate::rules::Condition::NE,
+                offset: 0,
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        assert!(scratch_dead_at(&seq, 1).is_empty());
+        // From AFTER the branch, the return proves R2/R3 dead.
+        assert_eq!(scratch_dead_at(&seq, 2), BTreeSet::from([Reg::R2, Reg::R3]));
+    }
+
+    #[test]
+    fn postex_relaxed_exit_recolors_terminal_segment_242() {
+        // A frame-carrying terminal segment homed in callee-saved r4/r5 whose
+        // only frame access is a dead store (the spilled `signed_div_const`
+        // shape). Shipping pins every live-out → identity/decline; relaxed
+        // exit pinning lowers the body into caller-saved registers.
+        let seq = vec![
+            ins(ArmOp::Sub {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(8),
+            }),
+            movw(Reg::R4, 10),
+            add3(Reg::R5, Reg::R4, Reg::R4),
+            sp_str(Reg::R5, 4), // dead store (never reloaded)
+            add3(Reg::R0, Reg::R5, Reg::R4),
+            ins(ArmOp::Add {
+                rd: Reg::SP,
+                rn: Reg::SP,
+                op2: Operand2::Imm(8),
+            }),
+            ins(ArmOp::Bx { rm: Reg::LR }),
+        ];
+        const RPOOL: [Reg; 9] = [
+            Reg::R0,
+            Reg::R1,
+            Reg::R2,
+            Reg::R3,
+            Reg::R4,
+            Reg::R5,
+            Reg::R6,
+            Reg::R7,
+            Reg::R8,
+        ];
+        let (out_off, stats_off) = reallocate_function(&seq, &RPOOL);
+        assert_eq!(out_off, seq, "flag-off: bit-identical");
+        assert_eq!(stats_off.reallocated, 0);
+        let (out_on, stats_on) = reallocate_function_post_exhaust(&seq, &RPOOL, true);
+        assert_eq!(stats_on.reallocated, 1, "relaxed exit must recolor");
+        assert!(
+            !out_on.iter().any(|i| {
+                reg_effect(&i.op).is_some_and(|e| {
+                    e.defs
+                        .iter()
+                        .chain(e.uses.iter())
+                        .any(|r| matches!(r, Reg::R4 | Reg::R5 | Reg::R6 | Reg::R7 | Reg::R8))
+                })
+            }),
+            "the recolored body avoids callee-saved registers: {out_on:?}"
+        );
+        // The result register is still pinned.
+        assert!(matches!(&out_on[4].op, ArmOp::Add { rd: Reg::R0, .. }));
     }
 }

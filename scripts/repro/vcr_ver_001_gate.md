@@ -126,3 +126,100 @@ SYNTH_SPILL_ON_EXHAUST=1 target/debug/synth compile \
     scripts/repro/spill_on_exhaust_242.wat -o /tmp/soe.elf --target cortex-m4
 python scripts/repro/spill_on_exhaust_242_differential.py /tmp/soe.elf
 ```
+
+## Post-exhaustion code quality — the named capability, built (follow-up PR)
+
+The missing capability named above ("post-exhaustion code quality on the
+optimized path") is now partially closed. Root cause of the unreached slots,
+found by construction analysis + disassembly of the flag-on streams:
+
+1. **`eliminate_dead_frame_stores` structurally cannot fire** on allocation-
+   time slots: `next_spill_offset` is fresh-monotonic (every eviction gets a
+   new slot), and the pass proves deadness ONLY via a later same-slot
+   overwrite (#515's overwrite-only discipline). No overwrite can exist.
+2. **`forward_stack_reloads` structurally cannot fire**: the Belady eviction
+   store's source register is redefined immediately after the store (that is
+   WHY the value was evicted), so the forwarding shape never survives.
+3. **`spill_rechoice_segment` declined every rename**: the bridge draws
+   scratch from R4-R8 only, so R2/R3 are never touched again after a
+   segment — and `rename_kill_def`'s segment-local deadness proof rejects a
+   register with no later in-segment def as "possibly live-out". The one
+   fact that resolves it (nothing past `bx lr` can read R2/R3) is function-
+   level, invisible to the segment pass. A second blocker hid behind the
+   first: guard (a)'s exact `SegmentTrace` equality rejects any rename onto a
+   fresh register (its exit entry differs), and guard (b) rejected
+   count-neutral `ldr`→`mov` folds.
+4. **`signed_div_const` was a different bug**: the optimized path emitted the
+   div-by-zero + INT_MIN/−1 trap guards even for a constant divisor (the
+   direct selector elides them since v0.11.17), plus a dead spill store the
+   unread-store sweep could not reach past the guards' resolved branches.
+
+Extensions, ALL scoped to functions the #580 machinery actually shaped
+(`OptimizerBridge::spill_on_exhaust_fired`, so a flag-on compile leaves every
+untouched function byte-identical — locked by `vcr_ver_001_gate_242` and the
+frozen suite run in BOTH flag states):
+
+- `scratch_dead_at` (function-level R2/R3 exit-deadness, conservative at any
+  branch/call/unmodeled op) feeding `rename_kill_def`; trace equality taken
+  modulo provably-dead-at-exit exit entries; per-pair pool-pressure commit;
+  count-neutral folds accepted when bytes strictly shrink.
+- Constant REMATERIALIZATION in `spill_forward_segment`: a reload of a slot
+  provably holding a single-instruction constant (`mov`/`movw`; `movt`'s RMW
+  kills the shape — the #582-class discipline) becomes the retargeted
+  materialization; the store then dies in the unread sweep.
+- Bounded fixpoint (≤4 rounds) of the cleanup triple, post-exhaustion only.
+- Terminal-segment RELAXED live-out pinning in range-realloc (only R0/R1
+  observable past `bx lr` pre-prologue; VCR-RA-003 validator run with the
+  same exemptions) — restricted to reload-free segments so R2/R3 stay free
+  for the rechoice pass; late `elide_dead_frame` re-run once cleanup empties
+  the frame.
+- Constant-divisor trap-guard elision in the bridge's DivS/DivU/RemS/RemU
+  (single-def `Const` scan, total-or-disabled def enumeration; c=0 keeps
+  everything, DivS c=−1 keeps the overflow guard).
+
+### Cycle proxy, re-measured (`scripts/repro/postex_cycle_proxy.py`)
+
+Weighted proxy = dynamic instructions + data-memory accesses under unicorn,
+summed over the differential vectors, every run execution-matched against
+wasmtime in both flag states.
+
+| fixture (default path) | off | on (PR #659) | on (now) | target ≤ +5% |
+|---|---|---|---|---|
+| `spill_on_exhaust_242.wat` | 368 | +30.4 % | 432 (**+17.4 %**) | missed |
+| `spill_rung_581.wat` | 204 | +32.4 % | 222 (**+8.8 %**) | missed |
+| `high_pressure_i32.wat` | 300 | +8.0 % | 228 (**−24.0 %**) | ✓ (now faster than the decline) |
+| `signed_div_const.wasm` | 75 | +120 % | 50 (**−33.3 %**) | ✓ (now faster than the decline) |
+| `i64_pair_exhaust_587.wat` | 584 | −5.5 % | 488 (**−16.4 %**) | ✓ |
+| `i64_spill_pool_587.wat` | 1656 | −1.4 % | 1608 (**−2.9 %**) | ✓ |
+
+(PR #659 percentages were derived on slightly different vector sets for two
+fixtures; each column is internally consistent — off and on always share
+vectors.)
+
+### The residual, named
+
+`spill_on_exhaust_242` (+17.4 %) and `spill_rung_581` (+8.8 %) still miss the
+≤ +5 % bar. The residual cause is the allocation itself, not the cleanup:
+`alloc_i32_scratch` draws destinations from a FIXED R4-R8 pool (5 registers)
+while the direct selector allocates over all nine of R0-R8 — so the bridge
+evicts 5 values where Belady over 9 registers needs 1. The post-hoc renamer
+recovers only what fits through the two forever-free caller-saved registers
+(R2/R3, serially reusable across disjoint live windows); the surviving pairs'
+windows overlap every candidate. Widening the RELOAD pool with R2/R3 at
+allocation time was tried and reverted (it starves the renamer of exactly
+those registers: rung +8.8 % → +14.7 %). Closing the last gap needs dest
+allocation over the full pool — the hand-written single-pass allocator itself,
+i.e. the Track-A VCR-RA/VCR-SEL replacement, exactly the North-Star claim.
+The `SYNTH_SPILL_ON_EXHAUST` default-on flip stays HELD (#580) on that gap +
+gale G474RE cycles.
+
+Reproduce:
+
+```sh
+cargo test -p synth-cli --test frozen_codegen_bytes --test vcr_ver_001_gate_242   # off
+SYNTH_SPILL_ON_EXHAUST=1 cargo test -p synth-cli \
+    --test frozen_codegen_bytes --test vcr_ver_001_gate_242                        # on
+SYNTH=target/debug/synth python scripts/repro/postex_cycle_proxy.py
+SYNTH=target/debug/synth SYNTH_SPILL_ON_EXHAUST=1 \
+    python scripts/repro/r12_spill_496_differential.py
+```
