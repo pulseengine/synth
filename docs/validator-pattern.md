@@ -266,6 +266,71 @@ written in 32-bit limbs with carry / borrow propagated explicitly:
   break ties; the lexicographic helpers are themselves proved equal to Z3's
   native 64-bit `bvult` / `bvslt` for all inputs.
 
+### Expansion-level validation — the i64 pseudo-ops (#667 move 2)
+
+The coverage above certifies `(WasmOp, [ArmOp])` selections — but several
+i64 `ArmOp`s are **pseudo-ops**: the encoder
+(`synth-backend/src/arm_encoder.rs::encode_thumb`) expands each into a
+multi-instruction Thumb-2 sequence (UMULL + MLA cross products, IT-block
+flag materialisation, CMP/BEQ diamonds, the HAKMEM popcount fold). At the
+`ArmOp` level the validator models those pseudo-ops with their reference
+semantics, which certifies the register *wiring* but is circular about the
+expansion itself — and the expansion is exactly where the #615 (A32 silent
+NOP), #632 (popcnt result clobbered by the scratch-restore `POP`) and #633
+(missing i64 `div_s` overflow guard) miscompiles lived.
+
+`expansion_validator.rs` closes that gap: it takes the **literal bytes the
+shipped encoder emits**, decodes them with a small Thumb-2 subset decoder
+(loud error on anything unmodeled — never a silent skip), symbolically
+executes the sequence (guarded/if-converted execution with path conditions
+for the forward branches, IT-block predication, a concrete-offset stack
+model for the scratch push/pop), and discharges
+`UNSAT(wasm_op_semantics != sequence_semantics)` through the
+certificate-checked solver. Because the checked artifact is the encoder's
+own output, encoder/validator drift is unrepresentable — there is no second
+hand-maintained copy of the expansion.
+
+**Validated at the emitted-sequence level** (green on the shipped encoder;
+`crates/synth-backend/tests/i64_expansion_certification.rs` +
+`synth verify` certificate lines):
+
+| pseudo-op | expansion shape | notes |
+|---|---|---|
+| `I64Mul` | MUL/MLA cross products + UMULL + ADD | branch-free |
+| `I64SetCond` ×10 | CMP (+IT CMP) / CMP+SBCS, ITE, MOV pair | IT predication |
+| `I64SetCondZ` (`i64.eqz`) | ORR.W + CMP + ITE + MOV pair | |
+| `I64Clz` / `I64Ctz` | CMP.W + BEQ diamond; CLZ / RBIT+CLZ; `+32` arm | forward branches |
+| `I64Popcnt` | HAKMEM fold ×2, PUSH/POP scratch discipline | the #632 surface |
+| `I64Shl`/`I64ShrU`/`I64ShrS` | small/large split, one BPL diamond | path conditions |
+| `I64Rotl`/`I64Rotr` | #610 fixed-ABI wrapper + diamond | stack marshaling |
+
+Oracles: the validator goes **red** on the literal #632 bug shape (the
+popcount total materialised into a register inside the `POP {R3,R4,R5}`
+restore set), on a wrong-condition compare, and on a Clz expansion with its
+`+32` arm nulled. Reference notes: `i64.mul` is checked against the
+textbook 32-bit-limb schoolbook form (whose multiply atoms structurally
+match the sequence's UMULL/MUL/MLA semantics) because the symbolic
+schoolbook↔64-bit-`bvmul` identity bit-blasts past any practical budget
+(measured: no convergence in 400 s — the same tractability line as the
+`rem_s` MLS scope-out below); the schoolbook form is pinned against Rust's
+`u64` multiply on an edge-heavy concrete grid. `i64.ctz` is independent by
+construction: the reference is an LSB-first ite chain while the sequence
+computes `CLZ(RBIT(x))`.
+
+**Held out, honestly:**
+
+- `I64DivS`/`I64DivU`/`I64RemS`/`I64RemU` — the expansions contain a
+  64-round binary long-division **loop** (backward branches). The symbolic
+  executor is forward-only (DAG); sound validation needs bounded unrolling
+  (64 × ~10 instructions is past the bit-blasting budget) or loop-invariant
+  reasoning. The decoder rejects backward branches loudly, so the held-out
+  surface cannot be green-washed.
+- Consequently the **#633 missing-overflow-guard shape is not yet
+  expressible** at this layer: the guard sits inside the div expansion, and
+  guard/trap equivalence additionally needs UDF-reachability (trap-state)
+  modeling on top of loop support — value-domain equivalence alone cannot
+  see a missing trap. This is the named next increment.
+
 **Scoped out, with reasons:**
 
 - **i32 `rem_s` / `rem_u`** — the ARM lowering is `SDIV`/`UDIV` then `MLS`,

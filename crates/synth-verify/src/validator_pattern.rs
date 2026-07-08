@@ -226,31 +226,31 @@ pub trait Validator<W, A> {
 // ===========================================================================
 
 /// Make a fresh 32-bit symbolic input.
-fn sym32(name: &str) -> BV {
+pub(crate) fn sym32(name: &str) -> BV {
     BV::new_const(name, 32)
 }
 
 /// 32-bit constant.
-fn k32(v: i64) -> BV {
+pub(crate) fn k32(v: i64) -> BV {
     BV::from_i64(v, 32)
 }
 
 /// Boolean → 32-bit `0`/`1` bitvector (WASM comparison result encoding).
-fn bool_to_i32(b: &Bool) -> BV {
+pub(crate) fn bool_to_i32(b: &Bool) -> BV {
     b.ite(k32(1), k32(0))
 }
 
 /// 64-bit value as a pair of 32-bit limbs: `lo` is bits 0..=31, `hi` is
 /// bits 32..=63 — exactly the ARM register pair the i64 lowering uses.
 #[derive(Clone)]
-struct I64Pair {
-    lo: BV,
-    hi: BV,
+pub(crate) struct I64Pair {
+    pub(crate) lo: BV,
+    pub(crate) hi: BV,
 }
 
 impl I64Pair {
     /// Bit-for-bit equality: both limbs must agree.
-    fn eq_pair(&self, other: &I64Pair) -> Bool {
+    pub(crate) fn eq_pair(&self, other: &I64Pair) -> Bool {
         Bool::and(&[&self.lo.eq(&other.lo), &self.hi.eq(&other.hi)])
     }
 
@@ -260,12 +260,12 @@ impl I64Pair {
     /// the standard little-endian-limb layout the ARM register pair uses.
     /// Used by the multiply reference, where a native 64-bit `bvmul` is far
     /// clearer (and far easier for Z3) than a hand-rolled limb product.
-    fn join64(&self) -> BV {
+    pub(crate) fn join64(&self) -> BV {
         self.hi.concat(&self.lo)
     }
 
     /// Inverse of [`I64Pair::join64`]: split a 64-bit bitvector into limbs.
-    fn from_u64_bv(v: &BV) -> I64Pair {
+    pub(crate) fn from_u64_bv(v: &BV) -> I64Pair {
         I64Pair {
             lo: v.extract(31, 0),
             hi: v.extract(63, 32),
@@ -286,7 +286,7 @@ impl I64Pair {
 /// `lo = a_lo + b_lo`. A carry out of the low limb happens exactly when the
 /// 32-bit sum wraps, i.e. when `lo <u a_lo` (unsigned). The carry (0 or 1) is
 /// then folded into the high limb: `hi = a_hi + b_hi + carry`.
-fn i64_add(a: &I64Pair, b: &I64Pair) -> I64Pair {
+pub(crate) fn i64_add(a: &I64Pair, b: &I64Pair) -> I64Pair {
     let lo = a.lo.bvadd(&b.lo);
     let carry = lo.bvult(&a.lo).ite(k32(1), k32(0));
     let hi = a.hi.bvadd(&b.hi).bvadd(&carry);
@@ -298,7 +298,7 @@ fn i64_add(a: &I64Pair, b: &I64Pair) -> I64Pair {
 /// `lo = a_lo - b_lo`. A borrow into the high limb happens exactly when the
 /// low subtraction underflows, i.e. when `a_lo <u b_lo`. The borrow is then
 /// subtracted from the high limb: `hi = a_hi - b_hi - borrow`.
-fn i64_sub(a: &I64Pair, b: &I64Pair) -> I64Pair {
+pub(crate) fn i64_sub(a: &I64Pair, b: &I64Pair) -> I64Pair {
     let lo = a.lo.bvsub(&b.lo);
     let borrow = a.lo.bvult(&b.lo).ite(k32(1), k32(0));
     let hi = a.hi.bvsub(&b.hi).bvsub(&borrow);
@@ -315,13 +315,13 @@ fn i64_sub(a: &I64Pair, b: &I64Pair) -> I64Pair {
 /// harder for the SMT solver to reason about. The ARM-side `I64Mul` lowering
 /// (the real UMULL + MLA cross-product expansion) is checked against this
 /// reference.
-fn i64_mul(a: &I64Pair, b: &I64Pair) -> I64Pair {
+pub(crate) fn i64_mul(a: &I64Pair, b: &I64Pair) -> I64Pair {
     I64Pair::from_u64_bv(&a.join64().bvmul(b.join64()))
 }
 
 /// Effective i64 shift amount: WASM masks the shift count to `count mod 64`,
 /// i.e. the low 6 bits of the second operand's low limb.
-fn shift_amount64(b: &I64Pair) -> BV {
+pub(crate) fn shift_amount64(b: &I64Pair) -> BV {
     b.lo.bvand(k32(63))
 }
 
@@ -336,7 +336,7 @@ fn shift_amount64(b: &I64Pair) -> BV {
 ///
 /// The middle case is the only one with a cross-limb transfer; `32 - s` is
 /// well-defined there because `0 < s < 32`.
-fn i64_shl(a: &I64Pair, s: &BV) -> I64Pair {
+pub(crate) fn i64_shl(a: &I64Pair, s: &BV) -> I64Pair {
     let s_lt_32 = s.bvult(k32(32));
     let s_is_zero = s.eq(k32(0));
 
@@ -356,7 +356,7 @@ fn i64_shl(a: &I64Pair, s: &BV) -> I64Pair {
 /// * `s == 0`: identity.
 /// * `0 < s < 32`: `lo = (lo >>u s) | (hi << (32-s))`, `hi = hi >>u s`.
 /// * `s >= 32`: `lo = hi >>u (s-32)`, `hi = 0`.
-fn i64_shr_u(a: &I64Pair, s: &BV) -> I64Pair {
+pub(crate) fn i64_shr_u(a: &I64Pair, s: &BV) -> I64Pair {
     let s_lt_32 = s.bvult(k32(32));
     let s_is_zero = s.eq(k32(0));
 
@@ -380,7 +380,7 @@ fn i64_shr_u(a: &I64Pair, s: &BV) -> I64Pair {
 ///
 /// `sign` is all-ones when `hi` is negative, all-zeros otherwise — obtained
 /// by an arithmetic shift of `hi` right by 31.
-fn i64_shr_s(a: &I64Pair, s: &BV) -> I64Pair {
+pub(crate) fn i64_shr_s(a: &I64Pair, s: &BV) -> I64Pair {
     let s_lt_32 = s.bvult(k32(32));
     let s_is_zero = s.eq(k32(0));
     let sign = a.hi.bvashr(k32(31)); // 0x0000_0000 or 0xFFFF_FFFF
@@ -400,7 +400,7 @@ fn i64_shr_s(a: &I64Pair, s: &BV) -> I64Pair {
 ///
 /// `(64 - s) mod 64` keeps the right-shift amount in range and maps `s == 0`
 /// to a 0 shift, so the OR below reduces to the identity at `s == 0`.
-fn i64_rotl(a: &I64Pair, s: &BV) -> I64Pair {
+pub(crate) fn i64_rotl(a: &I64Pair, s: &BV) -> I64Pair {
     let left = i64_shl(a, s);
     let comp = k32(64).bvsub(s).bvand(k32(63));
     let right = i64_shr_u(a, &comp);
@@ -411,7 +411,7 @@ fn i64_rotl(a: &I64Pair, s: &BV) -> I64Pair {
 }
 
 /// 64-bit rotate right: `rotr(x, s) = (x >>u s) | (x << (64-s))`.
-fn i64_rotr(a: &I64Pair, s: &BV) -> I64Pair {
+pub(crate) fn i64_rotr(a: &I64Pair, s: &BV) -> I64Pair {
     let right = i64_shr_u(a, s);
     let comp = k32(64).bvsub(s).bvand(k32(63));
     let left = i64_shl(a, &comp);
@@ -426,7 +426,7 @@ fn i64_rotr(a: &I64Pair, s: &BV) -> I64Pair {
 /// Lexicographic: the high limbs decide; if they are equal the low limbs
 /// (compared unsigned) break the tie. `a <u b  ⇔  a_hi <u b_hi ∨
 /// (a_hi == b_hi ∧ a_lo <u b_lo)`.
-fn i64_lt_u(a: &I64Pair, b: &I64Pair) -> Bool {
+pub(crate) fn i64_lt_u(a: &I64Pair, b: &I64Pair) -> Bool {
     let hi_lt = a.hi.bvult(&b.hi);
     let hi_eq = a.hi.eq(&b.hi);
     let lo_lt = a.lo.bvult(&b.lo);
@@ -439,7 +439,7 @@ fn i64_lt_u(a: &I64Pair, b: &I64Pair) -> Bool {
 /// **signed** (the sign of the 64-bit value lives in the top bit of `hi`).
 /// The low limbs are still compared unsigned — they carry no sign of their
 /// own.
-fn i64_lt_s(a: &I64Pair, b: &I64Pair) -> Bool {
+pub(crate) fn i64_lt_s(a: &I64Pair, b: &I64Pair) -> Bool {
     let hi_lt = a.hi.bvslt(&b.hi);
     let hi_eq = a.hi.eq(&b.hi);
     let lo_lt = a.lo.bvult(&b.lo);
@@ -452,16 +452,16 @@ fn i64_lt_s(a: &I64Pair, b: &I64Pair) -> Bool {
 
 /// The four ARM condition flags, as Z3 booleans.
 #[derive(Clone)]
-struct Flags {
-    n: Bool, // Negative — result bit 31
-    z: Bool, // Zero
-    c: Bool, // Carry / no-borrow
-    v: Bool, // Signed overflow
+pub(crate) struct Flags {
+    pub(crate) n: Bool, // Negative — result bit 31
+    pub(crate) z: Bool, // Zero
+    pub(crate) c: Bool, // Carry / no-borrow
+    pub(crate) v: Bool, // Signed overflow
 }
 
 impl Flags {
     /// Flags before any compare has run — unconstrained.
-    fn unconstrained() -> Self {
+    pub(crate) fn unconstrained() -> Self {
         Self {
             n: Bool::new_const("flag_n"),
             z: Bool::new_const("flag_z"),
@@ -478,7 +478,7 @@ impl Flags {
     ///   * `C` — *no borrow*, i.e. `a >=u b` (ARM carry convention for SUB).
     ///   * `V` — signed overflow of `a - b`: the operands have different
     ///     signs and the result's sign differs from `a`'s.
-    fn from_cmp(a: &BV, b: &BV) -> Self {
+    pub(crate) fn from_cmp(a: &BV, b: &BV) -> Self {
         let result = a.bvsub(b);
         let n = result.bvslt(k32(0));
         let z = a.eq(b);
@@ -496,7 +496,7 @@ impl Flags {
     /// Evaluate an ARM [`Condition`] against these flags.
     ///
     /// Standard ARM condition-code semantics; see the `Condition` enum doc.
-    fn holds(&self, cond: &Condition) -> Bool {
+    pub(crate) fn holds(&self, cond: &Condition) -> Bool {
         match cond {
             Condition::EQ => self.z.clone(),
             Condition::NE => self.z.not(),
@@ -1095,7 +1095,7 @@ impl Z3ArmValidator {
 }
 
 /// Map a `Reg` to its 0..=15 index.
-fn reg_index(r: &Reg) -> usize {
+pub(crate) fn reg_index(r: &Reg) -> usize {
     match r {
         Reg::R0 => 0,
         Reg::R1 => 1,
