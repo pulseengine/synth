@@ -388,6 +388,36 @@ fn select_attempt(
             });
         }
     }
+    // #457: zero-init the FRAME slot of every read-before-write non-param
+    // local (wasm mandates non-param locals read 0 before their first write).
+    // These were previously misclassified as params by `count_params` — with
+    // the declared-count cap (#457) they land in `local_offsets`, and a
+    // `sw zero, off(sp)` at entry makes the mandated 0 observable. Write-first
+    // locals are skipped (their first access overwrites the slot), so every
+    // function without read-before-write frame locals is byte-identical. An
+    // i64 local zeroes both words of its 8-byte slot. The stores sit before
+    // the body like the promoted zero-inits; `preserve_callee_saved` opens the
+    // frame around them (a local slot forces `local_bytes > 0`).
+    let rbw = synth_synthesis::read_before_write_locals(wasm_ops, num_params);
+    let mut rbw_slots: Vec<(i32, bool)> = rbw
+        .iter()
+        .filter_map(|idx| ctx.local_offsets.get(idx).copied())
+        .collect();
+    rbw_slots.sort_unstable();
+    for (off, is_i64) in rbw_slots {
+        ctx.out.push(RiscVOp::Sw {
+            rs1: Reg::SP,
+            rs2: Reg::ZERO,
+            imm: off,
+        });
+        if is_i64 {
+            ctx.out.push(RiscVOp::Sw {
+                rs1: Reg::SP,
+                rs2: Reg::ZERO,
+                imm: off + 4,
+            });
+        }
+    }
     ctx.lower_seq(wasm_ops)?;
     // #226: if any allocation ran out of registers that weren't pinning a live
     // vstack value, the function needs spilling we don't yet do — skip it rather
@@ -8215,6 +8245,63 @@ mod tests {
             WasmOp::End,
         ];
         assert!(compute_local_promotion(&with_call, 1, &no_i64).0.is_empty());
+    }
+
+    /// #457: a read-before-write non-param FRAME local (not promoted — a single
+    /// read fails the promotion cost gate) must get a prologue `sw zero, off(sp)`
+    /// so its `lw` observes the wasm-mandated 0 instead of stale stack memory.
+    #[test]
+    fn rbw_frame_local_is_zero_inited_457() {
+        // (param i32)(local i32) → p0 + local1; local 1 accessed ONCE (read) so
+        // the promotion cost gate declines it → frame slot.
+        let ops = [
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::I32Add,
+            WasmOp::End,
+        ];
+        let out = s(&ops, 1);
+        let zeroed: Vec<i32> = out
+            .iter()
+            .filter_map(|op| match op {
+                RiscVOp::Sw {
+                    rs1: Reg::SP,
+                    rs2: Reg::ZERO,
+                    imm,
+                } => Some(*imm),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !zeroed.is_empty(),
+            "read-before-write frame local must be zero-inited: {out:?}"
+        );
+
+        // Byte-neutrality guard: a write-first frame local gets NO zero-init.
+        let wf = [
+            WasmOp::I32Const(7),
+            WasmOp::LocalSet(1),
+            WasmOp::Block, // control flow → promotion declines → frame slot
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(0),
+            WasmOp::I32Add,
+            WasmOp::LocalSet(1),
+            WasmOp::End,
+            WasmOp::LocalGet(1),
+            WasmOp::End,
+        ];
+        let out = s(&wf, 1);
+        assert!(
+            !out.iter().any(|op| matches!(
+                op,
+                RiscVOp::Sw {
+                    rs1: Reg::SP,
+                    rs2: Reg::ZERO,
+                    ..
+                }
+            )),
+            "write-first local must not be zero-inited: {out:?}"
+        );
     }
 
     /// Three promotable locals exhaust exactly the s8/s9/s10 budget in

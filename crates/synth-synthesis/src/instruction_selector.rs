@@ -1139,6 +1139,37 @@ struct LocalLayout {
     spill_area_reserved: bool,
 }
 
+/// #457: the non-param locals whose FIRST access (in op order) is a read
+/// (`local.get`). WASM zero-initializes non-param locals, so such a read must
+/// observe 0 — the prologue zeroes their frame slots explicitly. A local whose
+/// first access is a write is skipped (its first access overwrites the slot
+/// before any read), keeping every function without read-before-write locals
+/// byte-identical. This is the same op-order first-access rule the RV32
+/// promotion zero-init (#472) and `count_params` use. `pub` because the RV32
+/// selector drives its frame-slot zero-init from the same set.
+pub fn read_before_write_locals(
+    wasm_ops: &[WasmOp],
+    num_params: u32,
+) -> std::collections::BTreeSet<u32> {
+    use std::collections::BTreeSet;
+    let mut seen: BTreeSet<u32> = BTreeSet::new();
+    let mut rbw: BTreeSet<u32> = BTreeSet::new();
+    for op in wasm_ops {
+        match op {
+            WasmOp::LocalGet(idx) if *idx >= num_params => {
+                if seen.insert(*idx) {
+                    rbw.insert(*idx);
+                }
+            }
+            WasmOp::LocalSet(idx) | WasmOp::LocalTee(idx) if *idx >= num_params => {
+                seen.insert(*idx);
+            }
+            _ => {}
+        }
+    }
+    rbw
+}
+
 /// Compute the stack-frame layout for non-parameter locals in a function.
 ///
 /// Walks the wasm op stream once to:
@@ -6007,6 +6038,49 @@ impl InstructionSelector {
                 },
                 source_line: None,
             });
+        }
+
+        // #457: WASM zero-initializes non-param locals, so a local READ before
+        // any write must observe 0 — not the caller garbage the old param-count
+        // inference exposed (the local was homed in a parameter register), and
+        // not stale frame memory. Zero the frame slot of every read-before-write
+        // local once at entry; an i64 local zeroes both words of its 8-byte
+        // slot. Write-first locals are untouched (their first access overwrites
+        // the slot), so functions without read-before-write locals keep a
+        // byte-identical prologue. R4 is a safe scratch: it is pushed above, no
+        // body value lives in it yet, and a promoted local homed in R4 is
+        // write-before-read by construction (`compute_local_promotion` declines
+        // read-first locals).
+        let rbw_zero_init: Vec<(i32, bool)> = read_before_write_locals(wasm_ops, num_params)
+            .iter()
+            .filter_map(|idx| layout.locals.get(idx).copied())
+            .collect();
+        if !rbw_zero_init.is_empty() {
+            instructions.push(ArmInstruction {
+                op: ArmOp::Mov {
+                    rd: Reg::R4,
+                    op2: Operand2::Imm(0),
+                },
+                source_line: None,
+            });
+            for (off, is_i64) in rbw_zero_init {
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Str {
+                        rd: Reg::R4,
+                        addr: MemAddr::imm(Reg::SP, off),
+                    },
+                    source_line: None,
+                });
+                if is_i64 {
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::Str {
+                            rd: Reg::R4,
+                            addr: MemAddr::imm(Reg::SP, off + 4),
+                        },
+                        source_line: None,
+                    });
+                }
+            }
         }
 
         // Virtual operand stack: each entry is a register-resident or spilled

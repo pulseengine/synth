@@ -1245,6 +1245,10 @@ fn compile_command(
     // `i64.shr_u x 32` returned 32 (the shift amount) instead of the high word.
     // Empty for the demo path (all-i32 demos).
     let mut current_func_params_i64: Vec<bool> = Vec::new(); // #359/#518/#599
+    // #457: declared param count of THIS function — caps the access-pattern
+    // param inference (a read-before-write local is otherwise indistinguishable
+    // from a param). None for the demo path (no module signature).
+    let mut current_func_param_count: Option<u32> = None;
     let mut func_ret_i64: Vec<bool> = Vec::new(); // #311: call-result pair tagging
     let mut type_ret_i64: Vec<bool> = Vec::new(); // #311: call_indirect results
     let mut current_func_block_arity: Vec<(u8, u8)> = Vec::new(); // #509: value-carrying branches
@@ -1286,6 +1290,7 @@ fn compile_command(
             func_ret_i64 = module.func_ret_i64;
             type_ret_i64 = module.type_ret_i64;
             let module_func_params_i64 = module.func_params_i64;
+            let module_func_arg_counts = module.func_arg_counts;
             // VCR-PERF-002 Phase 1 (#494): whatever facts loom forwarded
             // (empty for a section-less module — the overwhelmingly common
             // case — and for any malformed section, per the fail-safe rule).
@@ -1333,6 +1338,8 @@ fn compile_command(
             if let Some(p) = module_func_params_i64.get(func.index as usize) {
                 current_func_params_i64 = p.clone();
             }
+            // #457: THIS function's declared param count from the type section.
+            current_func_param_count = module_func_arg_counts.get(func.index as usize).copied();
             current_func_block_arity = func.block_arity.clone();
             // VCR-PERF-002 Phase 1 (#494): THIS function's facts slice, the
             // `current_func_params_i64` pattern (`compile_function` carries no
@@ -1435,6 +1442,9 @@ fn compile_command(
         // Without these the selector materialized constants into the param's
         // live high register (i64.shr_u/shr_s returned the shift amount).
         current_func_params_i64,
+        // #457: declared param count — caps the param-count inference so a
+        // read-before-write local lands in a zero-inited frame slot.
+        current_func_param_count,
         func_ret_i64,
         type_ret_i64,
         current_func_block_arity,
@@ -2416,6 +2426,10 @@ fn compile_all_exports(
                 fc.current_func_params_i64 = p.clone();
             }
             fc.current_func_block_arity = func.block_arity.clone();
+            // #457: THIS function's DECLARED param count, so the backends can
+            // cap the access-pattern param inference that mistook a
+            // read-before-write non-param local for a param.
+            fc.current_func_param_count = config.func_arg_counts.get(func.index as usize).copied();
             // VCR-PERF-002 Phase 1 (#494): THIS function's wsc.facts slice
             // (`compile_function` carries no function index — the same reason
             // `current_func_params_i64` exists). Not yet consumed.
