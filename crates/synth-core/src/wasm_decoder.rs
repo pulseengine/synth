@@ -47,6 +47,21 @@ pub struct WasmMemory {
     pub shared: bool,
 }
 
+/// A captured constant global initializer (#649). Only INTEGER `t.const` init
+/// exprs are captured: `f32.const`/`f64.const` inits deliberately decode to
+/// `None` — float-typed global ACCESS is the GI-FPU-001 (#369) loud-skip lane,
+/// and fabricating a bit-pattern here must not quietly unskip it. Non-const
+/// init exprs (e.g. `global.get` of an import) are not statically known and
+/// also decode to `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalInit {
+    /// A leading `i32.const` initializer.
+    I32(i32),
+    /// A leading `i64.const` initializer — BOTH words must reach the emitted
+    /// global slot (#649: `init_i32`-shaped capture silently zeroed these).
+    I64(i64),
+}
+
 /// A WASM global's declaration — its initial value and mutability (#237).
 /// Needed so the native-pointer ABI can recognize a global whose initializer is
 /// a linear-memory address (e.g. `$__stack_pointer = 65536`) and make it
@@ -56,8 +71,10 @@ pub struct WasmMemory {
 pub struct WasmGlobal {
     /// Global index (defined globals; imported globals are not counted here).
     pub index: u32,
-    /// The `i32.const` initializer value (other init exprs decode to `None`).
-    pub init_i32: Option<i32>,
+    /// The captured constant initializer (#237/#649): `i32.const` or
+    /// `i64.const`. Float/non-const init exprs decode to `None` — see
+    /// [`GlobalInit`].
+    pub init: Option<GlobalInit>,
     /// Whether the global is mutable.
     pub mutable: bool,
     /// #643: byte width of the global's storage slot, from its declared value
@@ -494,18 +511,25 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 }
             }
             Payload::GlobalSection(reader) => {
-                // #237: capture each defined global's i32 initializer + mutability.
-                // The init is a const expr; we only decode a leading `i32.const`
-                // (the shape `$__stack_pointer`/data-layout globals use). Anything
-                // else (global.get, f32/f64, etc.) records `init_i32: None` and is
-                // left to the table-relative path.
+                // #237/#649: capture each defined global's constant initializer
+                // + mutability. The init is a const expr; we decode a leading
+                // `i32.const` (the `$__stack_pointer`/data-layout shape) or
+                // `i64.const` (#649: capturing only i32 silently ZEROED every
+                // nonzero i64 init). f32/f64 inits stay `None` on purpose —
+                // float global access is the GI-FPU-001 (#369) loud-skip lane —
+                // as do non-const init exprs (`global.get` of an import).
                 for (idx, global) in reader.into_iter().enumerate() {
                     let global = global.context("Failed to parse global")?;
-                    let mut init_i32 = None;
                     let mut ops = global.init_expr.get_operators_reader();
-                    if let Ok(wasmparser::Operator::I32Const { value }) = ops.read() {
-                        init_i32 = Some(value);
-                    }
+                    let init = match ops.read() {
+                        Ok(wasmparser::Operator::I32Const { value }) => {
+                            Some(GlobalInit::I32(value))
+                        }
+                        Ok(wasmparser::Operator::I64Const { value }) => {
+                            Some(GlobalInit::I64(value))
+                        }
+                        _ => None,
+                    };
                     // #643: record the slot width from the DECLARED value type.
                     // i64/f64 globals occupy 8 bytes (a register pair on the
                     // 32-bit targets), v128 sixteen; laying every global out at
@@ -517,7 +541,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     };
                     globals.push(WasmGlobal {
                         index: idx as u32,
-                        init_i32,
+                        init,
                         mutable: global.ty.mutable,
                         slot_bytes,
                     });
@@ -2030,10 +2054,14 @@ mod tests {
         assert_eq!(module.globals.len(), 2, "both globals captured");
         let sp = &module.globals[0];
         assert_eq!(sp.index, 0);
-        assert_eq!(sp.init_i32, Some(65536), "stack-pointer init captured");
+        assert_eq!(
+            sp.init,
+            Some(GlobalInit::I32(65536)),
+            "stack-pointer init captured"
+        );
         assert!(sp.mutable, "stack pointer is mutable");
         let c = &module.globals[1];
-        assert_eq!(c.init_i32, Some(7));
+        assert_eq!(c.init, Some(GlobalInit::I32(7)));
         assert!(!c.mutable, "second global is immutable");
         assert_eq!(sp.slot_bytes, 4, "i32 global occupies one 4-byte slot");
         assert_eq!(c.slot_bytes, 4);
@@ -2059,6 +2087,41 @@ mod tests {
         assert_eq!(module.globals[0].slot_bytes, 8, "i64 global is 8 bytes");
         assert_eq!(module.globals[1].slot_bytes, 4, "i32 global is 4 bytes");
         assert_eq!(module.globals[2].slot_bytes, 8, "f64 global is 8 bytes");
+    }
+
+    /// #649: a nonzero `i64.const` initializer is captured as BOTH words — the
+    /// `init_i32`-shaped capture dropped it to `None` and every consumer's
+    /// `unwrap_or(0)` silently ZEROED the global. f32/f64 inits stay `None`
+    /// (GI-FPU-001/#369 loud-skip lane — never fabricate a float bit-pattern).
+    #[test]
+    fn test_decode_captures_i64_global_initializer_649() {
+        let wat = r#"
+            (module
+                (global $g (mut i64) (i64.const 0x123456789ABCDEF0))
+                (global $n (mut i64) (i64.const -1))
+                (global $f (mut f64) (f64.const 1.5))
+                (global $h (mut f32) (f32.const 2.5))
+                (func (export "f") (result i32) i32.const 0)
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let module = decode_wasm_module(&wasm).expect("Failed to decode");
+
+        assert_eq!(module.globals.len(), 4);
+        assert_eq!(
+            module.globals[0].init,
+            Some(GlobalInit::I64(0x123456789ABCDEF0u64 as i64)),
+            "nonzero i64 init captured with both words"
+        );
+        assert_eq!(module.globals[1].init, Some(GlobalInit::I64(-1)));
+        assert_eq!(
+            module.globals[2].init, None,
+            "f64 init is NOT captured (GI-FPU-001 loud-skip lane)"
+        );
+        assert_eq!(
+            module.globals[3].init, None,
+            "f32 init is NOT captured (GI-FPU-001 loud-skip lane)"
+        );
     }
 
     /// #509: the decoder records `(param_count, result_count)` for every
