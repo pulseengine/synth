@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.36.0] - 2026-07-08
+
+**`unreachable` finally traps (it was decode-dropped as an "intentional no-op"
+on every backend — WASM §4.4.5); RV32 rem_s stops over-trapping; sparse
+funcref tables dispatch with null-slot traps (falcon complete); the verified
+selector DSL reaches 40 rules and the Sail/ASL bridge reaches 81 Qed —
+catching two latent bugs in our own hand-written model.**
+
+### Fixed
+
+- **WASM `unreachable` compiled to a no-op on thumb-2 AND rv32 (#665, PR
+  #668).** One decode drop: `Unreachable` was whitelisted as intentionally
+  ignorable next to `Nop`, so every backend's existing trap arm was dead
+  code. Now decoded; UDF/ebreak/brk fire per backend; optimized path
+  loud-declines to direct. Differential: 5 red → green with non-vacuity.
+- **RV32 i32.rem_s(INT_MIN,-1) spuriously trapped (#666, PR #668)** — rem_s
+  had inherited div_s's overflow guard; M-ext REM already returns 0 per
+  spec. The ARM #633 twin-pins now exist on RV32 (rem_s carries only the
+  zero guard).
+
+### Added
+
+- **Null-funcref-slot call_indirect (#664, PR #669):** sparse tables no
+  longer decline — initialized slots type-verified closed-world, null slots
+  trap at runtime (check emitted only when the table has nulls; fully-
+  initialized tables whole-ELF byte-identical, 24/24). Contract: null slots
+  link as zero words (BSS satisfies). falcon's dispatch story is complete.
+- **VCR-SEL-001 increment 4 (PR #670, #242/#667):** 40 rules / 40 Qed —
+  clz, ctz (scratch=dest, no side condition), popcnt (pseudo-op tier), and
+  the ten binary i64 comparisons (the #615 cond-mapping class, register-
+  polymorphic). New DSL-coverage metric in coq/STATUS.md: 26% DSL-served /
+  62% model-only / 12% unverified — the #73 divergence now retires by
+  measurable subtraction. Named executor gap (SBCS flags-chain) converges
+  with the ISA spike's PC-executor gap.
+- **VCR-ISA-001 round 2 (PR #671, #242):** SailArmBridge.v 23 → **81 Qed**
+  (28 whole-instruction bridges: AddWithCarry family incl. live-carry
+  ADC/SBC, flag-free ALU, all four shifts in both forms, MOV/MOVW/MOVT).
+  **Found two latent hand-model divergences from ARM's ASL** (LSR/ASR #32,
+  register shift amounts ≥ 32 — unreachable via WASM masking, documented).
+  Amortization beat the spike estimate: six-plus classes in ~half a day.
+  VCR-ISA-001 → approved.
+
 ## [0.35.0] - 2026-07-08
 
 **The North-Star acceleration wave: the verified selector DSL enters the i64
