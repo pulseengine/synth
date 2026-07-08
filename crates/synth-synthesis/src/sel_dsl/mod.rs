@@ -1,11 +1,20 @@
-//! VCR-SEL-001 increment 1 (#242) — the Rocq-discharged selector rule DSL.
+//! VCR-SEL-001 increments 1+2 (#242) — the Rocq-discharged selector rule DSL.
 //!
-//! Scope: `docs/design/vcr-sel-001-first-increment.md`. This module is the
+//! Scope: `docs/design/vcr-sel-001-first-increment.md` (increment 1) and
+//! `docs/design/vcr-sel-001-increment-2.md` (increment 2). This module is the
 //! **checked-in rule table**: a declarative `op → parameterized ARM sequence`
-//! (registers as variables, side conditions explicit) for the pilot-measured
-//! tier-A i32 ALU class (`add/sub/mul/and/or/xor`, 6/6 auto-discharge) plus one
-//! tier-B scratch-using shape (`i32.rotl`), included deliberately so the rule
-//! format carries a scratch non-aliasing side condition from day one.
+//! (registers as variables, side conditions explicit) for:
+//!
+//! - increment 1: the pilot-measured tier-A i32 ALU class
+//!   (`add/sub/mul/and/or/xor`, 6/6 auto-discharge) plus one tier-B
+//!   scratch-using shape (`i32.rotl`), included deliberately so the rule
+//!   format carries a scratch non-aliasing side condition from day one;
+//! - increment 2: the i32 register-shift family (`shl/shr_s/shr_u` + `rotr`,
+//!   all single-instruction tier-A — no scratch needed, measured) and the ten
+//!   i32 comparisons (`eq/ne/lt_s/lt_u/gt_s/gt_u/le_s/le_u/ge_s/ge_u`, the
+//!   CMP+SetCond shape — no side conditions either: the flags transfer through
+//!   NZCV, not a register, so every rd/rn/rm aliasing is admitted by the
+//!   universal quantifier).
 //!
 //! The table is turned into plain Rust lowering functions by
 //! [`generate_lowering_source`] and the output is **committed to the tree** at
@@ -73,6 +82,74 @@ pub enum SideCondition {
     NotAlias(RegVar, RegVar),
 }
 
+/// Which hand-written selector arm delegates to this rule behind
+/// `SYNTH_SEL_DSL` — i.e. where the rule is byte-identically wired.
+///
+/// Increment 1 wired `select_default` only. Increment 2 steps the comparison
+/// family into `select_with_stack` because that is where the load-bearing
+/// hand-written CMP+SetCond arm lives: `select_default`'s comparison arms are
+/// a *blind* bare-`Cmp` lowering (the 0/1 result is never materialized —
+/// production-unreachable, `select_with_stack` owns comparisons), so a rule
+/// byte-matching them would be unprovable as T1 result-correspondence. Those
+/// arms stay hand-written — an honest holdout, documented in
+/// `docs/design/vcr-sel-001-increment-2.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delegation {
+    /// Wired in `select_default`'s match arm only (increment 1 pattern).
+    SelectDefault,
+    /// Wired in `select_with_stack`'s arm only (the load-bearing path).
+    SelectWithStack,
+    /// Wired in both selectors' arms (byte-identical in each).
+    Both,
+}
+
+/// A condition code for the `SetCond` template shape — mirrors
+/// `crate::rules::Condition` (and the Coq flat model's `MOVcc` family, which
+/// is how `ArmOp::SetCond` is modeled in `VcrSelRules.v`: `MOV rd #0;
+/// MOVcc rd #1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CondCode {
+    /// Equal (Z == 1).
+    Eq,
+    /// Not equal (Z == 0).
+    Ne,
+    /// Signed less-than (N != V).
+    Lt,
+    /// Unsigned lower (C == 0).
+    Lo,
+    /// Signed greater-than (Z == 0 && N == V).
+    Gt,
+    /// Unsigned higher (C == 1 && Z == 0).
+    Hi,
+    /// Signed less-or-equal (Z == 1 || N != V).
+    Le,
+    /// Unsigned lower-or-same (C == 0 || Z == 1).
+    Ls,
+    /// Signed greater-or-equal (N == V).
+    Ge,
+    /// Unsigned higher-or-same (C == 1).
+    Hs,
+}
+
+impl CondCode {
+    /// The `crate::rules::Condition` variant path this code renders to in the
+    /// generated lowering function.
+    pub const fn rust_name(self) -> &'static str {
+        match self {
+            CondCode::Eq => "Condition::EQ",
+            CondCode::Ne => "Condition::NE",
+            CondCode::Lt => "Condition::LT",
+            CondCode::Lo => "Condition::LO",
+            CondCode::Gt => "Condition::GT",
+            CondCode::Hi => "Condition::HI",
+            CondCode::Le => "Condition::LE",
+            CondCode::Ls => "Condition::LS",
+            CondCode::Ge => "Condition::GE",
+            CondCode::Hs => "Condition::HS",
+        }
+    }
+}
+
 /// One ARM instruction template over register variables. Shapes cover exactly
 /// what the increment-1 rules need; new op classes add shapes alongside their
 /// rules (+ theorems).
@@ -94,6 +171,16 @@ pub enum TemplateOp {
     RsbImm { rd: RegVar, rn: RegVar, imm: u32 },
     /// `ArmOp::RorReg { rd, rn, rm }`
     RorReg { rd: RegVar, rn: RegVar, rm: RegVar },
+    /// `ArmOp::LslReg { rd, rn, rm }`
+    LslReg { rd: RegVar, rn: RegVar, rm: RegVar },
+    /// `ArmOp::LsrReg { rd, rn, rm }`
+    LsrReg { rd: RegVar, rn: RegVar, rm: RegVar },
+    /// `ArmOp::AsrReg { rd, rn, rm }`
+    AsrReg { rd: RegVar, rn: RegVar, rm: RegVar },
+    /// `ArmOp::Cmp { rn, op2: Reg(rm) }` — flags only, no register written
+    CmpReg { rn: RegVar, rm: RegVar },
+    /// `ArmOp::SetCond { rd, cond }` — rd = if cond over current NZCV {1} else {0}
+    SetCond { rd: RegVar, cond: CondCode },
 }
 
 /// One declarative lowering rule: `op → parameterized ARM sequence`.
@@ -112,6 +199,9 @@ pub struct SelRule {
     pub side_conditions: &'static [SideCondition],
     /// The emitted instruction sequence, over register variables.
     pub seq: &'static [TemplateOp],
+    /// Which hand-written selector arm delegates to this rule (mirror-pin
+    /// target: the delegation must be byte-identical there).
+    pub delegation: Delegation,
     /// One-line human description for the generated function's doc comment.
     pub doc: &'static str,
 }
@@ -141,6 +231,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
+        delegation: Delegation::SelectDefault,
         doc: "`i32.add`: rd = rn + rm",
     },
     SelRule {
@@ -153,6 +244,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
+        delegation: Delegation::SelectDefault,
         doc: "`i32.sub`: rd = rn - rm",
     },
     SelRule {
@@ -165,6 +257,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
+        delegation: Delegation::SelectDefault,
         doc: "`i32.mul`: rd = rn * rm",
     },
     SelRule {
@@ -177,6 +270,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
+        delegation: Delegation::SelectDefault,
         doc: "`i32.and`: rd = rn & rm",
     },
     SelRule {
@@ -189,6 +283,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
+        delegation: Delegation::SelectDefault,
         doc: "`i32.or`: rd = rn | rm",
     },
     SelRule {
@@ -201,6 +296,7 @@ pub const RULES: &[SelRule] = &[
             rn: Rn,
             rm: Rm,
         }],
+        delegation: Delegation::SelectDefault,
         doc: "`i32.xor`: rd = rn ^ rm",
     },
     SelRule {
@@ -220,9 +316,262 @@ pub const RULES: &[SelRule] = &[
                 rm: Rs,
             },
         ],
+        delegation: Delegation::SelectDefault,
         doc: "`i32.rotl`: rotate left by rm = rotate right by (32 - rm), via scratch rs",
     },
+    // ---- increment 2: i32 register shifts + rotr (all tier-A: single
+    // instruction, no scratch, no side conditions) ----
+    SelRule {
+        name: "rule_i32_shl",
+        op: WasmOp::I32Shl,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[TemplateOp::LslReg {
+            rd: Rd,
+            rn: Rn,
+            rm: Rm,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i32.shl`: rd = rn << rm",
+    },
+    SelRule {
+        name: "rule_i32_shr_s",
+        op: WasmOp::I32ShrS,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[TemplateOp::AsrReg {
+            rd: Rd,
+            rn: Rn,
+            rm: Rm,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i32.shr_s`: rd = rn >> rm (arithmetic)",
+    },
+    SelRule {
+        name: "rule_i32_shr_u",
+        op: WasmOp::I32ShrU,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[TemplateOp::LsrReg {
+            rd: Rd,
+            rn: Rn,
+            rm: Rm,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i32.shr_u`: rd = rn >> rm (logical)",
+    },
+    SelRule {
+        name: "rule_i32_rotr",
+        op: WasmOp::I32Rotr,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[TemplateOp::RorReg {
+            rd: Rd,
+            rn: Rn,
+            rm: Rm,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i32.rotr`: rd = rn rotated right by rm",
+    },
+    // ---- increment 2: i32 comparisons — the CMP+SetCond shape. NO side
+    // conditions: CMP latches NZCV before SetCond writes rd, so every
+    // rd/rn/rm aliasing is admitted (the flags transfer is not a register).
+    // Delegated in select_with_stack (the load-bearing arm) ONLY:
+    // select_default's blind bare-Cmp comparison arms never materialize the
+    // 0/1 result and stay hand-written (unprovable-as-T1 holdout). ----
+    SelRule {
+        name: "rule_i32_eq",
+        op: WasmOp::I32Eq,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpReg { rn: Rn, rm: Rm },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Eq,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.eq`: rd = if rn == rm {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_ne",
+        op: WasmOp::I32Ne,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpReg { rn: Rn, rm: Rm },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Ne,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.ne`: rd = if rn != rm {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_lt_s",
+        op: WasmOp::I32LtS,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpReg { rn: Rn, rm: Rm },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Lt,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.lt_s`: rd = if rn < rm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_lt_u",
+        op: WasmOp::I32LtU,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpReg { rn: Rn, rm: Rm },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Lo,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.lt_u`: rd = if rn < rm (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_gt_s",
+        op: WasmOp::I32GtS,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpReg { rn: Rn, rm: Rm },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Gt,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.gt_s`: rd = if rn > rm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_gt_u",
+        op: WasmOp::I32GtU,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpReg { rn: Rn, rm: Rm },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Hi,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.gt_u`: rd = if rn > rm (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_le_s",
+        op: WasmOp::I32LeS,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpReg { rn: Rn, rm: Rm },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Le,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.le_s`: rd = if rn <= rm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_le_u",
+        op: WasmOp::I32LeU,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpReg { rn: Rn, rm: Rm },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Ls,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.le_u`: rd = if rn <= rm (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_ge_s",
+        op: WasmOp::I32GeS,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpReg { rn: Rn, rm: Rm },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Ge,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.ge_s`: rd = if rn >= rm (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i32_ge_u",
+        op: WasmOp::I32GeU,
+        params: &[Rd, Rn, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpReg { rn: Rn, rm: Rm },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Hs,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.ge_u`: rd = if rn >= rm (unsigned) {1} else {0}",
+    },
 ];
+
+/// Dispatch an i32 comparison op to its generated Rocq-proved rule
+/// (increment 2). Returns `None` for non-comparison ops so the caller's
+/// hand-written arm keeps ownership — the delegation is byte-identical
+/// where it fires (mirror-pinned) and a no-op everywhere else.
+pub fn i32_cmp_rule(
+    op: &WasmOp,
+    rd: crate::rules::Reg,
+    rn: crate::rules::Reg,
+    rm: crate::rules::Reg,
+) -> Option<Vec<crate::rules::ArmOp>> {
+    Some(match op {
+        WasmOp::I32Eq => generated::rule_i32_eq(rd, rn, rm),
+        WasmOp::I32Ne => generated::rule_i32_ne(rd, rn, rm),
+        WasmOp::I32LtS => generated::rule_i32_lt_s(rd, rn, rm),
+        WasmOp::I32LtU => generated::rule_i32_lt_u(rd, rn, rm),
+        WasmOp::I32GtS => generated::rule_i32_gt_s(rd, rn, rm),
+        WasmOp::I32GtU => generated::rule_i32_gt_u(rd, rn, rm),
+        WasmOp::I32LeS => generated::rule_i32_le_s(rd, rn, rm),
+        WasmOp::I32LeU => generated::rule_i32_le_u(rd, rn, rm),
+        WasmOp::I32GeS => generated::rule_i32_ge_s(rd, rn, rm),
+        WasmOp::I32GeU => generated::rule_i32_ge_u(rd, rn, rm),
+        _ => return None,
+    })
+}
+
+/// Dispatch an i32 register-shift/rotate op to its generated Rocq-proved rule
+/// (increment 2). Same contract as [`i32_cmp_rule`].
+pub fn i32_shift_rule(
+    op: &WasmOp,
+    rd: crate::rules::Reg,
+    rn: crate::rules::Reg,
+    rm: crate::rules::Reg,
+) -> Option<Vec<crate::rules::ArmOp>> {
+    Some(match op {
+        WasmOp::I32Shl => generated::rule_i32_shl(rd, rn, rm),
+        WasmOp::I32ShrS => generated::rule_i32_shr_s(rd, rn, rm),
+        WasmOp::I32ShrU => generated::rule_i32_shr_u(rd, rn, rm),
+        WasmOp::I32Rotr => generated::rule_i32_rotr(rd, rn, rm),
+        _ => return None,
+    })
+}
 
 /// Render a struct field, using field-init shorthand when the bound variable
 /// name matches the field name (keeps the generated file rustfmt/clippy-clean).
@@ -281,6 +630,42 @@ fn template_expr(t: &TemplateOp, indent: usize) -> String {
             field("rn", rn),
             field("rm", rm)
         ),
+        TemplateOp::LslReg { rd, rn, rm } => format!(
+            "ArmOp::LslReg {{ {}, {}, {} }}",
+            field("rd", rd),
+            field("rn", rn),
+            field("rm", rm)
+        ),
+        TemplateOp::LsrReg { rd, rn, rm } => format!(
+            "ArmOp::LsrReg {{ {}, {}, {} }}",
+            field("rd", rd),
+            field("rn", rn),
+            field("rm", rm)
+        ),
+        TemplateOp::AsrReg { rd, rn, rm } => format!(
+            "ArmOp::AsrReg {{ {}, {}, {} }}",
+            field("rd", rd),
+            field("rn", rn),
+            field("rm", rm)
+        ),
+        TemplateOp::CmpReg { rn, rm } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::Cmp {{\n{fld}{},\n{fld}op2: Operand2::Reg({}),\n{ind}}}",
+                field("rn", rn),
+                rm.rust_name()
+            )
+        }
+        TemplateOp::SetCond { rd, cond } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::SetCond {{\n{fld}{},\n{fld}cond: {},\n{ind}}}",
+                field("rd", rd),
+                cond.rust_name()
+            )
+        }
     }
 }
 
@@ -295,8 +680,9 @@ pub fn generate_lowering_source() -> String {
         "//! GENERATED FILE — DO NOT EDIT BY HAND.\n\
          //!\n\
          //! Emitted by `crate::sel_dsl::generate_lowering_source()` from the declarative\n\
-         //! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increment 1, #242,\n\
-         //! `docs/design/vcr-sel-001-first-increment.md`). Pinned up-to-date by the\n\
+         //! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2, #242,\n\
+         //! `docs/design/vcr-sel-001-first-increment.md` +\n\
+         //! `docs/design/vcr-sel-001-increment-2.md`). Pinned up-to-date by the\n\
          //! `generated_lowering_is_up_to_date` test; regenerate with\n\
          //! `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.\n\
          //!\n\
@@ -305,7 +691,7 @@ pub fn generate_lowering_source() -> String {
          //! `//coq:vcr_sel_rules_coverage`): the emitted sequence computes the op's\n\
          //! result in `rd` for EVERY register assignment satisfying the stated side\n\
          //! conditions.\n\n\
-         use crate::rules::{ArmOp, Operand2, Reg};\n",
+         use crate::rules::{ArmOp, Condition, Operand2, Reg};\n",
     );
 
     for rule in RULES {
