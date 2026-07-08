@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.31.0] - 2026-07-08
+
+**The first Rocq-verified selector rules land (VCR-SEL-001 increment 1); the
+proof-carrying-specialization pipeline opens (wsc.facts ingestion); RV32 local
+promotion ships default-on with a measured never-grow model (the #601 hold
+lifts); and the default build drops its last C++ dependency.**
+
+### Added
+
+- **VCR-SEL-001 increment 1 (#623, epic #242):** a verified selector rule DSL —
+  declarative rule table for i32 add/sub/mul/and/or/xor + rotl (explicit
+  scratch non-aliasing side condition), generated Rust lowerings committed to
+  the tree, one universally-quantified T1 theorem per rule
+  (`coq/Synth/Synth/VcrSelRules.v`) with a coverage check that fails the
+  `//coq` build if any rule lacks its Qed. `select_default` arms delegate
+  behind `SYNTH_SEL_DSL` (default OFF — OFF ≡ baseline byte-identical).
+- **wsc.facts ingestion, #494 phase 1 (#624, VCR-PERF-002):** schema-v1 parser
+  for loom's forthcoming facts section (keyed by function index + value id,
+  fail-safe: unknown kinds and malformed/missing sections ignored) threaded
+  into `CompileConfig`. Zero codegen change — compilation is byte-identical
+  with or without the section; the consumer is phase 2.
+
+### Changed (byte-changing on RV32, deliberate)
+
+- **`SYNTH_RV_LOCAL_PROMO` default-ON (#626/#627; closes the #601 hold).**
+  The heuristic profitability model is replaced by measurement: candidate
+  locals are lowered in every subset and a promoted lowering is kept only when
+  its emitted byte size does not exceed the unpromoted baseline — per-return
+  epilogue restores (the #601 blocker) are priced by construction.
+  `emitted_byte_size` is mirror-pinned to `assemble_function` sizing.
+  Red→green: the old model grew `control_step_decide` 484→488 B; the corpus
+  gate now shows 10 shrink / 0 grow (flight_algo −32 B, accum −68 B). All 11
+  RV32 execution differentials pass on the new default bytes; both pinned RV32
+  goldens are promo-neutral by hash; `=0` opt-out escape hatch CI-gated.
+- **static-link-z3 out of the default build/CI path (#621, #553 steps 3/4):**
+  `cargo test --workspace` now builds with no C++ toolchain (ordeal is the
+  engine, 139/139); Z3 remains as the feature-gated differential oracle
+  (`z3-solver` + `SYNTH_SOLVER_DIFF=1`), same CI job, now a true differential.
+
+### Documentation
+
+- README North-Star + CLAUDE.md refreshed to post-v0.30 reality (#625): the
+  315-cycle flat_flight table is historical motivation; shipped levers,
+  in-flight rivets, and proof counts (298 Qed) now stated with provenance.
+
 ## [0.30.2] - 2026-07-07
 
 **Every A32 (cortex-r5) i64 op computed real results — the entire family was
