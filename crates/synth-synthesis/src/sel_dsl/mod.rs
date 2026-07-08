@@ -1,8 +1,9 @@
-//! VCR-SEL-001 increments 1+2+3 (#242) — the Rocq-discharged selector rule DSL.
+//! VCR-SEL-001 increments 1+2+3+4 (#242) — the Rocq-discharged selector rule DSL.
 //!
 //! Scope: `docs/design/vcr-sel-001-first-increment.md` (increment 1),
-//! `docs/design/vcr-sel-001-increment-2.md` (increment 2) and
-//! `docs/design/vcr-sel-001-increment-3.md` (increment 3). This module is the
+//! `docs/design/vcr-sel-001-increment-2.md` (increment 2),
+//! `docs/design/vcr-sel-001-increment-3.md` (increment 3) and
+//! `docs/design/vcr-sel-001-increment-4.md` (increment 4). This module is the
 //! **checked-in rule table**: a declarative `op → parameterized ARM sequence`
 //! (registers as variables, side conditions explicit) for:
 //!
@@ -25,6 +26,16 @@
 //!   so a rule format that could not state "the destination must not be
 //!   clobbered before use" is exactly how #632-class bugs happen. Each pair
 //!   theorem proves BOTH result words.
+//! - increment 4: the scratch-using and multi-instruction tier the pilot
+//!   called out — i32 bit-manipulation (`clz` single-`CLZ`; `ctz` the
+//!   TWO-instruction `RBIT rd; CLZ rd, rd` shape with the scratch=dest trick,
+//!   no extra register and no side condition; `popcnt` at pseudo-op tier)
+//!   plus the binary i64 comparison family (`i64.eq/ne/lt_s/lt_u/gt_s/gt_u/
+//!   le_s/le_u/ge_s/ge_u`, the single-`I64SetCond`-pseudo-op shape both
+//!   selectors emit — the shape whose encoder expansion is the
+//!   CMP-lo/SBCS-hi flags-chain #615 re-implemented on A32; the rules and
+//!   theorems live at the pseudo-op tier the flat Rocq executor can express,
+//!   see `docs/design/vcr-sel-001-increment-4.md` for the honest bound).
 //!
 //! The table is turned into plain Rust lowering functions by
 //! [`generate_lowering_source`] and the output is **committed to the tree** at
@@ -223,6 +234,22 @@ pub enum TemplateOp {
         rn_lo: RegVar,
         rn_hi: RegVar,
     },
+    /// `ArmOp::Clz { rd, rm }` — count leading zeros
+    Clz { rd: RegVar, rm: RegVar },
+    /// `ArmOp::Rbit { rd, rm }` — reverse bits (the ctz shape's first step)
+    Rbit { rd: RegVar, rm: RegVar },
+    /// `ArmOp::Popcnt { rd, rm }` — population-count pseudo-op (encoder-expanded)
+    Popcnt { rd: RegVar, rm: RegVar },
+    /// `ArmOp::I64SetCond { rd, rn_lo, rn_hi, rm_lo, rm_hi, cond }` —
+    /// rd = if (rn_hi:rn_lo) <cond> (rm_hi:rm_lo) {1} else {0}
+    I64SetCond {
+        rd: RegVar,
+        rn_lo: RegVar,
+        rn_hi: RegVar,
+        rm_lo: RegVar,
+        rm_hi: RegVar,
+        cond: CondCode,
+    },
 }
 
 /// One declarative lowering rule: `op → parameterized ARM sequence`.
@@ -282,6 +309,12 @@ const I64_PAIR_SIDE_CONDITIONS: &[SideCondition] = &[
 
 /// The parameter order shared by every binary i64 pair rule.
 const I64_PAIR_PARAMS: &[RegVar] = &[RdLo, RdHi, RnLo, RnHi, RmLo, RmHi];
+
+/// The parameter order shared by every binary `I64SetCond` comparison rule
+/// (increment 4): the single i32 result register plus the two operand pairs.
+/// NO side conditions — the pseudo-op reads all four operand halves before
+/// writing `rd`, so every aliasing is admitted by the universal quantifier.
+const I64_SETCOND_PARAMS: &[RegVar] = &[Rd, RnLo, RnHi, RmLo, RmHi];
 
 /// The increment-1 rule table: the tier-A six + tier-B `i32.rotl`.
 ///
@@ -723,6 +756,215 @@ pub const RULES: &[SelRule] = &[
         delegation: Delegation::Both,
         doc: "`i64.eqz`: rd = if (rn_hi:rn_lo) == 0 {1} else {0}",
     },
+    // ---- increment 4: i32 bit manipulation. `clz` is single-instruction
+    // tier A; `ctz` is the TWO-instruction RBIT+CLZ shape with the
+    // scratch=dest trick (instruction 1 writes the bit-reversed value into
+    // rd itself, instruction 2 reads it back — no extra scratch register
+    // and NO side condition: RBIT reads rm before writing rd, and the
+    // second instruction only reads rd); `popcnt` is pseudo-op-tier (the
+    // rule mirrors the single ArmOp::Popcnt the selector emits; the
+    // encoder's shift-and-add expansion below the ArmOp boundary is
+    // outside the Rocq model — same honest tier as i64.eqz/I64SetCond). ----
+    SelRule {
+        name: "rule_i32_clz",
+        op: WasmOp::I32Clz,
+        params: &[Rd, Rm],
+        side_conditions: &[],
+        seq: &[TemplateOp::Clz { rd: Rd, rm: Rm }],
+        delegation: Delegation::Both,
+        doc: "`i32.clz`: rd = count of leading zero bits of rm",
+    },
+    SelRule {
+        name: "rule_i32_ctz",
+        op: WasmOp::I32Ctz,
+        params: &[Rd, Rm],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::Rbit { rd: Rd, rm: Rm },
+            TemplateOp::Clz { rd: Rd, rm: Rd },
+        ],
+        delegation: Delegation::Both,
+        doc: "`i32.ctz`: rd = count of trailing zero bits of rm, via RBIT + CLZ (scratch=dest)",
+    },
+    SelRule {
+        name: "rule_i32_popcnt",
+        op: WasmOp::I32Popcnt,
+        params: &[Rd, Rm],
+        side_conditions: &[],
+        seq: &[TemplateOp::Popcnt { rd: Rd, rm: Rm }],
+        delegation: Delegation::Both,
+        doc: "`i32.popcnt`: rd = count of set bits of rm (pseudo-op, encoder-expanded)",
+    },
+    // ---- increment 4: the binary i64 comparison family — the
+    // single-I64SetCond-pseudo-op shape BOTH selectors emit (the pseudo-op
+    // whose encoder expansion is the CMP-lo/SBCS-hi dual-precision
+    // flags-chain, with the GT/LE/HI/LS operand swap — the #615 A32 shape
+    // where cond-mapping bugs live). The rules and their theorems are
+    // pseudo-op-tier T1 against the i64_setcond_bits_spec axiom; the
+    // expansion itself is below what the flat Rocq executor can express
+    // (no SBCS, no conditional CMP — see
+    // docs/design/vcr-sel-001-increment-4.md). No side conditions: the
+    // pseudo-op reads all four operand halves before writing rd. ----
+    SelRule {
+        name: "rule_i64_eq",
+        op: WasmOp::I64Eq,
+        params: I64_SETCOND_PARAMS,
+        side_conditions: &[],
+        seq: &[TemplateOp::I64SetCond {
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+            cond: CondCode::Eq,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.eq`: rd = if (rn_hi:rn_lo) == (rm_hi:rm_lo) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i64_ne",
+        op: WasmOp::I64Ne,
+        params: I64_SETCOND_PARAMS,
+        side_conditions: &[],
+        seq: &[TemplateOp::I64SetCond {
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+            cond: CondCode::Ne,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.ne`: rd = if (rn_hi:rn_lo) != (rm_hi:rm_lo) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i64_lt_s",
+        op: WasmOp::I64LtS,
+        params: I64_SETCOND_PARAMS,
+        side_conditions: &[],
+        seq: &[TemplateOp::I64SetCond {
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+            cond: CondCode::Lt,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.lt_s`: rd = if (rn_hi:rn_lo) < (rm_hi:rm_lo) (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i64_lt_u",
+        op: WasmOp::I64LtU,
+        params: I64_SETCOND_PARAMS,
+        side_conditions: &[],
+        seq: &[TemplateOp::I64SetCond {
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+            cond: CondCode::Lo,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.lt_u`: rd = if (rn_hi:rn_lo) < (rm_hi:rm_lo) (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i64_gt_s",
+        op: WasmOp::I64GtS,
+        params: I64_SETCOND_PARAMS,
+        side_conditions: &[],
+        seq: &[TemplateOp::I64SetCond {
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+            cond: CondCode::Gt,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.gt_s`: rd = if (rn_hi:rn_lo) > (rm_hi:rm_lo) (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i64_gt_u",
+        op: WasmOp::I64GtU,
+        params: I64_SETCOND_PARAMS,
+        side_conditions: &[],
+        seq: &[TemplateOp::I64SetCond {
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+            cond: CondCode::Hi,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.gt_u`: rd = if (rn_hi:rn_lo) > (rm_hi:rm_lo) (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i64_le_s",
+        op: WasmOp::I64LeS,
+        params: I64_SETCOND_PARAMS,
+        side_conditions: &[],
+        seq: &[TemplateOp::I64SetCond {
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+            cond: CondCode::Le,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.le_s`: rd = if (rn_hi:rn_lo) <= (rm_hi:rm_lo) (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i64_le_u",
+        op: WasmOp::I64LeU,
+        params: I64_SETCOND_PARAMS,
+        side_conditions: &[],
+        seq: &[TemplateOp::I64SetCond {
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+            cond: CondCode::Ls,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.le_u`: rd = if (rn_hi:rn_lo) <= (rm_hi:rm_lo) (unsigned) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i64_ge_s",
+        op: WasmOp::I64GeS,
+        params: I64_SETCOND_PARAMS,
+        side_conditions: &[],
+        seq: &[TemplateOp::I64SetCond {
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+            cond: CondCode::Ge,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.ge_s`: rd = if (rn_hi:rn_lo) >= (rm_hi:rm_lo) (signed) {1} else {0}",
+    },
+    SelRule {
+        name: "rule_i64_ge_u",
+        op: WasmOp::I64GeU,
+        params: I64_SETCOND_PARAMS,
+        side_conditions: &[],
+        seq: &[TemplateOp::I64SetCond {
+            rd: Rd,
+            rn_lo: RnLo,
+            rn_hi: RnHi,
+            rm_lo: RmLo,
+            rm_hi: RmHi,
+            cond: CondCode::Hs,
+        }],
+        delegation: Delegation::Both,
+        doc: "`i64.ge_u`: rd = if (rn_hi:rn_lo) >= (rm_hi:rm_lo) (unsigned) {1} else {0}",
+    },
 ];
 
 /// Dispatch an i32 comparison op to its generated Rocq-proved rule
@@ -792,6 +1034,50 @@ pub fn i64_pair_rule(
     })
 }
 
+/// Dispatch an i32 unary bit-manipulation op (`clz/ctz/popcnt`) to its
+/// generated Rocq-proved rule (increment 4). Same contract as
+/// [`i32_cmp_rule`]: `None` for ops outside the family so the caller's
+/// hand-written arm keeps ownership.
+pub fn i32_unary_rule(
+    op: &WasmOp,
+    rd: crate::rules::Reg,
+    rm: crate::rules::Reg,
+) -> Option<Vec<crate::rules::ArmOp>> {
+    Some(match op {
+        WasmOp::I32Clz => generated::rule_i32_clz(rd, rm),
+        WasmOp::I32Ctz => generated::rule_i32_ctz(rd, rm),
+        WasmOp::I32Popcnt => generated::rule_i32_popcnt(rd, rm),
+        _ => return None,
+    })
+}
+
+/// Dispatch a binary i64 comparison op to its generated Rocq-proved
+/// `I64SetCond` rule (increment 4). Same contract as [`i32_cmp_rule`]; no
+/// side conditions (the pseudo-op reads all four operand halves before
+/// writing `rd`), so the return is infallible where it fires.
+pub fn i64_setcond_rule(
+    op: &WasmOp,
+    rd: crate::rules::Reg,
+    rn_lo: crate::rules::Reg,
+    rn_hi: crate::rules::Reg,
+    rm_lo: crate::rules::Reg,
+    rm_hi: crate::rules::Reg,
+) -> Option<Vec<crate::rules::ArmOp>> {
+    Some(match op {
+        WasmOp::I64Eq => generated::rule_i64_eq(rd, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64Ne => generated::rule_i64_ne(rd, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64LtS => generated::rule_i64_lt_s(rd, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64LtU => generated::rule_i64_lt_u(rd, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64GtS => generated::rule_i64_gt_s(rd, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64GtU => generated::rule_i64_gt_u(rd, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64LeS => generated::rule_i64_le_s(rd, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64LeU => generated::rule_i64_le_u(rd, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64GeS => generated::rule_i64_ge_s(rd, rn_lo, rn_hi, rm_lo, rm_hi),
+        WasmOp::I64GeU => generated::rule_i64_ge_u(rd, rn_lo, rn_hi, rm_lo, rm_hi),
+        _ => return None,
+    })
+}
+
 /// Render a struct field, using field-init shorthand when the bound variable
 /// name matches the field name (keeps the generated file rustfmt/clippy-clean).
 fn field(name: &str, var: RegVar) -> String {
@@ -838,6 +1124,38 @@ fn template_expr(t: &TemplateOp, indent: usize) -> String {
             field("rn_lo", rn_lo),
             field("rn_hi", rn_hi)
         ),
+        TemplateOp::Clz { rd, rm } => {
+            format!("ArmOp::Clz {{ {}, {} }}", field("rd", rd), field("rm", rm))
+        }
+        TemplateOp::Rbit { rd, rm } => {
+            format!("ArmOp::Rbit {{ {}, {} }}", field("rd", rd), field("rm", rm))
+        }
+        TemplateOp::Popcnt { rd, rm } => format!(
+            "ArmOp::Popcnt {{ {}, {} }}",
+            field("rd", rd),
+            field("rm", rm)
+        ),
+        TemplateOp::I64SetCond {
+            rd,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+            cond,
+        } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::I64SetCond {{\n{fld}{},\n{fld}{},\n{fld}{},\n{fld}{},\n{fld}{},\n\
+                 {fld}cond: {},\n{ind}}}",
+                field("rd", rd),
+                field("rn_lo", rn_lo),
+                field("rn_hi", rn_hi),
+                field("rm_lo", rm_lo),
+                field("rm_hi", rm_hi),
+                cond.rust_name()
+            )
+        }
         TemplateOp::Mul { rd, rn, rm } => format!(
             "ArmOp::Mul {{ {}, {}, {} }}",
             field("rd", rd),
@@ -909,10 +1227,11 @@ pub fn generate_lowering_source() -> String {
         "//! GENERATED FILE — DO NOT EDIT BY HAND.\n\
          //!\n\
          //! Emitted by `crate::sel_dsl::generate_lowering_source()` from the declarative\n\
-         //! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3, #242,\n\
+         //! rule table [`crate::sel_dsl::RULES`] (VCR-SEL-001 increments 1+2+3+4, #242,\n\
          //! `docs/design/vcr-sel-001-first-increment.md` +\n\
          //! `docs/design/vcr-sel-001-increment-2.md` +\n\
-         //! `docs/design/vcr-sel-001-increment-3.md`). Pinned up-to-date by the\n\
+         //! `docs/design/vcr-sel-001-increment-3.md` +\n\
+         //! `docs/design/vcr-sel-001-increment-4.md`). Pinned up-to-date by the\n\
          //! `generated_lowering_is_up_to_date` test; regenerate with\n\
          //! `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.\n\
          //!\n\
@@ -982,11 +1301,21 @@ pub fn generate_lowering_source() -> String {
         } else {
             ("Ok(vec![", "])")
         };
+        // rustfmt collapses a multi-element `vec![..]` onto one line when it
+        // fits max_width and every element is itself single-line — mirror
+        // that so the committed file stays a rustfmt fixpoint.
+        let one_line_body: Vec<String> = rule.seq.iter().map(|t| template_expr(t, 4)).collect();
+        let one_line = format!("    {open}{}{close}\n", one_line_body.join(", "));
+        // `one_line` is single-line iff its only '\n' is the trailing one
+        // (an element with an exploded rendering embeds more).
+        let fits_one_line = one_line.matches('\n').count() == 1 && one_line.len() <= 101;
         if rule.seq.len() == 1 {
             out.push_str(&format!(
                 "    {open}{}{close}\n",
                 template_expr(&rule.seq[0], 4)
             ));
+        } else if fits_one_line {
+            out.push_str(&one_line);
         } else {
             out.push_str(&format!("    {open}\n"));
             for t in rule.seq {

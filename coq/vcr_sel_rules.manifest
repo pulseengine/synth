@@ -30,3 +30,16 @@ rule_i64_and
 rule_i64_or
 rule_i64_xor
 rule_i64_eqz
+rule_i32_clz
+rule_i32_ctz
+rule_i32_popcnt
+rule_i64_eq
+rule_i64_ne
+rule_i64_lt_s
+rule_i64_lt_u
+rule_i64_gt_s
+rule_i64_gt_u
+rule_i64_le_s
+rule_i64_le_u
+rule_i64_ge_s
+rule_i64_ge_u

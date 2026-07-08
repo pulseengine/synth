@@ -378,9 +378,9 @@ All fully proved (Qed); no new axioms.
 | StateMonad.v | 3 | 0 | Infra |
 | WasmValues.v | 2 | 0 | Infra |
 | VcrSelPilot.v | 7 | 0 | T1 (register-polymorphic; VCR-SEL-001 go/abandon measurement, post-recount) |
-| VcrSelRules.v | 21 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2 rule table, 1:1 rule<->theorem, coverage-gated by `//coq:vcr_sel_rules_coverage`, post-recount) |
+| VcrSelRules.v | 40 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2+3+4 rule table, 1:1 rule<->theorem, coverage-gated by `//coq:vcr_sel_rules_coverage`, post-recount) |
 
-## VCR-SEL-001 increments 1 (2026-07-07) + 2 (2026-07-08): VcrSelRules.v
+## VCR-SEL-001 increments 1 (2026-07-07) + 2 + 3 + 4 (2026-07-08): VcrSelRules.v
 
 The wired selector-DSL rule table's obligations: one universally-quantified
 T1 theorem per rule in `crates/synth-synthesis/src/sel_dsl`.
@@ -404,9 +404,87 @@ Seven close with `synth_cmp_binop_proof_poly` — the fixed-register
 and `ne`/`lt_s`/`lt_u` use the same manual scripts as their
 CorrectnessI32.v ancestors, register-generalized verbatim).
 
-**21 Qed / 0 Admitted**, same T1 bound as the pilot ("the ARM sequence
-computes the named result", not WASM refinement). These 28 Qed (pilot +
+Increment 3 — the i64 register-pair family
+(`rule_i64_{add,sub,and,or,xor}_correct`, quantified over SIX registers
+under three explicit aliasing hypotheses, pair-result T1 proving BOTH words;
+plus `rule_i64_eqz_correct`, the `I64SetCondZ` pseudo-op shape).
+
+Increment 4 — the scratch-using/multi-instruction tier + the binary
+`I64SetCond` comparison family
+(`rule_i32_{clz,popcnt}_correct` via `synth_unop_proof_poly`;
+`rule_i32_ctz_correct`, the two-instruction RBIT+CLZ scratch=dest shape,
+stepped proof closing with `I32.clz_rbit`;
+`rule_i64_{eq,ne,lt_s,lt_u,gt_s,gt_u,le_s,le_u,ge_s,ge_u}_correct` via
+`synth_i64_setcond_proof_poly` against `i64_setcond_bits_spec` — pseudo-op
+tier: the encoder's CMP-lo/SBCS-hi expansion is below the flat executor,
+see `docs/design/vcr-sel-001-increment-4.md`).
+
+**40 Qed / 0 Admitted**, same T1 bound as the pilot ("the ARM sequence
+computes the named result", not WASM refinement). These 47 Qed (pilot +
 rules) post-date and are NOT in the 2026-06-04 recount above.
+
+## DSL coverage vs model relevance (per-op-family metric, #667)
+
+The Rocq suite proves things in two very different places, and #73's
+"retirement by subtraction" of the divergent monolithic model is only
+measurable if they are counted separately:
+
+- **DSL-served** — the op's *shipped* lowering is a `sel_dsl` rule with a
+  1:1 Qed theorem in `VcrSelRules.v`, register-polymorphic, mirror-pinned
+  byte-identical to the hand-written arm(s) (behind `SYNTH_SEL_DSL`,
+  default OFF). These proofs are about the code that ships.
+- **model-only** — the op is proven only against `compile_wasm_to_arm`
+  (Compilation.v), the fixed-register model that diverges from the shipped
+  Rust selector in documented ways (#73). Evidence about a model, not the
+  binary.
+- **unverified** — the shipped selector lowers the op but no Rocq theorem
+  covers it in either form.
+
+Every op family the shipped ARM selectors lower, as of increment 4
+(update this table whenever a rule lands or a model arm is retired):
+
+| Op family | ops | DSL-served | model-only | unverified |
+|---|---|---|---|---|
+| i32 ALU (add/sub/mul/and/or/xor) | 6 | **6** | 0 | 0 |
+| i32 shifts/rotates (shl/shr_s/shr_u/rotr/rotl) | 5 | **5** | 0 | 0 |
+| i32 binary comparisons (eq..ge_u) | 10 | **10** | 0 | 0 |
+| i32.eqz (CMP-imm shape) | 1 | 0 | 1 | 0 |
+| i32 bit-manip (clz/ctz/popcnt) | 3 | **3**¹ | 0 | 0 |
+| i32 div/rem (trap-guarded) | 4 | 0 | 4² | 0 |
+| i32 sign-extend (extend8_s/16_s) | 2 | 0 | 0 | 2 |
+| i32.const | 1 | 0 | 1 | 0 |
+| i64 pair ALU (add/sub/and/or/xor) | 5 | **5** | 0 | 0 |
+| i64 comparisons (eqz + eq..ge_u) | 11 | **11**¹ | 0 | 0 |
+| i64 mul/div/rem | 4 | 0 | 4 | 0 |
+| i64 shifts/rotates (pair pseudo-ops) | 5 | 0 | 5 | 0 |
+| i64 bit-manip (clz/ctz/popcnt) | 3 | 0 | 3 | 0 |
+| i64 wrap/extend (wrap_i64, extend_i32_s/u) | 3 | 0 | 3 | 0 |
+| i64 sign-extend (extend8/16/32_s) | 3 | 0 | 0 | 3 |
+| i64.const | 1 | 0 | 1 | 0 |
+| f32/f64 arithmetic + comparisons³ | 40 | 0 | 40 | 0 |
+| conversions (trunc/convert/demote/promote) | 18 | 0 | 18 | 0 |
+| memory load/store (i32/i64/f32/f64, basic) | 8 | 0 | 8 | 0 |
+| bulk memory (memory.copy/fill), memory.size/grow | 4 | 0 | 0 | 4 |
+| locals/globals (get/set/tee) | 5 | 0 | 5 | 0 |
+| parametric (drop/select/nop) | 3 | 0 | 3 | 0 |
+| control flow (block/loop/br/br_if/return/call/…) | ~10 | 0 | 0 | ~10 |
+| **Total (≈)** | **155** | **40 (26%)** | **96 (62%)** | **19 (12%)** |
+
+¹ pseudo-op tier: `popcnt`, `i64.eqz` and the ten binary i64 comparisons are
+proven at the `ArmOp` pseudo-op boundary (the selector's emission, which is
+what the DSL owns); the encoder expansions below that boundary
+(shift-and-add popcnt, the CMP-lo/SBCS-hi chain) are covered by the
+differential oracles, not Rocq — see `docs/design/vcr-sel-001-increment-4.md`.
+² the 4 i32 div/rem model proofs are the T3 trap-guard admits (#73,
+`BCondOffset` executor gap).
+³ the f32/f64 model rows ride the 21 VFP axioms; the shipped ARM path
+additionally gates FPU ops behind the #369/GI-FPU work.
+
+**Retirement criterion (#73):** a `compile_wasm_to_arm` arm may be deleted
+(and its Correctness* theorem retired) once its family is DSL-served — the
+DSL theorem is strictly stronger (register-polymorphic, mirror-pinned to
+the shipped bytes). The model-only column is the shrinking measure; report
+it per release.
 
 ## Phase History
 
