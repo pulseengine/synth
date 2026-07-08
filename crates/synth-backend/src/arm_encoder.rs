@@ -143,6 +143,11 @@ impl ArmEncoder {
     /// single-load form (single-table modules byte-identical by
     /// construction).
     ///
+    /// #664, `null_check` (the table has null slots, linked as ZERO words
+    /// per the layout contract): `CMP r12, #0; BNE +1; UDF` between the
+    /// pointer load and the `BLX` — a call reaching an uninitialized slot
+    /// traps (§4.4.8). `false` keeps the expansion byte-identical.
+    ///
     /// The §4.4.8 type check is discharged at COMPILE time by the selector's
     /// closed-world verification (the raw code-pointer table carries no
     /// runtime type ids) — see the #642 selector guard.
@@ -150,6 +155,7 @@ impl ArmEncoder {
         table_index_reg: &Reg,
         table_size: u32,
         table_byte_offset: u32,
+        null_check: bool,
     ) -> Vec<u8> {
         let idx = reg_to_bits(table_index_reg);
         let mut bytes = Vec::with_capacity(32);
@@ -194,6 +200,19 @@ impl ArmEncoder {
             // LDR r12, [r12, #offset] — immediate offset, P=1 U=1 L=1.
             let ldr: u32 = 0xE59CC000 | (table_byte_offset & 0xFFF);
             bytes.extend_from_slice(&ldr.to_le_bytes());
+        }
+        // #664: null-slot trap — only when the table image has null slots
+        // (zero-linked words). A fully-initialized table keeps the pre-#664
+        // bytes identical by construction.
+        if null_check {
+            // CMP r12, #0 — data-processing CMP (immediate), Rn=r12.
+            bytes.extend_from_slice(&0xE35C_0000u32.to_le_bytes());
+            // BNE +1 insn (skip the UDF when the pointer is non-null) —
+            // cond=NE(0001), imm24=0: target = branch + 8.
+            bytes.extend_from_slice(&0x1A00_0000u32.to_le_bytes());
+            // UDF — the §4.4.8 uninitialized-element trap (same idiom as
+            // the bounds guard).
+            bytes.extend_from_slice(&0xE7F0_00F0u32.to_le_bytes());
         }
         // BLX r12 — cond=E, 0001 0010 1111 1111 1111 0011, Rm=r12.
         let blx: u32 = 0xE12FFF3C;
@@ -1211,6 +1230,7 @@ impl ArmEncoder {
             table_index_reg,
             table_size,
             table_byte_offset,
+            null_check,
             ..
         } = op
         {
@@ -1218,6 +1238,7 @@ impl ArmEncoder {
                 table_index_reg,
                 *table_size,
                 *table_byte_offset,
+                *null_check,
             ));
         }
         let instr: u32 = match op {
@@ -3706,12 +3727,16 @@ impl ArmEncoder {
             // #650, table_byte_offset != 0 (a non-zero table in the contiguous
             // R11 region): the pointer load becomes
             //                   ADD R12,R11,R12; LDR R12,[R12,#offset]
+            // #664, null_check (the table has null slots, linked as ZERO
+            // words): the loaded pointer is null-checked before the BLX —
+            //                   CMP.W R12,#0; BNE +1; UDF #0
             ArmOp::CallIndirect {
                 rd: _,
                 type_idx: _,
                 table_index_reg,
                 table_size,
                 table_byte_offset,
+                null_check,
             } => {
                 let idx_reg = reg_to_bits(table_index_reg);
                 let mut bytes = Vec::new();
@@ -3807,6 +3832,26 @@ impl ArmEncoder {
                     bytes.extend_from_slice(
                         &((0xC000u16) | (*table_byte_offset as u16 & 0x0FFF)).to_le_bytes(),
                     );
+                }
+
+                // #664: null-slot trap — ONLY when the table image carries
+                // null (uninitialized) slots, which the layout contract
+                // requires to be linked as ZERO words. A fully-initialized
+                // table skips this branch entirely, keeping the pre-#664
+                // expansion byte-identical BY CONSTRUCTION (the #650
+                // offset-0 trick).
+                if *null_check {
+                    // CMP.W R12, #0 — T2 CMP (immediate): 11110 i 0 1101 1
+                    // Rn(4) | 0 imm3 1111 imm8, Rn=R12, imm=0.
+                    bytes.extend_from_slice(&0xF1BCu16.to_le_bytes());
+                    bytes.extend_from_slice(&0x0F00u16.to_le_bytes());
+                    // BNE +1 insn (skip the UDF when the pointer is non-null)
+                    // — B<cond>.N imm8=0: target = branch + 4. NE.
+                    bytes.extend_from_slice(&0xD100u16.to_le_bytes());
+                    // UDF #0 — call_indirect null-funcref trap (WASM Core
+                    // §4.4.8: calling an uninitialized element traps; same
+                    // trap idiom as the bounds guard above).
+                    bytes.extend_from_slice(&0xDE00u16.to_le_bytes());
                 }
 
                 // BLX R12 (call function indirectly)
@@ -8881,6 +8926,7 @@ mod tests {
                 table_index_reg: Reg::R0,
                 table_size: 4,
                 table_byte_offset: 0,
+                null_check: false,
             })
             .unwrap();
         assert_eq!(
@@ -8927,6 +8973,7 @@ mod tests {
                 table_index_reg: Reg::R4,
                 table_size: 4,
                 table_byte_offset: 0,
+                null_check: false,
             })
             .unwrap();
         let cmp = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
@@ -8948,6 +8995,7 @@ mod tests {
                 table_index_reg: Reg::R0,
                 table_size: 0x0002_0003,
                 table_byte_offset: 0,
+                null_check: false,
             })
             .unwrap();
         assert_eq!(bytes.len(), 32, "MOVT arm adds one word: {bytes:02x?}");
@@ -8983,6 +9031,7 @@ mod tests {
                 table_index_reg: Reg::R0,
                 table_size: 4,
                 table_byte_offset: 0,
+                null_check: false,
             })
             .unwrap();
         assert_eq!(
@@ -9015,6 +9064,7 @@ mod tests {
                 table_index_reg: Reg::R4,
                 table_size: 4,
                 table_byte_offset: 0,
+                null_check: false,
             })
             .unwrap();
         assert_eq!(&bytes[4..6], &[0x64, 0x45], "cmp r4, ip: {bytes:02x?}");
@@ -9039,6 +9089,7 @@ mod tests {
                 table_index_reg: Reg::R8,
                 table_size: 3,
                 table_byte_offset: 0,
+                null_check: false,
             })
             .unwrap();
         // cmp r8, ip — T2: 0x4500 | N(1)<<7 | Rm(12)<<3 | Rn(0) = 0x45E0
@@ -9051,6 +9102,7 @@ mod tests {
                 table_index_reg: Reg::R0,
                 table_size: 0x0002_0003,
                 table_byte_offset: 0,
+                null_check: false,
             })
             .unwrap();
         // movw ip,#3 then movt ip,#2 — the size must not be truncated.
@@ -9078,6 +9130,7 @@ mod tests {
                 table_index_reg: Reg::R1,
                 table_size: 41,
                 table_byte_offset: 28,
+                null_check: false,
             })
             .unwrap();
         assert_eq!(
@@ -9106,6 +9159,7 @@ mod tests {
                 table_index_reg: Reg::R1,
                 table_size: 41,
                 table_byte_offset: 0,
+                null_check: false,
             })
             .unwrap();
         assert_eq!(
@@ -9132,6 +9186,7 @@ mod tests {
                 table_index_reg: Reg::R1,
                 table_size: 41,
                 table_byte_offset: 28,
+                null_check: false,
             })
             .unwrap();
         let words: Vec<u32> = bytes
@@ -9158,6 +9213,77 @@ mod tests {
             words[6]
         );
         assert_eq!(words[7], 0xE12F_FF3C, "BLX r12: {:#010x}", words[7]);
+    }
+
+    /// #664: `null_check` inserts a null-funcref trap between the Thumb-2
+    /// pointer load and the `BLX` (`cmp.w ip, #0; bne .+4; udf #0`) — a
+    /// zero-linked (uninitialized) slot must TRAP (WASM §4.4.8), never
+    /// branch to address 0. `null_check: false` keeps the expansion
+    /// byte-identical to the pre-#664 form (by-construction pin).
+    #[test]
+    fn test_encode_thumb_call_indirect_null_check_664() {
+        use synth_synthesis::{ArmOp, Reg};
+        let enc = ArmEncoder::new_thumb2();
+        let op = |null_check| ArmOp::CallIndirect {
+            rd: Reg::R0,
+            type_idx: 0,
+            table_index_reg: Reg::R1,
+            table_size: 4,
+            table_byte_offset: 0,
+            null_check,
+        };
+        let with = enc.encode(&op(true)).unwrap();
+        let without = enc.encode(&op(false)).unwrap();
+        // The checked form = the unchecked form with EXACTLY the three-insn
+        // null check spliced in before the final BLX (byte identity of the
+        // shared prefix/suffix — nothing else may move).
+        assert_eq!(
+            with.len(),
+            without.len() + 8,
+            "cmp.w (4) + bne (2) + udf (2): {with:02x?}"
+        );
+        let blx_at = without.len() - 2;
+        assert_eq!(&with[..blx_at], &without[..blx_at], "shared prefix");
+        assert_eq!(
+            &with[blx_at..],
+            &[
+                0xBC, 0xF1, 0x00, 0x0F, // cmp.w ip, #0
+                0x00, 0xD1, // bne .+4 (skip the udf)
+                0x00, 0xDE, // udf #0 — null-funcref trap (#664)
+                0xE0, 0x47, // blx ip
+            ],
+            "null check precedes the BLX: {with:02x?}"
+        );
+        assert_eq!(&with[with.len() - 2..], &without[blx_at..], "same BLX");
+    }
+
+    /// #664: the A32 twin — `cmp r12, #0; bne .+8; udf` before the `BLX`;
+    /// `null_check: false` keeps the #594/#642/#650 bytes identical.
+    #[test]
+    fn test_encode_arm32_call_indirect_null_check_664() {
+        use synth_synthesis::{ArmOp, Reg};
+        let enc = ArmEncoder::new_arm32();
+        let op = |null_check| ArmOp::CallIndirect {
+            rd: Reg::R0,
+            type_idx: 0,
+            table_index_reg: Reg::R1,
+            table_size: 4,
+            table_byte_offset: 0,
+            null_check,
+        };
+        let with = enc.encode(&op(true)).unwrap();
+        let without = enc.encode(&op(false)).unwrap();
+        assert_eq!(with.len(), without.len() + 12, "3 A32 words: {with:02x?}");
+        let blx_at = without.len() - 4;
+        assert_eq!(&with[..blx_at], &without[..blx_at], "shared prefix");
+        let words: Vec<u32> = with[blx_at..]
+            .chunks_exact(4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .collect();
+        assert_eq!(words[0], 0xE35C_0000, "CMP r12,#0: {:#010x}", words[0]);
+        assert_eq!(words[1], 0x1A00_0000, "BNE +1 insn: {:#010x}", words[1]);
+        assert_eq!(words[2], 0xE7F0_00F0, "UDF (null trap): {:#010x}", words[2]);
+        assert_eq!(words[3], 0xE12F_FF3C, "BLX r12: {:#010x}", words[3]);
     }
 
     /// #178/#180 regression: the Thumb `Add`/`Adds`/`Subs` reg-forms used the

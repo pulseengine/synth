@@ -2177,11 +2177,14 @@ impl InstructionSelector {
     /// table size (for the encoder's bounds guard), a constant base offset,
     /// and a verified closed-world type verdict FOR THAT TABLE, this refuses
     /// rather than let an unchecked indirect branch be emitted.
+    /// Returns `(table_size, table_byte_offset, null_check)` — `null_check`
+    /// is set when the table image contains null (uninitialized) slots, so
+    /// the encoder must trap on a zero loaded pointer (#664).
     fn resolve_call_indirect_guards(
         &self,
         table_index: u32,
         type_index: u32,
-    ) -> Result<(u32, u32)> {
+    ) -> Result<(u32, u32, bool)> {
         let n_tables = self.call_indirect_guards.tables.len();
         let table = self
             .call_indirect_guards
@@ -2235,7 +2238,7 @@ impl InstructionSelector {
                 )));
             }
         }
-        Ok((table_size, table_byte_offset))
+        Ok((table_size, table_byte_offset, table.has_null_slots))
     }
 
     /// Enable relocatable host-link mode (#197): import calls emit a direct
@@ -2886,7 +2889,7 @@ impl InstructionSelector {
                 // guard), a constant table base offset, and a verified
                 // closed-world type verdict for THAT table, decline loudly
                 // rather than emit an unchecked indirect branch.
-                let (table_size, table_byte_offset) =
+                let (table_size, table_byte_offset, null_check) =
                     self.resolve_call_indirect_guards(*table_index, *type_index)?;
                 vec![ArmOp::CallIndirect {
                     rd,
@@ -2894,6 +2897,8 @@ impl InstructionSelector {
                     table_index_reg: rn, // Table index from stack
                     table_size,
                     table_byte_offset,
+                    // #664: trap on a null (zero-linked) slot at runtime.
+                    null_check,
                 }]
             }
 
@@ -9419,7 +9424,7 @@ impl InstructionSelector {
                     // table.grow/table.set are unsupported ops that loud-skip
                     // their functions). If any input is missing, DECLINE
                     // loudly — never emit an unchecked indirect branch.
-                    let (table_size, table_byte_offset) =
+                    let (table_size, table_byte_offset, null_check) =
                         self.resolve_call_indirect_guards(*table_index, *type_index)?;
 
                     // Top of stack is the table index; the call arguments sit
@@ -9529,9 +9534,12 @@ impl InstructionSelector {
                             // #642: the encoder emits `CMP idx, size; BLO ok;
                             // UDF #0` before the table load. #650: a non-zero
                             // offset routes the load through the table's base
-                            // within the contiguous R11 region.
+                            // within the contiguous R11 region. #664: a table
+                            // with null slots gets a runtime null check on
+                            // the loaded pointer (zero-linked slot → trap).
                             table_size,
                             table_byte_offset,
+                            null_check,
                         },
                         source_line: Some(idx),
                     });
@@ -13910,10 +13918,50 @@ mod tests {
                 ArmOp::CallIndirect {
                     table_size: 3,
                     table_byte_offset: 0, // #650: table 0 stays at R11 offset 0
+                    null_check: false,    // #664: fully-initialized → no check
                     ..
                 }
             )),
             "the pseudo-op must carry the compile-time table size: {arm:#?}"
+        );
+    }
+
+    /// #664: a VERIFIED table whose image carries null (uninitialized) slots
+    /// lowers with `null_check: true` — the encoder traps on a zero-linked
+    /// pointer between the table load and the `BLX`.
+    #[test]
+    fn test_664_call_indirect_null_slots_carry_null_check() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(Vec::new(), vec![0]);
+        selector.set_call_indirect_guards(synth_core::CallIndirectGuards {
+            tables: vec![synth_core::TableGuards {
+                table_size: Some(4),
+                base_byte_offset: Some(0),
+                type_reject: vec![None], // initialized slots verified
+                has_null_slots: true,    // slots 0,2 null (the falcon shape)
+            }],
+        });
+        let wasm_ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
+        ];
+        let arm = selector
+            .select_with_stack(&wasm_ops, 0)
+            .expect("a sparse-but-verified call_indirect must lower (#664)");
+        assert!(
+            arm.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::CallIndirect {
+                    table_size: 4,
+                    null_check: true,
+                    ..
+                }
+            )),
+            "the pseudo-op must request the runtime null check: {arm:#?}"
         );
     }
 
@@ -13931,11 +13979,13 @@ mod tests {
                     table_size: Some(7),
                     base_byte_offset: Some(0),
                     type_reject: vec![None],
+                    has_null_slots: false,
                 },
                 synth_core::TableGuards {
                     table_size: Some(41),
                     base_byte_offset: Some(28),
                     type_reject: vec![None],
+                    has_null_slots: false,
                 },
             ],
         });
@@ -13999,11 +14049,13 @@ mod tests {
                     table_size: None,
                     base_byte_offset: Some(0),
                     type_reject: vec![Some("growable import".to_string())],
+                    has_null_slots: false,
                 },
                 synth_core::TableGuards {
                     table_size: Some(4),
                     base_byte_offset: None,
                     type_reject: vec![None],
+                    has_null_slots: false,
                 },
             ],
         });

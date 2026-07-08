@@ -128,6 +128,16 @@ pub struct TableGuards {
     /// against THIS table; `Some(reason)` = not verifiable (the lowering
     /// declines).
     pub type_reject: Vec<Option<String>>,
+    /// #664: whether this table's image contains at least one uninitialized
+    /// (null funcref) slot. WASM Core §4.4.8 requires a `call_indirect`
+    /// reaching a null slot to TRAP — the closed-world type check verifies
+    /// the INITIALIZED slots only, and the lowering must emit a runtime
+    /// null check (pointer == 0 → trap) before the indirect branch when
+    /// this is set. `false` for a fully-initialized table keeps today's
+    /// exact dispatch bytes (no null check) BY CONSTRUCTION. Only
+    /// meaningful when the type verdict is `None` (verified); reject paths
+    /// decline before it is consulted.
+    pub has_null_slots: bool,
 }
 
 /// #642/#650: everything the `call_indirect` lowering needs to emit its
@@ -153,11 +163,19 @@ pub struct TableGuards {
 ///  - the BOUNDS check is emitted at runtime against THAT table's
 ///    compile-time `table_size` immediate (sound: fixed-size, see above), and
 ///  - the TYPE check is discharged at COMPILE time: for expected type `t`,
-///    `tables[n].type_reject[t]` is `None` only when every slot of table `n`
-///    is verifiably initialized with a function whose signature structurally
+///    `tables[n].type_reject[t]` is `None` only when every INITIALIZED slot
+///    of table `n` verifiably holds a function whose signature structurally
 ///    equals type `t` (the closed-world property — no runtime mismatch is
 ///    then possible). Otherwise it holds the reason, and the lowering
-///    declines LOUDLY rather than emit an unchecked indirect branch.
+///    declines LOUDLY rather than emit an unchecked indirect branch, and
+///  - a NULL (uninitialized) slot traps at RUNTIME (#664): the layout
+///    contract requires the runtime/harness to link every uninitialized
+///    slot as a ZERO word (null funcref has no code address; 0 is never a
+///    valid function pointer in the region), and when `has_null_slots` is
+///    set the dispatch emits a null check on the loaded pointer
+///    (`CMP #0` → trap) between the bounds guard and the indirect branch.
+///    A fully-initialized table (`has_null_slots == false`) keeps the
+///    pre-#664 dispatch bytes identical BY CONSTRUCTION.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CallIndirectGuards {
     /// Per-table guard inputs, indexed by table index (imports first). The
@@ -174,6 +192,7 @@ impl CallIndirectGuards {
                 table_size,
                 base_byte_offset: Some(0),
                 type_reject,
+                has_null_slots: false,
             }],
         }
     }
@@ -296,11 +315,13 @@ impl DecodedModule {
         let mut base_words: Option<u32> = Some(0);
         for (n, &size) in self.table_sizes.iter().enumerate() {
             let base_byte_offset = base_words.and_then(|w| w.checked_mul(4));
-            let type_reject = self.table_type_reject(n as u32, size, global_poison, n_types);
+            let (type_reject, has_null_slots) =
+                self.table_type_reject(n as u32, size, global_poison, n_types);
             tables.push(TableGuards {
                 table_size: size,
                 base_byte_offset,
                 type_reject,
+                has_null_slots,
             });
             base_words = match (base_words, size) {
                 (Some(w), Some(s)) => w.checked_add(s),
@@ -311,16 +332,21 @@ impl DecodedModule {
     }
 
     /// #642/#650: the closed-world type verdicts for ONE table — `None` per
-    /// expected type when every slot of table `n` verifiably holds a function
-    /// of that exact structural signature; `Some(reason)` otherwise.
+    /// expected type when every INITIALIZED slot of table `n` verifiably
+    /// holds a function of that exact structural signature; `Some(reason)`
+    /// otherwise. The second component is `has_null_slots` (#664): whether
+    /// the table image left any slot uninitialized — a `call_indirect`
+    /// reaching one must TRAP at runtime (null check on the loaded pointer),
+    /// which the lowering emits only when this is set. Reject paths return
+    /// `false` (the verdict declines before the flag is consulted).
     fn table_type_reject(
         &self,
         n: u32,
         size: Option<u32>,
         global_poison: Option<&str>,
         n_types: usize,
-    ) -> Vec<Option<String>> {
-        let reject_all = |reason: String| vec![Some(reason); n_types];
+    ) -> (Vec<Option<String>>, bool) {
+        let reject_all = |reason: String| (vec![Some(reason); n_types], false);
 
         if let Some(reason) = global_poison {
             return reject_all(reason.to_string());
@@ -355,18 +381,17 @@ impl DecodedModule {
                 *slot = Some(f);
             }
         }
-        // An uninitialized slot is a null funcref: calling it must trap, and
-        // the raw code-pointer table has no runtime representation of null to
-        // check against — so it breaks the closed world for EVERY type.
-        if let Some(i) = slots.iter().position(|s| s.is_none()) {
-            return reject_all(format!(
-                "table {n} slot {i} is uninitialized (null funcref) — a \
-                 `call_indirect` reaching it must trap, and the raw \
-                 code-pointer table has no runtime null/type id to check"
-            ));
-        }
+        // #664: an uninitialized slot is a null funcref — calling it must
+        // trap (WASM Core §4.4.8). It no longer poisons the closed world
+        // (pre-#664 it rejected EVERY type): the layout contract requires
+        // null slots to be linked as ZERO words, so the lowering discharges
+        // the trap at RUNTIME with a null check on the loaded pointer. The
+        // type check below therefore covers the INITIALIZED slots only —
+        // a null slot can never produce a live callee of the wrong type,
+        // because the null check traps before the branch.
+        let has_null_slots = slots.iter().any(|s| s.is_none());
 
-        (0..n_types)
+        let rejects = (0..n_types)
             .map(|t| {
                 for f in slots.iter().flatten() {
                     let Some(&fty) = self.func_type_indices.get(*f as usize) else {
@@ -384,7 +409,8 @@ impl DecodedModule {
                 }
                 None
             })
-            .collect()
+            .collect();
+        (rejects, has_null_slots)
     }
 }
 
@@ -2493,6 +2519,11 @@ mod tests {
             "closed-world type check must verify the homogeneous table: {:?}",
             guards.tables[0].type_reject
         );
+        assert!(
+            !guards.tables[0].has_null_slots,
+            "#664: a fully-initialized table must NOT request the runtime \
+             null check (dispatch bytes stay identical by construction)"
+        );
     }
 
     /// #642: a heterogeneous table (an entry whose signature differs from the
@@ -2528,11 +2559,13 @@ mod tests {
         );
     }
 
-    /// #642: an uninitialized table slot (elem covers less than the declared
-    /// size) is a null funcref — calling it must trap, which the raw
-    /// code-pointer table cannot express at runtime → reject all types.
+    /// #664 (relaxes the #642 all-reject): an uninitialized table slot (elem
+    /// covers less than the declared size) is a null funcref — calling it
+    /// must trap, which is now discharged at RUNTIME (null check on the
+    /// zero-linked pointer), so the closed-world verdict verifies the
+    /// INITIALIZED slots and sets `has_null_slots` for the lowering.
     #[test]
-    fn test_call_indirect_guards_null_slot_rejects_642() {
+    fn test_call_indirect_guards_null_slot_verifies_with_flag_664() {
         let wat = r#"
             (module
                 (type $s (func (result i32)))
@@ -2548,18 +2581,71 @@ mod tests {
         let module = decode_wasm_module(&wasm).expect("decode");
         let guards = module.call_indirect_guards();
         assert_eq!(guards.tables[0].table_size, Some(3));
-        assert!(
-            guards.tables[0].type_reject.iter().all(|r| r.is_some()),
-            "slot 2 is a null funcref — every type must be rejected: {:?}",
+        assert_eq!(
+            guards.tables[0].type_reject.first(),
+            Some(&None),
+            "initialized slots are homogeneous in $s — the verdict must \
+             verify despite the null slot (#664): {:?}",
             guards.tables[0].type_reject
         );
         assert!(
-            guards.tables[0].type_reject[0]
-                .as_deref()
-                .unwrap()
-                .contains("slot 2"),
-            "reason names the uninitialized slot: {:?}",
-            guards.tables[0].type_reject[0]
+            guards.tables[0].has_null_slots,
+            "slot 2 is uninitialized — the lowering must emit the runtime \
+             null check (#664)"
+        );
+    }
+
+    /// #664: the falcon shape — a SPARSE table (only slots 1 and 3 of 4
+    /// initialized, by two separate segments) verifies with the null flag;
+    /// a sparse table whose INITIALIZED slots are heterogeneous still
+    /// rejects (the runtime null check cannot discharge a TYPE mismatch).
+    #[test]
+    fn test_call_indirect_guards_sparse_table_664() {
+        let wat = r#"
+            (module
+                (type $t (func (param i32) (result i32)))
+                (table 4 4 funcref)
+                (func $f1 (type $t) (i32.add (local.get 0) (i32.const 100)))
+                (func $f3 (type $t) (i32.sub (i32.const 1000) (local.get 0)))
+                (elem (i32.const 1) $f1)
+                (elem (i32.const 3) $f3)
+                (func (export "via") (param i32 i32) (result i32)
+                    (call_indirect (type $t) (local.get 0) (local.get 1)))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode");
+        let guards = module.call_indirect_guards();
+        assert_eq!(guards.tables[0].table_size, Some(4));
+        assert_eq!(
+            guards.tables[0].type_reject.first(),
+            Some(&None),
+            "slots 1,3 are homogeneous in $t — verified: {:?}",
+            guards.tables[0].type_reject
+        );
+        assert!(guards.tables[0].has_null_slots, "slots 0,2 are null");
+
+        // Heterogeneous INITIALIZED slots in a sparse table: still rejected.
+        let wat = r#"
+            (module
+                (type $t (func (param i32) (result i32)))
+                (type $u (func (param i32 i32) (result i32)))
+                (table 4 4 funcref)
+                (func $f1 (type $t) (local.get 0))
+                (func $f3 (type $u) (i32.add (local.get 0) (local.get 1)))
+                (elem (i32.const 1) $f1)
+                (elem (i32.const 3) $f3)
+                (func (export "via") (param i32 i32) (result i32)
+                    (call_indirect (type $t) (local.get 0) (local.get 1)))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode");
+        let guards = module.call_indirect_guards();
+        assert!(
+            guards.tables[0].type_reject[0].is_some() && guards.tables[0].type_reject[1].is_some(),
+            "a heterogeneous sparse table must still reject every type: {:?}",
+            guards.tables[0].type_reject
         );
     }
 
