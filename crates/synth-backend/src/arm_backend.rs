@@ -316,7 +316,25 @@ fn compile_wasm_to_arm(
         SafetyBounds::None => BoundsCheckConfig::None,
         SafetyBounds::Mpu => BoundsCheckConfig::Mpu,
         SafetyBounds::Software => BoundsCheckConfig::Software,
-        SafetyBounds::Mask => BoundsCheckConfig::Masking,
+        SafetyBounds::Mask => {
+            // #651 (mirroring the RISC-V backend's compile-time decline):
+            // index masking wraps `ea & (size-1)` — a modulo only when the
+            // linear-memory size is a power of two. With a non-power-of-two
+            // size the AND would silently REMAP in-bounds addresses (e.g.
+            // 0x18000 & 0x2FFFF = 0x8000 for a 192 KiB memory). Decline
+            // loudly rather than miscompile. `linear_memory_bytes == 0`
+            // means "unknown" (plain per-function path, no module context)
+            // — the startup default of one 64 KiB page is a power of two.
+            let bytes = config.linear_memory_bytes;
+            if bytes != 0 && !bytes.is_power_of_two() {
+                return Err(format!(
+                    "--safety-bounds mask requires a power-of-two linear-memory \
+                     size, got {bytes} bytes — switch to --safety-bounds software \
+                     for the deterministic check (#651)"
+                ));
+            }
+            BoundsCheckConfig::Masking
+        }
     };
 
     // The non-optimized (direct) instruction-selection path. Handles f32 via
