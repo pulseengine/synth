@@ -463,8 +463,9 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         // I64Ctz: CMP.W(4) + BEQ(2) + RBIT.W(4) + CLZ.W(4) + B(2) + NOP(2) + RBIT.W(4) + CLZ.W(4) + ADD.W(4) + MOV(2) = 32 bytes
         ArmOp::I64Ctz { .. } => 32,
         // I64Popcnt: PUSH/POP + duplicate popcount for lo and hi word (#498:
-        // measured 172, was a ~180-guess 200 over-estimate).
-        ArmOp::I64Popcnt { .. } => 172,
+        // measured 172; #632 result-carry through R12 across the restore pop
+        // + R12-routed marshal + MOV.W hi-clear = +8).
+        ArmOp::I64Popcnt { .. } => 180,
         // I64 sign extension: SXTB/SXTH/ASR + ASR.
         ArmOp::I64Extend8S { .. } => 8,
         ArmOp::I64Extend16S { .. } => 8,
@@ -476,8 +477,10 @@ pub fn estimate_arm_byte_size(op: &ArmOp) -> usize {
         // pre-#610 cores (74/78/126/124, the #498 exact measurements).
         ArmOp::I64DivU { .. } => 120,
         ArmOp::I64RemU { .. } => 124,
-        // Signed versions have additional negation logic.
-        ArmOp::I64DivS { .. } => 172,
+        // Signed versions have additional negation logic. div_s also carries
+        // the #633 INT64_MIN/-1 overflow guard (+22 bytes); rem_s deliberately
+        // does NOT (rem_s(INT64_MIN, -1) == 0, no trap).
+        ArmOp::I64DivS { .. } => 194,
         ArmOp::I64RemS { .. } => 170,
         // AND/OR/XOR: encoder always uses 32-bit Thumb-2 (.W) encoding
         ArmOp::And { .. } | ArmOp::Orr { .. } | ArmOp::Eor { .. } => 4,
