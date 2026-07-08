@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.32.1] - 2026-07-08
+
+**Two gale-filed silent i64 miscompiles fixed same-day (#632/#633), plus two
+latent bugs the class audit surfaced in the same encoder arm.**
+
+### Fixed
+
+- **i64.popcnt result clobbered by the expansion's own scratch restore
+  (#632, BOTH ISAs).** The expansion computed the total into an
+  allocator-assigned register that could sit in its own `POP {R3,R4,R5}`
+  restore set — silent garbage whenever pressure landed rd there. Fix is
+  structural: the total crosses the restore in R12 (encoder scratch, never
+  allocatable, never restored) and lands in rd after the pop — no collision
+  possible by construction. Class audit: every push/pop-scratch expansion on
+  both ISAs swept; I64Popcnt was the only affected op (Thumb-2 AND A32 fixed).
+  Also found in the same arm: an entry-marshal clobber for pairs at (R3,R4)
+  and 3-bit ADDS-T1/MOVS-T1 fields silently corrupting R8 — both fixed with
+  total MOV/MOV.W forms. Differential: 6/11 mismatch → 11/11.
+- **i64.div_s(INT64_MIN, -1) returned INT64_MIN instead of trapping (#633).**
+  The i64 signed-div path had only the zero-divisor guard (the i32 path has
+  both). New overflow guard on the fixed-ABI wrapper (both ISAs): divisor
+  == -1 && dividend == INT64_MIN → UDF. The rem_s twin is pinned:
+  `i64.rem_s(INT64_MIN,-1)` still returns 0 without trapping (unit tests
+  assert exactly one UDF in I64RemS). Differential: 2 mismatch → 16/16.
+
+Frozen anchors untouched (no fixture exercises these shapes); estimator
+re-aligned (I64Popcnt 172→180 B, I64DivS 172→194 B).
+
 ## [0.32.0] - 2026-07-08
 
 **Proof-carrying specialization fires for the first time (#494 phase 2,
