@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.33.0] - 2026-07-08
+
+**The correctness wave: four MORE live optimized-path miscompiles closed
+(#500 class), safety-bounds actually enforced on both paths (#377 — the
+direct path's existing check was a fallthrough no-op), zero-init locals
+(#457), the estimator gap allowlist reaches zero (#498), the verified
+selector DSL grows to 21 Rocq-proven rules, and certified divisor-nonzero
+guard elision lands.**
+
+### Fixed
+
+- **Four optimized-path miscompiles (#500 class, PR #641):** real if/else
+  (both arms executed), real if without else (then ran unconditionally),
+  function-level br (post-block code ran), non-tail return (dropped). Each
+  now honestly declines to the direct selector, whose function-level br /
+  br_if / Return arms were fixed to emit full return epilogues. 14-case CF
+  differential red (4 FAIL on v0.32.1) → 14/14. Defense: ir_to_arm declines
+  loudly on any unresolvable branch target (the literal #483 silent-skip).
+- **--safety-bounds software was a silent no-op on the optimized path AND a
+  fallthrough no-op on the direct path (#377, PR #640):** the direct path's
+  `Bhs Trap_Handler` resolved to offset-0 in self-contained images — the
+  compare ran, the trap never fired. Both paths now emit inline
+  `CMP/BLO+UDF` guards; 13/13 OOB vectors trap (was 6/13 on both paths).
+  `mask` loud-declines to direct; `mpu` proven path-independent by pinned
+  test. Base-CSE disabled under software mode (folded addressing would
+  bypass the guard).
+- **Read-before-write non-param locals read caller garbage (#457, PR #638,
+  all three backends):** count_params inferred params from access patterns,
+  homing wasm-zero-initialized locals in param registers. Fixed with the
+  declared param count from the type section (min(inferred, declared)),
+  prologue zero-init on ARM-direct + RV32, optimized-path decline routing,
+  and a loud skip on aarch64.
+- **Estimator gap allowlist 2 → 0 (#498, PR #641):** far branch
+  displacements (bridge now declines what outgrows the short form — a
+  latent layout-shift miscompile) and negative/wide Mov immediates (the
+  encoder emitted wrong-value `MOVS #(imm&0xFF)` for negative imm — fixed
+  with unsigned imm8/imm16/MOVW+MOVT). KNOWN_GAP machinery deleted.
+
+### Added
+
+- **VCR-SEL-001 increment 2 (#639, epic #242):** +14 rules → **21 total /
+  21 Qed / 0 Admitted** in the verified selector DSL — the ten i32
+  comparisons, register shifts (shl/shr_s/shr_u), and rotr. Coverage check
+  unweakened; OFF ≡ baseline byte-identical even with delegation on.
+- **Divisor-nonzero fact elision (#636, #494 phase 2b, VCR-PERF-002):**
+  kind-3 wsc.facts premises elide div/rem zero-trap guards under a per-site
+  ordeal UNSAT certificate; the #634 INT64_MIN/-1 overflow guard falls only
+  to its own separate obligation (pinned at four levels). Marked functions
+  route to the direct selector; fixture .text 446→406 B.
+
 ## [0.32.1] - 2026-07-08
 
 **Two gale-filed silent i64 miscompiles fixed same-day (#632/#633), plus two
