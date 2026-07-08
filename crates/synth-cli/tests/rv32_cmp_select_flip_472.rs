@@ -20,11 +20,13 @@
 //!   shrink (control_step −12 B, the sel_* family −4/−8 B each, clamp −8 B
 //!   at flip time).
 //!
-//! `SYNTH_RV_LOCAL_PROMO` (the wave's second lever) did NOT flip — HELD on a
-//! per-function no-grow blocker (its own WAR fixtures grow: war_set 56→64 B,
-//! war_tee 60→68 B; promo-alone grows control_step 504→508 B). The blocker is
-//! documented at the env read in `synth-backend-riscv/src/selector.rs`; this
-//! test env-removes the flag so a stray value can't skew the gate.
+//! `SYNTH_RV_LOCAL_PROMO` (the wave's second lever) was HELD out of the wave
+//! on a per-function no-grow blocker (its own WAR fixtures grew under the v1
+//! access-count model: war_set 56→64 B, war_tee 60→68 B) and later flipped
+//! default-on once profitability became MEASURED (#601; see
+//! `rv32_local_promo_flip_472.rs`). This gate pins it OFF in both arms so it
+//! keeps isolating the cmp→select lever against the same pre-promo baseline
+//! it was frozen on.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -49,7 +51,8 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 /// `SYNTH_RV_CMP_SELECT=0` opt-out (pre-flip bytes).
 fn compile(rel: &str, out: &str, default_on: bool) -> Vec<u8> {
     let mut cmd = Command::new(synth());
-    cmd.env_remove("SYNTH_RV_LOCAL_PROMO");
+    // #601 promo flip: default-on now — pin OFF in both arms (see module doc).
+    cmd.env("SYNTH_RV_LOCAL_PROMO", "0");
     // #242 flag-audit flip-wave: shift-fold is default-on; remove it so a
     // stray opt-out can't skew the cmp-select isolation (both arms fold).
     cmd.env_remove("SYNTH_RV_SHIFT_FOLD");

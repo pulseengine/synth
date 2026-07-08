@@ -26,8 +26,11 @@
 //!   NO-GROW: for every function, text size(flag-on) <= text size(flag-off).
 //!   NON-VACUITY: the lever genuinely fires (>=1 function shrinks — accum).
 //!
-//! This gate is the flip precondition: it was verified RED on the old model
-//! (war_set/war_tee grew) before the measured decision landed.
+//! This gate was the flip precondition: it was verified RED on the old model
+//! (war_set/war_tee grew) before the measured decision landed, GREEN after,
+//! and the flip shipped — `SYNTH_RV_LOCAL_PROMO` is DEFAULT-ON, `=0` opts out
+//! (pre-flip bytes; CI-gated escape hatch in `frozen_codegen_bytes.rs`). The
+//! two arms below are now default-vs-opt-out, same invariant.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -47,18 +50,20 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 }
 
 /// Compile `rel` for RV32 exactly like the `.py` differentials do.
-/// `promo_on` toggles ONLY `SYNTH_RV_LOCAL_PROMO`; every other lever env var
-/// is removed so both arms run the shipped defaults and the gate isolates the
-/// promotion lever.
+/// `promo_on` toggles ONLY `SYNTH_RV_LOCAL_PROMO` (`true` = the shipped
+/// default, env removed so a stray opt-out in the test environment can't skew
+/// the gate; `false` = the `=0` opt-out, pre-flip bytes); every other lever
+/// env var is removed so both arms run the shipped defaults and the gate
+/// isolates the promotion lever.
 fn compile(rel: &str, out: &str, promo_on: bool) -> Vec<u8> {
     let mut cmd = Command::new(synth());
     cmd.env_remove("SYNTH_RV_CMP_SELECT");
     cmd.env_remove("SYNTH_RV_SHIFT_FOLD");
     cmd.env_remove("SYNTH_RV_ADDR_FOLD");
     if promo_on {
-        cmd.env("SYNTH_RV_LOCAL_PROMO", "1");
-    } else {
         cmd.env_remove("SYNTH_RV_LOCAL_PROMO");
+    } else {
+        cmd.env("SYNTH_RV_LOCAL_PROMO", "0");
     }
     let out_status = cmd
         .args([

@@ -33,7 +33,8 @@
 //!
 //! The #601 local-promo precedent applies: had ANY function grown, the flag
 //! would have been HELD with the numbers documented at the flag site (as
-//! `SYNTH_RV_LOCAL_PROMO` still is).
+//! `SYNTH_RV_LOCAL_PROMO` was, until its measured-profitability fix flipped
+//! it default-on — see `rv32_local_promo_flip_472.rs`).
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -57,8 +58,11 @@ fn fixture(rel: &str) -> std::path::PathBuf {
 /// opt-out (pre-flip bytes). `backend_args` selects ARM path / RV32.
 fn compile(rel: &str, out: &str, flag: &str, default_on: bool, backend_args: &[&str]) -> Vec<u8> {
     let mut cmd = Command::new(synth());
-    // Hold the still-unflipped RV32 lever out of both arms.
-    cmd.env_remove("SYNTH_RV_LOCAL_PROMO");
+    // #601 promo flip: local promotion is default-on now; pin it OFF in both
+    // arms so this gate keeps isolating its own lever against the same
+    // pre-promo baseline it was frozen on (the flip has its own gate in
+    // `rv32_local_promo_flip_472.rs`).
+    cmd.env("SYNTH_RV_LOCAL_PROMO", "0");
     if default_on {
         cmd.env_remove(flag);
     } else {
