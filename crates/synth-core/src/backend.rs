@@ -140,6 +140,14 @@ pub struct CompileConfig {
     /// invisible to liveness.
     pub func_ret_i64: Vec<bool>,
     pub type_ret_i64: Vec<bool>,
+    /// #643: byte width of each defined global's storage slot, indexed by
+    /// global index — 4 for i32/f32, 8 for i64/f64, 16 for v128 (from the
+    /// module's global section). The globals table is laid out by SUMMING
+    /// these widths: an i64 global needs a register-PAIR store/load at
+    /// `[R9, off]`/`[R9, off+4]`, and every later global's offset shifts.
+    /// Empty ⇒ every global assumed 4 bytes (the legacy `idx * 4` layout;
+    /// hand-built op streams and i32-only modules are byte-identical).
+    pub global_widths: Vec<u32>,
     /// #359: declared parameter widths per *function* (full index, imports
     /// first): `func_params_i64[f][k]` is true when param `k` of function `f` is
     /// i64/f64. The AAPCS stack-argument path needs the *declared* widths
@@ -308,6 +316,8 @@ impl Default for CompileConfig {
             stack_pointer_global: None,
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
+            // #643: empty ⇒ legacy all-4-byte global slots (i32-only modules).
+            global_widths: Vec::new(),
             func_params_i64: Vec::new(),
             current_func_params_i64: Vec::new(),
             // #457: None ⇒ declared signature unknown ⇒ param-count inference

@@ -60,6 +60,11 @@ pub struct WasmGlobal {
     pub init_i32: Option<i32>,
     /// Whether the global is mutable.
     pub mutable: bool,
+    /// #643: byte width of the global's storage slot, from its declared value
+    /// type — 4 for i32/f32, 8 for i64/f64, 16 for v128. The globals table is
+    /// laid out by SUMMING these widths (not `index * 4`): an i64 global needs
+    /// room for both words, and every later global's offset shifts with it.
+    pub slot_bytes: u32,
 }
 
 impl WasmMemory {
@@ -305,10 +310,20 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     if let Ok(wasmparser::Operator::I32Const { value }) = ops.read() {
                         init_i32 = Some(value);
                     }
+                    // #643: record the slot width from the DECLARED value type.
+                    // i64/f64 globals occupy 8 bytes (a register pair on the
+                    // 32-bit targets), v128 sixteen; laying every global out at
+                    // `index * 4` silently dropped the high word of every i64.
+                    let slot_bytes = match global.ty.content_type {
+                        wasmparser::ValType::I64 | wasmparser::ValType::F64 => 8,
+                        wasmparser::ValType::V128 => 16,
+                        _ => 4,
+                    };
                     globals.push(WasmGlobal {
                         index: idx as u32,
                         init_i32,
                         mutable: global.ty.mutable,
+                        slot_bytes,
                     });
                 }
             }
@@ -1774,6 +1789,30 @@ mod tests {
         let c = &module.globals[1];
         assert_eq!(c.init_i32, Some(7));
         assert!(!c.mutable, "second global is immutable");
+        assert_eq!(sp.slot_bytes, 4, "i32 global occupies one 4-byte slot");
+        assert_eq!(c.slot_bytes, 4);
+    }
+
+    /// #643: the decoder records the DECLARED slot width per global — an i64
+    /// (or f64) global occupies 8 bytes, so the globals-table layout can give
+    /// it room for both words and shift every later global's offset.
+    #[test]
+    fn test_decode_records_global_slot_widths_643() {
+        let wat = r#"
+            (module
+                (global $c (mut i64) (i64.const 0))
+                (global $k (mut i32) (i32.const 0))
+                (global $f (mut f64) (f64.const 0))
+                (func (export "f") (result i32) global.get 1)
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("Failed to parse WAT");
+        let module = decode_wasm_module(&wasm).expect("Failed to decode");
+
+        assert_eq!(module.globals.len(), 3);
+        assert_eq!(module.globals[0].slot_bytes, 8, "i64 global is 8 bytes");
+        assert_eq!(module.globals[1].slot_bytes, 4, "i32 global is 4 bytes");
+        assert_eq!(module.globals[2].slot_bytes, 8, "f64 global is 8 bytes");
     }
 
     /// #509: the decoder records `(param_count, result_count)` for every

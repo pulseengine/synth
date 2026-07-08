@@ -370,6 +370,10 @@ fn compile_wasm_to_arm(
         {
             selector.set_native_pointer_stack(sp_idx, sp_init);
         }
+        // #643: per-global slot widths — i64/f64 globals occupy 8-byte slots
+        // (register-pair store/load) and shift every later global's offset.
+        // Empty for i32-only modules ⇒ the legacy `idx * 4` layout, unchanged.
+        selector.set_global_widths(config.global_widths.clone());
         selector.set_spill_on_exhaustion(spill_on_exhaustion);
         selector.set_param_backing_on_exhaustion(param_backing_on_exhaustion);
         // #587 pool-grow rung: a larger i64 spill-slot pool, set ONLY on the
@@ -572,11 +576,25 @@ fn compile_wasm_to_arm(
     // pattern). Never fires without SYNTH_FACT_SPEC + facts + a discharged
     // obligation, so every existing compile keeps its path byte-identical.
     let has_fact_div_elide = !fact_div_zero_elide.is_empty() || !fact_div_ovf_elide.is_empty();
+    // #643: the optimized path's global lowering is width-naive — `GlobalGet`/
+    // `GlobalSet` are single-word `[R9, idx*4]` accesses, which (a) silently
+    // dropped the high word of every i64 global and (b) mis-address every
+    // global whose offset an earlier wide (i64/f64) slot shifted. When the
+    // module has any wide global, route every global-touching function to the
+    // direct selector, whose type-aware summed layout pairs the access (or
+    // declines loudly). Modules with only 4-byte globals — every existing
+    // fixture — keep the optimized path byte-identical.
+    let has_wide_global_module = config.global_widths.iter().any(|&w| w > 4);
+    let has_global_access = has_wide_global_module
+        && wasm_ops
+            .iter()
+            .any(|op| matches!(op, WasmOp::GlobalGet(_) | WasmOp::GlobalSet(_)));
     let arm_instrs = if config.no_optimize
         || config.relocatable
         || has_br_table
         || has_value_carry
         || has_wide_param
+        || has_global_access
         || has_fact_div_elide
         // #457: route read-before-write non-param locals to the direct
         // selector, whose prologue zero-init lands the wasm-mandated 0.

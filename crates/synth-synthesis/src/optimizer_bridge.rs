@@ -2434,6 +2434,14 @@ impl OptimizerBridge {
                 // ===== Globals =====
                 //
                 // GlobalGet pushes a fresh i32; GlobalSet pops one.
+                //
+                // #643: this i32-single-slot model (and ir_to_arm's
+                // `[R9, idx*4]` lowering) is WIDTH-NAIVE — it truncated i64
+                // globals and mis-addressed globals behind a wide slot. The
+                // backend's #643 pre-gate routes every global-touching
+                // function of a module with any i64/f64/v128 global to the
+                // direct selector, so these opcodes only ever see modules
+                // whose globals are all 4-byte (`idx * 4` is then exact).
                 WasmOp::GlobalGet(idx) => Opcode::GlobalGet {
                     dest: OptReg(inst_id as u32),
                     idx: *idx,
