@@ -73,9 +73,11 @@ rocq_library(
     deps = [":arm_semantics"],
 )
 
-# VCR-ISA-001 spike (#242): Sail/ASL-derived semantics bridge — AArch32
-# ADD/ADDS/CMP (register) transcribed from rems-project/sail-arm with
-# line-level provenance, proven ≡ ArmSemantics.v on registers + NZCV.
+# VCR-ISA-001 (#242): Sail/ASL-derived semantics bridge — the AArch32
+# integer core (AddWithCarry family ADD/ADDS/CMP/SUB/SUBS/CMN/RSB/ADC/SBC,
+# flag-free ALU AND/ORR/EOR/MVN, LSL/LSR/ASR/ROR imm+reg via Shift_C,
+# MOV/MOVW/MOVT) transcribed from rems-project/sail-arm with line-level
+# provenance, proven ≡ ArmSemantics.v on registers + NZCV.
 rocq_library(
     name = "sail_arm_bridge",
     srcs = ["Synth/ARM/SailArmBridge.v"],
