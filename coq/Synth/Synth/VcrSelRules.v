@@ -1,4 +1,4 @@
-(** * VCR-SEL-001 increments 1+2: Rocq obligations of the wired selector rule table
+(** * VCR-SEL-001 increments 1+2+3: Rocq obligations of the wired selector rule table
 
     One universally-quantified T1 theorem per rule in the checked-in DSL table
     [crates/synth-synthesis/src/sel_dsl/mod.rs] (RULES), naming 1:1:
@@ -39,7 +39,36 @@
     generalized to universally-quantified registers
     ([synth_cmp_binop_proof_poly] below), with the same three manual
     variants (ne / lt_s / lt_u) the fixed-register proofs in
-    CorrectnessI32.v use, parameterized over registers verbatim. *)
+    CorrectnessI32.v use, parameterized over registers verbatim.
+
+    INCREMENT 3 extends the DSL into the i64 register-pair family — the
+    two-instruction pair shapes (ADDS+ADC / SUBS+SBC / ANDx2 / ORRx2 /
+    EORx2) plus the single-instruction [I64SetCondZ] shape for i64.eqz.
+    An i64 value lives in a (lo, hi) register pair, so each pair rule is
+    quantified over SIX registers and its theorem proves BOTH result
+    words. The pair shapes are where register generalization earns its
+    keep: the low-half instruction writes [rdlo] before the high-half
+    instruction reads [rnhi]/[rmhi], so a rule that could not state
+    "the destination must not be clobbered before use" would be exactly
+    how #632-class bugs happen. Three explicit aliasing hypotheses per
+    pair rule (carried as [SideCondition::NotAlias] in the Rust table and
+    enforced Ok-or-Err in the generated lowering):
+
+      - [rdhi <> rdlo] — the high write must not destroy the low result;
+      - [rdlo <> rnhi] and [rdlo <> rmhi] — the low write must not
+        clobber a high-half operand the second instruction still reads.
+
+    In-place lowering ([rdlo = rnlo], [rdhi = rnhi] — what
+    [select_default]'s fixed R0:R1 += R2:R3 arms emit) satisfies all
+    three, so one Qed per rule covers both selectors' assignments.
+    Discharge: the value-level carry/borrow lemmas already proven for the
+    fixed-register ancestors ([i64_add_via_adds_adc] /
+    [i64_sub_via_subs_sbc] in ArmFlagLemmas.v; the halves-distribute
+    combine lemmas in CorrectnessI64.v), applied under the generalized
+    register bookkeeping — no new axiom. The theorem shape follows the
+    CorrectnessI64.v ancestors: a value-level correspondence between the
+    WASM-spec function ([I64.add] etc. on [combine_i32]-combined
+    operands) and the ARM execution result, both halves pinned. *)
 
 From Stdlib Require Import List.
 From Stdlib Require Import ZArith.
@@ -54,6 +83,10 @@ Require Import Synth.WASM.WasmSemantics.
 Require Import Synth.Synth.Compilation.
 Require Import Synth.Synth.Tactics.
 Require Import Synth.ARM.ArmFlagLemmas.
+(* Increment 3: the halves-distribute combine lemmas
+   ({and,or,xor}_{lo,hi}_combine) proven for the fixed-register i64
+   bitwise ancestors live in CorrectnessI64.v — imported, not duplicated. *)
+Require Import Synth.Synth.CorrectnessI64.
 Import ListNotations.
 
 Open Scope Z_scope.
@@ -455,3 +488,196 @@ Theorem rule_i32_ge_u_correct : forall wstate astate v1 v2 stack' rd rn rm,
     exec_program (rule_i32_ge_u rd rn rm) astate = Some astate' /\
     get_reg astate' rd = (if I32.geu v1 v2 then I32.one else I32.zero).
 Proof. synth_cmp_binop_proof_poly flags_geu. Qed.
+
+(** ** Increment 3: the i64 register-pair rule lowerings — 1:1 with
+    sel_dsl::RULES / sel_dsl::generated. An i64 value is a (lo, hi)
+    register pair; operand 1 is (rnlo, rnhi), operand 2 is (rmlo, rmhi),
+    the result pair is (rdlo, rdhi). *)
+
+Definition rule_i64_add (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [ADDS rdlo rnlo (Reg rmlo); ADC rdhi rnhi (Reg rmhi)].
+Definition rule_i64_sub (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [SUBS rdlo rnlo (Reg rmlo); SBC rdhi rnhi (Reg rmhi)].
+Definition rule_i64_and (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [AND rdlo rnlo (Reg rmlo); AND rdhi rnhi (Reg rmhi)].
+Definition rule_i64_or (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [ORR rdlo rnlo (Reg rmlo); ORR rdhi rnhi (Reg rmhi)].
+Definition rule_i64_xor (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
+  [EOR rdlo rnlo (Reg rmlo); EOR rdhi rnhi (Reg rmhi)].
+
+(** i64.eqz — unary, single [I64SetCondZ] pseudo-op (the SetCondZ shape);
+    the 0/1 result is a single i32 register, so no pair side conditions. *)
+Definition rule_i64_eqz (rd rnlo rnhi : arm_reg) : arm_program :=
+  [I64SetCondZ rd rnlo rnhi].
+
+(** ** Increment-3 discharge tactics.
+
+    [synth_i64_carry_pair_proof_poly] — the flags-coupled pair shapes
+    (ADDS+ADC / SUBS+SBC): verbatim the stepped structure of the
+    fixed-register [i64_add_correct] / [i64_sub_correct] proofs
+    (CorrectnessI64.v) modulo (a) the six register binders, (b) the
+    lowering-unfold target, and (c) the three aliasing hypotheses standing
+    in for what was [discriminate] on concrete registers. Parameterized by
+    the ArmFlagLemmas.v carry/borrow-propagation lemma.
+
+    [synth_i64_bitwise_pair_proof_poly] — the flag-free parallel-halves
+    shapes (ANDx2/ORRx2/EORx2), parameterized by the lo/hi
+    halves-distribute lemmas from CorrectnessI64.v. *)
+
+Ltac synth_i64_carry_pair_proof_poly carry_lemma :=
+  intros astate lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi
+         Hdd Hdnh Hdmh HR0 HR1 HR2 HR3;
+  unfold rule_i64_add, rule_i64_sub;
+  cbn [exec_program exec_instr eval_operand2];
+  rewrite flags_set_flags_set_reg;
+  rewrite flag_c_update_flags_arith;
+  let Hpair := fresh "Hpair" in
+  pose proof (carry_lemma lo1 hi1 lo2 hi2) as Hpair;
+  let Hlo := fresh "Hlo" in
+  let Hhi := fresh "Hhi" in
+  destruct Hpair as [Hlo Hhi];
+  eexists; split;
+  [ reflexivity
+  | split;
+    [ (* lo word: the high-half write must not have destroyed it. *)
+      rewrite (get_set_reg_neq _ rdhi rdlo) by exact Hdd;
+      rewrite get_reg_set_flags;
+      rewrite get_set_reg_eq;
+      rewrite HR0, HR2; exact Hlo
+    | (* hi word: the high-half instruction read its operands from the
+         post-low-half state, where rdlo was already written. *)
+      rewrite get_set_reg_eq;
+      rewrite !get_reg_set_flags;
+      rewrite (get_set_reg_neq astate rdlo rnhi) by exact Hdnh;
+      rewrite (get_set_reg_neq astate rdlo rmhi) by exact Hdmh;
+      rewrite HR0, HR1, HR2, HR3; exact Hhi ] ].
+
+Ltac synth_i64_bitwise_pair_proof_poly lo_lemma hi_lemma :=
+  intros astate lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi
+         Hdd Hdnh Hdmh HR0 HR1 HR2 HR3;
+  unfold rule_i64_and, rule_i64_or, rule_i64_xor;
+  cbn [exec_program exec_instr eval_operand2];
+  eexists; split;
+  [ reflexivity
+  | split;
+    [ rewrite (get_set_reg_neq _ rdhi rdlo) by exact Hdd;
+      rewrite get_set_reg_eq;
+      rewrite HR0, HR2; apply lo_lemma
+    | rewrite get_set_reg_eq;
+      rewrite (get_set_reg_neq astate rdlo rnhi) by exact Hdnh;
+      rewrite (get_set_reg_neq astate rdlo rmhi) by exact Hdmh;
+      rewrite HR1, HR3; apply hi_lemma ] ].
+
+(** ** Increment-3 pair theorems — quantified over all SIX registers,
+    under the three explicit aliasing hypotheses the rule table carries.
+    Pair-result T1: BOTH words of the result are proven. *)
+
+Theorem rule_i64_add_correct :
+  forall astate lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi,
+  rdhi <> rdlo ->    (* high write must not destroy the low result *)
+  rdlo <> rnhi ->    (* low write must not clobber operand-1's high half *)
+  rdlo <> rmhi ->    (* low write must not clobber operand-2's high half *)
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_add rdlo rdhi rnlo rnhi rmlo rmhi) astate
+      = Some astate' /\
+    get_reg astate' rdlo = lo_of_i64 (I64.add (combine_i32 lo1 hi1)
+                                              (combine_i32 lo2 hi2)) /\
+    get_reg astate' rdhi = hi_of_i64 (I64.add (combine_i32 lo1 hi1)
+                                              (combine_i32 lo2 hi2)).
+Proof. synth_i64_carry_pair_proof_poly i64_add_via_adds_adc. Qed.
+
+Theorem rule_i64_sub_correct :
+  forall astate lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi,
+  rdhi <> rdlo ->
+  rdlo <> rnhi ->
+  rdlo <> rmhi ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_sub rdlo rdhi rnlo rnhi rmlo rmhi) astate
+      = Some astate' /\
+    get_reg astate' rdlo = lo_of_i64 (I64.sub (combine_i32 lo1 hi1)
+                                              (combine_i32 lo2 hi2)) /\
+    get_reg astate' rdhi = hi_of_i64 (I64.sub (combine_i32 lo1 hi1)
+                                              (combine_i32 lo2 hi2)).
+Proof. synth_i64_carry_pair_proof_poly i64_sub_via_subs_sbc. Qed.
+
+Theorem rule_i64_and_correct :
+  forall astate lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi,
+  rdhi <> rdlo ->
+  rdlo <> rnhi ->
+  rdlo <> rmhi ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_and rdlo rdhi rnlo rnhi rmlo rmhi) astate
+      = Some astate' /\
+    get_reg astate' rdlo = lo_of_i64 (I64.and (combine_i32 lo1 hi1)
+                                              (combine_i32 lo2 hi2)) /\
+    get_reg astate' rdhi = hi_of_i64 (I64.and (combine_i32 lo1 hi1)
+                                              (combine_i32 lo2 hi2)).
+Proof. synth_i64_bitwise_pair_proof_poly and_lo_combine and_hi_combine. Qed.
+
+Theorem rule_i64_or_correct :
+  forall astate lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi,
+  rdhi <> rdlo ->
+  rdlo <> rnhi ->
+  rdlo <> rmhi ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_or rdlo rdhi rnlo rnhi rmlo rmhi) astate
+      = Some astate' /\
+    get_reg astate' rdlo = lo_of_i64 (I64.or (combine_i32 lo1 hi1)
+                                             (combine_i32 lo2 hi2)) /\
+    get_reg astate' rdhi = hi_of_i64 (I64.or (combine_i32 lo1 hi1)
+                                             (combine_i32 lo2 hi2)).
+Proof. synth_i64_bitwise_pair_proof_poly or_lo_combine or_hi_combine. Qed.
+
+Theorem rule_i64_xor_correct :
+  forall astate lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi,
+  rdhi <> rdlo ->
+  rdlo <> rnhi ->
+  rdlo <> rmhi ->
+  get_reg astate rnlo = lo1 ->
+  get_reg astate rnhi = hi1 ->
+  get_reg astate rmlo = lo2 ->
+  get_reg astate rmhi = hi2 ->
+  exists astate',
+    exec_program (rule_i64_xor rdlo rdhi rnlo rnhi rmlo rmhi) astate
+      = Some astate' /\
+    get_reg astate' rdlo = lo_of_i64 (I64.xor (combine_i32 lo1 hi1)
+                                              (combine_i32 lo2 hi2)) /\
+    get_reg astate' rdhi = hi_of_i64 (I64.xor (combine_i32 lo1 hi1)
+                                              (combine_i32 lo2 hi2)).
+Proof. synth_i64_bitwise_pair_proof_poly xor_lo_combine xor_hi_combine. Qed.
+
+(** i64.eqz — the SetCondZ shape. Single instruction, no pair side
+    conditions (the pseudo-op reads both operand halves before writing
+    [rd], so every rd/rnlo/rnhi aliasing is admitted). Value-level T1 via
+    the [i64_setcondz_bits_spec] axiom, exactly like the fixed-register
+    bit-manipulation ancestors (i64_clz/ctz/popcnt in CorrectnessI64.v). *)
+Theorem rule_i64_eqz_correct : forall astate lo hi rd rnlo rnhi,
+  get_reg astate rnlo = lo ->
+  get_reg astate rnhi = hi ->
+  exists astate',
+    exec_program (rule_i64_eqz rd rnlo rnhi) astate = Some astate' /\
+    get_reg astate' rd =
+      (if I64.eq (combine_i32 lo hi) I64.zero then I32.one else I32.zero).
+Proof.
+  intros astate lo hi rd rnlo rnhi HR0 HR1.
+  unfold rule_i64_eqz; simpl.
+  rewrite HR0, HR1.
+  rewrite i64_setcondz_bits_spec.
+  eexists. split; [reflexivity | apply get_set_reg_eq].
+Qed.

@@ -426,11 +426,43 @@ artifacts:
       select_with_stack-delegated rules, with a non-vacuity window check that
       the delegation actually fired) +
       sel_dsl_cmp_imm_fold_path_stays_handwritten_and_byte_identical_242.
-      FLIP EVIDENCE: with all 21 rules mirror-pinned byte-identical, nothing
+      INCREMENT 3 LANDED (2026-07-08, flag-off,
+      docs/design/vcr-sel-001-increment-3.md): +6 rules = 27 total, each with
+      its 1:1 Qed (27/27, 0 Admitted, 0 holdouts among attempted rules). The
+      i64 register-pair family — add/sub/and/or/xor (two-instruction pair
+      shapes ADDS+ADC / SUBS+SBC / ANDx2 / ORRx2 / EORx2 over SIX register
+      variables rd_lo..rm_hi) + eqz (single I64SetCondZ). Chosen deliberately:
+      the #615/#632/#633/#643/#599 miscompile cluster is all hand-written i64
+      paths, zero bugs in DSL-covered ops. MODEL FINDING: the Rocq flat model
+      needed ZERO extension for pairs — ADDS/ADC carry coupling +
+      combine_i32/lo_of_i64/hi_of_i64 have carried the pair convention since
+      v0.8.0; the increment is the pilot's fixed-to-universal register lift
+      applied to CorrectnessI64.v's ancestors. SIDE-CONDITION DESIGN (the
+      #632 lesson made structural): each pair rule carries THREE explicit
+      aliasing hypotheses (rd_hi<>rd_lo, rd_lo<>rn_hi, rd_lo<>rm_hi — the
+      low-half write must not clobber the high-half operands still to be
+      read, and the high write must not destroy the low result), runtime
+      Ok-or-Err in the generated Rust; in-place rd=rn reuse (select_default's
+      fixed R0:R1 op= R2:R3) is deliberately admitted, so one Qed covers both
+      selectors. Theorems are pair-result T1: BOTH words proven
+      (rd_lo=lo_of_i64, rd_hi=hi_of_i64 post-conditions), discharged by
+      synth_i64_carry_pair_proof_poly (via the existing i64_add_via_adds_adc
+      / i64_sub_via_subs_sbc, no new axiom) and
+      synth_i64_bitwise_pair_proof_poly (combine lemmas imported from
+      CorrectnessI64, not duplicated); eqz via i64_setcondz_bits_spec.
+      Delegation::Both — select_default fixed-register arms + the
+      select_with_stack allocated-pair arms (alloc_consecutive_pair's
+      extra_avoid satisfies the side conditions by construction). Mirror-pins:
+      the select_default loop now covers 17 rules; the dedicated
+      sel_dsl_mirror_pin_i64_pair_rules_select_with_stack_242 probes i64-typed
+      stacks with the RMW-vacuity window check;
+      i64_pair_side_conditions_are_enforced pins all three Errs per rule.
+      FLIP EVIDENCE: with all 27 rules mirror-pinned byte-identical, nothing
       byte-visible remains before the SYNTH_SEL_DSL default-on flip — the
       flip is a later PR with the standard re-freeze ritual. NOT yet done
-      (hence not verified): that default flip; optimizer_bridge + the
-      remaining select_with_stack families; div/rem (VCR-ISA-001-gated).
+      (hence not verified): that default flip; i64
+      mul/div/shifts/rotates/comparisons (I64SetCond) + optimizer_bridge +
+      the remaining select_with_stack families; div/rem (VCR-ISA-001-gated).
     status: implemented
     tags: [codegen, selector, isle, verified-dsl, rocq, track-a, novel, release-v0.12.1]
     links:
