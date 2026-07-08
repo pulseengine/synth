@@ -2526,15 +2526,31 @@ impl OptimizerBridge {
                     continue;
                 }
 
+                // #665: `unreachable` must TRAP (WASM §4.4.5). The optimized
+                // path's local `Opcode` enum has no trap opcode, and adding
+                // one would ripple through the #513 mirror-pinned
+                // reg_effect/rewrite_op machinery — so decline to the direct
+                // selector, whose `Unreachable` arm emits `UDF #0`. Same
+                // decline-don't-drop pattern as #120 floats and the #500
+                // non-tail `return` (this arm previously lumped `unreachable`
+                // in with Nop as a placeholder — a silent fall-through).
+                WasmOp::Unreachable => {
+                    return Err(synth_core::Error::validation(
+                        "optimized lowering path does not support `unreachable` \
+                         (no trap opcode in the bridge IR); the direct \
+                         instruction selector lowers it to UDF #0 — issue #665",
+                    ));
+                }
+
                 // ===== Stack-neutral control-flow / no-op ops =====
                 //
-                // Nop / Unreachable / Return have no slot_stack effect at
+                // Nop / Return have no slot_stack effect at
                 // this layer (Return's value handling is done later by the
                 // function-epilogue codegen in `ir_to_arm`). They still
                 // emit an IR Nop placeholder so the IR length is in lockstep
                 // with the wasm op index for any downstream pass that
                 // relies on positional alignment.
-                WasmOp::Nop | WasmOp::Unreachable | WasmOp::Return => {
+                WasmOp::Nop | WasmOp::Return => {
                     // #500: `return` is representable here only as a Nop
                     // placeholder — the real epilogue is emitted once at the
                     // function end, and the callee-saved push/pop frame is

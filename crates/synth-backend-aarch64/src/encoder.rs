@@ -67,6 +67,13 @@ pub fn ret() -> u32 {
     0xD65F_03C0
 }
 
+/// `brk #imm16` — A64 breakpoint/trap. Used for wasm `unreachable` (#665):
+/// WASM §4.4.5 requires an unconditional trap, the A64 analogue of Thumb-2
+/// `udf #0` / RV32 `ebreak`.
+pub fn brk(imm16: u16) -> u32 {
+    0xD420_0000 | ((imm16 as u32) << 5)
+}
+
 /// Materialize a 32-bit constant into `wd` with `movz` + optional `movk`.
 /// Returns 1 or 2 words.
 pub fn mov_imm32(rd: Reg, value: u32) -> Vec<u32> {

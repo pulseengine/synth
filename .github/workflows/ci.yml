@@ -286,6 +286,42 @@ jobs:
       - name: Run two-move execution oracle
         run: python scripts/repro/cmp_select_two_move_differential.py
 
+  trap-semantics-oracle:
+    name: trap-semantics oracle (#665 unreachable + #666 rem_s)
+    # #665: wasm `unreachable` must TRAP (WASM §4.4.5) — it was decoder-dropped
+    # to a no-op on EVERY backend, falling through panic/abort guards. #666:
+    # rv32 rem_s wrongly carried div_s's INT_MIN/-1 ebreak guard —
+    # irem_s(INT_MIN,-1) = 0, no trap (§4.3.2). Both EXECUTION-validated under
+    # unicorn (thumb2 + rv32) against wasmtime ground truth, including the
+    # non-vacuity direction (a guarded `unreachable` NOT taken runs normally;
+    # rem_s zero-divisor + div_s overflow traps are KEPT). Isolated job:
+    # emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run unreachable trap oracle (#665, thumb2 + rv32)
+        run: SYNTH=./target/debug/synth python scripts/repro/unreachable_665_differential.py
+      - name: Run rem_s trap-table oracle (#666, rv32)
+        run: SYNTH=./target/debug/synth python scripts/repro/rem_s_666_differential.py
+
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b)
     # VCR-PERF-002 Phase 2 (#494): the proof-carrying-specialization lever
