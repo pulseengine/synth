@@ -24,6 +24,13 @@ path = "src/main.rs"
 name = "fact_spec_clamp_494"
 required-features = ["verify"]
 
+# #494 phase 2b (divisor-nonzero): same contract — the guard-elision byte
+# gates need the solver-carrying binary; the fact-spec CI job runs it via
+# `cargo test -p synth-cli --features verify --test fact_spec_div_494`.
+[[test]]
+name = "fact_spec_div_494"
+required-features = ["verify"]
+
 [features]
 default = ["riscv"]
 awsm = ["synth-backend-awsm"]

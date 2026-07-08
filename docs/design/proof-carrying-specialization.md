@@ -1,8 +1,9 @@
 # VCR-PERF-002 — Proof-carrying specialization design (#494)
 
-Status: **Phases 1–2 implemented** (fact ingestion + the single-elision
-prototype behind `SYNTH_FACT_SPEC` — see "Phasing"; Phase 3, the gale
-measurement vs the 0.45× floor, remains). Tracks `VCR-PERF-002` in
+Status: **Phases 1–2 + 2b implemented** (fact ingestion, the single-elision
+prototype, and the divisor-nonzero trap-guard elision behind
+`SYNTH_FACT_SPEC` — see "Phasing"; Phase 3, the gale measurement vs the
+0.45× floor, remains). Tracks `VCR-PERF-002` in
 `artifacts/verified-codegen-roadmap.yaml`, epic #242, GitHub #494 part (a).
 Cross-repo contract: loom#240 / loom#231 (`wsc.facts`), gale PR
 pulseengine/gale#121 (`gust_floor_bench`, the measured floor).
@@ -122,6 +123,46 @@ bounds adversarial queries to a clean conservative decline.
    sweep, specialized ≡ wasmtime ≡ unspecialized on [524,1524]), both CI-run
    by the `fact-spec-oracle` job. Fixture:
    `scripts/repro/fact_spec_clamp_494.wat`.
+
+   **Phase 2b — divisor-nonzero trap-guard elision (fact kind 3).
+   IMPLEMENTED.** The pass's symbolic walk now TRACKS `div`/`rem` (i32 and
+   i64) instead of stopping at them — the ops are never *deleted* (they can
+   trap; a div result carries no erasable producer slice), but each site
+   discharges up to TWO **independent** guard obligations and emits per-site
+   elision marks the direct selector consumes
+   (`CompileConfig::fact_div_zero_elide` / `fact_div_ovf_elide`):
+
+   | guard | applies to | obligation |
+   |---|---|---|
+   | divide-by-zero (`CMP/BNE/UDF #0`; i64: fused `ORRS R12/BNE/UDF #0`) | `div_u`, `div_s`, `rem_u`, `rem_s` | `UNSAT(P ∧ divisor == 0)` |
+   | `INT_MIN / -1` overflow (`…UDF #1`; i64: the #633 22-byte sequence) | `div_s` ONLY (`rem_s(INT_MIN,-1) == 0` never traps) | `UNSAT(P ∧ dividend == INT_MIN ∧ divisor == -1)` |
+
+   **The two-guard distinction (the #633/#634 synergy):** a divisor-nonzero
+   fact (kind 3) discharges the first obligation but NOT the second —
+   `divisor ≠ 0` does not exclude `divisor == -1`, so the overflow guard is
+   RETAINED (loud decline) unless the premises independently prove it (a
+   value-range fact `divisor ∈ [1, N]` proves both). Both fact kinds work:
+   kind 3 directly, or any value-range excluding 0. Sat / Unknown /
+   no-premise ⇒ loud decline, the guard is emitted.
+
+   Consumption is direct-selector-only: the optimized path's IR passes
+   renumber instructions, so op-index-keyed marks route the function to
+   `select_with_stack` (the #507/#509 honest-degradation pattern; never
+   fires without flag + facts + a discharged obligation). The i64 guards
+   live inside the `ArmOp::I64Div*/I64Rem*` encoder expansions, which
+   gained per-guard elision flags — estimator sizes track them
+   (estimator↔encoder agreement oracle extended with the elided variants).
+   Oracles: fact_spec unit gates (two-guard matrix, i64 width discipline,
+   mark remapping through a clamp elision) +
+   `crates/synth-cli/tests/fact_spec_div_494.rs` (byte evidence: guard UDFs
+   present without facts, absent with facts+flag, i64 overflow guard
+   retained under kind 3; Sat-decline byte-identity; the debug-only
+   `SYNTH_FACT_SPEC_FORCE_ADMIT` red lever) +
+   `scripts/repro/fact_spec_div_494_differential.py` (in-bounds sweep over
+   the proven divisor bound incl. the retained-guard trap
+   `qs64(INT64_MIN, -1)`; `--expect-decline`; `--force-admit` red
+   divergence demo), all CI-run by the `fact-spec-oracle` job. Fixture:
+   `scripts/repro/fact_spec_div_494.wat`.
 3. **Measurement vs the 0.45× floor** — gale re-measures `gust_mix` on
    `gust_floor_bench` (qemu `-icount`) and STM32F100 silicon (DWT CYCCNT).
    Kill-criterion (#494, unchanged): shipped dissolved lane **<1.0× then
@@ -136,5 +177,5 @@ bounds adversarial queries to a clean conservative decline.
   functions) — that is VCR-RA territory and independently unblocked.
 - loom's algebraic mid-end (`256*x>>8 → x`, loom#240 ask 1) — a loom change;
   it shrinks the input but is not fact-passing.
-- Fact kinds beyond value-range in the prototype — ordered by silicon payoff
-  only after Phase 3 reports.
+- Fact kinds beyond value-range and divisor-nonzero in the prototype —
+  ordered by silicon payoff only after Phase 3 reports.

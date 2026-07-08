@@ -229,6 +229,21 @@ pub struct CompileConfig {
     ///
     /// [`current_func_params_i64`]: CompileConfig::current_func_params_i64
     pub current_func_facts: Vec<WscFact>,
+    /// VCR-PERF-002 Phase 2b (#494, divisor-nonzero): op indices (into the op
+    /// stream passed to `compile_function`) of `div`/`rem` ops whose
+    /// DIVIDE-BY-ZERO trap guard is proven dead — the fact-spec pass
+    /// discharged `UNSAT(P ∧ divisor == 0)` per site through the
+    /// certificate-checked ordeal solver BEFORE the driver set this field.
+    /// Consumed by the ARM direct selector (`select_with_stack`); every other
+    /// path ignores it (guards stay — sound). Empty (the default) ⇒ every
+    /// guard is emitted, byte-identical to today.
+    pub fact_div_zero_elide: Vec<usize>,
+    /// VCR-PERF-002 Phase 2b (#494): op indices of `div_s` ops whose
+    /// `INT_MIN / -1` OVERFLOW trap guard is proven dead — a SEPARATE
+    /// obligation (`UNSAT(P ∧ dividend == INT_MIN ∧ divisor == -1)`). A
+    /// divisor-nonzero fact alone NEVER lands here: divisor ≠ 0 does not
+    /// exclude -1 (#633/#634 two-guard distinction). Empty ⇒ guard emitted.
+    pub fact_div_ovf_elide: Vec<usize>,
 }
 
 /// #543 — an integrator-marked volatile linear-memory segment (the DMA transfer
@@ -288,6 +303,11 @@ impl Default for CompileConfig {
             // no consumer anyway) ⇒ emitted bytes unchanged.
             wsc_facts: Vec::new(),
             current_func_facts: Vec::new(),
+            // VCR-PERF-002 Phase 2b (#494): no guard-elision marks unless the
+            // fact-spec pass discharged the per-site obligations. Empty ⇒
+            // every div/rem trap guard is emitted, byte-identical.
+            fact_div_zero_elide: Vec::new(),
+            fact_div_ovf_elide: Vec::new(),
         }
     }
 }

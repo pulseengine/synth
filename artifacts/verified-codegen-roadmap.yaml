@@ -1683,6 +1683,43 @@ artifacts:
       measured cortex-m4 codegen 84 B/23 insns -> 14 B/6 insns (vs the 6 B
       add+bx measured floor: residual const-materialization + reg-shuffle +
       callee-saved frame — allocator/peephole residue, a Phase-3 datum).
+      Phase 2b — divisor-nonzero trap-guard elision (fact kind 3).
+      IMPLEMENTED (2026-07-08): the fact_spec walk now TRACKS i32/i64 div/rem
+      (upgrading the phase-2 hard stop) — never deleting them (they can trap;
+      result carries no erasable slice) but discharging up to TWO INDEPENDENT
+      per-site guard obligations: divide-by-zero = UNSAT(P AND divisor == 0)
+      (div_u/div_s/rem_u/rem_s, both widths) and INT_MIN/-1 overflow =
+      UNSAT(P AND dividend == INT_MIN AND divisor == -1) (div_s ONLY). THE
+      TWO-GUARD DISTINCTION (#633/#634 synergy): a divisor-nonzero fact
+      discharges the first but NOT the second — divisor != 0 does not exclude
+      -1, so the overflow guard is RETAINED (loud decline) unless the premises
+      independently prove it (a value-range divisor in [1,N] proves both;
+      either fact kind works). Discharged obligations become per-site elision
+      marks (FactSpecResult::elide_div_zero/elide_div_ovf, remapped through
+      any clamp-elision rewrite) threaded via
+      CompileConfig::fact_div_zero_elide/fact_div_ovf_elide to the DIRECT
+      selector only — the optimized path's IR passes renumber instructions,
+      so marked functions route to select_with_stack (the #507/#509
+      honest-degradation pattern; never fires without flag+facts+obligation).
+      i32 guards are selector-emitted and simply skipped; i64 guards live
+      inside the ArmOp::I64Div*/I64Rem* encoder expansions, which gained
+      per-guard elision flags (Thumb-2 + A32), with estimator sizes tracking
+      the flags (estimator<->encoder agreement oracle extended with the 5
+      elided variants — zero guard 8 B Thumb / 12 B A32, div_s overflow 22 B
+      / 24 B). Oracles: fact_spec unit gates (two-guard matrix, i64 width
+      discipline via current_func_params_i64, mark remapping); encoder splice
+      pins (elision removes EXACTLY the guard bytes, overflow retained under
+      zero-only); synth-cli tests/fact_spec_div_494.rs (byte evidence on the
+      qu/qs/ru/qs64 fixture: guard UDFs present without facts, absent with
+      facts+flag, qs64's INT64_MIN/-1 guard retained under kind 3 = 1 UDF
+      left; Sat-decline byte-identity; the debug-only
+      SYNTH_FACT_SPEC_FORCE_ADMIT red lever screams);
+      scripts/repro/fact_spec_div_494_differential.py (1584-case in-bounds
+      sweep specialized ≡ wasmtime ≡ unspecialized over the proven divisor
+      bound, retained-guard trap qs64(INT64_MIN,-1) fires in BOTH wasmtime
+      and the specialized build, --expect-decline byte-identity leg,
+      --force-admit RED leg demonstrating the wasmtime-traps/unsound-build-
+      returns-0 divergence) — all CI-gated by the fact-spec-oracle job.
       Phase 3 NOT started — the requirement's kill-criterion is gale-measured;
       status stays at implemented (not verified) until Phase 3 reports.
       Phase 3 — measurement vs the 0.45x floor: gale re-measures gust_mix on
@@ -1692,7 +1729,7 @@ artifacts:
       floor (0.45x) gives the target 0.25x of headroom — if the productized
       elision cannot land inside it, the premise-to-selector plumbing (not the
       idea) is at fault and the phase re-plans.
-    # implemented (not verified): Phases 1+2 of 3 landed with their oracles —
+    # implemented (not verified): Phases 1+2+2b of 3 landed with their oracles —
     # the elision exists, certificate-gated and differential-tested. The
     # requirement's kill-criterion (Phase 3, gale-measured 0.70x vs native)
     # has NO evidence yet — never strengthen a traceability claim beyond it.

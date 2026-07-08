@@ -287,7 +287,7 @@ jobs:
         run: python scripts/repro/cmp_select_two_move_differential.py
 
   fact-spec-oracle:
-    name: fact-spec clamp elision oracle (#494 phase 2)
+    name: fact-spec elision oracle (#494 phases 2 + 2b)
     # VCR-PERF-002 Phase 2 (#494): the proof-carrying-specialization lever
     # (SYNTH_FACT_SPEC, default off; per-elision ordeal obligation). Built
     # with the `verify` feature (the solver lives in synth-verify — pure-Rust
@@ -295,7 +295,11 @@ jobs:
     # certificate-evidence Rust gates; (2) the in-bounds execution
     # differential — specialized ≡ wasmtime ≡ unspecialized over the proven
     # bound ch ∈ [524,1524] under unicorn — plus the wrong-bound loud-decline
-    # green path. Isolated job: emulation deps pip-installed here ONLY.
+    # green path. Phase 2b (divisor-nonzero, kind 3): the div/rem trap-guard
+    # elision byte gates + differential (incl. the two-guard distinction — the
+    # i64 INT64_MIN/-1 overflow guard is RETAINED under a nonzero-only fact —
+    # and the RED force-admit divergence demo, debug-build lever). Isolated
+    # job: emulation deps pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -312,6 +316,8 @@ jobs:
             ${{ runner.os }}-cargo-
       - name: Run fact-spec end-to-end gates (flag matrix + certificates)
         run: cargo test -p synth-cli --features verify --test fact_spec_clamp_494
+      - name: Run divisor-nonzero guard-elision gates (#494 phase 2b byte evidence)
+        run: cargo test -p synth-cli --features verify --test fact_spec_div_494
       - name: Build synth (verify feature)
         run: cargo build -p synth-cli --features verify
       - uses: actions/setup-python@v6
@@ -325,6 +331,18 @@ jobs:
         run: >
           python scripts/repro/fact_spec_clamp_494_differential.py
           --fact-lo 0 --fact-hi 4000 --expect-decline
+      # #494 phase 2b — divisor-nonzero: in-bounds div/rem differential
+      # (specialized ≡ wasmtime ≡ unspecialized over the proven divisor bound,
+      # incl. the RETAINED-i64-overflow-guard trap assertion), the
+      # Sat loud-decline byte-identity leg, and the RED force-admit divergence
+      # demonstration (the lever exists in debug builds only — CI's synth is
+      # a debug build).
+      - name: Run divisor-nonzero in-bounds differential (green)
+        run: python scripts/repro/fact_spec_div_494_differential.py
+      - name: Run divisor-including-zero loud-decline path
+        run: python scripts/repro/fact_spec_div_494_differential.py --expect-decline
+      - name: Run RED force-admit divergence demonstration
+        run: python scripts/repro/fact_spec_div_494_differential.py --force-admit
 
   rv32-shift-fold-oracle:
     name: rv32 immediate-shift-fold execution oracle

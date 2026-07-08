@@ -1942,6 +1942,18 @@ pub struct InstructionSelector {
     /// (`sel_dsl_mirror_pin_generated_rules_match_handwritten_arms_242`).
     /// See `docs/design/vcr-sel-001-first-increment.md`.
     sel_dsl: bool,
+    /// #494 phase 2b (divisor-nonzero fact): op indices (into the stream fed
+    /// to `select_with_stack`) of `div`/`rem` ops whose DIVIDE-BY-ZERO trap
+    /// guard is proven dead — the fact-spec pass discharged
+    /// `UNSAT(P ∧ divisor == 0)` per site through the certificate-checked
+    /// ordeal solver BEFORE selection. Empty (the default) ⇒ every guard is
+    /// emitted, byte-identical to today.
+    fact_div_zero_elide: Vec<usize>,
+    /// #494 phase 2b: op indices of `div_s` ops whose `INT_MIN / -1` OVERFLOW
+    /// trap guard is proven dead — a SEPARATE obligation
+    /// (`UNSAT(P ∧ dividend == INT_MIN ∧ divisor == -1)`; divisor ≠ 0 alone
+    /// never justifies it, #633/#634). Empty ⇒ guard emitted.
+    fact_div_ovf_elide: Vec<usize>,
 }
 
 /// `SYNTH_SEL_DSL` (VCR-SEL-001, #242): opt-IN lever, default OFF. Set (to
@@ -1982,6 +1994,8 @@ impl InstructionSelector {
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
             sel_dsl: sel_dsl_from_env(),
+            fact_div_zero_elide: Vec::new(),
+            fact_div_ovf_elide: Vec::new(),
         }
     }
 
@@ -2015,6 +2029,8 @@ impl InstructionSelector {
             local_promote: false,
             i64_spill_slots: I64_SPILL_SLOTS,
             sel_dsl: sel_dsl_from_env(),
+            fact_div_zero_elide: Vec::new(),
+            fact_div_ovf_elide: Vec::new(),
         }
     }
 
@@ -2071,6 +2087,21 @@ impl InstructionSelector {
     /// the lever without racing on the process environment.
     pub fn set_sel_dsl(&mut self, enabled: bool) {
         self.sel_dsl = enabled;
+    }
+
+    /// #494 phase 2b (divisor-nonzero fact): per-site trap-guard elision marks
+    /// for `div`/`rem` ops, keyed by op index into the stream fed to
+    /// `select_with_stack`. `zero` = sites whose divide-by-zero guard was
+    /// proven dead (`UNSAT(P ∧ divisor == 0)`); `ovf` = `div_s` sites whose
+    /// `INT_MIN / -1` overflow guard was proven dead — a SEPARATE obligation
+    /// (`UNSAT(P ∧ dividend == INT_MIN ∧ divisor == -1)`); divisor ≠ 0 alone
+    /// never elides it (#633/#634). Every mark was discharged by the fact-spec
+    /// pass through the certificate-checked ordeal solver BEFORE selection —
+    /// this setter only CONSUMES marks, it never derives them. Empty (the
+    /// default) ⇒ every guard is emitted, byte-identical to today.
+    pub fn set_fact_div_guard_elisions(&mut self, zero: Vec<usize>, ovf: Vec<usize>) {
+        self.fact_div_zero_elide = zero;
+        self.fact_div_ovf_elide = ovf;
     }
 
     /// Enable relocatable host-link mode (#197): import calls emit a direct
@@ -3286,6 +3317,9 @@ impl InstructionSelector {
                     rnhi: Reg::R1,
                     rmlo: Reg::R2,
                     rmhi: Reg::R3,
+                    // #494: select_default never consumes fact marks — full guards.
+                    elide_zero_guard: false,
+                    elide_overflow_guard: false,
                 }]
             }
 
@@ -3297,6 +3331,7 @@ impl InstructionSelector {
                     rnhi: Reg::R1,
                     rmlo: Reg::R2,
                     rmhi: Reg::R3,
+                    elide_zero_guard: false,
                 }]
             }
 
@@ -3308,6 +3343,7 @@ impl InstructionSelector {
                     rnhi: Reg::R1,
                     rmlo: Reg::R2,
                     rmhi: Reg::R3,
+                    elide_zero_guard: false,
                 }]
             }
 
@@ -3319,6 +3355,7 @@ impl InstructionSelector {
                     rnhi: Reg::R1,
                     rmlo: Reg::R2,
                     rmhi: Reg::R3,
+                    elide_zero_guard: false,
                 }]
             }
 
@@ -7023,7 +7060,11 @@ impl InstructionSelector {
                     } else {
                         // A nonzero constant divisor can never trap; only emit
                         // the div-by-zero guard when the divisor is unknown or 0.
-                        let needs_guard = cdiv.is_none_or(|c| c == 0);
+                        // #494 phase 2b: a certificate-discharged divisor-nonzero
+                        // fact (UNSAT(P ∧ divisor == 0), proven by the fact-spec
+                        // pass before selection) elides it too.
+                        let needs_guard =
+                            cdiv.is_none_or(|c| c == 0) && !self.fact_div_zero_elide.contains(&idx);
                         if needs_guard {
                             // CMP divisor, #0
                             instructions.push(ArmInstruction {
@@ -7106,8 +7147,11 @@ impl InstructionSelector {
                         });
                         stack.push(StackVal::i32(dst));
                     } else {
-                        // Trap check 1: divide by zero (dead for a nonzero const).
-                        let needs_dz_guard = cdiv.is_none_or(|c| c == 0);
+                        // Trap check 1: divide by zero (dead for a nonzero const,
+                        // or under a #494 certificate-discharged divisor-nonzero
+                        // fact — UNSAT(P ∧ divisor == 0)).
+                        let needs_dz_guard =
+                            cdiv.is_none_or(|c| c == 0) && !self.fact_div_zero_elide.contains(&idx);
                         if needs_dz_guard {
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Cmp {
@@ -7130,8 +7174,13 @@ impl InstructionSelector {
                         }
 
                         // Trap check 2: signed overflow (INT_MIN / -1). Dead
-                        // unless the divisor could be -1.
-                        let needs_ovf_guard = cdiv.is_none_or(|c| c == -1);
+                        // unless the divisor could be -1. #494 phase 2b: elidable
+                        // ONLY under its OWN discharged obligation
+                        // (UNSAT(P ∧ dividend == INT_MIN ∧ divisor == -1)) — a
+                        // divisor-nonzero fact alone never elides it (#633/#634:
+                        // nonzero does not exclude -1).
+                        let needs_ovf_guard =
+                            cdiv.is_none_or(|c| c == -1) && !self.fact_div_ovf_elide.contains(&idx);
                         if needs_ovf_guard {
                             // We need a temp register for INT_MIN (0x80000000)
                             let tmp = alloc_temp_or_spill(
@@ -7254,8 +7303,11 @@ impl InstructionSelector {
                         });
                         stack.push(StackVal::i32(dst));
                     } else {
-                        // Trap check: divide by zero (dead for a nonzero const).
-                        let needs_guard = cdiv.is_none_or(|c| c == 0);
+                        // Trap check: divide by zero (dead for a nonzero const,
+                        // or under a #494 certificate-discharged divisor-nonzero
+                        // fact).
+                        let needs_guard =
+                            cdiv.is_none_or(|c| c == 0) && !self.fact_div_zero_elide.contains(&idx);
                         if needs_guard {
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Cmp {
@@ -7355,8 +7407,10 @@ impl InstructionSelector {
                         stack.push(StackVal::i32(dst));
                     } else {
                         // Trap check: divide by zero (rem_s doesn't trap on
-                        // INT_MIN % -1). Dead for a nonzero constant divisor.
-                        let needs_guard = cdiv.is_none_or(|c| c == 0);
+                        // INT_MIN % -1). Dead for a nonzero constant divisor, or
+                        // under a #494 certificate-discharged divisor-nonzero fact.
+                        let needs_guard =
+                            cdiv.is_none_or(|c| c == 0) && !self.fact_div_zero_elide.contains(&idx);
                         if needs_guard {
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Cmp {
@@ -10370,6 +10424,12 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
+                    // #494 phase 2b: certificate-discharged guard-elision marks
+                    // (fact-spec pass, UNSAT obligations checked BEFORE selection).
+                    // The overflow mark applies to div_s ONLY and is a separate
+                    // obligation from the zero mark (#633/#634).
+                    let elide_zero_guard = self.fact_div_zero_elide.contains(&idx);
+                    let elide_overflow_guard = self.fact_div_ovf_elide.contains(&idx);
                     let arm_op = match op {
                         I64DivS => ArmOp::I64DivS {
                             rdlo: dst_lo,
@@ -10378,6 +10438,8 @@ impl InstructionSelector {
                             rnhi: a_hi,
                             rmlo: b_lo,
                             rmhi: b_hi,
+                            elide_zero_guard,
+                            elide_overflow_guard,
                         },
                         I64DivU => ArmOp::I64DivU {
                             rdlo: dst_lo,
@@ -10386,6 +10448,7 @@ impl InstructionSelector {
                             rnhi: a_hi,
                             rmlo: b_lo,
                             rmhi: b_hi,
+                            elide_zero_guard,
                         },
                         I64RemS => ArmOp::I64RemS {
                             rdlo: dst_lo,
@@ -10394,6 +10457,7 @@ impl InstructionSelector {
                             rnhi: a_hi,
                             rmlo: b_lo,
                             rmhi: b_hi,
+                            elide_zero_guard,
                         },
                         I64RemU => ArmOp::I64RemU {
                             rdlo: dst_lo,
@@ -10402,6 +10466,7 @@ impl InstructionSelector {
                             rnhi: a_hi,
                             rmlo: b_lo,
                             rmhi: b_hi,
+                            elide_zero_guard,
                         },
                         _ => unreachable!(),
                     };
@@ -16631,6 +16696,7 @@ mod tests {
             rnhi,
             rmlo,
             rmhi,
+            ..
         } = &instrs[0].op
         {
             assert_eq!(*rnlo, Reg::R0, "Dividend low in R0");

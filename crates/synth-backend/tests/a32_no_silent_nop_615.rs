@@ -673,6 +673,8 @@ fn representatives() -> Vec<ArmOp> {
             rnhi: nh,
             rmlo: ml,
             rmhi: mh,
+            elide_zero_guard: false,
+            elide_overflow_guard: false,
         },
         I64DivU {
             rdlo: dl,
@@ -681,6 +683,7 @@ fn representatives() -> Vec<ArmOp> {
             rnhi: nh,
             rmlo: ml,
             rmhi: mh,
+            elide_zero_guard: false,
         },
         I64RemS {
             rdlo: dl,
@@ -689,6 +692,7 @@ fn representatives() -> Vec<ArmOp> {
             rnhi: nh,
             rmlo: ml,
             rmhi: mh,
+            elide_zero_guard: false,
         },
         I64RemU {
             rdlo: dl,
@@ -697,6 +701,7 @@ fn representatives() -> Vec<ArmOp> {
             rnhi: nh,
             rmlo: ml,
             rmhi: mh,
+            elide_zero_guard: false,
         },
         I64And {
             rdlo: dl,
