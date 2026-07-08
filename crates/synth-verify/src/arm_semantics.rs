@@ -480,8 +480,11 @@ impl ArmSemantics {
                 type_idx,
                 table_index_reg,
                 // #642: the bounds guard is a control-flow effect (trap), not
-                // modeled by the symbolic call result.
+                // modeled by the symbolic call result. #650: the table base
+                // offset only changes WHICH pointer is loaded, not the
+                // symbolic result shape.
                 table_size: _,
+                table_byte_offset: _,
             } => {
                 // Indirect function call through table
                 let _table_index = state.get_reg(table_index_reg).clone();
