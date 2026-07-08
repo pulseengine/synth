@@ -15,6 +15,18 @@ funcref tables dispatch with null-slot traps (falcon complete); the verified
 selector DSL reaches 40 rules and the Sail/ASL bridge reaches 81 Qed —
 catching two latent bugs in our own hand-written model.**
 
+### Changed
+
+- **Post-exhaustion code quality (PR #672, #242 — the VCR-VER-001-named
+  capability):** spill-cleanup now reaches allocation-time Belady slots
+  (exit-dead scratch renaming, const rematerialization, bounded cleanup
+  fixpoint, const-divisor guard elision under spill) — all scoped to
+  `SYNTH_SPILL_ON_EXHAUST` firings; flag-off bit-identical. Cycle-proxy vs
+  PR #659: spill_rung +32.4% → +8.8%, exhaust +30.4% → +17.4%,
+  high_pressure_i32 and signed_div_const now BEAT the decline path (−24%,
+  −33%). Residual named: the bridge's fixed 5-register destination pool —
+  i.e. the Track-A allocator replacement itself. Flip stays held (#580).
+
 ### Fixed
 
 - **WASM `unreachable` compiled to a no-op on thumb-2 AND rv32 (#665, PR
