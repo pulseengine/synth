@@ -6736,6 +6736,55 @@ impl InstructionSelector {
                 param_last_read.insert(*p, i);
             }
         }
+        // #663: the linear scan above is blind to loop BACK-EDGES — a param
+        // read inside a `Loop..End` span is re-executed every iteration, so
+        // its value is live until the loop exits, not until the (linearly)
+        // last read. Pre-fix, a parameter-bounded counting loop lost the
+        // bound's reservation right after the loop-top compare, and the
+        // induction increment was allocated into the bound's home register
+        // (`adds r0, r7, #1` clobbered n in r0 → loop exited after one
+        // iteration). Extend each last read to the End of every enclosing
+        // loop, iterating to fixpoint so a read in an inner loop extends to
+        // the outermost enclosing loop's End (its back-edge re-executes the
+        // read too). Spans are contiguous and properly nested, so extending
+        // only the maximum read index is sound: any earlier read's enclosing
+        // loop that ends after the max read must also contain the max read.
+        let loop_spans: Vec<(usize, usize)> = {
+            let mut spans = Vec::new();
+            let mut open: Vec<(bool, usize)> = Vec::new(); // (is_loop, start)
+            for (i, op) in wasm_ops.iter().enumerate() {
+                match op {
+                    WasmOp::Loop => open.push((true, i)),
+                    WasmOp::Block | WasmOp::If => open.push((false, i)),
+                    WasmOp::End => {
+                        if let Some((true, start)) = open.pop() {
+                            spans.push((start, i));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // A loop left open at stream end (implicit function-body End)
+            // conservatively extends to the last op.
+            for (is_loop, start) in open {
+                if is_loop {
+                    spans.push((start, wasm_ops.len().saturating_sub(1)));
+                }
+            }
+            spans
+        };
+        for last in param_last_read.values_mut() {
+            let mut changed = true;
+            while changed {
+                changed = false;
+                for &(start, end) in &loop_spans {
+                    if *last > start && *last < end {
+                        *last = end;
+                        changed = true;
+                    }
+                }
+            }
+        }
         let live_param_regs = |at: usize| -> Vec<Reg> {
             let mut out = Vec::new();
             for (p, r) in &param_regs {
@@ -13774,6 +13823,122 @@ mod tests {
                 .any(|i| matches!(&i.op, ArmOp::Movw { rd: Reg::R0, .. })),
             "a constant clobbered param0 (r0) while it was still live (#193): {arm:#?}"
         );
+    }
+
+    /// #663 regression: a param read inside a loop body is re-read every
+    /// iteration via the back-edge, so its reservation must extend to the
+    /// loop's End — linear last-read liveness ended it at the first
+    /// iteration's read, and the induction increment `$i + 1` was allocated
+    /// into r0 (the live bound n): `adds r0, r7, #1` → the loop exited after
+    /// one iteration. Reproducer is gale's `sum_below` (sum of 0..n-1 with
+    /// n = param 0). Pin: no instruction up to and including the loop
+    /// back-edge (the last `B`) may define r0.
+    #[test]
+    fn test_663_loop_body_defs_avoid_live_param_bound() {
+        use WasmOp::*;
+        let mut selector = InstructionSelector::new(RuleDatabase::new().rules().to_vec());
+        // (param i32 i32) (local $i i32) (local $acc i32) — locals 2, 3
+        let ops = vec![
+            Block,
+            Loop,
+            LocalGet(2), // $i
+            LocalGet(0), // n — the bound, re-read EVERY iteration
+            I32GeS,
+            BrIf(1), // exit to $d
+            LocalGet(3),
+            LocalGet(2),
+            I32Add,
+            LocalSet(3), // $acc += $i
+            LocalGet(2),
+            I32Const(1),
+            I32Add,
+            LocalSet(2), // $i += 1 — pre-fix this landed in r0
+            Br(0),       // back-edge
+            End,
+            End,
+            LocalGet(3),
+        ];
+        let arm = selector.select_with_stack(&ops, 2).unwrap();
+        let back_edge = arm
+            .iter()
+            .rposition(|i| matches!(&i.op, ArmOp::B { .. }))
+            .expect("the loop back-edge B must be emitted");
+        for (i, instr) in arm[..=back_edge].iter().enumerate() {
+            if let Some(effect) = crate::liveness::reg_effect(&instr.op) {
+                assert!(
+                    !effect.defs.contains(&Reg::R0),
+                    "instruction {i} ({:?}) defines r0 while the loop bound \
+                     (param0) is still live across the back-edge (#663): {arm:#?}",
+                    instr.op
+                );
+            }
+        }
+    }
+
+    /// #663 nested-loop variant: a param read only in the INNER loop is
+    /// still re-executed by the OUTER back-edge, so the reservation must
+    /// extend to the outermost enclosing loop's End (fixpoint extension),
+    /// not just the inner one's.
+    #[test]
+    fn test_663_nested_loop_extends_reservation_to_outer_end() {
+        use WasmOp::*;
+        let mut selector = InstructionSelector::new(RuleDatabase::new().rules().to_vec());
+        // (param i32 i32) (local $i i32) (local $j i32) (local $acc i32)
+        // outer bound = param 1 (r1), inner bound = param 0 (r0, read only
+        // inside the inner loop).
+        let ops = vec![
+            Block,
+            Loop, // outer
+            LocalGet(2),
+            LocalGet(1),
+            I32GeS,
+            BrIf(1),
+            I32Const(0),
+            LocalSet(3), // $j = 0
+            Block,
+            Loop, // inner
+            LocalGet(3),
+            LocalGet(0), // inner bound — deepest read of param 0
+            I32GeS,
+            BrIf(1),
+            LocalGet(4),
+            I32Const(1),
+            I32Add,
+            LocalSet(4),
+            LocalGet(3),
+            I32Const(1),
+            I32Add,
+            LocalSet(3),
+            Br(0), // inner back-edge
+            End,
+            End,
+            LocalGet(2),
+            I32Const(1),
+            I32Add,
+            LocalSet(2), // outer increment — after param 0's linear last read
+            Br(0),       // outer back-edge
+            End,
+            End,
+            LocalGet(4),
+        ];
+        let arm = selector.select_with_stack(&ops, 2).unwrap();
+        let outer_back_edge = arm
+            .iter()
+            .rposition(|i| matches!(&i.op, ArmOp::B { .. }))
+            .expect("the outer back-edge B must be emitted");
+        for (i, instr) in arm[..=outer_back_edge].iter().enumerate() {
+            if let Some(effect) = crate::liveness::reg_effect(&instr.op) {
+                for r in [Reg::R0, Reg::R1] {
+                    assert!(
+                        !effect.defs.contains(&r),
+                        "instruction {i} ({:?}) defines {r:?} while a loop \
+                         bound param is live across an enclosing back-edge \
+                         (#663 nested): {arm:#?}",
+                        instr.op
+                    );
+                }
+            }
+        }
     }
 
     /// #195 regression: a single i32 argument to a local call must be placed in
