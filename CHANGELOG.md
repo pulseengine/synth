@@ -7,6 +7,63 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-07-10
+
+**A seven-lane feature hub — scalar f32 hard-float becomes reachable on
+Cortex-M4F, the verified selector DSL ships as the DEFAULT selection path,
+two more #73 division admits fall, wit-bindgen buffers unblock, an npm
+distribution lands, and the flaky Z3 release-blocker is killed. Gated by the
+claim-check gate (17/17) plus an independent cold-agent review.**
+
+### Added
+
+- **f32 hard-float reachable on thumb-2 (#619/#369, GI-FPU-002 phase 1).**
+  The existing VFP encoder was unreachable — the direct selector had no float
+  arms and `select_default`'s VFP allocator was a blind round-robin over
+  garbage. Now a real VFP value stack (`StackVal::Float` + an S0–S15
+  allocator), AAPCS-VFP param homing, `.ARM.attributes` FP tags, and CPACR
+  enable in startup — FPU-gated (cortex-m4f/m7/m7dp), honest-reject on M0/M3.
+  Covered: f32 add/sub/mul/div, the six compares, i32.trunc_f32_s/u,
+  f32.convert_i32_s/u, f32 const/param. **48/48 bit-exact vs wasmtime**;
+  surfaced and fixed two latent VCVT/CPACR-mask bugs. f64 held for phase 2.
+- **npm CLI wrapper (#426):** dependency-free `@pulseengine/synth` — postinstall
+  fetches the release tarball for the host triple and verifies it against the
+  cosign-signed SHA256SUMS before extract; publish workflow chains after the
+  release. Closes the last release-standard gap.
+
+### Changed
+
+- **`SYNTH_SEL_DSL` default-ON (#242) — the verified selector DSL is now the
+  SHIPPED selection path for its 40 Rocq-proved ops** (i32/i64 arithmetic,
+  bitwise, shifts, comparisons, clz/ctz/popcnt). Byte-invisible by
+  construction: frozen anchors 10/10 unchanged, 88/88 fixtures bit-identical
+  default-vs-`SYNTH_NO_SEL_DSL`. A North-Star milestone — the DSL stops being
+  a shadow path and becomes what synth emits.
+- **Z3 differential CI job links system libz3 (#553):** kills the flaky
+  `build.rs` prebuilt download (HTTP 403/502) that blocked releases twice.
+  Job now runs in ~1m41s vs ~16 min; the default build stays z3-free (ordeal).
+
+### Fixed
+
+- **Two more #73 i32 division admits discharged (#242):** i32.rem_s and
+  i32.rem_u proven against the fuel-bounded `exec_program_br` executor (the
+  #697 vehicle); i32.div_s held honestly (needs the INT_MIN/-1 overflow
+  restatement). Proofs now **472 Qed / 6 Admitted** (was 470/8).
+- **--native-pointer-abi statics down-shift (#678, VCR-MEM-001 layer-2):**
+  zero-init BSS statics (wit-bindgen realloc/scratch) now rebase into the
+  shrunk reservation instead of a blanket refusal; three sound-decline
+  sub-cases kept precise. Unblocks wit-bindgen buffer nodes.
+- **Estimator gap allowlist verified empty (#498):** the remaining gaps were
+  closed by #555/#641; added the acceptance-criterion regression test (a
+  br_if displacement across a popcnt body, with proven teeth).
+
+### Verification
+
+**Falsification (kill-criterion):** wrong if any shipped .text diverges from
+wasmtime on exercised inputs, if a frozen anchor drifts without a refreeze,
+if `claim_check.py` derives counts differing from the docs, or if the f32
+differential diverges on the covered FPU targets. All CI-gated.
+
 ## [0.38.0] - 2026-07-10
 
 **The largest release: a ten-lane feature hub — five miscompile classes
