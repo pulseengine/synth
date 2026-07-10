@@ -89,12 +89,13 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 470 Qed / 8 Admitted
+See `coq/STATUS.md` for the complete coverage matrix. Current: 472 Qed / 6 Admitted
 (+2 `admit.` tactics) across `coq/Synth/`. This count is CI-gated: `claims.yaml` +
 `scripts/claim_check.py` re-derive it on every commit — when a proof lands, update
 the docs AND `claims.yaml` in the same PR. Proofs are tiered:
 T1 (result-correspondence), T2 (existence-only), T3 (admitted). Remaining admits:
-3 i32 division trap guards (exec_program model gap, #73), 2 Compilation.v,
+1 i32 division trap guard (div_s INT_MIN/-1 double guard, #73 — div_u/rem_s/rem_u
+discharged against `exec_program_br`), 2 Compilation.v,
 1 CorrectnessSimple.v, 2 ArmRefinement.v — 0 i64 admits.
 All i32 AND i64 operations have T1 proofs (i64 T1 parity since v0.11.0).
 

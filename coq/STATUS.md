@@ -1,6 +1,6 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-07-10 (recount: 470 Qed / 8 Admitted, +2 admit., crude
+**Last Updated: 2026-07-10 (recount: 472 Qed / 6 Admitted, +2 admit., crude
 `grep "Qed\."` over `coq/Synth/**/*.v` — same method as prior recounts)
 
 The headline count is CI-gated: `claims.yaml` + `scripts/claim_check.py`
@@ -27,15 +27,18 @@ The flat-executor capability gap named by VCR-SEL-001 increment 4 is closed:
   I64SetCond rules re-proven at EXPANSION tier — against the encoder's
   actual dual-precision chains (CMP lo,lo; SBCS/CMPEQ hi,hi; MOVcc) —
   with no `i64_setcond_bits` axiom.
-- **`i32_divu_correct`** (CorrectnessI32.v): the first #73 trap-guard
-  admit DISCHARGED, restated against `exec_program_br` (the BNE skips the
-  UDF; extra `I32.valid_unsigned` divisor hypothesis makes the raw-Z
-  divu guard and the mod-2^32 Z-flag agree). Compilation.v's I32DivS
-  guard offsets corrected for real branch semantics (2→3, 0→1).
+- **`i32_divu_correct` + `i32_rems_correct` + `i32_remu_correct`**
+  (CorrectnessI32.v): three of the four #73 trap-guard admits DISCHARGED,
+  each restated against `exec_program_br` (the BNE skips the UDF; extra
+  `I32.valid_unsigned` divisor hypothesis makes the raw-Z guard and the
+  mod-2^32 Z-flag agree; SDIV/UDIV then MLS computes the remainder tail).
+  Compilation.v's I32DivS guard offsets corrected for real branch
+  semantics (2→3, 0→1). Only `i32_divs_correct` — whose model carries the
+  extra INT_MIN/-1 double guard — remains Admitted.
 
-**Total admits: 8** (was 9) — 3 i32 division/remainder trap guards
-(div_s/rem_s/rem_u, #73 — restatement against `exec_program_br` pending,
-no new executor capability needed), 2 Compilation.v, 1 CorrectnessSimple.v,
+**Total admits: 6** (was 8) — 1 i32 division trap guard (div_s only, #73 —
+the INT_MIN/-1 double-guard restatement against `exec_program_br` pending;
+div_u/rem_s/rem_u discharged), 2 Compilation.v, 1 CorrectnessSimple.v,
 2 ArmRefinement.v. The headline count grew 291 → 467 because the recount
 now includes everything landed since 2026-06-04 (SailArmBridge rounds 1–3,
 VcrSelRules increments, VcrSelExpansion, i64 certifying validation lemmas).
@@ -147,7 +150,7 @@ umbrella #147).
 |------|---------|-------|
 | **T1: Result Correspondence** | ARM output register = WASM result value | 37¹ |
 | **T2: Existence-Only** | ARM execution succeeds (no result claim) | 139¹ |
-| **T3: Admitted / admit.** | Not yet proven | 11 (8 Admitted + 2 admit.) |
+| **T3: Admitted / admit.** | Not yet proven | 8 (6 Admitted + 2 admit.) |
 | **Infrastructure** | Properties of integers, states, flag lemmas | 65¹ |
 
 ¹ T1/T2/Infrastructure tier classification is the 2026-06-04 semantic recount
@@ -155,7 +158,7 @@ and predates the VcrSelRules (42), VcrSelPilot (7) and SailArmBridge (92) Qed;
 see the per-file breakdown below for current per-file counts. The T3 row and
 the headline total are re-derived by the claim gate.
 
-**Total: 470 Qed / 8 Admitted (+2 admit.) across all files** (recount 2026-07-10, CI-gated via `claims.yaml`)
+**Total: 472 Qed / 6 Admitted (+2 admit.) across all files** (recount 2026-07-10, CI-gated via `claims.yaml`)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,
@@ -279,7 +282,7 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 |------|-------|------------|---------------------|
 | ArmRefinement.v | 2 | Needs Sail-generated ARM semantics | Phase 2: Import Sail specifications |
 | Integers.v | 1 | `i64_to_i32_to_i64_wrap` — Rocq 9 `Z.mod_mod` signature changed | Rework proof for new Z.mod_mod API |
-| CorrectnessI32.v | 3 | `i32_divs/divu/rems/remu_correct` — trap guard sequences (CMP+BCondOffset+UDF) cannot be verified in the sequential exec_program model | Extend exec_program to support PC-relative branching |
+| CorrectnessI32.v | 1 | `i32_divs_correct` — the INT_MIN/-1 double-guard trap sequence; div_u/rem_s/rem_u discharged against `exec_program_br` (#697/#73) | Restate against `exec_program_br` (as div_u/rem_s/rem_u) with the second (INT_MIN/-1) guard |
 | CorrectnessSimple.v | 1 | `i32_const_correct` — compilation now branches on `I32.unsigned n <= 65535`; large-constant case requires Z.land/Z.shiftr lemmas | Prove MOVW+MOVT reconstruction lemma |
 | CorrectnessSimple.v | 1 | `i64_const_correct` — v0.8.0 PR 1a aligned codegen to `I64ConstPseudo` (loads both halves); proof claimed R0 = low 16 bits via stale MOVW model | v0.8.0 PR 5: concrete `i64_const_lo`/`i64_const_hi` definitions |
 | CorrectnessI64.v | 3 | `i64_and/or/xor_correct` — halves-distribute-over-bitwise decomposition blocked by the same Rocq 9 `Z.mod_mod` rewrite issue as `i64_to_i32_to_i64_wrap` | Rework with new Z.mod_mod API (separate PR) |
@@ -410,7 +413,7 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 |------|-----|----------|------|
 | Correctness.v | 6 | 0 | T1 |
 | CorrectnessSimple.v | 28 | 1 | T2 + 1 admitted (i64_const_correct) |
-| CorrectnessI32.v | 28 | 3 | T1 + 3 admitted (i32_divu discharged #697) (i32 div/rem trap guards — exec_program model gap, #73) |
+| CorrectnessI32.v | 30 | 1 | T1 + 1 admitted (div_u/rem_s/rem_u discharged against `exec_program_br` #697/#73; only i32_divs_correct — INT_MIN/-1 double guard — remains) |
 | CorrectnessI64.v | 46 | 0 | T1 (arith/bitwise/div/rem) + T2 (shifts/cmps/bit-manip) — 0 i64 admits since v0.11.0 |
 | CorrectnessI64Comparisons.v | 19 | 0 | T2 |
 | CorrectnessF32.v | 20 | 0 | T2 |
@@ -432,7 +435,7 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 | WasmValues.v | 2 | 0 | Infra |
 | VcrSelPilot.v | 7 | 0 | T1 (register-polymorphic; VCR-SEL-001 go/abandon measurement) |
 | VcrSelRules.v | 42 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2+3+4 rule table — 40 rule theorems 1:1 with `coq/vcr_sel_rules.manifest`, coverage-gated by `//coq:vcr_sel_rules_coverage`, + 2 mod-32 helper lemmas #683) |
-| **Total** | **470** | **9** | (+2 `admit.`) |
+| **Total** | **472** | **6** | (+2 `admit.`) |
 
 ## VCR-SEL-001 increments 1 (2026-07-07) + 2 + 3 + 4 (2026-07-08): VcrSelRules.v
 
