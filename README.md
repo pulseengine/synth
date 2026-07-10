@@ -109,7 +109,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 | ELF output with vector table | Implemented | Thumb bit set on symbols; not linked on real hardware |
 | Linker scripts (STM32, nRF52840, generic) | Implemented | Generated, not tested with real boards |
 | Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
-| Rocq mechanized proofs | 423 Qed / 9 Admitted | i32 + i64 T1 proofs; division proofs re-admitted for trap guard alignment |
+| Rocq mechanized proofs | 470 Qed / 8 Admitted | i32 + i64 T1 proofs; division proofs re-admitted for trap guard alignment |
 | SMT translation validation | ordeal (pure-Rust QF_BV) default | v0.27.0 (#553); Z3 demoted to feature-gated differential oracle — 141/141 agreement |
 | WebAssembly spec test suite | 227/257 compile | Compilation only — not executed on emulator |
 
@@ -194,7 +194,7 @@ Per the [PulseEngine Verification Guide](https://pulseengine.eu/guides/VERIFICAT
 
 | Track | Status | Coverage |
 |-------|--------|----------|
-| **Rocq** | Partial | 423 Qed / 9 Admitted — division proofs re-admitted for trap guard alignment |
+| **Rocq** | Partial | 470 Qed / 8 Admitted — division proofs re-admitted for trap guard alignment |
 | **Kani** | Starting | 18 bounded model checking harnesses for ARM encoder |
 | **Verus** | Starting | 8 spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` |
 | **Lean** | Not started | — |
@@ -206,15 +206,15 @@ See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 thr
 Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM semantics for each operation. The proof suite lives in `coq/Synth/` and covers ARM instruction semantics, WASM stack-machine semantics, and per-operation correctness theorems.
 
 ```
-423 Qed / 9 Admitted (+2 admit. tactics)   [CI-gated: claims.yaml + scripts/claim_check.py]
+470 Qed / 8 Admitted (+2 admit. tactics)   [CI-gated: claims.yaml + scripts/claim_check.py]
   T1 result-correspondence (ARM output = WASM result): all i32 ops and all
      i64 ops — i64 T1 parity since v0.11.0, 0 i64 admits (coq/STATUS.md)
   T2 existence-only: f32/f64 and remaining categories
-  T3 admitted (9): 4 i32 division trap guards (exec_program model gap, #73),
+  T3 admitted (8): 3 i32 division trap guards (exec_program model gap, #73),
      2 Compilation.v, 1 CorrectnessSimple.v, 2 ArmRefinement.v
   incl. 40 Qed selector-DSL rule theorems (Synth/VcrSelRules.v, 1:1 with
      coq/vcr_sel_rules.manifest), 7 Qed VCR-SEL-001 pilot lemmas
-     (Synth/VcrSelPilot.v, #386), 81 Qed Sail/ASL bridge lemmas
+     (Synth/VcrSelPilot.v, #386), 92 Qed Sail/ASL bridge lemmas
      (ARM/SailArmBridge.v, VCR-ISA-001)
 ```
 
@@ -261,7 +261,7 @@ The one-sentence version: moving synth's correctness from *"we patched every bug
 | **A — codegen core** | `VCR-SEL-001` | Rocq-discharged verified selector DSL — *"ISLE with a proof-assistant backend"*; a missing lowering rule becomes an enumerable coverage gap, not a silent miscompile | increments 1–4 landed flag-off (`SYNTH_SEL_DSL`): 40 rules / 40 Qed theorems in `coq/Synth/Synth/VcrSelRules.v` (1:1 with `coq/vcr_sel_rules.manifest`, coverage-gated), plus 7 Qed pilot lemmas in `coq/Synth/Synth/VcrSelPilot.v`; default-on flip pending |
 | | `VCR-PERF-002` | Proof-carrying specialization (#494): loom's `wsc.facts` invariants become premises for per-elision proof obligations, certificate-checked by the ordeal-backed validator — toward gale's measured **0.45× (below-native) floor** | design traced (v0.30.0); phase 1 (facts ingestion) landed ([PR #624](https://github.com/pulseengine/synth/pull/624), v0.31.0) |
 | | `SYNTH_SPILL_ON_EXHAUST` | Replace the register-exhaustion decline with allocation-time Belady spilling (#580) — the last piece of the exhaustion hard-fail | built, flag-off; default-on held for silicon cycle numbers |
-| **B — authoritative semantics** | `VCR-ISA-001` | Re-base ARM/RISC-V semantics on Sail-generated Rocq (the official ISA spec) | approved — Sail/ASL bridge spike landed (81 Qed, `coq/Synth/ARM/SailArmBridge.v`) |
+| **B — authoritative semantics** | `VCR-ISA-001` | Re-base ARM/RISC-V semantics on Sail-generated Rocq (the official ISA spec) | approved — Sail/ASL bridge spike landed (92 Qed, `coq/Synth/ARM/SailArmBridge.v`) |
 | | `VCR-WASM-001` | Anchor WASM source semantics on WasmCert-Coq | proposed |
 | **Gate** | `VCR-VER-001` | Success = a previously load-bearing greedy-fix becomes *revertable*, with the full differential bit-identical and cycles equal-or-better | **demonstrated** (implemented; [evidence](scripts/repro/vcr_ver_001_gate.md)): the v0.11.20 reciprocal-mult cost-gate deleted outright (PR #322, bit-identical); the #496 exhaustion decline revertable behind `SYNTH_SPILL_ON_EXHAUST` — red case green, anchors byte-identical, declines 14→8; flip held on a measured i32-shape cycle regression |
 

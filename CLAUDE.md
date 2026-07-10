@@ -89,12 +89,12 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 423 Qed / 9 Admitted
+See `coq/STATUS.md` for the complete coverage matrix. Current: 470 Qed / 8 Admitted
 (+2 `admit.` tactics) across `coq/Synth/`. This count is CI-gated: `claims.yaml` +
 `scripts/claim_check.py` re-derive it on every commit — when a proof lands, update
 the docs AND `claims.yaml` in the same PR. Proofs are tiered:
 T1 (result-correspondence), T2 (existence-only), T3 (admitted). Remaining admits:
-4 i32 division trap guards (exec_program model gap, #73), 2 Compilation.v,
+3 i32 division trap guards (exec_program model gap, #73), 2 Compilation.v,
 1 CorrectnessSimple.v, 2 ArmRefinement.v — 0 i64 admits.
 All i32 AND i64 operations have T1 proofs (i64 T1 parity since v0.11.0).
 
@@ -125,7 +125,7 @@ frozen and oracle-gated every step:
   `SYNTH_SEL_DSL`) and `VCR-PERF-002` proof-carrying specialization (#494,
   0.45× floor; phase 1 facts ingestion landed, PR #624).
 - **Track B (semantics):** `VCR-ISA-001` Sail-generated Rocq ISA model —
-  approved, Sail/ASL bridge spike landed (81 Qed, `coq/Synth/ARM/SailArmBridge.v`);
+  approved, Sail/ASL bridge spike landed (92 Qed, `coq/Synth/ARM/SailArmBridge.v`);
   `VCR-WASM-001` WasmCert-Coq source semantics — proposed.
 - **Track C (validation):** the differential oracles are CI-gated jobs
   (cmp-select, RV32 shift-fold/const-addr-fold, callee-saved, spill-frame,

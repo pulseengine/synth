@@ -19,26 +19,26 @@
 claims:
   # ---------------------------------------------------------------------------
   # Headline Rocq proof counts — the number that drifts fastest.
-  # Was "298 Qed / 9 Admitted" in README/CLAUDE.md and "291" in coq/STATUS.md
-  # while the tree held 423 (v0.31–v0.37 churn: VcrSelRules increments 2–4,
+  # Was "298 Qed / 8 Admitted" in README/CLAUDE.md and "291" in coq/STATUS.md
+  # while the tree held 470 (v0.31–v0.37 churn: VcrSelRules increments 2–4,
   # SailArmBridge, i64/flag lemmas). Fixed to derived truth in this PR.
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-README
     doc: README.md
-    text: "423 Qed / 9 Admitted"
+    text: "470 Qed / 8 Admitted"
     evidence:
       - kind: count-eq                       # ALL THREE README spots must agree —
-        pattern: '423 Qed / 9 Admitted'      # a verbatim check alone greens if one
+        pattern: '470 Qed / 8 Admitted'      # a verbatim check alone greens if one
         glob: ['README.md']                  # of them drifts while another matches
         expect: 3
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 423
+        expect: 470
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 9
+        expect: 8
       - kind: count-eq                       # the "+2 admit. tactics" disclosure
         pattern: '^\s*admit\.'
         glob: ['coq/Synth/**/*.v']
@@ -46,33 +46,33 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "423 Qed / 9 Admitted"
+    text: "470 Qed / 8 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 423
+        expect: 470
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 9
+        expect: 8
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "423 Qed / 9 Admitted"
+    text: "470 Qed / 8 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '423 Qed / 9 Admitted'
+        pattern: '470 Qed / 8 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 423
+        expect: 470
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 9
+        expect: 8
 
   # ---------------------------------------------------------------------------
   # The admit breakdown the docs disclose — per-file, so a new admit anywhere
@@ -80,12 +80,12 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ADMIT-BREAKDOWN
     doc: README.md
-    text: "4 i32 division trap guards"
+    text: "3 i32 division trap guards"
     evidence:
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/Synth/CorrectnessI32.v']
-        expect: 4
+        expect: 3
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/Synth/Compilation.v']
@@ -180,10 +180,10 @@ claims:
         id: VCR-ISA-001
         field: status
         equals: approved
-      - kind: count-eq                       # "81 Qed" bridge lemmas
+      - kind: count-eq                       # "92 Qed" bridge lemmas
         pattern: 'Qed\.'
         glob: ['coq/Synth/ARM/SailArmBridge.v']
-        expect: 81
+        expect: 92
 
   # ---------------------------------------------------------------------------
   # Verified selector DSL coverage — the rule table, its manifest, and the
