@@ -69,9 +69,9 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
        MOVW R2 (I32.repr 0);            (* Load low half of 0x80000000 = 0x0000 *)
        MOVT R2 (I32.repr 32768);        (* Load high half = 0x8000 *)
        CMP R0 (Reg R2);                 (* Is dividend == INT_MIN? *)
-       BCondOffset Cond_NE 2;           (* Skip if not INT_MIN *)
+       BCondOffset Cond_NE 3;           (* Skip CMN+B+UDF if not INT_MIN *)
        CMN R1 (Imm I32.one);            (* Is divisor == -1? (R1 + 1 == 0?) *)
-       BCondOffset Cond_NE 0;           (* Skip trap if not -1 *)
+       BCondOffset Cond_NE 1;           (* Skip trap if not -1 *)
        UDF 1;                            (* Trap: signed overflow *)
        SDIV R0 R0 R1]                   (* Safe to divide *)
 

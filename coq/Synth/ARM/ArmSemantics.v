@@ -368,6 +368,36 @@ Definition compute_v_flag_sub (v1 v2 : I32.int) : bool :=
     (andb (andb (Z.leb 0 sv1) (Z.ltb sv2 0)) (Z.ltb sr 0))
     (andb (andb (Z.ltb sv1 0) (Z.leb 0 sv2)) (Z.leb 0 sr)).
 
+(** ** Three-operand borrow-aware flag helpers (SBCS)
+
+    SBCS computes rn - op2 - NOT(C) and writes NZCV — the second link of the
+    encoder's dual-precision i64 compare chain. The two-operand
+    compute_c_flag_sub / compute_v_flag_sub cannot express the borrow-in, so
+    the carry-in-aware variants below transcribe the ASL ground truth
+    AddWithCarry(x, NOT(y), carry_in) (v8_base.sail:13337, quoted in
+    SailArmBridge.v):
+
+      C = "UInt(result) != unsigned_sum", i.e. carry-out of
+          x + NOT(y) + carry_in, i.e. NO borrow in x - y - (1 - carry_in):
+          uy + borrow <= ux;
+      V = "SInt(result) != signed_sum", i.e. the 32-bit signed result differs
+          from the exact signed difference sx - sy - borrow.
+
+    Proven equal to the ASL formulation in SailArmBridge.v
+    (sail_sbcs_r_flags_eq / sail_bridge_sbcs_reg); proven to collapse to the
+    two-operand SUBS/CMP helpers at carry_in = true
+    (sbc_flags_carry_set_c / sbc_flags_carry_set_v there). *)
+
+Definition compute_c_flag_sbc (v1 v2 : I32.int) (carry_in : bool) : bool :=
+  let borrow := if carry_in then 0 else 1 in
+  Z.leb (I32.unsigned v2 + borrow) (I32.unsigned v1).
+
+Definition compute_v_flag_sbc (v1 v2 : I32.int) (carry_in : bool) : bool :=
+  let borrow := if carry_in then 0 else 1 in
+  let borrow_in := if carry_in then I32.zero else I32.one in
+  let exact := I32.signed v1 - I32.signed v2 - borrow in
+  negb (Z.eqb (I32.signed (I32.sub (I32.sub v1 v2) borrow_in)) exact).
+
 (** Update flags after arithmetic operation *)
 Definition update_flags_arith (result : I32.int) (c v : bool) : condition_flags :=
   mkFlags
@@ -381,6 +411,27 @@ Definition update_flags_arith (result : I32.int) (c v : bool) : condition_flags 
     flag set by the low-half instruction. *)
 Lemma flag_c_update_flags_arith : forall result c v,
   (update_flags_arith result c v).(flag_c) = c.
+Proof.
+  intros. unfold update_flags_arith. reflexivity.
+Qed.
+
+(** The remaining projections of update_flags_arith — used by the
+    expansion-level I64SetCond proofs (VcrSelExpansion.v) to read the
+    N/Z/V flags latched by the CMP-lo/SBCS-hi chain. *)
+Lemma flag_n_update_flags_arith : forall result c v,
+  (update_flags_arith result c v).(flag_n) = compute_n_flag result.
+Proof.
+  intros. unfold update_flags_arith. reflexivity.
+Qed.
+
+Lemma flag_z_update_flags_arith : forall result c v,
+  (update_flags_arith result c v).(flag_z) = compute_z_flag result.
+Proof.
+  intros. unfold update_flags_arith. reflexivity.
+Qed.
+
+Lemma flag_v_update_flags_arith : forall result c v,
+  (update_flags_arith result c v).(flag_v) = v.
 Proof.
   intros. unfold update_flags_arith. reflexivity.
 Qed.
@@ -441,6 +492,20 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       let borrow_in := if s.(flags).(flag_c) then I32.zero else I32.one in
       let result := I32.sub (I32.sub v1 v2) borrow_in in
       Some (set_reg s rd result)
+
+  (* SBCS: SBC additionally writing NZCV — same result as SBC, flags from the
+     borrow-aware three-operand helpers (ASL AddWithCarry(x, NOT y, C) with
+     setflags=true; bridged in SailArmBridge.v). *)
+  | SBCS rd rn op2 =>
+      let v1 := get_reg s rn in
+      let v2 := eval_operand2 op2 s in
+      let cin := s.(flags).(flag_c) in
+      let borrow_in := if cin then I32.zero else I32.one in
+      let result := I32.sub (I32.sub v1 v2) borrow_in in
+      let c := compute_c_flag_sbc v1 v2 cin in
+      let v := compute_v_flag_sbc v1 v2 cin in
+      let new_flags := update_flags_arith result c v in
+      Some (set_flags (set_reg s rd result) new_flags)
 
   | MUL rd rn rm =>
       let v1 := get_reg s rn in
@@ -657,6 +722,22 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
       let new_flags := update_flags_arith result c v in
       Some (set_flags s new_flags)
 
+  (* Conditionally-executed CMP (CMPEQ etc.): executes the compare — and
+     REWRITES all four NZCV flags — only when the condition holds on the
+     CURRENT flags; otherwise the flags (and everything else) are untouched.
+     Generalizes conditional execution beyond the MOVcc family. *)
+  | CMPCond cond rn op2 =>
+      if eval_condition cond s.(flags) then
+        let v1 := get_reg s rn in
+        let v2 := eval_operand2 op2 s in
+        let result := I32.sub v1 v2 in
+        let c := compute_c_flag_sub v1 v2 in
+        let v := compute_v_flag_sub v1 v2 in
+        let new_flags := update_flags_arith result c v in
+        Some (set_flags s new_flags)
+      else
+        Some s
+
   (* Bit manipulation — axiomatized via I32.clz/rbit/popcnt *)
   | CLZ rd rm =>
       let v := get_reg s rm in
@@ -698,22 +779,19 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
 
   (* BCondOffset: conditional branch with instruction offset.
 
-     Limitation: The current exec_program model executes instructions
-     sequentially from a flat list with no support for skipping instructions.
-     Real ARM conditional branches modify the PC to skip over instructions.
-     To properly model BCondOffset, exec_program would need to track a
-     program counter index and support non-sequential execution.
+     exec_instr is a pure state transformer with no program-counter view, so
+     it cannot express the jump; the branch is taken by the PC-indexed
+     executor exec_program_pc / exec_program_br below, which intercepts
+     BCondOffset BEFORE delegating to exec_instr. Within exec_instr (i.e.
+     within the legacy flat exec_program) BCondOffset remains a state no-op —
+     this preserves every proof written against the flat executor.
 
-     Current modeling: BCondOffset is treated as a no-op that only updates
-     flags-based state. The actual branching behavior (skipping instructions
-     on trap guards) is handled at a higher level by the correctness proofs
-     which reason about the full instruction sequence.
-
-     TODO: Extend exec_program to support indexed execution with PC-relative
-     branching. This would enable compositional proofs of trap-guarded
-     sequences like CMP + BCondOffset + UDF + UDIV. *)
+     The trap-guarded div/rem sequences (CMP + BCondOffset + UDF + SDIV/UDIV)
+     are provable against exec_program_br, where the taken branch skips the
+     UDF — i32_divu_correct in CorrectnessI32.v is the first of the #73 T3
+     admits so discharged (div_s/rem_s/rem_u still pending restatement). *)
   | BCondOffset _cond _offset =>
-      Some s  (* No-op in sequential model *)
+      Some s  (* No-op at the instruction level; branched in exec_program_pc *)
 
   (* Control flow - simplified *)
   | B offset =>
@@ -1030,6 +1108,99 @@ Fixpoint exec_program (prog : list arm_instr) (s : arm_state) : option arm_state
       | None => None
       end
   end.
+
+(** ** PC-indexed bounded executor — BCondOffset takes branches
+
+    The flat [exec_program] above executes a list sequentially and cannot
+    skip instructions, which is why [BCondOffset] is a no-op there and the
+    trap-guarded div/rem proofs were T3 admits (#73). [exec_program_pc] is
+    the step-indexed (fuel-bounded) executor with an explicit instruction
+    index:
+
+      - [nth_error prog pc = None] — the pc ran off the end: the program
+        completed, return the current state;
+      - [BCondOffset cond off] — if [cond] holds on the current flags, jump
+        to [pc + 1 + off] (skipping [off] instructions); otherwise fall
+        through to [pc + 1]. The instruction itself never changes the state.
+      - any other instruction — delegate to [exec_instr], advance to
+        [pc + 1].
+
+    Fuel discipline: every step advances [pc] by at least 1 ([Z.to_nat] of a
+    negative offset is 0, so even a malformed backward branch falls through
+    forward), so [S (length prog)] fuel always suffices from pc = 0 — that is
+    what [exec_program_br] supplies. Compilation.v only emits forward
+    (skip-ahead) offsets. *)
+
+Fixpoint exec_program_pc (fuel : nat) (prog : list arm_instr) (pc : nat)
+    (s : arm_state) : option arm_state :=
+  match fuel with
+  | O => None  (* out of fuel — cannot happen with exec_program_br's budget *)
+  | S fuel' =>
+      match nth_error prog pc with
+      | None => Some s
+      | Some (BCondOffset cond off) =>
+          let pc' := if eval_condition cond s.(flags)
+                     then (pc + 1 + Z.to_nat off)%nat
+                     else (pc + 1)%nat in
+          exec_program_pc fuel' prog pc' s
+      | Some i =>
+          match exec_instr i s with
+          | Some s' => exec_program_pc fuel' prog (pc + 1)%nat s'
+          | None => None
+          end
+      end
+  end.
+
+(** The branch-taking program executor: run from index 0 with sufficient
+    fuel. This is the executor the div/rem trap-guard theorems use. *)
+Definition exec_program_br (prog : list arm_instr) (s : arm_state)
+    : option arm_state :=
+  exec_program_pc (S (length prog)) prog 0 s.
+
+(** *** One-step unfolding lemmas for [exec_program_pc]
+
+    Symbolic execution of [exec_program_pc] must go through these rewrites,
+    NOT through [cbn]/[simpl] on the fixpoint: reducing the fix under a
+    stuck [nth_error]/branch condition duplicates the full ~40-arm
+    instruction match once per fuel level — exponential blowup (a cbn on a
+    4-instruction program burns CPU-hours). One rewrite per program index
+    keeps every intermediate term linear. *)
+
+(** The pc ran off the end: the program completed. *)
+Lemma exec_program_pc_done : forall fuel prog pc s,
+  nth_error prog pc = None ->
+  exec_program_pc (S fuel) prog pc s = Some s.
+Proof.
+  intros fuel prog pc s H. cbn [exec_program_pc]. rewrite H. reflexivity.
+Qed.
+
+(** A conditional branch: jump [off] instructions when the condition holds
+    on the current flags, fall through otherwise; state untouched. *)
+Lemma exec_program_pc_bcond : forall fuel prog pc s cond off,
+  nth_error prog pc = Some (BCondOffset cond off) ->
+  exec_program_pc (S fuel) prog pc s
+  = exec_program_pc fuel prog
+      (if eval_condition cond s.(flags)
+       then (pc + 1 + Z.to_nat off)%nat
+       else (pc + 1)%nat) s.
+Proof.
+  intros fuel prog pc s cond off H. cbn [exec_program_pc]. rewrite H.
+  destruct (eval_condition cond (flags s)); reflexivity.
+Qed.
+
+(** Any non-branch instruction: delegate to [exec_instr], advance the pc. *)
+Lemma exec_program_pc_instr : forall fuel prog pc s i,
+  nth_error prog pc = Some i ->
+  (match i with BCondOffset _ _ => False | _ => True end) ->
+  exec_program_pc (S fuel) prog pc s
+  = match exec_instr i s with
+    | Some s' => exec_program_pc fuel prog (pc + 1)%nat s'
+    | None => None
+    end.
+Proof.
+  intros fuel prog pc s i H Hni. cbn [exec_program_pc]. rewrite H.
+  destruct i; solve [reflexivity | contradiction].
+Qed.
 
 (** ** Properties *)
 

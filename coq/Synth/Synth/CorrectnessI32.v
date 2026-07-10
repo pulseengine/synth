@@ -1,17 +1,19 @@
 (** * I32 Operations Correctness
 
     This file contains correctness proofs for all i32 WebAssembly operations.
-    Total: 34 operations — 20 Qed, 9 Admitted
+    Total: 29 theorems — 26 Qed, 3 Admitted
 
     Strategy:
     - Arithmetic (add, sub, mul, and, or, xor): synth_binop_proof tactic
-    - Division (divs, divu): Admitted — trap guard sequences require
-      PC-relative branching model (BCondOffset + UDF cannot be skipped
-      in the sequential exec_program model)
-    - Remainder (rems, remu): Admitted — same trap guard issue as division
+    - Division (divu): Qed against the branch-taking executor
+      exec_program_br — the trap guard's BCondOffset actually skips the
+      UDF (#73)
+    - Division (divs) + remainder (rems, remu): Admitted — same
+      trap-guard restatement pending (longer guard chains, no new
+      executor capability needed)
     - Comparisons: flag-correspondence lemmas from ArmFlagLemmas.v
     - Bit manipulation: axiom-based (I32.clz/rbit/popcnt)
-    - Shifts: Admitted — ARM compilation uses fixed immediate, not register shift
+    - Shifts: Qed — mod-32 mask + register shift (#682)
 *)
 
 From Stdlib Require Import ZArith Lia Znumtheory.
@@ -69,16 +71,20 @@ Theorem i32_mul_correct : forall wstate astate v1 v2 stack',
     get_reg astate' R0 = I32.mul v1 v2.
 Proof. synth_binop_proof. Qed.
 
-(** Division operations — trap-guarded sequences.
+(** Division operations — trap-guarded sequences (#73).
 
-    The compilation now emits CMP + BCondOffset + UDF trap guards before
-    the actual SDIV/UDIV. These proofs are Admitted because the current
-    sequential exec_program model cannot skip instructions (BCondOffset is
-    modeled as a no-op, so UDF is always reached and returns None).
+    The compilation emits CMP + BCondOffset + UDF trap guards before the
+    actual SDIV/UDIV. Under the flat sequential [exec_program] these are
+    unprovable (BCondOffset is a no-op there, so the UDF is always reached
+    and returns None); the PC-indexed branch-taking executor
+    [exec_program_br] (ArmSemantics.v) is the model that can take the
+    guard's skip.
 
-    Completing these proofs requires extending exec_program to support
-    indexed/PC-relative execution so that BCondOffset can skip the UDF
-    when the condition holds. See the TODO in ArmSemantics.v. *)
+    Status: [i32_divu_correct] is DISCHARGED against [exec_program_br]
+    below. [i32_divs_correct] (the INT_MIN/-1 double guard),
+    [i32_rems_correct] and [i32_remu_correct] (guard + SDIV/UDIV + MLS
+    tail) remain Admitted pending the same restatement — their guard
+    chains are longer but need no new executor capability. *)
 
 Theorem i32_divs_correct : forall wstate astate v1 v2 stack' result,
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -95,20 +101,74 @@ Proof.
   (* Admitted: requires PC-relative branching model to skip UDF trap guard *)
 Admitted.
 
+(** i32.div_u — the FIRST trap-guard proof discharged against the
+    branch-taking executor [exec_program_br] (#73): the compiled sequence
+    is CMP R1,#0; BNE +1; UDF; UDIV — with a non-zero divisor the CMP
+    latches Z=0, the BNE is TAKEN (pc skips the UDF), and the UDIV
+    computes the quotient. The flat [exec_program] cannot state this
+    (BCondOffset is a no-op there, so UDF is always reached).
+
+    The extra [I32.valid_unsigned v2] hypothesis is the register
+    well-formedness the flat model left implicit: [I32.divu]'s trap guard
+    tests the RAW representative [v2 =? 0] while the CMP Z-flag observes
+    [v2 mod 2^32]; the two agree exactly on normalized 32-bit values
+    (every value a [set_reg]-produced state can hold). *)
 Theorem i32_divu_correct : forall wstate astate v1 v2 stack' result,
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   get_reg astate R0 = v1 ->
   get_reg astate R1 = v2 ->
+  I32.valid_unsigned v2 ->
   I32.divu v1 v2 = Some result ->
   exec_wasm_instr I32DivU wstate =
     Some (mkWasmState (VI32 result :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
-    exec_program (compile_wasm_to_arm I32DivU) astate = Some astate' /\
+    exec_program_br (compile_wasm_to_arm I32DivU) astate = Some astate' /\
     get_reg astate' R0 = result.
 Proof.
-  (* Admitted: requires PC-relative branching model to skip UDF trap guard *)
-Admitted.
+  intros wstate astate v1 v2 stack' result Hstack HR0 HR1 Hval Hdivu Hwasm.
+  (* The divisor is non-zero — otherwise divu would have trapped. *)
+  assert (Hnz : v2 <> 0).
+  { unfold I32.divu in Hdivu.
+    destruct (Z.eqb_spec v2 0); [discriminate | assumption]. }
+  (* The Z flag latched by CMP R1,#0 is therefore false. *)
+  assert (Hz : compute_z_flag (I32.sub v2 I32.zero) = false).
+  { rewrite z_flag_sub_eq.
+    unfold I32.eq.
+    replace (I32.unsigned I32.zero) with 0 by reflexivity.
+    apply Z.eqb_neq.
+    unfold I32.unsigned.
+    rewrite Z.mod_small; [exact Hnz |].
+    unfold I32.valid_unsigned, I32.max_unsigned, I32.modulus in *. lia. }
+  (* Symbolic execution goes through the one-step exec_program_pc_* rewrite
+     lemmas — cbn/simpl on the executor fixpoint is exponential (see the
+     warning at the lemmas in ArmSemantics.v). *)
+  unfold exec_program_br.
+  change (length (compile_wasm_to_arm I32DivU)) with 4%nat.
+  (* pc = 0: CMP R1,#0 latches the flags, registers untouched. *)
+  erewrite (exec_program_pc_instr _ _ _ _ (CMP R1 (Imm I32.zero)));
+    [| reflexivity | exact I].
+  cbn [exec_instr eval_operand2].
+  (* pc = 1: BNE +1 — Z=0, so the branch is TAKEN, skipping the UDF. *)
+  erewrite (exec_program_pc_bcond _ _ _ _ Cond_NE 1); [| reflexivity].
+  rewrite flags_set_flags.
+  cbn [eval_condition].
+  rewrite flag_z_update_flags_arith.
+  rewrite HR1, Hz.
+  cbn [negb].
+  (* pc = 3: UDIV R0,R0,R1 computes the quotient. *)
+  erewrite (exec_program_pc_instr _ _ _ _ (UDIV R0 R0 R1));
+    [| reflexivity | exact I].
+  cbn [exec_instr].
+  rewrite !get_reg_set_flags.
+  rewrite HR0, HR1, Hdivu.
+  cbn beta iota.
+  (* pc = 4: off the end — the program completed. *)
+  rewrite exec_program_pc_done; [| reflexivity].
+  eexists. split.
+  - reflexivity.
+  - apply get_set_reg_eq.
+Qed.
 
 Theorem i32_rems_correct : forall wstate astate v1 v2 stack' result quotient,
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -565,14 +625,13 @@ Qed.
 
 (** ** Summary
 
-    I32 Operations: 34 total — ALL proven (29 Qed, 0 Admitted)
-    - Arithmetic: 7 Qed (Add, Sub, Mul, DivS, DivU, RemS, RemU)
+    I32 theorems: 29 total — 26 Qed, 3 Admitted
+    - Arithmetic: 4 Qed (Add, Sub, Mul, DivU — DivU against the
+      branch-taking exec_program_br, #73), 3 Admitted (DivS, RemS, RemU —
+      trap-guard restatement against exec_program_br pending)
     - Bitwise: 8 Qed (And, Or, Xor, Shl, ShrU, ShrS, Rotl, Rotr)
     - Comparison: 11 Qed (EQZ, EQ, NE, LtS, LtU, GtS, GtU, LeS, LeU, GeS, GeU)
     - Bit manipulation: 3 Qed (CLZ/CTZ/POPCNT using axiomatized I32.clz/ctz/popcnt)
-
-    Completed (Qed): 29 / 34 (ALL result-correspondence proofs)
-    Admitted: 0
 
     The 11 comparison proofs use flag-correspondence lemmas from ArmFlagLemmas.v.
     The signed comparison proofs (LtS, GtS, LeS, GeS) depend on the nv_flag_sub_lts

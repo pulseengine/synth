@@ -8,23 +8,71 @@ open WasmInstructions
 (** val compile_wasm_to_arm : wasm_instr -> arm_program **)
 
 let compile_wasm_to_arm = function
-| I32Const n -> (MOVW (R0, n))::[]
-| I64Const n ->
-  (MOVW (R0, (I32.repr (Z.modulo (I64.unsigned n) I32.modulus))))::[]
+| I32Const n ->
+  if Z.leb (I32.unsigned n) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+       ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+       ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+       ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+       1)))))))))))))))
+  then (MOVW (R0, n))::[]
+  else (MOVW (R0,
+         (I32.repr
+           (Z.coq_land (I32.unsigned n) ((fun p->1+2*p) ((fun p->1+2*p)
+             ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+             ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+             ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+             ((fun p->1+2*p) 1)))))))))))))))))))::((MOVT
+         (R0,
+         (I32.repr
+           (Z.shiftr (I32.unsigned n) ((fun p->2*p) ((fun p->2*p)
+             ((fun p->2*p) ((fun p->2*p) 1))))))))::[])
+| I64Const n -> (I64ConstPseudo (R0, R1, n))::[]
 | I32Add -> (ADD (R0, R0, (Reg R1)))::[]
 | I32Sub -> (SUB (R0, R0, (Reg R1)))::[]
 | I32Mul -> (MUL (R0, R0, R1))::[]
-| I32DivS -> (SDIV (R0, R0, R1))::[]
-| I32DivU -> (UDIV (R0, R0, R1))::[]
-| I32RemS -> (SDIV (R2, R0, R1))::((MLS (R0, R2, R1, R0))::[])
-| I32RemU -> (UDIV (R2, R0, R1))::((MLS (R0, R2, R1, R0))::[])
+| I32DivS ->
+  (CMP (R1, (Imm I32.zero)))::((BCondOffset (Cond_NE, 1))::((UDF 0)::((MOVW
+    (R2, (I32.repr 0)))::((MOVT (R2,
+    (I32.repr ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p)
+      ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p)
+      ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p)
+      ((fun p->2*p) 1))))))))))))))))))::((CMP
+    (R0, (Reg R2)))::((BCondOffset (Cond_NE, ((fun p->1+2*p) 1)))::((CMN (R1,
+    (Imm I32.one)))::((BCondOffset (Cond_NE, 1))::((UDF 1)::((SDIV (R0, R0,
+    R1))::[]))))))))))
+| I32DivU ->
+  (CMP (R1, (Imm I32.zero)))::((BCondOffset (Cond_NE, 1))::((UDF 0)::((UDIV
+    (R0, R0, R1))::[])))
+| I32RemS ->
+  (CMP (R1, (Imm I32.zero)))::((BCondOffset (Cond_NE, 1))::((UDF 0)::((SDIV
+    (R2, R0, R1))::((MLS (R0, R2, R1, R0))::[]))))
+| I32RemU ->
+  (CMP (R1, (Imm I32.zero)))::((BCondOffset (Cond_NE, 1))::((UDF 0)::((UDIV
+    (R2, R0, R1))::((MLS (R0, R2, R1, R0))::[]))))
 | I32And -> (AND (R0, R0, (Reg R1)))::[]
 | I32Or -> (ORR (R0, R0, (Reg R1)))::[]
 | I32Xor -> (EOR (R0, R0, (Reg R1)))::[]
-| I32Shl -> (LSL (R0, R0, 0))::[]
-| I32ShrS -> (ASR (R0, R0, 0))::[]
-| I32ShrU -> (LSR (R0, R0, 0))::[]
-| I32Rotr -> (ROR (R0, R0, 0))::[]
+| I32Shl ->
+  (AND (R12, R1, (Imm
+    (I32.repr ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+      1))))))))::((LSL_reg
+    (R0, R0, R12))::[])
+| I32ShrS ->
+  (AND (R12, R1, (Imm
+    (I32.repr ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+      1))))))))::((ASR_reg
+    (R0, R0, R12))::[])
+| I32ShrU ->
+  (AND (R12, R1, (Imm
+    (I32.repr ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+      1))))))))::((LSR_reg
+    (R0, R0, R12))::[])
+| I32Rotl ->
+  (RSB (R2, R1, (Imm
+    (I32.repr ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p)
+      ((fun p->2*p) 1)))))))))::((ROR_reg
+    (R0, R0, R2))::[])
+| I32Rotr -> (ROR_reg (R0, R0, R1))::[]
 | I32Eqz ->
   (CMP (R0, (Imm I32.zero)))::((MOV (R0, (Imm I32.zero)))::((MOVEQ (R0, (Imm
     I32.one)))::[]))
@@ -61,56 +109,35 @@ let compile_wasm_to_arm = function
 | I32Clz -> (CLZ (R0, R0))::[]
 | I32Ctz -> (RBIT (R0, R0))::((CLZ (R0, R0))::[])
 | I32Popcnt -> (POPCNT (R0, R0))::[]
-| I64Add -> (ADD (R0, R0, (Reg R1)))::[]
-| I64Sub -> (SUB (R0, R0, (Reg R1)))::[]
-| I64Mul -> (MUL (R0, R0, R1))::[]
-| I64DivS -> (SDIV (R0, R0, R1))::[]
-| I64DivU -> (UDIV (R0, R0, R1))::[]
-| I64RemS -> (SDIV (R2, R0, R1))::((MLS (R0, R2, R1, R0))::[])
-| I64RemU -> (UDIV (R2, R0, R1))::((MLS (R0, R2, R1, R0))::[])
-| I64And -> (AND (R0, R0, (Reg R1)))::[]
-| I64Or -> (ORR (R0, R0, (Reg R1)))::[]
-| I64Xor -> (EOR (R0, R0, (Reg R1)))::[]
-| I64Shl -> (LSL (R0, R0, 0))::[]
-| I64ShrS -> (ASR (R0, R0, 0))::[]
-| I64ShrU -> (LSR (R0, R0, 0))::[]
-| I64Rotr -> (ROR (R0, R0, 0))::[]
-| I64Eqz ->
-  (CMP (R0, (Imm I32.zero)))::((MOV (R0, (Imm I32.zero)))::((MOVEQ (R0, (Imm
-    I32.one)))::[]))
-| I64Eq ->
-  (CMP (R0, (Reg R1)))::((MOV (R0, (Imm I32.zero)))::((MOVEQ (R0, (Imm
-    I32.one)))::[]))
-| I64Ne ->
-  (CMP (R0, (Reg R1)))::((MOV (R0, (Imm I32.zero)))::((MOVNE (R0, (Imm
-    I32.one)))::[]))
-| I64LtS ->
-  (CMP (R0, (Reg R1)))::((MOV (R0, (Imm I32.zero)))::((MOVLT (R0, (Imm
-    I32.one)))::[]))
-| I64LtU ->
-  (CMP (R0, (Reg R1)))::((MOV (R0, (Imm I32.zero)))::((MOVLO (R0, (Imm
-    I32.one)))::[]))
-| I64GtS ->
-  (CMP (R0, (Reg R1)))::((MOV (R0, (Imm I32.zero)))::((MOVGT (R0, (Imm
-    I32.one)))::[]))
-| I64GtU ->
-  (CMP (R0, (Reg R1)))::((MOV (R0, (Imm I32.zero)))::((MOVHI (R0, (Imm
-    I32.one)))::[]))
-| I64LeS ->
-  (CMP (R0, (Reg R1)))::((MOV (R0, (Imm I32.zero)))::((MOVLE (R0, (Imm
-    I32.one)))::[]))
-| I64LeU ->
-  (CMP (R0, (Reg R1)))::((MOV (R0, (Imm I32.zero)))::((MOVLS (R0, (Imm
-    I32.one)))::[]))
-| I64GeS ->
-  (CMP (R0, (Reg R1)))::((MOV (R0, (Imm I32.zero)))::((MOVGE (R0, (Imm
-    I32.one)))::[]))
-| I64GeU ->
-  (CMP (R0, (Reg R1)))::((MOV (R0, (Imm I32.zero)))::((MOVHS (R0, (Imm
-    I32.one)))::[]))
-| I64Clz -> (CLZ (R0, R0))::[]
-| I64Ctz -> (RBIT (R0, R0))::((CLZ (R0, R0))::[])
-| I64Popcnt -> (POPCNT (R0, R0))::[]
+| I64Add -> (ADDS (R0, R0, (Reg R2)))::((ADC (R1, R1, (Reg R3)))::[])
+| I64Sub -> (SUBS (R0, R0, (Reg R2)))::((SBC (R1, R1, (Reg R3)))::[])
+| I64Mul -> (I64MulPseudo (R0, R1, R0, R1, R2, R3))::[]
+| I64DivS -> (I64DivSPseudo (R0, R1, R0, R1, R2, R3))::[]
+| I64DivU -> (I64DivUPseudo (R0, R1, R0, R1, R2, R3))::[]
+| I64RemS -> (I64RemSPseudo (R0, R1, R0, R1, R2, R3))::[]
+| I64RemU -> (I64RemUPseudo (R0, R1, R0, R1, R2, R3))::[]
+| I64And -> (AND (R0, R0, (Reg R2)))::((AND (R1, R1, (Reg R3)))::[])
+| I64Or -> (ORR (R0, R0, (Reg R2)))::((ORR (R1, R1, (Reg R3)))::[])
+| I64Xor -> (EOR (R0, R0, (Reg R2)))::((EOR (R1, R1, (Reg R3)))::[])
+| I64Shl -> (I64ShlPseudo (R0, R1, R0, R1, R2, R3))::[]
+| I64ShrS -> (I64ShrSPseudo (R0, R1, R0, R1, R2, R3))::[]
+| I64ShrU -> (I64ShrUPseudo (R0, R1, R0, R1, R2, R3))::[]
+| I64Rotl -> (I64RotlPseudo (R0, R1, R0, R1, R2))::[]
+| I64Rotr -> (I64RotrPseudo (R0, R1, R0, R1, R2))::[]
+| I64Eqz -> (I64SetCondZ (R0, R0, R1))::[]
+| I64Eq -> (I64SetCond (R0, R0, R1, R2, R3, Cond_EQ))::[]
+| I64Ne -> (I64SetCond (R0, R0, R1, R2, R3, Cond_NE))::[]
+| I64LtS -> (I64SetCond (R0, R0, R1, R2, R3, Cond_LT))::[]
+| I64LtU -> (I64SetCond (R0, R0, R1, R2, R3, Cond_CC))::[]
+| I64GtS -> (I64SetCond (R0, R0, R1, R2, R3, Cond_GT))::[]
+| I64GtU -> (I64SetCond (R0, R0, R1, R2, R3, Cond_HI))::[]
+| I64LeS -> (I64SetCond (R0, R0, R1, R2, R3, Cond_LE))::[]
+| I64LeU -> (I64SetCond (R0, R0, R1, R2, R3, Cond_LS))::[]
+| I64GeS -> (I64SetCond (R0, R0, R1, R2, R3, Cond_GE))::[]
+| I64GeU -> (I64SetCond (R0, R0, R1, R2, R3, Cond_CS))::[]
+| I64Clz -> (I64ClzPseudo (R0, R0, R1))::[]
+| I64Ctz -> (I64CtzPseudo (R0, R0, R1))::[]
+| I64Popcnt -> (I64PopcntPseudo (R0, R0, R1))::[]
 | F32Add -> (VADD_F32 (S0, S0, S1))::[]
 | F32Sub -> (VSUB_F32 (S0, S0, S1))::[]
 | F32Mul -> (VMUL_F32 (S0, S0, S1))::[]
@@ -137,6 +164,9 @@ let compile_wasm_to_arm = function
 | F64Gt -> (VCMP_F64 (D0, D1))::[]
 | F64Le -> (VCMP_F64 (D0, D1))::[]
 | F64Ge -> (VCMP_F64 (D0, D1))::[]
+| I32WrapI64 -> (I32WrapI64Pseudo (R0, R0))::[]
+| I64ExtendI32S -> (I64ExtendI32SPseudo (R0, R1, R0))::[]
+| I64ExtendI32U -> (I64ExtendI32UPseudo (R0, R1, R0))::[]
 | I32TruncF32S -> (VCVT_S32_F32 (S0, S0))::((VMOV_VFP_TO_ARM (R0, S0))::[])
 | I32TruncF32U -> (VCVT_S32_F32 (S0, S0))::((VMOV_VFP_TO_ARM (R0, S0))::[])
 | I32TruncF64S ->
@@ -168,11 +198,11 @@ let compile_wasm_to_arm = function
     S0))::[]))
 | F64PromoteF32 -> (VCVT_F64_F32 (D0, S0))::[]
 | I32Load offset -> (LDR (R0, R0, (Z.of_nat offset)))::[]
-| I64Load offset -> (LDR (R0, R0, (Z.of_nat offset)))::[]
+| I64Load offset -> (I64LoadPseudo (R0, R1, R0, (Z.of_nat offset)))::[]
 | F32Load offset -> (VLDR_F32 (S0, R0, (Z.of_nat offset)))::[]
 | F64Load offset -> (VLDR_F64 (D0, R0, (Z.of_nat offset)))::[]
 | I32Store offset -> (STR (R1, R0, (Z.of_nat offset)))::[]
-| I64Store offset -> (STR (R1, R0, (Z.of_nat offset)))::[]
+| I64Store offset -> (I64StorePseudo (R0, R1, R2, (Z.of_nat offset)))::[]
 | F32Store offset -> (VSTR_F32 (S1, R0, (Z.of_nat offset)))::[]
 | F64Store offset -> (VSTR_F64 (D1, R0, (Z.of_nat offset)))::[]
 | LocalGet idx ->

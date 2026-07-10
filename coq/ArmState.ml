@@ -127,6 +127,160 @@ type vfp_reg =
 | D14
 | D15
 
+(** val vfp_reg_eq_dec : vfp_reg -> vfp_reg -> bool **)
+
+let vfp_reg_eq_dec r1 r2 =
+  match r1 with
+  | S0 -> (match r2 with
+           | S0 -> true
+           | _ -> false)
+  | S1 -> (match r2 with
+           | S1 -> true
+           | _ -> false)
+  | S2 -> (match r2 with
+           | S2 -> true
+           | _ -> false)
+  | S3 -> (match r2 with
+           | S3 -> true
+           | _ -> false)
+  | S4 -> (match r2 with
+           | S4 -> true
+           | _ -> false)
+  | S5 -> (match r2 with
+           | S5 -> true
+           | _ -> false)
+  | S6 -> (match r2 with
+           | S6 -> true
+           | _ -> false)
+  | S7 -> (match r2 with
+           | S7 -> true
+           | _ -> false)
+  | S8 -> (match r2 with
+           | S8 -> true
+           | _ -> false)
+  | S9 -> (match r2 with
+           | S9 -> true
+           | _ -> false)
+  | S10 -> (match r2 with
+            | S10 -> true
+            | _ -> false)
+  | S11 -> (match r2 with
+            | S11 -> true
+            | _ -> false)
+  | S12 -> (match r2 with
+            | S12 -> true
+            | _ -> false)
+  | S13 -> (match r2 with
+            | S13 -> true
+            | _ -> false)
+  | S14 -> (match r2 with
+            | S14 -> true
+            | _ -> false)
+  | S15 -> (match r2 with
+            | S15 -> true
+            | _ -> false)
+  | S16 -> (match r2 with
+            | S16 -> true
+            | _ -> false)
+  | S17 -> (match r2 with
+            | S17 -> true
+            | _ -> false)
+  | S18 -> (match r2 with
+            | S18 -> true
+            | _ -> false)
+  | S19 -> (match r2 with
+            | S19 -> true
+            | _ -> false)
+  | S20 -> (match r2 with
+            | S20 -> true
+            | _ -> false)
+  | S21 -> (match r2 with
+            | S21 -> true
+            | _ -> false)
+  | S22 -> (match r2 with
+            | S22 -> true
+            | _ -> false)
+  | S23 -> (match r2 with
+            | S23 -> true
+            | _ -> false)
+  | S24 -> (match r2 with
+            | S24 -> true
+            | _ -> false)
+  | S25 -> (match r2 with
+            | S25 -> true
+            | _ -> false)
+  | S26 -> (match r2 with
+            | S26 -> true
+            | _ -> false)
+  | S27 -> (match r2 with
+            | S27 -> true
+            | _ -> false)
+  | S28 -> (match r2 with
+            | S28 -> true
+            | _ -> false)
+  | S29 -> (match r2 with
+            | S29 -> true
+            | _ -> false)
+  | S30 -> (match r2 with
+            | S30 -> true
+            | _ -> false)
+  | S31 -> (match r2 with
+            | S31 -> true
+            | _ -> false)
+  | D0 -> (match r2 with
+           | D0 -> true
+           | _ -> false)
+  | D1 -> (match r2 with
+           | D1 -> true
+           | _ -> false)
+  | D2 -> (match r2 with
+           | D2 -> true
+           | _ -> false)
+  | D3 -> (match r2 with
+           | D3 -> true
+           | _ -> false)
+  | D4 -> (match r2 with
+           | D4 -> true
+           | _ -> false)
+  | D5 -> (match r2 with
+           | D5 -> true
+           | _ -> false)
+  | D6 -> (match r2 with
+           | D6 -> true
+           | _ -> false)
+  | D7 -> (match r2 with
+           | D7 -> true
+           | _ -> false)
+  | D8 -> (match r2 with
+           | D8 -> true
+           | _ -> false)
+  | D9 -> (match r2 with
+           | D9 -> true
+           | _ -> false)
+  | D10 -> (match r2 with
+            | D10 -> true
+            | _ -> false)
+  | D11 -> (match r2 with
+            | D11 -> true
+            | _ -> false)
+  | D12 -> (match r2 with
+            | D12 -> true
+            | _ -> false)
+  | D13 -> (match r2 with
+            | D13 -> true
+            | _ -> false)
+  | D14 -> (match r2 with
+            | D14 -> true
+            | _ -> false)
+  | D15 -> (match r2 with
+            | D15 -> true
+            | _ -> false)
+
+(** val vfp_reg_EqDec : vfp_reg coq_EqDec **)
+
+let vfp_reg_EqDec =
+  vfp_reg_eq_dec
+
 type condition_flags = { flag_n : bool; flag_z : bool; flag_c : bool;
                          flag_v : bool }
 
@@ -150,6 +304,18 @@ let get_reg s r =
 let set_reg s r v =
   { regs = (update arm_reg_EqDec s.regs r v); flags = s.flags; vfp_regs =
     s.vfp_regs; mem = s.mem; locals = s.locals; globals = s.globals }
+
+(** val get_vfp_reg : arm_state -> vfp_reg -> I32.int **)
+
+let get_vfp_reg s r =
+  s.vfp_regs r
+
+(** val set_vfp_reg : arm_state -> vfp_reg -> I32.int -> arm_state **)
+
+let set_vfp_reg s r v =
+  { regs = s.regs; flags = s.flags; vfp_regs =
+    (update vfp_reg_EqDec s.vfp_regs r v); mem = s.mem; locals = s.locals;
+    globals = s.globals }
 
 (** val set_flags : arm_state -> condition_flags -> arm_state **)
 

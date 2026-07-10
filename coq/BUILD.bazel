@@ -226,6 +226,26 @@ rocq_library(
     ],
 )
 
+# VCR-SEL-001 expansion tier (#242): the binary I64SetCond family proven
+# against the encoder's ACTUAL dual-precision expansion chains
+# (CMP/SBCS/MOVcc, CMP/CMPEQ/MOVcc from arm_encoder.rs) — no
+# i64_setcond_bits axiom. Rests on the round-3 SailArmBridge anchors
+# (sail_bridge_sbcs_reg / sail_bridge_cmp_cond_reg).
+rocq_library(
+    name = "vcr_sel_expansion",
+    srcs = ["Synth/Synth/VcrSelExpansion.v"],
+    include_path = "Synth",
+    deps = [
+        ":base",
+        ":common",
+        ":arm_state",
+        ":arm_instructions",
+        ":arm_semantics",
+        ":arm_flag_lemmas",
+        ":sail_arm_bridge",
+    ],
+)
+
 # Master index: imports all correctness proofs
 rocq_library(
     name = "correctness_complete",
@@ -254,6 +274,7 @@ rocq_proof_test(
         ":sail_arm_bridge",
         ":vcr_sel_pilot",
         ":vcr_sel_rules",
+        ":vcr_sel_expansion",
     ],
 )
 

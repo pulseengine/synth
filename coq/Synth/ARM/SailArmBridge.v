@@ -1402,3 +1402,246 @@ Theorem sail_bridge_movt : forall s rd imm,
 Proof.
   intros. rewrite sail_movt_result_eq by auto. reflexivity.
 Qed.
+
+(** ** ROUND 3 — SBCS (flags-writing SBC) + conditional execution (CMPcc)
+
+    Same pin as rounds 1–2: rems-project/sail-arm @ master (commit
+    1bf2e5574ba9, 2026-06-19), model arm-v9.4-a. This round anchors the two
+    executor capabilities the VCR-SEL-001 increment-4 holdout named
+    (docs/design/vcr-sel-001-increment-4.md): the dual-precision i64 compare
+    chain's SBCS link and the conditionally-executed CMP (CMPEQ) link.
+
+    Execute-clause provenance:
+
+      - execute SBC (register), setflags = true   instrs32.sail:10946
+        "(result, nzcv) = AddWithCarry(R_read(n), not_vec(shifted), PSTATE.C);
+         ... if setflags then (PSTATE.N @ PSTATE.Z @ PSTATE.C @ PSTATE.V) = nzcv"
+        — the SAME AddWithCarry call round 2 bridged for SBC's result; round 3
+        adds the nzcv write. No new transcription is needed: the flag tuple of
+        [sail_add_with_carry x (sail_not y) c] IS the ASL output.
+      - ConditionHolds                            v8_base.sail
+        (function ConditionHolds(cond): the case table on cond<3:1> —
+         '000' Z / '001' C / '010' N / '011' V / '100' C && !Z /
+         '101' N == V / '110' N == V && !Z / '111' TRUE — with the final
+         "if cond<0> == '1' && cond != '1111' then result = !result" invert
+         bit). Every conditional A32 instruction executes under
+        "if ConditionPassed() then ..."; a false condition leaves the whole
+        state (registers AND PSTATE.NZCV) untouched. CMPEQ is the CMP
+        (register) execute clause under ConditionHolds(EQ).
+
+    ADDITIONAL ABSTRACTION GAP:
+
+     11. [sail_condition_holds] is indexed by the [condition] inductive, not
+         by the bits(4) encoding: the cond<3:1> grouping and the cond<0>
+         invert bit are transcribed per constructor (EQ=0000 .. AL=1110).
+         The '1111' arm (unconditional in A32) has no [condition]
+         constructor on the Rocq side — synth never emits it. *)
+
+(** [ConditionHolds] transcription. The [base] match is the case table on
+    cond<3:1> (each pair of constructors shares a row); the outer match is
+    the cond<0> invert bit (NE/CC/PL/VC/LS/LT/LE are the odd encodings). *)
+Definition sail_condition_holds (cond : condition) (f : condition_flags)
+    : bool :=
+  let n := f.(flag_n) in let z := f.(flag_z) in
+  let c := f.(flag_c) in let v := f.(flag_v) in
+  let base :=
+    match cond with
+    | Cond_EQ | Cond_NE => z
+    | Cond_CS | Cond_CC => c
+    | Cond_MI | Cond_PL => n
+    | Cond_VS | Cond_VC => v
+    | Cond_HI | Cond_LS => c && negb z
+    | Cond_GE | Cond_LT => Bool.eqb n v
+    | Cond_GT | Cond_LE => Bool.eqb n v && negb z
+    | Cond_AL => true
+    end in
+  match cond with
+  | Cond_NE | Cond_CC | Cond_PL | Cond_VC | Cond_LS | Cond_LT | Cond_LE =>
+      negb base
+  | _ => base
+  end.
+
+(** The transcribed ConditionHolds equals the hand-written eval_condition —
+    the foundation under every MOVcc arm and the new CMPCond. *)
+Lemma sail_condition_holds_eq : forall cond f,
+  sail_condition_holds cond f = eval_condition cond f.
+Proof.
+  intros cond f.
+  destruct cond; unfold sail_condition_holds, eval_condition; cbv zeta;
+    destruct (flag_n f), (flag_z f), (flag_c f), (flag_v f); reflexivity.
+Qed.
+
+(** *** Transcription: SBCS flags
+
+    The nzcv tuple of AddWithCarry(x, NOT y, C) — the flags companion of
+    round 2's [sail_sbc_r_result]. *)
+Definition sail_sbcs_r_flags (rn_val rm_val : I32.int) (c : bool)
+    : condition_flags :=
+  let '(_, (n, z, cc, v)) :=
+    sail_add_with_carry rn_val (sail_not rm_val) c in
+  mkFlags n z cc v.
+
+(** *** Arithmetic helpers (round 3) *)
+
+(** Subtracting I32.zero renormalizes but does not change the value. *)
+Lemma sub_sub_zero : forall x y : I32.int,
+  I32.sub (I32.sub x y) I32.zero = I32.sub x y.
+Proof.
+  intros. unfold I32.sub, I32.zero, I32.repr.
+  rewrite (Z.mod_small 0) by (rewrite modulus_val; lia).
+  rewrite Z.sub_0_r. apply Zmod_mod.
+Qed.
+
+(** The SBCS result representative, both carry cases at once:
+    x + NOT(y) + C = x - y - (1 - C). *)
+Lemma repr_sbc_unsigned : forall (x y : I32.int) (c : bool),
+  I32.repr (I32.unsigned x + (I32.modulus - 1 - I32.unsigned y)
+            + (if c then 1 else 0))
+  = I32.sub (I32.sub x y) (if c then I32.zero else I32.one).
+Proof.
+  intros. destruct c.
+  - rewrite sub_sub_zero. apply repr_sub_unsigned.
+  - apply repr_sbc_borrow_unsigned.
+Qed.
+
+(** The unsigned view of the SBCS result is the exact difference mod 2^32. *)
+Lemma unsigned_sbc_result : forall (x y : I32.int) (c : bool),
+  I32.unsigned (I32.sub (I32.sub x y) (if c then I32.zero else I32.one))
+  = (I32.unsigned x - I32.unsigned y - (if c then 0 else 1)) mod I32.modulus.
+Proof.
+  intros. destruct c.
+  - rewrite sub_sub_zero.
+    unfold I32.sub, I32.repr, I32.unsigned.
+    rewrite Zmod_mod, Z.sub_0_r. apply Zminus_mod.
+  - unfold I32.sub, I32.one, I32.repr, I32.unsigned.
+    rewrite !Zmod_mod.
+    rewrite (Z.mod_small 1) by (rewrite modulus_val; lia).
+    rewrite Zminus_mod_idemp_l.
+    rewrite <- mod3_sub. reflexivity.
+Qed.
+
+(** *** Per-flag bridges: SBCS *)
+
+(** C (SBCS): ASL "UInt(result) != UInt(x) + UInt(NOT y) + UInt(C)"
+    ≡ the borrow-aware no-borrow test "uy + borrow <= ux". *)
+Lemma sail_bridge_c_flag_sbc : forall (x y : I32.int) (c : bool),
+  negb (I32.unsigned (I32.sub (I32.sub x y) (if c then I32.zero else I32.one))
+        =? I32.unsigned x + (I32.modulus - 1 - I32.unsigned y)
+           + (if c then 1 else 0))
+  = compute_c_flag_sbc x y c.
+Proof.
+  intros.
+  pose proof (unsigned_range x) as Hx.
+  pose proof (unsigned_range y) as Hy.
+  rewrite unsigned_sbc_result.
+  unfold compute_c_flag_sbc. cbv zeta.
+  set (b := if c then 0 else 1).
+  assert (Hb : 0 <= b <= 1) by (unfold b; destruct c; lia).
+  assert (Hcarry : (if c then 1 else 0) = 1 - b)
+    by (unfold b; destruct c; lia).
+  rewrite Hcarry.
+  set (d := I32.unsigned x - I32.unsigned y - b).
+  replace (I32.unsigned x + (I32.modulus - 1 - I32.unsigned y) + (1 - b))
+    with (d + I32.modulus) by (unfold d; lia).
+  destruct (Z_le_gt_dec 0 d) as [L | G].
+  - rewrite Z.mod_small by (unfold d in *; lia).
+    unfold d in *. bool_blast.
+  - assert (E : d mod I32.modulus = d + I32.modulus).
+    { assert (Hrw : d = (d + I32.modulus) + (-1) * I32.modulus) by lia.
+      rewrite Hrw at 1.
+      rewrite Z_mod_plus_full. apply Z.mod_small. unfold d in *. lia. }
+    rewrite E. unfold d in *. bool_blast.
+Qed.
+
+(** V (SBCS): ASL "SInt(result) != SInt(x) + SInt(NOT y) + UInt(C)"
+    ≡ compute_v_flag_sbc's "signed result differs from the exact signed
+    difference" — the transcription IS the definition, modulo rearranging
+    sx + (-1 - sy) + C into sx - sy - (1 - C). *)
+Lemma sail_bridge_v_flag_sbc : forall (x y : I32.int) (c : bool),
+  negb (I32.signed (I32.sub (I32.sub x y) (if c then I32.zero else I32.one))
+        =? I32.signed x + (- 1 - I32.signed y) + (if c then 1 else 0))
+  = compute_v_flag_sbc x y c.
+Proof.
+  intros. unfold compute_v_flag_sbc. cbv zeta.
+  destruct c; do 2 f_equal; lia.
+Qed.
+
+(** *** Whole-flags and whole-instruction bridges: SBCS *)
+
+(** The transcribed AddWithCarry(x, NOT y, C) NZCV equals the executor's
+    borrow-aware SBCS flag computation. *)
+Lemma sail_sbcs_r_flags_eq : forall x y c,
+  sail_sbcs_r_flags x y c
+  = update_flags_arith
+      (I32.sub (I32.sub x y) (if c then I32.zero else I32.one))
+      (compute_c_flag_sbc x y c)
+      (compute_v_flag_sbc x y c).
+Proof.
+  intros. unfold sail_sbcs_r_flags, sail_add_with_carry.
+  cbv beta iota zeta.
+  rewrite unsigned_not, signed_not.
+  rewrite repr_sbc_unsigned.
+  unfold update_flags_arith.
+  f_equal.
+  - apply sail_bridge_n_flag.
+  - apply sail_bridge_c_flag_sbc.
+  - apply sail_bridge_v_flag_sbc.
+Qed.
+
+(** SBCS (register): result register AND all four NZCV flags agree EXACTLY
+    with ASL's AddWithCarry(R[n], NOT(R[m]), PSTATE.C) + setflags write.
+    This is the anchor for the new executor SBCS case — the semantics is
+    transcribed, not invented. *)
+Theorem sail_bridge_sbcs_reg : forall s rd rn rm,
+  exec_instr (SBCS rd rn (Reg rm)) s
+  = Some (set_flags
+            (set_reg s rd
+               (sail_sbc_r_result (get_reg s rn) (get_reg s rm)
+                                  (s.(flags).(flag_c))))
+            (sail_sbcs_r_flags (get_reg s rn) (get_reg s rm)
+                               (s.(flags).(flag_c)))).
+Proof.
+  intros. rewrite sail_sbc_r_result_eq, sail_sbcs_r_flags_eq. reflexivity.
+Qed.
+
+(** *** Consistency: at carry-in = true the three-operand SBCS helpers
+    collapse to the two-operand SUBS/CMP helpers (borrow = 0) — the new
+    flag math agrees with the already-bridged old flag math on the shared
+    boundary. *)
+
+Lemma sbc_flags_carry_set_c : forall x y,
+  compute_c_flag_sbc x y true = compute_c_flag_sub x y.
+Proof.
+  intros. unfold compute_c_flag_sbc, compute_c_flag_sub. cbv zeta.
+  rewrite Z.add_0_r. reflexivity.
+Qed.
+
+Lemma sbc_flags_carry_set_v : forall x y,
+  compute_v_flag_sbc x y true = compute_v_flag_sub x y.
+Proof.
+  intros.
+  rewrite <- (sail_bridge_v_flag_sbc x y true).
+  rewrite sub_sub_zero.
+  replace (I32.signed x + (- 1 - I32.signed y) + (if true then 1 else 0))
+    with (I32.signed x + (- 1 - I32.signed y) + 1) by reflexivity.
+  apply sail_bridge_v_flag_sub.
+Qed.
+
+(** *** Whole-instruction bridge: conditionally-executed CMP (CMPcc)
+
+    ASL: "if ConditionPassed() then ... AddWithCarry(R[n], NOT(shifted), '1')
+    (flags only)"; a false condition leaves the state untouched. The bridge
+    routes the condition through the transcribed [sail_condition_holds] and
+    the flags through round 1's fully-bridged [sail_cmp_r_flags]. *)
+Theorem sail_bridge_cmp_cond_reg : forall s cond rn rm,
+  exec_instr (CMPCond cond rn (Reg rm)) s
+  = if sail_condition_holds cond s.(flags)
+    then Some (set_flags s (sail_cmp_r_flags (get_reg s rn) (get_reg s rm)))
+    else Some s.
+Proof.
+  intros. cbn [exec_instr].
+  rewrite (sail_condition_holds_eq cond (flags s)).
+  destruct (eval_condition cond (flags s)).
+  - rewrite sail_cmp_r_flags_eq. reflexivity.
+  - reflexivity.
+Qed.

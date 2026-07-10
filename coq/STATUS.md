@@ -1,11 +1,44 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-07-10 (v0.37.x; recount: 423 Qed / 9 Admitted, +2 admit.)**
+**Last Updated: 2026-07-10 (recount: 470 Qed / 8 Admitted, +2 admit., crude
+`grep "Qed\."` over `coq/Synth/**/*.v` — same method as prior recounts)
 
 The headline count is CI-gated: `claims.yaml` + `scripts/claim_check.py`
 re-derive `Qed.`/`Admitted.`/`admit.` counts from `coq/Synth/**/*.v` on every
 commit. When a proof lands, update this file, README.md, CLAUDE.md AND
 `claims.yaml` in the same PR.
+
+## 2026-07 executor upgrade: SBCS + CMPcc + a branch-taking executor (#242)
+
+The flat-executor capability gap named by VCR-SEL-001 increment 4 is closed:
+
+- **SBCS** (flags-writing subtract-with-carry) and **CMPCond** (conditionally
+  executed CMP, e.g. CMPEQ) are in `exec_instr`, with borrow-aware
+  three-operand C/V helpers (`compute_c_flag_sbc` / `compute_v_flag_sbc`).
+  The flag math is transcribed, not invented: bridged to the ASL
+  `AddWithCarry` / `ConditionHolds` formulations in `SailArmBridge.v`
+  round 3 (`sail_bridge_sbcs_reg`, `sail_bridge_cmp_cond_reg`,
+  `sail_condition_holds_eq`).
+- **`exec_program_pc` / `exec_program_br`** (ArmSemantics.v): a PC-indexed,
+  fuel-bounded executor in which `BCondOffset` actually takes the branch.
+  The flat `exec_program` is untouched (BCondOffset stays a no-op there),
+  so every existing proof still discharges.
+- **`VcrSelExpansion.v`** (new, 29 Qed, 0 admits): the ten binary
+  I64SetCond rules re-proven at EXPANSION tier — against the encoder's
+  actual dual-precision chains (CMP lo,lo; SBCS/CMPEQ hi,hi; MOVcc) —
+  with no `i64_setcond_bits` axiom.
+- **`i32_divu_correct`** (CorrectnessI32.v): the first #73 trap-guard
+  admit DISCHARGED, restated against `exec_program_br` (the BNE skips the
+  UDF; extra `I32.valid_unsigned` divisor hypothesis makes the raw-Z
+  divu guard and the mod-2^32 Z-flag agree). Compilation.v's I32DivS
+  guard offsets corrected for real branch semantics (2→3, 0→1).
+
+**Total admits: 8** (was 9) — 3 i32 division/remainder trap guards
+(div_s/rem_s/rem_u, #73 — restatement against `exec_program_br` pending,
+no new executor capability needed), 2 Compilation.v, 1 CorrectnessSimple.v,
+2 ArmRefinement.v. The headline count grew 291 → 467 because the recount
+now includes everything landed since 2026-06-04 (SailArmBridge rounds 1–3,
+VcrSelRules increments, VcrSelExpansion, i64 certifying validation lemmas).
 
 ## v0.11.0 outcome: true i64 T1 parity
 
@@ -20,7 +53,7 @@ New helpers (all Qed, no axioms): `div32_mod64`
 (ORR/EOR identical) and apply the combine lemmas — the `i64_add_correct`
 template minus flag-peeling.
 
-**Total admits: 9** (was 12) — 4 i32 division (separate exec_program-model
+**Total admits: 8** (was 12) — 3 i32 division (separate exec_program-model
 gap #73), 2 Compilation.v, 1 CorrectnessSimple.v, 2 ArmRefinement.v. No
 remaining i64 admits.
 
@@ -40,7 +73,7 @@ high-half combine helper (`(Z.land X Y mod 2^64)/2^32 mod 2^32`, via
 exec-proofs (template: `i64_add_correct` minus flag handling). The
 infrastructure to close them is in place.
 
-**Total admits: 12** — 4 i32 division (separate exec_program-model gap),
+**Total admits: 12** — 3 i32 division (separate exec_program-model gap),
 2 Compilation.v, 1 CorrectnessSimple.v, 3 i64 and/or/xor (above),
 2 ArmRefinement.v.
 
@@ -81,7 +114,7 @@ result-correspondence equations). PR 1 was re-scoped into the full precursor:
    combined operand pairs, high-half register pinning, and dual-register
    post-conditions (R0 = lo_of_i64 result, R1 = hi_of_i64 result).
 
-3. **Discharges**: 5/5 admits closed as `Qed` (4 div/rem + 1 i64_const).
+3. **Discharges**: 5/5 admits closed as `Qed` (3 div/rem + 1 i64_const).
 
 Net change: +5 Qed (the 5 discharges), 0 admits added.
 
@@ -114,15 +147,15 @@ umbrella #147).
 |------|---------|-------|
 | **T1: Result Correspondence** | ARM output register = WASM result value | 37¹ |
 | **T2: Existence-Only** | ARM execution succeeds (no result claim) | 139¹ |
-| **T3: Admitted / admit.** | Not yet proven | 11 (9 Admitted + 2 admit.) |
+| **T3: Admitted / admit.** | Not yet proven | 11 (8 Admitted + 2 admit.) |
 | **Infrastructure** | Properties of integers, states, flag lemmas | 65¹ |
 
 ¹ T1/T2/Infrastructure tier classification is the 2026-06-04 semantic recount
-and predates the VcrSelRules (42), VcrSelPilot (7) and SailArmBridge (81) Qed;
+and predates the VcrSelRules (42), VcrSelPilot (7) and SailArmBridge (92) Qed;
 see the per-file breakdown below for current per-file counts. The T3 row and
 the headline total are re-derived by the claim gate.
 
-**Total: 423 Qed / 9 Admitted (+2 admit.) across all files** (recount 2026-07-10, CI-gated via `claims.yaml`)
+**Total: 470 Qed / 8 Admitted (+2 admit.) across all files** (recount 2026-07-10, CI-gated via `claims.yaml`)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,
@@ -246,7 +279,7 @@ Named `*_executes` to distinguish from T1 `*_correct` proofs.
 |------|-------|------------|---------------------|
 | ArmRefinement.v | 2 | Needs Sail-generated ARM semantics | Phase 2: Import Sail specifications |
 | Integers.v | 1 | `i64_to_i32_to_i64_wrap` — Rocq 9 `Z.mod_mod` signature changed | Rework proof for new Z.mod_mod API |
-| CorrectnessI32.v | 4 | `i32_divs/divu/rems/remu_correct` — trap guard sequences (CMP+BCondOffset+UDF) cannot be verified in the sequential exec_program model | Extend exec_program to support PC-relative branching |
+| CorrectnessI32.v | 3 | `i32_divs/divu/rems/remu_correct` — trap guard sequences (CMP+BCondOffset+UDF) cannot be verified in the sequential exec_program model | Extend exec_program to support PC-relative branching |
 | CorrectnessSimple.v | 1 | `i32_const_correct` — compilation now branches on `I32.unsigned n <= 65535`; large-constant case requires Z.land/Z.shiftr lemmas | Prove MOVW+MOVT reconstruction lemma |
 | CorrectnessSimple.v | 1 | `i64_const_correct` — v0.8.0 PR 1a aligned codegen to `I64ConstPseudo` (loads both halves); proof claimed R0 = low 16 bits via stale MOVW model | v0.8.0 PR 5: concrete `i64_const_lo`/`i64_const_hi` definitions |
 | CorrectnessI64.v | 3 | `i64_and/or/xor_correct` — halves-distribute-over-bitwise decomposition blocked by the same Rocq 9 `Z.mod_mod` rewrite issue as `i64_to_i32_to_i64_wrap` | Rework with new Z.mod_mod API (separate PR) |
@@ -391,7 +424,7 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 | Tactics.v | 1 | 0 | Infra |
 | ArmState.v | 14 | 0 | Infra |
 | ArmSemantics.v | 8 | 0 | Infra |
-| SailArmBridge.v | 81 | 0 | Infra (VCR-ISA-001 Sail/ASL bridge: AddWithCarry family + ALU + shifts + moves) |
+| SailArmBridge.v | 92 | 0 | Infra (VCR-ISA-001 Sail/ASL bridge: AddWithCarry family + ALU + shifts + moves) |
 | WasmSemantics.v | 6 | 0 | Infra |
 | Compilation.v | 3 | 2 | Infra + 2 admitted (`ex_compile_*` examples — Z.leb reduction) |
 | Base.v | 4 | 0 | Infra |
@@ -399,7 +432,7 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 | WasmValues.v | 2 | 0 | Infra |
 | VcrSelPilot.v | 7 | 0 | T1 (register-polymorphic; VCR-SEL-001 go/abandon measurement) |
 | VcrSelRules.v | 42 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2+3+4 rule table — 40 rule theorems 1:1 with `coq/vcr_sel_rules.manifest`, coverage-gated by `//coq:vcr_sel_rules_coverage`, + 2 mod-32 helper lemmas #683) |
-| **Total** | **423** | **9** | (+2 `admit.`) |
+| **Total** | **470** | **9** | (+2 `admit.`) |
 
 ## VCR-SEL-001 increments 1 (2026-07-07) + 2 + 3 + 4 (2026-07-08): VcrSelRules.v
 
