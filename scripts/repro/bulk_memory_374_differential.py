@@ -33,6 +33,7 @@ Exits nonzero on any mismatch.
 """
 import re
 import subprocess
+import os
 import sys
 
 import wasmtime
@@ -57,7 +58,7 @@ from unicorn.arm_const import (
 
 WASM = "scripts/repro/bulk_memory_374_diff.wat"
 ELF = sys.argv[1] if len(sys.argv) > 1 else "/tmp/bmd.elf"
-SYNTH = "./target/release/synth"
+SYNTH = os.environ.get("SYNTH", "./target/release/synth")
 
 MEM_BYTES = 0x10000  # 1 page = 64 KiB (matches the wat `(memory 1)`)
 CODE, LIN, STK, RET = 0x200000, 0x400000, 0x90000, 0x300000

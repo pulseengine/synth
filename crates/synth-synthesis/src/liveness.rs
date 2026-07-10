@@ -3612,11 +3612,45 @@ fn try_reallocate_segment(
 
     // Colouring input: pool ranges only (reserved registers cannot collide
     // with pool colours, so their edges are irrelevant to the colouring).
-    let pool_adj: BTreeMap<usize, BTreeSet<usize>> = adj
+    let mut pool_adj: BTreeMap<usize, BTreeSet<usize>> = adj
         .iter()
         .filter(|(n, _)| pool_nodes.contains(n))
         .map(|(n, nbrs)| (*n, nbrs.intersection(&pool_nodes).copied().collect()))
         .collect();
+
+    // #677 (the #663 defect class): a pool register with NO range in this
+    // segment is not thereby FREE — it may be live-through (defined before the
+    // segment, read after it: a param home the segment never touches, a value
+    // live across a loop back-edge). Segment-local analysis cannot prove it
+    // dead, so introducing it as a rename target silently clobbers the live
+    // value — the memory.copy backward path recolored its walking-pointer
+    // intermediate onto R0, the still-live dst local (#677). Block every
+    // ABSENT pool colour with a synthetic pinned node that interferes with all
+    // real pool nodes. This never costs a recoloring the original bytes did
+    // not have: simultaneously-live ranges carry distinct ORIGINAL registers
+    // (a register holds one value at a time), all of which are present, so an
+    // identity-shaped colouring within the present registers always exists.
+    // Relaxed-exit terminal segments (VCR-VER-001 #580) keep their exemptions:
+    // past the `bx lr` only R0/R1 are observable, so only absent R0/R1 are
+    // blocked there — R2-R8/R12 stay introducible, preserving the push-shrink
+    // the post-exhaust pass exists for.
+    let present: BTreeSet<Reg> = ranges.iter().map(|r| r.reg).collect();
+    let mut next_blocker = ranges.len();
+    for (idx, reg) in pool.iter().enumerate() {
+        if present.contains(reg) {
+            continue;
+        }
+        if relaxed_exit && !matches!(reg, Reg::R0 | Reg::R1) {
+            continue;
+        }
+        let blocker = next_blocker;
+        next_blocker += 1;
+        pins.insert(blocker, idx);
+        for (_, nbrs) in pool_adj.iter_mut() {
+            nbrs.insert(blocker);
+        }
+        pool_adj.insert(blocker, pool_nodes.iter().copied().collect());
+    }
 
     // Spill cost: occurrence count per range (1 per def + 1 per use event),
     // replayed with the same numbering.
