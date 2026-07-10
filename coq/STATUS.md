@@ -1,6 +1,11 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-06-04 (v0.11.x; recount: 291 Qed / 9 Admitted, +2 admit.)
+**Last Updated: 2026-07-10 (v0.37.x; recount: 423 Qed / 9 Admitted, +2 admit.)**
+
+The headline count is CI-gated: `claims.yaml` + `scripts/claim_check.py`
+re-derive `Qed.`/`Admitted.`/`admit.` counts from `coq/Synth/**/*.v` on every
+commit. When a proof lands, update this file, README.md, CLAUDE.md AND
+`claims.yaml` in the same PR.
 
 ## v0.11.0 outcome: true i64 T1 parity
 
@@ -107,12 +112,17 @@ umbrella #147).
 
 | Tier | Meaning | Count |
 |------|---------|-------|
-| **T1: Result Correspondence** | ARM output register = WASM result value | 37 |
-| **T2: Existence-Only** | ARM execution succeeds (no result claim) | 139 |
-| **T3: Admitted** | Not yet proven | 13 |
-| **Infrastructure** | Properties of integers, states, flag lemmas | 65 |
+| **T1: Result Correspondence** | ARM output register = WASM result value | 37¹ |
+| **T2: Existence-Only** | ARM execution succeeds (no result claim) | 139¹ |
+| **T3: Admitted / admit.** | Not yet proven | 11 (9 Admitted + 2 admit.) |
+| **Infrastructure** | Properties of integers, states, flag lemmas | 65¹ |
 
-**Total: 291 Qed / 9 Admitted (+2 admit.) across all files** (recount 2026-06-04)
+¹ T1/T2/Infrastructure tier classification is the 2026-06-04 semantic recount
+and predates the VcrSelRules (42), VcrSelPilot (7) and SailArmBridge (81) Qed;
+see the per-file breakdown below for current per-file counts. The T3 row and
+the headline total are re-derived by the claim gate.
+
+**Total: 423 Qed / 9 Admitted (+2 admit.) across all files** (recount 2026-07-10, CI-gated via `claims.yaml`)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,
@@ -320,7 +330,14 @@ IEEE 754 definitions and prove correspondence with WASM float semantics.
 |-------|---------|
 | `sail_exec_instr` | Placeholder for Sail ARM specification (not yet imported) |
 
-**Total: 41 axioms** (13 I32 + 6 I64 + 20 VFP + 1 flag + 1 refinement)
+**Total: 93 Axiom/Parameter declarations** (recount 2026-07-10,
+`grep -E '^\s*(Axiom|Parameter) '` over `coq/Synth/**/*.v`; CI-gated via
+`claims.yaml`): 19 Integers.v (13 I32 + 6 I64), 72 ArmSemantics.v (the 21 VFP
+bit-pattern axioms tabled above + the i64 pseudo-op `_spec` result axioms +
+abstract operation parameters), 1 ArmFlagLemmas.v (`nv_flag_sub_lts`),
+1 ArmRefinement.v (`sail_exec_instr`). The tables above enumerate the
+originally-documented subset; the grep count is the authoritative trusted-base
+size.
 
 ## Flag-Correspondence Lemmas (ArmFlagLemmas.v)
 
@@ -354,31 +371,35 @@ All fully proved (Qed); no new axioms.
 
 ## Per-File Breakdown
 
+Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
+
 | File | Qed | Admitted | Tier |
 |------|-----|----------|------|
 | Correctness.v | 6 | 0 | T1 |
 | CorrectnessSimple.v | 28 | 1 | T2 + 1 admitted (i64_const_correct) |
-| CorrectnessI32.v | 29 | 0 | T1 |
-| CorrectnessI64.v | 26 | 3 | T1 (add+sub+mul+div+rem) + T2 (shifts/cmps/bit-manip) + 3 admitted (And, Or, Xor — restated to T1 shape, pending Z.mod_mod halves-distribute rework) |
+| CorrectnessI32.v | 27 | 4 | T1 + 4 admitted (i32 div/rem trap guards — exec_program model gap, #73) |
+| CorrectnessI64.v | 46 | 0 | T1 (arith/bitwise/div/rem) + T2 (shifts/cmps/bit-manip) — 0 i64 admits since v0.11.0 |
 | CorrectnessI64Comparisons.v | 19 | 0 | T2 |
 | CorrectnessF32.v | 20 | 0 | T2 |
 | CorrectnessF64.v | 20 | 0 | T2 |
 | CorrectnessConversions.v | 21 | 0 | T2 |
 | CorrectnessMemory.v | 8 | 0 | T2 |
-| CorrectnessComplete.v | 1 | 0 | T2 |
-| ArmRefinement.v | 0 | 2 | T3 |
-| Integers.v | 10 | 1 | Infra/T3 |
-| ArmFlagLemmas.v | 15 | 0 | Infra (+5: combine_i32_unsigned, carry_split_add, borrow_split_sub, i64_add_via_adds_adc, i64_sub_via_subs_sbc) |
+| CorrectnessComplete.v | 0 | 0 | commentary only (tier taxonomy) |
+| ArmRefinement.v | 0 | 2 | T3 (+ the 2 `admit.` tactics) |
+| Integers.v | 11 | 0 | Infra (i64_to_i32_to_i64_wrap closed v0.10.0 PR 2) |
+| ArmFlagLemmas.v | 46 | 0 | Infra (flag correspondence + i64 carry/borrow/shift lemmas) |
 | Tactics.v | 1 | 0 | Infra |
-| ArmState.v | 14 | 0 | Infra (+3: get_reg_set_flags, flags_set_flags, flags_set_flags_set_reg) |
-| ArmSemantics.v | 8 | 0 | Infra (+1: flag_c_update_flags_arith) |
+| ArmState.v | 14 | 0 | Infra |
+| ArmSemantics.v | 8 | 0 | Infra |
+| SailArmBridge.v | 81 | 0 | Infra (VCR-ISA-001 Sail/ASL bridge: AddWithCarry family + ALU + shifts + moves) |
 | WasmSemantics.v | 6 | 0 | Infra |
-| Compilation.v | 5 | 0 | Infra |
+| Compilation.v | 3 | 2 | Infra + 2 admitted (`ex_compile_*` examples — Z.leb reduction) |
 | Base.v | 4 | 0 | Infra |
 | StateMonad.v | 3 | 0 | Infra |
 | WasmValues.v | 2 | 0 | Infra |
-| VcrSelPilot.v | 7 | 0 | T1 (register-polymorphic; VCR-SEL-001 go/abandon measurement, post-recount) |
-| VcrSelRules.v | 40 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2+3+4 rule table, 1:1 rule<->theorem, coverage-gated by `//coq:vcr_sel_rules_coverage`, post-recount) |
+| VcrSelPilot.v | 7 | 0 | T1 (register-polymorphic; VCR-SEL-001 go/abandon measurement) |
+| VcrSelRules.v | 42 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2+3+4 rule table — 40 rule theorems 1:1 with `coq/vcr_sel_rules.manifest`, coverage-gated by `//coq:vcr_sel_rules_coverage`, + 2 mod-32 helper lemmas #683) |
+| **Total** | **423** | **9** | (+2 `admit.`) |
 
 ## VCR-SEL-001 increments 1 (2026-07-07) + 2 + 3 + 4 (2026-07-08): VcrSelRules.v
 
@@ -421,7 +442,7 @@ see `docs/design/vcr-sel-001-increment-4.md`).
 
 **40 Qed / 0 Admitted**, same T1 bound as the pilot ("the ARM sequence
 computes the named result", not WASM refinement). These 47 Qed (pilot +
-rules) post-date and are NOT in the 2026-06-04 recount above.
+rules) are included in the 2026-07-10 recount above.
 
 ## DSL coverage vs model relevance (per-op-family metric, #667)
 

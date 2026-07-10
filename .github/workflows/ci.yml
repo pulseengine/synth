@@ -96,6 +96,21 @@ jobs:
       - name: Check intra-workspace version pins
         run: python3 scripts/check_version_pins.py
 
+  claim-check:
+    name: Claim Check
+    # claim-verification gate: README/CLAUDE.md/coq/STATUS.md load-bearing
+    # claims (proof counts, "verified" wording, DSL rule coverage, trusted-base
+    # sizes) are pinned in claims.yaml and RE-DERIVED from source here — a
+    # hand-maintained number that drifts from the tree fails the build.
+    # When a proof/rule lands, update the docs AND claims.yaml together.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Ensure PyYAML
+        run: python3 -c "import yaml" || python3 -m pip install --user pyyaml
+      - name: Re-derive documentation claims
+        run: python3 scripts/claim_check.py claims.yaml
+
   verify:
     name: Z3 Verification
     # #553 steps 3/4: this is now the ONLY job that builds z3 (feature
