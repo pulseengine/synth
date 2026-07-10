@@ -1051,6 +1051,39 @@ fn compile_wasm_to_arm(
         arm_instrs
     };
 
+    // #686: elide the #682 mod-32 shift-amount mask (`and r12,rK,#31` before
+    // every register-controlled i32 shl/shr) when the amount is STATICALLY
+    // provable < 32 — a const amount folds to the immediate-shift form
+    // (reduced mod 32, so >= 32 shrinks too), and an already-masked amount
+    // (`rK = rX & c`, c < 32) drops the redundant re-mask. gale measured the
+    // unconditional mask at ~12% cyc/call (+14 B) on gust_mix, whose Q8
+    // fixed-point shifts are all constants (#686). The mask stays wherever
+    // the bound is unproven — elision is an optimization, the mask is the
+    // sound default (`liveness::elide_shift_masks` has the proof
+    // obligations). Runs after `fold_immediate_shifts` (whose movw→shift
+    // window the #682 mask intercepts, so it declines every masked const
+    // shift) and before branch resolution (removal/rewrite-only ⇒
+    // offset-neutral).
+    //
+    // FLAG-OFF (opt-in via `SYNTH_SHIFT_MASK_ELIDE=1`) because the elision
+    // moves the frozen anchors: const-amount shifts in control_step (−20 B),
+    // flight_seam (−164 B) and flight_seam_flat (−168 B) fold back to the
+    // immediate form — byte-shapes the corpus had BEFORE the #682 mask, now
+    // with the mask soundly kept for every unproven amount. Flipping
+    // default-on is a deliberate byte-changing refreeze (all differentials
+    // re-run on the new bytes, goldens re-pinned) owned by the maintainer.
+    let arm_instrs = if std::env::var("SYNTH_SHIFT_MASK_ELIDE").is_ok_and(|v| v != "0") {
+        let (out, elisions) = synth_synthesis::liveness::elide_shift_masks(&arm_instrs);
+        if std::env::var("SYNTH_FUSE_STATS").is_ok() {
+            eprintln!(
+                "[shift-mask-elide] {elisions} provably-<32 shift-amount mask(s) elided (#686)"
+            );
+        }
+        out
+    } else {
+        arm_instrs
+    };
+
     // VCR-RA uxth/uxtb fold (#428, #242): `movw rM,#0xffff; and rD,rN,rM` →
     // `uxth rD,rN` (and the 0xff/uxtb form), removing the dead `movw` — −1
     // instruction, −1 live register per 16/8-bit mask. 0xffff/0xff are not Thumb-2
