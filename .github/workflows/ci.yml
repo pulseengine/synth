@@ -113,18 +113,26 @@ jobs:
 
   verify:
     name: Z3 Verification
-    # #553 steps 3/4: this is now the ONLY job that builds z3 (feature
+    # #553 steps 3/4: this is now the ONLY job that pulls in z3 (feature
     # `z3-solver`) — the trusted-reference differential oracle, not the default
     # engine. SYNTH_SOLVER_DIFF=1 routes every query through BOTH engines
     # (ordeal + Z3); any decided-verdict disagreement is a hard error. Do not
     # delete this job: it is the standing cross-check that keeps the pure-Rust
     # default honest.
-    # Stays on ubuntu-latest: needs `sudo apt-get install -y libz3-dev`
-    # (smithy runners have no sudo). Move once libz3-dev is added to
-    # the smithy toolchains role.
+    # Links the SYSTEM libz3 (`sudo apt-get install -y libz3-dev`): the
+    # `z3-solver` feature no longer enables `static-link-z3`, so z3-sys links
+    # `-lz3` (via its `#[link(name="z3")]`) against the apt-installed shared
+    # library instead of compiling z3 from source OR downloading a prebuilt —
+    # this removes the flaky `z3-sys build.rs` GitHub download (HTTP 403/502)
+    # that blocked releases. Stays on ubuntu-latest for `sudo` (smithy runners
+    # have no sudo); move once libz3-dev is in the smithy toolchains role.
     runs-on: ubuntu-latest
     env:
       SYNTH_SOLVER_DIFF: "1"
+      # Point z3-sys bindgen at the apt header (libz3-dev installs it here);
+      # without this it would fall back to the crate's wrapper.h + pkg-config
+      # include path. Set explicitly so the system-link path is unambiguous.
+      Z3_SYS_Z3_HEADER: /usr/include/z3.h
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -138,7 +146,7 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-      - name: Install Z3
+      - name: Install system Z3 (shared lib + headers; no from-source/download)
         run: sudo apt-get update && sudo apt-get install -y libz3-dev
       - name: Run verification tests (differential ordeal vs Z3)
         run: cargo test -p synth-verify --features z3-solver,arm

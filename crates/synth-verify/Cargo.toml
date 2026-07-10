@@ -13,8 +13,10 @@ description = "SMT translation validation for the Synth compiler (ordeal QF_BV e
 [features]
 default = ["arm"]
 # Optional Z3 backend: differential oracle against the default ordeal engine
-# (enable + set SYNTH_SOLVER_DIFF=1 to cross-check every query). Pulls in
-# z3-sys (C++ build) — no longer on the default build path.
+# (enable + set SYNTH_SOLVER_DIFF=1 to cross-check every query). Links the
+# SYSTEM libz3 (apt `libz3-dev`) via z3-sys pkg-config/`#[link(name="z3")]` —
+# no from-source C++ build and no prebuilt download (#553). Not on the default
+# build path.
 z3-solver = ["z3"]
 arm = ["synth-synthesis"]
 
@@ -30,8 +32,11 @@ synth-synthesis = { path = "../synth-synthesis", version = "0.38.0", optional = 
 # Default SMT engine: pure-Rust, certificate-checked QF_BV solver (#553)
 ordeal = "0.4"
 
-# Z3: optional differential oracle (feature `z3-solver`) — no longer default
-z3 = { version = "0.19", features = ["static-link-z3"], optional = true }
+# Z3: optional differential oracle (feature `z3-solver`) — no longer default.
+# Default features only (NO `static-link-z3`/`bundled`): z3-sys links the
+# system libz3 (`libz3-dev`) instead of compiling z3 from source or downloading
+# a prebuilt — kills the flaky `build.rs` GitHub download (HTTP 403/502, #553).
+z3 = { version = "0.19", optional = true }
 
 # Error handling
 anyhow.workspace = true
