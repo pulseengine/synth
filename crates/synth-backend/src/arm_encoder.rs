@@ -1460,6 +1460,17 @@ impl ArmEncoder {
                 let rn_bits = reg_to_bits(rn);
                 // RSB encoding: cond(4) | 00 1 0011 S | Rn(4) | Rd(4) | imm12
                 // Opcode for RSB = 0011, I=1 (immediate), S=0
+                //
+                // #681 class audit: the A32 imm12 is a rotate(4):imm8 modified
+                // immediate; `*imm & 0xFF` silently encoded a WRONG constant
+                // for imm > 0xFF (#378 masking class). All current emitters use
+                // imm 32, so erroring here is byte-identical for real codegen.
+                if *imm > 0xFF {
+                    return Err(synth_core::Error::synthesis(
+                        "A32 RSB immediate > 0xFF requires a rotated-immediate encoding \
+                         (not supported) — materialize into a register",
+                    ));
+                }
                 0xE2600000 | (rn_bits << 16) | (rd_bits << 12) | (*imm & 0xFF)
             }
 
@@ -3206,11 +3217,21 @@ impl ArmEncoder {
             ArmOp::Rsb { rd, rn, imm } => {
                 let rd_bits = reg_to_bits(rd);
                 let rn_bits = reg_to_bits(rn);
-                let imm_val = *imm;
 
-                let i_bit = (imm_val >> 11) & 1;
-                let imm3 = (imm_val >> 8) & 0x7;
-                let imm8 = imm_val & 0xFF;
+                // #681 class audit: the T2 `i:imm3:imm8` field is a
+                // ThumbExpandImm modified immediate and RSB has NO plain-imm12
+                // (T4-style) form — packing a raw value > 0xFF silently encodes
+                // a different constant (#253/#255 class). All current emitters
+                // use imm 32 (shift complement), which expands to itself, so
+                // this gate is byte-identical for existing codegen.
+                let field = try_thumb_expand_imm(*imm).ok_or_else(|| {
+                    synth_core::Error::synthesis(
+                        "RSB immediate is not a valid ThumbExpandImm — materialize into a register",
+                    )
+                })?;
+                let i_bit = (field >> 11) & 1;
+                let imm3 = (field >> 8) & 0x7;
+                let imm8 = field & 0xFF;
 
                 // hw1: 11110 i 01110 0 Rn  (S=0)
                 let hw1: u16 = (0xF1C0 | (i_bit << 10) | rn_bits) as u16;
@@ -7768,22 +7789,21 @@ impl ArmEncoder {
         let rd_bits = reg_to_bits(rd);
         let rn_bits = reg_to_bits(rn);
 
-        // For small immediates, use ADD.W Rd, Rn, #imm12
-        // Encoding: 1111 0 i 0 1 0 0 0 S Rn | 0 imm3 Rd imm8
-        // S = 0 (don't update flags)
-        // The 12-bit immediate is encoded as: i:imm3:imm8
-        // For simplicity, we only support imm <= 0xFFF (direct encoding)
+        // In-range immediates (<= 0xFFF) delegate to `encode_thumb32_add`,
+        // which picks the correct form per value:
+        //   - imm <= 0xFF  -> ADD.W (T3). Its `i:imm3:imm8` field is a
+        //     ThumbExpandImm MODIFIED immediate — raw == expanded only here.
+        //   - 0x100..=0xFFF -> ADDW (T4, 0xF200): a PLAIN 12-bit immediate.
+        //
+        // #681: this function used to pack the raw value into the T3 field for
+        // ALL imm <= 0xFFF. ThumbExpandImm(0x200) = 0 and ThumbExpandImm(0x400)
+        // = 0x8000_0000, so every dynamic-address load/store with a static
+        // offset in 0x100..=0xFFF silently computed a WRONG address — and in
+        // --safety-bounds software the guard checked the intended address while
+        // the access used the mis-encoded one (bounds bypass). Same
+        // ThumbExpandImm raw-packing class as #253/#255, reached via #382.
         if imm <= 0xFFF {
-            let i_bit = (imm >> 11) & 1;
-            let imm3 = (imm >> 8) & 0x7;
-            let imm8 = imm & 0xFF;
-
-            let hw1: u16 = (0xF100 | (i_bit << 10) | rn_bits) as u16;
-            let hw2: u16 = ((imm3 << 12) | (rd_bits << 8) | imm8) as u16;
-
-            let mut bytes = hw1.to_le_bytes().to_vec();
-            bytes.extend_from_slice(&hw2.to_le_bytes());
-            Ok(bytes)
+            self.encode_thumb32_add(rd, rn, imm)
         } else {
             // Out-of-range immediate (> 0xFFF): materialize it into a scratch
             // register, then ADD.W Rd, Rn, scratch. This is the #180/#185
@@ -7916,11 +7936,20 @@ impl ArmEncoder {
     /// Encode Thumb-2 32-bit AND with immediate - raw version
     fn encode_thumb32_and_imm_raw(&self, rd: u32, rn: u32, imm: u32) -> Result<Vec<u8>> {
         // AND.W Rd, Rn, #<modified_immediate>
-        // For small immediates (0-255), the encoding is simpler
         // F0 00 Rn | 0 imm3 Rd imm8
-        let i_bit = (imm >> 11) & 1;
-        let imm3 = (imm >> 8) & 0x7;
-        let imm8 = imm & 0xFF;
+        //
+        // #681 class audit: the field is a ThumbExpandImm modified immediate,
+        // not a raw value. The only current caller (POPCNT final mask) passes
+        // 0x3F, which expands to itself — the gate is byte-identical today and
+        // closes the raw-packing landmine for any future caller.
+        let field = try_thumb_expand_imm(imm).ok_or_else(|| {
+            synth_core::Error::synthesis(
+                "AND immediate is not a valid ThumbExpandImm — materialize into a register",
+            )
+        })?;
+        let i_bit = (field >> 11) & 1;
+        let imm3 = (field >> 8) & 0x7;
+        let imm8 = field & 0xFF;
 
         let hw1: u16 = (0xF000 | (i_bit << 10) | rn) as u16;
         let hw2: u16 = ((imm3 << 12) | (rd << 8) | imm8) as u16;
@@ -9496,11 +9525,15 @@ mod tests {
     fn test_encode_add_imm_large_350() {
         let enc = ArmEncoder::new_thumb2();
 
-        // --- Fast path unchanged: imm <= 0xFFF is a single 4-byte ADD.W ---
+        // --- Fast path: imm <= 0xFFF is a single 4-byte instruction, and the
+        // VALUE must be right (#681: this test used to assert only the length,
+        // letting the raw-packed T3 mis-encoding of 0x123 pass CI). 0x123 is
+        // not ThumbExpandImm-representable, so it must be ADDW (T4, plain
+        // imm12): clang `addw r0, r1, #0x123` = f201 0023.
         let small = enc
             .encode_thumb32_add_imm(&Reg::R0, &Reg::R1, 0x123)
             .unwrap();
-        assert_eq!(small.len(), 4, "small imm must stay a single instruction");
+        assert_eq!(small, vec![0x01, 0xF2, 0x23, 0x10], "ADDW r0, r1, #0x123");
 
         // helper: decode a Thumb-2 MOVW/MOVT halfword pair back to its imm16
         fn movx_imm16(b: &[u8]) -> u32 {
@@ -9566,6 +9599,125 @@ mod tests {
         let ip_add2 = u16::from_le_bytes([inplace[10], inplace[11]]) as u32;
         assert_eq!(ip_add2 & 0xF, 12);
         assert_eq!((ip_add2 >> 8) & 0xF, 5);
+    }
+
+    /// #681 — `encode_thumb32_add_imm` packed a RAW immediate into the T3
+    /// ADD.W `i:imm3:imm8` field, which is a ThumbExpandImm MODIFIED immediate:
+    /// ThumbExpandImm(0x200) = 0, ThumbExpandImm(0x400) = 0x8000_0000. Every
+    /// dynamic-address load/store with a static offset in 0x100..=0xFFF
+    /// computed a wrong address (and bypassed --safety-bounds software: the
+    /// guard checked the intended address, the access used the mis-encoded
+    /// one). Fix: imm <= 0xFF keeps T3 (raw == expanded there, bit-identical);
+    /// 0x100..=0xFFF uses ADDW (T4, plain imm12) — same lowering
+    /// `encode_thumb32_add` already uses per #253.
+    ///
+    /// Every expected byte sequence below is pinned against clang
+    /// (`-target thumbv7m-none-eabi`) output, bit-for-bit (#544 pattern).
+    #[test]
+    fn test_encode_add_imm_thumb_expand_681() {
+        let enc = ArmEncoder::new_thumb2();
+        let add = |rd: &Reg, rn: &Reg, imm: u32| enc.encode_thumb32_add_imm(rd, rn, imm).unwrap();
+
+        // imm <= 0xFF stays T3 ADD.W (raw == ThumbExpandImm-expanded):
+        // clang: add.w r12, r0, #0xff  = f100 0cff
+        assert_eq!(add(&Reg::R12, &Reg::R0, 0xFF), vec![0x00, 0xF1, 0xFF, 0x0C]);
+
+        // 0x100..=0xFFF must be ADDW (T4, plain imm12). The old T3 raw packing
+        // decoded as +0 (0x100/0x200), +0x80000000 (0x400), etc.
+        // clang: addw r12, r0, #0x100 = f200 1c00
+        assert_eq!(
+            add(&Reg::R12, &Reg::R0, 0x100),
+            vec![0x00, 0xF2, 0x00, 0x1C]
+        );
+        // clang: addw r12, r0, #0x104 = f200 1c04
+        assert_eq!(
+            add(&Reg::R12, &Reg::R0, 0x104),
+            vec![0x00, 0xF2, 0x04, 0x1C]
+        );
+        // clang: addw r12, r0, #0x200 = f200 2c00
+        assert_eq!(
+            add(&Reg::R12, &Reg::R0, 0x200),
+            vec![0x00, 0xF2, 0x00, 0x2C]
+        );
+        // clang: addw r12, r0, #0x3fc = f200 3cfc
+        assert_eq!(
+            add(&Reg::R12, &Reg::R0, 0x3FC),
+            vec![0x00, 0xF2, 0xFC, 0x3C]
+        );
+        // clang: addw r12, r0, #0x400 = f200 4c00
+        assert_eq!(
+            add(&Reg::R12, &Reg::R0, 0x400),
+            vec![0x00, 0xF2, 0x00, 0x4C]
+        );
+        // clang: addw r12, r0, #0xfff = f600 7cff
+        assert_eq!(
+            add(&Reg::R12, &Reg::R0, 0xFFF),
+            vec![0x00, 0xF6, 0xFF, 0x7C]
+        );
+        // Non-scratch rd/rn — clang: addw r1, r2, #0x104 = f202 1104
+        assert_eq!(add(&Reg::R1, &Reg::R2, 0x104), vec![0x02, 0xF2, 0x04, 0x11]);
+    }
+
+    /// #681 class audit — the T2 RSB and AND.W immediate fields are also
+    /// ThumbExpandImm-coded and were raw-packed. Neither has a plain-imm12
+    /// (T4-style) form, so a non-representable immediate must Err loudly
+    /// (#253/#255/#378 class: never silently encode a different constant).
+    /// Existing emitters only use representable values (RSB #32, AND #0x3F),
+    /// pinned here bit-for-bit against clang.
+    #[test]
+    fn test_rsb_and_imm_thumb_expand_gate_681() {
+        let enc = ArmEncoder::new_thumb2();
+
+        // clang: rsb.w r3, r2, #0x20 = f1c2 0320 — byte-identical to before.
+        let rsb = enc
+            .encode(&ArmOp::Rsb {
+                rd: Reg::R3,
+                rn: Reg::R2,
+                imm: 32,
+            })
+            .unwrap();
+        assert_eq!(rsb, vec![0xC2, 0xF1, 0x20, 0x03]);
+
+        // 0x101 is not ThumbExpandImm-representable -> must Err, not mis-encode.
+        assert!(
+            enc.encode(&ArmOp::Rsb {
+                rd: Reg::R3,
+                rn: Reg::R2,
+                imm: 0x101,
+            })
+            .is_err(),
+            "non-ThumbExpandImm RSB immediate must Err"
+        );
+
+        // clang: and r4, r4, #0x3f = f004 043f — byte-identical to before.
+        let and = enc.encode_thumb32_and_imm_raw(4, 4, 0x3F).unwrap();
+        assert_eq!(and, vec![0x04, 0xF0, 0x3F, 0x04]);
+        assert!(
+            enc.encode_thumb32_and_imm_raw(4, 4, 0x101).is_err(),
+            "non-ThumbExpandImm AND immediate must Err"
+        );
+
+        // A32 RSB: imm12 is a rotate:imm8 modified immediate; > 0xFF used to be
+        // silently masked to `imm & 0xFF` (#378 masking class) -> must Err.
+        let a32 = ArmEncoder::new_arm32();
+        assert!(
+            a32.encode(&ArmOp::Rsb {
+                rd: Reg::R3,
+                rn: Reg::R2,
+                imm: 0x120,
+            })
+            .is_err(),
+            "A32 RSB immediate > 0xFF must Err, not mask"
+        );
+        // imm 32 (the only value real codegen emits) still encodes.
+        assert!(
+            a32.encode(&ArmOp::Rsb {
+                rd: Reg::R3,
+                rn: Reg::R2,
+                imm: 32,
+            })
+            .is_ok()
+        );
     }
 
     /// #350 follow-up — the `encoder_no_panic` fuzz harness drives the encoder
