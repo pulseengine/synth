@@ -79,13 +79,9 @@ impl PatternMatcher {
                 let mut current_index = index;
 
                 for pat in patterns {
-                    match self.match_pattern(pat, ops, current_index) {
-                        Some(mut new_bindings) => {
-                            bindings.extend(new_bindings.drain());
-                            current_index += 1;
-                        }
-                        None => return None,
-                    }
+                    let mut new_bindings = self.match_pattern(pat, ops, current_index)?;
+                    bindings.extend(new_bindings.drain());
+                    current_index += 1;
                 }
 
                 Some(bindings)
