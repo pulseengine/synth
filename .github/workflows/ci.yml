@@ -338,6 +338,8 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/rem_s_666_differential.py
       - name: Run i32 shift-mask oracle (#682)
         run: SYNTH=./target/debug/synth python scripts/repro/i32_shift_mask_682_differential.py
+      - name: Run ADDW static-offset oracle (#681, incl. software-bounds bypass)
+        run: SYNTH=./target/debug/synth python scripts/repro/addw_offset_681_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b)
