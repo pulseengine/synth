@@ -255,6 +255,8 @@ For automotive safety certification:
 - ✅ Traceability matrix (WASM ops → ARM instructions → test cases)
 
 **Certification Claim**:
+> **⚠️ DRAFT — DO NOT PUBLISH VERBATIM (claim-verification, #688): the compiler is Partial (8 Admitted, #73 div/rem trap-guard model gap), and the Sail/ASL bridge is a hand-transcribed 92-Qed SPIKE (VCR-ISA-001 status: approved, NOT verified — the ASL side is not machine-generated from official Sail). Any external claim must name the technique + trusted base per the claim-verification skill.**
+
 > "The Synth WASM-to-ARM compiler has been formally verified in the Coq theorem prover and validated against the official ARM Sail architectural specifications. The compiler's correctness has been demonstrated through:
 > 1. Mathematical proofs of semantic preservation (Coq)
 > 2. Validation against official ARM ISA emulator (Sail C backend)

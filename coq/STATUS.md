@@ -410,7 +410,7 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 |------|-----|----------|------|
 | Correctness.v | 6 | 0 | T1 |
 | CorrectnessSimple.v | 28 | 1 | T2 + 1 admitted (i64_const_correct) |
-| CorrectnessI32.v | 27 | 4 | T1 + 4 admitted (i32 div/rem trap guards — exec_program model gap, #73) |
+| CorrectnessI32.v | 28 | 3 | T1 + 3 admitted (i32_divu discharged #697) (i32 div/rem trap guards — exec_program model gap, #73) |
 | CorrectnessI64.v | 46 | 0 | T1 (arith/bitwise/div/rem) + T2 (shifts/cmps/bit-manip) — 0 i64 admits since v0.11.0 |
 | CorrectnessI64Comparisons.v | 19 | 0 | T2 |
 | CorrectnessF32.v | 20 | 0 | T2 |

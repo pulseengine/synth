@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.38.0] - 2026-07-10
+
+**The largest release: a ten-lane feature hub — five miscompile classes
+closed (several with class-audit spillover), falcon's call_indirect story
+finished end-to-end, a stack-overflow-safety layout, the flat-executor
+verification upgrade discharging a real proof admit, and a
+claim-verification gate that makes doc honesty a build property. Gated by
+the new claim-check gate PLUS an independent cold-agent claim review.**
+
+### Added
+
+- **Claim-verification gate (#688):** README/CLAUDE/STATUS proof-count,
+  admit-breakdown, coverage, and roadmap-status claims are marked → bound to
+  re-derivable evidence → CI-gated (`scripts/claim_check.py` + `claims.yaml`).
+  Drift fails the build. Stood up per the pulseengine-claude
+  claim-verification skill; it immediately caught six stale proof counts.
+- **Heterogeneous funcref tables (#676):** runtime type-id sidecar +
+  per-slot class check — the terminal layer of falcon's dispatch
+  (#642→#650→#664→#676 complete). Homogeneous tables byte-identical.
+- **`--stack-layout=low` (#687, VCR-MEM-003):** stack at the SRAM bottom so
+  overflow BusFaults instead of silently corrupting linmem/globals — proven
+  by an oracle (stack-high clobbered 4/8 canaries pre-fault; stack-low
+  faults with 8/8 intact). No MPU needed. Flag-off byte-identical.
+- **Flat-executor verification upgrade (#697, #242):** SBCS, conditional
+  flags-writers, and a fuel-bounded branch-taking `exec_program_br` — closing
+  the executor gap VCR-SEL-001 named. All ten binary i64 comparisons proven
+  at expansion tier (no axiom); the first #73 division trap-guard admit
+  DISCHARGED. Proofs now 470 Qed / 8 Admitted; SailArmBridge → 92 Qed.
+
+### Fixed
+
+- **Loop bound in a live param register clobbered by the induction
+  increment (#663):** param liveness now extends across loop back-edges;
+  loops ran once, now run fully.
+- **T3 ADD.W raw-immediate packing → wrong address + software-bounds bypass
+  (#681):** ADDW (T4) for offsets 0x100..0xFFF; class audit gated three more
+  raw-packing sites (a store had escaped 2 GiB past base).
+- **memory.copy/fill clobbered reused local operands + mask was a silent
+  no-op while the safety manifest attested it (#677/#679):** operands copied
+  to scratch; mask discipline applied so attestation is backed by emission.
+  (Surfaced a second instance of the #663 liveness class in the allocator's
+  coloring — fixed.)
+- **v128 SIMD ops silently dropped to no-ops on non-SIMD targets (#680):**
+  category-level loud-skip (macro-generated from wasmparser's SIMD markers);
+  the ops were decoded but their selector arms sat behind a test-only flag.
+- **ELF tooling (#637/#656):** `.ARM.attributes` emitted + `synth disasm`
+  auto-detects Thumb; internal `func_N` symbols are STB_LOCAL (co-linkable).
+
+### Changed
+
+- **Shift-mask elision (#686, flag-off `SYNTH_SHIFT_MASK_ELIDE`):** elides the
+  #682 mod-32 mask when the amount is provably < 32 (gust_mix −10 B, the 12%
+  proxy); also recovers the const-shift imm-fold #682 had blocked. Default-on
+  flip deferred (moves anchors — its own refreeze PR).
+
 ## [0.37.1] - 2026-07-10
 
 **i32 register shifts finally obey WASM's mod-32 semantics (#682) — a latent
