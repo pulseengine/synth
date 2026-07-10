@@ -37,8 +37,8 @@ let compile_wasm_to_arm = function
       ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p)
       ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p)
       ((fun p->2*p) 1))))))))))))))))))::((CMP
-    (R0, (Reg R2)))::((BCondOffset (Cond_NE, ((fun p->2*p) 1)))::((CMN (R1,
-    (Imm I32.one)))::((BCondOffset (Cond_NE, 0))::((UDF 1)::((SDIV (R0, R0,
+    (R0, (Reg R2)))::((BCondOffset (Cond_NE, ((fun p->1+2*p) 1)))::((CMN (R1,
+    (Imm I32.one)))::((BCondOffset (Cond_NE, 1))::((UDF 1)::((SDIV (R0, R0,
     R1))::[]))))))))))
 | I32DivU ->
   (CMP (R1, (Imm I32.zero)))::((BCondOffset (Cond_NE, 1))::((UDF 0)::((UDIV
@@ -52,9 +52,21 @@ let compile_wasm_to_arm = function
 | I32And -> (AND (R0, R0, (Reg R1)))::[]
 | I32Or -> (ORR (R0, R0, (Reg R1)))::[]
 | I32Xor -> (EOR (R0, R0, (Reg R1)))::[]
-| I32Shl -> (LSL_reg (R0, R0, R1))::[]
-| I32ShrS -> (ASR_reg (R0, R0, R1))::[]
-| I32ShrU -> (LSR_reg (R0, R0, R1))::[]
+| I32Shl ->
+  (AND (R12, R1, (Imm
+    (I32.repr ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+      1))))))))::((LSL_reg
+    (R0, R0, R12))::[])
+| I32ShrS ->
+  (AND (R12, R1, (Imm
+    (I32.repr ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+      1))))))))::((ASR_reg
+    (R0, R0, R12))::[])
+| I32ShrU ->
+  (AND (R12, R1, (Imm
+    (I32.repr ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p) ((fun p->1+2*p)
+      1))))))))::((LSR_reg
+    (R0, R0, R12))::[])
 | I32Rotl ->
   (RSB (R2, R1, (Imm
     (I32.repr ((fun p->2*p) ((fun p->2*p) ((fun p->2*p) ((fun p->2*p)

@@ -787,8 +787,9 @@ Definition exec_instr (i : arm_instr) (s : arm_state) : option arm_state :=
      this preserves every proof written against the flat executor.
 
      The trap-guarded div/rem sequences (CMP + BCondOffset + UDF + SDIV/UDIV)
-     are proven against exec_program_br, where the taken branch skips the
-     UDF (CorrectnessI32.v, the former #73 T3 admits). *)
+     are provable against exec_program_br, where the taken branch skips the
+     UDF — i32_divu_correct in CorrectnessI32.v is the first of the #73 T3
+     admits so discharged (div_s/rem_s/rem_u still pending restatement). *)
   | BCondOffset _cond _offset =>
       Some s  (* No-op at the instruction level; branched in exec_program_pc *)
 
@@ -1155,6 +1156,51 @@ Fixpoint exec_program_pc (fuel : nat) (prog : list arm_instr) (pc : nat)
 Definition exec_program_br (prog : list arm_instr) (s : arm_state)
     : option arm_state :=
   exec_program_pc (S (length prog)) prog 0 s.
+
+(** *** One-step unfolding lemmas for [exec_program_pc]
+
+    Symbolic execution of [exec_program_pc] must go through these rewrites,
+    NOT through [cbn]/[simpl] on the fixpoint: reducing the fix under a
+    stuck [nth_error]/branch condition duplicates the full ~40-arm
+    instruction match once per fuel level — exponential blowup (a cbn on a
+    4-instruction program burns CPU-hours). One rewrite per program index
+    keeps every intermediate term linear. *)
+
+(** The pc ran off the end: the program completed. *)
+Lemma exec_program_pc_done : forall fuel prog pc s,
+  nth_error prog pc = None ->
+  exec_program_pc (S fuel) prog pc s = Some s.
+Proof.
+  intros fuel prog pc s H. cbn [exec_program_pc]. rewrite H. reflexivity.
+Qed.
+
+(** A conditional branch: jump [off] instructions when the condition holds
+    on the current flags, fall through otherwise; state untouched. *)
+Lemma exec_program_pc_bcond : forall fuel prog pc s cond off,
+  nth_error prog pc = Some (BCondOffset cond off) ->
+  exec_program_pc (S fuel) prog pc s
+  = exec_program_pc fuel prog
+      (if eval_condition cond s.(flags)
+       then (pc + 1 + Z.to_nat off)%nat
+       else (pc + 1)%nat) s.
+Proof.
+  intros fuel prog pc s cond off H. cbn [exec_program_pc]. rewrite H.
+  destruct (eval_condition cond (flags s)); reflexivity.
+Qed.
+
+(** Any non-branch instruction: delegate to [exec_instr], advance the pc. *)
+Lemma exec_program_pc_instr : forall fuel prog pc s i,
+  nth_error prog pc = Some i ->
+  (match i with BCondOffset _ _ => False | _ => True end) ->
+  exec_program_pc (S fuel) prog pc s
+  = match exec_instr i s with
+    | Some s' => exec_program_pc fuel prog (pc + 1)%nat s'
+    | None => None
+    end.
+Proof.
+  intros fuel prog pc s i H Hni. cbn [exec_program_pc]. rewrite H.
+  destruct i; solve [reflexivity | contradiction].
+Qed.
 
 (** ** Properties *)
 
