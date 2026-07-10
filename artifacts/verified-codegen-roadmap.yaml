@@ -2135,6 +2135,39 @@ artifacts:
       gale offered on-silicon reflash on this exact gust_kernel.wasm as the final
       gate. A FOCUSED gated step, not an idle-tick increment.
 
+      LAYER-2 DOWN-SHIFT LANDED (2026-07-10, gale #678). The SHIPPED layer-1
+      (#383) was narrower than the layer-1 the roadmap sketched above: it
+      re-based the SP slot + resized the .bss but REFUSED any residual
+      `__synth_wasm_data + C` reloc with C != 0 still pointing into the
+      reservation ("down-shifting inline statics is the deferred general case").
+      That refusal gated EVERY buffer-carrying dissolved node (wit-bindgen
+      `list<u8>` — gale's gust:os `log`/`channel`/`io` capabilities) AND every
+      plain `static mut` array (a `spawn` task table), because the wit-bindgen
+      canonical ABI / any stateful CM node puts data + zero-init scratch in the
+      static tail `[sp_init, used_extent)`. So only pure-stateless-scalar nodes
+      (gale's drivers, the gust:os `time` interface) fit an MCU today; the whole
+      gust:os OS milestone beyond `time` was blocked. #678 completes the
+      down-shift the shipped layer-1 deferred: each residual tail static rebases
+      in place `C -> C - (sp_init - budget)` (Abs32 REL literal word patched like
+      the #354 retarget), landing in the down-shifted `.bss` tail — which is a
+      ZERO byte, exactly wasm's zero-init semantics, because a residual reloc is
+      NEVER inside a `(data)` segment (the split path either has no segments —
+      `split_linmem_bss` — or retargets ALL of them into `.data`). The addend-0
+      region-base pointer (`global.get $sp` base) is stable and left as-is; the
+      SP VALUE rides the re-based `__synth_globals` slot. Sound-decline sub-cases
+      kept LOUD + precise: a load window straddling a `(data)` segment boundary
+      (part in `.data`, part in `.bss` tail), an addend below sp_init (would
+      collide with the live stack), and the one-PROGBITS fallback geometry.
+      Opt-in (only fires with `--shadow-stack-size`) ⇒ frozen fixtures
+      bit-identical (10/10). Evidence: `static_downshift_678.rs` (4 tests:
+      bss-static + buffer+bss down-shift, straddle decline, no-flag frozen) +
+      the execution differential `native_pointer_static_downshift_678.py`
+      (a shadow-stack roundtrip + a `.data` buffer + a down-shifted BSS static,
+      all agreeing with wasmtime `run(p) == 43 + 2p` incl. negative p). NOT to
+      be confused with the roadmap's numbered layer-2 (scry-PROVEN auto-budget,
+      `--shadow-stack-size auto`) below, which is orthogonal (this fixes the ELF
+      mechanics of the down-shift; that computes how big B may safely be).
+
       LAYER-2 DECISION LOGIC LANDED (2026-06-22, frozen-safe, no dep change):
       `synth-cli/src/shadow_budget.rs` — a pure `budget_from_bound(bound,
       sp_init, fallback) -> BudgetDecision` over a synth-OWNED `StackDepthBound`
