@@ -76,12 +76,10 @@ impl PatternMatcher {
 
             Pattern::Sequence(patterns) => {
                 let mut bindings = HashMap::new();
-                let mut current_index = index;
 
-                for pat in patterns {
-                    let mut new_bindings = self.match_pattern(pat, ops, current_index)?;
+                for (i, pat) in patterns.iter().enumerate() {
+                    let mut new_bindings = self.match_pattern(pat, ops, index + i)?;
                     bindings.extend(new_bindings.drain());
-                    current_index += 1;
                 }
 
                 Some(bindings)
