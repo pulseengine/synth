@@ -99,25 +99,64 @@ pub fn rule_i32_rotl(rd: Reg, rn: Reg, rm: Reg, rs: Reg) -> Result<Vec<ArmOp>, &
     ])
 }
 
-/// `i32.shl`: rd = rn << rm
+/// `i32.shl`: rd = rn << (rm mod 32) — #682 mask via scratch rs
 ///
 /// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_shl_correct` (Qed).
-pub fn rule_i32_shl(rd: Reg, rn: Reg, rm: Reg) -> Vec<ArmOp> {
-    vec![ArmOp::LslReg { rd, rn, rm }]
+///
+/// Side condition: `rs` must not alias `rn` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i32_shl(rd: Reg, rn: Reg, rm: Reg, rs: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rs == rn {
+        return Err("rule_i32_shl: side condition violated: rs must not alias rn");
+    }
+    Ok(vec![
+        ArmOp::And {
+            rd: rs,
+            rn: rm,
+            op2: Operand2::Imm(31),
+        },
+        ArmOp::LslReg { rd, rn, rm: rs },
+    ])
 }
 
-/// `i32.shr_s`: rd = rn >> rm (arithmetic)
+/// `i32.shr_s`: rd = rn >> (rm mod 32) (arithmetic) — #682 mask via scratch rs
 ///
 /// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_shr_s_correct` (Qed).
-pub fn rule_i32_shr_s(rd: Reg, rn: Reg, rm: Reg) -> Vec<ArmOp> {
-    vec![ArmOp::AsrReg { rd, rn, rm }]
+///
+/// Side condition: `rs` must not alias `rn` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i32_shr_s(rd: Reg, rn: Reg, rm: Reg, rs: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rs == rn {
+        return Err("rule_i32_shr_s: side condition violated: rs must not alias rn");
+    }
+    Ok(vec![
+        ArmOp::And {
+            rd: rs,
+            rn: rm,
+            op2: Operand2::Imm(31),
+        },
+        ArmOp::AsrReg { rd, rn, rm: rs },
+    ])
 }
 
-/// `i32.shr_u`: rd = rn >> rm (logical)
+/// `i32.shr_u`: rd = rn >> (rm mod 32) (logical) — #682 mask via scratch rs
 ///
 /// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_shr_u_correct` (Qed).
-pub fn rule_i32_shr_u(rd: Reg, rn: Reg, rm: Reg) -> Vec<ArmOp> {
-    vec![ArmOp::LsrReg { rd, rn, rm }]
+///
+/// Side condition: `rs` must not alias `rn` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i32_shr_u(rd: Reg, rn: Reg, rm: Reg, rs: Reg) -> Result<Vec<ArmOp>, &'static str> {
+    if rs == rn {
+        return Err("rule_i32_shr_u: side condition violated: rs must not alias rn");
+    }
+    Ok(vec![
+        ArmOp::And {
+            rd: rs,
+            rn: rm,
+            op2: Operand2::Imm(31),
+        },
+        ArmOp::LsrReg { rd, rn, rm: rs },
+    ])
 }
 
 /// `i32.rotr`: rd = rn rotated right by rm

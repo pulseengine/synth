@@ -123,6 +123,14 @@ fn text_sha256(wasm: &str, backend: &str, target: &str) -> (String, usize) {
 fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
     for &(wasm, golden, golden_len) in cases {
         let (got, len) = text_sha256(wasm, backend, target);
+        // Refreeze ritual aid: with SYNTH_REFREEZE_PRINT=1 the gate prints the
+        // NEW golden tuples instead of asserting — paste them over the old
+        // pins ONLY after every scripts/repro/*_differential.py passes on the
+        // new bytes (they move together; see the assert message below).
+        if std::env::var("SYNTH_REFREEZE_PRINT").is_ok() {
+            println!("REPIN ({backend}/{target}): (\"{wasm}\", \"{got}\", {len}),");
+            continue;
+        }
         assert_eq!(
             len, golden_len,
             "{wasm} ({backend}): .text length changed ({len} vs locked {golden_len}) \
@@ -206,18 +214,18 @@ fn frozen_fixtures_text_is_bit_identical_oracle_001() {
     let cases = [
         (
             "control_step.wasm",
-            "d0907e0206e8abd5724dec30eb261f2b9d689c6ec1a3d3b66853691fb532de82",
-            294usize,
+            "f962794f128223b5212fc5cc25bb8393bcae758e89b93c07eb23deb4fffe5c0d",
+            314usize,
         ),
         (
             "flight_seam.wasm",
-            "92fd68638e4074024f54c7744775f44aa88d2f5b36abbd0963d27d62b95e1e97",
-            706,
+            "28642d60533c3fc154dfc7ab27e6a9f4ffe5b0a81adfe4c0fba493d490fc8d2c",
+            870,
         ),
         (
             "flight_seam_flat.wasm",
-            "660c3fbc3a58820b13949412e11f79d47eccfb4de7cfa737a781abe01e4e1b96",
-            846,
+            "643882379d3c25cd1acc34129f5456d54b6864b127184c1f81823daeb267401c",
+            1014,
         ),
         (
             "signed_div_const.wasm",
@@ -247,13 +255,13 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
     let old = [
         (
             "flight_seam.wasm",
-            "9e73eea3867ba085820329951e84a7d650c38a7fc78d9d03a6a83d02963f9670",
-            774usize,
+            "a11ed21e5fe53cdd3bc45382e7ad4288a53abf7fbdffa42c299cf1d2bc24f1da",
+            938usize,
         ),
         (
             "flight_seam_flat.wasm",
-            "887ea546429a4569112147fdc94b0ba90f02a6ccd2b511aa2ca48dab017dbc2c",
-            910,
+            "973a630e6ed687ec02dc73ce9f79cb8261455fceaca1f373c51279d23943ef8a",
+            1078,
         ),
     ];
     for &(wasm, golden, golden_len) in &old {
@@ -290,6 +298,14 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
             .expect(".text")
             .data()
             .expect("read .text");
+        if std::env::var("SYNTH_REFREEZE_PRINT").is_ok() {
+            let hex: String = Sha256::digest(data)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            println!("REPIN: (\"{wasm}\", \"{hex}\", {}),", data.len());
+            continue;
+        }
         assert_eq!(
             data.len(),
             golden_len,
@@ -325,13 +341,13 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
     let old = [
         (
             "flight_seam.wasm",
-            "dce728b48e14aa9187774799c0b268c6ad60be6dc0fa3e7cc9458c17dc65403b",
-            738usize,
+            "b590aea84d62b5dd58702a1a4dd5628683615b0482f1610bdf700509f8c8e360",
+            902usize,
         ),
         (
             "flight_seam_flat.wasm",
-            "0665e623f33457479940046d57a4b7ec02416a61bcc6ec71ea3556ed5b3cb568",
-            878,
+            "49ebf8a1b48d96f66ad4d91f401cd78ce8bcbacc9340941039301a18aba2ec83",
+            1046,
         ),
     ];
     for &(wasm, golden, golden_len) in &old {
@@ -368,6 +384,14 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
             .expect(".text")
             .data()
             .expect("read .text");
+        if std::env::var("SYNTH_REFREEZE_PRINT").is_ok() {
+            let hex: String = Sha256::digest(data)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            println!("REPIN: (\"{wasm}\", \"{hex}\", {}),", data.len());
+            continue;
+        }
         assert_eq!(
             data.len(),
             golden_len,
@@ -402,13 +426,13 @@ fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
     let old = [
         (
             "control_step.wasm",
-            "1a97711cfb4754794a8577814388f08b81eff444edcba3de7d3e3d18ff435183",
-            304usize,
+            "93ef2610ce177e30e28767182ceecfa455d4e69968429145c967f16d7b2e22f1",
+            324usize,
         ),
         (
             "flight_seam.wasm",
-            "6872d6f3f00331e9a52e176428fca375a87b9fbe0cf2b3eb0fb657c304a7372d",
-            730,
+            "d8af257f82594e0a41d75c2fba2aaee62041fff54863342f4a9c3aebe39e10f3",
+            894,
         ),
     ];
     for &(wasm, golden, golden_len) in &old {
@@ -445,6 +469,14 @@ fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
             .expect(".text")
             .data()
             .expect("read .text");
+        if std::env::var("SYNTH_REFREEZE_PRINT").is_ok() {
+            let hex: String = Sha256::digest(data)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            println!("REPIN: (\"{wasm}\", \"{hex}\", {}),", data.len());
+            continue;
+        }
         assert_eq!(
             data.len(),
             golden_len,
@@ -478,13 +510,13 @@ fn frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes() {
     let old = [
         (
             "flight_seam.wasm",
-            "1e1d2b75fe6c4975359c8b1163a6e082a548a0ce1e23d7a360495785bf5e54c2",
-            726usize,
+            "18163e0b37f5932f0e97fe573d9626f53ca1962b823c24e8f5057a34cf8c4318",
+            890usize,
         ),
         (
             "flight_seam_flat.wasm",
-            "d11849db9bef82b77280ee06fdc6f076a7df278b2e5a3213284e569cbf1eccc9",
-            866,
+            "d62bdfa3faed21aef1ad943d824817f3adb04f0f400c1dd498690a437dd2bf43",
+            1034,
         ),
     ];
     for &(wasm, golden, golden_len) in &old {
@@ -521,6 +553,14 @@ fn frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes() {
             .expect(".text")
             .data()
             .expect("read .text");
+        if std::env::var("SYNTH_REFREEZE_PRINT").is_ok() {
+            let hex: String = Sha256::digest(data)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            println!("REPIN: (\"{wasm}\", \"{hex}\", {}),", data.len());
+            continue;
+        }
         assert_eq!(
             data.len(),
             golden_len,
@@ -550,8 +590,8 @@ fn frozen_fixtures_uxth_fold_escape_hatch_restores_old_bytes() {
     // default.
     let old = [(
         "control_step.wasm",
-        "158b036bc678261a6f6ee71450d0af7b23d92415d16d21679347e2a436c25bb2",
-        300usize,
+        "fdcfbac168dcd71ae4a981103f618bb661ffb74c9fd2248c876e5c9b007a65fe",
+        320usize,
     )];
     for &(wasm, golden, golden_len) in &old {
         let elf = format!("/tmp/frozen_nouxth_{wasm}.elf");
@@ -587,6 +627,14 @@ fn frozen_fixtures_uxth_fold_escape_hatch_restores_old_bytes() {
             .expect(".text")
             .data()
             .expect("read .text");
+        if std::env::var("SYNTH_REFREEZE_PRINT").is_ok() {
+            let hex: String = Sha256::digest(data)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            println!("REPIN: (\"{wasm}\", \"{hex}\", {}),", data.len());
+            continue;
+        }
         assert_eq!(
             data.len(),
             golden_len,
@@ -720,6 +768,14 @@ fn frozen_fixtures_rv32_shift_fold_escape_hatch_restores_old_bytes() {
             .expect(".text")
             .data()
             .expect("read .text");
+        if std::env::var("SYNTH_REFREEZE_PRINT").is_ok() {
+            let hex: String = Sha256::digest(data)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            println!("REPIN: (\"{wasm}\", \"{hex}\", {}),", data.len());
+            continue;
+        }
         assert_eq!(
             data.len(),
             golden_len,
@@ -792,6 +848,14 @@ fn frozen_fixtures_rv32_cmp_select_escape_hatch_restores_old_bytes() {
             .expect(".text")
             .data()
             .expect("read .text");
+        if std::env::var("SYNTH_REFREEZE_PRINT").is_ok() {
+            let hex: String = Sha256::digest(data)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            println!("REPIN: (\"{wasm}\", \"{hex}\", {}),", data.len());
+            continue;
+        }
         assert_eq!(
             data.len(),
             golden_len,
@@ -860,6 +924,14 @@ fn frozen_fixtures_rv32_local_promo_escape_hatch_is_noop() {
             .expect(".text")
             .data()
             .expect("read .text");
+        if std::env::var("SYNTH_REFREEZE_PRINT").is_ok() {
+            let hex: String = Sha256::digest(data)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            println!("REPIN: (\"{wasm}\", \"{hex}\", {}),", data.len());
+            continue;
+        }
         assert_eq!(
             data.len(),
             golden_len,

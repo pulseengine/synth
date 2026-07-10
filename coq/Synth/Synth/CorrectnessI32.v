@@ -14,7 +14,7 @@
     - Shifts: Admitted — ARM compilation uses fixed immediate, not register shift
 *)
 
-From Stdlib Require Import ZArith.
+From Stdlib Require Import ZArith Lia Znumtheory.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
 Require Import Synth.ARM.ArmState.
@@ -182,7 +182,25 @@ Theorem i32_xor_correct : forall wstate astate v1 v2 stack',
     get_reg astate' R0 = I32.xor v1 v2.
 Proof. synth_binop_proof. Qed.
 
-(** Shift operations — register-based, matching Rust instruction selector *)
+(** Shift operations — register-based, matching the Rust instruction
+    selector. #682: the amount is masked mod 32 through R12 (ARMv7-M
+    register shifts consume Rm[7:0]; WASM requires mod 32 — the old bare
+    single-instruction lowering was wrong on hardware and its proof
+    vacuous, since I32.shl masks internally). Z-level mask lemmas below
+    duplicate VcrSelRules.v pending consolidation into Common/Integers. *)
+
+Lemma land31_mod32' : forall a : Z, (Z.land a 31) mod 32 = a mod 32.
+Proof.
+  intros a. change 31 with (Z.ones 5).
+  rewrite Z.land_ones by lia.
+  change (2 ^ 5) with 32. apply Z.mod_mod. lia.
+Qed.
+
+Lemma mod_modulus_mod32' : forall a : Z, (a mod 4294967296) mod 32 = a mod 32.
+Proof.
+  intros a.
+  symmetry. apply Zmod_div_mod; [lia | lia | exists 134217728; reflexivity].
+Qed.
 
 Theorem i32_shl_correct : forall wstate astate v1 v2 stack',
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
@@ -195,8 +213,20 @@ Theorem i32_shl_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32Shl) astate = Some astate' /\
     get_reg astate' R0 = I32.shl v1 v2.
 Proof.
-  (* Compiles to [LSL_reg R0 R0 R1] *)
-  synth_binop_proof.
+  intros wstate astate v1 v2 stack' Hstack HR0 HR1 Hwasm.
+  unfold compile_wasm_to_arm.
+  set (s1 := set_reg astate R12 (I32.and (get_reg astate R1) (I32.repr 31))).
+  set (s2 := set_reg s1 R0 (I32.shl (get_reg s1 R0) (get_reg s1 R12))).
+  exists s2. split.
+  - subst s2 s1. simpl. reflexivity.
+  - subst s2. rewrite get_set_reg_eq.
+    subst s1. rewrite get_set_reg_neq by discriminate.
+    rewrite get_set_reg_eq.
+    rewrite HR0, HR1.
+    unfold I32.shl, I32.and, I32.repr, I32.unsigned, I32.modulus.
+    change (31 mod 4294967296) with 31.
+    rewrite !mod_modulus_mod32', land31_mod32'.
+    reflexivity.
 Qed.
 
 Theorem i32_shru_correct : forall wstate astate v1 v2 stack',
@@ -210,7 +240,20 @@ Theorem i32_shru_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32ShrU) astate = Some astate' /\
     get_reg astate' R0 = I32.shru v1 v2.
 Proof.
-  synth_binop_proof.
+  intros wstate astate v1 v2 stack' Hstack HR0 HR1 Hwasm.
+  unfold compile_wasm_to_arm.
+  set (s1 := set_reg astate R12 (I32.and (get_reg astate R1) (I32.repr 31))).
+  set (s2 := set_reg s1 R0 (I32.shru (get_reg s1 R0) (get_reg s1 R12))).
+  exists s2. split.
+  - subst s2 s1. simpl. reflexivity.
+  - subst s2. rewrite get_set_reg_eq.
+    subst s1. rewrite get_set_reg_neq by discriminate.
+    rewrite get_set_reg_eq.
+    rewrite HR0, HR1.
+    unfold I32.shru, I32.and, I32.repr, I32.unsigned, I32.modulus.
+    change (31 mod 4294967296) with 31.
+    rewrite !mod_modulus_mod32', land31_mod32'.
+    reflexivity.
 Qed.
 
 Theorem i32_shrs_correct : forall wstate astate v1 v2 stack',
@@ -224,7 +267,20 @@ Theorem i32_shrs_correct : forall wstate astate v1 v2 stack',
     exec_program (compile_wasm_to_arm I32ShrS) astate = Some astate' /\
     get_reg astate' R0 = I32.shrs v1 v2.
 Proof.
-  synth_binop_proof.
+  intros wstate astate v1 v2 stack' Hstack HR0 HR1 Hwasm.
+  unfold compile_wasm_to_arm.
+  set (s1 := set_reg astate R12 (I32.and (get_reg astate R1) (I32.repr 31))).
+  set (s2 := set_reg s1 R0 (I32.shrs (get_reg s1 R0) (get_reg s1 R12))).
+  exists s2. split.
+  - subst s2 s1. simpl. reflexivity.
+  - subst s2. rewrite get_set_reg_eq.
+    subst s1. rewrite get_set_reg_neq by discriminate.
+    rewrite get_set_reg_eq.
+    rewrite HR0, HR1.
+    unfold I32.shrs, I32.and, I32.repr, I32.unsigned, I32.modulus.
+    change (31 mod 4294967296) with 31.
+    rewrite !mod_modulus_mod32', land31_mod32'.
+    reflexivity.
 Qed.
 
 Theorem i32_rotl_correct : forall wstate astate v1 v2 stack',

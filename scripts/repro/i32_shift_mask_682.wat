@@ -1,0 +1,11 @@
+(module
+  (func (export "shl32")   (param i32) (result i32) (local.get 0) (i32.const 32)  (i32.shl))
+  (func (export "shl33")   (param i32) (result i32) (local.get 0) (i32.const 33)  (i32.shl))
+  (func (export "shl300")  (param i32) (result i32) (local.get 0) (i32.const 300) (i32.shl))
+  (func (export "shr300")  (param i32) (result i32) (local.get 0) (i32.const 300) (i32.shr_u))
+  (func (export "sar300")  (param i32) (result i32) (local.get 0) (i32.const 300) (i32.shr_s))
+  (func (export "shl_var") (param i32 i32) (result i32) (local.get 0) (local.get 1) (i32.shl))
+  (func (export "shr_var") (param i32 i32) (result i32) (local.get 0) (local.get 1) (i32.shr_u))
+  (func (export "sar_var") (param i32 i32) (result i32) (local.get 0) (local.get 1) (i32.shr_s))
+  (func (export "rotr_var") (param i32 i32) (result i32) (local.get 0) (local.get 1) (i32.rotr))
+)

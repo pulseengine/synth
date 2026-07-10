@@ -2589,28 +2589,66 @@ impl InstructionSelector {
             }
 
             // Shifts: WASM pops both value (rn) and shift amount (rm) from stack.
-            // VCR-SEL-001 increment 2 (#242): delegated to the Rocq-proved rules
-            // behind SYNTH_SEL_DSL, byte-identical by construction (single
-            // identical instruction).
+            // #682: ARMv7-M register shifts use Rm[7:0] (>= 32 yields 0/sign)
+            // while WASM requires amount mod 32 — mask into R12 first (encoder
+            // scratch, never allocatable per #212, so no liveness hazard; the
+            // same pattern the optimized path always used). Flag-on delegates
+            // to the Rocq-proved masked rules, byte-identical by construction.
             I32Shl => {
                 if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_shl(rd, rn, rm)
+                    crate::sel_dsl::generated::rule_i32_shl(rd, rn, rm, Reg::R12)
+                        .map_err(synth_core::Error::synthesis)?
                 } else {
-                    vec![ArmOp::LslReg { rd, rn, rm }]
+                    vec![
+                        ArmOp::And {
+                            rd: Reg::R12,
+                            rn: rm,
+                            op2: Operand2::Imm(31),
+                        },
+                        ArmOp::LslReg {
+                            rd,
+                            rn,
+                            rm: Reg::R12,
+                        },
+                    ]
                 }
             }
             I32ShrS => {
                 if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_shr_s(rd, rn, rm)
+                    crate::sel_dsl::generated::rule_i32_shr_s(rd, rn, rm, Reg::R12)
+                        .map_err(synth_core::Error::synthesis)?
                 } else {
-                    vec![ArmOp::AsrReg { rd, rn, rm }]
+                    vec![
+                        ArmOp::And {
+                            rd: Reg::R12,
+                            rn: rm,
+                            op2: Operand2::Imm(31),
+                        },
+                        ArmOp::AsrReg {
+                            rd,
+                            rn,
+                            rm: Reg::R12,
+                        },
+                    ]
                 }
             }
             I32ShrU => {
                 if self.sel_dsl {
-                    crate::sel_dsl::generated::rule_i32_shr_u(rd, rn, rm)
+                    crate::sel_dsl::generated::rule_i32_shr_u(rd, rn, rm, Reg::R12)
+                        .map_err(synth_core::Error::synthesis)?
                 } else {
-                    vec![ArmOp::LsrReg { rd, rn, rm }]
+                    vec![
+                        ArmOp::And {
+                            rd: Reg::R12,
+                            rn: rm,
+                            op2: Operand2::Imm(31),
+                        },
+                        ArmOp::LsrReg {
+                            rd,
+                            rn,
+                            rm: Reg::R12,
+                        },
+                    ]
                 }
             }
 
@@ -10971,21 +11009,31 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
+                    // #682: LSL/LSR/ASR mask the amount mod 32 through R12
+                    // (ARM uses Rm[7:0]; WASM requires mod 32). ROR is cyclic,
+                    // so Rm[7:0] already agrees with WASM — no mask. The mask
+                    // is emitted in the hand-written branch below; the DSL
+                    // branch's generated rules carry their own.
+                    let masked_amt = if matches!(op, I32Rotr) {
+                        shift_amt
+                    } else {
+                        Reg::R12
+                    };
                     let shift_op = match op {
                         I32Shl => ArmOp::LslReg {
                             rd: dst,
                             rn: value,
-                            rm: shift_amt,
+                            rm: masked_amt,
                         },
                         I32ShrU => ArmOp::LsrReg {
                             rd: dst,
                             rn: value,
-                            rm: shift_amt,
+                            rm: masked_amt,
                         },
                         I32ShrS => ArmOp::AsrReg {
                             rd: dst,
                             rn: value,
-                            rm: shift_amt,
+                            rm: masked_amt,
                         },
                         I32Rotr => ArmOp::RorReg {
                             rd: dst,
@@ -10999,7 +11047,9 @@ impl InstructionSelector {
                     // Rocq-proved rule — the identical ArmOp, byte-identical
                     // by construction (mirror-pinned per op).
                     let dsl_ops = if self.sel_dsl {
-                        crate::sel_dsl::i32_shift_rule(op, dst, value, shift_amt)
+                        crate::sel_dsl::i32_shift_rule(op, dst, value, shift_amt, Reg::R12)
+                            .map(|r| r.map_err(synth_core::Error::synthesis))
+                            .transpose()?
                     } else {
                         None
                     };
@@ -11012,6 +11062,17 @@ impl InstructionSelector {
                             cf.add_instruction();
                         }
                     } else {
+                        if !matches!(op, I32Rotr) {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::And {
+                                    rd: Reg::R12,
+                                    rn: shift_amt,
+                                    op2: Operand2::Imm(31),
+                                },
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
                         instructions.push(ArmInstruction {
                             op: shift_op,
                             source_line: Some(idx),
@@ -12581,10 +12642,27 @@ mod tests {
                     | ArmOp::RorReg { rd, rn, rm } => (*rd, *rn, *rm),
                     _ => unreachable!(),
                 };
+                // #682: LSL/LSR/ASR windows are two instructions (And #31 into
+                // R12, then the shift by R12); the rule is invoked with the
+                // ORIGINAL amount register (the And's rn). ROR stays unmasked.
+                let is_masked = !matches!(&baseline[i], ArmOp::RorReg { .. });
+                let (window, orig_rm) = if is_masked {
+                    let orig = match &baseline[i - 1] {
+                        ArmOp::And { rn, .. } => *rn,
+                        other => panic!(
+                            "{}: expected the #682 mask before the shift, found {:?}",
+                            rule.name, other
+                        ),
+                    };
+                    (baseline[i - 1..=i].to_vec(), orig)
+                } else {
+                    (baseline[i..i + 1].to_vec(), rm)
+                };
                 (
-                    baseline[i..i + 1].to_vec(),
-                    crate::sel_dsl::i32_shift_rule(&rule.op, rd, rn, rm)
-                        .unwrap_or_else(|| panic!("{}: shift dispatch missing", rule.name)),
+                    window,
+                    crate::sel_dsl::i32_shift_rule(&rule.op, rd, rn, orig_rm, Reg::R12)
+                        .unwrap_or_else(|| panic!("{}: shift dispatch missing", rule.name))
+                        .unwrap_or_else(|e| panic!("{}: side condition: {e}", rule.name)),
                 )
             };
             assert_eq!(
@@ -12974,21 +13052,33 @@ mod tests {
 
         let arm_instrs = selector.select(&wasm_ops).unwrap();
 
-        assert_eq!(arm_instrs.len(), 3);
+        // #682: each register shift is a two-instruction sequence — the
+        // amount mask (AND R12, rm, #31; WASM mod-32 vs ARM Rm[7:0]) then
+        // the shift consuming R12.
+        assert_eq!(arm_instrs.len(), 6);
 
-        match &arm_instrs[0].op {
-            ArmOp::LslReg { .. } => {}
-            _ => panic!("Expected LslReg, got {:?}", arm_instrs[0].op),
-        }
-
+        let expect_mask = |i: usize| match &arm_instrs[i].op {
+            ArmOp::And {
+                rd: Reg::R12,
+                op2: Operand2::Imm(31),
+                ..
+            } => {}
+            other => panic!("Expected #682 mask AND R12,#31 at {i}, got {other:?}"),
+        };
+        expect_mask(0);
         match &arm_instrs[1].op {
-            ArmOp::AsrReg { .. } => {}
-            _ => panic!("Expected AsrReg, got {:?}", arm_instrs[1].op),
+            ArmOp::LslReg { rm: Reg::R12, .. } => {}
+            _ => panic!("Expected LslReg by R12, got {:?}", arm_instrs[1].op),
         }
-
-        match &arm_instrs[2].op {
-            ArmOp::LsrReg { .. } => {}
-            _ => panic!("Expected LsrReg, got {:?}", arm_instrs[2].op),
+        expect_mask(2);
+        match &arm_instrs[3].op {
+            ArmOp::AsrReg { rm: Reg::R12, .. } => {}
+            _ => panic!("Expected AsrReg by R12, got {:?}", arm_instrs[3].op),
+        }
+        expect_mask(4);
+        match &arm_instrs[5].op {
+            ArmOp::LsrReg { rm: Reg::R12, .. } => {}
+            _ => panic!("Expected LsrReg by R12, got {:?}", arm_instrs[5].op),
         }
     }
 
@@ -13055,8 +13145,24 @@ mod tests {
                 _ => None,
             }
         }
-        // No operand-producing instruction targets R12 (it is encoder scratch only).
+        // No operand-producing instruction targets R12 (it is encoder scratch
+        // only) — EXCEPT the #682 shift-amount mask `AND R12, rm, #31`, the
+        // sanctioned define-and-immediately-consume scratch pattern (the next
+        // instruction's register shift reads R12 and nothing else ever does).
+        fn is_682_mask(op: &ArmOp) -> bool {
+            matches!(
+                op,
+                ArmOp::And {
+                    rd: Reg::R12,
+                    op2: Operand2::Imm(31),
+                    ..
+                }
+            )
+        }
         for ins in &instrs {
+            if is_682_mask(&ins.op) {
+                continue;
+            }
             assert_ne!(
                 dest(&ins.op),
                 Some(Reg::R12),

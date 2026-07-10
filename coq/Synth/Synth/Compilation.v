@@ -111,16 +111,18 @@ Definition compile_wasm_to_arm (w : wasm_instr) : arm_program :=
 
   (* i32 shift operations — register-based, matching Rust instruction_selector.rs *)
   | I32Shl =>
-      (* Logical shift left: R0 = R0 << R1 (I32.shl masks mod 32 internally) *)
-      [LSL_reg R0 R0 R1]
+      (* Logical shift left: R0 = R0 << (R1 mod 32). #682: the mask is
+         MATERIALIZED (AND R12) — ARMv7-M register shifts consume Rm[7:0],
+         so relying on I32.shl's internal mod-32 was vacuous vs hardware. *)
+      [AND R12 R1 (Imm (I32.repr 31)); LSL_reg R0 R0 R12]
 
   | I32ShrU =>
-      (* Logical shift right (unsigned): R0 = R0 >> R1 *)
-      [LSR_reg R0 R0 R1]
+      (* #682: amount masked mod 32 via R12 (ARM Rm[7:0] vs WASM mod-32). *)
+      [AND R12 R1 (Imm (I32.repr 31)); LSR_reg R0 R0 R12]
 
   | I32ShrS =>
-      (* Arithmetic shift right (signed): R0 = R0 >> R1 *)
-      [ASR_reg R0 R0 R1]
+      (* #682: amount masked mod 32 via R12 (ARM Rm[7:0] vs WASM mod-32). *)
+      [AND R12 R1 (Imm (I32.repr 31)); ASR_reg R0 R0 R12]
 
   | I32Rotl =>
       (* Rotate left = rotate right by (32 - shift) *)
