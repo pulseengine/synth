@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-07-10
+
+**i32 register shifts finally obey WASM's mod-32 semantics (#682) — a latent
+hand-written bug the DSL had faithfully mirrored, whose Rocq proof was
+vacuous against real hardware: exactly the model-divergence class the
+Sail/ASL bridge documented as gaps 6–7 and judged unreachable.**
+
+### Fixed
+
+- **i32.shl/shr_s/shr_u with amounts >= 32 silently compiled to 0/sign on
+  both direct selectors (#682, PR #683).** ARMv7-M register shifts consume
+  Rm[7:0]; WASM requires amount mod 32. Both direct selectors now emit
+  `AND R12, rm, #31` before the shift (the optimized bridge's own pattern —
+  that path was never affected); the DSL rules gain the mask + an rs != rn
+  scratch side condition with re-proved theorems; Compilation.v aligned.
+  ROR is exempt (cyclic) and pinned. Red→green: 8 mismatches on v0.37.0's
+  relocatable path → 0 across gale's repro table + variable amounts;
+  CI-gated as a new oracle. Deliberate byte change (+4 B per
+  register-controlled shift; constant amounts imm-fold — unaffected):
+  refreeze ritual honored, 23 differentials green before 13 re-pins, RV32
+  untouched. The gate gains a documented SYNTH_REFREEZE_PRINT repin aid.
+  The honest model-semantics fix (Rm[7:0] in ArmSemantics) rides the
+  flat-executor follow-up.
+- **rust-1.97 clippy drift (PR #684):** three unneeded-wildcard patterns +
+  a question-mark/counter-loop pair on pre-existing code — unreds CI after
+  the toolchain bump.
+
 ## [0.37.0] - 2026-07-09
 
 **The certifying validator reaches the shipped bytes: expansion-level
