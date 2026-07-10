@@ -120,9 +120,11 @@ impl StartupCode {
             // LDR R1, [R0]
             code.extend_from_slice(&[0xD0, 0xF8, 0x00, 0x10]); // LDR R1, [R0, #0]
 
-            // ORR R1, R1, #0x00F00000 (enable CP10+CP11 full access)
-            // Thumb-2 ORR with modified immediate: 0x00F00000
-            code.extend_from_slice(&[0x41, 0xF0, 0xF0, 0x61]); // ORR R1, R1, #0x00F00000
+            // ORR R1, R1, #0x00F00000 (enable CP10+CP11 full access). GI-FPU-002:
+            // the previous bytes [0x41,0xF0,0xF0,0x61] decode to #0x07800000 (a
+            // wrong mask that does NOT enable CP10/CP11); the correct Thumb-2
+            // modified-immediate encoding of #0x00F00000 is [0x41,0xF4,0x70,0x01].
+            code.extend_from_slice(&[0x41, 0xF4, 0x70, 0x01]); // ORR R1, R1, #0x00F00000
 
             // STR R1, [R0]
             code.extend_from_slice(&[0xC0, 0xF8, 0x00, 0x10]); // STR R1, [R0, #0]

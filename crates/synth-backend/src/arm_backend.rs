@@ -91,17 +91,26 @@ impl Backend for ArmBackend {
             // mistook a read-before-write local for a param. `None` when the
             // driver supplied no arg-count table (hand-built modules).
             let declared_params = config.func_arg_counts.get(func.index as usize).copied();
-            let func_config =
-                if params.is_some() || !func.block_arity.is_empty() || declared_params.is_some() {
-                    Some(CompileConfig {
-                        current_func_params_i64: params.cloned().unwrap_or_default(),
-                        current_func_block_arity: func.block_arity.clone(),
-                        current_func_param_count: declared_params,
-                        ..config.clone()
-                    })
-                } else {
-                    None
-                };
+            // GI-FPU-002 (#619/#369): THIS function's declared f32-param mask.
+            let params_f32 = config
+                .func_params_f32
+                .get(func.index as usize)
+                .filter(|p| !p.is_empty());
+            let func_config = if params.is_some()
+                || params_f32.is_some()
+                || !func.block_arity.is_empty()
+                || declared_params.is_some()
+            {
+                Some(CompileConfig {
+                    current_func_params_i64: params.cloned().unwrap_or_default(),
+                    current_func_params_f32: params_f32.cloned().unwrap_or_default(),
+                    current_func_block_arity: func.block_arity.clone(),
+                    current_func_param_count: declared_params,
+                    ..config.clone()
+                })
+            } else {
+                None
+            };
             let cfg = func_config.as_ref().unwrap_or(config);
             let compiled = self.compile_function(&name, &func.ops, cfg)?;
             functions.push(compiled);
@@ -379,6 +388,9 @@ fn compile_wasm_to_arm(
         // #359: declared param widths of THIS function, so the AAPCS stack-arg
         // path can refuse 64-bit params (Ok-or-Err). Empty ⇒ assume i32.
         selector.set_params_i64(config.current_func_params_i64.clone());
+        // GI-FPU-002 (#619/#369): declared f32-param mask — home hard-float f32
+        // args in S0..S15 (AAPCS-VFP) instead of the R0..R3 integer path.
+        selector.set_params_f32(config.current_func_params_f32.clone());
         // #509: blocktype-arity side-table of THIS function, so value-carrying
         // br/br_if/br_table land the carried value in the target block's
         // designated result register instead of dropping it. Empty ⇒ legacy
@@ -2026,6 +2038,9 @@ mod tests {
             target: TargetSpec::cortex_m4f(),
             // no_optimize NOT set — this exercises the optimized path that
             // panicked in issue #120, then the fallback to direct selection.
+            // GI-FPU-002: the f32 params must be declared so the direct
+            // selector homes them in S0/S1 (AAPCS-VFP) rather than declining.
+            current_func_params_f32: vec![true, true],
             ..CompileConfig::default()
         };
 
@@ -2049,6 +2064,8 @@ mod tests {
         let backend = ArmBackend::new();
         let config = CompileConfig {
             target: TargetSpec::cortex_m4f(),
+            // GI-FPU-002: declare the two f32 params for AAPCS-VFP homing.
+            current_func_params_f32: vec![true, true],
             ..CompileConfig::default()
         };
 

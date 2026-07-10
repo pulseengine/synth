@@ -183,6 +183,16 @@ pub struct CompileConfig {
     /// driver loop, because `compile_function` is shared across backends and
     /// carries no function index. Empty → assume i32.
     pub current_func_params_i64: Vec<bool>,
+    /// GI-FPU-002 (#619/#369): per-function declared f32-param mask (full index,
+    /// imports first). The driver copies `func_params_f32[f]` into
+    /// [`current_func_params_f32`] before each `compile_function`. Empty ⇒
+    /// all-non-f32 (byte-identical to before).
+    pub func_params_f32: Vec<Vec<bool>>,
+    /// GI-FPU-002: declared f32-param mask of the function CURRENTLY being
+    /// compiled — `current_func_params_f32[k]` is true when param `k` is f32.
+    /// Set per function from [`func_params_f32`], mirroring
+    /// [`current_func_params_i64`]. Empty ⇒ no f32 params.
+    pub current_func_params_f32: Vec<bool>,
     /// #457: DECLARED parameter count of the function CURRENTLY being compiled,
     /// from the module's type section (`func_arg_counts[func.index]`). Set per
     /// function by the driver loops like [`current_func_params_i64`].
@@ -350,6 +360,8 @@ impl Default for CompileConfig {
             global_widths: Vec::new(),
             func_params_i64: Vec::new(),
             current_func_params_i64: Vec::new(),
+            func_params_f32: Vec::new(),
+            current_func_params_f32: Vec::new(),
             // #457: None ⇒ declared signature unknown ⇒ param-count inference
             // only (unit tests / hand-built op streams); driver loops fill it.
             current_func_param_count: None,

@@ -2237,12 +2237,16 @@ impl ArmEncoder {
         let vmov = encode_vmov_core_sreg(true, sd, rm)?;
         bytes.extend_from_slice(&vmov.to_le_bytes());
 
-        // VCVT.F32.S32 Sd, Sd (signed) or VCVT.F32.U32 Sd, Sd (unsigned)
-        // Base: 0xEEB80A40 (signed) or 0xEEB80AC0 (unsigned)
+        // VCVT.F32.S32 Sd, Sd (signed) or VCVT.F32.U32 Sd, Sd (unsigned).
+        // The "op" bit (bit 7) selects signedness: 1 = signed (S32), 0 =
+        // unsigned (U32). So signed = 0xEEB80AC0, unsigned = 0xEEB80A40 —
+        // objdump confirms 0xEEB80A40 decodes to `vcvt.f32.u32` (GI-FPU-002:
+        // the two were previously swapped, silently making `convert_i32_s`
+        // an unsigned conversion).
         let sd_num = vfp_sreg_to_num(sd)?;
         let (vd, d) = encode_sreg(sd_num);
         let (vm, m) = encode_sreg(sd_num); // same register as source
-        let base = if signed { 0xEEB80A40 } else { 0xEEB80AC0 };
+        let base = if signed { 0xEEB80AC0 } else { 0xEEB80A40 };
         let vcvt = base | (d << 22) | (vd << 12) | (m << 5) | vm;
         bytes.extend_from_slice(&vcvt.to_le_bytes());
 
@@ -6898,11 +6902,13 @@ impl ArmEncoder {
         let vmov = encode_vmov_core_sreg(true, sd, rm)?;
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vmov));
 
-        // VCVT.F32.S32/U32 Sd, Sd
+        // VCVT.F32.S32/U32 Sd, Sd. Bit 7 (op) = 1 for signed (S32), 0 for
+        // unsigned (U32): signed = 0xEEB80AC0, unsigned = 0xEEB80A40
+        // (GI-FPU-002: previously swapped — see the ARM32 twin).
         let sd_num = vfp_sreg_to_num(sd)?;
         let (vd, d) = encode_sreg(sd_num);
         let (vm, m) = encode_sreg(sd_num);
-        let base = if signed { 0xEEB80A40 } else { 0xEEB80AC0 };
+        let base = if signed { 0xEEB80AC0 } else { 0xEEB80A40 };
         let vcvt = base | (d << 22) | (vd << 12) | (m << 5) | vm;
         bytes.extend_from_slice(&vfp_to_thumb_bytes(vcvt));
 

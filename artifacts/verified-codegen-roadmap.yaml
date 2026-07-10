@@ -2780,3 +2780,74 @@ artifacts:
         verbatim in program order (no pass deletes/forwards/reorders linmem
         accesses). No frozen fixture uses the flag, so no re-freeze was needed
         (frozen anchors pass untouched).
+
+  # ---------------------------------------------------------------------------
+  # Scalar f32 hard-float reachability (GI-FPU-002, #619/#369)
+  # ---------------------------------------------------------------------------
+
+  - id: GI-FPU-002
+    type: sw-req
+    title: "Scalar f32 hard-float (VFP) reachable on the thumb-2 CLI path — phase 1 (synth #619/#369)"
+    description: >
+      synth had a working VFP encoder (f32_vfp_encoding_test.rs) and selector
+      VFP arms, but the decoder DROPPED every scalar float op
+      (wasm_decoder.rs `_ => None`), so `synth compile -t cortex-m4f`
+      HONEST-REJECTED f32 on every CLI path (GI-FPU-001 loud-skip). Worse, the
+      "existing" selector VFP lowering was a NON-FUNCTIONAL prototype: the
+      direct `select_with_stack` fell through to `select_default`, whose
+      `alloc_vfp_reg` is a blind `%16` round-robin with no operand-stack
+      integration, so `f32.const;f32.const;f32.add` emitted `VADD S2,S3,S4` over
+      garbage. Phase 1 builds the real bridge.
+
+      DELIVERED (phase 1, implemented):
+        (1) Decoder un-drops the in-scope scalar f32 ops (add/sub/mul/div, the
+            six comparisons, i32.trunc_f32_s/u, f32.convert_i32_s/u, f32.const);
+            f64 and the rest of the f32 surface (abs/neg/sqrt/min/max, load/store,
+            local.set/tee) stay dropped → phase 1b/2.
+        (2) A real VFP value stack in `select_with_stack`: `StackVal::Float`,
+            an S0..S15 allocator (no VFP spilling — loud-bail on exhaustion),
+            and f32 arms that pop/push S-register operands. Integer modules never
+            construct a Float entry, so the frozen integer path is byte-identical.
+        (3) AAPCS-VFP calling convention: f32 params homed in S0..S15 (threaded
+            `params_f32`, decoder → CompileConfig → selector), f32 result in S0.
+        (4) FPU gate: only FPU targets (cortex-m4f/m7/m7dp) lower f32; m0/m3/r5
+            keep the honest reject with a clear GI-FPU-002 message.
+        (5) `.ARM.attributes`: Tag_FP_arch=VFPv4-D16 + Tag_ABI_VFP_args=VFP
+            registers on FPU targets (non-FPU byte-identical), and the reset
+            handler enables CP10/CP11 in SCB->CPACR (the M4F FPU is off at reset).
+        (6) Encoder bug fixed: the signed/unsigned VCVT constants in
+            encode_{arm,thumb}_f32_convert_i32 were SWAPPED (0xEEB80A40 is U32),
+            silently making convert_i32_s an unsigned conversion; and the CPACR
+            ORR mask (main.rs / cortex_m.rs) encoded #0x07800000 instead of
+            #0x00F00000. Both corrected.
+
+      HELD (honest-subset boundary, chosen not missed): f64 (phase 2 — M7DP
+      D-registers), f32 load/store (VLDR/VSTR address materialization — 1b),
+      f32 local.set/tee and non-param f32 locals (VFP home write-back — 1b),
+      mixed f32/integer parameter lists and f32-in-functions-with-calls (both
+      loud-decline: AAPCS-VFP independent register pools / S0..S15 caller-saved).
+    status: implemented
+    tags: [codegen, f32, vfp, hard-float, aapcs-vfp, cortex-m4f, decoder, selector, synth-619, synth-369, gi-fpu-002]
+    links:
+      - type: derives-from
+        target: VCR-001
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        Tracks GitHub issues #619 / #369. RED→GREEN execution differential
+        (scripts/repro/f32_vfp_619_differential.py): compiles f32.add/sub/mul/div
+        + i32.trunc_f32_s + f32.convert_i32_s/u for cortex-m4f, reads each symbol
+        from the ELF SYMTAB (#489), runs it under unicorn (ARM/Thumb, FPU enabled
+        via CPACR CP10/CP11 + FPEXC.EN) with f32 args in S0/S1 (hard-float), and
+        asserts the result is bit-exact (`to_bits`) vs wasmtime on boundary
+        values (0.0, 1.5, -2.25, large, subnormal). RED on origin/main (compile
+        REJECTS → exit 1); GREEN after (48/48 bit-exact → exit 0). Honest-reject:
+        the same harness asserts cortex-m3 REJECTS f32. CI-gateable Rust test
+        crates/synth-backend/tests/f32_hardfloat_619.rs locks the AAPCS-VFP S0/S1
+        homing, the honest reject, and the convert-signedness fix without
+        unicorn. Frozen anchors 10/10 and the #511 estimator oracle pass
+        untouched (float declines the optimized path → the estimator never sees
+        VFP ops). The f32 comparisons compile + are byte-pinned in
+        f32_vfp_encoding_test.rs but are not execution-differentiated (unicorn
+        does not model the VMRS FPSCR→APSR flag transfer — an emulator gap).

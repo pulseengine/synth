@@ -1390,6 +1390,11 @@ fn compile_command(
     // `i64.shr_u x 32` returned 32 (the shift amount) instead of the high word.
     // Empty for the demo path (all-i32 demos).
     let mut current_func_params_i64: Vec<bool> = Vec::new(); // #359/#518/#599
+    // GI-FPU-002 (#619/#369): declared f32-param mask of THIS function (and the
+    // per-module table) — home hard-float f32 args in S0..S15 (AAPCS-VFP).
+    // Empty for the demo path (no module signature).
+    let mut current_func_params_f32: Vec<bool> = Vec::new();
+    let mut func_params_f32_all: Vec<Vec<bool>> = Vec::new();
     // #457: declared param count of THIS function — caps the access-pattern
     // param inference (a read-before-write local is otherwise indistinguishable
     // from a param). None for the demo path (no module signature).
@@ -1460,6 +1465,7 @@ fn compile_command(
             startup_globals_words = globals_table_words(&module.globals);
             let module_func_params_i64 = module.func_params_i64;
             let module_func_arg_counts = module.func_arg_counts;
+            func_params_f32_all = module.func_params_f32.clone();
             // VCR-PERF-002 Phase 1 (#494): whatever facts loom forwarded
             // (empty for a section-less module — the overwhelmingly common
             // case — and for any malformed section, per the fail-safe rule).
@@ -1506,6 +1512,10 @@ fn compile_command(
             // all-exports compile loop (#359/#509/#518).
             if let Some(p) = module_func_params_i64.get(func.index as usize) {
                 current_func_params_i64 = p.clone();
+            }
+            // GI-FPU-002 (#619/#369): THIS function's declared f32-param mask.
+            if let Some(p) = func_params_f32_all.get(func.index as usize) {
+                current_func_params_f32 = p.clone();
             }
             // #457: THIS function's declared param count from the type section.
             current_func_param_count = module_func_arg_counts.get(func.index as usize).copied();
@@ -1611,6 +1621,9 @@ fn compile_command(
         // Without these the selector materialized constants into the param's
         // live high register (i64.shr_u/shr_s returned the shift amount).
         current_func_params_i64,
+        // GI-FPU-002 (#619/#369): AAPCS-VFP f32-param homing.
+        current_func_params_f32,
+        func_params_f32: func_params_f32_all,
         // #457: declared param count — caps the param-count inference so a
         // read-before-write local lands in a zero-inited frame slot.
         current_func_param_count,
@@ -2357,6 +2370,7 @@ fn compile_all_exports(
         all_func_ret_i64,  // #311: per-function returns-i64 (pair tagging)
         all_type_ret_i64,  // #311: per-type returns-i64 (call_indirect)
         all_func_params_i64, // #359: per-function declared param widths (stack-arg ABI)
+        all_func_params_f32, // GI-FPU-002: per-function declared f32-param mask (AAPCS-VFP)
         all_wsc_facts,     // VCR-PERF-002 Phase 1 (#494): loom wsc.facts premises
         all_call_indirect_guards, // #642: table size + closed-world type verdicts
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
@@ -2456,6 +2470,7 @@ fn compile_all_exports(
             Vec::new(), // #311: WAST runs the fixture suite; i32-only
             Vec::new(),
             Vec::new(), // #359: WAST fixture suite is i32-only — no stack params
+            Vec::new(), // GI-FPU-002: WAST fixture suite is i32-only — no f32 params
             Vec::new(), // #494: facts are a loom-emitted-.wasm channel; WAST fixtures carry none
             // #642: the multi-module WAST merge has no single table image to
             // verify — the default guards DECLINE any call_indirect (the WAST
@@ -2551,6 +2566,7 @@ fn compile_all_exports(
             module.func_ret_i64,
             module.type_ret_i64,
             module.func_params_i64,
+            module.func_params_f32,
             module.wsc_facts,
             guards, // #642
         )
@@ -2629,6 +2645,9 @@ fn compile_all_exports(
         // source of truth for the AAPCS stack-argument refusal. The per-function
         // `current_func_params_i64` is derived from this in the compile loop.
         func_params_i64: all_func_params_i64.clone(),
+        // GI-FPU-002 (#619/#369): per-function AAPCS-VFP f32-param homing.
+        func_params_f32: all_func_params_f32.clone(),
+        current_func_params_f32: Vec::new(),
         // #543 Phase 1: threaded but not yet consumed (inert plumbing). The
         // Phase-2 back-off (const-CSE + #468 base-CSE decline inside these ranges)
         // lives on the optimized path this config feeds. See VCR-DMA-001.
@@ -2688,6 +2707,12 @@ fn compile_all_exports(
                 && !p.is_empty()
             {
                 fc.current_func_params_i64 = p.clone();
+            }
+            // GI-FPU-002 (#619/#369): THIS function's declared f32-param mask.
+            if let Some(p) = all_func_params_f32.get(func.index as usize)
+                && !p.is_empty()
+            {
+                fc.current_func_params_f32 = p.clone();
             }
             fc.current_func_block_arity = func.block_arity.clone();
             // #457: THIS function's DECLARED param count, so the backends can
@@ -3076,9 +3101,13 @@ fn arm_build_attributes(target: &TargetSpec) -> Section {
         // architecturally permitted on v7-R, but synth emits pure A32 here and
         // the STT_FUNC symbols carry no Thumb bit (#598) — advertise A32 only
         // so ISA auto-detection picks the A32 decoder.
-        IsaVariant::Arm32 => arm_attributes_section(aeabi::CPU_ARCH_V7, aeabi::PROFILE_R, 1, 0),
+        IsaVariant::Arm32 => {
+            arm_attributes_section(aeabi::CPU_ARCH_V7, aeabi::PROFILE_R, 1, 0, 0, 0)
+        }
         // Cortex-M0 (Thumb-1 only): v6-M, 16-bit Thumb.
-        IsaVariant::Thumb => arm_attributes_section(aeabi::CPU_ARCH_V6M, aeabi::PROFILE_M, 0, 1),
+        IsaVariant::Thumb => {
+            arm_attributes_section(aeabi::CPU_ARCH_V6M, aeabi::PROFILE_M, 0, 1, 0, 0)
+        }
         // Cortex-M Thumb-2 family: arch from the triple (M3 = v7-M,
         // M4/M4F/M7 = v7E-M, M55 = v8.1-M.mainline), profile M, Thumb-2.
         _ => {
@@ -3089,7 +3118,16 @@ fn arm_build_attributes(target: &TargetSpec) -> Section {
             } else {
                 aeabi::CPU_ARCH_V7
             };
-            arm_attributes_section(cpu_arch, aeabi::PROFILE_M, 0, 2)
+            // GI-FPU-002 (#619/#369): an FPU target advertises hard-float —
+            // Tag_FP_arch = VFPv4-D16 and Tag_ABI_VFP_args = VFP registers — so
+            // a consumer can tell the FP mode from the artifact. Non-FPU M-profile
+            // targets keep 0/0 (omitted) and stay byte-identical.
+            let (fp_arch, vfp_args) = if target.has_fpu() {
+                (aeabi::FP_ARCH_VFPV4_D16, aeabi::VFP_ARGS_VFP_REGS)
+            } else {
+                (0, 0)
+            };
+            arm_attributes_section(cpu_arch, aeabi::PROFILE_M, 0, 2, fp_arch, vfp_args)
         }
     }
 }
@@ -4278,7 +4316,12 @@ fn build_multi_func_cortex_m_elf(
     let vector_table_size: u32 = 128;
 
     let startup_addr = flash_base + vector_table_size;
-    let startup_code = generate_minimal_startup(linear_memory_size, globals_words, linmem_base);
+    let startup_code = generate_minimal_startup(
+        linear_memory_size,
+        globals_words,
+        linmem_base,
+        target.has_fpu(),
+    );
     let startup_size = startup_code.len() as u32;
 
     let default_handler_addr = startup_addr + startup_size;
@@ -5156,7 +5199,12 @@ fn build_cortex_m_elf(
     let vector_table_size: u32 = 128; // 32 entries * 4 bytes
 
     let startup_addr = flash_base + vector_table_size;
-    let startup_code = generate_minimal_startup(linear_memory_size, globals_words, linmem_base);
+    let startup_code = generate_minimal_startup(
+        linear_memory_size,
+        globals_words,
+        linmem_base,
+        target.has_fpu(),
+    );
     let startup_size = startup_code.len() as u32;
 
     let default_handler_addr = startup_addr + startup_size;
@@ -5326,8 +5374,15 @@ fn build_cortex_m_elf(
 ///   high stack layout; `0x20000000 + stack_size` under `--stack-layout=low`,
 ///   #687)
 /// * R9  = `linmem_base` + memory_size (globals table; only when globals exist)
-fn generate_minimal_startup(memory_size: u32, globals_words: &[u32], linmem_base: u32) -> Vec<u8> {
+fn generate_minimal_startup(
+    memory_size: u32,
+    globals_words: &[u32],
+    linmem_base: u32,
+    enable_fpu: bool,
+) -> Vec<u8> {
     // This startup code:
+    // 0. (GI-FPU-002, #619) On an FPU target, enables CP10/CP11 in SCB->CPACR
+    //    so VFP instructions don't fault (the FPU is disabled at reset).
     // 1. Initializes R10 with memory size (for bounds checking)
     // 2. Initializes R11 with the linear memory base for WASM memory access
     // 3. Loads the address of the user function
@@ -5349,6 +5404,21 @@ fn generate_minimal_startup(memory_size: u32, globals_words: &[u32], linmem_base
     let r10_movt = encode_thumb2_movt(10, (memory_size >> 16) as u16);
 
     let mut code: Vec<u8> = Vec::new();
+    // GI-FPU-002 (#619/#369): enable the FPU before any VFP instruction runs.
+    // SCB->CPACR (0xE000ED88) |= 0x00F00000 sets CP10+CP11 to full access, then
+    // DSB+ISB. Seven 4-byte Thumb-2 instructions (28 bytes, a multiple of 4) so
+    // the later 16-bit `LDR r0,[pc,#4]` literal load stays 4-byte aligned and
+    // its relative offset is unchanged. Emitted ONLY on FPU targets — a
+    // non-FPU startup is byte-identical to before.
+    if enable_fpu {
+        code.extend_from_slice(&[0x4E, 0xF6, 0x88, 0x50]); // MOVW R0, #0xED88
+        code.extend_from_slice(&[0xCE, 0xF2, 0x00, 0x00]); // MOVT R0, #0xE000
+        code.extend_from_slice(&[0xD0, 0xF8, 0x00, 0x10]); // LDR  R1, [R0]
+        code.extend_from_slice(&[0x41, 0xF4, 0x70, 0x01]); // ORR  R1, R1, #0x00F00000
+        code.extend_from_slice(&[0xC0, 0xF8, 0x00, 0x10]); // STR  R1, [R0]
+        code.extend_from_slice(&[0xBF, 0xF3, 0x4F, 0x8F]); // DSB SY
+        code.extend_from_slice(&[0xBF, 0xF3, 0x6F, 0x8F]); // ISB SY
+    }
     // MOVW R10, #(memory_size & 0xFFFF) / MOVT R10, #(memory_size >> 16)
     code.extend_from_slice(&r10_movw);
     code.extend_from_slice(&r10_movt);
@@ -6420,7 +6490,7 @@ mod tests {
     fn test_minimal_startup_generation() {
         // Test with 64KB memory size (0x10000)
         let memory_size: u32 = 64 * 1024;
-        let startup = generate_minimal_startup(memory_size, &[], 0x2000_0000);
+        let startup = generate_minimal_startup(memory_size, &[], 0x2000_0000, false);
 
         // Should be 28 bytes:
         // MOVW R10 + MOVT R10 + MOVW R11 + MOVT R11 + LDR + BLX + B + padding + literal
@@ -6460,8 +6530,8 @@ mod tests {
         let memory_size: u32 = 64 * 1024;
         // i64 0x123456789ABCDEF0 (lo, hi) followed by an i32 canary.
         let words = [0x9ABCDEF0u32, 0x12345678, 0x0C0FFEE1];
-        let startup = generate_minimal_startup(memory_size, &words, 0x2000_0000);
-        let empty = generate_minimal_startup(memory_size, &[], 0x2000_0000);
+        let startup = generate_minimal_startup(memory_size, &words, 0x2000_0000, false);
+        let empty = generate_minimal_startup(memory_size, &[], 0x2000_0000, false);
 
         // 16 scaffold + 8 (R9 movw/movt) + 3 * 12 (movw/movt/str) + 12 tail
         assert_eq!(startup.len(), 16 + 8 + 36 + 12, "materializer size");
@@ -6496,8 +6566,8 @@ mod tests {
         let base_low = base_high + DEFAULT_LOW_STACK_SIZE; // 0x2000_1000
         let words = [0x0C0FFEE1u32];
 
-        let low = generate_minimal_startup(memory_size, &words, base_low);
-        let high = generate_minimal_startup(memory_size, &words, base_high);
+        let low = generate_minimal_startup(memory_size, &words, base_low, false);
+        let high = generate_minimal_startup(memory_size, &words, base_high, false);
         assert_eq!(low.len(), high.len(), "same shape, shifted constants");
 
         // R10 (memory size) identical.
