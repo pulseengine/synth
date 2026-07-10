@@ -1,0 +1,60 @@
+{
+  "name": "@pulseengine/synth",
+  "version": "0.38.0",
+  "description": "synth — a WebAssembly-to-ARM/RISC-V/AArch64 compiler with mechanized correctness proofs. Produces bare-metal ELF binaries for embedded targets.",
+  "bin": {
+    "synth": "./run.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js",
+    "preuninstall": "node uninstall.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "webassembly",
+    "wasm",
+    "compiler",
+    "arm",
+    "cortex-m",
+    "riscv",
+    "aarch64",
+    "embedded",
+    "bare-metal",
+    "verified",
+    "rocq",
+    "coq",
+    "rust",
+    "cli"
+  ],
+  "author": "PulseEngine <https://github.com/pulseengine>",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pulseengine/synth.git"
+  },
+  "homepage": "https://github.com/pulseengine/synth#readme",
+  "bugs": {
+    "url": "https://github.com/pulseengine/synth/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "files": [
+    "index.js",
+    "install.js",
+    "run.js",
+    "uninstall.js",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
