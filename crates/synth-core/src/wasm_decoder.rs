@@ -305,6 +305,11 @@ pub struct DecodedModule {
     /// AAPCS stack-argument path needs the declared widths — op-stream inference
     /// can't see an unused i64 param that still shifts the incoming-stack layout.
     pub func_params_i64: Vec<Vec<bool>>,
+    /// GI-FPU-002 (#619/#369): declared f32-param mask per *function* (full
+    /// index, imports first): `func_params_f32[f][k]` is true when param `k` is
+    /// f32. The direct selector homes hard-float f32 args in S0..S15 (AAPCS-VFP),
+    /// which op-stream inference cannot recover for a pure-passthrough f32 param.
+    pub func_params_f32: Vec<Vec<bool>>,
     /// Defined globals with their initializers (#237). Empty if the module has
     /// no global section. Used by the native-pointer ABI to make a global whose
     /// initializer is a linear-memory address (e.g. `$__stack_pointer`)
@@ -589,6 +594,12 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // #359: declared param widths per type / per function (full index).
     let mut type_params_i64: Vec<Vec<bool>> = Vec::new();
     let mut func_params_i64: Vec<Vec<bool>> = Vec::new();
+    // GI-FPU-002 (#619/#369): per-type / per-function declared f32-param mask,
+    // so the direct selector can home hard-float (AAPCS-VFP) f32 args in S0..S15
+    // instead of the core-register (R0..R3) integer path. Independent of
+    // `params_i64` (which lumps f64 with i64): an f32 param is neither.
+    let mut type_params_f32: Vec<Vec<bool>> = Vec::new();
+    let mut func_params_f32: Vec<Vec<bool>> = Vec::new();
     // #509: (param_count, result_count) per type index, for FuncType blocktypes.
     let mut type_block_arity: Vec<(u8, u8)> = Vec::new();
     let mut elem_func_indices: Vec<u32> = Vec::new();
@@ -672,9 +683,19 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             ),
                             _ => (0, false, Vec::new()),
                         };
+                        // GI-FPU-002: declared f32-param mask for this type.
+                        let params_f32 = match &sub_ty.composite_type.inner {
+                            wasmparser::CompositeInnerType::Func(func_ty) => func_ty
+                                .params()
+                                .iter()
+                                .map(|t| matches!(t, wasmparser::ValType::F32))
+                                .collect::<Vec<bool>>(),
+                            _ => Vec::new(),
+                        };
                         type_arg_counts.push(count);
                         type_ret_i64.push(ret_i64);
                         type_params_i64.push(params_i64);
+                        type_params_f32.push(params_f32);
                         // #680: v128 anywhere in the signature.
                         type_has_v128.push(match &sub_ty.composite_type.inner {
                             wasmparser::CompositeInnerType::Func(f) => f
@@ -721,6 +742,12 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             );
                             func_params_i64.push(
                                 type_params_i64
+                                    .get(type_idx as usize)
+                                    .cloned()
+                                    .unwrap_or_default(),
+                            );
+                            func_params_f32.push(
+                                type_params_f32
                                     .get(type_idx as usize)
                                     .cloned()
                                     .unwrap_or_default(),
@@ -787,6 +814,12 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                     );
                     func_params_i64.push(
                         type_params_i64
+                            .get(type_idx as usize)
+                            .cloned()
+                            .unwrap_or_default(),
+                    );
+                    func_params_f32.push(
+                        type_params_f32
                             .get(type_idx as usize)
                             .cloned()
                             .unwrap_or_default(),
@@ -1062,6 +1095,7 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         func_ret_i64,
         type_ret_i64,
         func_params_i64,
+        func_params_f32,
         globals,
         elem_func_indices,
         table_size: table_sizes.first().copied().flatten(),
@@ -1853,6 +1887,34 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         I64x2ExtractLane { lane } => Some(WasmOp::I64x2ExtractLane(*lane)),
         I64x2ReplaceLane { lane } => Some(WasmOp::I64x2ReplaceLane(*lane)),
 
+        // === Scalar f32 (GI-FPU-002 phase 1, #619/#369) ===
+        // Un-dropped so the FPU targets (cortex-m4f/m7/m7dp) can route these to
+        // the VFP selector arms in `select_with_stack`. The FPU gate lives at
+        // the selector/validate layer (`requires_fpu()` + `set_target`): on a
+        // non-FPU target (m0/m3/r5) these still honest-reject. f64 stays dropped
+        // (phase 2 — M7DP D-registers). Only the wired scope is un-dropped; the
+        // rest of the scalar f32 surface (abs/neg/sqrt/min/max/…) still falls to
+        // `_ => None` and loud-skips its function until phase 1b wires it.
+        F32Add => Some(WasmOp::F32Add),
+        F32Sub => Some(WasmOp::F32Sub),
+        F32Mul => Some(WasmOp::F32Mul),
+        F32Div => Some(WasmOp::F32Div),
+        F32Eq => Some(WasmOp::F32Eq),
+        F32Ne => Some(WasmOp::F32Ne),
+        F32Lt => Some(WasmOp::F32Lt),
+        F32Le => Some(WasmOp::F32Le),
+        F32Gt => Some(WasmOp::F32Gt),
+        F32Ge => Some(WasmOp::F32Ge),
+        F32Const { value } => Some(WasmOp::F32Const(f32::from_bits(value.bits()))),
+        // F32Load / F32Store (linear-memory f32 access) stay dropped in phase 1
+        // — VFP VLDR/VSTR take a [Rn,#imm] address, so the computed base+offset
+        // needs an extra materialization the phase-1 selector does not yet emit.
+        // They loud-skip at decode (phase 1b).
+        F32ConvertI32S => Some(WasmOp::F32ConvertI32S),
+        F32ConvertI32U => Some(WasmOp::F32ConvertI32U),
+        I32TruncF32S => Some(WasmOp::I32TruncF32S),
+        I32TruncF32U => Some(WasmOp::I32TruncF32U),
+
         // f32x4
         F32x4Add => Some(WasmOp::F32x4Add),
         F32x4Sub => Some(WasmOp::F32x4Sub),
@@ -2471,13 +2533,19 @@ mod tests {
 
     #[test]
     fn test_369_scalar_float_op_flags_function_unsupported_not_dropped() {
-        // #369: a scalar f32/f64 op the decoder can't lower must FLAG the
-        // function (-> loud skip), never be silently dropped (which left a
-        // `mov r0,r1` wrong-value stub). A pure-integer function stays clean.
+        // GI-FPU-002 (#619): the in-scope scalar f32 ops (add/sub/mul/div,
+        // comparisons, i32.trunc_f32_s/u, f32.convert_i32_s/u, f32.const) are
+        // now DECODED (routed to the VFP selector on FPU targets), so `f32.add`
+        // is no longer flagged. An out-of-scope scalar float op (`f64.add`,
+        // phase 2) is STILL flagged (loud-skip), never silently dropped — the
+        // #369 honesty contract holds for the not-yet-lowered surface. A
+        // pure-integer function stays clean.
         let wat = r#"
             (module
                 (func (export "fadd") (param f32 f32) (result f32)
                     local.get 0 local.get 1 f32.add)
+                (func (export "dadd") (param f64 f64) (result f64)
+                    local.get 0 local.get 1 f64.add)
                 (func (export "iadd") (param i32 i32) (result i32)
                     local.get 0 local.get 1 i32.add))
         "#;
@@ -2487,19 +2555,30 @@ mod tests {
             .iter()
             .find(|f| f.export_name.as_deref() == Some("fadd"))
             .unwrap();
+        let dadd = functions
+            .iter()
+            .find(|f| f.export_name.as_deref() == Some("dadd"))
+            .unwrap();
         let iadd = functions
             .iter()
             .find(|f| f.export_name.as_deref() == Some("iadd"))
             .unwrap();
+        // In-scope f32 op: now decoded (reachable), not flagged.
         assert!(
-            fadd.unsupported.is_some(),
-            "f32.add must flag the function unsupported (loud-skip), got {:?}",
+            fadd.unsupported.is_none(),
+            "GI-FPU-002: f32.add must now decode (not be flagged), got {:?}",
             fadd.unsupported
         );
         assert!(
-            fadd.unsupported.as_deref().unwrap().contains("F32Add"),
-            "diagnostic should name the op: {:?}",
-            fadd.unsupported
+            fadd.ops.contains(&WasmOp::F32Add),
+            "f32.add must decode to WasmOp::F32Add: {:?}",
+            fadd.ops
+        );
+        // Out-of-scope scalar double op: still flagged (phase 2), never dropped.
+        assert!(
+            dadd.unsupported.is_some(),
+            "f64.add must still flag the function unsupported (phase 2), got {:?}",
+            dadd.unsupported
         );
         assert!(
             iadd.unsupported.is_none(),

@@ -396,6 +396,21 @@ pub mod aeabi {
     pub const PROFILE_M: u32 = b'M' as u32;
     /// Tag_CPU_arch_profile value: real-time
     pub const PROFILE_R: u32 = b'R' as u32;
+
+    /// Tag_ABI_VFP_args (GI-FPU-002, #619): 0 = base (soft-float) variant,
+    /// 1 = FP args passed in VFP registers (AAPCS-VFP / hard-float).
+    pub const TAG_ABI_VFP_ARGS: u32 = 28;
+    /// Tag_FP_arch (GI-FPU-002, #619): the floating-point hardware the object
+    /// requires (tag 10 — NOT 36, which is Tag_FP_HP_extension). Value 0 = none
+    /// (soft-float; omitted by the writer).
+    pub const TAG_FP_ARCH: u32 = 10;
+    /// Tag_ABI_VFP_args value: FP args passed in VFP registers (hard-float).
+    pub const VFP_ARGS_VFP_REGS: u32 = 1;
+    /// Tag_FP_arch value: VFPv4-D16. synth's phase-1 f32 codegen uses only the
+    /// single-precision VADD/VMUL/VCVT subset shared by every Cortex-M FPU
+    /// (FPv4-SP through FPv5), so this conservative value describes the required
+    /// hardware without over-claiming (#619/#369).
+    pub const FP_ARCH_VFPV4_D16: u32 = 6;
 }
 
 /// Encode a u32 as ULEB128 (build-attribute value encoding).
@@ -422,14 +437,22 @@ pub fn arm_attributes_section(
     cpu_arch_profile: u32,
     arm_isa_use: u32,
     thumb_isa_use: u32,
+    fp_arch: u32,
+    vfp_args: u32,
 ) -> Section {
-    // File-scope attribute pairs (uleb tag, uleb value).
+    // File-scope attribute pairs (uleb tag, uleb value). Emitted in ascending
+    // tag order: CPU_arch(6), profile(7), ARM_ISA(8), THUMB_ISA(9),
+    // FP_arch(10), ABI_VFP_args(28). Tags with value 0 are omitted (spec
+    // default), so a soft-float (no-FPU) object is byte-identical to before
+    // GI-FPU-002.
     let mut attrs = Vec::new();
     for (tag, value) in [
         (aeabi::TAG_CPU_ARCH, cpu_arch),
         (aeabi::TAG_CPU_ARCH_PROFILE, cpu_arch_profile),
         (aeabi::TAG_ARM_ISA_USE, arm_isa_use),
         (aeabi::TAG_THUMB_ISA_USE, thumb_isa_use),
+        (aeabi::TAG_FP_ARCH, fp_arch),
+        (aeabi::TAG_ABI_VFP_ARGS, vfp_args),
     ] {
         if value != 0 {
             push_uleb128(&mut attrs, tag);
@@ -1788,7 +1811,7 @@ mod tests {
     #[test]
     fn test_arm_attributes_section_bytes_637() {
         // Cortex-M3: v7, profile M, no A32, Thumb-2.
-        let sec = arm_attributes_section(aeabi::CPU_ARCH_V7, aeabi::PROFILE_M, 0, 2);
+        let sec = arm_attributes_section(aeabi::CPU_ARCH_V7, aeabi::PROFILE_M, 0, 2, 0, 0);
         assert_eq!(sec.name, ".ARM.attributes");
         assert_eq!(sec.section_type, SectionType::ArmAttributes);
         let d = &sec.data;
@@ -1811,7 +1834,19 @@ mod tests {
         );
 
         // Cortex-R5: v7, profile R, A32 permitted, Thumb-2 permitted.
-        let sec = arm_attributes_section(aeabi::CPU_ARCH_V7, aeabi::PROFILE_R, 1, 2);
+        let sec = arm_attributes_section(aeabi::CPU_ARCH_V7, aeabi::PROFILE_R, 1, 2, 0, 0);
         assert_eq!(&sec.data[16..], &[6, 10, 7, b'R', 8, 1, 9, 2]);
+
+        // GI-FPU-002: a hard-float FPU target adds Tag_FP_arch(10)=VFPv4-D16(6)
+        // and Tag_ABI_VFP_args(28)=1, in ascending tag order.
+        let sec = arm_attributes_section(
+            aeabi::CPU_ARCH_V7EM,
+            aeabi::PROFILE_M,
+            0,
+            2,
+            aeabi::FP_ARCH_VFPV4_D16,
+            aeabi::VFP_ARGS_VFP_REGS,
+        );
+        assert_eq!(&sec.data[16..], &[6, 13, 7, b'M', 9, 2, 10, 6, 28, 1]);
     }
 }
