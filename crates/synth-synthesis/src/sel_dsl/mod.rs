@@ -41,7 +41,7 @@
 //! [`generate_lowering_source`] and the output is **committed to the tree** at
 //! [`generated`] (reviewable diffs, no build-time codegen). `select_default`
 //! keeps dispatch ownership: a migrated arm delegates to the generated rule
-//! behind `SYNTH_SEL_DSL` (default OFF), so OFF ≡ baseline byte-identical by
+//! behind `SYNTH_SEL_DSL` (default ON since v0.39.0; opt out with SYNTH_NO_SEL_DSL), so OFF ≡ baseline byte-identical by
 //! construction.
 //!
 //! Every rule carries a **1:1 Rocq obligation**: rule `rule_i32_add` ↔ theorem
