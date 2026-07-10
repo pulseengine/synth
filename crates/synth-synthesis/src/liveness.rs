@@ -1038,6 +1038,223 @@ pub fn fold_immediate_shifts(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
     (folded, folds)
 }
 
+/// #686 — elide the #682 mod-32 shift-amount mask when the amount is
+/// STATICALLY provably `< 32` at the shift.
+///
+/// Since #682/#683 every i32 register-controlled `shl`/`shr_s`/`shr_u`
+/// lowering (both direct selectors, the Rocq-proved DSL rules, and the
+/// optimized bridge) emits the WASM mod-32 mask as an adjacent pair:
+///
+/// ```text
+/// and r12, rK, #31 ; {lsl|lsr|asr}.w rD, rN, r12
+/// ```
+///
+/// The mask is the SOUND DEFAULT — this pass removes it only when the bound
+/// is proven, in two shapes:
+///
+/// - **Const amount (pattern A):** the nearest preceding def of `rK` is
+///   `movw rK, #C`, with `rK` not redefined in between over a fully-modeled
+///   straight-line window. The whole idiom folds to the immediate form
+///   `{lsl|lsr|asr} rD, rN, #(C mod 32)`; `C mod 32 == 0` becomes
+///   `mov rD, rN` (immediate `lsr/asr #0` encodes shift-by-**32**, the imm5
+///   pitfall). The `movw` is dropped when `rK` has no other reader
+///   ([`reg_dead_by_redef`]). This SUPERSEDES [`fold_immediate_shifts`] for
+///   the masked idiom — that fold's `movw→shift` window is intercepted by
+///   the `and`, so post-#682 it declines every const-amount register shift —
+///   and, unlike it, folds `C >= 32` too by reducing mod 32 (exactly WASM
+///   §4.3.2, the semantics the mask enforces; the mask made those cases
+///   correct, the fold now also makes them small).
+/// - **Range-carried amount (pattern B):** the nearest preceding def of `rK`
+///   is `and rK, rX, #c` with `c ∈ [0, 31]` — then `rK <= c < 32` unsigned
+///   at the shift (no redefinition in the window), so the #682 re-mask is a
+///   no-op: the shift consumes `rK` directly and the `and r12` is dropped.
+///   Covers the wasm-level `x & 31` / `x & 15` amount idioms.
+///
+/// A fact-spec value-range premise (`hi < 32` carried through CompileConfig
+/// via the #494 machinery) is the documented follow-up; anything unproven
+/// keeps the mask.
+///
+/// SOUNDNESS:
+/// - The backward scan from the mask walks only [`reg_effect`]-modeled ops
+///   and aborts on `None` (call / branch / **label** — a label is a
+///   control-flow merge where another def of `rK` could arrive).
+/// - Reads of `rK` inside the window don't change its value (the fold stays
+///   valid) but do keep the `movw` alive in pattern A.
+/// - Dropping the `and r12` (a write to R12) is safe by the R12 convention
+///   (#212): R12 is encoder scratch, never allocatable, never live across
+///   instructions — nothing downstream reads the masked value except the
+///   adjacent shift being rewritten.
+/// - `rotr` is exempt from #682 (ROR is cyclic — never masked), so the
+///   pattern cannot match it.
+///
+/// Branch-offset safety: removal/rewrite-only, run BEFORE
+/// `resolve_label_branches` like [`fold_immediate_shifts`]. Pure function;
+/// the wiring is flag-gated in the backend (`SYNTH_SHIFT_MASK_ELIDE`).
+pub fn elide_shift_masks(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
+    #[derive(Clone, Copy)]
+    enum ShiftKind {
+        Lsl,
+        Lsr,
+        Asr,
+    }
+    let n = instrs.len();
+    let mut out = instrs.to_vec();
+    let mut drop: Vec<bool> = vec![false; n];
+    let mut elisions = 0usize;
+
+    for j in 0..n.saturating_sub(1) {
+        // [j] must be the #682 mask: `and r12, rK, #31` …
+        let k = match &out[j].op {
+            ArmOp::And {
+                rd: Reg::R12,
+                rn,
+                op2: Operand2::Imm(31),
+            } if *rn != Reg::R12 => *rn,
+            _ => continue,
+        };
+        // … and [j+1] the adjacent shift consuming R12 as its AMOUNT (the
+        // pair is emitted as a unit by every #682 lowering site).
+        let (kind, rd, rn_val) = match &out[j + 1].op {
+            ArmOp::LslReg {
+                rd,
+                rn,
+                rm: Reg::R12,
+            } if *rn != Reg::R12 => (ShiftKind::Lsl, *rd, *rn),
+            ArmOp::LsrReg {
+                rd,
+                rn,
+                rm: Reg::R12,
+            } if *rn != Reg::R12 => (ShiftKind::Lsr, *rd, *rn),
+            ArmOp::AsrReg {
+                rd,
+                rn,
+                rm: Reg::R12,
+            } if *rn != Reg::R12 => (ShiftKind::Asr, *rd, *rn),
+            _ => continue,
+        };
+        // Nearest preceding def of `rK` over a fully-modeled window. Reads of
+        // `rK` are value-preserving (fold stays valid) but recorded — they
+        // block the movw removal in pattern A.
+        let mut def_site: Option<usize> = None;
+        let mut k_read_between = false;
+        for i in (0..j).rev() {
+            if drop[i] {
+                continue; // already elided (a dead movw or an `and r12` mask)
+            }
+            let Some(eff) = reg_effect(&out[i].op) else {
+                break; // unmodeled: call/branch/label ⇒ can't prove, mask stays
+            };
+            if eff.defs.contains(&k) {
+                def_site = Some(i);
+                break;
+            }
+            if eff.uses.contains(&k) {
+                k_read_between = true;
+            }
+        }
+        let Some(d) = def_site else { continue };
+
+        // Pattern A: the const the amount register holds at the mask, if its
+        // def is a pure materialization — `movw` (direct paths) or `mov #imm`
+        // (the bridge's small-const form; `movw+movt` large consts land on
+        // the RMW `movt` and decline, as does `mvn`).
+        let const_amount = match &out[d].op {
+            ArmOp::Movw { rd: mrd, imm16 } if *mrd == k => Some(u32::from(*imm16)),
+            ArmOp::Mov {
+                rd: mrd,
+                op2: Operand2::Imm(c),
+            } if *mrd == k && *c >= 0 => Some(*c as u32),
+            _ => None,
+        };
+        match (const_amount, &out[d].op) {
+            // Pattern A: const amount — fold to the immediate shift, mod 32.
+            // (Red-tested at land time: a force-elide of `c >= 32` via the
+            // bare register shift turned 10 rows of
+            // `i32_shift_mask_682_differential.py` red on both paths — the
+            // #682 oracle guards this pass's mod-32 obligation.)
+            (Some(c), _) => {
+                let s = c & 31;
+                out[j + 1].op = match (kind, s) {
+                    // shift-by-0 ⇒ identity move (imm5==0 means shift-by-32
+                    // for LSR/ASR; LSL #0 is representable but MOV is the
+                    // single uniform, encoder-clean identity).
+                    (_, 0) => ArmOp::Mov {
+                        rd,
+                        op2: Operand2::Reg(rn_val),
+                    },
+                    (ShiftKind::Lsl, s) => ArmOp::Lsl {
+                        rd,
+                        rn: rn_val,
+                        shift: s,
+                    },
+                    (ShiftKind::Lsr, s) => ArmOp::Lsr {
+                        rd,
+                        rn: rn_val,
+                        shift: s,
+                    },
+                    (ShiftKind::Asr, s) => ArmOp::Asr {
+                        rd,
+                        rn: rn_val,
+                        shift: s,
+                    },
+                };
+                drop[j] = true;
+                // The movw is a dead store only if the shift (now immediate)
+                // was `rK`'s sole reader: nothing read it inside the window,
+                // and it is redefined-before-read after the pair.
+                if !k_read_between && reg_dead_by_redef(k, &instrs[j + 2..]) {
+                    drop[d] = true;
+                }
+                elisions += 1;
+            }
+            // Pattern B: range-carried amount — `rK = rX & c` with `c < 32`
+            // proves `rK < 32`; the #682 re-mask is a no-op. Shift by `rK`.
+            (
+                None,
+                ArmOp::And {
+                    rd: ard,
+                    op2: Operand2::Imm(c),
+                    ..
+                },
+            ) if *ard == k && (0..=31).contains(c) => {
+                out[j + 1].op = match kind {
+                    ShiftKind::Lsl => ArmOp::LslReg {
+                        rd,
+                        rn: rn_val,
+                        rm: k,
+                    },
+                    ShiftKind::Lsr => ArmOp::LsrReg {
+                        rd,
+                        rn: rn_val,
+                        rm: k,
+                    },
+                    ShiftKind::Asr => ArmOp::AsrReg {
+                        rd,
+                        rn: rn_val,
+                        rm: k,
+                    },
+                };
+                drop[j] = true;
+                elisions += 1;
+            }
+            // Any other def (arithmetic, load, `movt`, `mvn`, …): bound
+            // unproven, mask stays.
+            _ => {}
+        }
+    }
+
+    if elisions == 0 {
+        return (out, 0);
+    }
+    let kept: Vec<ArmInstruction> = out
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| !drop[*i])
+        .map(|(_, ins)| ins)
+        .collect();
+    (kept, elisions)
+}
+
 /// VCR-RA peephole (#428, #242): fold a 16/8-bit mask materialized into a scratch
 /// register and consumed by `AND` into the dedicated zero-extend instruction.
 ///
@@ -6372,6 +6589,253 @@ mod tests {
             }),
         ];
         let (_, n) = fold_immediate_shifts(&seq);
+        assert_eq!(n, 0);
+    }
+
+    // ---- elide_shift_masks (#686) ----
+
+    /// The #682 masked idiom for register `k`: `and r12, k, #31 ; <shift> rd, rn, r12`.
+    fn mask_pair(k: Reg, shift: fn(Reg, Reg, Reg) -> ArmOp) -> [ArmInstruction; 2] {
+        [
+            ins(ArmOp::And {
+                rd: Reg::R12,
+                rn: k,
+                op2: Operand2::Imm(31),
+            }),
+            ins(shift(Reg::R4, Reg::R1, Reg::R12)),
+        ]
+    }
+    fn lslreg(rd: Reg, rn: Reg, rm: Reg) -> ArmOp {
+        ArmOp::LslReg { rd, rn, rm }
+    }
+    fn lsrreg(rd: Reg, rn: Reg, rm: Reg) -> ArmOp {
+        ArmOp::LsrReg { rd, rn, rm }
+    }
+    fn asrreg(rd: Reg, rn: Reg, rm: Reg) -> ArmOp {
+        ArmOp::AsrReg { rd, rn, rm }
+    }
+    fn ret() -> ArmInstruction {
+        ins(ArmOp::Bx { rm: Reg::LR })
+    }
+
+    #[test]
+    fn elide_686_const_lt32_folds_masked_triple_to_imm_shift() {
+        // movw r3,#8 ; and r12,r3,#31 ; asr r4,r1,r12 ; bx lr
+        //   ⇒ asr r4,r1,#8 (movw + and both removed) — the gust_mix shape.
+        let mut seq = vec![ins(ArmOp::Movw {
+            rd: Reg::R3,
+            imm16: 8,
+        })];
+        seq.extend(mask_pair(Reg::R3, asrreg));
+        seq.push(ret());
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1);
+        assert_eq!(out.len(), 2, "movw and the #682 mask are both removed");
+        assert!(matches!(
+            out[0].op,
+            ArmOp::Asr {
+                rd: Reg::R4,
+                rn: Reg::R1,
+                shift: 8
+            }
+        ));
+    }
+
+    #[test]
+    fn elide_686_const_ge32_folds_mod_32() {
+        // The #682 semantics the mask enforces, now folded: #33 ⇒ lsl #1.
+        let mut seq = vec![ins(ArmOp::Movw {
+            rd: Reg::R3,
+            imm16: 33,
+        })];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1);
+        assert!(matches!(out[0].op, ArmOp::Lsl { shift: 1, .. }));
+    }
+
+    #[test]
+    fn elide_686_const_mod32_zero_is_mov_not_imm5_zero() {
+        // #32 ≡ 0 mod 32 ⇒ identity. MUST be `mov` — immediate `lsr/asr #0`
+        // encodes shift-by-32 (the imm5 pitfall), the exact #682 bug shape.
+        let mut seq = vec![ins(ArmOp::Movw {
+            rd: Reg::R3,
+            imm16: 32,
+        })];
+        seq.extend(mask_pair(Reg::R3, lsrreg));
+        seq.push(ret());
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1);
+        assert!(
+            matches!(
+                out[0].op,
+                ArmOp::Mov {
+                    rd: Reg::R4,
+                    op2: Operand2::Reg(Reg::R1)
+                }
+            ),
+            "shift-by-0 must lower to MOV, got {:?}",
+            out[0].op
+        );
+    }
+
+    #[test]
+    fn elide_686_bridge_mov_imm_const_form_folds_too() {
+        // The optimized bridge materializes small consts as `mov rd,#imm`.
+        let mut seq = vec![ins(ArmOp::Mov {
+            rd: Reg::R3,
+            op2: Operand2::Imm(24),
+        })];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1);
+        assert!(matches!(out[0].op, ArmOp::Lsl { shift: 24, .. }));
+    }
+
+    #[test]
+    fn elide_686_range_carried_and_mask_drops_the_re_mask() {
+        // and r3,r2,#15 ; and r12,r3,#31 ; lsl r4,r1,r12
+        //   ⇒ and r3,r2,#15 ; lsl r4,r1,r3 — r3 ≤ 15 < 32, re-mask is a no-op.
+        let mut seq = vec![ins(ArmOp::And {
+            rd: Reg::R3,
+            rn: Reg::R2,
+            op2: Operand2::Imm(15),
+        })];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1);
+        assert_eq!(out.len(), 3, "only the #682 re-mask is removed");
+        assert!(matches!(
+            out[0].op,
+            ArmOp::And {
+                rd: Reg::R3,
+                op2: Operand2::Imm(15),
+                ..
+            }
+        ));
+        assert!(
+            matches!(
+                out[1].op,
+                ArmOp::LslReg {
+                    rd: Reg::R4,
+                    rn: Reg::R1,
+                    rm: Reg::R3
+                }
+            ),
+            "shift consumes the range-carried register directly"
+        );
+    }
+
+    #[test]
+    fn elide_686_and_mask_ge32_keeps_the_mask() {
+        // `x & 63` proves only < 64 — NOT < 32. The #682 mask must stay.
+        let mut seq = vec![ins(ArmOp::And {
+            rd: Reg::R3,
+            rn: Reg::R2,
+            op2: Operand2::Imm(63),
+        })];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0);
+        assert_eq!(out.len(), seq.len());
+    }
+
+    #[test]
+    fn elide_686_unproven_def_keeps_the_mask() {
+        // The amount comes from an ADD — no bound, mask stays (sound default).
+        let mut seq = vec![ins(ArmOp::Add {
+            rd: Reg::R3,
+            rn: Reg::R2,
+            op2: Operand2::Imm(1),
+        })];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn elide_686_unmodeled_op_in_window_keeps_the_mask() {
+        // A label between the def and the mask is a control-flow merge —
+        // another def of r3 could arrive there. Mask stays.
+        let mut seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 8,
+            }),
+            ins(ArmOp::Label {
+                name: "L1".to_string(),
+            }),
+        ];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (_, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn elide_686_movw_kept_when_amount_reg_has_other_readers() {
+        // r3 is also stored between the movw and the shift — the fold still
+        // fires (value unchanged) but the movw must survive for the store.
+        let mut seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 8,
+            }),
+            ins(ArmOp::Str {
+                rd: Reg::R3,
+                addr: crate::rules::MemAddr {
+                    base: Reg::SP,
+                    offset: 0,
+                    offset_reg: None,
+                },
+            }),
+        ];
+        seq.extend(mask_pair(Reg::R3, lslreg));
+        seq.push(ret());
+        let (out, n) = elide_shift_masks(&seq);
+        assert_eq!(n, 1);
+        assert!(
+            out.iter()
+                .any(|i| matches!(i.op, ArmOp::Movw { rd: Reg::R3, .. })),
+            "movw survives — r3 has another reader"
+        );
+        assert!(
+            out.iter()
+                .any(|i| matches!(i.op, ArmOp::Lsl { shift: 8, .. }))
+        );
+        assert!(
+            !out.iter().any(|i| matches!(i.op, ArmOp::And { .. })),
+            "the #682 mask itself is still elided"
+        );
+    }
+
+    #[test]
+    fn elide_686_non_adjacent_or_non_r12_pattern_untouched() {
+        // A mask into a NON-scratch register, or a shift not consuming R12,
+        // is not the #682 idiom — never touched.
+        let seq = vec![
+            ins(ArmOp::Movw {
+                rd: Reg::R3,
+                imm16: 8,
+            }),
+            ins(ArmOp::And {
+                rd: Reg::R5,
+                rn: Reg::R3,
+                op2: Operand2::Imm(31),
+            }),
+            ins(ArmOp::LslReg {
+                rd: Reg::R4,
+                rn: Reg::R1,
+                rm: Reg::R5,
+            }),
+            ret(),
+        ];
+        let (_, n) = elide_shift_masks(&seq);
         assert_eq!(n, 0);
     }
 

@@ -340,6 +340,12 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/i32_shift_mask_682_differential.py
       - name: Run ADDW static-offset oracle (#681, incl. software-bounds bypass)
         run: SYNTH=./target/debug/synth python scripts/repro/addw_offset_681_differential.py
+      # #686: the same oracle under the mask-elision lever (opt-in,
+      # SYNTH_SHIFT_MASK_ELIDE=1) — const amounts fold to the immediate form
+      # mod 32, unproven amounts keep the mask; the >= 32 rows pin that the
+      # elision never fires unsoundly (red-tested at land time).
+      - name: Run i32 shift-mask oracle with mask elision ON (#686)
+        run: SYNTH_SHIFT_MASK_ELIDE=1 SYNTH=./target/debug/synth python scripts/repro/i32_shift_mask_682_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b)
