@@ -208,6 +208,8 @@ pub enum TemplateOp {
     EorReg { rd: RegVar, rn: RegVar, rm: RegVar },
     /// `ArmOp::Rsb { rd, rn, imm }` — `rd = imm - rn`
     RsbImm { rd: RegVar, rn: RegVar, imm: u32 },
+    /// `ArmOp::And { rd, rn, op2: Imm(imm) }` — `rd = rn & imm` (#682 mask)
+    AndImm { rd: RegVar, rn: RegVar, imm: u32 },
     /// `ArmOp::RorReg { rd, rn, rm }`
     RorReg { rd: RegVar, rn: RegVar, rm: RegVar },
     /// `ArmOp::LslReg { rd, rn, rm }`
@@ -425,41 +427,62 @@ pub const RULES: &[SelRule] = &[
     SelRule {
         name: "rule_i32_shl",
         op: WasmOp::I32Shl,
-        params: &[Rd, Rn, Rm],
-        side_conditions: &[],
-        seq: &[TemplateOp::LslReg {
-            rd: Rd,
-            rn: Rn,
-            rm: Rm,
-        }],
+        params: &[Rd, Rn, Rm, Rs],
+        side_conditions: &[SideCondition::NotAlias(Rs, Rn)],
+        seq: &[
+            TemplateOp::AndImm {
+                rd: Rs,
+                rn: Rm,
+                imm: 31,
+            },
+            TemplateOp::LslReg {
+                rd: Rd,
+                rn: Rn,
+                rm: Rs,
+            },
+        ],
         delegation: Delegation::Both,
-        doc: "`i32.shl`: rd = rn << rm",
+        doc: "`i32.shl`: rd = rn << (rm mod 32) — #682 mask via scratch rs",
     },
     SelRule {
         name: "rule_i32_shr_s",
         op: WasmOp::I32ShrS,
-        params: &[Rd, Rn, Rm],
-        side_conditions: &[],
-        seq: &[TemplateOp::AsrReg {
-            rd: Rd,
-            rn: Rn,
-            rm: Rm,
-        }],
+        params: &[Rd, Rn, Rm, Rs],
+        side_conditions: &[SideCondition::NotAlias(Rs, Rn)],
+        seq: &[
+            TemplateOp::AndImm {
+                rd: Rs,
+                rn: Rm,
+                imm: 31,
+            },
+            TemplateOp::AsrReg {
+                rd: Rd,
+                rn: Rn,
+                rm: Rs,
+            },
+        ],
         delegation: Delegation::Both,
-        doc: "`i32.shr_s`: rd = rn >> rm (arithmetic)",
+        doc: "`i32.shr_s`: rd = rn >> (rm mod 32) (arithmetic) — #682 mask via scratch rs",
     },
     SelRule {
         name: "rule_i32_shr_u",
         op: WasmOp::I32ShrU,
-        params: &[Rd, Rn, Rm],
-        side_conditions: &[],
-        seq: &[TemplateOp::LsrReg {
-            rd: Rd,
-            rn: Rn,
-            rm: Rm,
-        }],
+        params: &[Rd, Rn, Rm, Rs],
+        side_conditions: &[SideCondition::NotAlias(Rs, Rn)],
+        seq: &[
+            TemplateOp::AndImm {
+                rd: Rs,
+                rn: Rm,
+                imm: 31,
+            },
+            TemplateOp::LsrReg {
+                rd: Rd,
+                rn: Rn,
+                rm: Rs,
+            },
+        ],
         delegation: Delegation::Both,
-        doc: "`i32.shr_u`: rd = rn >> rm (logical)",
+        doc: "`i32.shr_u`: rd = rn >> (rm mod 32) (logical) — #682 mask via scratch rs",
     },
     SelRule {
         name: "rule_i32_rotr",
@@ -999,12 +1022,13 @@ pub fn i32_shift_rule(
     rd: crate::rules::Reg,
     rn: crate::rules::Reg,
     rm: crate::rules::Reg,
-) -> Option<Vec<crate::rules::ArmOp>> {
+    rs: crate::rules::Reg,
+) -> Option<Result<Vec<crate::rules::ArmOp>, &'static str>> {
     Some(match op {
-        WasmOp::I32Shl => generated::rule_i32_shl(rd, rn, rm),
-        WasmOp::I32ShrS => generated::rule_i32_shr_s(rd, rn, rm),
-        WasmOp::I32ShrU => generated::rule_i32_shr_u(rd, rn, rm),
-        WasmOp::I32Rotr => generated::rule_i32_rotr(rd, rn, rm),
+        WasmOp::I32Shl => generated::rule_i32_shl(rd, rn, rm, rs),
+        WasmOp::I32ShrS => generated::rule_i32_shr_s(rd, rn, rm, rs),
+        WasmOp::I32ShrU => generated::rule_i32_shr_u(rd, rn, rm, rs),
+        WasmOp::I32Rotr => Ok(generated::rule_i32_rotr(rd, rn, rm)),
         _ => return None,
     })
 }
@@ -1167,6 +1191,15 @@ fn template_expr(t: &TemplateOp, indent: usize) -> String {
             let fld = " ".repeat(indent + 4);
             format!(
                 "ArmOp::Rsb {{\n{fld}{},\n{fld}{},\n{fld}imm: {imm},\n{ind}}}",
+                field("rd", rd),
+                field("rn", rn)
+            )
+        }
+        TemplateOp::AndImm { rd, rn, imm } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::And {{\n{fld}{},\n{fld}{},\n{fld}op2: Operand2::Imm({imm}),\n{ind}}}",
                 field("rd", rd),
                 field("rn", rn)
             )

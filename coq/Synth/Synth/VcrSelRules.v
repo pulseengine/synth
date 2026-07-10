@@ -71,6 +71,7 @@
     operands) and the ARM execution result, both halves pinned. *)
 
 From Stdlib Require Import List.
+From Stdlib Require Import Lia ZArith Znumtheory.
 From Stdlib Require Import ZArith.
 Require Import Synth.Common.Base.
 Require Import Synth.Common.Integers.
@@ -107,14 +108,43 @@ Definition rule_i32_xor (rd rn rm : arm_reg) : arm_program := [EOR rd rn (Reg rm
 Definition rule_i32_rotl (rd rn rm rs : arm_reg) : arm_program :=
   [RSB rs rm (Imm (I32.repr 32)); ROR_reg rd rn rs].
 
-(** ** Increment 2: i32 register shifts + rotr — tier A (single instruction,
-    no scratch; the shift amount is masked mod 32 by the I32 semantics of
-    LSL_reg/LSR_reg/ASR_reg/ROR_reg, matching WASM). *)
+(** ** Increment 2: i32 register shifts + rotr.
 
-Definition rule_i32_shl   (rd rn rm : arm_reg) : arm_program := [LSL_reg rd rn rm].
-Definition rule_i32_shr_s (rd rn rm : arm_reg) : arm_program := [ASR_reg rd rn rm].
-Definition rule_i32_shr_u (rd rn rm : arm_reg) : arm_program := [LSR_reg rd rn rm].
+    #682 SOUNDNESS FIX: the single-instruction shift rules were WRONG on
+    hardware — ARMv7-M register shifts consume Rm[7:0] and yield 0 (LSL/LSR)
+    or the sign (ASR) for amounts >= 32, while WASM requires amount mod 32.
+    The model's LSL_reg/LSR_reg/ASR_reg use I32.shl/shru/shrs, which mask
+    mod 32 INTERNALLY (WASM-like) — so the old Qeds were vacuous against
+    real hardware (the exact divergence SailArmBridge.v documents as gaps
+    6-7). The rules now materialize the mask explicitly:
+    [AND rs rm #31; shift rd rn rs] — correct under BOTH the current model
+    semantics and real Rm[7:0] hardware. The scratch [rs] carries the
+    [rs <> rn] non-aliasing side condition (rotl pattern); the Rust side
+    passes R12 (never allocatable, #212), so the condition always holds.
+    ROR is exempt: rotation is cyclic, so Rm[7:0] mod 32 = WASM semantics. *)
+
+Definition rule_i32_shl   (rd rn rm rs : arm_reg) : arm_program :=
+  [AND rs rm (Imm (I32.repr 31)); LSL_reg rd rn rs].
+Definition rule_i32_shr_s (rd rn rm rs : arm_reg) : arm_program :=
+  [AND rs rm (Imm (I32.repr 31)); ASR_reg rd rn rs].
+Definition rule_i32_shr_u (rd rn rm rs : arm_reg) : arm_program :=
+  [AND rs rm (Imm (I32.repr 31)); LSR_reg rd rn rs].
 Definition rule_i32_rotr  (rd rn rm : arm_reg) : arm_program := [ROR_reg rd rn rm].
+
+(** The mask identity: ANDing the amount with 31 does not change the
+    mod-32 shift the I32 semantics performs. Z-level plumbing first. *)
+Lemma land31_mod32 : forall a : Z, (Z.land a 31) mod 32 = a mod 32.
+Proof.
+  intros a. change 31 with (Z.ones 5).
+  rewrite Z.land_ones by lia.
+  change (2 ^ 5) with 32. apply Z.mod_mod. lia.
+Qed.
+
+Lemma mod_modulus_mod32 : forall a : Z, (a mod 4294967296) mod 32 = a mod 32.
+Proof.
+  intros a.
+  symmetry. apply Zmod_div_mod; [lia | lia | exists 134217728; reflexivity].
+Qed.
 
 (** ** Increment 2: i32 comparisons — the Rust rule emits
     [Cmp {rn, Reg(rm)}; SetCond {rd, cond}]; per the established
@@ -269,7 +299,8 @@ Qed.
     rules are single-instruction no-scratch shapes; their fixed-register
     ancestors in CorrectnessI32.v already close with [synth_binop_proof]). *)
 
-Theorem rule_i32_shl_correct : forall wstate astate v1 v2 stack' rd rn rm,
+Theorem rule_i32_shl_correct : forall wstate astate v1 v2 stack' rd rn rm rs,
+  rs <> rn ->        (* mask scratch must not alias the value register *)
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   get_reg astate rn = v1 ->
   get_reg astate rm = v2 ->
@@ -277,11 +308,27 @@ Theorem rule_i32_shl_correct : forall wstate astate v1 v2 stack' rd rn rm,
     Some (mkWasmState (VI32 (I32.shl v1 v2) :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
-    exec_program (rule_i32_shl rd rn rm) astate = Some astate' /\
+    exec_program (rule_i32_shl rd rn rm rs) astate = Some astate' /\
     get_reg astate' rd = I32.shl v1 v2.
-Proof. synth_binop_proof_poly. Qed.
+Proof.
+  intros wstate astate v1 v2 stack' rd rn rm rs Hne Hstack HR0 HR1 Hwasm.
+  unfold rule_i32_shl.
+  set (s1 := set_reg astate rs (I32.and (get_reg astate rm) (I32.repr 31))).
+  set (s2 := set_reg s1 rd (I32.shl (get_reg s1 rn) (get_reg s1 rs))).
+  exists s2. split.
+  - subst s2 s1. simpl. reflexivity.
+  - subst s2. rewrite get_set_reg_eq.
+    subst s1. rewrite get_set_reg_neq by exact Hne.
+    rewrite get_set_reg_eq.
+    rewrite HR0, HR1.
+    unfold I32.shl, I32.and, I32.repr, I32.unsigned, I32.modulus.
+    change (31 mod 4294967296) with 31.
+    rewrite !mod_modulus_mod32, land31_mod32.
+    reflexivity.
+Qed.
 
-Theorem rule_i32_shr_s_correct : forall wstate astate v1 v2 stack' rd rn rm,
+Theorem rule_i32_shr_s_correct : forall wstate astate v1 v2 stack' rd rn rm rs,
+  rs <> rn ->        (* mask scratch must not alias the value register *)
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   get_reg astate rn = v1 ->
   get_reg astate rm = v2 ->
@@ -289,11 +336,27 @@ Theorem rule_i32_shr_s_correct : forall wstate astate v1 v2 stack' rd rn rm,
     Some (mkWasmState (VI32 (I32.shrs v1 v2) :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
-    exec_program (rule_i32_shr_s rd rn rm) astate = Some astate' /\
+    exec_program (rule_i32_shr_s rd rn rm rs) astate = Some astate' /\
     get_reg astate' rd = I32.shrs v1 v2.
-Proof. synth_binop_proof_poly. Qed.
+Proof.
+  intros wstate astate v1 v2 stack' rd rn rm rs Hne Hstack HR0 HR1 Hwasm.
+  unfold rule_i32_shr_s.
+  set (s1 := set_reg astate rs (I32.and (get_reg astate rm) (I32.repr 31))).
+  set (s2 := set_reg s1 rd (I32.shrs (get_reg s1 rn) (get_reg s1 rs))).
+  exists s2. split.
+  - subst s2 s1. simpl. reflexivity.
+  - subst s2. rewrite get_set_reg_eq.
+    subst s1. rewrite get_set_reg_neq by exact Hne.
+    rewrite get_set_reg_eq.
+    rewrite HR0, HR1.
+    unfold I32.shrs, I32.and, I32.repr, I32.unsigned, I32.modulus.
+    change (31 mod 4294967296) with 31.
+    rewrite !mod_modulus_mod32, land31_mod32.
+    reflexivity.
+Qed.
 
-Theorem rule_i32_shr_u_correct : forall wstate astate v1 v2 stack' rd rn rm,
+Theorem rule_i32_shr_u_correct : forall wstate astate v1 v2 stack' rd rn rm rs,
+  rs <> rn ->        (* mask scratch must not alias the value register *)
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   get_reg astate rn = v1 ->
   get_reg astate rm = v2 ->
@@ -301,9 +364,24 @@ Theorem rule_i32_shr_u_correct : forall wstate astate v1 v2 stack' rd rn rm,
     Some (mkWasmState (VI32 (I32.shru v1 v2) :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
-    exec_program (rule_i32_shr_u rd rn rm) astate = Some astate' /\
+    exec_program (rule_i32_shr_u rd rn rm rs) astate = Some astate' /\
     get_reg astate' rd = I32.shru v1 v2.
-Proof. synth_binop_proof_poly. Qed.
+Proof.
+  intros wstate astate v1 v2 stack' rd rn rm rs Hne Hstack HR0 HR1 Hwasm.
+  unfold rule_i32_shr_u.
+  set (s1 := set_reg astate rs (I32.and (get_reg astate rm) (I32.repr 31))).
+  set (s2 := set_reg s1 rd (I32.shru (get_reg s1 rn) (get_reg s1 rs))).
+  exists s2. split.
+  - subst s2 s1. simpl. reflexivity.
+  - subst s2. rewrite get_set_reg_eq.
+    subst s1. rewrite get_set_reg_neq by exact Hne.
+    rewrite get_set_reg_eq.
+    rewrite HR0, HR1.
+    unfold I32.shru, I32.and, I32.repr, I32.unsigned, I32.modulus.
+    change (31 mod 4294967296) with 31.
+    rewrite !mod_modulus_mod32, land31_mod32.
+    reflexivity.
+Qed.
 
 Theorem rule_i32_rotr_correct : forall wstate astate v1 v2 stack' rd rn rm,
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->

@@ -128,23 +128,23 @@ fn i32_xor_corresponds_to_rocq() {
 
 #[test]
 fn i32_shl_corresponds_to_rocq() {
-    // Rocq: I32Shl => [LSL_reg R0 R0 R1]
+    // Rocq (#682): rule_i32_shl => [AND rs rm #31; LSL_reg rd rn rs]
     let ops = select_single(WasmOp::I32Shl);
-    assert_eq!(opcode_names(&ops), vec!["LSL_reg"]);
+    assert_eq!(opcode_names(&ops), vec!["AND", "LSL_reg"]);
 }
 
 #[test]
 fn i32_shru_corresponds_to_rocq() {
-    // Rocq: I32ShrU => [LSR_reg R0 R0 R1]
+    // Rocq (#682): rule_i32_shr_u => [AND rs rm #31; LSR_reg rd rn rs]
     let ops = select_single(WasmOp::I32ShrU);
-    assert_eq!(opcode_names(&ops), vec!["LSR_reg"]);
+    assert_eq!(opcode_names(&ops), vec!["AND", "LSR_reg"]);
 }
 
 #[test]
 fn i32_shrs_corresponds_to_rocq() {
-    // Rocq: I32ShrS => [ASR_reg R0 R0 R1]
+    // Rocq (#682): rule_i32_shr_s => [AND rs rm #31; ASR_reg rd rn rs]
     let ops = select_single(WasmOp::I32ShrS);
-    assert_eq!(opcode_names(&ops), vec!["ASR_reg"]);
+    assert_eq!(opcode_names(&ops), vec!["AND", "ASR_reg"]);
 }
 
 #[test]
@@ -327,9 +327,10 @@ fn instruction_counts_match_rocq() {
         (WasmOp::I32And, 1),
         (WasmOp::I32Or, 1),
         (WasmOp::I32Xor, 1),
-        (WasmOp::I32Shl, 1),
-        (WasmOp::I32ShrU, 1),
-        (WasmOp::I32ShrS, 1),
+        // #682: register shifts are AND-mask + shift (2 instructions).
+        (WasmOp::I32Shl, 2),
+        (WasmOp::I32ShrU, 2),
+        (WasmOp::I32ShrS, 2),
         (WasmOp::I32Rotr, 1),
         (WasmOp::I32Clz, 1),
         (WasmOp::I32DivS, 4), // CMP + BNE + UDF + SDIV (with trap guard)
