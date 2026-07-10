@@ -461,6 +461,15 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     // wrong value. Functions touching a float global loud-skip instead.
     let mut num_imported_globals = 0u32;
     let mut float_globals: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // #680: v128-typed globals (same index space) — a SIMD access has no
+    // lowering on any target, so touching one must loud-skip the function.
+    let mut v128_globals: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // #680: per-type "params/results contain v128" and its per-defined-function
+    // projection — a v128 param/result is expressible with ZERO SIMD-proposal
+    // operators in the body (`local.get 0` passthrough), so the operator-level
+    // catch alone would miss it.
+    let mut type_has_v128: Vec<bool> = Vec::new();
+    let mut func_sig_has_v128: Vec<bool> = Vec::new();
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
@@ -510,6 +519,15 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         type_arg_counts.push(count);
                         type_ret_i64.push(ret_i64);
                         type_params_i64.push(params_i64);
+                        // #680: v128 anywhere in the signature.
+                        type_has_v128.push(match &sub_ty.composite_type.inner {
+                            wasmparser::CompositeInnerType::Func(f) => f
+                                .params()
+                                .iter()
+                                .chain(f.results())
+                                .any(|t| *t == wasmparser::ValType::V128),
+                            _ => false,
+                        });
                         // #642: canonical structural signature for the
                         // closed-world call_indirect type check (compares
                         // SIGNATURES so duplicate types stay interchangeable).
@@ -578,6 +596,10 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             ) {
                                 float_globals.insert(num_imported_globals);
                             }
+                            // #680: v128-typed imported globals — same lane.
+                            if g.content_type == wasmparser::ValType::V128 {
+                                v128_globals.insert(num_imported_globals);
+                            }
                             num_imported_globals += 1;
                             (ImportKind::Global, 0)
                         }
@@ -612,6 +634,13 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                             .get(type_idx as usize)
                             .cloned()
                             .unwrap_or_default(),
+                    );
+                    // #680: defined-function order matches code-entry order.
+                    func_sig_has_v128.push(
+                        type_has_v128
+                            .get(type_idx as usize)
+                            .copied()
+                            .unwrap_or(false),
                     );
                 }
             }
@@ -677,6 +706,12 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         wasmparser::ValType::F32 | wasmparser::ValType::F64
                     ) {
                         float_globals.insert(num_imported_globals + idx as u32);
+                    }
+                    // #680: a v128-typed global's `v128.const` initializer is
+                    // not captured either (slot zeroed) and an access moves 4
+                    // of the 16 bytes — record it so accesses loud-skip.
+                    if global.ty.content_type == wasmparser::ValType::V128 {
+                        v128_globals.insert(num_imported_globals + idx as u32);
                     }
                     globals.push(WasmGlobal {
                         index: idx as u32,
@@ -791,8 +826,24 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let (ops, op_offsets, block_arity, unsupported) =
-                    decode_function_body(&body, &type_block_arity, &float_globals)?;
+                let (ops, op_offsets, block_arity, mut unsupported) =
+                    decode_function_body(&body, &type_block_arity, &float_globals, &v128_globals)?;
+                // #680: a v128 param/result reaches the body only through
+                // type-agnostic ops (a `local.get 0` passthrough compiles to
+                // a 4-byte `mov`), so flag the SIGNATURE even when the body
+                // contains no SIMD-proposal operator.
+                if unsupported.is_none()
+                    && func_sig_has_v128
+                        .get(func_index as usize)
+                        .copied()
+                        .unwrap_or(false)
+                {
+                    unsupported = Some(
+                        "signature has a v128 param/result — no SIMD lowering \
+                         for this target (#680)"
+                            .to_string(),
+                    );
+                }
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
 
@@ -909,6 +960,10 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
     // whose accesses must loud-skip — see `decode_wasm_module`.
     let mut num_imported_globals = 0u32;
     let mut float_globals: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    // #680: v128-typed globals + v128 params/results — see `decode_wasm_module`.
+    let mut v128_globals: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut type_has_v128: Vec<bool> = Vec::new();
+    let mut func_sig_has_v128: Vec<bool> = Vec::new();
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload.context("Failed to parse WASM payload")?;
@@ -929,6 +984,15 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                             ),
                             _ => (u8::MAX, u8::MAX),
                         });
+                        // #680: v128 anywhere in the signature.
+                        type_has_v128.push(match &sub_ty.composite_type.inner {
+                            wasmparser::CompositeInnerType::Func(f) => f
+                                .params()
+                                .iter()
+                                .chain(f.results())
+                                .any(|t| *t == wasmparser::ValType::V128),
+                            _ => false,
+                        });
                     }
                 }
             }
@@ -948,10 +1012,28 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                             ) {
                                 float_globals.insert(num_imported_globals);
                             }
+                            // #680: v128-typed imported globals — same lane.
+                            if g.content_type == wasmparser::ValType::V128 {
+                                v128_globals.insert(num_imported_globals);
+                            }
                             num_imported_globals += 1;
                         }
                         _ => {}
                     }
+                }
+            }
+            Payload::FunctionSection(reader) => {
+                // #680: defined-function type indices, in order — the per-
+                // function v128-signature flag (`decode_wasm_module` gets this
+                // from its existing FunctionSection handling).
+                for ty in reader {
+                    let type_idx = ty.context("Failed to parse function type index")?;
+                    func_sig_has_v128.push(
+                        type_has_v128
+                            .get(type_idx as usize)
+                            .copied()
+                            .unwrap_or(false),
+                    );
                 }
             }
             Payload::GlobalSection(reader) => {
@@ -966,6 +1048,10 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                     ) {
                         float_globals.insert(num_imported_globals + idx as u32);
                     }
+                    // #680: v128-typed defined globals — same lane.
+                    if global.ty.content_type == wasmparser::ValType::V128 {
+                        v128_globals.insert(num_imported_globals + idx as u32);
+                    }
                 }
             }
             Payload::ExportSection(exports) => {
@@ -977,8 +1063,21 @@ pub fn decode_wasm_functions(wasm_bytes: &[u8]) -> Result<Vec<FunctionOps>> {
                 }
             }
             Payload::CodeSectionEntry(body) => {
-                let (ops, op_offsets, block_arity, unsupported) =
-                    decode_function_body(&body, &type_block_arity, &float_globals)?;
+                let (ops, op_offsets, block_arity, mut unsupported) =
+                    decode_function_body(&body, &type_block_arity, &float_globals, &v128_globals)?;
+                // #680: v128 param/result — see `decode_wasm_module`.
+                if unsupported.is_none()
+                    && func_sig_has_v128
+                        .get(func_index as usize)
+                        .copied()
+                        .unwrap_or(false)
+                {
+                    unsupported = Some(
+                        "signature has a v128 param/result — no SIMD lowering \
+                         for this target (#680)"
+                            .to_string(),
+                    );
+                }
                 let actual_index = num_imported_funcs + func_index;
                 let export_name = export_names.get(&actual_index).cloned();
 
@@ -1091,6 +1190,7 @@ fn decode_function_body(
     body: &wasmparser::FunctionBody,
     type_block_arity: &[(u8, u8)],
     float_globals: &std::collections::HashSet<u32>,
+    v128_globals: &std::collections::HashSet<u32>,
 ) -> Result<DecodedBody> {
     let mut ops = Vec::new();
     // VCR-DBG-001 step 1: parallel to `ops` — the module-relative wasm byte
@@ -1103,9 +1203,43 @@ fn decode_function_body(
     let mut block_arity: Vec<(u8, u8)> = Vec::new();
     let mut unsupported: Option<String> = None;
 
+    // #680: a v128-typed LOCAL is expressible with zero SIMD-proposal
+    // operators (`local.get`/`local.set`/`local.tee` are type-agnostic), but
+    // every selector lowers those as 4-byte (or 8-byte i64) register moves —
+    // silently truncating the 16-byte value. Flag the declaration up front.
+    for local in body.get_locals_reader()? {
+        let (count, ty) = local.context("Failed to read local declaration")?;
+        if unsupported.is_none() && count > 0 && ty == wasmparser::ValType::V128 {
+            unsupported = Some(
+                "declares a v128-typed local — no SIMD lowering for this \
+                 target, accesses would silently truncate the 16-byte value \
+                 (#680)"
+                    .to_string(),
+            );
+        }
+    }
+
     let ops_reader = body.get_operators_reader()?;
     for item in ops_reader.into_iter_with_offsets() {
         let (op, offset) = item.context("Failed to read operator")?;
+
+        // #680: SIMD (v128) category-level honesty guard. Some SIMD ops decode
+        // into `WasmOp` v128 variants that only a dead, never-wired Helium/MVE
+        // prototype can select (`has_helium` is set by tests alone), so on
+        // every real target they were silently dropped at selection —
+        // `i32x4.add` compiled to an operand passthrough and `v128.store`
+        // left memory unwritten. Catch the ENTIRE SIMD + relaxed-SIMD
+        // proposal space here (macro-generated from wasmparser's operator
+        // table — no hand-kept list to fall out of date) and route the
+        // function through the same loud-skip/honest-bail lane as scalar
+        // floats (GI-FPU-001). Targets with real SIMD hardware (Helium/MVE on
+        // cortex-m55) can lift this once a lowering is actually wired.
+        if unsupported.is_none() && is_simd_operator(&op) {
+            unsupported = Some(format!(
+                "{op:?}: no SIMD lowering for this target — the op would be \
+                 silently dropped to a no-op (WASM SIMD proposal, #680)"
+            ));
+        }
 
         if let Some(wasm_op) = convert_operator(&op) {
             // #509: capture the blocktype arity BEFORE the enum flattens it away
@@ -1129,6 +1263,19 @@ fn decode_function_body(
                     "{wasm_op:?} on an f32/f64-typed global — float globals \
                      have no lowering, the initializer would be silently \
                      zeroed (GI-FPU-001)"
+                ));
+            }
+            // #680: same hazard for v128-typed globals — `global.get`/
+            // `global.set` decode fine, but there is no SIMD lowering: the
+            // access would move 4 of the 16 bytes and the `v128.const`
+            // initializer is never captured (slot zeroed).
+            if unsupported.is_none()
+                && let WasmOp::GlobalGet(i) | WasmOp::GlobalSet(i) = &wasm_op
+                && v128_globals.contains(i)
+            {
+                unsupported = Some(format!(
+                    "{wasm_op:?} on a v128-typed global — no SIMD lowering \
+                     for this target (#680)"
                 ));
             }
             ops.push(wasm_op);
@@ -1155,6 +1302,38 @@ fn decode_function_body(
 fn is_intentionally_ignored(op: &wasmparser::Operator) -> bool {
     use wasmparser::Operator::*;
     matches!(op, Nop)
+}
+
+/// #680: is `op` from the WASM SIMD or relaxed-SIMD proposal?
+///
+/// CATEGORY-LEVEL by construction: the match is macro-generated from
+/// `wasmparser::for_each_operator!`'s own proposal markers (`@simd` /
+/// `@relaxed_simd`), so it covers the entire SIMD operator space of the
+/// pinned wasmparser — there is no hand-kept op list that a new lane op,
+/// load/store variant, or relaxed-SIMD instruction can silently fall out of.
+/// Used to loud-skip functions with SIMD ops: no target has a SIMD lowering
+/// wired today (the Helium/MVE selector arms are gated on a `has_helium`
+/// flag only tests set), so a decoded v128 `WasmOp` was silently dropped at
+/// selection — the #554-class miscompile this predicate closes.
+fn is_simd_operator(op: &wasmparser::Operator) -> bool {
+    macro_rules! define_match_operator {
+        ($( @$proposal:ident $op:ident $({ $($arg:ident: $argty:ty),* })? => $visit:ident ($($ann:tt)*))*) => {
+            match op {
+                $(
+                    wasmparser::Operator::$op { .. } => {
+                        define_match_operator!(impl_one @$proposal)
+                    }
+                )*
+                // `Operator` is non-exhaustive; an operator outside the
+                // pinned wasmparser's own table cannot be produced by it.
+                _ => false,
+            }
+        };
+        (impl_one @simd) => { true };
+        (impl_one @relaxed_simd) => { true };
+        (impl_one @$proposal:ident) => { false };
+    }
+    wasmparser::for_each_operator!(define_match_operator)
 }
 
 /// Convert a wasmparser Operator to our WasmOp enum
@@ -2267,6 +2446,164 @@ mod tests {
             "defined i32 global at shifted index 1 must NOT flag: {:?}",
             by_name("iget").unsupported
         );
+    }
+
+    #[test]
+    fn test_680_simd_ops_flag_function_unsupported_not_dropped() {
+        // #680: SIMD (v128) ops decode into WasmOp variants no production
+        // target can select (`has_helium` is test-only), so they were silently
+        // dropped at selection — `i32x4.add` compiled to an operand
+        // passthrough (`mov r0,r1`) and shipped a wrong result. The issue's
+        // exact reproducer must flag the function; the scalar sibling must
+        // stay compilable (non-vacuity).
+        let wat = r#"
+            (module
+                (memory 1)
+                (func (export "vadd") (param i32 i32) (result i32)
+                    (i32x4.extract_lane 2
+                        (i32x4.add (i32x4.splat (local.get 0))
+                                   (i32x4.splat (local.get 1)))))
+                (func (export "vstore") (param i32 i32) (result i32)
+                    (v128.store (i32.const 0) (i32x4.splat (local.get 0)))
+                    (i32.load (i32.const 0)))
+                (func (export "iadd") (param i32 i32) (result i32)
+                    local.get 0 local.get 1 i32.add))
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+
+        // Both decode entry points must flag (the CLI compiles through both).
+        let module = decode_wasm_module(&wasm).expect("decode module");
+        for functions in [
+            &module.functions,
+            &decode_wasm_functions(&wasm).expect("decode fns"),
+        ] {
+            let by_name = |n: &str| {
+                functions
+                    .iter()
+                    .find(|f| f.export_name.as_deref() == Some(n))
+                    .unwrap()
+            };
+            for name in ["vadd", "vstore"] {
+                let reason = by_name(name).unsupported.as_deref();
+                assert!(
+                    reason.is_some(),
+                    "{name}: v128 ops must flag the function (loud-skip), got None"
+                );
+                let reason = reason.unwrap();
+                assert!(
+                    reason.contains("no SIMD lowering for this target") && reason.contains("#680"),
+                    "{name}: diagnostic must name the target gap and #680: {reason:?}"
+                );
+            }
+            // The reason names the FIRST SIMD op hit (splat in both bodies).
+            assert!(
+                by_name("vadd")
+                    .unsupported
+                    .as_deref()
+                    .unwrap()
+                    .contains("I32x4Splat"),
+                "diagnostic should name the op: {:?}",
+                by_name("vadd").unsupported
+            );
+            assert!(
+                by_name("iadd").unsupported.is_none(),
+                "a scalar function in the same module must NOT be flagged: {:?}",
+                by_name("iadd").unsupported
+            );
+        }
+    }
+
+    #[test]
+    fn test_680_v128_local_and_signature_flag_function() {
+        // #680: v128 VALUES are expressible with ZERO SIMD-proposal operators
+        // in the body — a v128-typed local or a v128 param/result is reached
+        // through type-agnostic `local.get`/`local.set`, which the selectors
+        // lower as 4-byte moves (silent 16-byte truncation). Both must flag.
+        let wat = r#"
+            (module
+                (func (export "vlocal") (result i32) (local v128)
+                    i32.const 7)
+                (func (export "vpass") (param v128) (result v128)
+                    local.get 0)
+                (func (export "scalar") (param i32) (result i32)
+                    local.get 0))
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode module");
+        for functions in [
+            &module.functions,
+            &decode_wasm_functions(&wasm).expect("decode fns"),
+        ] {
+            let by_name = |n: &str| {
+                functions
+                    .iter()
+                    .find(|f| f.export_name.as_deref() == Some(n))
+                    .unwrap()
+            };
+            assert!(
+                by_name("vlocal")
+                    .unsupported
+                    .as_deref()
+                    .is_some_and(|r| r.contains("v128-typed local") && r.contains("#680")),
+                "a v128-typed local declaration must flag: {:?}",
+                by_name("vlocal").unsupported
+            );
+            assert!(
+                by_name("vpass")
+                    .unsupported
+                    .as_deref()
+                    .is_some_and(|r| r.contains("v128 param/result") && r.contains("#680")),
+                "a v128 param/result signature must flag (op-free body!): {:?}",
+                by_name("vpass").unsupported
+            );
+            assert!(
+                by_name("scalar").unsupported.is_none(),
+                "a scalar function must NOT be flagged: {:?}",
+                by_name("scalar").unsupported
+            );
+        }
+    }
+
+    #[test]
+    fn test_680_v128_global_access_flags_function() {
+        // #680: `global.get`/`global.set` on a v128-typed global decode fine
+        // (type-agnostic ops), but the access would move 4 of the 16 bytes and
+        // the `v128.const` initializer is never captured. Same lane as the
+        // float globals (#648/GI-FPU-001); imported globals shift the index
+        // space (imports first). The i32-global sibling stays compilable.
+        let wat = r#"
+            (module
+                (import "env" "vg" (global v128))
+                (global $ig (mut i32) (i32.const 7))
+                (global $dg (mut v128) (v128.const i32x4 1 2 3 4))
+                (func (export "vget") global.get 0 drop)
+                (func (export "iget") (result i32) global.get $ig))
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode module");
+        for functions in [
+            &module.functions,
+            &decode_wasm_functions(&wasm).expect("decode fns"),
+        ] {
+            let by_name = |n: &str| {
+                functions
+                    .iter()
+                    .find(|f| f.export_name.as_deref() == Some(n))
+                    .unwrap()
+            };
+            let reason = by_name("vget").unsupported.as_deref();
+            assert!(
+                reason.is_some_and(|r| r.contains("GlobalGet")
+                    && r.contains("v128-typed global")
+                    && r.contains("#680")),
+                "global.get of an imported v128 global must flag: {reason:?}"
+            );
+            assert!(
+                by_name("iget").unsupported.is_none(),
+                "an i32 global access must NOT be flagged: {:?}",
+                by_name("iget").unsupported
+            );
+        }
     }
 
     #[test]
