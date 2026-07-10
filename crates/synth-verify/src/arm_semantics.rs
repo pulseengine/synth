@@ -487,6 +487,9 @@ impl ArmSemantics {
                 table_size: _,
                 table_byte_offset: _,
                 null_check: _,
+                // #676: the runtime type check is likewise a trap
+                // (control-flow effect) on the sidecar-loaded class id.
+                type_check: _,
             } => {
                 // Indirect function call through table
                 let _table_index = state.get_reg(table_index_reg).clone();

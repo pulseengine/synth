@@ -2969,6 +2969,8 @@ fn compile_all_exports(
             // #598/#637: Thumb-bit handling + `.ARM.attributes` derive from
             // the selected target inside the builder.
             target_spec,
+            // #676: heterogeneous-table type-id sidecar (empty = no section).
+            &config.call_indirect_guards.type_ids_image,
         )?
     } else if cortex_m {
         // #649: the self-contained image materializes the R9 globals table —
@@ -3171,6 +3173,9 @@ fn build_relocatable_elf(
     // interworking bit) on STT_FUNC symbols + e_entry — A32 (cortex-r5) keeps
     // it clear — and every object carries a target-derived `.ARM.attributes`.
     target_spec: &TargetSpec,
+    // #676: the call_indirect type-id sidecar image (one u32 class id per
+    // table slot, region order; empty = no heterogeneous table = no section).
+    table_type_ids: &[u32],
 ) -> Result<Vec<u8>> {
     use std::collections::HashMap;
 
@@ -3896,6 +3901,27 @@ fn build_relocatable_elf(
 
             elf_builder.add_section(import_section);
         }
+    }
+
+    // #676: the call_indirect type-id sidecar — one LE u32 structural class
+    // id per table slot across ALL tables in region order (0 = null slot).
+    // Non-empty ONLY for a module with a heterogeneous funcref table, so
+    // every existing (homogeneous) module's object stays byte-identical.
+    // Structurally a clone of `.meld_import_table` (non-ALLOC trailing
+    // PROGBITS, no symbol, no relocation): the runtime/harness that links
+    // the pointer region at R11 reads this section and copies its words
+    // VERBATIM to `R11 + sum(all table sizes) * 4` — it never re-derives
+    // the ids (see the layout contract on `synth_core::CallIndirectGuards`).
+    if !table_type_ids.is_empty() {
+        let mut sidecar = Vec::with_capacity(table_type_ids.len() * 4);
+        for id in table_type_ids {
+            sidecar.extend_from_slice(&id.to_le_bytes());
+        }
+        let sidecar_section = Section::new(".synth.table_type_ids", ElfSectionType::ProgBits)
+            .with_flags(0) // Not ALLOC — metadata for the region linker
+            .with_align(4)
+            .with_data(sidecar);
+        elf_builder.add_section(sidecar_section);
     }
 
     // VCR-DBG-001 step 4 (#394): emit a FULL DWARF unit (`.debug_info`,
@@ -5865,6 +5891,7 @@ mod tests {
             Some(native),
             None,
             &TargetSpec::cortex_m3(),
+            &[],
         )
         .expect("#345: native-pointer zero-linmem object builds");
 
@@ -5970,6 +5997,7 @@ mod tests {
             Some(native),
             None,
             &TargetSpec::cortex_m3(),
+            &[],
         )
         .expect("#345: native-pointer literal-pool object builds");
 
@@ -6063,6 +6091,7 @@ mod tests {
             Some(native),
             None,
             &TargetSpec::cortex_m3(),
+            &[],
         )
         .expect("#354: mixed-case object builds");
 

@@ -148,14 +148,21 @@ impl ArmEncoder {
     /// pointer load and the `BLX` — a call reaching an uninitialized slot
     /// traps (§4.4.8). `false` keeps the expansion byte-identical.
     ///
-    /// The §4.4.8 type check is discharged at COMPILE time by the selector's
-    /// closed-world verification (the raw code-pointer table carries no
-    /// runtime type ids) — see the #642 selector guard.
+    /// #676, `type_check` (heterogeneous table): the §4.4.8 type check is
+    /// discharged at RUNTIME against the type-id sidecar — after the bounds
+    /// guard, `MOV r12, idx, LSL #2; ADD r12, r11, r12;
+    /// LDR r12, [r12, #type_off]; CMP r12, #expected_id; BEQ +1; UDF`
+    /// (mirror of the Thumb-2 arm; the dispatch tail recomputes `idx*4`).
+    /// Null slots carry the reserved class id 0, subsuming the #664 null
+    /// trap. `None` (every homogeneous table — the verdict discharged at
+    /// COMPILE time by the closed-world verification, see the #642 selector
+    /// guard) emits nothing and keeps the expansion byte-identical.
     fn encode_arm_call_indirect(
         table_index_reg: &Reg,
         table_size: u32,
         table_byte_offset: u32,
         null_check: bool,
+        type_check: Option<(u32, u32)>,
     ) -> Vec<u8> {
         let idx = reg_to_bits(table_index_reg);
         let mut bytes = Vec::with_capacity(32);
@@ -178,6 +185,27 @@ impl ArmEncoder {
         // UDF — permanently undefined (same trap idiom as the A32 div-by-zero
         // guards): call_indirect out-of-bounds trap.
         bytes.extend_from_slice(&0xE7F0_00F0u32.to_le_bytes());
+        // #676: runtime type check for a heterogeneous table — load the
+        // indexed slot's structural class id from the type-id sidecar and
+        // trap on mismatch (§4.4.8). Mirror of the Thumb-2 arm; `None`
+        // emits nothing (homogeneous tables byte-identical by construction).
+        if let Some((expected_id, type_off)) = type_check {
+            debug_assert!(expected_id <= 255, "selector enforces the CMP imm8 range");
+            debug_assert!(type_off <= 4095, "selector enforces the LDR imm12 range");
+            // MOV r12, idx, LSL #2 (same as the dispatch tail's scale).
+            bytes.extend_from_slice(&(0xE1A0C000u32 | (2 << 7) | idx).to_le_bytes());
+            // ADD r12, r11, r12 — data-processing ADD (register).
+            bytes.extend_from_slice(&0xE08BC00Cu32.to_le_bytes());
+            // LDR r12, [r12, #type_off] — immediate offset, P=1 U=1 L=1.
+            bytes.extend_from_slice(&(0xE59CC000u32 | (type_off & 0xFFF)).to_le_bytes());
+            // CMP r12, #expected_id — data-processing CMP (immediate).
+            bytes.extend_from_slice(&(0xE35C_0000u32 | (expected_id & 0xFF)).to_le_bytes());
+            // BEQ +1 insn (skip the UDF when the class id matches) —
+            // cond=EQ(0000), imm24=0: target = branch + 8.
+            bytes.extend_from_slice(&0x0A00_0000u32.to_le_bytes());
+            // UDF — the §4.4.8 type-mismatch trap.
+            bytes.extend_from_slice(&0xE7F0_00F0u32.to_le_bytes());
+        }
         // MOV r12, idx, LSL #2 — data-processing MOV, register op2 with
         // imm5=2/LSL: cond=E, opcode=1101, S=0, Rd=r12.
         let mov: u32 = 0xE1A0C000 | (2 << 7) | idx;
@@ -1231,6 +1259,7 @@ impl ArmEncoder {
             table_size,
             table_byte_offset,
             null_check,
+            type_check,
             ..
         } = op
         {
@@ -1239,6 +1268,7 @@ impl ArmEncoder {
                 *table_size,
                 *table_byte_offset,
                 *null_check,
+                *type_check,
             ));
         }
         let instr: u32 = match op {
@@ -3751,6 +3781,13 @@ impl ArmEncoder {
             // #664, null_check (the table has null slots, linked as ZERO
             // words): the loaded pointer is null-checked before the BLX —
             //                   CMP.W R12,#0; BNE +1; UDF #0
+            // #676, type_check (heterogeneous table — runtime §4.4.8 type
+            // check against the type-id sidecar at R11+off): after the
+            // bounds guard —
+            //                   LSL R12,idx,#2; ADD R12,R11,R12;
+            //                   LDR R12,[R12,#type_off]; CMP.W R12,#id;
+            //                   BEQ +1; UDF #0
+            // (the dispatch tail then recomputes idx*4 — idx stays live).
             ArmOp::CallIndirect {
                 rd: _,
                 type_idx: _,
@@ -3758,6 +3795,7 @@ impl ArmEncoder {
                 table_size,
                 table_byte_offset,
                 null_check,
+                type_check,
             } => {
                 let idx_reg = reg_to_bits(table_index_reg);
                 let mut bytes = Vec::new();
@@ -3809,6 +3847,51 @@ impl ArmEncoder {
                 // UDF #0 — call_indirect out-of-bounds trap (same trap idiom as
                 // the div-by-zero guards).
                 bytes.extend_from_slice(&0xDE00u16.to_le_bytes());
+
+                // #676: runtime type check — ONLY for a heterogeneous table
+                // (mixed signatures, closed-world verdict impossible). Load
+                // the indexed slot's structural class id from the type-id
+                // sidecar (`R11 + type_off + idx*4`; `type_off` = sidecar
+                // base + this table's base offset, a compile-time constant)
+                // and compare it against the expected type's class id — a
+                // mismatch is the WASM Core §4.4.8 type trap. Null slots
+                // carry the reserved id 0, so this compare subsumes the
+                // #664 null trap (the selector passes `null_check: false`).
+                // `None` emits NOTHING: every homogeneous table keeps the
+                // pre-#676 bytes identical BY CONSTRUCTION. R12 stays the
+                // only scratch (#212); the dispatch tail below recomputes
+                // idx*4 — the index register is never clobbered here.
+                if let Some((expected_id, type_off)) = type_check {
+                    debug_assert!(*expected_id <= 255, "selector enforces the CMP imm8 range");
+                    debug_assert!(*type_off <= 4095, "selector enforces the LDR imm12 range");
+                    // MOV.W R12, idx, LSL #2 (same encoding as the dispatch
+                    // tail's index scale below).
+                    bytes.extend_from_slice(&0xEA4Fu16.to_le_bytes());
+                    bytes.extend_from_slice(
+                        &(((0x0C00 | (0b10 << 6)) | idx_reg) as u16).to_le_bytes(),
+                    );
+                    // ADD.W R12, R11, R12 (the #650 base-add form).
+                    bytes.extend_from_slice(&0xEB0Bu16.to_le_bytes());
+                    bytes.extend_from_slice(&0x0C0Cu16.to_le_bytes());
+                    // LDR.W R12, [R12, #type_off] — T3 LDR (immediate):
+                    // 1111 1000 1101 Rn=1100 | Rt=1100 imm12.
+                    bytes.extend_from_slice(&0xF8DCu16.to_le_bytes());
+                    bytes.extend_from_slice(
+                        &(0xC000u16 | (*type_off as u16 & 0x0FFF)).to_le_bytes(),
+                    );
+                    // CMP.W R12, #expected_id — T2 CMP (immediate), imm8
+                    // (same form as the #664 null check's CMP.W R12, #0).
+                    bytes.extend_from_slice(&0xF1BCu16.to_le_bytes());
+                    bytes.extend_from_slice(
+                        &(0x0F00u16 | (*expected_id as u16 & 0xFF)).to_le_bytes(),
+                    );
+                    // BEQ +1 insn (skip the UDF when the class id matches) —
+                    // B<cond>.N imm8=0: target = branch + 4. EQ.
+                    bytes.extend_from_slice(&0xD000u16.to_le_bytes());
+                    // UDF #0 — the §4.4.8 type-mismatch trap (same idiom as
+                    // the bounds guard above).
+                    bytes.extend_from_slice(&0xDE00u16.to_le_bytes());
+                }
 
                 // LSL R12, idx_reg, #2 (multiply index by 4)
                 // Thumb-2 MOV with shift: 11101010 010 S 1111 | 0 imm3 Rd imm2 type Rm
@@ -8956,6 +9039,7 @@ mod tests {
                 table_size: 4,
                 table_byte_offset: 0,
                 null_check: false,
+                type_check: None,
             })
             .unwrap();
         assert_eq!(
@@ -9003,6 +9087,7 @@ mod tests {
                 table_size: 4,
                 table_byte_offset: 0,
                 null_check: false,
+                type_check: None,
             })
             .unwrap();
         let cmp = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
@@ -9025,6 +9110,7 @@ mod tests {
                 table_size: 0x0002_0003,
                 table_byte_offset: 0,
                 null_check: false,
+                type_check: None,
             })
             .unwrap();
         assert_eq!(bytes.len(), 32, "MOVT arm adds one word: {bytes:02x?}");
@@ -9061,6 +9147,7 @@ mod tests {
                 table_size: 4,
                 table_byte_offset: 0,
                 null_check: false,
+                type_check: None,
             })
             .unwrap();
         assert_eq!(
@@ -9094,6 +9181,7 @@ mod tests {
                 table_size: 4,
                 table_byte_offset: 0,
                 null_check: false,
+                type_check: None,
             })
             .unwrap();
         assert_eq!(&bytes[4..6], &[0x64, 0x45], "cmp r4, ip: {bytes:02x?}");
@@ -9119,6 +9207,7 @@ mod tests {
                 table_size: 3,
                 table_byte_offset: 0,
                 null_check: false,
+                type_check: None,
             })
             .unwrap();
         // cmp r8, ip — T2: 0x4500 | N(1)<<7 | Rm(12)<<3 | Rn(0) = 0x45E0
@@ -9132,6 +9221,7 @@ mod tests {
                 table_size: 0x0002_0003,
                 table_byte_offset: 0,
                 null_check: false,
+                type_check: None,
             })
             .unwrap();
         // movw ip,#3 then movt ip,#2 — the size must not be truncated.
@@ -9160,6 +9250,7 @@ mod tests {
                 table_size: 41,
                 table_byte_offset: 28,
                 null_check: false,
+                type_check: None,
             })
             .unwrap();
         assert_eq!(
@@ -9189,6 +9280,7 @@ mod tests {
                 table_size: 41,
                 table_byte_offset: 0,
                 null_check: false,
+                type_check: None,
             })
             .unwrap();
         assert_eq!(
@@ -9216,6 +9308,7 @@ mod tests {
                 table_size: 41,
                 table_byte_offset: 28,
                 null_check: false,
+                type_check: None,
             })
             .unwrap();
         let words: Vec<u32> = bytes
@@ -9260,6 +9353,7 @@ mod tests {
             table_size: 4,
             table_byte_offset: 0,
             null_check,
+            type_check: None,
         };
         let with = enc.encode(&op(true)).unwrap();
         let without = enc.encode(&op(false)).unwrap();
@@ -9299,6 +9393,7 @@ mod tests {
             table_size: 4,
             table_byte_offset: 0,
             null_check,
+            type_check: None,
         };
         let with = enc.encode(&op(true)).unwrap();
         let without = enc.encode(&op(false)).unwrap();
@@ -9313,6 +9408,114 @@ mod tests {
         assert_eq!(words[1], 0x1A00_0000, "BNE +1 insn: {:#010x}", words[1]);
         assert_eq!(words[2], 0xE7F0_00F0, "UDF (null trap): {:#010x}", words[2]);
         assert_eq!(words[3], 0xE12F_FF3C, "BLX r12: {:#010x}", words[3]);
+    }
+
+    /// #676: `type_check` splices the runtime type check — scale the index,
+    /// load the slot's structural class id from the type-id sidecar
+    /// (`ldr.w ip, [ip, #type_off]`), compare against the expected class id
+    /// and trap on mismatch (WASM §4.4.8) — between the bounds guard and
+    /// the dispatch tail. `type_check: None` keeps the expansion
+    /// byte-identical to the pre-#676 form (by-construction pin, the same
+    /// trick as #650 offset-0 / #664 `null_check: false`).
+    #[test]
+    fn test_encode_thumb_call_indirect_type_check_676() {
+        use synth_synthesis::{ArmOp, Reg};
+        let enc = ArmEncoder::new_thumb2();
+        let op = |type_check| ArmOp::CallIndirect {
+            rd: Reg::R0,
+            type_idx: 1,
+            table_index_reg: Reg::R1,
+            table_size: 5,
+            table_byte_offset: 0,
+            null_check: false,
+            type_check,
+        };
+        let with = enc.encode(&op(Some((2, 20)))).unwrap();
+        let without = enc.encode(&op(None)).unwrap();
+        // The checked form = the unchecked form with EXACTLY the six-insn
+        // type check spliced in after the bounds guard (byte identity of
+        // the shared prefix/suffix — nothing else may move).
+        assert_eq!(
+            with.len(),
+            without.len() + 20,
+            "lsl.w(4)+add.w(4)+ldr.w(4)+cmp.w(4)+beq(2)+udf(2): {with:02x?}"
+        );
+        // Bounds guard: movw(4) + cmp(2) + blo(2) + udf(2) = 10 bytes.
+        let guard_end = 10;
+        assert_eq!(&with[..guard_end], &without[..guard_end], "shared guard");
+        assert_eq!(
+            &with[guard_end..guard_end + 20],
+            &[
+                0x4F, 0xEA, 0x81, 0x0C, // mov.w ip, r1, lsl #2
+                0x0B, 0xEB, 0x0C, 0x0C, // add.w ip, r11, ip
+                0xDC, 0xF8, 0x14, 0xC0, // ldr.w ip, [ip, #20] — sidecar slot id
+                0xBC, 0xF1, 0x02, 0x0F, // cmp.w ip, #2 — expected class id
+                0x00, 0xD0, // beq .+4 (skip the udf on a match)
+                0x00, 0xDE, // udf #0 — §4.4.8 type-mismatch trap (#676)
+            ],
+            "type check follows the bounds guard: {with:02x?}"
+        );
+        assert_eq!(
+            &with[guard_end + 20..],
+            &without[guard_end..],
+            "dispatch tail unchanged (idx*4 recomputed)"
+        );
+    }
+
+    /// #676: the A32 twin — `mov r12, idx, lsl #2; add r12, r11, r12;
+    /// ldr r12, [r12, #type_off]; cmp r12, #id; beq .+8; udf` after the
+    /// bounds guard; `type_check: None` keeps the #594/#642/#650/#664
+    /// bytes identical.
+    #[test]
+    fn test_encode_arm32_call_indirect_type_check_676() {
+        use synth_synthesis::{ArmOp, Reg};
+        let enc = ArmEncoder::new_arm32();
+        let op = |type_check| ArmOp::CallIndirect {
+            rd: Reg::R0,
+            type_idx: 1,
+            table_index_reg: Reg::R1,
+            table_size: 5,
+            table_byte_offset: 0,
+            null_check: false,
+            type_check,
+        };
+        let with = enc.encode(&op(Some((2, 20)))).unwrap();
+        let without = enc.encode(&op(None)).unwrap();
+        assert_eq!(with.len(), without.len() + 24, "6 A32 words: {with:02x?}");
+        // Bounds guard: movw + cmp + blo + udf = 4 words = 16 bytes.
+        let guard_end = 16;
+        assert_eq!(&with[..guard_end], &without[..guard_end], "shared guard");
+        let words: Vec<u32> = with[guard_end..guard_end + 24]
+            .chunks_exact(4)
+            .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+            .collect();
+        assert_eq!(
+            words[0], 0xE1A0_C101,
+            "MOV r12,r1,LSL#2: {:#010x}",
+            words[0]
+        );
+        assert_eq!(words[1], 0xE08B_C00C, "ADD r12,r11,r12: {:#010x}", words[1]);
+        assert_eq!(
+            words[2], 0xE59C_C014,
+            "LDR r12,[r12,#20] (sidecar): {:#010x}",
+            words[2]
+        );
+        assert_eq!(
+            words[3], 0xE35C_0002,
+            "CMP r12,#2 (expected class id): {:#010x}",
+            words[3]
+        );
+        assert_eq!(words[4], 0x0A00_0000, "BEQ +1 insn: {:#010x}", words[4]);
+        assert_eq!(
+            words[5], 0xE7F0_00F0,
+            "UDF (type-mismatch trap): {:#010x}",
+            words[5]
+        );
+        assert_eq!(
+            &with[guard_end + 24..],
+            &without[guard_end..],
+            "dispatch tail unchanged"
+        );
     }
 
     /// #178/#180 regression: the Thumb `Add`/`Adds`/`Subs` reg-forms used the

@@ -635,6 +635,55 @@ jobs:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/call_indirect_664_differential.py
 
+  call-indirect-676-heterogeneous-oracle:
+    name: heterogeneous-table call_indirect oracle (Thumb-2 + A32)
+    # VCR-ORACLE-001 (#242, #676): a HETEROGENEOUS funcref table (mixed
+    # signatures — falcon's fused 41-slot dispatch table) can never satisfy
+    # the closed-world type check, so WASM Core §4.4.8's type check is
+    # discharged at RUNTIME: the object carries a type-id sidecar
+    # (`.synth.table_type_ids`, one u32 structural class id per slot, id 0 =
+    # null) which the layout contract places at R11 + sum(table sizes)*4,
+    # and the dispatch compares the indexed slot's id against the expected
+    # class id (compile-time immediate), UDF-trapping on mismatch — which
+    # subsumes the #664 null trap. EXECUTE the mixed fixture (two signature
+    # classes INTERLEAVED + a structural duplicate type + null slots) under
+    # unicorn on BOTH ISAs vs the wasmtime oracle: matching-class calls must
+    # return wasmtime's values; wrong-class ("indirect call type mismatch"),
+    # null AND OOB indices must all stop at a UDF. Non-vacuous red: a build
+    # without the type check CALLS the wrong-typed function and returns a
+    # wrong value. On <= v0.37.1 this is red at compile: every dispatch
+    # through the mixed table loud-declined (capability upgrade — red =
+    # "declines today", green = sound heterogeneous dispatch). Homogeneous
+    # tables stay byte-identical by construction (type_check=None emits the
+    # pre-#676 bytes), pinned by the frozen-fixture job, the whole-object
+    # no-sidecar test (heterogeneous_table_676.rs) and the
+    # #642/#650/#664/#594/#597 oracles.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run heterogeneous-table call_indirect oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/call_indirect_676_differential.py
+
   block-brif-483-oracle:
     name: optimized-path block/br_if lowering oracle
     # VCR-ORACLE-001 (#242, #483): EXECUTE optimized-path functions with forward

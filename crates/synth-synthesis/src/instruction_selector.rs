@@ -2016,6 +2016,13 @@ fn sel_dsl_from_env() -> bool {
     std::env::var("SYNTH_SEL_DSL").is_ok_and(|v| v != "0")
 }
 
+/// #642/#650/#664/#676: resolved `call_indirect` guard inputs —
+/// `(table_size, table_byte_offset, null_check, type_check)`. `type_check`
+/// is `Some((expected_class_id, type_id_byte_offset))` when the dispatched
+/// table is heterogeneous and the §4.4.8 type check is discharged at
+/// runtime against the type-id sidecar (#676).
+type ResolvedCallIndirectGuards = (u32, u32, bool, Option<(u32, u32)>);
+
 impl InstructionSelector {
     /// Create a new instruction selector
     pub fn new(rules: Vec<SynthesisRule>) -> Self {
@@ -2177,14 +2184,19 @@ impl InstructionSelector {
     /// table size (for the encoder's bounds guard), a constant base offset,
     /// and a verified closed-world type verdict FOR THAT TABLE, this refuses
     /// rather than let an unchecked indirect branch be emitted.
-    /// Returns `(table_size, table_byte_offset, null_check)` — `null_check`
-    /// is set when the table image contains null (uninitialized) slots, so
-    /// the encoder must trap on a zero loaded pointer (#664).
+    /// Returns `(table_size, table_byte_offset, null_check, type_check)` —
+    /// `null_check` is set when the table image contains null
+    /// (uninitialized) slots, so the encoder must trap on a zero loaded
+    /// pointer (#664); `type_check` is `Some((expected_class_id,
+    /// type_id_byte_offset))` when the table is HETEROGENEOUS and §4.4.8's
+    /// type check is discharged at runtime against the type-id sidecar
+    /// (#676) — the null trap is then subsumed by the compare (null slots
+    /// carry the reserved class id 0), so `null_check` is `false`.
     fn resolve_call_indirect_guards(
         &self,
         table_index: u32,
         type_index: u32,
-    ) -> Result<(u32, u32, bool)> {
+    ) -> Result<ResolvedCallIndirectGuards> {
         let n_tables = self.call_indirect_guards.tables.len();
         let table = self
             .call_indirect_guards
@@ -2224,6 +2236,18 @@ impl InstructionSelector {
         match table.type_reject.get(type_index as usize) {
             Some(None) => {} // closed-world type property verified
             Some(Some(reason)) => {
+                // #676: a HETEROGENEOUS table (mixed signatures) fails the
+                // closed world for every expected type, but the §4.4.8
+                // mismatch trap is dischargeable at RUNTIME via the type-id
+                // sidecar — emit the check instead of declining.
+                if table.runtime_type_check {
+                    return self.resolve_runtime_type_check(
+                        table_index,
+                        type_index,
+                        table_size,
+                        table_byte_offset,
+                    );
+                }
                 return Err(synth_core::Error::synthesis(format!(
                     "call_indirect (expected type {type_index}, table \
                      {table_index}): closed-world type check failed — {reason}; \
@@ -2238,7 +2262,74 @@ impl InstructionSelector {
                 )));
             }
         }
-        Ok((table_size, table_byte_offset, table.has_null_slots))
+        Ok((table_size, table_byte_offset, table.has_null_slots, None))
+    }
+
+    /// #676: guard inputs for a heterogeneous-table dispatch — resolve the
+    /// expected type's structural class id (the CMP immediate) and the full
+    /// byte offset from R11 to the dispatched table's type-id subarray, or
+    /// decline LOUDLY when either exceeds its encoding range. The #664 null
+    /// check is subsumed: null slots carry the reserved class id 0, which
+    /// never equals an expected id (>= 1), so the compare traps them too.
+    fn resolve_runtime_type_check(
+        &self,
+        table_index: u32,
+        type_index: u32,
+        table_size: u32,
+        table_byte_offset: u32,
+    ) -> Result<ResolvedCallIndirectGuards> {
+        let sidecar_base = self
+            .call_indirect_guards
+            .type_ids_byte_offset
+            .ok_or_else(|| {
+                synth_core::Error::synthesis(format!(
+                    "call_indirect (table {table_index}): heterogeneous table needs \
+                 the type-id sidecar but the pointer region's total size is not \
+                 a compile-time constant — #676"
+                ))
+            })?;
+        let expected_id = self
+            .call_indirect_guards
+            .type_class_ids
+            .get(type_index as usize)
+            .copied()
+            .ok_or_else(|| {
+                synth_core::Error::synthesis(format!(
+                    "call_indirect (table {table_index}): no structural class id \
+                     for expected type {type_index} — #676"
+                ))
+            })?;
+        // The expected id is the CMP immediate: imm8 keeps it encodable on
+        // BOTH ISAs (Thumb-2 T2 CMP and A32 CMP imm12 alike). Dense
+        // structural classes make >255 unreachable in practice (meld's
+        // falcon core has 25); decline loudly rather than truncate.
+        if expected_id > 255 {
+            return Err(synth_core::Error::synthesis(format!(
+                "call_indirect (table {table_index}): expected type \
+                 {type_index}'s structural class id {expected_id} exceeds the \
+                 CMP immediate range (255) — #676"
+            )));
+        }
+        // Full offset from R11 to THIS table's type-id subarray; the encoder
+        // folds it into the sidecar load's LDR imm12 (<= 4095, the #650
+        // decline pattern).
+        let type_id_byte_offset = sidecar_base
+            .checked_add(table_byte_offset)
+            .filter(|&off| off <= 4095)
+            .ok_or_else(|| {
+                synth_core::Error::synthesis(format!(
+                    "call_indirect (table {table_index}): type-id sidecar offset \
+                     {sidecar_base}+{table_byte_offset} exceeds the LDR imm12 \
+                     addressing range (4095) — #676"
+                ))
+            })?;
+        Ok((
+            table_size,
+            table_byte_offset,
+            // #664 subsumed: the type compare traps null slots (id 0).
+            false,
+            Some((expected_id, type_id_byte_offset)),
+        ))
     }
 
     /// Enable relocatable host-link mode (#197): import calls emit a direct
@@ -2945,7 +3036,7 @@ impl InstructionSelector {
                 // guard), a constant table base offset, and a verified
                 // closed-world type verdict for THAT table, decline loudly
                 // rather than emit an unchecked indirect branch.
-                let (table_size, table_byte_offset, null_check) =
+                let (table_size, table_byte_offset, null_check, type_check) =
                     self.resolve_call_indirect_guards(*table_index, *type_index)?;
                 vec![ArmOp::CallIndirect {
                     rd,
@@ -2955,6 +3046,9 @@ impl InstructionSelector {
                     table_byte_offset,
                     // #664: trap on a null (zero-linked) slot at runtime.
                     null_check,
+                    // #676: heterogeneous table — runtime type check
+                    // against the type-id sidecar.
+                    type_check,
                 }]
             }
 
@@ -9462,7 +9556,7 @@ impl InstructionSelector {
                     // table.grow/table.set are unsupported ops that loud-skip
                     // their functions). If any input is missing, DECLINE
                     // loudly — never emit an unchecked indirect branch.
-                    let (table_size, table_byte_offset, null_check) =
+                    let (table_size, table_byte_offset, null_check, type_check) =
                         self.resolve_call_indirect_guards(*table_index, *type_index)?;
 
                     // Top of stack is the table index; the call arguments sit
@@ -9575,9 +9669,12 @@ impl InstructionSelector {
                             // within the contiguous R11 region. #664: a table
                             // with null slots gets a runtime null check on
                             // the loaded pointer (zero-linked slot → trap).
+                            // #676: a heterogeneous table gets the runtime
+                            // type check against the type-id sidecar.
                             table_size,
                             table_byte_offset,
                             null_check,
+                            type_check,
                         },
                         source_line: Some(idx),
                     });
@@ -14304,7 +14401,9 @@ mod tests {
                 base_byte_offset: Some(0),
                 type_reject: vec![None], // initialized slots verified
                 has_null_slots: true,    // slots 0,2 null (the falcon shape)
+                runtime_type_check: false,
             }],
+            ..Default::default()
         });
         let wasm_ops = vec![
             WasmOp::I32Const(1),
@@ -14329,6 +14428,126 @@ mod tests {
         );
     }
 
+    /// #676: a HETEROGENEOUS table (closed-world verdict rejects every
+    /// expected type, but the image is statically classifiable) lowers with
+    /// the runtime type check — `type_check: Some((expected_class_id,
+    /// sidecar_base + table_byte_offset))` — instead of declining. The #664
+    /// null check is subsumed by the compare (null slots carry the reserved
+    /// class id 0), so `null_check` is `false` even though the table has
+    /// null slots.
+    #[test]
+    fn test_676_call_indirect_heterogeneous_emits_runtime_type_check() {
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(Vec::new(), vec![0, 0]);
+        selector.set_call_indirect_guards(synth_core::CallIndirectGuards {
+            tables: vec![synth_core::TableGuards {
+                table_size: Some(5),
+                base_byte_offset: Some(0),
+                type_reject: vec![
+                    Some("mixed signatures".to_string()),
+                    Some("mixed signatures".to_string()),
+                ],
+                has_null_slots: true, // slots 3,4 null — subsumed by the compare
+                runtime_type_check: true,
+            }],
+            type_ids_byte_offset: Some(20), // 5 pointer words
+            type_ids_image: vec![1, 2, 1, 0, 0],
+            type_class_ids: vec![1, 2],
+        });
+        let wasm_ops = vec![
+            WasmOp::I32Const(1),
+            WasmOp::CallIndirect {
+                type_index: 1,
+                table_index: 0,
+            },
+        ];
+        let arm = selector
+            .select_with_stack(&wasm_ops, 0)
+            .expect("a heterogeneous call_indirect must lower via the runtime check (#676)");
+        assert!(
+            arm.iter().any(|i| matches!(
+                &i.op,
+                ArmOp::CallIndirect {
+                    table_size: 5,
+                    null_check: false,         // subsumed: null slots carry id 0
+                    type_check: Some((2, 20)), // class of type 1; sidecar base + offset 0
+                    ..
+                }
+            )),
+            "the pseudo-op must carry the runtime type check: {arm:#?}"
+        );
+    }
+
+    /// #676: the runtime check declines LOUDLY past its encoding ranges — a
+    /// sidecar offset beyond LDR imm12 or a class id beyond the CMP imm8 —
+    /// and a heterogeneous table WITHOUT a sidecar (a later table's size
+    /// unknown) keeps declining.
+    #[test]
+    fn test_676_call_indirect_runtime_check_range_declines() {
+        let db = RuleDatabase::new();
+        let hetero_table = |off| synth_core::TableGuards {
+            table_size: Some(2),
+            base_byte_offset: Some(off),
+            type_reject: vec![Some("mixed signatures".to_string())],
+            has_null_slots: false,
+            runtime_type_check: true,
+        };
+        let ops = vec![
+            WasmOp::I32Const(0),
+            WasmOp::CallIndirect {
+                type_index: 0,
+                table_index: 0,
+            },
+        ];
+
+        // Sidecar offset past LDR imm12.
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(Vec::new(), vec![0]);
+        selector.set_call_indirect_guards(synth_core::CallIndirectGuards {
+            tables: vec![hetero_table(2000)],
+            type_ids_byte_offset: Some(3000), // 3000 + 2000 > 4095
+            type_ids_image: vec![1, 2],
+            type_class_ids: vec![1],
+        });
+        let err = selector
+            .select_with_stack(&ops, 0)
+            .expect_err("sidecar offset past LDR imm12 must decline");
+        assert!(
+            err.to_string().contains("#676") && err.to_string().contains("4095"),
+            "loud range decline: {err}"
+        );
+
+        // Class id past the CMP immediate.
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(Vec::new(), vec![0]);
+        selector.set_call_indirect_guards(synth_core::CallIndirectGuards {
+            tables: vec![hetero_table(0)],
+            type_ids_byte_offset: Some(8),
+            type_ids_image: vec![1, 300],
+            type_class_ids: vec![300],
+        });
+        let err = selector
+            .select_with_stack(&ops, 0)
+            .expect_err("class id past the CMP imm8 must decline");
+        assert!(
+            err.to_string().contains("#676") && err.to_string().contains("255"),
+            "loud range decline: {err}"
+        );
+
+        // Heterogeneous but NO sidecar → still a loud decline.
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_func_arg_counts(Vec::new(), vec![0]);
+        selector.set_call_indirect_guards(synth_core::CallIndirectGuards {
+            tables: vec![hetero_table(0)],
+            ..Default::default()
+        });
+        let err = selector
+            .select_with_stack(&ops, 0)
+            .expect_err("no sidecar → the runtime check is not emittable");
+        assert!(err.to_string().contains("#676"), "loud decline: {err}");
+    }
+
     /// #650: `call_indirect` through table 1 lowers with THAT table's size in
     /// the bounds guard and its base byte offset (`size(table 0) * 4`) in the
     /// dispatch — the contiguous R11 region layout.
@@ -14344,14 +14563,17 @@ mod tests {
                     base_byte_offset: Some(0),
                     type_reject: vec![None],
                     has_null_slots: false,
+                    runtime_type_check: false,
                 },
                 synth_core::TableGuards {
                     table_size: Some(41),
                     base_byte_offset: Some(28),
                     type_reject: vec![None],
                     has_null_slots: false,
+                    runtime_type_check: false,
                 },
             ],
+            ..Default::default()
         });
         let wasm_ops = vec![
             WasmOp::I32Const(1),
@@ -14414,14 +14636,17 @@ mod tests {
                     base_byte_offset: Some(0),
                     type_reject: vec![Some("growable import".to_string())],
                     has_null_slots: false,
+                    runtime_type_check: false,
                 },
                 synth_core::TableGuards {
                     table_size: Some(4),
                     base_byte_offset: None,
                     type_reject: vec![None],
                     has_null_slots: false,
+                    runtime_type_check: false,
                 },
             ],
+            ..Default::default()
         });
         let wasm_ops = vec![
             WasmOp::I32Const(0),
