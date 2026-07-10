@@ -554,6 +554,26 @@ pub enum ArmOp {
         /// load and the `BLX`. `false` (every slot verifiably initialized)
         /// keeps the pre-#664 expansion byte-identical BY CONSTRUCTION.
         null_check: bool,
+        /// #676: `Some((expected_class_id, type_id_byte_offset))` — the
+        /// dispatched table is HETEROGENEOUS (mixed signatures, so the
+        /// closed-world verdict cannot hold) and WASM Core §4.4.8's type
+        /// check is discharged at RUNTIME against the type-id sidecar: a
+        /// parallel `u32` array mirroring the pointer region slot for slot,
+        /// placed at `R11 + sum(all table sizes) * 4` per the layout
+        /// contract (see `synth_core::CallIndirectGuards`). After the
+        /// bounds guard the encoder emits
+        /// `MOV ip, idx, LSL #2; ADD ip, r11, ip;
+        ///  LDR ip, [ip, #type_id_byte_offset]; CMP ip, #expected_class_id;
+        ///  BEQ ok; UDF #0` — `type_id_byte_offset` is the FULL byte offset
+        /// from R11 to THIS table's type-id subarray (sidecar base +
+        /// `table_byte_offset`, <= 4095 per the LDR imm12 range, enforced
+        /// by the selector; `expected_class_id` is 1-based and <= 255 for
+        /// the CMP immediate, likewise enforced). Class id 0 is reserved
+        /// for null slots, so the compare also subsumes the #664 null trap
+        /// (the selector then passes `null_check: false`). `None` (every
+        /// homogeneous table) emits NOTHING — the pre-#676 expansion stays
+        /// byte-identical BY CONSTRUCTION.
+        type_check: Option<(u32, u32)>,
     },
 
     // ========================================================================

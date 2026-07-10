@@ -138,6 +138,19 @@ pub struct TableGuards {
     /// meaningful when the type verdict is `None` (verified); reject paths
     /// decline before it is consulted.
     pub has_null_slots: bool,
+    /// #676: this table's image is statically known but HETEROGENEOUS — its
+    /// initialized slots span at least two distinct STRUCTURAL signature
+    /// classes, so no expected type's closed world can hold
+    /// (`type_reject[t]` is `Some` for every `t`) — yet the mismatch trap
+    /// (WASM Core §4.4.8) IS dischargeable at runtime: the type-id sidecar
+    /// (see [`CallIndirectGuards`]) carries each slot's structural class id,
+    /// and the dispatch compares the indexed slot's id against the expected
+    /// type's class id (a compile-time immediate), trapping on inequality.
+    /// When set (and [`CallIndirectGuards::type_ids_byte_offset`] is known),
+    /// the lowering emits that runtime check INSTEAD of declining. `false`
+    /// keeps the pre-#676 behavior: verified tables dispatch unchecked
+    /// (byte-identical), unverifiable tables decline.
+    pub runtime_type_check: bool,
 }
 
 /// #642/#650: everything the `call_indirect` lowering needs to emit its
@@ -175,6 +188,31 @@ pub struct TableGuards {
 ///    set the dispatch emits a null check on the loaded pointer
 ///    (`CMP #0` → trap) between the bounds guard and the indirect branch.
 ///    A fully-initialized table (`has_null_slots == false`) keeps the
+///    pre-#664 dispatch bytes identical BY CONSTRUCTION, and
+///  - a HETEROGENEOUS table (mixed signatures — the closed-world property
+///    cannot hold for ANY expected type) is dispatched through a runtime
+///    type check against the **type-id sidecar** (#676): a parallel `u32`
+///    array the layout contract places at `R11 + type_ids_byte_offset`
+///    (immediately after the LAST table's pointer words, i.e. at
+///    `sum(size(0..num_tables)) * 4`), mirroring the pointer region slot
+///    for slot — table N's type-ids start at
+///    `R11 + type_ids_byte_offset + base_byte_offset(N)`. Each word is the
+///    slot's STRUCTURAL signature class id: structurally-equal function
+///    types share one dense id (1-based, first-occurrence order over the
+///    type section); id **0 is reserved for null slots**, so the type
+///    compare (expected ids are always >= 1) subsumes the #664 null trap
+///    in the same `CMP`. The dispatch loads `type_id[idx]`, compares it
+///    against the expected type's class id (compile-time immediate) and
+///    traps (`UDF`) on mismatch — WASM Core §4.4.8's runtime type check —
+///    before the pointer load and `BLX`. The sidecar words are emitted
+///    into the relocatable object as the `.synth.table_type_ids` section
+///    (non-ALLOC metadata, like `.meld_import_table`): the runtime/harness
+///    that links the pointer region copies them to
+///    `R11 + type_ids_byte_offset` verbatim — it never re-derives ids. A
+///    module with NO heterogeneous table emits no sidecar and no runtime
+///    type check anywhere: homogeneous dispatch bytes stay identical BY
+///    CONSTRUCTION (the #650 offset-0 / #664 `null_check: false` trick).
+///
 ///    pre-#664 dispatch bytes identical BY CONSTRUCTION.
 ///
 /// ## Companion: the self-contained SRAM layout contract (#687)
@@ -194,6 +232,26 @@ pub struct CallIndirectGuards {
     /// Per-table guard inputs, indexed by table index (imports first). The
     /// default (empty — no module context) DECLINES every `call_indirect`.
     pub tables: Vec<TableGuards>,
+    /// #676: byte offset of the type-id sidecar within the R11 region — the
+    /// total pointer-region size, `sum(size(0..num_tables)) * 4`. `Some`
+    /// only when a sidecar exists: at least one table is heterogeneous
+    /// (see [`TableGuards::runtime_type_check`]) AND every table's size is
+    /// compile-time known (otherwise the sidecar base is not a constant and
+    /// heterogeneous dispatches keep declining). `None` = no sidecar.
+    pub type_ids_byte_offset: Option<u32>,
+    /// #676: the sidecar image — one `u32` structural class id per slot
+    /// across ALL tables in region order (0 = null slot). Emitted into the
+    /// object as `.synth.table_type_ids`; empty exactly when
+    /// `type_ids_byte_offset` is `None`. A table whose image is not
+    /// statically known contributes ZERO words (it declines at the
+    /// lowering, and 0 never equals an expected class id, so even a rogue
+    /// dispatch would trap, not branch).
+    pub type_ids_image: Vec<u32>,
+    /// #676: per module type index, that type's structural class id
+    /// (1-based, dense; structurally-equal duplicate types share an id).
+    /// The expected-type immediate the dispatch compares against. Empty
+    /// when `type_ids_byte_offset` is `None` (no sidecar — never consulted).
+    pub type_class_ids: Vec<u32>,
 }
 
 impl CallIndirectGuards {
@@ -206,7 +264,9 @@ impl CallIndirectGuards {
                 base_byte_offset: Some(0),
                 type_reject,
                 has_null_slots: false,
+                runtime_type_check: false,
             }],
+            ..Self::default()
         }
     }
 }
@@ -321,27 +381,92 @@ impl DecodedModule {
                  entry)",
             );
 
+        // #676: structural signature classes — structurally-equal types share
+        // one dense 1-based id (first-occurrence order over the type section);
+        // id 0 is reserved for null slots. These feed the type-id sidecar and
+        // the expected-type compare immediate of the runtime type check.
+        let mut class_of_sig: std::collections::HashMap<&str, u32> =
+            std::collections::HashMap::new();
+        let mut type_class_ids: Vec<u32> = Vec::with_capacity(n_types);
+        for sig in &self.type_signatures {
+            let next = class_of_sig.len() as u32 + 1;
+            type_class_ids.push(*class_of_sig.entry(sig.as_str()).or_insert(next));
+        }
+
         let mut tables = Vec::with_capacity(self.table_sizes.len());
+        // #676: per table, the slot class ids (None = image not statically
+        // known) — concatenated into the sidecar image below.
+        let mut per_table_slot_ids: Vec<Option<Vec<u32>>> =
+            Vec::with_capacity(self.table_sizes.len());
         // Running word offset of the next table's base within the R11 region;
         // `None` once a table of unknown size is passed (every later base is
         // then not a compile-time constant).
         let mut base_words: Option<u32> = Some(0);
         for (n, &size) in self.table_sizes.iter().enumerate() {
             let base_byte_offset = base_words.and_then(|w| w.checked_mul(4));
-            let (type_reject, has_null_slots) =
-                self.table_type_reject(n as u32, size, global_poison, n_types);
+            let (type_reject, has_null_slots, slot_class_ids) =
+                self.table_type_reject(n as u32, size, global_poison, n_types, &type_class_ids);
+            // #676: heterogeneous = the image is statically known and its
+            // INITIALIZED slots span >= 2 distinct structural classes (null
+            // slots — id 0 — don't count; a sparse homogeneous table stays
+            // on the #664 verified-plus-null-check path, bytes identical).
+            let runtime_type_check = slot_class_ids.as_ref().is_some_and(|ids| {
+                let mut distinct: Vec<u32> = ids.iter().copied().filter(|&c| c != 0).collect();
+                distinct.sort_unstable();
+                distinct.dedup();
+                distinct.len() >= 2
+            });
+            per_table_slot_ids.push(slot_class_ids);
             tables.push(TableGuards {
                 table_size: size,
                 base_byte_offset,
                 type_reject,
                 has_null_slots,
+                runtime_type_check,
             });
             base_words = match (base_words, size) {
                 (Some(w), Some(s)) => w.checked_add(s),
                 _ => None,
             };
         }
-        CallIndirectGuards { tables }
+
+        // #676: the sidecar exists only when some table actually needs the
+        // runtime check AND the whole pointer region's size is compile-time
+        // known (`base_words` survived every table) — otherwise the sidecar
+        // base is not a constant and heterogeneous dispatches keep declining
+        // (their `runtime_type_check` flag is cleared so the lowering sees a
+        // plain reject).
+        let any_hetero = tables.iter().any(|t| t.runtime_type_check);
+        let type_ids_byte_offset = base_words
+            .filter(|_| any_hetero)
+            .and_then(|w| w.checked_mul(4));
+        let type_ids_image = if type_ids_byte_offset.is_some() {
+            self.table_sizes
+                .iter()
+                .zip(&per_table_slot_ids)
+                .flat_map(|(&size, ids)| match ids {
+                    Some(ids) => ids.clone(),
+                    // Image not statically known: zero words (id 0 never
+                    // matches an expected class id >= 1 — trap, not branch).
+                    None => vec![0u32; size.unwrap_or(0) as usize],
+                })
+                .collect()
+        } else {
+            for t in &mut tables {
+                t.runtime_type_check = false;
+            }
+            Vec::new()
+        };
+        CallIndirectGuards {
+            tables,
+            type_ids_byte_offset,
+            type_ids_image,
+            type_class_ids: if type_ids_byte_offset.is_some() {
+                type_class_ids
+            } else {
+                Vec::new()
+            },
+        }
     }
 
     /// #642/#650: the closed-world type verdicts for ONE table — `None` per
@@ -351,15 +476,20 @@ impl DecodedModule {
     /// the table image left any slot uninitialized — a `call_indirect`
     /// reaching one must TRAP at runtime (null check on the loaded pointer),
     /// which the lowering emits only when this is set. Reject paths return
-    /// `false` (the verdict declines before the flag is consulted).
+    /// `false` (the verdict declines before the flag is consulted). The
+    /// third component (#676) is the table's slot class ids — per slot, the
+    /// structural signature class of the initializing function (0 for a
+    /// null slot) — `Some` exactly when the table image is statically
+    /// known; it feeds the type-id sidecar and the heterogeneity verdict.
     fn table_type_reject(
         &self,
         n: u32,
         size: Option<u32>,
         global_poison: Option<&str>,
         n_types: usize,
-    ) -> (Vec<Option<String>>, bool) {
-        let reject_all = |reason: String| (vec![Some(reason); n_types], false);
+        type_class_ids: &[u32],
+    ) -> (Vec<Option<String>>, bool, Option<Vec<u32>>) {
+        let reject_all = |reason: String| (vec![Some(reason); n_types], false, None);
 
         if let Some(reason) = global_poison {
             return reject_all(reason.to_string());
@@ -415,15 +545,28 @@ impl DecodedModule {
                     if self.type_signatures.get(fty as usize) != self.type_signatures.get(t) {
                         return Some(format!(
                             "table {n} entry (function {f}, type {fty}) has a different \
-                             signature than expected type {t} — a runtime type check \
-                             is not implementable on the raw code-pointer table"
+                             signature than expected type {t}"
                         ));
                     }
                 }
                 None
             })
             .collect();
-        (rejects, has_null_slots)
+        // #676: per-slot structural class ids (0 = null). `None` as soon as
+        // any initializing function's type is unknown — the image is then
+        // not statically classifiable and the table can neither verify nor
+        // carry the runtime check (the rejects above already name it).
+        let slot_class_ids: Option<Vec<u32>> = slots
+            .iter()
+            .map(|s| match s {
+                None => Some(0u32),
+                Some(f) => self
+                    .func_type_indices
+                    .get(*f as usize)
+                    .and_then(|&fty| type_class_ids.get(fty as usize).copied()),
+            })
+            .collect();
+        (rejects, has_null_slots, slot_class_ids)
     }
 }
 
@@ -2919,6 +3062,23 @@ mod tests {
             "heterogeneous table must reject every expected type: {:?}",
             guards.tables[0].type_reject
         );
+        // #676: ... but the image is statically known, so the mismatch trap
+        // is dischargeable at RUNTIME via the type-id sidecar.
+        assert!(
+            guards.tables[0].runtime_type_check,
+            "heterogeneous-but-known table must offer the runtime check (#676)"
+        );
+        assert_eq!(
+            guards.type_ids_byte_offset,
+            Some(8),
+            "sidecar sits after the 2-slot pointer region"
+        );
+        assert_eq!(
+            guards.type_ids_image,
+            vec![1, 2],
+            "slot 0 = $bin (class 1), slot 1 = $un (class 2)"
+        );
+        assert_eq!(guards.type_class_ids, vec![1, 2]);
     }
 
     /// #664 (relaxes the #642 all-reject): an uninitialized table slot (elem
@@ -3009,6 +3169,82 @@ mod tests {
             "a heterogeneous sparse table must still reject every type: {:?}",
             guards.tables[0].type_reject
         );
+        // #676: the sparse-heterogeneous case is now dischargeable at
+        // runtime too — null slots take the reserved class id 0, so ONE
+        // sidecar compare covers both the type mismatch and the null trap.
+        assert!(guards.tables[0].runtime_type_check, "#676 runtime check");
+        assert_eq!(guards.type_ids_byte_offset, Some(16), "4 pointer slots");
+        assert_eq!(
+            guards.type_ids_image,
+            vec![0, 1, 0, 2],
+            "nulls at 0/2 carry the reserved id 0; $t slot 1 = class 1, \
+             $u slot 3 = class 2"
+        );
+    }
+
+    /// #676: the heterogeneous type-id sidecar — structural duplicate types
+    /// share one class id (the meld 31-decls/25-distinct shape), null slots
+    /// take the reserved id 0, and the sidecar base is the total pointer
+    /// region size. A module with NO heterogeneous table gets NO sidecar
+    /// (empty image, `None` offset) — homogeneous modules stay untouched.
+    #[test]
+    fn test_call_indirect_guards_heterogeneous_sidecar_676() {
+        let wat = r#"
+            (module
+                (type $bin (func (param i32 i32) (result i32)))
+                (type $un (func (param i32) (result i32)))
+                (type $bin2 (func (param i32 i32) (result i32)))
+                (table 5 5 funcref)
+                (func $add (type $bin) (i32.add (local.get 0) (local.get 1)))
+                (func $neg (type $un) (i32.sub (i32.const 0) (local.get 0)))
+                (func $sub (type $bin2) (i32.sub (local.get 0) (local.get 1)))
+                (elem (i32.const 0) func $add $neg $sub)
+                (func (export "via2") (param i32 i32) (result i32)
+                    (call_indirect (type $bin)
+                        (local.get 0) (i32.const 3) (local.get 1)))
+                (func (export "via1") (param i32 i32) (result i32)
+                    (call_indirect (type $un) (local.get 0) (local.get 1)))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode");
+        let guards = module.call_indirect_guards();
+        assert!(guards.tables[0].runtime_type_check);
+        assert_eq!(
+            guards.type_class_ids,
+            vec![1, 2, 1],
+            "$bin2 is a structural duplicate of $bin — one class id (#676)"
+        );
+        assert_eq!(
+            guards.type_ids_image,
+            vec![1, 2, 1, 0, 0],
+            "slots: $add(bin)=1, $neg(un)=2, $sub(bin2 ≡ bin)=1, null, null"
+        );
+        assert_eq!(
+            guards.type_ids_byte_offset,
+            Some(20),
+            "sidecar starts after the 5 pointer words"
+        );
+
+        // Homogeneous module → NO sidecar, no runtime check anywhere.
+        let wat = r#"
+            (module
+                (type $t (func (param i32) (result i32)))
+                (table 2 2 funcref)
+                (func $f0 (type $t) (local.get 0))
+                (func $f1 (type $t) (i32.const 7))
+                (elem (i32.const 0) func $f0 $f1)
+                (func (export "via") (param i32 i32) (result i32)
+                    (call_indirect (type $t) (local.get 0) (local.get 1)))
+            )
+        "#;
+        let wasm = wat::parse_str(wat).expect("parse");
+        let module = decode_wasm_module(&wasm).expect("decode");
+        let guards = module.call_indirect_guards();
+        assert!(!guards.tables[0].runtime_type_check);
+        assert_eq!(guards.type_ids_byte_offset, None, "no heterogeneous table");
+        assert!(guards.type_ids_image.is_empty());
+        assert!(guards.type_class_ids.is_empty());
     }
 
     /// #642: no table at all → no compile-time bound → table_size None and

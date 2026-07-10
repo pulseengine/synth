@@ -2001,6 +2001,7 @@ fn verify_call_indirect() {
                     table_size: 4,        // #642: bounds-guard immediate
                     table_byte_offset: 0, // #650: table 0 of the contiguous R11 region
                     null_check: false,    // #664: fully-initialized table
+                    type_check: None,     // #676: homogeneous table
                 },
             );
 
