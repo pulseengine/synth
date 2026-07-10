@@ -65,6 +65,9 @@ pub enum SectionType {
     NoBits = 8,
     /// Relocation entries
     Rel = 9,
+    /// ARM build attributes (`SHT_ARM_ATTRIBUTES`, #637) — the `.ARM.attributes`
+    /// section every ARM toolchain consults to auto-select the Thumb/A32 decoder.
+    ArmAttributes = 0x7000_0003,
 }
 
 /// Section flags
@@ -366,6 +369,93 @@ pub const EF_ARM_ABI_FLOAT_HARD: u32 = 0x00000400;
 /// ARM soft-float ABI flag
 pub const EF_ARM_ABI_FLOAT_SOFT: u32 = 0x00000200;
 
+/// ARM EABI build-attribute tags and values (#637) — "Addenda to, and Errata
+/// in, the ABI for the Arm Architecture" (build attributes). Only the tags the
+/// synth ELF writer emits; consumers (objdump, gdb, `synth disasm`) use them to
+/// auto-select the Thumb vs A32 decoder without a manual `--triple`.
+pub mod aeabi {
+    /// Tag_CPU_arch (uleb value)
+    pub const TAG_CPU_ARCH: u32 = 6;
+    /// Tag_CPU_arch_profile (uleb value: 'M', 'R', 'A')
+    pub const TAG_CPU_ARCH_PROFILE: u32 = 7;
+    /// Tag_ARM_ISA_use (0 = no A32, 1 = A32 permitted)
+    pub const TAG_ARM_ISA_USE: u32 = 8;
+    /// Tag_THUMB_ISA_use (0 = none, 1 = Thumb-1 (16-bit), 2 = Thumb-2)
+    pub const TAG_THUMB_ISA_USE: u32 = 9;
+
+    /// Tag_CPU_arch value: ARMv7 (Cortex-M3 / Cortex-R profile base)
+    pub const CPU_ARCH_V7: u32 = 10;
+    /// Tag_CPU_arch value: ARMv6-M (Cortex-M0)
+    pub const CPU_ARCH_V6M: u32 = 11;
+    /// Tag_CPU_arch value: ARMv7E-M (Cortex-M4/M7)
+    pub const CPU_ARCH_V7EM: u32 = 13;
+    /// Tag_CPU_arch value: ARMv8.1-M.mainline (Cortex-M55)
+    pub const CPU_ARCH_V8_1M_MAIN: u32 = 21;
+
+    /// Tag_CPU_arch_profile value: microcontroller
+    pub const PROFILE_M: u32 = b'M' as u32;
+    /// Tag_CPU_arch_profile value: real-time
+    pub const PROFILE_R: u32 = b'R' as u32;
+}
+
+/// Encode a u32 as ULEB128 (build-attribute value encoding).
+fn push_uleb128(out: &mut Vec<u8>, mut v: u32) {
+    loop {
+        let byte = (v & 0x7f) as u8;
+        v >>= 7;
+        if v == 0 {
+            out.push(byte);
+            break;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// Build the `.ARM.attributes` section (#637): format-version `'A'`, one
+/// `"aeabi"` vendor subsection carrying a single `Tag_File` (1) subsubsection
+/// with the given file-scope attributes. Tags with value 0 are omitted (0 is
+/// the spec default). Standard toolchains (objdump, gdb, ld) read this to
+/// auto-select the Thumb vs A32 decoder — synth objects become self-describing
+/// instead of requiring a manual `--triple=thumbv7m`.
+pub fn arm_attributes_section(
+    cpu_arch: u32,
+    cpu_arch_profile: u32,
+    arm_isa_use: u32,
+    thumb_isa_use: u32,
+) -> Section {
+    // File-scope attribute pairs (uleb tag, uleb value).
+    let mut attrs = Vec::new();
+    for (tag, value) in [
+        (aeabi::TAG_CPU_ARCH, cpu_arch),
+        (aeabi::TAG_CPU_ARCH_PROFILE, cpu_arch_profile),
+        (aeabi::TAG_ARM_ISA_USE, arm_isa_use),
+        (aeabi::TAG_THUMB_ISA_USE, thumb_isa_use),
+    ] {
+        if value != 0 {
+            push_uleb128(&mut attrs, tag);
+            push_uleb128(&mut attrs, value);
+        }
+    }
+
+    // Tag_File (1) subsubsection: tag byte + u32 length (self-inclusive) + attrs.
+    let file_len = (1 + 4 + attrs.len()) as u32;
+    let mut file_sub = vec![1u8]; // Tag_File
+    file_sub.extend_from_slice(&file_len.to_le_bytes());
+    file_sub.extend_from_slice(&attrs);
+
+    // "aeabi" vendor subsection: u32 length (self-inclusive) + NTBS name + data.
+    let vendor_name = b"aeabi\0";
+    let vendor_len = (4 + vendor_name.len() + file_sub.len()) as u32;
+    let mut blob = vec![b'A']; // format version
+    blob.extend_from_slice(&vendor_len.to_le_bytes());
+    blob.extend_from_slice(vendor_name);
+    blob.extend_from_slice(&file_sub);
+
+    Section::new(".ARM.attributes", SectionType::ArmAttributes)
+        .with_align(1)
+        .with_data(blob)
+}
+
 /// ELF file builder
 pub struct ElfBuilder {
     /// File class (32 or 64 bit)
@@ -534,6 +624,40 @@ impl ElfBuilder {
         // Build symbol string table
         let (strtab_data, symbol_name_offsets) = self.build_symbol_string_table();
 
+        // #656: ELF requires every STB_LOCAL symbol to precede all non-local
+        // symbols in `.symtab`, with the section's `sh_info` set to the index of
+        // the first non-local symbol. Callers add symbols in whatever order is
+        // convenient (and hold 1-based indices from `add_symbol_indexed` /
+        // `add_undefined_symbol` for their relocations), so the LOCAL/GLOBAL
+        // ordering is established here at build time: a stable locals-first
+        // permutation, plus an old→new index map every relocation is rewritten
+        // through. With zero local symbols (every pre-#656 object) the
+        // permutation is the identity and `sh_info` stays 1 — byte-identical.
+        let mut sym_order: Vec<usize> = (0..self.symbols.len()).collect();
+        sym_order.sort_by_key(|&i| self.symbols[i].binding != SymbolBinding::Local);
+        // old_to_new[old_1based] = new_1based; index 0 (the null symbol) maps to 0.
+        let mut old_to_new = vec![0u32; self.symbols.len() + 1];
+        for (new_pos, &old) in sym_order.iter().enumerate() {
+            old_to_new[old + 1] = new_pos as u32 + 1;
+        }
+        let local_count = self
+            .symbols
+            .iter()
+            .filter(|s| s.binding == SymbolBinding::Local)
+            .count();
+        // The null symbol (index 0) counts as local, so first-global = locals + 1.
+        let symtab_sh_info = local_count as u32 + 1;
+        let remap_relocs = |relocs: &[Relocation]| -> Vec<Relocation> {
+            relocs
+                .iter()
+                .map(|r| Relocation {
+                    offset: r.offset,
+                    symbol_index: old_to_new[r.symbol_index as usize],
+                    reloc_type: r.reloc_type,
+                })
+                .collect()
+        };
+
         // Calculate section offsets (after ELF header + program headers)
         let mut current_offset = header_size + ph_table_size;
 
@@ -552,13 +676,14 @@ impl ElfBuilder {
             current_offset += section.data.len();
         }
 
-        // Section 3: .symtab (symbol table)
+        // Section 3: .symtab (symbol table), in locals-first order (#656)
         let symtab_offset = current_offset;
-        let symtab_data = self.build_symbol_table(&symbol_name_offsets);
+        let symtab_data = self.build_symbol_table(&symbol_name_offsets, &sym_order);
         current_offset += symtab_data.len();
 
-        // Section 4+ (optional): .rel.text (relocations)
-        let rel_data = self.build_relocation_table();
+        // Section 4+ (optional): .rel.text (relocations), symbol indices
+        // rewritten through the locals-first permutation (#656)
+        let rel_data = Self::encode_rel_entries(&remap_relocs(&self.relocations));
         let rel_offset = current_offset;
         current_offset += rel_data.len();
 
@@ -571,7 +696,7 @@ impl ElfBuilder {
             let Some(target_idx) = self.section_index_by_name(target) else {
                 continue;
             };
-            let data = Self::encode_rel_entries(relocs);
+            let data = Self::encode_rel_entries(&remap_relocs(relocs));
             let name_offset = extra_rel_name_offsets.get(i).copied().unwrap_or(0);
             extra_rel.push(ExtraRelSection {
                 name_offset,
@@ -612,6 +737,7 @@ impl ElfBuilder {
             rel_offset,
             &rel_data,
             &extra_rel,
+            symtab_sh_info,
         );
         output.extend_from_slice(&section_headers);
 
@@ -835,11 +961,6 @@ impl ElfBuilder {
         (strtab, offsets)
     }
 
-    /// Build relocation table (ELF32 REL entries: 8 bytes each)
-    fn build_relocation_table(&self) -> Vec<u8> {
-        Self::encode_rel_entries(&self.relocations)
-    }
-
     /// Encode a slice of relocations as ELF32 REL entries (8 bytes each). Shared
     /// by `.rel.text` and the per-section `.rel.<name>` tables.
     fn encode_rel_entries(relocs: &[Relocation]) -> Vec<u8> {
@@ -864,15 +985,18 @@ impl ElfBuilder {
             .map(|pos| 4 + pos as u32)
     }
 
-    /// Build symbol table
-    fn build_symbol_table(&self, name_offsets: &[usize]) -> Vec<u8> {
+    /// Build symbol table. `order` is the locals-first permutation of
+    /// `self.symbols` computed in [`build`] (#656): entry `k` of the emitted
+    /// table (after the null symbol) is `self.symbols[order[k]]`.
+    fn build_symbol_table(&self, name_offsets: &[usize], order: &[usize]) -> Vec<u8> {
         let mut symtab = Vec::new();
 
         // First entry is always null symbol
         symtab.extend_from_slice(&[0u8; 16]); // 16 bytes per symbol in ELF32
 
-        // User symbols
-        for (i, symbol) in self.symbols.iter().enumerate() {
+        // User symbols, locals first (#656)
+        for &i in order {
+            let symbol = &self.symbols[i];
             let name_offset = if i < name_offsets.len() {
                 name_offsets[i] as u32
             } else {
@@ -930,6 +1054,9 @@ impl ElfBuilder {
         rel_offset: usize,
         rel_data: &[u8],
         extra_rel: &[ExtraRelSection],
+        // #656: `.symtab` sh_info = index of the first non-LOCAL symbol
+        // (1 + number of local symbols; the null symbol counts as local).
+        symtab_sh_info: u32,
     ) -> Vec<u8> {
         let mut headers = Vec::new();
 
@@ -980,7 +1107,10 @@ impl ElfBuilder {
             symtab_offset as u32,
             symtab_data.len() as u32,
             2,
-            1,
+            // #656: was hardcoded 1 (the #430 blocker) — with local symbols
+            // present that under-reports, and `ld` then treats every local as
+            // global-bindable. Now the real first-non-local index.
+            symtab_sh_info,
             4,
             16,
         );
@@ -1442,7 +1572,7 @@ mod tests {
         builder.add_symbol(sym);
 
         let (_strtab, offsets) = builder.build_symbol_string_table();
-        let symtab = builder.build_symbol_table(&offsets);
+        let symtab = builder.build_symbol_table(&offsets, &[0]);
 
         // Should have null symbol (16 bytes) + 1 symbol (16 bytes) = 32 bytes
         assert_eq!(symtab.len(), 32);
@@ -1492,7 +1622,7 @@ mod tests {
         builder.add_symbol(func_sym);
 
         let (_strtab, offsets) = builder.build_symbol_string_table();
-        let symtab = builder.build_symbol_table(&offsets);
+        let symtab = builder.build_symbol_table(&offsets, &[0]);
         let value = u32::from_le_bytes(symtab[20..24].try_into().unwrap());
         assert_eq!(value, 0x1000, "A32 STT_FUNC st_value must keep bit 0 clear");
 
@@ -1505,5 +1635,183 @@ mod tests {
         // The default (Thumb) behavior is unchanged: bit 0 set on both.
         let builder = ElfBuilder::new_arm32().with_entry(0x8000);
         assert_eq!(builder.entry, 0x8001, "Thumb e_entry keeps the bit");
+    }
+
+    /// Minimal ELF32 section-header reader for the tests below:
+    /// (sh_type, sh_offset, sh_size, sh_link, sh_info) per section.
+    fn read_section_headers(elf: &[u8]) -> Vec<(u32, u32, u32, u32, u32)> {
+        let e_shoff = u32::from_le_bytes(elf[32..36].try_into().unwrap()) as usize;
+        let e_shnum = u16::from_le_bytes(elf[48..50].try_into().unwrap()) as usize;
+        (0..e_shnum)
+            .map(|i| {
+                let base = e_shoff + i * 40;
+                let f = |off: usize| {
+                    u32::from_le_bytes(elf[base + off..base + off + 4].try_into().unwrap())
+                };
+                (f(4), f(16), f(20), f(24), f(28))
+            })
+            .collect()
+    }
+
+    /// Read symtab entries as (st_value, st_info, st_shndx).
+    fn read_symtab(elf: &[u8]) -> (Vec<(u32, u8, u16)>, u32) {
+        let headers = read_section_headers(elf);
+        let &(_, off, size, _, sh_info) = headers
+            .iter()
+            .find(|h| h.0 == SectionType::SymTab as u32)
+            .expect("symtab present");
+        let syms = (0..size as usize / 16)
+            .map(|i| {
+                let base = off as usize + i * 16;
+                (
+                    u32::from_le_bytes(elf[base + 4..base + 8].try_into().unwrap()),
+                    elf[base + 12],
+                    u16::from_le_bytes(elf[base + 14..base + 16].try_into().unwrap()),
+                )
+            })
+            .collect();
+        (syms, sh_info)
+    }
+
+    /// #656: local symbols must be emitted BEFORE globals (stable within each
+    /// class), `.symtab` `sh_info` must be the first-non-local index, and every
+    /// relocation's symbol index must be rewritten through the permutation.
+    #[test]
+    fn test_locals_sorted_first_sh_info_and_reloc_reindex_656() {
+        let mut builder = ElfBuilder::new_arm32()
+            .with_entry(0)
+            .with_type(ElfType::Rel);
+        let text = Section::new(".text", SectionType::ProgBits)
+            .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
+            .with_align(4)
+            .with_data(vec![0u8; 16]);
+        builder.add_section(text);
+
+        // Added out of ELF order: global export first, then a LOCAL internal
+        // helper, then a global undefined external.
+        builder.add_symbol(
+            Symbol::new("exported")
+                .with_value(0)
+                .with_binding(SymbolBinding::Global)
+                .with_type(SymbolType::Func)
+                .with_section(4),
+        ); // pre-build index 1
+        builder.add_symbol(
+            Symbol::new("func_2")
+                .with_value(8)
+                .with_binding(SymbolBinding::Local)
+                .with_type(SymbolType::Func)
+                .with_section(4),
+        ); // pre-build index 2
+        let undef_idx = builder.add_undefined_symbol("external"); // pre-build index 3
+        assert_eq!(undef_idx, 3);
+
+        // BL at offset 0 → the LOCAL func_2 (pre-build index 2);
+        // BL at offset 4 → the undefined external (pre-build index 3).
+        builder.add_relocation(Relocation {
+            offset: 0,
+            symbol_index: 2,
+            reloc_type: ArmRelocationType::ThmCall,
+        });
+        builder.add_relocation(Relocation {
+            offset: 4,
+            symbol_index: undef_idx,
+            reloc_type: ArmRelocationType::ThmCall,
+        });
+
+        let elf = builder.build().unwrap();
+        let (syms, sh_info) = read_symtab(&elf);
+
+        // Order: null, func_2 (LOCAL), exported (GLOBAL), external (GLOBAL undef).
+        assert_eq!(syms.len(), 4);
+        assert_eq!(syms[0], (0, 0, 0), "null symbol first");
+        let bind = |info: u8| info >> 4;
+        assert_eq!(bind(syms[1].1), SymbolBinding::Local as u8, "local first");
+        assert_eq!(syms[1].0, 8 | 1, "func_2 st_value (thumb bit)");
+        assert_eq!(bind(syms[2].1), SymbolBinding::Global as u8);
+        assert_eq!(syms[2].0, 1, "exported st_value 0 | thumb bit");
+        assert_eq!(bind(syms[3].1), SymbolBinding::Global as u8);
+        assert_eq!(syms[3].2, 0, "external is SHN_UNDEF");
+        assert_eq!(sh_info, 2, "sh_info = index of first non-local symbol");
+
+        // Relocations rewritten: func_2 is now index 1, external index 3.
+        let headers = read_section_headers(&elf);
+        let &(_, rel_off, rel_size, _, rel_info) = headers
+            .iter()
+            .find(|h| h.0 == SectionType::Rel as u32)
+            .expect(".rel.text present");
+        assert_eq!(rel_info, 4, ".rel.text still targets .text");
+        assert_eq!(rel_size, 16);
+        let r_info = |i: usize| {
+            u32::from_le_bytes(
+                elf[rel_off as usize + i * 8 + 4..rel_off as usize + i * 8 + 8]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        assert_eq!(r_info(0) >> 8, 1, "BL func_2 reloc remapped to new index 1");
+        assert_eq!(r_info(0) & 0xff, ArmRelocationType::ThmCall as u32);
+        assert_eq!(r_info(1) >> 8, 3, "BL external reloc keeps index 3");
+    }
+
+    /// #656 freeze guard: with zero LOCAL symbols the permutation is the
+    /// identity and `sh_info` stays 1 — the pre-#656 layout, byte-identical.
+    #[test]
+    fn test_all_global_symtab_unchanged_sh_info_1_656() {
+        let mut builder = ElfBuilder::new_arm32()
+            .with_entry(0)
+            .with_type(ElfType::Rel);
+        builder.add_section(
+            Section::new(".text", SectionType::ProgBits)
+                .with_flags(SectionFlags::ALLOC | SectionFlags::EXEC)
+                .with_data(vec![0u8; 8]),
+        );
+        for (name, val) in [("a", 0u32), ("b", 4u32)] {
+            builder.add_symbol(
+                Symbol::new(name)
+                    .with_value(val)
+                    .with_binding(SymbolBinding::Global)
+                    .with_type(SymbolType::Func)
+                    .with_section(4),
+            );
+        }
+        let elf = builder.build().unwrap();
+        let (syms, sh_info) = read_symtab(&elf);
+        assert_eq!(sh_info, 1, "no locals ⇒ sh_info stays 1 (pre-#656 layout)");
+        assert_eq!(syms[1].0, 1, "a first (insertion order preserved)");
+        assert_eq!(syms[2].0, 5, "b second");
+    }
+
+    /// #637: `.ARM.attributes` blob structure — format version 'A', "aeabi"
+    /// vendor subsection, Tag_File subsubsection with the uleb tag pairs, and
+    /// zero-valued tags omitted (spec default).
+    #[test]
+    fn test_arm_attributes_section_bytes_637() {
+        // Cortex-M3: v7, profile M, no A32, Thumb-2.
+        let sec = arm_attributes_section(aeabi::CPU_ARCH_V7, aeabi::PROFILE_M, 0, 2);
+        assert_eq!(sec.name, ".ARM.attributes");
+        assert_eq!(sec.section_type, SectionType::ArmAttributes);
+        let d = &sec.data;
+        assert_eq!(d[0], b'A', "format version");
+        let vendor_len = u32::from_le_bytes(d[1..5].try_into().unwrap()) as usize;
+        assert_eq!(vendor_len, d.len() - 1, "vendor subsection length");
+        assert_eq!(&d[5..11], b"aeabi\0");
+        assert_eq!(d[11], 1, "Tag_File");
+        let file_len = u32::from_le_bytes(d[12..16].try_into().unwrap()) as usize;
+        assert_eq!(file_len, d.len() - 11, "Tag_File length");
+        // Attribute pairs (all values < 128 ⇒ one uleb byte each).
+        let attrs = &d[16..];
+        assert_eq!(
+            attrs,
+            &[
+                6, 10, // Tag_CPU_arch = v7
+                7, b'M', // Tag_CPU_arch_profile = M
+                9, 2, // Tag_THUMB_ISA_use = Thumb-2 (Tag_ARM_ISA_use=0 omitted)
+            ],
+        );
+
+        // Cortex-R5: v7, profile R, A32 permitted, Thumb-2 permitted.
+        let sec = arm_attributes_section(aeabi::CPU_ARCH_V7, aeabi::PROFILE_R, 1, 2);
+        assert_eq!(&sec.data[16..], &[6, 10, 7, b'R', 8, 1, 9, 2]);
     }
 }

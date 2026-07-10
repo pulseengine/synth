@@ -14,7 +14,8 @@ pub mod w2c2_wrapper;
 pub use elf_builder::{
     ArmRelocationType, EF_ARM_ABI_FLOAT_HARD, EF_ARM_ABI_FLOAT_SOFT, EF_ARM_EABI_VER5, ElfBuilder,
     ElfClass, ElfData, ElfMachine, ElfType, ProgramFlags, ProgramHeader, ProgramType, Relocation,
-    Section, SectionFlags, SectionType as ElfSectionType, Symbol, SymbolBinding, SymbolType,
+    Section, SectionFlags, SectionType as ElfSectionType, Symbol, SymbolBinding, SymbolType, aeabi,
+    arm_attributes_section,
 };
 pub use linker_script::{LinkerScriptGenerator, MemoryRegion};
 pub use memory_layout::{MemoryLayout, MemoryLayoutAnalyzer, MemorySection, SectionType};

@@ -2794,9 +2794,9 @@ fn compile_all_exports(
                 None
             },
             input_dwarf.as_ref(),
-            // #598: only Thumb-encoded functions get the interworking bit on
-            // their STT_FUNC symbols; the A32 path (cortex-r5) keeps bit 0 clear.
-            !matches!(target_spec.isa, synth_core::target::IsaVariant::Arm32),
+            // #598/#637: Thumb-bit handling + `.ARM.attributes` derive from
+            // the selected target inside the builder.
+            target_spec,
         )?
     } else if cortex_m {
         // #649: the self-contained image materializes the R9 globals table —
@@ -2889,6 +2889,36 @@ fn compile_all_exports(
 }
 
 /// Build a simple multi-function ELF
+/// #637: `.ARM.attributes` for an ARM target — Tag_CPU_arch + profile +
+/// Tag_ARM_ISA_use/Tag_THUMB_ISA_use for the selected `-t`. Emitted into every
+/// ARM object/image so standard toolchains (objdump, gdb, `synth disasm`)
+/// auto-select the Thumb vs A32 decoder without a manual `--triple`.
+fn arm_build_attributes(target: &TargetSpec) -> Section {
+    use synth_backend::{aeabi, arm_attributes_section};
+    use synth_core::target::IsaVariant;
+    match target.isa {
+        // Cortex-R5 (A32 encoder): v7, profile R, A32 permitted. Thumb-2 is
+        // architecturally permitted on v7-R, but synth emits pure A32 here and
+        // the STT_FUNC symbols carry no Thumb bit (#598) — advertise A32 only
+        // so ISA auto-detection picks the A32 decoder.
+        IsaVariant::Arm32 => arm_attributes_section(aeabi::CPU_ARCH_V7, aeabi::PROFILE_R, 1, 0),
+        // Cortex-M0 (Thumb-1 only): v6-M, 16-bit Thumb.
+        IsaVariant::Thumb => arm_attributes_section(aeabi::CPU_ARCH_V6M, aeabi::PROFILE_M, 0, 1),
+        // Cortex-M Thumb-2 family: arch from the triple (M3 = v7-M,
+        // M4/M4F/M7 = v7E-M, M55 = v8.1-M.mainline), profile M, Thumb-2.
+        _ => {
+            let cpu_arch = if target.triple.starts_with("thumbv8.1m") {
+                aeabi::CPU_ARCH_V8_1M_MAIN
+            } else if target.triple.starts_with("thumbv7em") {
+                aeabi::CPU_ARCH_V7EM
+            } else {
+                aeabi::CPU_ARCH_V7
+            };
+            arm_attributes_section(cpu_arch, aeabi::PROFILE_M, 0, 2)
+        }
+    }
+}
+
 fn build_multi_func_simple_elf(funcs: &[ElfFunction]) -> Result<Vec<u8>> {
     let base_addr: u32 = 0x8000;
     let mut elf_builder = ElfBuilder::new_arm32().with_entry(base_addr);
@@ -2964,12 +2994,15 @@ fn build_relocatable_elf(
     // code_base). `None` ⇒ `--debug-line` off OR the input carried no DWARF ⇒
     // no `.debug_line` section emitted ⇒ output byte-identical to the default.
     dwarf_line: Option<&synth_core::dwarf_line::InputDwarfLine>,
-    // #598: true for Thumb targets (STT_FUNC symbols + e_entry get bit 0, the
-    // interworking bit), false for A32 (cortex-r5) — A32 code addresses must
-    // keep bit 0 clear.
-    thumb_funcs: bool,
+    // #598/#637: the selected ARM target. Thumb targets get bit 0 (the
+    // interworking bit) on STT_FUNC symbols + e_entry — A32 (cortex-r5) keeps
+    // it clear — and every object carries a target-derived `.ARM.attributes`.
+    target_spec: &TargetSpec,
 ) -> Result<Vec<u8>> {
     use std::collections::HashMap;
+
+    // #598: only Thumb-encoded functions get the interworking bit.
+    let thumb_funcs = !matches!(target_spec.isa, synth_core::target::IsaVariant::Arm32);
 
     // #383 (VCR-MEM-001 layer-1): the integrator-declared shadow-stack budget
     // shrinks the [0, sp_init) reservation. The actual shrink is computed below
@@ -3468,11 +3501,26 @@ fn build_relocatable_elf(
     // `func_{wasm_index}` name (the label the instruction selector emits for
     // internal `call`s). Internal `BL func_N` relocations resolve against the
     // latter; without it, internal calls were left as unpatched `bl #0` (#167).
+    //
+    // #656: only EXPORTED names are STB_GLOBAL. Non-exported functions (their
+    // only name is `func_{wasm_index}`) and every `func_N` alias are per-object
+    // labels by wasm function INDEX — two independently-dissolved objects both
+    // define `func_2`, so a GLOBAL binding made `ld -r a.o b.o` fail with
+    // multiple-definition collisions. STB_LOCAL resolves in-object relocations
+    // exactly the same (they reference the symbol by index, and `ElfBuilder`
+    // reindexes them across the locals-first sort) while staying invisible to
+    // cross-object resolution.
     for (i, func) in funcs.iter().enumerate() {
+        let internal_label = format!("func_{}", func.wasm_index);
+        let is_exported = func.name != internal_label;
         let export_sym = Symbol::new(&func.name)
             .with_value(func_offsets[i])
             .with_size(func.code.len() as u32)
-            .with_binding(SymbolBinding::Global)
+            .with_binding(if is_exported {
+                SymbolBinding::Global
+            } else {
+                SymbolBinding::Local // #656: internal helper — file-local
+            })
             .with_type(SymbolType::Func)
             .with_section(4); // .text is section 4 (null=0, shstrtab=1, strtab=2, symtab=3, .text=4)
         elf_builder.add_symbol(export_sym);
@@ -3480,12 +3528,11 @@ fn build_relocatable_elf(
         sym_indices.insert(func.name.clone(), sym_count);
 
         // `func_{wasm_index}` alias (skip if the export name already is that).
-        let internal_label = format!("func_{}", func.wasm_index);
-        if internal_label != func.name {
+        if is_exported {
             let internal_sym = Symbol::new(&internal_label)
                 .with_value(func_offsets[i])
                 .with_size(func.code.len() as u32)
-                .with_binding(SymbolBinding::Global)
+                .with_binding(SymbolBinding::Local) // #656: in-object call label
                 .with_type(SymbolType::Func)
                 .with_section(4);
             elf_builder.add_symbol(internal_sym);
@@ -3795,6 +3842,10 @@ fn build_relocatable_elf(
             );
         }
     }
+
+    // #637: target-derived `.ARM.attributes`, appended LAST so every earlier
+    // section keeps its index (`.text`=4, `.bss`/`.data`=5/6, DWARF tail).
+    elf_builder.add_section(arm_build_attributes(target_spec));
 
     let (external_count, reloc_count) = extern_sym_indices;
     info!(
@@ -4174,16 +4225,181 @@ fn build_multi_func_cortex_m_elf(
     // TODO(#170, mapping-symbols): emit ARM `$t`/`$a`/`$d` mapping symbols so
     // tools (objdump, gdb, debuggers) know each .text region is Thumb code vs
     // data without relying on the Func-typed symbols above. This is the
-    // secondary half of #170 and is intentionally deferred: mapping symbols are
-    // STB_LOCAL and ELF requires all local symbols to precede globals in the
-    // symtab, with `.symtab`'s sh_info pointing at the first global. ElfBuilder
-    // currently appends symbols in call order and does not maintain
-    // local-before-global ordering or set sh_info, so adding locals here would
-    // produce a malformed symtab. Direct call resolution (the primary fix)
-    // works without these; objdump already disassembles correctly via the
-    // Func-typed function symbols.
+    // secondary half of #170. The former blocker is gone: since #656 ElfBuilder
+    // sorts STB_LOCAL symbols before globals and sets `.symtab` sh_info to the
+    // first-non-local index, so locals no longer produce a malformed symtab.
+    // Still deferred because direct call resolution (the primary fix) works
+    // without them and the `.ARM.attributes` section (#637) already tells
+    // tools the .text is Thumb.
+
+    // #637: target-derived `.ARM.attributes` (appended last; `.text` stays 4).
+    elf_builder.add_section(arm_build_attributes(target));
 
     elf_builder.build().context("ELF generation failed")
+}
+
+/// #637: detect whether an EM_ARM ELF carries Thumb code, so `synth disasm`
+/// selects the Thumb decoder instead of defaulting to A32 (which mis-decodes
+/// synth's own Cortex-M output into garbage). Returns `None` when the file is
+/// not a little-endian ELF32 EM_ARM object (RISC-V, AArch64, non-ELF, ...).
+///
+/// Detection order:
+/// 1. `.ARM.attributes` `Tag_THUMB_ISA_use` (synth emits it since #637; any
+///    toolchain-produced ARM object carries it too);
+/// 2. the STT_FUNC Thumb bit — every defined function symbol with `st_value`
+///    bit 0 set is the standard ARM interworking marker;
+/// 3. `e_entry` bit 0 (self-contained images);
+/// 4. otherwise A32.
+fn detect_arm_thumb(elf: &[u8]) -> Option<bool> {
+    // ELF32, little-endian, EM_ARM (40).
+    if elf.len() < 52 || elf[0..4] != [0x7f, b'E', b'L', b'F'] || elf[4] != 1 || elf[5] != 1 {
+        return None;
+    }
+    let u16le = |off: usize| u16::from_le_bytes(elf[off..off + 2].try_into().unwrap());
+    let u32le = |off: usize| u32::from_le_bytes(elf[off..off + 4].try_into().unwrap());
+    if u16le(18) != 40 {
+        return None; // not EM_ARM
+    }
+
+    let e_shoff = u32le(32) as usize;
+    let e_shentsize = u16le(46) as usize;
+    let e_shnum = u16le(48) as usize;
+    let section = |i: usize| -> Option<(u32, usize, usize)> {
+        let base = e_shoff.checked_add(i.checked_mul(e_shentsize)?)?;
+        if base + 40 > elf.len() {
+            return None;
+        }
+        // (sh_type, sh_offset, sh_size)
+        Some((
+            u32le(base + 4),
+            u32le(base + 16) as usize,
+            u32le(base + 20) as usize,
+        ))
+    };
+
+    // 1. `.ARM.attributes` (SHT_ARM_ATTRIBUTES = 0x70000003): Tag_THUMB_ISA_use.
+    for i in 0..e_shnum {
+        let Some((sh_type, off, size)) = section(i) else {
+            continue;
+        };
+        if sh_type == 0x7000_0003
+            && let Some(data) = elf.get(off..off + size)
+            && let Some(thumb_isa) = parse_aeabi_thumb_isa_use(data)
+        {
+            return Some(thumb_isa > 0);
+        }
+    }
+
+    // 2. STT_FUNC symbols: the odd-address Thumb interworking convention.
+    for i in 0..e_shnum {
+        let Some((sh_type, off, size)) = section(i) else {
+            continue;
+        };
+        if sh_type != 2 {
+            continue; // not SHT_SYMTAB
+        }
+        let mut saw_func = false;
+        for s in 0..size / 16 {
+            let base = off + s * 16;
+            if base + 16 > elf.len() {
+                break;
+            }
+            let st_value = u32le(base + 4);
+            let st_info = elf[base + 12];
+            let st_shndx = u16le(base + 14);
+            // Defined STT_FUNC only (undefined symbols carry no Thumb bit).
+            if st_info & 0xf == 2 && st_shndx != 0 {
+                if st_value & 1 == 1 {
+                    return Some(true);
+                }
+                saw_func = true;
+            }
+        }
+        if saw_func {
+            return Some(false); // FUNC symbols present, all even ⇒ A32
+        }
+    }
+
+    // 3. e_entry Thumb bit (ET_EXEC images), else A32.
+    Some(u32le(24) & 1 == 1)
+}
+
+/// Parse an `.ARM.attributes` blob for the file-scope `Tag_THUMB_ISA_use` (9)
+/// value in the `"aeabi"` vendor subsection. Tolerant: any malformed structure
+/// yields `None` (the caller falls back to the symbol-table heuristic).
+fn parse_aeabi_thumb_isa_use(data: &[u8]) -> Option<u32> {
+    fn uleb(data: &[u8], pos: &mut usize) -> Option<u32> {
+        let mut v: u32 = 0;
+        let mut shift = 0u32;
+        loop {
+            let byte = *data.get(*pos)?;
+            *pos += 1;
+            v |= u32::from(byte & 0x7f) << shift;
+            if byte & 0x80 == 0 {
+                return Some(v);
+            }
+            shift += 7;
+            if shift > 28 {
+                return None;
+            }
+        }
+    }
+
+    if *data.first()? != b'A' {
+        return None;
+    }
+    let mut pos = 1usize;
+    while pos + 4 <= data.len() {
+        // Vendor subsection: u32 length (self-inclusive) + NTBS name + data.
+        let sub_start = pos;
+        let sub_len = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+        let sub_end = sub_start.checked_add(sub_len)?;
+        if sub_len < 4 || sub_end > data.len() {
+            return None;
+        }
+        pos += 4;
+        let name_end = data[pos..sub_end].iter().position(|&b| b == 0)? + pos;
+        let vendor = &data[pos..name_end];
+        pos = name_end + 1;
+        if vendor != b"aeabi" {
+            pos = sub_end;
+            continue;
+        }
+        // Subsubsections: uleb tag + u32 length (self-inclusive) + contents.
+        while pos < sub_end {
+            let ss_start = pos;
+            let tag = uleb(data, &mut pos)?;
+            let ss_len = u32::from_le_bytes(data.get(pos..pos + 4)?.try_into().ok()?) as usize;
+            pos += 4;
+            let ss_end = ss_start.checked_add(ss_len)?;
+            if ss_end > sub_end || ss_end < pos {
+                return None;
+            }
+            if tag != 1 {
+                pos = ss_end; // only Tag_File carries file-scope attributes
+                continue;
+            }
+            // Attribute pairs. String-valued tags are NTBS; the rest uleb.
+            while pos < ss_end {
+                let attr_tag = uleb(data, &mut pos)?;
+                // Per the addenda: tag 4 (CPU_raw_name), 5 (CPU_name), 32
+                // (compatibility), 65 (also_compatible_with), 67 (conformance)
+                // carry strings; everything else we care about is uleb.
+                if matches!(attr_tag, 4 | 5 | 32 | 65 | 67) {
+                    let nul = data[pos..ss_end].iter().position(|&b| b == 0)?;
+                    pos += nul + 1;
+                } else {
+                    let value = uleb(data, &mut pos)?;
+                    if attr_tag == 9 {
+                        return Some(value); // Tag_THUMB_ISA_use
+                    }
+                }
+            }
+            pos = ss_end;
+        }
+        pos = sub_end;
+    }
+    None
 }
 
 fn disasm_command(input: PathBuf) -> Result<()> {
@@ -4195,9 +4411,18 @@ fn disasm_command(input: PathBuf) -> Result<()> {
 
     info!("Disassembling: {}", input.display());
 
-    // Try objdump with ARM triple (works on macOS with Apple LLVM)
+    // #637: auto-detect Thumb vs A32 for EM_ARM inputs — synth's primary
+    // Cortex-M output is Thumb-2, and decoding it as A32 produced garbage.
+    let bytes = std::fs::read(&input).context("Failed to read input file")?;
+    let triple = match detect_arm_thumb(&bytes) {
+        Some(true) => "thumbv7m-none-eabi",
+        Some(false) | None => "arm-none-eabi",
+    };
+    info!("Detected triple: {}", triple);
+
+    // Try objdump with the detected triple (works on macOS with Apple LLVM)
     let output = Command::new("objdump")
-        .args(["-d", "--triple=arm-none-eabi"])
+        .args(["-d", &format!("--triple={triple}")])
         .arg(&input)
         .output()
         .context("Failed to run objdump. Is it installed?")?;
@@ -4735,6 +4960,10 @@ fn build_cortex_m_elf(
         .with_type(SymbolType::Func)
         .with_section(4);
     elf_builder.add_symbol(func_sym);
+
+    // #637: target-derived `.ARM.attributes` (appended last; `.text` stays 4,
+    // and the LOAD-segment vaddr auto-correct still matches `.text` first).
+    elf_builder.add_section(arm_build_attributes(target));
 
     elf_builder.build().context("ELF generation failed")
 }
@@ -5372,7 +5601,7 @@ mod tests {
             linear_memory_bytes,
             Some(native),
             None,
-            true,
+            &TargetSpec::cortex_m3(),
         )
         .expect("#345: native-pointer zero-linmem object builds");
 
@@ -5470,8 +5699,16 @@ mod tests {
             sp_init: 65_536,
             shadow_stack_size: None,
         };
-        let elf = build_relocatable_elf(&[func], &[], &[], 131_072, Some(native), None, true)
-            .expect("#345: native-pointer literal-pool object builds");
+        let elf = build_relocatable_elf(
+            &[func],
+            &[],
+            &[],
+            131_072,
+            Some(native),
+            None,
+            &TargetSpec::cortex_m3(),
+        )
+        .expect("#345: native-pointer literal-pool object builds");
 
         let header = object::elf::FileHeader32::<Endianness>::parse(&*elf).expect("valid ELF32");
         let endian = header.endian().expect("endian");
@@ -5562,7 +5799,7 @@ mod tests {
             131_072,
             Some(native),
             None,
-            true,
+            &TargetSpec::cortex_m3(),
         )
         .expect("#354: mixed-case object builds");
 
