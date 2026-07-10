@@ -93,8 +93,12 @@ fn push_software_bounds_guard(
     arm_instrs.push(ArmOp::Udf { imm: 0 });
 }
 
-/// The linear-memory base the optimized (absolute) path materializes.
-const BASE_CSE_LINMEM_BASE: u32 = 0x2000_0100;
+/// The DEFAULT linear-memory base the optimized (absolute) path materializes.
+/// #687: no longer the only possible base — `OptimizerBridge::linmem_base`
+/// (threaded from `CompileConfig::linmem_base`) overrides it under
+/// `--stack-layout=low`, which shifts the whole RAM layout up by the reserved
+/// stack size. This constant remains the byte-identical default.
+const BASE_CSE_LINMEM_BASE: u32 = synth_core::backend::OPTIMIZED_LINMEM_BASE;
 /// VCR-RA lever 3 base register: R11 is OUTSIDE the `reallocate_function` pool
 /// (R0–R8), so the range-reallocator identity-preserves it — the hoisted base
 /// survives across every straight-line segment untouched, letting us materialize
@@ -686,6 +690,12 @@ pub struct OptimizerBridge {
     /// declines the function to the direct selector (which implements it);
     /// `None`/`Mpu` emit no inline guard (byte-identical to before).
     bounds_check: BoundsCheckConfig,
+    /// #687 (`--stack-layout=low`): the absolute linear-memory base this
+    /// path materializes (per-access `MOVW/MOVT R12` and the #468 base-CSE
+    /// R11 hoist). Defaults to [`BASE_CSE_LINMEM_BASE`] (byte-identical);
+    /// the CLI shifts it up by the reserved stack size under the low layout
+    /// so const-address accesses follow the moved linear memory.
+    linmem_base: u32,
     /// VCR-VER-001 (#242): whether the LAST `ir_to_arm` call's output was
     /// actually shaped by the spill-on-exhaustion machinery (a pre-step
     /// reinstate/evict fired, or a constant-divisor guard was elided). The
@@ -704,6 +714,7 @@ impl OptimizerBridge {
             spill_on_exhaust: None,
             volatile_segments: Vec::new(),
             bounds_check: BoundsCheckConfig::None,
+            linmem_base: BASE_CSE_LINMEM_BASE,
             spill_on_exhaust_fired: std::cell::Cell::new(false),
         }
     }
@@ -716,6 +727,7 @@ impl OptimizerBridge {
             spill_on_exhaust: None,
             volatile_segments: Vec::new(),
             bounds_check: BoundsCheckConfig::None,
+            linmem_base: BASE_CSE_LINMEM_BASE,
             spill_on_exhaust_fired: std::cell::Cell::new(false),
         }
     }
@@ -729,6 +741,12 @@ impl OptimizerBridge {
     /// #377: set the `--safety-bounds` mode (see [`OptimizerBridge::bounds_check`]).
     pub fn set_bounds_check(&mut self, bounds_check: BoundsCheckConfig) {
         self.bounds_check = bounds_check;
+    }
+
+    /// #687: set the absolute linear-memory base the optimized path
+    /// materializes (see [`OptimizerBridge::linmem_base`]).
+    pub fn set_linmem_base(&mut self, base: u32) {
+        self.linmem_base = base;
     }
 
     /// Set the number of imported functions (see [`OptimizerBridge::num_imports`]).
@@ -3457,11 +3475,11 @@ impl OptimizerBridge {
         if base_cse.is_some() {
             arm_instrs.push(ArmOp::Movw {
                 rd: BASE_CSE_REG,
-                imm16: (BASE_CSE_LINMEM_BASE & 0xFFFF) as u16,
+                imm16: (self.linmem_base & 0xFFFF) as u16,
             });
             arm_instrs.push(ArmOp::Movt {
                 rd: BASE_CSE_REG,
-                imm16: ((BASE_CSE_LINMEM_BASE >> 16) & 0xFFFF) as u16,
+                imm16: ((self.linmem_base >> 16) & 0xFFFF) as u16,
             });
         }
 
@@ -5943,10 +5961,11 @@ impl OptimizerBridge {
                             push_software_bounds_guard(&mut arm_instrs, r_addr, *offset, 4);
                         }
 
-                        // Linear memory base 0x20000100 (SRAM, above stack area).
-                        // #382: fold a large static offset (> imm12) into the
-                        // compile-time-constant base so the access immediate is 0.
-                        let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
+                        // Linear memory base (default 0x20000100; #687 shifts
+                        // it under --stack-layout=low). #382: fold a large
+                        // static offset (> imm12) into the compile-time-
+                        // constant base so the access immediate is 0.
+                        let (base, mem_off) = fold_mem_offset(self.linmem_base, *offset);
                         let base_lo = (base & 0xFFFF) as u16;
                         let base_hi = ((base >> 16) & 0xFFFF) as u16;
 
@@ -5998,10 +6017,11 @@ impl OptimizerBridge {
                             push_software_bounds_guard(&mut arm_instrs, r_addr, *offset, 4);
                         }
 
-                        // Linear memory base 0x20000100 (SRAM, above stack area).
-                        // #382: fold a large static offset (> imm12) into the
-                        // compile-time-constant base so the access immediate is 0.
-                        let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
+                        // Linear memory base (default 0x20000100; #687 shifts
+                        // it under --stack-layout=low). #382: fold a large
+                        // static offset (> imm12) into the compile-time-
+                        // constant base so the access immediate is 0.
+                        let (base, mem_off) = fold_mem_offset(self.linmem_base, *offset);
                         let base_lo = (base & 0xFFFF) as u16;
                         let base_hi = ((base >> 16) & 0xFFFF) as u16;
 
@@ -6072,8 +6092,9 @@ impl OptimizerBridge {
                         }
 
                         // #382: fold a large static offset (> imm12) into the
-                        // compile-time-constant base so the access immediate is 0.
-                        let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
+                        // compile-time-constant base (#687-shifted under
+                        // --stack-layout=low) so the access immediate is 0.
+                        let (base, mem_off) = fold_mem_offset(self.linmem_base, *offset);
                         let base_lo = (base & 0xFFFF) as u16;
                         let base_hi = ((base >> 16) & 0xFFFF) as u16;
                         arm_instrs.push(ArmOp::Movw {
@@ -6130,8 +6151,9 @@ impl OptimizerBridge {
                         }
 
                         // #382: fold a large static offset (> imm12) into the
-                        // compile-time-constant base so the access immediate is 0.
-                        let (base, mem_off) = fold_mem_offset(0x20000100, *offset);
+                        // compile-time-constant base (#687-shifted under
+                        // --stack-layout=low) so the access immediate is 0.
+                        let (base, mem_off) = fold_mem_offset(self.linmem_base, *offset);
                         let base_lo = (base & 0xFFFF) as u16;
                         let base_hi = ((base >> 16) & 0xFFFF) as u16;
                         arm_instrs.push(ArmOp::Movw {

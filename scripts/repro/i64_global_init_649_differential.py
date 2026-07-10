@@ -61,6 +61,9 @@ def compile_synth(out):
     env = {"PATH": "/usr/bin:/bin"}
     cmd = [SYNTH, "compile", str(WAT), "-o", out, "--all-exports",
            "-b", "arm", "--target", "cortex-m4f"]
+    # #687: EXTRA_SYNTH_FLAGS (e.g. "--stack-layout low") re-runs this oracle
+    # against a shifted self-contained layout. Default empty = unchanged.
+    cmd += os.environ.get("EXTRA_SYNTH_FLAGS", "").split()
     r = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if r.returncode != 0:
         sys.exit(f"compile failed: {r.stderr}")

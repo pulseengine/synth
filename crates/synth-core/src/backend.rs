@@ -73,6 +73,15 @@ impl SafetyBounds {
     }
 }
 
+/// The absolute SRAM address the OPTIMIZED (non-relocatable) ARM path
+/// materializes as its linear-memory base (`MOVW/MOVT R12, #base` before each
+/// const-address access, and the #468 base-CSE R11 hoist). Historical value:
+/// 256 bytes above the SRAM start — the differential-harness contract for
+/// optimized-path fixtures maps linmem here. `CompileConfig::linmem_base`
+/// defaults to this; `--stack-layout=low` (#687) shifts it up by the reserved
+/// stack size so the moved layout reaches user code, not just the startup.
+pub const OPTIMIZED_LINMEM_BASE: u32 = 0x2000_0100;
+
 /// Configuration for a compilation run
 #[derive(Debug, Clone)]
 pub struct CompileConfig {
@@ -114,6 +123,16 @@ pub struct CompileConfig {
     /// also emitted as direct `func_N` BLs (resolved to the wasm field name)
     /// instead of `__meld_dispatch_import`. (#197 — follow-up to #188/#171.)
     pub relocatable: bool,
+
+    /// #687 (`--stack-layout=low`): the absolute linear-memory base the
+    /// OPTIMIZED ARM path materializes into user code. Defaults to
+    /// [`OPTIMIZED_LINMEM_BASE`] (`0x2000_0100`, byte-identical to every
+    /// pre-#687 compile). Under the low stack layout the CLI shifts it up by
+    /// the reserved stack size so const-address loads/stores land in the moved
+    /// linear memory instead of the stack region. Only the optimized
+    /// (non-relocatable) path consumes it — the direct selector is R11/fp
+    /// - relative and follows the startup's R11 init instead.
+    pub linmem_base: u32,
 
     /// #237: emit wasm function-static data as a base-independent `.data`
     /// section (`__synth_wasm_data`) addressed via MOVW/MOVT symbol relocations,
@@ -319,6 +338,9 @@ impl Default for CompileConfig {
             func_arg_counts: Vec::new(),
             type_arg_counts: Vec::new(),
             relocatable: false,
+            // #687: the historical optimized-path absolute base — every
+            // default compile stays byte-identical.
+            linmem_base: OPTIMIZED_LINMEM_BASE,
             native_pointer_abi: false,
             linear_memory_bytes: 0,
             stack_pointer_global: None,

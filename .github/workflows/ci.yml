@@ -1061,3 +1061,48 @@ jobs:
         env:
           SYNTH: ./target/debug/synth
         run: python scripts/repro/frame_slot_dce_differential.py
+
+  stack-layout-687-oracle:
+    name: stack-layout=low overflow BusFault oracle
+    # VCR-MEM-003 (#687): EXECUTE the REAL self-contained Cortex-M image (its
+    # own vector-table SP + reset path) under unicorn, both stack layouts. RED:
+    # today's stack-HIGH default silently corrupts linmem canary words on deep
+    # recursion BEFORE any fault (the overflow hazard). GREEN: --stack-layout=low
+    # BusFaults (UC_ERR_WRITE_UNMAPPED below the SRAM start) with every canary
+    # intact — the fault PRECEDES any linmem damage. TRANSPARENT: in-budget
+    # calls match wasmtime under BOTH layouts, and the existing #649 i64-global
+    # -init differential passes unchanged under the low layout (the whole
+    # RAM-anchored layout — R9/R10/R11 startup AND the optimized path's
+    # absolute 0x2000_0100 base — shifts by stack_size as one). Flag-off
+    # byte-identity is pinned by the frozen-fixture job + the startup unit
+    # tests. Isolated job: emulation deps pip-installed here ONLY.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Build synth
+        run: cargo build -p synth-cli
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
+      - name: Install emulation deps
+        run: pip install wasmtime unicorn pyelftools
+      - name: Run stack-layout red/green/transparent oracle
+        env:
+          SYNTH: ./target/debug/synth
+        run: python scripts/repro/stack_layout_687_differential.py
+      - name: Run the #649 global-init differential under --stack-layout=low
+        env:
+          SYNTH: ./target/debug/synth
+          EXTRA_SYNTH_FLAGS: "--stack-layout low"
+        run: python scripts/repro/i64_global_init_649_differential.py

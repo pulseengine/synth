@@ -176,6 +176,19 @@ pub struct TableGuards {
 ///    (`CMP #0` → trap) between the bounds guard and the indirect branch.
 ///    A fully-initialized table (`has_null_slots == false`) keeps the
 ///    pre-#664 dispatch bytes identical BY CONSTRUCTION.
+///
+/// ## Companion: the self-contained SRAM layout contract (#687)
+///
+/// The R11 register above is ALSO the linear-memory base register, whose
+/// placement inside SRAM is governed by the self-contained image's stack
+/// layout: `--stack-layout=high` (default) keeps linmem at the SRAM start
+/// with the stack growing down from the top; `--stack-layout=low` reserves
+/// the stack at the SRAM BOTTOM and shifts linmem/globals (and the optimized
+/// path's absolute `0x2000_0100` base) up by the stack size, so an overflow
+/// BusFaults below SRAM instead of silently corrupting them. The full layout
+/// tables live on `build_multi_func_cortex_m_elf` in `synth-cli` (the builder
+/// that owns the addresses). Relocatable/host-linked objects are NOT covered
+/// — their linker script owns the layout, and the flag is refused there.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CallIndirectGuards {
     /// Per-table guard inputs, indexed by table index (imports first). The
