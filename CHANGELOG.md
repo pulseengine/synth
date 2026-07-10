@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--shadow-stack-size` co-rebases N aliased `__stack_pointer` globals
+  (#707, VCR-MEM-001).** After #701 cleared the buffer-carrying blocker, a
+  multi-provider `meld fuse --memory shared` node (gust:os `app` +
+  `time-provider` + `log-provider`) compiled but the shadow-stack shrink then
+  refused: the fused module carries one `__stack_pointer` global per component,
+  all with `init == sp_init`, and the re-base insisted on a *unique* match.
+  These globals alias the one shared reservation, so #707 re-bases the whole
+  **mutable**-global `init == sp_init` equivalence class to the shrunk budget
+  (an immutable constant that merely coincides with sp_init is never touched —
+  same predicate `identify_stack_pointer_global` selects on). A single-SP module
+  has exactly one match ⇒ byte-identical (the #383/#678 paths are unchanged);
+  only "no mutable global carries sp_init" stays an honest refuse. Gated by
+  `multi_sp_rebase_707.rs` (compile red→green, three mutable slots re-based while
+  the immutable constant stays put, no-flag frozen) + the execution differential
+  `multi_sp_707_differential.py`. Unblocks the gust:os v0.4.0 OS node (the last
+  synth gate before that cut).
+
 ## [0.39.0] - 2026-07-10
 
 **A seven-lane feature hub — scalar f32 hard-float becomes reachable on

@@ -2179,6 +2179,26 @@ artifacts:
       `--shadow-stack-size auto`) below, which is orthogonal (this fixes the ELF
       mechanics of the down-shift; that computes how big B may safely be).
 
+      MULTI-SP CO-REBASE LANDED (2026-07-11, gale #707). After #701 (#678 tail
+      down-shift) cleared the buffer-carrying blocker, a multi-provider
+      meld-fused gust:os node (`app-tl` = app + time-provider + log-provider)
+      compiled all functions but `--shadow-stack-size` then REFUSED: the fused
+      shared-memory module carries N mutable `__stack_pointer` globals (one per
+      fused component), ALL with `init == sp_init`, and the re-base picked the
+      UNIQUE such global — bailing on ambiguity ("could not uniquely identify the
+      shadow-stack global ... N globals have init == sp_init"). #707 re-bases the
+      whole `init == sp_init` equivalence class: in a `meld fuse --memory shared`
+      module the per-component SP globals all point into the ONE shared
+      reservation, so sliding all of them to the shrunk budget is correct (they
+      alias the same stack). A single-SP module has exactly one match ⇒
+      byte-identical (the #383 tests still pin that path); only the len==0 case
+      remains an honest refuse. Evidence: `multi_sp_rebase_707.rs` (compile
+      red→green + all-slots-rebased + no-flag frozen) + the execution differential
+      `multi_sp_707_differential.py` (each of 3 exports roundtrips through its own
+      co-rebased SP global and restores its own slot to B; faithful — fails when
+      the expected init is wrong). This unblocks the gust:os v0.4.0 buffer-interface
+      OS node (log carries `list<u8>`), the last synth gate before that cut.
+
       LAYER-2 DECISION LOGIC LANDED (2026-06-22, frozen-safe, no dep change):
       `synth-cli/src/shadow_budget.rs` — a pure `budget_from_bound(bound,
       sp_init, fallback) -> BudgetDecision` over a synth-OWNED `StackDepthBound`
