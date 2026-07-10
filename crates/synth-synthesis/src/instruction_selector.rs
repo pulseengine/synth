@@ -2061,11 +2061,23 @@ pub struct InstructionSelector {
     call_indirect_guards: synth_core::CallIndirectGuards,
 }
 
-/// `SYNTH_SEL_DSL` (VCR-SEL-001, #242): opt-IN lever, default OFF. Set (to
-/// anything but `0`) ⇒ the migrated selector arms delegate to the
-/// generated rule table.
+/// `SYNTH_SEL_DSL` (VCR-SEL-001, #242): **default ON** since the increment-1..4
+/// default-on flip — the 40 Rocq-proved rules are the SHIPPED lowering path for
+/// their covered ops (i32 add/sub/mul/and/or/xor/rotl/rotr + comparisons +
+/// shifts + clz/ctz/popcnt, i64 add/sub/and/or/xor/eqz + i64 comparisons). The
+/// flip is byte-invisible by construction: every rule was mirror-pinned
+/// byte-identical to the hand-written arm it replaces.
+///
+/// Opt-out (CI-gated back to the hand-written path): `SYNTH_NO_SEL_DSL=1`
+/// (mirrors every other default-on lever's opt-out) or the back-compat
+/// `SYNTH_SEL_DSL=0`. `SYNTH_NO_SEL_DSL` wins if both are set.
 fn sel_dsl_from_env() -> bool {
-    std::env::var("SYNTH_SEL_DSL").is_ok_and(|v| v != "0")
+    // Opt-out escape hatch takes precedence over any opt-in.
+    if std::env::var("SYNTH_NO_SEL_DSL").is_ok_and(|v| v != "0") {
+        return false;
+    }
+    // Default ON; only an explicit `SYNTH_SEL_DSL=0` forces the old path.
+    !std::env::var("SYNTH_SEL_DSL").is_ok_and(|v| v == "0")
 }
 
 /// #642/#650/#664/#676: resolved `call_indirect` guard inputs —
@@ -12817,6 +12829,36 @@ mod tests {
     /// `select_with_stack` owns comparisons) and stay hand-written. Their
     /// mirror-pin is
     /// `sel_dsl_mirror_pin_select_with_stack_rules_byte_identical_242`.
+    /// Positive default-on guard for the VCR-SEL-001 flip (#242): the mirror-pin
+    /// tests use `set_sel_dsl` explicitly and the frozen/differential gates are
+    /// byte-identical by design, so NONE of them would notice if the default
+    /// silently reverted to OFF (a construction site hardcoding `false`, or the
+    /// env logic inverting). This asserts the shipped default actually routes
+    /// the covered ops through the DSL: a freshly constructed selector — the
+    /// exact object the compile path builds — has `sel_dsl` set with no env.
+    #[test]
+    fn sel_dsl_defaults_on_after_flip_242() {
+        // Guard against a polluted test-process environment (no test sets these,
+        // but be explicit): the assertion is only meaningful when neither the
+        // opt-out nor the back-compat disable is present.
+        if std::env::var("SYNTH_NO_SEL_DSL").is_ok() || std::env::var("SYNTH_SEL_DSL").is_ok() {
+            return;
+        }
+        assert!(
+            sel_dsl_from_env(),
+            "VCR-SEL-001 flip: sel_dsl_from_env() must default ON"
+        );
+        // Both public constructors must carry the default onto the live path.
+        assert!(
+            InstructionSelector::new(vec![]).sel_dsl,
+            "InstructionSelector::new must default sel_dsl ON"
+        );
+        assert!(
+            InstructionSelector::with_bounds_check(vec![], BoundsCheckConfig::None).sel_dsl,
+            "InstructionSelector::with_bounds_check must default sel_dsl ON"
+        );
+    }
+
     #[test]
     fn sel_dsl_mirror_pin_generated_rules_match_handwritten_arms_242() {
         use crate::sel_dsl::Delegation;

@@ -457,12 +457,23 @@ artifacts:
       sel_dsl_mirror_pin_i64_pair_rules_select_with_stack_242 probes i64-typed
       stacks with the RMW-vacuity window check;
       i64_pair_side_conditions_are_enforced pins all three Errs per rule.
-      FLIP EVIDENCE: with all 27 rules mirror-pinned byte-identical, nothing
-      byte-visible remains before the SYNTH_SEL_DSL default-on flip — the
-      flip is a later PR with the standard re-freeze ritual. NOT yet done
-      (hence not verified): that default flip; i64
-      mul/div/shifts/rotates/comparisons (I64SetCond) + optimizer_bridge +
-      the remaining select_with_stack families; div/rem (VCR-ISA-001-gated).
+      FLIP LANDED (default-on): with all 40 rules mirror-pinned
+      byte-identical, the SYNTH_SEL_DSL default-on flip shipped — the DSL is
+      now the SHIPPED lowering path for its 40 covered ops (opt-out
+      SYNTH_NO_SEL_DSL=1, CI-gated to the hand-written path). The flip was
+      byte-invisible by construction: the frozen 10/10 anchors did not move
+      (frozen_codegen_bytes), the mirror-pins stayed green, and the broad
+      default-vs-opt-out differential was bit-identical across all 88
+      compilable scripts/repro fixtures — on the default (optimized), the
+      --relocatable (select_with_stack, the path the DSL rules ship on) AND
+      the --no-optimize paths — including flight_seam(_flat), controller_step,
+      filter_axis and signed_div_const; the 2 flag-gated fixtures
+      (gust_mix_686, spill_on_exhaust_242) fail identically on both paths.
+      Status stays `implemented` (NOT `verified`): the flip
+      clears exactly the default-flip item; still NOT done (hence not
+      verified) — i64 mul/div/shifts/rotates/comparisons (I64SetCond) +
+      optimizer_bridge + the remaining select_with_stack families; div/rem
+      (VCR-ISA-001-gated).
     status: implemented
     tags: [codegen, selector, isle, verified-dsl, rocq, track-a, novel, release-v0.12.1]
     links:
