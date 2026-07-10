@@ -3456,15 +3456,21 @@ fn build_relocatable_elf(
         }
     }
 
-    // #383 (VCR-MEM-001 layer-1): shrink the [0, sp_init) shadow-stack reservation
-    // to the integrator-declared budget B. Correct-by-construction for the verified
-    // gust geometry (stack-first: statics at/above sp_init are retargeted into the
-    // packed `.data`, so the only static relocs still pointing into the `.bss`
-    // reservation are addend-0 region-base pointers — stable because
-    // `__synth_wasm_data` stays at offset 0). The shrink re-bases the SP global slot
-    // sp_init -> B and resizes the `.bss` to B + (used_extent - sp_init). It REFUSES
-    // honestly (typed Err, the #359/#368 lesson) for any geometry it cannot prove
-    // safe; opt-in, so the default (unset) reserves the full page = byte-identical.
+    // #383 (VCR-MEM-001 layer-1 + #678 layer-2): shrink the [0, sp_init)
+    // shadow-stack reservation to the integrator-declared budget B. Layer-1
+    // handled the verified gust geometry where the only static relocs still
+    // pointing into the `.bss` reservation are addend-0 region-base pointers
+    // (stable because `__synth_wasm_data` stays at offset 0); layer-2 (#678)
+    // additionally DOWN-SHIFTS the inline linmem statics that sit in the tail
+    // `[sp_init, used_extent)` (a `static mut` array, a wit-bindgen `list<u8>`
+    // buffer's realloc/scratch) by rebasing their addend `C -> C - (sp_init - B)`,
+    // so a buffer-carrying dissolved node links into an 8-KiB part instead of
+    // being refused. The shrink re-bases the SP global slot sp_init -> B and
+    // resizes the `.bss` to B + (used_extent - sp_init). It still REFUSES honestly
+    // (typed Err, the #359/#368 lesson) for the sub-shapes it cannot down-shift
+    // soundly (segment-straddling access, below-base addend, one-PROGBITS
+    // fallback); opt-in, so the default (unset) reserves the full page =
+    // byte-identical.
     let (reserved_extent, rebased_globals): (u32, Option<Vec<(u32, i32)>>) = match native_layout
         .as_ref()
         .and_then(|ng| ng.shadow_stack_size.map(|b| (ng, b)))
@@ -3488,12 +3494,36 @@ fn build_relocatable_elf(
                      sp_init={sp}; refusing (would enlarge, not shrink)."
                 );
             }
-            // Every `__synth_wasm_data` reloc still pointing into the `.bss` reservation
-            // (i.e. NOT retargeted into `.data`) must be a region-base pointer (addend 0),
-            // which is stable under the shrink. A non-zero addend is a real static inside
-            // the reservation; down-shifting inline statics is the deferred general case ⇒
-            // refuse rather than mis-address. Only the Abs32 literal-pool form is inspected;
-            // any other static-reloc kind into the reservation is refused.
+            // VCR-MEM-001 layer-2 (#678): DOWN-SHIFT the inline linmem statics that
+            // sit in the static tail `[sp_init, used_extent)` so a buffer-carrying
+            // dissolved node (wit-bindgen `list<u8>`, a `static mut` array) links
+            // into a shrunk reservation instead of being refused (the layer-1
+            // "deferred general case").
+            //
+            // Model. Before the shrink the `[0, used_extent)` region maps 1:1 to
+            // wasm linear memory: wasm address A ↦ object offset A via
+            // `__synth_wasm_data + A` (`__synth_wasm_data` = offset 0). Shrinking
+            // `sp_init → budget` removes `[budget, sp_init)` from the stack
+            // reservation, so every static that lived at/above `sp_init` slides
+            // DOWN by `down = sp_init - budget` to `[budget, budget + tail)`. Each
+            // residual (NOT `.data`-retargeted) `__synth_wasm_data + C` reloc is
+            // rebased in place: `C → C - down` (Abs32 is REL — the addend is the
+            // in-place literal word, patched exactly like the #354 retarget).
+            //
+            // Soundness. The affine map is exact and `reserved_extent = budget +
+            // (used_extent - sp_init)` already covers the shifted tail, because
+            // `static_top_abs32` (computed above, pre-patch) is `max(C)+8` over
+            // every Abs32 `__synth_wasm_data` reloc. A residual reloc is NEVER
+            // inside a `(data)` segment (the split path either has no segments —
+            // `split_linmem_bss` — or retargets ALL of them into `.data`), so the
+            // down-shifted target is a ZERO byte in the `.bss` reservation, which
+            // is exactly wasm's zero-init semantics for that address. The only
+            // unsound shape is a load window that STRADDLES a segment boundary
+            // from just below (part in `.data`, part in the `.bss` tail) — declined
+            // loudly rather than mis-addressed. The addend-0 region-base pointer
+            // (`global.get $sp`'s base, `memory.grow`) is stable and left as-is;
+            // the SP VALUE rides the re-based `__synth_globals` slot below.
+            let down = sp.saturating_sub(budget);
             for (i, func) in funcs.iter().enumerate() {
                 for reloc in &func.relocations {
                     if reloc.symbol != "__synth_wasm_data"
@@ -3516,14 +3546,40 @@ fn build_relocatable_elf(
                              into the reservation; refusing. VCR-MEM-001/#383."
                         ),
                     };
-                    if c != 0 {
+                    // Addend-0 region-base pointer: stable under the shrink
+                    // (`__synth_wasm_data` stays at offset 0). No rebase.
+                    if c == 0 {
+                        continue;
+                    }
+                    // A static below sp_init would rebase into the live stack
+                    // region `[0, budget)` (or negative) — the selector never
+                    // emits one (`static_data_addend` requires `C >= wasm_data_base
+                    // = sp_init`), so this is an unexpected shape: decline loudly.
+                    if c < sp {
                         anyhow::bail!(
-                            "--shadow-stack-size: a native-pointer static access addends {c} into \
-                             the [0, sp_init) reservation (not the region base, not retargeted into \
-                             .data); down-shifting inline statics is the deferred general case. \
-                             Refusing rather than mis-addressing. VCR-MEM-001/#383."
+                            "--shadow-stack-size: a native-pointer static access addends {c}, below \
+                             sp_init={sp}; down-shifting it would collide with the live stack \
+                             reservation. Refusing rather than mis-addressing. VCR-MEM-001/#678."
                         );
                     }
+                    // Straddle guard: the (conservative 8-byte, covers i64) access
+                    // window must not overlap an initialized `(data)` segment — those
+                    // bytes live in `.data`, not the zero `.bss` tail, so a
+                    // down-shift would read zero where wasm reads segment data.
+                    const STRADDLE_W: u32 = 8;
+                    if data_segments
+                        .iter()
+                        .any(|(off, d)| c < off + d.len() as u32 && *off < c + STRADDLE_W)
+                    {
+                        anyhow::bail!(
+                            "--shadow-stack-size: a native-pointer static at {c} straddles an \
+                             initialized (data) segment boundary; part of its access window lives \
+                             in .data and part in the .bss tail, so it cannot be down-shifted \
+                             soundly. Refusing rather than mis-addressing. VCR-MEM-001/#678."
+                        );
+                    }
+                    let new_c = c - down;
+                    all_code[pos..pos + 4].copy_from_slice(&new_c.to_le_bytes());
                 }
             }
             // Re-base the SP global slot: the unique global whose init == sp_init.
