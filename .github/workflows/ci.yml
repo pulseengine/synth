@@ -346,6 +346,10 @@ jobs:
       # elision never fires unsoundly (red-tested at land time).
       - name: Run i32 shift-mask oracle with mask elision ON (#686)
         run: SYNTH_SHIFT_MASK_ELIDE=1 SYNTH=./target/debug/synth python scripts/repro/i32_shift_mask_682_differential.py
+      - name: Run bulk-memory operand-clobber oracle (#677, thumb2)
+        run: SYNTH=./target/debug/synth python scripts/repro/bulk_local_clobber_677_differential.py
+      - name: Run bulk-memory mask-coverage oracle (#679, thumb2)
+        run: SYNTH=./target/debug/synth python scripts/repro/bulk_mask_679_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b)

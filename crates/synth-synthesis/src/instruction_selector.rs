@@ -983,6 +983,58 @@ fn peek_operand(
     }
 }
 
+/// #677: return a register the bulk-memory lowerings may MUTATE in place.
+///
+/// `memory.copy`/`memory.fill` reuse their popped operand registers as the
+/// walking loop pointers / byte buffer (and, under `--safety-bounds mask`,
+/// the clamped length). A popped register is NOT always a dead temp:
+/// `LocalGet` of a register-homed local (AAPCS param in r0-r3, promoted
+/// local in r4-r8) pushes the HOME register itself onto the vstack, so
+/// mutating it in place corrupts every later read of that local — a wild
+/// `mem_base + <loop cursor>` pointer for a dest/src, a wrong value for a
+/// len. The same register can also sit deeper on the remaining vstack
+/// (duplicate `local.get`), be reserved as an if/block result register
+/// (both folded into `live_params` by the op loop), or alias ANOTHER popped
+/// operand of the same op (`memory.fill (local.get 0) (local.get 0) ...`).
+///
+/// Mirror of the #193 reservation discipline: if the popped register is
+/// provably dead — none of the above — it is returned unchanged (byte-
+/// identical to pre-#677 code for the const/dead-temp shapes the #374
+/// differential pins). Otherwise the operand is copied into a fresh scratch
+/// (`MOV scratch, reg`) and the scratch returned; `reserve` (live params +
+/// every popped operand of the op + scratches chosen so far) keeps the
+/// allocator from handing back a register the op still needs, and is grown
+/// with the new scratch so later calls avoid it too.
+#[allow(clippy::too_many_arguments)]
+fn bulk_mutable_operand(
+    reg: Reg,
+    other_operands: &[Reg],
+    live_params: &[Reg],
+    stack: &mut [StackVal],
+    next_temp: &mut u8,
+    instructions: &mut Vec<ArmInstruction>,
+    spill: &mut SpillState,
+    reserve: &mut Vec<Reg>,
+    line: usize,
+) -> Result<Reg> {
+    let live_after = live_params.contains(&reg)
+        || other_operands.contains(&reg)
+        || stack_live_regs(stack).contains(&reg);
+    if !live_after {
+        return Ok(reg);
+    }
+    let scratch = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserve, line)?;
+    reserve.push(scratch);
+    instructions.push(ArmInstruction {
+        op: ArmOp::Mov {
+            rd: scratch,
+            op2: Operand2::Reg(reg),
+        },
+        source_line: Some(line),
+    });
+    Ok(scratch)
+}
+
 /// Allocate a CONSECUTIVE pair `(rN, rN+1)` of registers from ALLOCATABLE_REGS,
 /// neither of which is currently in use.
 ///
@@ -11878,19 +11930,30 @@ impl InstructionSelector {
                 }
 
                 // Bulk memory (#374): memory.fill / memory.copy. Both pop three
-                // i32 operands (dst, val/src, len) and push nothing, so all three
-                // popped registers are DEAD after the op — we reuse them as walking
-                // pointers and the byte buffer, needing only R12 as extra scratch
-                // (no temp allocation). Lowered to a bounds-checked byte loop:
-                //   - bounds (Software mode only, mirroring the store helper): trap
+                // i32 operands (dst, val/src, len) and push nothing. The lowering
+                // reuses (mutates) operand registers as walking pointers / byte
+                // buffer, so any popped register still live past the op — a
+                // register-homed local's HOME register, a duplicate vstack entry,
+                // or an alias of another operand — is first copied into a fresh
+                // scratch via `bulk_mutable_operand` (#677); a provably-dead temp
+                // is used in place (byte-identical to pre-#677 code). Lowered to a
+                // bounds-checked byte loop:
+                //   - bounds (Software mode, mirroring the store helper): trap
                 //     iff `off + len` overflows u32 OR `off + len > size` (R10, in
                 //     bytes). End-EXCLUSIVE, so a zero-length op at `off == size`
                 //     and an access ending exactly at `size` do NOT trap (matches
                 //     wasmtime). Trap target is the established "Trap_Handler".
+                //   - Masking (#679): the same wrap-not-trap discipline as the
+                //     scalar `mask_effective_address` — fold dst (and src) into
+                //     `[0, size)` with `AND (size-1)`, then clamp len to
+                //     `size - dst` (and `size - src`) so the FINAL byte stays in
+                //     bounds; every loop access lands in `[0, size)` and an
+                //     in-bounds op is untouched. Pre-#679 Masking emitted the
+                //     raw loop, byte-identical to None, while the safety
+                //     manifest still attested `mask`.
                 //   - addresses are R11-relative (R11 = linear-memory base);
                 //     R10 = size in bytes.
-                // None/Mpu/Masking emit just the loop (Masking does NOT wrap each
-                // byte address — a documented gap; Software is the safe default).
+                // None/Mpu emit just the loop (MPU faults in hardware).
                 MemoryFill => {
                     let len = pop_operand(
                         &mut stack,
@@ -11919,7 +11982,71 @@ impl InstructionSelector {
                     let loop_label = self.alloc_label("memfill_loop");
                     let done_label = self.alloc_label("memfill_done");
                     let software = matches!(self.bounds_check, BoundsCheckConfig::Software);
+                    let masking = matches!(self.bounds_check, BoundsCheckConfig::Masking);
+                    // #677: the loop mutates `dst` in place (walking pointer) and,
+                    // under Masking, the clamp mutates `len`; copy either into a
+                    // scratch first when it is still live past this op. `val` and
+                    // (non-mask) `len` are only ever read — no copy needed.
+                    let mut reserve: Vec<Reg> = live_params.clone();
+                    reserve.extend([len, val, dst]);
+                    let dst = bulk_mutable_operand(
+                        dst,
+                        &[val, len],
+                        &live_params,
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &mut reserve,
+                        idx,
+                    )?;
+                    let len = if masking {
+                        bulk_mutable_operand(
+                            len,
+                            &[val, dst],
+                            &live_params,
+                            &mut stack,
+                            &mut next_temp,
+                            &mut instructions,
+                            &mut spill,
+                            &mut reserve,
+                            idx,
+                        )?
+                    } else {
+                        len
+                    };
                     let mut ops: Vec<ArmOp> = Vec::new();
+                    if masking {
+                        // #679: dst &= (size-1); len = min(len, size - dst).
+                        // After this, dst ∈ [0, size) and dst+len <= size, so
+                        // every byte the loop writes is in bounds; an op that was
+                        // already wasm-in-bounds is unchanged (dst < size keeps
+                        // AND a no-op; len <= size-dst keeps the clamp a no-op).
+                        ops.push(ArmOp::Sub {
+                            rd: Reg::R12,
+                            rn: Reg::R10,
+                            op2: Operand2::Imm(1),
+                        });
+                        ops.push(ArmOp::And {
+                            rd: dst,
+                            rn: dst,
+                            op2: Operand2::Reg(Reg::R12),
+                        });
+                        ops.push(ArmOp::Sub {
+                            rd: Reg::R12,
+                            rn: Reg::R10,
+                            op2: Operand2::Reg(dst),
+                        });
+                        ops.push(ArmOp::Cmp {
+                            rn: len,
+                            op2: Operand2::Reg(Reg::R12),
+                        });
+                        ops.push(ArmOp::SelectMove {
+                            rd: len,
+                            rm: Reg::R12,
+                            cond: Condition::HI,
+                        });
+                    }
                     // R12 = dst + len (wasm offset of one-past-end); ADDS sets carry
                     // on u32 overflow.
                     ops.push(ArmOp::Adds {
@@ -12035,7 +12162,89 @@ impl InstructionSelector {
                     let bwd_loop = self.alloc_label("memcpy_bwd_loop");
                     let done_label = self.alloc_label("memcpy_done");
                     let software = matches!(self.bounds_check, BoundsCheckConfig::Software);
+                    let masking = matches!(self.bounds_check, BoundsCheckConfig::Masking);
+                    // #677: the copy mutates ALL THREE operand registers in place
+                    // (dst/src walking pointers, len as the byte buffer — and the
+                    // Masking clamp); copy each into a scratch first when it is
+                    // still live past this op.
+                    let mut reserve: Vec<Reg> = live_params.clone();
+                    reserve.extend([len, src, dst]);
+                    let dst = bulk_mutable_operand(
+                        dst,
+                        &[src, len],
+                        &live_params,
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &mut reserve,
+                        idx,
+                    )?;
+                    let src = bulk_mutable_operand(
+                        src,
+                        &[dst, len],
+                        &live_params,
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &mut reserve,
+                        idx,
+                    )?;
+                    let len = bulk_mutable_operand(
+                        len,
+                        &[dst, src],
+                        &live_params,
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &mut reserve,
+                        idx,
+                    )?;
                     let mut ops: Vec<ArmOp> = Vec::new();
+                    if masking {
+                        // #679: fold BOTH effective addresses into [0, size) and
+                        // clamp len so both ranges end within the bound:
+                        //   dst &= size-1; src &= size-1;
+                        //   len = min(len, size - dst, size - src)
+                        // Every byte the loop touches (read AND write) then lands
+                        // in [0, size); a wasm-in-bounds copy is unchanged. Same
+                        // wrap-not-trap discipline as `mask_effective_address`,
+                        // with the dynamic len taking the place of the static
+                        // access-size clamp (len bounds the FINAL byte).
+                        ops.push(ArmOp::Sub {
+                            rd: Reg::R12,
+                            rn: Reg::R10,
+                            op2: Operand2::Imm(1),
+                        });
+                        ops.push(ArmOp::And {
+                            rd: dst,
+                            rn: dst,
+                            op2: Operand2::Reg(Reg::R12),
+                        });
+                        ops.push(ArmOp::And {
+                            rd: src,
+                            rn: src,
+                            op2: Operand2::Reg(Reg::R12),
+                        });
+                        for range_base in [dst, src] {
+                            ops.push(ArmOp::Sub {
+                                rd: Reg::R12,
+                                rn: Reg::R10,
+                                op2: Operand2::Reg(range_base),
+                            });
+                            ops.push(ArmOp::Cmp {
+                                rn: len,
+                                op2: Operand2::Reg(Reg::R12),
+                            });
+                            ops.push(ArmOp::SelectMove {
+                                rd: len,
+                                rm: Reg::R12,
+                                cond: Condition::HI,
+                            });
+                        }
+                    }
                     if software {
                         // Both `dst+len` and `src+len` must be in bounds
                         // (end-exclusive; overflow or `> size` traps, `== size` is
@@ -18039,6 +18248,279 @@ mod tests {
         assert!(
             labels >= 2,
             "copy must emit forward+backward loop labels, got {labels}"
+        );
+    }
+
+    /// Destination register written by the ArmOps the bulk-memory lowering
+    /// emits (loop pointers, scratch movs, mask/clamp). `Strb`/`Cmp`/branches
+    /// define nothing.
+    fn bulk_def_reg(op: &ArmOp) -> Option<Reg> {
+        match op {
+            ArmOp::Mov { rd, .. }
+            | ArmOp::Add { rd, .. }
+            | ArmOp::Adds { rd, .. }
+            | ArmOp::Sub { rd, .. }
+            | ArmOp::And { rd, .. }
+            | ArmOp::Ldrb { rd, .. }
+            | ArmOp::SelectMove { rd, .. } => Some(*rd),
+            _ => None,
+        }
+    }
+
+    /// All registers written by instructions belonging to wasm op `line`.
+    fn defs_at_line(arm: &[ArmInstruction], line: usize) -> Vec<Reg> {
+        arm.iter()
+            .filter(|i| i.source_line == Some(line))
+            .filter_map(|i| bulk_def_reg(&i.op))
+            .collect()
+    }
+
+    #[test]
+    fn test_677_copy_preserves_live_dst_local_reg() {
+        // #677: `memory.copy` with a param-homed dst (R0) that is READ AFTER
+        // the op. Pre-fix the lowering mutated R0 in place as the walking
+        // pointer (`add r0, r11, r0; adds r0,#1; ...`), so the later
+        // `local.get 0` read a wild loop cursor. Post-fix the operand is
+        // copied into a scratch and R0 is never a destination of any
+        // copy-lowering instruction.
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(2),
+            WasmOp::MemoryCopy, // idx 3
+            WasmOp::LocalGet(0),
+            WasmOp::End,
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 3).unwrap();
+        let defs = defs_at_line(&arm, 3);
+        assert!(
+            !defs.contains(&Reg::R0),
+            "memory.copy must not mutate the still-live dst local's home \
+             register R0 (got defs {defs:?})"
+        );
+        // The scratch copy is the mechanism: at least one MOV off R0.
+        assert!(
+            arm.iter().any(|i| i.source_line == Some(3)
+                && matches!(
+                    &i.op,
+                    ArmOp::Mov {
+                        op2: Operand2::Reg(Reg::R0),
+                        ..
+                    }
+                )),
+            "expected a scratch copy MOV of the live dst operand"
+        );
+    }
+
+    #[test]
+    fn test_677_copy_preserves_live_len_local_reg() {
+        // #677 third reproducer: `len` (param-homed R2) reused after the copy.
+        // Pre-fix `len` was recycled as the byte buffer (`ldrb r2, [src]`),
+        // so the later `local.get 2` returned the last byte copied.
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(2),
+            WasmOp::MemoryCopy, // idx 3
+            WasmOp::LocalGet(2),
+            WasmOp::End,
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 3).unwrap();
+        let defs = defs_at_line(&arm, 3);
+        assert!(
+            !defs.contains(&Reg::R2),
+            "memory.copy must not mutate the still-live len local's home \
+             register R2 (got defs {defs:?})"
+        );
+    }
+
+    #[test]
+    fn test_677_fill_preserves_live_dst_local_reg() {
+        // #677 fill reproducer: dst local read back via i32.load8_u after
+        // the fill — its home register must survive the fill loop.
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::LocalGet(2),
+            WasmOp::MemoryFill, // idx 3
+            WasmOp::LocalGet(0),
+            WasmOp::End,
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 3).unwrap();
+        let defs = defs_at_line(&arm, 3);
+        assert!(
+            !defs.contains(&Reg::R0),
+            "memory.fill must not mutate the still-live dst local's home \
+             register R0 (got defs {defs:?})"
+        );
+    }
+
+    #[test]
+    fn test_677_fill_dst_aliasing_val_gets_scratch() {
+        // #677 aliasing corner: `memory.fill (local.get 0) (local.get 0) ...`
+        // pops the SAME register for dst and val. Mutating dst in place would
+        // change the fill byte mid-loop even though the local is never read
+        // again — the alias check must force the scratch copy.
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(0),
+            WasmOp::LocalGet(1),
+            WasmOp::MemoryFill, // idx 3
+            WasmOp::End,
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 2).unwrap();
+        let defs = defs_at_line(&arm, 3);
+        assert!(
+            !defs.contains(&Reg::R0),
+            "aliased dst/val operand register R0 must not be mutated \
+             (got defs {defs:?})"
+        );
+    }
+
+    #[test]
+    fn test_677_dead_const_operands_lower_without_copies() {
+        // Behavior preservation: const operands land in dead round-robin
+        // temps — provably dead, so NO scratch MOVs are inserted and the
+        // lowering stays byte-identical to pre-#677 code (the shape the #374
+        // differential and the frozen anchors pin).
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        let wasm_ops = vec![
+            WasmOp::I32Const(32),
+            WasmOp::I32Const(16),
+            WasmOp::I32Const(4),
+            WasmOp::MemoryCopy, // idx 3
+            WasmOp::End,
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 0).unwrap();
+        let movs = arm
+            .iter()
+            .filter(|i| {
+                i.source_line == Some(3)
+                    && matches!(
+                        &i.op,
+                        ArmOp::Mov {
+                            op2: Operand2::Reg(_),
+                            ..
+                        }
+                    )
+            })
+            .count();
+        assert_eq!(
+            movs, 0,
+            "dead const operands must not grow scratch copies (#374 shape)"
+        );
+    }
+
+    #[test]
+    fn test_679_fill_mask_emits_fold_and_clamp() {
+        // #679: under `--safety-bounds mask`, memory.fill must fold dst with
+        // AND (size-1) and clamp len with CMP + IT-HI SelectMove — pre-fix it
+        // emitted the raw loop, byte-identical to `none`.
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_bounds_check(BoundsCheckConfig::Masking);
+        let wasm_ops = vec![
+            WasmOp::I32Const(32),
+            WasmOp::I32Const(0xAB),
+            WasmOp::I32Const(4),
+            WasmOp::MemoryFill, // idx 3
+            WasmOp::End,
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 0).unwrap();
+        let at3: Vec<&ArmOp> = arm
+            .iter()
+            .filter(|i| i.source_line == Some(3))
+            .map(|i| &i.op)
+            .collect();
+        assert!(
+            at3.iter().any(|op| matches!(op, ArmOp::And { .. })),
+            "mask profile must fold the fill dst with AND (size-1)"
+        );
+        assert!(
+            at3.iter().any(|op| matches!(
+                op,
+                ArmOp::SelectMove {
+                    cond: Condition::HI,
+                    ..
+                }
+            )),
+            "mask profile must clamp the fill len (CMP + IT-HI move)"
+        );
+    }
+
+    #[test]
+    fn test_679_copy_mask_folds_both_addresses_and_clamps_len() {
+        // #679: memory.copy under mask must fold BOTH effective addresses
+        // (dst AND src) and clamp len against BOTH ranges.
+        let db = RuleDatabase::new();
+        let mut selector = InstructionSelector::new(db.rules().to_vec());
+        selector.set_bounds_check(BoundsCheckConfig::Masking);
+        let wasm_ops = vec![
+            WasmOp::I32Const(32),
+            WasmOp::I32Const(16),
+            WasmOp::I32Const(4),
+            WasmOp::MemoryCopy, // idx 3
+            WasmOp::End,
+        ];
+        let arm = selector.select_with_stack(&wasm_ops, 0).unwrap();
+        let ands = arm
+            .iter()
+            .filter(|i| i.source_line == Some(3) && matches!(&i.op, ArmOp::And { .. }))
+            .count();
+        let clamps = arm
+            .iter()
+            .filter(|i| {
+                i.source_line == Some(3)
+                    && matches!(
+                        &i.op,
+                        ArmOp::SelectMove {
+                            cond: Condition::HI,
+                            ..
+                        }
+                    )
+            })
+            .count();
+        assert_eq!(ands, 2, "copy under mask must AND-fold dst AND src");
+        assert_eq!(clamps, 2, "copy under mask must clamp len for both ranges");
+    }
+
+    #[test]
+    fn test_679_mask_lowering_differs_from_none() {
+        // #679 attestation integrity: `mask` must NEVER lower bulk memory
+        // identically to `none` (that was the silent no-op the safety
+        // manifest still attested as `mask`). Structural inequality here;
+        // the ELF-level byte-diff proof lives in
+        // scripts/repro/bulk_mask_679_differential.py.
+        let wasm_ops = vec![
+            WasmOp::I32Const(32),
+            WasmOp::I32Const(16),
+            WasmOp::I32Const(4),
+            WasmOp::MemoryCopy,
+            WasmOp::End,
+        ];
+        let db = RuleDatabase::new();
+        let mut masked = InstructionSelector::new(db.rules().to_vec());
+        masked.set_bounds_check(BoundsCheckConfig::Masking);
+        let masked_arm = masked.select_with_stack(&wasm_ops, 0).unwrap();
+        let db = RuleDatabase::new();
+        let mut plain = InstructionSelector::new(db.rules().to_vec());
+        plain.set_bounds_check(BoundsCheckConfig::None);
+        let plain_arm = plain.select_with_stack(&wasm_ops, 0).unwrap();
+        let ops_of =
+            |v: &[ArmInstruction]| v.iter().map(|i| format!("{:?}", i.op)).collect::<Vec<_>>();
+        assert_ne!(
+            ops_of(&masked_arm),
+            ops_of(&plain_arm),
+            "mask bulk-memory lowering must differ from none"
         );
     }
 
