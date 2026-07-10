@@ -78,6 +78,8 @@ module I32 :
   val ctz : int -> int
 
   val popcnt : int -> int
+
+  val rbit : int -> int
  end
 
 module I64 :

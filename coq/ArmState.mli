@@ -73,6 +73,10 @@ type vfp_reg =
 | D14
 | D15
 
+val vfp_reg_eq_dec : vfp_reg -> vfp_reg -> bool
+
+val vfp_reg_EqDec : vfp_reg coq_EqDec
+
 type condition_flags = { flag_n : bool; flag_z : bool; flag_c : bool;
                          flag_v : bool }
 
@@ -89,6 +93,10 @@ type arm_state = { regs : regfile; flags : condition_flags;
 val get_reg : arm_state -> arm_reg -> I32.int
 
 val set_reg : arm_state -> arm_reg -> I32.int -> arm_state
+
+val get_vfp_reg : arm_state -> vfp_reg -> I32.int
+
+val set_vfp_reg : arm_state -> vfp_reg -> I32.int -> arm_state
 
 val set_flags : arm_state -> condition_flags -> arm_state
 

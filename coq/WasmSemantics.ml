@@ -487,7 +487,8 @@ let exec_wasm_instr i s =
            | None -> None)
         | None -> None)
      | None -> None)
-  | _ -> Some s
+  | Nop -> Some s
+  | _ -> None
 
 (** val exec_wasm_program :
     wasm_instr list -> wasm_state -> wasm_state option **)

@@ -222,6 +222,11 @@ module I32 =
 
   let popcnt =
     failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I32.popcnt)"
+
+  (** val rbit : int -> int **)
+
+  let rbit =
+    failwith "AXIOM TO BE REALIZED (Synth.Common.Integers.I32.rbit)"
  end
 
 module I64 =

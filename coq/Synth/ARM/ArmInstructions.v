@@ -70,6 +70,12 @@ Inductive arm_instr : Type :=
   | ADC  : arm_reg -> arm_reg -> operand2 -> arm_instr  (* ADD with carry, reads C *)
   | SUBS : arm_reg -> arm_reg -> operand2 -> arm_instr  (* SUB setting flags *)
   | SBC  : arm_reg -> arm_reg -> operand2 -> arm_instr  (* SUB with carry, reads C *)
+  | SBCS : arm_reg -> arm_reg -> operand2 -> arm_instr
+        (* SBC setting flags — reads C AND writes NZCV. The second link of the
+           encoder's dual-precision i64 compare chain (CMP lo,lo; SBCS hi,hi;
+           MOVcc), see arm_encoder.rs I64SetCond. Mirrors ASL
+           AddWithCarry(R[n], NOT(shifted), PSTATE.C) with setflags=true —
+           bridged in SailArmBridge.v (sail_bridge_sbcs_reg). *)
 
   (* Bitwise operations *)
   | AND : arm_reg -> arm_reg -> operand2 -> arm_instr
@@ -111,6 +117,14 @@ Inductive arm_instr : Type :=
 
   (* Comparison operations *)
   | CMP : arm_reg -> operand2 -> arm_instr
+  | CMPCond : condition -> arm_reg -> operand2 -> arm_instr
+        (* Conditionally-executed CMP (e.g. CMPEQ = CMPCond Cond_EQ): executes
+           the compare — and REWRITES all four NZCV flags — only when the
+           condition holds on the current flags; otherwise a no-op. The EQ/NE
+           link of the encoder's i64 compare chain (CMP lo,lo; CMPEQ hi,hi;
+           MOVcc), see arm_encoder.rs I64SetCond. Generalizes the model's
+           conditional execution beyond the register-writing MOVcc family to
+           flags-writers. *)
 
   (* Bit manipulation *)
   | CLZ : arm_reg -> arm_reg -> arm_instr     (* Count leading zeros *)
