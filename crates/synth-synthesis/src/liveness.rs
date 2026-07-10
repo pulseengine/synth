@@ -3646,7 +3646,7 @@ fn try_reallocate_segment(
         let blocker = next_blocker;
         next_blocker += 1;
         pins.insert(blocker, idx);
-        for (_, nbrs) in pool_adj.iter_mut() {
+        for nbrs in pool_adj.values_mut() {
             nbrs.insert(blocker);
         }
         pool_adj.insert(blocker, pool_nodes.iter().copied().collect());

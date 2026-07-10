@@ -91,11 +91,13 @@ def load_text_and_syms(elf_path):
         text = ef.get_section_by_name(".text")
         code, base = text.data(), text["sh_addr"]
         syms = {}
-        symtab = ef.get_section_by_name(".symtab")
-        if symtab is not None:
-            for s in symtab.iter_symbols():
-                if s.name:
-                    syms[s.name] = s["st_value"]
+        # synth emits .symtab as an unnamed SHT_SYMTAB section, so match by
+        # TYPE not name (#489 pattern — get_section_by_name returns None here).
+        for sec in ef.iter_sections():
+            if sec.header.sh_type == "SHT_SYMTAB":
+                for s in sec.iter_symbols():
+                    if s.name:
+                        syms[s.name] = s["st_value"]
     if not syms:
         # Self-contained images carry no symtab — fall back to `synth disasm`
         # labels (same-arch decode, the established #374-harness pattern).
