@@ -2406,15 +2406,7 @@ impl LoopInvariantCodeMotion {
                     Opcode::Const { .. } => true,
 
                     // Arithmetic ops are invariant if operands are
-                    Opcode::Add {
-                        src1: _, src2: _, ..
-                    }
-                    | Opcode::Sub {
-                        src1: _, src2: _, ..
-                    }
-                    | Opcode::Mul {
-                        src1: _, src2: _, ..
-                    } => {
+                    Opcode::Add { .. } | Opcode::Sub { .. } | Opcode::Mul { .. } => {
                         // Simplified check: if sources are from outside loop or are constants
                         // In real implementation, would track def-use chains
                         false // Conservative: mark as not invariant
