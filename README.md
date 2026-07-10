@@ -109,7 +109,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 | ELF output with vector table | Implemented | Thumb bit set on symbols; not linked on real hardware |
 | Linker scripts (STM32, nRF52840, generic) | Implemented | Generated, not tested with real boards |
 | Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
-| Rocq mechanized proofs | 470 Qed / 8 Admitted | i32 + i64 T1 proofs; division proofs re-admitted for trap guard alignment |
+| Rocq mechanized proofs | 472 Qed / 6 Admitted | i32 + i64 T1 proofs; div_s trap guard re-admitted (div_u/rem_s/rem_u discharged) |
 | SMT translation validation | ordeal (pure-Rust QF_BV) default | v0.27.0 (#553); Z3 demoted to feature-gated differential oracle — 141/141 agreement |
 | WebAssembly spec test suite | 227/257 compile | Compilation only — not executed on emulator |
 
@@ -194,7 +194,7 @@ Per the [PulseEngine Verification Guide](https://pulseengine.eu/guides/VERIFICAT
 
 | Track | Status | Coverage |
 |-------|--------|----------|
-| **Rocq** | Partial | 470 Qed / 8 Admitted — division proofs re-admitted for trap guard alignment |
+| **Rocq** | Partial | 472 Qed / 6 Admitted — div_s trap guard re-admitted (div_u/rem_s/rem_u discharged) |
 | **Kani** | Starting | 18 bounded model checking harnesses for ARM encoder |
 | **Verus** | Starting | 8 spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` |
 | **Lean** | Not started | — |
@@ -206,11 +206,12 @@ See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 thr
 Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM semantics for each operation. The proof suite lives in `coq/Synth/` and covers ARM instruction semantics, WASM stack-machine semantics, and per-operation correctness theorems.
 
 ```
-470 Qed / 8 Admitted (+2 admit. tactics)   [CI-gated: claims.yaml + scripts/claim_check.py]
+472 Qed / 6 Admitted (+2 admit. tactics)   [CI-gated: claims.yaml + scripts/claim_check.py]
   T1 result-correspondence (ARM output = WASM result): all i32 ops and all
      i64 ops — i64 T1 parity since v0.11.0, 0 i64 admits (coq/STATUS.md)
   T2 existence-only: f32/f64 and remaining categories
-  T3 admitted (8): 3 i32 division trap guards (exec_program model gap, #73),
+  T3 admitted (6): 1 i32 division trap guard (div_s INT_MIN/-1 double guard, #73;
+     div_u/rem_s/rem_u discharged against exec_program_br),
      2 Compilation.v, 1 CorrectnessSimple.v, 2 ArmRefinement.v
   incl. 40 Qed selector-DSL rule theorems (Synth/VcrSelRules.v, 1:1 with
      coq/vcr_sel_rules.manifest), 7 Qed VCR-SEL-001 pilot lemmas
