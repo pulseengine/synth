@@ -44,23 +44,23 @@ verify = ["synth-verify"]
 # Path deps carry `version` so `cargo publish` rewrites them to the
 # crates.io coordinate. Bumping the workspace version requires
 # updating these in lockstep — see docs/release-process.md.
-synth-core = { path = "../synth-core", version = "0.39.0" }
-synth-frontend = { path = "../synth-frontend", version = "0.39.0" }
-synth-synthesis = { path = "../synth-synthesis", version = "0.39.0" }
-synth-backend = { path = "../synth-backend", version = "0.39.0" }
+synth-core = { path = "../synth-core", version = "0.39.1" }
+synth-frontend = { path = "../synth-frontend", version = "0.39.1" }
+synth-synthesis = { path = "../synth-synthesis", version = "0.39.1" }
+synth-backend = { path = "../synth-backend", version = "0.39.1" }
 
 # AArch64 host-native backend (#538) — small pure-Rust crate, always on.
-synth-backend-aarch64 = { path = "../synth-backend-aarch64", version = "0.39.0" }
+synth-backend-aarch64 = { path = "../synth-backend-aarch64", version = "0.39.1" }
 
 # Optional external backends
-synth-backend-awsm = { path = "../synth-backend-awsm", version = "0.39.0", optional = true }
-synth-backend-wasker = { path = "../synth-backend-wasker", version = "0.39.0", optional = true }
-synth-backend-riscv = { path = "../synth-backend-riscv", version = "0.39.0", optional = true }
+synth-backend-awsm = { path = "../synth-backend-awsm", version = "0.39.1", optional = true }
+synth-backend-wasker = { path = "../synth-backend-wasker", version = "0.39.1", optional = true }
+synth-backend-riscv = { path = "../synth-backend-riscv", version = "0.39.1", optional = true }
 
 # Optional translation validation — pure-Rust ordeal engine by default (#553),
 # no C++ toolchain needed. For the Z3 differential oracle build with
 # `--features verify,synth-verify/z3-solver` (+ SYNTH_SOLVER_DIFF=1 at runtime).
-synth-verify = { path = "../synth-verify", version = "0.39.0", optional = true, features = ["arm"] }
+synth-verify = { path = "../synth-verify", version = "0.39.1", optional = true, features = ["arm"] }
 
 # Optional PulseEngine WASM optimizer
 # Uncomment when loom crate is available:

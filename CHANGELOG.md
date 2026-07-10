@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.39.1] - 2026-07-11
+
+**A single-fix release that unblocks the gust:os multi-provider OS node — the
+last synth gate before gust:os v0.4.0. Also sweeps the npm wrapper version
+(stale at 0.38.0 from the #703 post-hub merge) up to the release tag.**
+
 ### Fixed
 
 - **`--shadow-stack-size` co-rebases N aliased `__stack_pointer` globals
