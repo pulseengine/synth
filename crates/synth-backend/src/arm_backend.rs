@@ -657,6 +657,11 @@ fn compile_wasm_to_arm(
         // memory-accessing functions to the direct selector; `None`/`Mpu` are
         // byte-identical to before.
         bridge.set_bounds_check(bounds_config);
+        // #687: thread the absolute linear-memory base the optimized path
+        // materializes. Defaults to 0x2000_0100 (byte-identical);
+        // `--stack-layout=low` shifts it up by the reserved stack size so
+        // const-address accesses follow the moved linear memory.
+        bridge.set_linmem_base(config.linmem_base);
         // `ir_to_arm` now returns `Result` — an `Err` means the optimized path
         // hit an unmapped vreg (issue-#93-class). Treat it identically to an
         // `optimize_full` failure: fall back to the direct selector rather

@@ -391,6 +391,30 @@ enum Commands {
         /// Phase 2. See rivet VCR-DMA-001.
         #[arg(long, value_name = "BASE:LEN")]
         volatile_segment: Vec<String>,
+
+        /// #687: SRAM stack placement for SELF-CONTAINED Cortex-M images.
+        /// `high` (default, byte-identical to every pre-#687 compile) puts the
+        /// stack at the TOP of SRAM growing down toward the globals table and
+        /// linear memory — an overflow silently corrupts them. `low` reserves
+        /// `--stack-size` bytes at the BOTTOM of SRAM (SP init = SRAM start +
+        /// stack size) and places linear memory + the R9 globals table ABOVE
+        /// it, so an overflow descends past the SRAM start into reserved
+        /// address space and BusFaults on the first errant push — every
+        /// Cortex-M, no MPU. Applies ONLY to self-contained images: with
+        /// `--relocatable`, imported functions (host-linked ET_REL), or a
+        /// non-Cortex-M backend the linker/harness owns the layout and synth
+        /// REFUSES the flag (loud error, never silently ignored). See the
+        /// SRAM layout contract on `build_multi_func_cortex_m_elf`.
+        #[arg(long, value_enum, default_value_t = StackLayoutArg::High)]
+        stack_layout: StackLayoutArg,
+
+        /// #687: size in BYTES of the reserved stack region under
+        /// `--stack-layout=low` (default 4096). Must be a multiple of 8
+        /// (AAPCS SP alignment) and at least 256. Ignored (with a warning)
+        /// under the default `--stack-layout=high`, where the stack simply
+        /// grows down from the top of SRAM.
+        #[arg(long, value_name = "BYTES")]
+        stack_size: Option<u32>,
     },
 
     /// Disassemble an ARM ELF file (e.g., synth disasm output.elf)
@@ -510,11 +534,18 @@ fn main() -> Result<()> {
             shadow_stack_size,
             debug_line,
             volatile_segment,
+            stack_layout,
+            stack_size,
         } => {
             // Resolve target spec: --target overrides, --cortex-m is backwards compat
             let target_spec = resolve_target_spec(target.as_deref(), cortex_m, &backend)?;
             let is_cortex_m =
                 cortex_m || target_spec.family == synth_core::target::ArchFamily::ArmCortexM;
+
+            // #687: resolve --stack-layout/--stack-size and refuse the low
+            // layout anywhere synth does not own the image layout.
+            let stack_layout =
+                resolve_stack_layout(stack_layout, stack_size, relocatable, is_cortex_m, &backend)?;
 
             // --loom implies --loom-compat (skip redundant synth passes)
             let loom_compat = loom_compat || loom;
@@ -556,6 +587,7 @@ fn main() -> Result<()> {
                 shadow_stack_size,
                 debug_line,
                 volatile_segments,
+                stack_layout,
             )?;
 
             // If --link requested, invoke the cross-linker
@@ -1114,6 +1146,114 @@ fn parse_volatile_segments(raw: &[String]) -> Result<Vec<VolatileRange>> {
     Ok(ranges)
 }
 
+/// #687: the `--stack-layout` CLI value. See the flag doc on `Commands::Compile`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum StackLayoutArg {
+    /// Stack at the top of SRAM growing down toward globals/linmem (default,
+    /// byte-identical to every pre-#687 compile).
+    High,
+    /// Stack reserved at the BOTTOM of SRAM; linmem/globals above it, so an
+    /// overflow BusFaults below SRAM instead of corrupting them.
+    Low,
+}
+
+/// #687: the RESOLVED stack layout for a self-contained Cortex-M image.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum StackLayout {
+    /// Today's layout: SP init = SRAM top; linmem at the SRAM start.
+    High,
+    /// Stack occupies `[SRAM start, SRAM start + stack_size)`; SP init =
+    /// SRAM start + stack_size; linmem/globals shifted up by `stack_size`.
+    Low { stack_size: u32 },
+}
+
+/// #687: default `--stack-size` under `--stack-layout=low`.
+const DEFAULT_LOW_STACK_SIZE: u32 = 4096;
+
+impl StackLayout {
+    /// Bytes reserved for the stack at the BOTTOM of SRAM — the uniform
+    /// upward shift every RAM-anchored address gets under the low layout.
+    /// `0` for the default high layout (all formulas degenerate to today's,
+    /// byte-identical by construction).
+    fn stack_reserve(self) -> u32 {
+        match self {
+            StackLayout::High => 0,
+            StackLayout::Low { stack_size } => stack_size,
+        }
+    }
+
+    /// The linear-memory base the STARTUP loads into R11 (and bases the R9
+    /// globals table on): the SRAM start, shifted up past the reserved stack
+    /// region under the low layout.
+    fn startup_linmem_base(self, ram_base: u32) -> u32 {
+        ram_base + self.stack_reserve()
+    }
+
+    /// The absolute linmem base the OPTIMIZED codegen path materializes into
+    /// user code (`CompileConfig::linmem_base`) — the historical
+    /// `0x2000_0100` harness contract, shifted by the same reserve. NOTE the
+    /// pre-existing `0x100` offset between this and the startup's R11 base is
+    /// preserved unchanged in BOTH layouts (see the SRAM layout contract on
+    /// `build_multi_func_cortex_m_elf`).
+    fn optimized_linmem_base(self) -> u32 {
+        synth_core::backend::OPTIMIZED_LINMEM_BASE + self.stack_reserve()
+    }
+}
+
+/// #687: resolve `--stack-layout`/`--stack-size` and enforce the flag's
+/// applicability contract EARLY (before any compilation): the low layout is
+/// meaningful only for a SELF-CONTAINED Cortex-M image, where synth itself
+/// emits the vector table (SP init) and the startup's R9/R10/R11 layout.
+/// `--relocatable` (ET_REL host-link) and non-Cortex-M backends own their
+/// layout in the linker script/harness — synth REFUSES the combination loudly
+/// rather than emitting an image whose flag silently did nothing. (Imported
+/// functions also force ET_REL; that case is only detectable after decode and
+/// is refused in `compile_all_exports`.)
+fn resolve_stack_layout(
+    arg: StackLayoutArg,
+    stack_size: Option<u32>,
+    relocatable: bool,
+    is_cortex_m: bool,
+    backend_name: &str,
+) -> Result<StackLayout> {
+    if arg == StackLayoutArg::High {
+        if let Some(sz) = stack_size {
+            warn!(
+                "--stack-size {sz} has no effect under --stack-layout=high: the stack \
+                 grows down from the top of SRAM (pass --stack-layout=low to reserve \
+                 a fixed region at the SRAM bottom)"
+            );
+        }
+        return Ok(StackLayout::High);
+    }
+    if relocatable {
+        anyhow::bail!(
+            "--stack-layout=low applies only to self-contained Cortex-M images: \
+             --relocatable produces an ET_REL object whose stack/linmem layout is \
+             owned by the host linker script, so the flag would silently do \
+             nothing — refusing (#687)"
+        );
+    }
+    if !is_cortex_m || backend_name == "aarch64" {
+        anyhow::bail!(
+            "--stack-layout=low applies only to self-contained Cortex-M images \
+             (synth emits the vector table and startup there); backend '{backend_name}' \
+             / this target does not produce one — refusing rather than silently \
+             ignoring the flag (#687)"
+        );
+    }
+    let stack_size = stack_size.unwrap_or(DEFAULT_LOW_STACK_SIZE);
+    if stack_size < 256 {
+        anyhow::bail!("--stack-size {stack_size} is below the 256-byte minimum (#687)");
+    }
+    if !stack_size.is_multiple_of(8) {
+        anyhow::bail!(
+            "--stack-size {stack_size} must be a multiple of 8 (AAPCS SP alignment, #687)"
+        );
+    }
+    Ok(StackLayout::Low { stack_size })
+}
+
 /// Emit a CycloneDX 1.5 SBOM next to the compiled ELF when `--sbom` was
 /// requested. The SBOM documents the synth compiler, the input WASM module
 /// (hash + size), the output ELF (hash + size + target + backend), and the
@@ -1180,6 +1320,9 @@ fn compile_command(
     // #543 Phase 1: integrator-marked volatile DMA-window ranges. Threaded to the
     // CompileConfig; not yet consumed (Phase 2 is the gated codegen back-off).
     volatile_segments: Vec<VolatileRange>,
+    // #687: resolved --stack-layout (self-contained Cortex-M images only;
+    // already validated against --relocatable / non-Cortex-M in main).
+    stack_layout: StackLayout,
 ) -> Result<()> {
     // Validate backend exists
     let registry = build_backend_registry();
@@ -1229,6 +1372,7 @@ fn compile_command(
             shadow_stack_size,
             debug_line,
             volatile_segments,
+            stack_layout,
         );
     }
 
@@ -1487,6 +1631,10 @@ fn compile_command(
         // #642: call_indirect guard inputs — the default declines every
         // call_indirect lowering, so the demo path (no module) stays safe.
         call_indirect_guards,
+        // #687: shift the optimized path's absolute linmem base up by the
+        // reserved stack size under --stack-layout=low; default = 0x2000_0100
+        // (byte-identical).
+        linmem_base: stack_layout.optimized_linmem_base(),
         ..CompileConfig::default()
     };
 
@@ -1507,7 +1655,13 @@ fn compile_command(
     } else if matches!(target_spec.family, synth_core::target::ArchFamily::RiscV) {
         build_riscv_elf(&code, &func_name)?
     } else if cortex_m {
-        build_cortex_m_elf(&code, &func_name, target_spec, &startup_globals_words)?
+        build_cortex_m_elf(
+            &code,
+            &func_name,
+            target_spec,
+            &startup_globals_words,
+            stack_layout,
+        )?
     } else {
         build_simple_elf(&code, &func_name)?
     };
@@ -2172,6 +2326,9 @@ fn compile_all_exports(
     // #543 Phase 1: integrator-marked volatile DMA-window ranges. Threaded to the
     // CompileConfig; not yet consumed (Phase 2 is the gated codegen back-off).
     volatile_segments: Vec<VolatileRange>,
+    // #687: resolved --stack-layout. `Low` moves the self-contained image's
+    // SP init / linmem / R9 table (and is refused on any ET_REL output).
+    stack_layout: StackLayout,
 ) -> Result<()> {
     let path = input.context("--all-exports requires an input file")?;
 
@@ -2485,6 +2642,10 @@ fn compile_all_exports(
         // #642: call_indirect guard inputs (compile-time table size for the
         // bounds guard + closed-world type verdicts). Default = decline.
         call_indirect_guards: all_call_indirect_guards,
+        // #687: shift the optimized path's absolute linmem base up by the
+        // reserved stack size under --stack-layout=low; default = 0x2000_0100
+        // (byte-identical).
+        linmem_base: stack_layout.optimized_linmem_base(),
         ..CompileConfig::default()
     };
 
@@ -2708,6 +2869,17 @@ fn compile_all_exports(
     // executable, so the summary below reports the right type and link hint.
     let produced_relocatable = is_riscv || is_aarch64 || has_external_relocations || relocatable;
 
+    // #687: imported functions force ET_REL output (host-linked), where the
+    // linker script owns the stack/linmem layout — only detectable here, after
+    // decode. Refuse the low layout loudly, mirroring the early main() check.
+    if stack_layout != StackLayout::High && produced_relocatable {
+        anyhow::bail!(
+            "--stack-layout=low applies only to self-contained Cortex-M images: this \
+             module produces a relocatable object (imported functions require host \
+             linking), whose layout is owned by the linker script — refusing (#687)"
+        );
+    }
+
     // VCR-DBG-001 step 4 (#394): when `--debug-line` is set, parse the input
     // wasm's `.debug_line` from the bytes synth actually compiled
     // (`sbom_wasm_bytes` = post-WAT/post-loom). A DWARF-free input yields empty
@@ -2807,6 +2979,7 @@ fn compile_all_exports(
             &all_memories,
             target_spec,
             &globals_table_words(&all_globals),
+            stack_layout,
         )?
     } else {
         build_multi_func_simple_elf(&compiled_funcs)?
@@ -3847,7 +4020,58 @@ fn encode_thumb_bl(bl_addr: u32, target_addr: u32) -> [u8; 4] {
     bytes
 }
 
-/// Build a complete Cortex-M multi-function ELF with vector table
+/// Build a complete Cortex-M multi-function ELF with vector table.
+///
+/// ## The self-contained SRAM layout contract (#687)
+///
+/// This is the layout companion to the R11 multi-table contract documented on
+/// [`synth_core::CallIndirectGuards`] (#650/#669). It applies ONLY to the
+/// self-contained image paths (this builder and `build_cortex_m_elf`) — a
+/// `--relocatable`/host-linked object owns its layout in the linker script,
+/// and `--stack-layout=low` is REFUSED there.
+///
+/// `--stack-layout=high` (default, byte-identical to every pre-#687 image):
+///
+/// | SRAM address                 | contents                                |
+/// |------------------------------|-----------------------------------------|
+/// | `0x2000_0000`                | linear memory (startup: R11; optimized  |
+/// |                              | path materializes abs `0x2000_0100`)    |
+/// | `+ linmem_size`              | R9 globals table (#649, if any)         |
+/// | `ram_base + ram_size` (top)  | initial SP, stack grows DOWN toward the |
+/// |                              | globals table and linear memory         |
+///
+/// Overflow hazard: the stack descends INTO the globals table and linear
+/// memory — silent corruption, no fault until it exits SRAM entirely.
+///
+/// `--stack-layout=low` (`--stack-size` bytes, default 4096): the ENTIRE
+/// RAM-anchored layout shifts UP by `stack_size`, and the stack takes the
+/// bottom:
+///
+/// | SRAM address                    | contents                            |
+/// |---------------------------------|-------------------------------------|
+/// | `0x2000_0000 .. + stack_size`   | stack region; initial SP = its top  |
+/// | `0x2000_0000 + stack_size`      | linear memory (startup R11; the     |
+/// |                                 | optimized path's absolute base is   |
+/// |                                 | `0x2000_0100 + stack_size`)         |
+/// | `+ linmem_size`                 | R9 globals table (#649, if any)     |
+///
+/// Overflow descends past `0x2000_0000` into reserved/flash-alias space and
+/// BusFaults on the first errant push — on every Cortex-M, no MPU needed —
+/// BEFORE any linmem/global byte changes. This is rung 1 of the stack-guard
+/// ladder (VCR-MEM-003): low layout → MPU guard region → v8-M PSPLIM.
+///
+/// Invariants shared by both layouts:
+///  - R10 = linear-memory size (bounds checking), R11 = linmem base, R9 =
+///    linmem base + linmem size (globals) — all set by the startup blob.
+///  - The optimized path's absolute base sits `0x100` ABOVE the startup R11
+///    base. That pre-existing offset (the `0x2000_0100` differential-harness
+///    contract) is preserved verbatim in both layouts — the low layout shifts
+///    it, never changes it. Mixed direct/optimized access to the same wasm
+///    address therefore disagrees by `0x100` in BOTH layouts (pre-existing
+///    quirk, orthogonal to #687).
+///  - RAM auto-scale: `max(128 KiB, 64 KiB-rounded(needed))`, where `needed`
+///    is `linmem + globals + 8 KiB stack headroom` (high) or
+///    `stack_size + linmem + globals` (low — the stack is already counted).
 fn build_multi_func_cortex_m_elf(
     funcs: &[ElfFunction],
     memories: &[WasmMemory],
@@ -3856,6 +4080,8 @@ fn build_multi_func_cortex_m_elf(
     // summed-width layout). Empty = no globals: startup, RAM sizing and the
     // NoBits region are BYTE-IDENTICAL to the pre-#649 output.
     globals_words: &[u32],
+    // #687: resolved --stack-layout (see the SRAM layout contract above).
+    stack_layout: StackLayout,
 ) -> Result<Vec<u8>> {
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
@@ -3877,25 +4103,36 @@ fn build_multi_func_cortex_m_elf(
         );
     }
 
-    // RAM layout:
-    // 0x2000_0000: Linear memory (R11 points here)
-    // 0x2000_0000 + linear_memory_size: R9 globals table (#649, if any)
-    // above that: Stack base
-    // ram_base + ram_size: Stack top (grows down)
+    // RAM layout — see the SRAM layout contract in this function's doc (#687).
     //
-    // Auto-scale RAM: linear memory + globals table + 8KB stack, rounded up to
-    // next 64KB boundary. Minimum 128KB for backwards compatibility.
-    let min_stack_size: u32 = 8 * 1024;
-    let needed = linear_memory_size + globals_table_bytes + min_stack_size;
+    // high (default): linmem at ram_base, globals above it, SP init at the top
+    // of the auto-scaled RAM growing down (auto-scale keeps 8KB of headroom).
+    // low: stack region [ram_base, ram_base + stack_size), SP init at its top,
+    // linmem + globals shifted up by stack_size (already counted in `needed`).
+    let stack_reserve = stack_layout.stack_reserve();
+    let linmem_base = stack_layout.startup_linmem_base(ram_base);
+    let needed = match stack_layout {
+        StackLayout::High => {
+            let min_stack_headroom: u32 = 8 * 1024;
+            linear_memory_size + globals_table_bytes + min_stack_headroom
+        }
+        StackLayout::Low { stack_size } => stack_size + linear_memory_size + globals_table_bytes,
+    };
     let ram_size: u32 = std::cmp::max(128 * 1024, (needed + 0xFFFF) & !0xFFFF);
 
-    let stack_top = ram_base + ram_size;
+    // #687: initial SP — vector-table word 0. Top of RAM (high) or top of the
+    // reserved bottom-of-SRAM stack region (low).
+    let sp_init = match stack_layout {
+        StackLayout::High => ram_base + ram_size,
+        StackLayout::Low { .. } => ram_base + stack_reserve,
+    };
 
     info!(
-        "RAM layout: linear memory {}KB at 0x{:08x}, stack at 0x{:08x}",
+        "RAM layout ({:?}): linear memory {}KB at 0x{:08x}, initial SP 0x{:08x}",
+        stack_layout,
         linear_memory_size / 1024,
-        ram_base,
-        stack_top
+        linmem_base,
+        sp_init
     );
 
     // Flash layout:
@@ -3908,7 +4145,7 @@ fn build_multi_func_cortex_m_elf(
     let vector_table_size: u32 = 128;
 
     let startup_addr = flash_base + vector_table_size;
-    let startup_code = generate_minimal_startup(linear_memory_size, globals_words);
+    let startup_code = generate_minimal_startup(linear_memory_size, globals_words, linmem_base);
     let startup_size = startup_code.len() as u32;
 
     let default_handler_addr = startup_addr + startup_size;
@@ -4005,10 +4242,10 @@ fn build_multi_func_cortex_m_elf(
             func.code.len()
         );
     }
-    info!("  Stack top: 0x{:08x}", stack_top);
+    info!("  Initial SP: 0x{:08x}", sp_init);
 
-    // Generate vector table
-    let mut vt = VectorTable::new_cortex_m(stack_top);
+    // Generate vector table (word 0 = initial SP; #687: layout-dependent)
+    let mut vt = VectorTable::new_cortex_m(sp_init);
     vt.reset_handler = startup_addr;
 
     for handler in &mut vt.handlers {
@@ -4556,7 +4793,11 @@ fn build_simple_elf(code: &[u8], func_name: &str) -> Result<Vec<u8>> {
     elf_builder.build().context("ELF generation failed")
 }
 
-/// Build a complete Cortex-M ELF with vector table and startup code
+/// Build a complete Cortex-M ELF with vector table and startup code.
+///
+/// Single-function twin of [`build_multi_func_cortex_m_elf`] — see the
+/// self-contained SRAM layout contract (#687) documented there; both layouts
+/// apply identically here (fixed 64KB linear memory, 128KB minimum RAM).
 fn build_cortex_m_elf(
     code: &[u8],
     func_name: &str,
@@ -4564,15 +4805,32 @@ fn build_cortex_m_elf(
     // #649: initial R9 globals-table contents (see `globals_table_words`).
     // Empty = no globals: output byte-identical to the pre-#649 builder.
     globals_words: &[u32],
+    // #687: resolved --stack-layout (see the SRAM layout contract).
+    stack_layout: StackLayout,
 ) -> Result<Vec<u8>> {
     // Memory layout for generic Cortex-M (works with QEMU/Renode)
     let flash_base: u32 = 0x0000_0000;
     let ram_base: u32 = 0x2000_0000;
-    let ram_size: u32 = 128 * 1024; // 128KB to accommodate linear memory + stack
-    let stack_top = ram_base + ram_size;
 
     // Default linear memory size (1 WASM page = 64KB) for single-function mode
     let linear_memory_size: u32 = 64 * 1024;
+
+    // #687: high keeps the historical fixed 128KB RAM (SP init at its top);
+    // low reserves the stack at the SRAM bottom and shifts linmem/globals up,
+    // growing RAM past 128KB only if stack + linmem + globals demand it.
+    let linmem_base = stack_layout.startup_linmem_base(ram_base);
+    let ram_size: u32 = std::cmp::max(
+        128 * 1024,
+        (stack_layout.stack_reserve()
+            + linear_memory_size
+            + (globals_words.len() as u32) * 4
+            + 0xFFFF)
+            & !0xFFFF,
+    );
+    let sp_init = match stack_layout {
+        StackLayout::High => ram_base + ram_size,
+        StackLayout::Low { stack_size } => ram_base + stack_size,
+    };
 
     // #649: R9 globals table just above linear memory (0x2001_0000); the
     // stack grows down from 0x2002_0000, leaving it 64KB of headroom. The
@@ -4591,7 +4849,7 @@ fn build_cortex_m_elf(
     let vector_table_size: u32 = 128; // 32 entries * 4 bytes
 
     let startup_addr = flash_base + vector_table_size;
-    let startup_code = generate_minimal_startup(linear_memory_size, globals_words);
+    let startup_code = generate_minimal_startup(linear_memory_size, globals_words, linmem_base);
     let startup_size = startup_code.len() as u32;
 
     let default_handler_addr = startup_addr + startup_size;
@@ -4612,10 +4870,10 @@ fn build_cortex_m_elf(
     info!("  Default handler: 0x{:08x}", default_handler_addr);
     info!("  Trap handler: 0x{:08x}", trap_handler_addr);
     info!("  User code: 0x{:08x}", code_addr);
-    info!("  Stack top: 0x{:08x}", stack_top);
+    info!("  Initial SP: 0x{:08x}", sp_init);
 
-    // Generate vector table
-    let mut vt = VectorTable::new_cortex_m(stack_top);
+    // Generate vector table (word 0 = initial SP; #687: layout-dependent)
+    let mut vt = VectorTable::new_cortex_m(sp_init);
     vt.reset_handler = startup_addr;
 
     // Set handlers - UsageFault/HardFault go to Trap_Handler for WASM trap detection
@@ -4745,7 +5003,7 @@ fn build_cortex_m_elf(
 /// * `memory_size` - Size of linear memory in bytes (for R10 bounds checking)
 /// * `globals_words` - #649: initial R9 globals-table contents (little-endian
 ///   words, #643 summed-width layout). When non-empty, startup points R9 at
-///   `0x2000_0000 + memory_size` and stores every word there BEFORE calling
+///   `linmem_base + memory_size` and stores every word there BEFORE calling
 ///   the user function — this is where `i64.const`/`i32.const` global
 ///   initializers reach the running image (they exist nowhere else in a
 ///   self-contained ELF; a zeroed table silently dropped every nonzero init).
@@ -4753,12 +5011,14 @@ fn build_cortex_m_elf(
 ///
 /// # Memory Register Setup
 /// * R10 = memory_size (for bounds checking)
-/// * R11 = 0x20000000 (linear memory base)
-/// * R9  = 0x20000000 + memory_size (globals table; only when globals exist)
-fn generate_minimal_startup(memory_size: u32, globals_words: &[u32]) -> Vec<u8> {
+/// * R11 = `linmem_base` (linear memory base — `0x20000000` under the default
+///   high stack layout; `0x20000000 + stack_size` under `--stack-layout=low`,
+///   #687)
+/// * R9  = `linmem_base` + memory_size (globals table; only when globals exist)
+fn generate_minimal_startup(memory_size: u32, globals_words: &[u32], linmem_base: u32) -> Vec<u8> {
     // This startup code:
     // 1. Initializes R10 with memory size (for bounds checking)
-    // 2. Initializes R11 with linear memory base (0x20000000) for WASM memory access
+    // 2. Initializes R11 with the linear memory base for WASM memory access
     // 3. Loads the address of the user function
     // 4. Calls it with BLX
     // 5. Loops forever
@@ -4766,8 +5026,8 @@ fn generate_minimal_startup(memory_size: u32, globals_words: &[u32]) -> Vec<u8> 
     // In Thumb assembly:
     //   MOVW R10, #(memory_size & 0xFFFF)
     //   MOVT R10, #(memory_size >> 16)
-    //   MOVW R11, #0x0000  ; Low 16 bits of memory base
-    //   MOVT R11, #0x2000  ; High 16 bits of memory base
+    //   MOVW R11, #(linmem_base & 0xFFFF)
+    //   MOVT R11, #(linmem_base >> 16)
     //   LDR r0, [pc, #4]   ; Load function address from literal pool
     //   BLX r0             ; Call function
     //   B .                ; Infinite loop
@@ -4781,16 +5041,19 @@ fn generate_minimal_startup(memory_size: u32, globals_words: &[u32]) -> Vec<u8> 
     // MOVW R10, #(memory_size & 0xFFFF) / MOVT R10, #(memory_size >> 16)
     code.extend_from_slice(&r10_movw);
     code.extend_from_slice(&r10_movt);
-    // MOVW R11, #0x0000 / MOVT R11, #0x2000 - Thumb-2 32-bit encodings
-    code.extend_from_slice(&[0x40, 0xF2, 0x00, 0x0B]);
-    code.extend_from_slice(&[0xC2, 0xF2, 0x00, 0x0B]);
+    // MOVW/MOVT R11, #linmem_base — for the default 0x2000_0000 these encode
+    // to the historical fixed bytes [40 F2 00 0B, C2 F2 00 0B] (pinned by
+    // test_minimal_startup_generation), so the high layout stays
+    // byte-identical by construction (#687).
+    code.extend_from_slice(&encode_thumb2_movw(11, (linmem_base & 0xFFFF) as u16));
+    code.extend_from_slice(&encode_thumb2_movt(11, (linmem_base >> 16) as u16));
 
     // #649: materialize the R9 globals table. R9 = table base; each captured
     // init word is stored via the R12 scratch (IP — reserved to the encoder,
     // never live here: this runs before any user code). Every insn is 4 bytes,
     // so the LDR-literal alignment below is undisturbed.
     if !globals_words.is_empty() {
-        let base = 0x2000_0000u32.wrapping_add(memory_size);
+        let base = linmem_base.wrapping_add(memory_size);
         // MOVW/MOVT R9, #base
         code.extend_from_slice(&encode_thumb2_movw(9, (base & 0xFFFF) as u16));
         code.extend_from_slice(&encode_thumb2_movt(9, (base >> 16) as u16));
@@ -5709,8 +5972,14 @@ mod tests {
             0x1e, 0xff, 0x2f, 0xe1, // BX lr (ARM encoding)
         ];
 
-        let elf_data =
-            build_cortex_m_elf(&code, "test_func", &TargetSpec::cortex_m3(), &[]).unwrap();
+        let elf_data = build_cortex_m_elf(
+            &code,
+            "test_func",
+            &TargetSpec::cortex_m3(),
+            &[],
+            StackLayout::High,
+        )
+        .unwrap();
 
         // Verify ELF magic
         assert_eq!(&elf_data[0..4], b"\x7fELF", "Invalid ELF magic");
@@ -5730,7 +5999,14 @@ mod tests {
     fn test_vector_table_structure() {
         let code = vec![0x00, 0x80, 0x80, 0xe0]; // ADD r0, r0, r1
 
-        let elf_data = build_cortex_m_elf(&code, "test", &TargetSpec::cortex_m3(), &[]).unwrap();
+        let elf_data = build_cortex_m_elf(
+            &code,
+            "test",
+            &TargetSpec::cortex_m3(),
+            &[],
+            StackLayout::High,
+        )
+        .unwrap();
 
         // Find .text section (it starts after ELF headers)
         // For simplicity, look for the vector table pattern
@@ -5784,7 +6060,14 @@ mod tests {
     fn test_startup_code_patching() {
         let code = vec![0x00, 0x80, 0x80, 0xe0];
 
-        let elf_data = build_cortex_m_elf(&code, "patched", &TargetSpec::cortex_m3(), &[]).unwrap();
+        let elf_data = build_cortex_m_elf(
+            &code,
+            "patched",
+            &TargetSpec::cortex_m3(),
+            &[],
+            StackLayout::High,
+        )
+        .unwrap();
 
         // With the new startup code layout (28 bytes with R10/R11 init):
         // - Startup: 0x80 (28 bytes)
@@ -5815,7 +6098,7 @@ mod tests {
     fn test_minimal_startup_generation() {
         // Test with 64KB memory size (0x10000)
         let memory_size: u32 = 64 * 1024;
-        let startup = generate_minimal_startup(memory_size, &[]);
+        let startup = generate_minimal_startup(memory_size, &[], 0x2000_0000);
 
         // Should be 28 bytes:
         // MOVW R10 + MOVT R10 + MOVW R11 + MOVT R11 + LDR + BLX + B + padding + literal
@@ -5855,8 +6138,8 @@ mod tests {
         let memory_size: u32 = 64 * 1024;
         // i64 0x123456789ABCDEF0 (lo, hi) followed by an i32 canary.
         let words = [0x9ABCDEF0u32, 0x12345678, 0x0C0FFEE1];
-        let startup = generate_minimal_startup(memory_size, &words);
-        let empty = generate_minimal_startup(memory_size, &[]);
+        let startup = generate_minimal_startup(memory_size, &words, 0x2000_0000);
+        let empty = generate_minimal_startup(memory_size, &[], 0x2000_0000);
 
         // 16 scaffold + 8 (R9 movw/movt) + 3 * 12 (movw/movt/str) + 12 tail
         assert_eq!(startup.len(), 16 + 8 + 36 + 12, "materializer size");
@@ -5879,6 +6162,101 @@ mod tests {
         assert_eq!(&startup[60..], &empty[16..], "call scaffold unchanged");
         // No globals => byte-identical historical 28-byte blob.
         assert_eq!(empty.len(), 28);
+    }
+
+    /// #687: under `--stack-layout=low` the startup's R11 linmem base and the
+    /// R9 globals-table base shift up by the reserved stack size — everything
+    /// else in the blob is byte-identical to the high-layout blob.
+    #[test]
+    fn test_startup_low_layout_shifted_bases_687() {
+        let memory_size: u32 = 64 * 1024;
+        let base_high = 0x2000_0000u32;
+        let base_low = base_high + DEFAULT_LOW_STACK_SIZE; // 0x2000_1000
+        let words = [0x0C0FFEE1u32];
+
+        let low = generate_minimal_startup(memory_size, &words, base_low);
+        let high = generate_minimal_startup(memory_size, &words, base_high);
+        assert_eq!(low.len(), high.len(), "same shape, shifted constants");
+
+        // R10 (memory size) identical.
+        assert_eq!(&low[..8], &high[..8]);
+        // R11 = 0x2000_1000 (SRAM start + 4KB reserved stack).
+        assert_eq!(&low[8..12], &encode_thumb2_movw(11, 0x1000));
+        assert_eq!(&low[12..16], &encode_thumb2_movt(11, 0x2000));
+        // R9 = 0x2001_1000 (shifted linmem base + 64KB linear memory).
+        assert_eq!(&low[16..20], &encode_thumb2_movw(9, 0x1000));
+        assert_eq!(&low[20..24], &encode_thumb2_movt(9, 0x2001));
+        // Globals materializer + call scaffold byte-identical.
+        assert_eq!(&low[24..], &high[24..]);
+    }
+
+    /// #687: vector-table word 0 (initial SP). High = top of RAM (the
+    /// historical 0x2002_0000); low = SRAM start + stack size, so an overflow
+    /// descends past 0x2000_0000 and BusFaults instead of eating linmem.
+    #[test]
+    fn test_cortex_m_elf_sp_init_by_layout_687() {
+        let code = vec![0x70, 0x47]; // BX LR
+        let high = build_cortex_m_elf(&code, "f", &TargetSpec::cortex_m3(), &[], StackLayout::High)
+            .unwrap();
+        let low = build_cortex_m_elf(
+            &code,
+            "f",
+            &TargetSpec::cortex_m3(),
+            &[],
+            StackLayout::Low { stack_size: 4096 },
+        )
+        .unwrap();
+
+        // Vector-table word 0 lives at the start of the flash image; locate it
+        // as the first LE word with value ram_base+X inside the raw ELF bytes.
+        let find_sp = |elf: &[u8], sp: u32| elf.windows(4).any(|w| w == sp.to_le_bytes());
+        assert!(
+            find_sp(&high, 0x2002_0000),
+            "high layout: initial SP = top of 128KB RAM"
+        );
+        assert!(
+            find_sp(&low, 0x2000_1000),
+            "low layout: initial SP = SRAM start + 4KB stack"
+        );
+        assert!(
+            !find_sp(&low, 0x2002_0000),
+            "low layout must not carry the high-layout SP"
+        );
+    }
+
+    /// #687: `resolve_stack_layout` applicability contract — low is refused
+    /// off the self-contained Cortex-M image path, sizes are validated, and
+    /// high ignores --stack-size (with a warning).
+    #[test]
+    fn test_resolve_stack_layout_contract_687() {
+        use StackLayoutArg::{High, Low};
+        // Default: high, byte-identical path.
+        assert_eq!(
+            resolve_stack_layout(High, None, false, true, "arm").unwrap(),
+            StackLayout::High
+        );
+        // High + --stack-size: warned and ignored, still high.
+        assert_eq!(
+            resolve_stack_layout(High, Some(8192), false, true, "arm").unwrap(),
+            StackLayout::High
+        );
+        // Low on the self-contained Cortex-M path: default 4KB.
+        assert_eq!(
+            resolve_stack_layout(Low, None, false, true, "arm").unwrap(),
+            StackLayout::Low { stack_size: 4096 }
+        );
+        assert_eq!(
+            resolve_stack_layout(Low, Some(8192), false, true, "arm").unwrap(),
+            StackLayout::Low { stack_size: 8192 }
+        );
+        // Refused: --relocatable owns its layout in the linker script.
+        assert!(resolve_stack_layout(Low, None, true, true, "arm").is_err());
+        // Refused: non-Cortex-M target / backend emits no self-contained image.
+        assert!(resolve_stack_layout(Low, None, false, false, "riscv").is_err());
+        assert!(resolve_stack_layout(Low, None, false, true, "aarch64").is_err());
+        // Refused: unaligned / too-small stack sizes.
+        assert!(resolve_stack_layout(Low, Some(4097), false, true, "arm").is_err());
+        assert!(resolve_stack_layout(Low, Some(128), false, true, "arm").is_err());
     }
 
     /// #649: `globals_table_words` lays inits out by the #643 summed-width

@@ -2305,6 +2305,68 @@ artifacts:
         frozen-fixture re-freeze + differential + gale on-silicon (the
         #193/#212/#215 latent-regalloc lesson) — never an idle-tick increment.
 
+  - id: VCR-MEM-003
+    type: sw-req
+    title: "Stack-guard ladder for self-contained images: low stack layout → MPU guard → v8-M PSPLIM (synth #687)"
+    description: >
+      Today's self-contained Cortex-M image puts the initial SP at the TOP of
+      SRAM growing DOWN toward the R9 globals table and linear memory — a
+      stack overflow silently corrupts them (measured under unicorn: deep
+      recursion sweeps the linmem canaries and only faults once SP exits SRAM
+      entirely). Graded fix ladder (maintainer design 2026-07-10, #687):
+
+        (1) IMPLEMENTED — `--stack-layout=low` (+ `--stack-size`, default
+            4096): SP init = SRAM start + stack_size; linear memory, the R9
+            globals table AND the optimized path's absolute linmem base
+            (CompileConfig::linmem_base, default 0x2000_0100) shift UP by
+            stack_size — the entire RAM-anchored layout moves as one. An
+            overflow descends past 0x2000_0000 into reserved/flash-alias
+            space and BusFaults on the FIRST errant push — every Cortex-M,
+            no MPU. Applies ONLY to self-contained images; --relocatable /
+            imported-function ET_REL / non-Cortex-M backends REFUSE the flag
+            loudly (the linker script owns their layout). Default
+            --stack-layout=high is byte-identical by construction (reserve=0
+            degenerates every formula; the startup's MOVW/MOVT R11 encodes
+            the historical fixed bytes; whole-ELF cmp vs main on three
+            fixtures + frozen gate 10/10). Layout contract documented on
+            build_multi_func_cortex_m_elf, cross-referenced from the
+            #650/#669 R11 table contract (CallIndirectGuards).
+        (2) OPEN — MPU guard region below a stack-HIGH stack (reuse the
+            --safety-bounds mpu machinery, #404/#406 region model); costs one
+            v7-M region, catches overflow without moving the layout.
+        (3) OPEN — PSPLIM/MSPLIM hardware stack limit on ARMv8-M targets
+            (M33/M55); wire when a v8-M target matters.
+
+      Status "implemented" covers rung (1) ONLY — rungs (2)/(3) are future
+      issues on this artifact.
+    status: implemented
+    tags: [codegen, memory, stack, layout, busfault, self-contained, track-c, synth-687]
+    links:
+      - type: derives-from
+        target: VCR-001
+      - type: traces-to
+        target: VCR-MEM-001
+      - type: traces-to
+        target: VCR-MEM-002
+    fields:
+      req-type: functional
+      priority: should
+      verification-criteria: >
+        scripts/repro/stack_layout_687_differential.py (unicorn + wasmtime,
+        artifact-derived: the image's OWN vector-table SP + reset path): RED —
+        stack-HIGH deep recursion silently corrupts linmem canary words
+        (4/8 clobbered) BEFORE any fault (fault only at the SRAM floor,
+        SP 0x1FFFFFF0); GREEN — stack-LOW faults UC_ERR_WRITE_UNMAPPED at the
+        SRAM start (SP 0x20000010) with ALL 8 canaries intact — the BusFault
+        precedes any linmem damage. TRANSPARENT — in-budget calls match
+        wasmtime under BOTH layouts, and the existing #649 i64-global-init
+        differential passes unchanged under EXTRA_SYNTH_FLAGS="--stack-layout
+        low" (R9 shifts 0x20010000→0x20011000). SHIFT PIN — low-layout canary
+        addresses sit exactly stack_size above their high-layout twins.
+        Flag-off: frozen byte gate 10/10 + whole-ELF cmp vs main byte-identical
+        on stack_canary_687 / i64_global_init_649 / control_step self-contained
+        images.
+
   # ---------------------------------------------------------------------------
   # Toolchain completeness — debuggability (not a VCR correctness item, but
   # Tier-2 depends on the VCR-RA value→location mapping)
