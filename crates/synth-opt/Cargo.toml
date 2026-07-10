@@ -11,7 +11,7 @@ categories.workspace = true
 description = "Peephole optimization passes for the Synth compiler"
 
 [dependencies]
-synth-cfg = { path = "../synth-cfg", version = "0.39.0" }
+synth-cfg = { path = "../synth-cfg", version = "0.39.1" }
 
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
