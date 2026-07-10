@@ -92,6 +92,10 @@ class ImageRunner:
         self.mu = Uc(UC_ARCH_ARM, UC_MODE_THUMB)
         self.mu.mem_map(FLASH, 0x100000)
         self.mu.mem_map(RAM, RAM_SIZE)  # zeroed RAM: inits must come from startup
+        # GI-FPU-002 (#619): FPU-target startup writes SCB->CPACR (0xE000ED88)
+        # to enable CP10/CP11 — map the System Control Space page so the
+        # reset-path replay does not fault on it (real silicon has this reg).
+        self.mu.mem_map(0xE000E000, 0x1000)
         self.mu.mem_write(base, code)
         # Initial SP from vector table word 0 (the image's own stack top).
         self.sp = int.from_bytes(code[0:4], "little")
