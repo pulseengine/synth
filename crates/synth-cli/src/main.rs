@@ -2985,6 +2985,21 @@ fn compile_all_exports(
                         })
                         .collect(),
                     sp_init: stack_pointer_global_opt.map(|(_, v)| v).unwrap_or(0),
+                    // #707: the re-base equivalence class — MUTABLE i32 globals
+                    // whose init == sp_init (mutability preserved here because the
+                    // `globals` slot list above dropped it). Empty when there is
+                    // no SP global, so the shrink honestly refuses rather than
+                    // re-basing nothing silently.
+                    sp_alias_indices: match stack_pointer_global_opt {
+                        Some((_, sp_v)) => all_globals
+                            .iter()
+                            .filter(|g| {
+                                g.mutable && matches!(g.init, Some(GlobalInit::I32(v)) if v == sp_v)
+                            })
+                            .map(|g| g.index)
+                            .collect(),
+                        None => Vec::new(),
+                    },
                     shadow_stack_size,
                 })
             } else {
@@ -3188,6 +3203,15 @@ struct NativeGlobalsLayout {
     globals: Vec<(u32, i32)>,
     /// The shadow-stack top (the SP global's init); the region must cover it.
     sp_init: i32,
+    /// #707: indices of the globals the shadow-stack shrink may re-base — every
+    /// MUTABLE i32 global whose init == sp_init (the same predicate
+    /// `identify_stack_pointer_global` selects on, kept here because `globals`
+    /// above threw the mutability flag away). A single-SP module has one entry;
+    /// a `meld fuse --memory shared` multi-provider node has one per fused
+    /// component, all aliasing the one reservation. Computed from the decoded
+    /// globals so an IMMUTABLE constant that merely coincides with sp_init is
+    /// NEVER re-based.
+    sp_alias_indices: Vec<u32>,
     /// #383 (VCR-MEM-001): integrator-declared shadow-stack budget in bytes. When
     /// `Some(B)`, the caller asked to shrink the [0, sp_init) reservation to `B`
     /// (re-basing the stack top and shifting the high zero-init static relocs
@@ -3620,24 +3644,40 @@ fn build_relocatable_elf(
                     all_code[pos..pos + 4].copy_from_slice(&new_c.to_le_bytes());
                 }
             }
-            // Re-base the SP global slot: the unique global whose init == sp_init.
-            let sp_matches: Vec<usize> = ng
-                .globals
-                .iter()
-                .enumerate()
-                .filter(|(_, (_, v))| *v == ng.sp_init)
-                .map(|(i, _)| i)
-                .collect();
-            if sp_matches.len() != 1 {
+            // Re-base the shadow-stack global slot(s): every MUTABLE global whose
+            // init == sp_init (`ng.sp_alias_indices`, the same predicate
+            // `identify_stack_pointer_global` selects on — an immutable constant
+            // that merely coincides with sp_init is never touched). #707: a
+            // multi-provider meld-fused shared-memory node (`meld fuse --memory
+            // shared`) carries one `__stack_pointer` global PER fused component,
+            // all initialized to the same sp_init — they alias the ONE shadow-stack
+            // reservation, so re-basing the whole equivalence class to the shrunk
+            // top `budget` is correct (they point into the same stack). A single-SP
+            // module (the common case) has exactly one member, so this is
+            // byte-identical to the pre-#707 behaviour there. Only an EMPTY set is a
+            // real failure (no mutable global carries the SP init) — refuse honestly.
+            if ng.sp_alias_indices.is_empty() {
                 anyhow::bail!(
-                    "--shadow-stack-size: could not uniquely identify the shadow-stack global to \
-                     re-base ({} globals have init == sp_init {}); refusing. VCR-MEM-001/#383.",
-                    sp_matches.len(),
+                    "--shadow-stack-size: no mutable global carries init == sp_init {}; cannot \
+                     identify the shadow-stack global to re-base; refusing. VCR-MEM-001/#383.",
+                    ng.sp_init
+                );
+            }
+            if ng.sp_alias_indices.len() > 1 {
+                info!(
+                    "Native-pointer shadow-stack shrink (#707): re-basing {} aliased \
+                     __stack_pointer globals (all init == sp_init {}) to budget {budget} — a \
+                     multi-provider shared-memory fused node shares one reservation.",
+                    ng.sp_alias_indices.len(),
                     ng.sp_init
                 );
             }
             let mut rebased = ng.globals.clone();
-            rebased[sp_matches[0]].1 = budget as i32;
+            for slot in rebased.iter_mut() {
+                if ng.sp_alias_indices.contains(&slot.0) {
+                    slot.1 = budget as i32;
+                }
+            }
             // Reservation now covers [0, B) stack + the preserved static tail that sat
             // above sp_init (the retargeted statics are in `.data`, unaffected).
             // saturating_sub: used_extent is `.min(linear_memory_bytes)`-clamped, so a
@@ -6006,6 +6046,7 @@ mod tests {
         let native = NativeGlobalsLayout {
             globals: vec![(0, 65_536)],
             sp_init: 65_536,
+            sp_alias_indices: vec![0],
             shadow_stack_size: None,
         };
 
@@ -6113,6 +6154,7 @@ mod tests {
         let native = NativeGlobalsLayout {
             globals: vec![(0, 65_536)],
             sp_init: 65_536,
+            sp_alias_indices: vec![0],
             shadow_stack_size: None,
         };
         let elf = build_relocatable_elf(
@@ -6206,6 +6248,7 @@ mod tests {
         let native = NativeGlobalsLayout {
             globals: vec![(0, 65_536)],
             sp_init: 65_536,
+            sp_alias_indices: vec![0],
             shadow_stack_size: None,
         };
 
