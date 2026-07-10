@@ -1,0 +1,6 @@
+bin/
+test/
+*.tmp
+*.tgz
+.DS_Store
+Thumbs.db

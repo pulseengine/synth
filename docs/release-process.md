@@ -61,6 +61,10 @@ an existing tag).
    — see Phase 4 below. Pushes the publishable workspace crates to
    crates.io via OIDC trusted publishing.
 
+4. **`release-npm.yml`** (chained via `workflow_run` after `release.yml`
+   completes) — publishes the `@pulseengine/synth` npm wrapper. See the
+   "npm distribution channel" section below.
+
 ## Provenance and signing model
 
 synth uses **two complementary mechanisms**, matching the sibling repos:
@@ -148,6 +152,76 @@ After the workflow finishes:
 - [ ] `publish-to-crates-io.yml` ran green: confirm
       `cargo install synth-cli` works on a clean machine, or check
       <https://crates.io/crates/synth-cli> shows the new version.
+
+## npm distribution channel
+
+Alongside crates.io, synth publishes an npm CLI wrapper — `@pulseengine/synth`
+— so the compiler can be installed with `npm install -g @pulseengine/synth` or
+run one-shot with `npx @pulseengine/synth --version`. The package lives in
+`npm/`.
+
+### How the wrapper works
+
+The package ships **no binaries**. It has no third-party dependencies. On
+install, its `postinstall` hook (`npm/install.js`):
+
+1. Detects the platform + arch and maps them to the Rust target triple
+   (`npm/index.js` — the single source of truth, mirroring the four targets
+   `release.yml` builds; there is no Windows build).
+2. Downloads the matching `synth-v<version>-<triple>.tar.gz` from the GitHub
+   Release whose tag equals the package version.
+3. Fetches `SHA256SUMS.txt` from the same release and **verifies** the
+   tarball's SHA-256 against it *before* extracting — a mismatch aborts the
+   install. This reuses the release's existing signed checksum manifest (the
+   same one covered by the cosign signature above) as the trust anchor.
+4. Extracts `synth` into `npm/bin/` and `run.js` execs it.
+
+Because the wrapper downloads at install time, publishing it does not require
+the binaries to exist at publish time — only at first user install, which is
+always after the Release page exists. That ordering is why `release-npm.yml`
+triggers on `workflow_run` after `release.yml`, not on tag push.
+
+This is a deliberate deviation from rivet's npm layout (one bundled binary
+package per platform, no checksum check). synth uses a single
+download-and-verify package because (a) checksum verification is a first-class
+requirement for the canonical Track-A supply-chain reference, (b) synth ships
+four targets and no Windows build, and (c) it keeps the maintainer surface to
+one package.
+
+### Publishing (automated)
+
+`release-npm.yml` runs after `release.yml` succeeds, resolves the version from
+the tag, pins `npm/package.json`'s `version` to it (so no manual bump is
+needed in the release commit), and runs `npm publish`. It requires the
+`NPM_TOKEN` repo secret to be a classic **Automation** token (or a granular
+token with read-write on `@pulseengine/*`); a classic *Publish* token fails
+under the org's 2FA-on-publish with `EOTP`. A preflight `npm whoami` step fails
+loud + early if the token is wrong. Backfill a missed release with the manual
+`workflow_dispatch` (pass the existing tag).
+
+### Publishing (manual fallback)
+
+If the workflow is unavailable, a maintainer with publish rights can release
+the wrapper by hand from a clean checkout of the tag:
+
+```bash
+cd npm
+npm version 0.3.1 --no-git-tag-version   # match the release tag (bare semver)
+npm test                                 # platform->tarball mapping unit tests
+npm pack --dry-run                        # sanity-check the file list
+npm publish --access public               # requires NPM_TOKEN / npm login
+```
+
+Then smoke-test: `npx @pulseengine/synth@0.3.1 --version` on macOS and Linux.
+
+### Release-checklist additions
+
+Add to the post-workflow checks below:
+
+- [ ] `release-npm.yml` ran green (or was backfilled via `workflow_dispatch`);
+      <https://www.npmjs.com/package/@pulseengine/synth> shows the new version.
+- [ ] `npx @pulseengine/synth@<version> --version` prints the matching version
+      on a clean machine (verifies the download + checksum path end-to-end).
 
 ## CHANGELOG.md mapping
 

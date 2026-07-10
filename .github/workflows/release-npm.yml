@@ -1,0 +1,119 @@
+name: Release NPM
+
+# Publishes the @pulseengine/synth npm wrapper after the main Release
+# workflow (release.yml) has created the GitHub Release with the per-target
+# binary archives + SHA256SUMS.txt.
+#
+# Unlike rivet (which ships one npm package per platform with the binaries
+# bundled), synth's wrapper is a SINGLE package that downloads and
+# checksum-verifies the matching release tarball at install time. So there is
+# exactly one package to publish, and it does not need the binaries present at
+# publish time — only at first install, which is always after the Release page
+# exists. workflow_run on Release completion satisfies that ordering.
+#
+# Trigger rationale: release.yml creates the Release using GITHUB_TOKEN, and
+# GitHub suppresses downstream `release: published` triggers from
+# GITHUB_TOKEN-authenticated runs (loop-prevention). workflow_run is the
+# documented escape hatch. Note: workflow_run only fires when this file is on
+# the default branch.
+
+concurrency:
+  group: release-npm-${{ github.event.workflow_run.head_branch || github.event.inputs.version || github.ref }}
+  cancel-in-progress: false
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to publish (e.g. v0.38.0)"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish @pulseengine/synth
+    # Skip on failed/cancelled upstream Release runs; always run for manual
+    # workflow_dispatch (backfills).
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      # Preflight: fail loud + early if NPM_TOKEN can't authenticate, instead
+      # of letting `npm publish` crash with a cryptic E404 (expired/no-access)
+      # or EOTP (a classic *Publish* token, which the org's 2FA-on-publish
+      # rejects in CI). npm publish needs a classic *Automation* token or a
+      # granular token with read-write on @pulseengine/*.
+      - name: Preflight — verify npm auth
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if ! who=$(npm whoami 2>/dev/null); then
+            echo "::error title=npm auth failed::NPM_TOKEN is invalid, expired, or the wrong type. npm publish needs a classic *Automation* token (or a granular token with read-write on @pulseengine/*); a classic *Publish* token fails under 2FA with EOTP. Regenerate at npmjs.com -> Access Tokens and update the NPM_TOKEN secret."
+            exit 1
+          fi
+          echo "npm auth OK as: $who"
+
+      - name: Resolve version
+        id: version
+        env:
+          # workflow_run: head_branch is the tag name (e.g. v0.38.0).
+          # workflow_dispatch: the user-supplied tag input.
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          INPUT_TAG: ${{ github.event.inputs.version }}
+        run: |
+          TAG="${INPUT_TAG:-$RUN_BRANCH}"
+          if [ -z "$TAG" ]; then
+            echo "No tag provided" >&2
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "Tag '$TAG' is not a release tag (expected vX.Y.Z); skipping" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Pin the package version to the tag at publish time so the download URL
+      # (v${version}) resolves to this exact release. Avoids a manual npm
+      # version bump in the release commit and keeps the two from drifting.
+      - name: Set package version
+        working-directory: npm
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          jq --arg v "$VERSION" '.version = $v' package.json > package.json.tmp
+          mv package.json.tmp package.json
+          cat package.json
+
+      - name: Publish to npm
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          {
+            echo "## NPM package published";
+            echo "";
+            echo "- \`@pulseengine/synth@$VERSION\`";
+            echo "";
+            echo "### Usage";
+            echo '```bash';
+            echo "npx @pulseengine/synth@$VERSION --version";
+            echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
