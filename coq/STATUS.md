@@ -485,8 +485,9 @@ measurable if they are counted separately:
 
 - **DSL-served** — the op's *shipped* lowering is a `sel_dsl` rule with a
   1:1 Qed theorem in `VcrSelRules.v`, register-polymorphic, mirror-pinned
-  byte-identical to the hand-written arm(s) (behind `SYNTH_SEL_DSL`,
-  default OFF). These proofs are about the code that ships.
+  byte-identical to the hand-written arm(s) (`SYNTH_SEL_DSL`, **default ON**
+  since the increment-1..4 flip — opt-out `SYNTH_NO_SEL_DSL=1`). These proofs
+  are about the code that ships — and now, by default, the code that DOES ship.
 - **model-only** — the op is proven only against `compile_wasm_to_arm`
   (Compilation.v), the fixed-register model that diverges from the shipped
   Rust selector in documented ways (#73). Evidence about a model, not the

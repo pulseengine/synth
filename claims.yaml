@@ -163,7 +163,7 @@ claims:
 
   - id: SYNTH-VCR-SEL-001-STATUS
     doc: README.md
-    text: "increments 1–4 landed flag-off (`SYNTH_SEL_DSL`)"
+    text: "increments 1–4 shipped default-on (`SYNTH_SEL_DSL`, opt-out `SYNTH_NO_SEL_DSL=1`)"
     evidence:
       - kind: yaml-field
         path: artifacts/verified-codegen-roadmap.yaml

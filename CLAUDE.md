@@ -121,8 +121,10 @@ frozen and oracle-gated every step:
 - **Track A (core):** `VCR-RA-001` allocator with Belady spilling — **verified,
   default-on since v0.24.0** (`SYNTH_SPILL_REALLOC`; `SYNTH_SPILL_ON_EXHAUST`
   built flag-off, silicon-gated #580). Next: `VCR-SEL-001` Rocq-discharged
-  verified selector DSL (increments 1–4 landed flag-off, 40 rules / 40 Qed,
-  `SYNTH_SEL_DSL`) and `VCR-PERF-002` proof-carrying specialization (#494,
+  verified selector DSL (increments 1–4 shipped **default-on**, 40 rules / 40 Qed,
+  `SYNTH_SEL_DSL`; the Rocq-proved rules are the SHIPPED lowering path for their
+  40 covered ops, opt-out `SYNTH_NO_SEL_DSL=1`, byte-invisible flip) and
+  `VCR-PERF-002` proof-carrying specialization (#494,
   0.45× floor; phase 1 facts ingestion landed, PR #624).
 - **Track B (semantics):** `VCR-ISA-001` Sail-generated Rocq ISA model —
   approved, Sail/ASL bridge spike landed (92 Qed, `coq/Synth/ARM/SailArmBridge.v`);
