@@ -15363,6 +15363,54 @@ mod tests {
         assert_eq!(l.stack.get(&5), Some(&(4, false)));
     }
 
+    /// #719: AAPCS-VFP independent register pools — an f32 param consumes no core
+    /// register, so the surrounding integer params fill R0.. as if it were absent.
+    #[test]
+    fn test_719_aapcs_vfp_mixed_param_pools() {
+        // (i32, f32): i32 -> R0, f32 skipped (VFP-homed elsewhere).
+        let l = aapcs_param_layout(2, &[false, false], &[false, true]);
+        assert_eq!(l.regs.get(&0), Some(&Reg::R0));
+        assert_eq!(l.regs.get(&1), None); // f32 not in the core pool
+        assert!(l.stack.is_empty());
+        // (f32, i32): the discriminator — i32 -> R0, NOT R1.
+        let l = aapcs_param_layout(2, &[false, false], &[true, false]);
+        assert_eq!(l.regs.get(&0), None); // f32 skipped
+        assert_eq!(l.regs.get(&1), Some(&Reg::R0)); // i32 back-to-R0
+        // (f32, i32, i32, i32, i32): four i32s fill R0..R3, the 5th spills @ nsaa 0
+        // (the f32 never took a core slot).
+        let l = aapcs_param_layout(5, &[false; 5], &[true, false, false, false, false]);
+        assert_eq!(l.regs.get(&1), Some(&Reg::R0));
+        assert_eq!(l.regs.get(&2), Some(&Reg::R1));
+        assert_eq!(l.regs.get(&3), Some(&Reg::R2));
+        assert_eq!(l.regs.get(&4), Some(&Reg::R3));
+        // (i32, f32, i32): both i32s are R0, R1; f32 consumes nothing.
+        let l = aapcs_param_layout(3, &[false; 3], &[false, true, false]);
+        assert_eq!(l.regs.get(&0), Some(&Reg::R0));
+        assert_eq!(l.regs.get(&2), Some(&Reg::R1));
+        assert_eq!(l.regs.get(&1), None);
+    }
+
+    /// #719: f32-across-a-call is DECLINED loudly this round (S0..S15 are
+    /// caller-saved; the spill/rehome across call sites is the next increment).
+    /// The function must Err (loud skip), never silently miscompile.
+    #[test]
+    fn test_719_f32_with_call_declines_loudly() {
+        let mut selector = fresh_selector();
+        selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
+        selector.set_params_f32(vec![true]); // one f32 param
+        let ops = vec![WasmOp::LocalGet(0), WasmOp::Call(0)];
+        let result = selector.select_with_stack(&ops, 1);
+        assert!(
+            result.is_err(),
+            "f32-in-a-function-with-a-call must decline"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("caller-saved") && err.contains("call"),
+            "decline must name the caller-saved-across-call cause, got: {err}"
+        );
+    }
+
     /// #587: the i64 spill-slot pool is growable — the same op stream that
     /// exhausts the default 8-slot pool compiles with a grown pool. 20 i64
     /// constants are simultaneously live (~16 concurrent pair spills; the
