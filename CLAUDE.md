@@ -89,7 +89,7 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 472 Qed / 6 Admitted
+See `coq/STATUS.md` for the complete coverage matrix. Current: 512 Qed / 6 Admitted
 (+2 `admit.` tactics) across `coq/Synth/`. This count is CI-gated: `claims.yaml` +
 `scripts/claim_check.py` re-derive it on every commit — when a proof lands, update
 the docs AND `claims.yaml` in the same PR. Proofs are tiered:
@@ -129,7 +129,13 @@ frozen and oracle-gated every step:
   0.45× floor; phase 1 facts ingestion landed, PR #624).
 - **Track B (semantics):** `VCR-ISA-001` Sail-generated Rocq ISA model —
   approved, Sail/ASL bridge spike landed (92 Qed, `coq/Synth/ARM/SailArmBridge.v`);
-  `VCR-WASM-001` WasmCert-Coq source semantics — proposed.
+  first "generate the model from the shipped selector" increment landed (#667):
+  the shipped `sel_dsl::RULES` table now EMITS the 40 covered ops' Rocq lowerings
+  (`coq/Synth/Synth/VcrSelRulesGenerated.v`, `Module Gen`), each proven equal to
+  the hand-written `VcrSelRules.rule_X` by a `reflexivity` Qed
+  (`VcrSelRulesGenCheck.v`, 40 Qed) — Coq's kernel is the divergence gate, so the
+  #682 model↔selector drift is unrepresentable at the instruction-sequence level
+  for those ops. `VCR-WASM-001` WasmCert-Coq source semantics — proposed.
 - **Track C (validation):** the differential oracles are CI-gated jobs
   (cmp-select, RV32 shift-fold/const-addr-fold, callee-saved, spill-frame,
   symtab-based frozen-fixture differentials).

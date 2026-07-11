@@ -105,6 +105,25 @@ impl RegVar {
             RegVar::RmHi => "rm_hi",
         }
     }
+
+    /// The Coq binder name this variable uses in `VcrSelRules.v`. Identical to
+    /// [`RegVar::rust_name`] for the i32 shapes, but the i64 pair binders drop
+    /// the underscore (`rd_lo` in Rust is `rdlo` in Coq) — this is the one
+    /// spelling difference the Rocq generator must bridge.
+    pub const fn coq_name(self) -> &'static str {
+        match self {
+            RegVar::Rd => "rd",
+            RegVar::Rn => "rn",
+            RegVar::Rm => "rm",
+            RegVar::Rs => "rs",
+            RegVar::RdLo => "rdlo",
+            RegVar::RdHi => "rdhi",
+            RegVar::RnLo => "rnlo",
+            RegVar::RnHi => "rnhi",
+            RegVar::RmLo => "rmlo",
+            RegVar::RmHi => "rmhi",
+        }
+    }
 }
 
 /// An explicit side condition a rule's register assignment must satisfy.
@@ -185,6 +204,42 @@ impl CondCode {
             CondCode::Ls => "Condition::LS",
             CondCode::Ge => "Condition::GE",
             CondCode::Hs => "Condition::HS",
+        }
+    }
+
+    /// The conditional-`MOV` constructor the i32 `SetCond` shape expands to in
+    /// the flat Rocq model (`ArmOp::SetCond` is modeled as
+    /// `MOV rd #0; MOV<cc> rd #1`, following the Compilation.v convention).
+    const fn coq_movcc(self) -> &'static str {
+        match self {
+            CondCode::Eq => "MOVEQ",
+            CondCode::Ne => "MOVNE",
+            CondCode::Lt => "MOVLT",
+            CondCode::Lo => "MOVLO",
+            CondCode::Gt => "MOVGT",
+            CondCode::Hi => "MOVHI",
+            CondCode::Le => "MOVLE",
+            CondCode::Ls => "MOVLS",
+            CondCode::Ge => "MOVGE",
+            CondCode::Hs => "MOVHS",
+        }
+    }
+
+    /// The `condition` constructor the i64 `I64SetCond` pseudo-op carries in
+    /// the Rocq model. Note the unsigned codes map to the carry-flag names the
+    /// ARM model uses: `Lo` (LO) is `Cond_CC`, `Hs` (HS) is `Cond_CS`.
+    const fn coq_condition(self) -> &'static str {
+        match self {
+            CondCode::Eq => "Cond_EQ",
+            CondCode::Ne => "Cond_NE",
+            CondCode::Lt => "Cond_LT",
+            CondCode::Lo => "Cond_CC",
+            CondCode::Gt => "Cond_GT",
+            CondCode::Hi => "Cond_HI",
+            CondCode::Le => "Cond_LE",
+            CondCode::Ls => "Cond_LS",
+            CondCode::Ge => "Cond_GE",
+            CondCode::Hs => "Cond_CS",
         }
     }
 }
@@ -1361,6 +1416,209 @@ pub fn generate_lowering_source() -> String {
     out
 }
 
+// ─── VCR-ISA-001 (#667): generate the Rocq model from the shipped selector ────
+//
+// The functions below turn the SAME [`RULES`] table into the Rocq lowering
+// `Definition`s that `coq/Synth/Synth/VcrSelRules.v` proves correct. Today those
+// definitions are HAND-WRITTEN in `VcrSelRules.v` and can silently diverge from
+// the shipped selector (the #682 vacuous-proof incident: a Qed certified a
+// hardware-wrong program because the model had drifted). Generating them from
+// `RULES` closes that divergence at the *instruction-sequence* level (the
+// existing `//coq:vcr_sel_rules_coverage` gate only pins the rule NAMES).
+//
+// The emitted `Gen.<rule>` module is checked against the hand-written
+// `<rule>` by a Coq `reflexivity` proof per rule (see
+// `coq/Synth/Synth/VcrSelRulesGenCheck.v`): Coq's kernel — not a Rust text
+// normalizer — is the oracle, so the fiddly spots (the `SetCond` →
+// two-instruction expansion, the i32 `MOV<cc>` vs i64 `Cond_*` mapping) cannot
+// hide a false green. The `.v` artifacts are committed and pinned up-to-date by
+// the tests below.
+
+/// Render one [`TemplateOp`] as the Coq `arm_instr` term(s) it denotes. A
+/// `SetCond` expands to the TWO-instruction `MOV rd #0; MOV<cc> rd #1` shape
+/// the flat model uses; every other shape is a single instruction.
+fn coq_instrs(t: &TemplateOp) -> Vec<String> {
+    let r = |v: RegVar| v.coq_name();
+    match *t {
+        TemplateOp::AddReg { rd, rn, rm } => {
+            vec![format!("ADD {} {} (Reg {})", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::SubReg { rd, rn, rm } => {
+            vec![format!("SUB {} {} (Reg {})", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::Mul { rd, rn, rm } => vec![format!("MUL {} {} {}", r(rd), r(rn), r(rm))],
+        TemplateOp::AndReg { rd, rn, rm } => {
+            vec![format!("AND {} {} (Reg {})", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::OrrReg { rd, rn, rm } => {
+            vec![format!("ORR {} {} (Reg {})", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::EorReg { rd, rn, rm } => {
+            vec![format!("EOR {} {} (Reg {})", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::RsbImm { rd, rn, imm } => {
+            vec![format!("RSB {} {} (Imm (I32.repr {}))", r(rd), r(rn), imm)]
+        }
+        TemplateOp::AndImm { rd, rn, imm } => {
+            vec![format!("AND {} {} (Imm (I32.repr {}))", r(rd), r(rn), imm)]
+        }
+        TemplateOp::RorReg { rd, rn, rm } => {
+            vec![format!("ROR_reg {} {} {}", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::LslReg { rd, rn, rm } => {
+            vec![format!("LSL_reg {} {} {}", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::LsrReg { rd, rn, rm } => {
+            vec![format!("LSR_reg {} {} {}", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::AsrReg { rd, rn, rm } => {
+            vec![format!("ASR_reg {} {} {}", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::CmpReg { rn, rm } => vec![format!("CMP {} (Reg {})", r(rn), r(rm))],
+        TemplateOp::SetCond { rd, cond } => vec![
+            format!("MOV {} (Imm I32.zero)", r(rd)),
+            format!("{} {} (Imm I32.one)", cond.coq_movcc(), r(rd)),
+        ],
+        TemplateOp::AddsReg { rd, rn, rm } => {
+            vec![format!("ADDS {} {} (Reg {})", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::AdcReg { rd, rn, rm } => {
+            vec![format!("ADC {} {} (Reg {})", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::SubsReg { rd, rn, rm } => {
+            vec![format!("SUBS {} {} (Reg {})", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::SbcReg { rd, rn, rm } => {
+            vec![format!("SBC {} {} (Reg {})", r(rd), r(rn), r(rm))]
+        }
+        TemplateOp::I64SetCondZ { rd, rn_lo, rn_hi } => {
+            vec![format!("I64SetCondZ {} {} {}", r(rd), r(rn_lo), r(rn_hi))]
+        }
+        TemplateOp::Clz { rd, rm } => vec![format!("CLZ {} {}", r(rd), r(rm))],
+        TemplateOp::Rbit { rd, rm } => vec![format!("RBIT {} {}", r(rd), r(rm))],
+        TemplateOp::Popcnt { rd, rm } => vec![format!("POPCNT {} {}", r(rd), r(rm))],
+        TemplateOp::I64SetCond {
+            rd,
+            rn_lo,
+            rn_hi,
+            rm_lo,
+            rm_hi,
+            cond,
+        } => vec![format!(
+            "I64SetCond {} {} {} {} {} {}",
+            r(rd),
+            r(rn_lo),
+            r(rn_hi),
+            r(rm_lo),
+            r(rm_hi),
+            cond.coq_condition()
+        )],
+    }
+}
+
+/// Emit the Coq `Definition <name> (<binders> : arm_reg) : arm_program := [..].`
+/// for one rule — the register-polymorphic ARM sequence the shipped selector
+/// emits, in the exact surface syntax `VcrSelRules.v` hand-writes.
+pub fn emit_rocq_definition(rule: &SelRule) -> String {
+    let binders: Vec<&str> = rule.params.iter().map(|p| p.coq_name()).collect();
+    let instrs: Vec<String> = rule.seq.iter().flat_map(coq_instrs).collect();
+    format!(
+        "Definition {} ({} : arm_reg) : arm_program :=\n  [{}].",
+        rule.name,
+        binders.join(" "),
+        instrs.join("; "),
+    )
+}
+
+/// Generate `coq/Synth/Synth/VcrSelRulesGenerated.v` from [`RULES`] — the whole
+/// rule table's lowerings wrapped in a `Module Gen`, so the cross-check file can
+/// state `Gen.<rule> = <rule>` without a name collision.
+///
+/// Committed to the tree and pinned by
+/// [`tests::rocq_generated_lowering_is_up_to_date`]; regenerate with
+/// `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.
+pub fn generate_rocq_lowering_source() -> String {
+    let mut out = String::new();
+    out.push_str(
+        "(** * VCR-ISA-001 (#667): the selector rule table's Rocq lowerings, GENERATED.\n\
+         \n\
+         GENERATED FILE — DO NOT EDIT BY HAND.\n\
+         \n\
+         Emitted by [crate::sel_dsl::generate_rocq_lowering_source] from the\n\
+         shipped rule table [crates/synth-synthesis/src/sel_dsl/mod.rs] (RULES),\n\
+         the SAME table that produces the shipped Rust lowering\n\
+         ([sel_dsl/generated.rs]). Each [Gen.rule_X] below is proven equal to the\n\
+         hand-written [rule_X] of [VcrSelRules.v] by a [reflexivity] Qed in\n\
+         [VcrSelRulesGenCheck.v] — so the Rocq model the theorems are ABOUT cannot\n\
+         silently diverge from the shipped selector for the covered ops (the #682\n\
+         vacuous-proof failure mode, closed at the instruction-sequence level).\n\
+         \n\
+         Pinned up-to-date by the [rocq_generated_lowering_is_up_to_date] cargo\n\
+         test; regenerate with\n\
+         [SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl]. *)\n\
+         \n\
+         From Stdlib Require Import List.\n\
+         From Stdlib Require Import ZArith.\n\
+         Require Import Synth.Common.Base.\n\
+         Require Import Synth.Common.Integers.\n\
+         Require Import Synth.ARM.ArmState.\n\
+         Require Import Synth.ARM.ArmInstructions.\n\
+         Import ListNotations.\n\
+         Open Scope Z_scope.\n\
+         \n\
+         Module Gen.\n",
+    );
+    for rule in RULES {
+        out.push('\n');
+        out.push_str(&emit_rocq_definition(rule));
+        out.push('\n');
+    }
+    out.push_str("\nEnd Gen.\n");
+    out
+}
+
+/// Generate `coq/Synth/Synth/VcrSelRulesGenCheck.v` — one `reflexivity` Qed per
+/// rule asserting the generated `Gen.<rule>` equals the hand-written `<rule>` of
+/// `VcrSelRules.v`. This is the divergence GATE: Coq's kernel checks the two
+/// lowerings are convertible, so any edit to either side that changes the
+/// emitted sequence fails to compile under `//coq:verify_proofs`.
+///
+/// Committed and pinned by [`tests::rocq_gencheck_is_up_to_date`].
+pub fn generate_rocq_gencheck_source() -> String {
+    let mut out = String::new();
+    out.push_str(
+        "(** * VCR-ISA-001 (#667): generated-vs-hand-written lowering cross-check.\n\
+         \n\
+         GENERATED FILE — DO NOT EDIT BY HAND.\n\
+         \n\
+         Emitted by [crate::sel_dsl::generate_rocq_gencheck_source]. One\n\
+         [reflexivity] Qed per rule proving the GENERATED lowering\n\
+         ([VcrSelRulesGenerated.Gen.rule_X], emitted straight from the shipped\n\
+         [sel_dsl::RULES] table) is definitionally equal to the HAND-WRITTEN\n\
+         [VcrSelRules.rule_X] the correctness theorems are stated about. If the\n\
+         shipped selector's sequence for a covered op ever diverges from the\n\
+         model, the matching [reflexivity] stops type-checking — the gate goes\n\
+         red under [//coq:verify_proofs]. Coq's kernel is the oracle; there is no\n\
+         text normalizer to get wrong (the #682 lesson).\n\
+         \n\
+         Pinned up-to-date by the [rocq_gencheck_is_up_to_date] cargo test;\n\
+         regenerate with\n\
+         [SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl]. *)\n\
+         \n\
+         Require Import Synth.ARM.ArmInstructions.\n\
+         Require Import Synth.Synth.VcrSelRules.\n\
+         Require Import Synth.Synth.VcrSelRulesGenerated.\n",
+    );
+    for rule in RULES {
+        out.push('\n');
+        out.push_str(&format!(
+            "Lemma check_{name} : Gen.{name} = {name}.\nProof. reflexivity. Qed.\n",
+            name = rule.name
+        ));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1386,6 +1644,83 @@ mod tests {
             "src/sel_dsl/generated.rs is stale relative to the RULES table — \
              regenerate with SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl"
         );
+    }
+
+    /// VCR-ISA-001 (#667): the generated Rocq lowerings
+    /// (`coq/Synth/Synth/VcrSelRulesGenerated.v`) are the committed output of
+    /// the SAME rule table, emitted straight from `RULES`. Any edit to the
+    /// table (or the file) without regenerating fails here; the Coq
+    /// `reflexivity` cross-check (`VcrSelRulesGenCheck.v`) then proves the
+    /// generated lowerings equal the hand-written model. Regenerate with
+    /// `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.
+    #[test]
+    fn rocq_generated_lowering_is_up_to_date() {
+        let path = crate_root().join("../../coq/Synth/Synth/VcrSelRulesGenerated.v");
+        let expected = generate_rocq_lowering_source();
+        if std::env::var("SYNTH_SEL_DSL_REGEN").is_ok() {
+            std::fs::write(&path, &expected).expect("write VcrSelRulesGenerated.v");
+        }
+        let actual = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        assert_eq!(
+            actual, expected,
+            "coq/Synth/Synth/VcrSelRulesGenerated.v is stale relative to the RULES \
+             table — regenerate with SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl"
+        );
+    }
+
+    /// VCR-ISA-001 (#667): the generated cross-check file
+    /// (`coq/Synth/Synth/VcrSelRulesGenCheck.v`, one `reflexivity` Qed per
+    /// rule) is the committed output of `RULES`. Regenerate with
+    /// `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.
+    #[test]
+    fn rocq_gencheck_is_up_to_date() {
+        let path = crate_root().join("../../coq/Synth/Synth/VcrSelRulesGenCheck.v");
+        let expected = generate_rocq_gencheck_source();
+        if std::env::var("SYNTH_SEL_DSL_REGEN").is_ok() {
+            std::fs::write(&path, &expected).expect("write VcrSelRulesGenCheck.v");
+        }
+        let actual = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        assert_eq!(
+            actual, expected,
+            "coq/Synth/Synth/VcrSelRulesGenCheck.v is stale relative to the RULES \
+             table — regenerate with SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl"
+        );
+    }
+
+    /// The generated Rocq `Definition` bodies must match the hand-written
+    /// `VcrSelRules.v` lowerings verbatim (whitespace-normalized). This is the
+    /// fast Rust-side smoke of the same property the Coq `reflexivity` gate
+    /// proves definitionally — it catches a drift even without a Coq build.
+    #[test]
+    fn generated_definitions_match_handwritten_vcr_sel_rules() {
+        let v_path = crate_root().join("../../coq/Synth/Synth/VcrSelRules.v");
+        let v = std::fs::read_to_string(&v_path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", v_path.display()));
+        // Collapse all runs of whitespace to a single space for comparison.
+        let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        for rule in RULES {
+            let generated = norm(&emit_rocq_definition(rule));
+            // Find `Definition <name> ` ... up to the terminating `.` that ends
+            // the definition (the body is a `[..]` list, no interior periods).
+            let needle = format!("Definition {} ", rule.name);
+            let start = v
+                .find(&needle)
+                .unwrap_or_else(|| panic!("no `{needle}` in VcrSelRules.v"));
+            let rest = &v[start..];
+            let end = rest
+                .find(".\n")
+                .or_else(|| rest.find(".\r\n"))
+                .unwrap_or_else(|| panic!("unterminated Definition {}", rule.name));
+            let handwritten = norm(&rest[..=end]);
+            assert_eq!(
+                generated, handwritten,
+                "generated Rocq lowering for {} diverges from the hand-written \
+                 VcrSelRules.v Definition (VCR-ISA-001 divergence)",
+                rule.name
+            );
+        }
     }
 
     /// Rule names are unique and follow the `rule_` prefix the 1:1 theorem

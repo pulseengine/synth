@@ -25,16 +25,16 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-README
     doc: README.md
-    text: "472 Qed / 6 Admitted"
+    text: "512 Qed / 6 Admitted"
     evidence:
       - kind: count-eq                       # ALL THREE README spots must agree —
-        pattern: '472 Qed / 6 Admitted'      # a verbatim check alone greens if one
+        pattern: '512 Qed / 6 Admitted'      # a verbatim check alone greens if one
         glob: ['README.md']                  # of them drifts while another matches
         expect: 3
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 472
+        expect: 512
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -46,12 +46,12 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "472 Qed / 6 Admitted"
+    text: "512 Qed / 6 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 472
+        expect: 512
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -59,16 +59,16 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "472 Qed / 6 Admitted"
+    text: "512 Qed / 6 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '472 Qed / 6 Admitted'
+        pattern: '512 Qed / 6 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 472
+        expect: 512
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']

@@ -1,7 +1,9 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-07-10 (recount: 472 Qed / 6 Admitted, +2 admit., crude
-`grep "Qed\."` over `coq/Synth/**/*.v` — same method as prior recounts)
+**Last Updated: 2026-07-11 (recount: 512 Qed / 6 Admitted, +2 admit., crude
+`grep "Qed\."` over `coq/Synth/**/*.v` — same method as prior recounts; the
++40 vs the prior 472 are the VCR-ISA-001 #667 generated-vs-model cross-check
+lemmas in `VcrSelRulesGenCheck.v`, one `reflexivity` Qed per shipped rule)
 
 The headline count is CI-gated: `claims.yaml` + `scripts/claim_check.py`
 re-derive `Qed.`/`Admitted.`/`admit.` counts from `coq/Synth/**/*.v` on every
@@ -158,7 +160,7 @@ and predates the VcrSelRules (42), VcrSelPilot (7) and SailArmBridge (92) Qed;
 see the per-file breakdown below for current per-file counts. The T3 row and
 the headline total are re-derived by the claim gate.
 
-**Total: 472 Qed / 6 Admitted (+2 admit.) across all files** (recount 2026-07-10, CI-gated via `claims.yaml`)
+**Total: 512 Qed / 6 Admitted (+2 admit.) across all files** (recount 2026-07-10, CI-gated via `claims.yaml`)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,
@@ -435,7 +437,8 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 | WasmValues.v | 2 | 0 | Infra |
 | VcrSelPilot.v | 7 | 0 | T1 (register-polymorphic; VCR-SEL-001 go/abandon measurement) |
 | VcrSelRules.v | 42 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2+3+4 rule table — 40 rule theorems 1:1 with `coq/vcr_sel_rules.manifest`, coverage-gated by `//coq:vcr_sel_rules_coverage`, + 2 mod-32 helper lemmas #683) |
-| **Total** | **472** | **6** | (+2 `admit.`) |
+| VcrSelRulesGenCheck.v | 40 | 0 | Gate (VCR-ISA-001 #667: one `reflexivity` Qed per rule proving the GENERATED lowering `Gen.rule_X` — emitted from the shipped `sel_dsl::RULES` into `VcrSelRulesGenerated.v` — equals the hand-written `VcrSelRules.rule_X`; closes model↔selector divergence at the instruction-sequence level) |
+| **Total** | **512** | **6** | (+2 `admit.`) |
 
 ## VCR-SEL-001 increments 1 (2026-07-07) + 2 + 3 + 4 (2026-07-08): VcrSelRules.v
 

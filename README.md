@@ -109,7 +109,7 @@ synth verify examples/wat/simple_add.wat firmware.elf
 | ELF output with vector table | Implemented | Thumb bit set on symbols; not linked on real hardware |
 | Linker scripts (STM32, nRF52840, generic) | Implemented | Generated, not tested with real boards |
 | Cross-compilation (`--link` flag) | Implemented | Requires `arm-none-eabi-gcc` in PATH; not CI-tested |
-| Rocq mechanized proofs | 472 Qed / 6 Admitted | i32 + i64 T1 proofs; div_s trap guard re-admitted (div_u/rem_s/rem_u discharged) |
+| Rocq mechanized proofs | 512 Qed / 6 Admitted | i32 + i64 T1 correctness proofs + 40 VCR-ISA-001 (#667) generated-vs-model reflexivity gate lemmas; div_s trap guard re-admitted (div_u/rem_s/rem_u discharged) |
 | SMT translation validation | ordeal (pure-Rust QF_BV) default | v0.27.0 (#553); Z3 demoted to feature-gated differential oracle — 141/141 agreement |
 | WebAssembly spec test suite | 227/257 compile | Compilation only — not executed on emulator |
 
@@ -194,7 +194,7 @@ Per the [PulseEngine Verification Guide](https://pulseengine.eu/guides/VERIFICAT
 
 | Track | Status | Coverage |
 |-------|--------|----------|
-| **Rocq** | Partial | 472 Qed / 6 Admitted — div_s trap guard re-admitted (div_u/rem_s/rem_u discharged) |
+| **Rocq** | Partial | 512 Qed / 6 Admitted (incl. 40 VCR-ISA-001 #667 generated-vs-model gate lemmas) — div_s trap guard re-admitted (div_u/rem_s/rem_u discharged) |
 | **Kani** | Starting | 18 bounded model checking harnesses for ARM encoder |
 | **Verus** | Starting | 8 spec functions in `synth-synthesis/src/contracts.rs`; Bazel integration via `rules_verus` |
 | **Lean** | Not started | — |
@@ -206,7 +206,7 @@ See `artifacts/verification-gaps.yaml` for the detailed gap analysis (VG-001 thr
 Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM semantics for each operation. The proof suite lives in `coq/Synth/` and covers ARM instruction semantics, WASM stack-machine semantics, and per-operation correctness theorems.
 
 ```
-472 Qed / 6 Admitted (+2 admit. tactics)   [CI-gated: claims.yaml + scripts/claim_check.py]
+512 Qed / 6 Admitted (+2 admit. tactics)   [CI-gated: claims.yaml + scripts/claim_check.py]
   T1 result-correspondence (ARM output = WASM result): all i32 ops and all
      i64 ops — i64 T1 parity since v0.11.0, 0 i64 admits (coq/STATUS.md)
   T2 existence-only: f32/f64 and remaining categories

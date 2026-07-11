@@ -246,6 +246,47 @@ rocq_library(
     ],
 )
 
+# VCR-ISA-001 (#667): the selector rule table's Rocq lowerings GENERATED from
+# the shipped sel_dsl::RULES (crates/synth-synthesis) — the same table that
+# emits the shipped Rust lowering. Wrapped in `Module Gen` so the cross-check
+# below can name both `Gen.rule_X` and the hand-written `rule_X`. Committed +
+# pinned up-to-date by the cargo test `rocq_generated_lowering_is_up_to_date`.
+rocq_library(
+    name = "vcr_sel_rules_generated",
+    srcs = ["Synth/Synth/VcrSelRulesGenerated.v"],
+    include_path = "Synth",
+    deps = [
+        ":base",
+        ":common",
+        ":arm_state",
+        ":arm_instructions",
+    ],
+)
+
+# VCR-ISA-001 (#667) divergence GATE: one `reflexivity` Qed per rule proving the
+# GENERATED lowering (Gen.rule_X) equals the HAND-WRITTEN VcrSelRules.rule_X the
+# correctness theorems are about. If the shipped selector's sequence for a
+# covered op ever drifts from the model, the matching reflexivity stops
+# type-checking and this target (part of :verify_proofs) goes red — Coq's kernel
+# is the oracle, closing the #682 model-vs-selector divergence at the
+# instruction-sequence level. Committed + pinned by the cargo test
+# `rocq_gencheck_is_up_to_date`.
+rocq_library(
+    name = "vcr_sel_rules_gencheck",
+    srcs = ["Synth/Synth/VcrSelRulesGenCheck.v"],
+    include_path = "Synth",
+    # Requiring VcrSelRules pulls its whole transitive loadpath (the rocq rules
+    # do not propagate deps automatically), so list the same set vcr_sel_rules
+    # carries plus the two new libraries this file names.
+    deps = _CORRECTNESS_FULL_DEPS + [
+        ":tactics",
+        ":arm_flag_lemmas",
+        ":correctness_tactics",
+        ":vcr_sel_rules",
+        ":vcr_sel_rules_generated",
+    ],
+)
+
 # Master index: imports all correctness proofs
 rocq_library(
     name = "correctness_complete",
@@ -274,6 +315,8 @@ rocq_proof_test(
         ":sail_arm_bridge",
         ":vcr_sel_pilot",
         ":vcr_sel_rules",
+        ":vcr_sel_rules_generated",
+        ":vcr_sel_rules_gencheck",
         ":vcr_sel_expansion",
     ],
 )
