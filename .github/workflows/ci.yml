@@ -358,6 +358,14 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/bulk_local_clobber_677_differential.py
       - name: Run bulk-memory mask-coverage oracle (#679, thumb2)
         run: SYNTH=./target/debug/synth python scripts/repro/bulk_mask_679_differential.py
+      # f32 hard-float SOUNDNESS oracles (GI-FPU-002). Dev-only before v0.40.0 —
+      # the exact gap that let TWO silent miscompiles ship in v0.39.0 (trunc
+      # saturation #709, and every compare returning 0 via a flag-clobber #712).
+      # CI-gated now so the f32 path can't silently regress. The compare oracle
+      # covers ALL SIX comparisons (#712: eq/ne/lt/gt/le/ge — the old harness
+      # exercised only lt/gt, which is how eq/ne/le/ge stayed ungated).
+      - name: Run f32 arith/compare execution oracle (#619/#712, cortex-m4f)
+        run: SYNTH=./target/debug/synth python scripts/repro/f32_vfp_619_differential.py
       # #708/#709: f32.load/reinterpret bit-casts + i32.trunc_f32 trap table.
       - name: Run f32 load/reinterpret + trunc-trap oracle (#708/#709, m4f)
         run: SYNTH=./target/debug/synth python scripts/repro/f32_mem_trunc_708_709_differential.py

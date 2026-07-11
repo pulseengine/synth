@@ -71,7 +71,7 @@ I32_INPUTS = [0, 1, -1, 7, -7, 2147483647, -2147483648, 100000]
 TRUNC_INPUTS = [0.0, 1.9, -1.9, 2.5, -2.5, 123.75, -123.75, 2000000.5]
 
 BINOP_F32 = ["fadd", "fsub", "fmul", "fdiv"]
-CMP_F32 = ["flt", "fgt"]
+CMP_F32 = ["flt", "fgt", "feq", "fne", "fle", "fge"]  # #712: all six, not just lt/gt
 # The f32 comparisons compile to VCMP.F32 + VMRS APSR_nzcv, FPSCR + IT + MOV.
 # HISTORY (#709): this harness ORIGINALLY skipped compare execution on the
 # premise that "unicorn does not model the VMRS FPSCR->APSR transfer." That
@@ -111,6 +111,23 @@ def f32_bits(x):
 
 def bits_f32(b):
     return struct.unpack("<f", struct.pack("<I", b & 0xFFFFFFFF))[0]
+
+
+def is_nan32(b):
+    """True if the 32 bits are any IEEE-754 f32 NaN (exp all-ones, mantissa!=0)."""
+    b &= 0xFFFFFFFF
+    return (b & 0x7F800000) == 0x7F800000 and (b & 0x007FFFFF) != 0
+
+
+def f32_bits_eq(got, want):
+    """WASM leaves the sign+payload of a NaN result NON-DETERMINISTIC (§4.3.3
+    NaN propagation) — a bit-exact compare of a NaN is over-specified and diverges
+    by wasmtime version (e.g. f32.div(-0.0,0.0): ARM's DefaultNaN 0x7fc00000 vs
+    wasmtime 0xffc00000, both valid qNaNs). So NaN==NaN regardless of bits; every
+    non-NaN result stays bit-exact (signed zero / inf still can't slip)."""
+    if is_nan32(got) and is_nan32(want):
+        return True
+    return (got & 0xFFFFFFFF) == (want & 0xFFFFFFFF)
 
 
 def run_unicorn(text, text_base, addr, s0_bits=None, s1_bits=None, r0=None):
@@ -176,7 +193,7 @@ def main():
             got = uc.reg_read(UC_ARM_REG_S0) & 0xFFFFFFFF
             want = f32_bits(wf(store, a, b))
             checked += 1
-            if got != want:
+            if not f32_bits_eq(got, want):
                 fails += 1
                 print(f"MISMATCH {fn}({a},{b}): synth 0x{got:08x} ({bits_f32(got)}) "
                       f"!= wasmtime 0x{want:08x} ({bits_f32(want)})")
