@@ -2299,6 +2299,19 @@ pub struct InstructionSelector {
     /// direct `BL func_N` (the relocatable-ELF builder rewrites `func_N` to the
     /// wasm field name, e.g. `k_spin_lock`) instead of `__meld_dispatch_import`.
     relocatable: bool,
+    /// #275: reject `call_indirect` on the SELF-CONTAINED image path. The
+    /// dispatch loads the function pointer from the contiguous R11 table
+    /// region, but R11 is the LINEAR-MEMORY base and the funcref table is a
+    /// SEPARATE WASM address space. In `--relocatable`/host-linked mode a
+    /// runtime places the table region at R11+offset, so the dispatch is
+    /// sound; in a self-contained image NOTHING populates that region, so the
+    /// load collides with linear-memory data — a SILENT MISCOMPILE. Until the
+    /// full fix (a dedicated, Thumb-bit-set func-pointer table + a non-R11
+    /// table base, silicon-gated — see #275) lands, decline LOUDLY on this
+    /// path (AFD-008: an unlowerable op must `Err`, never silently continue).
+    /// Set by the backend from `!config.relocatable`; the selector's own unit
+    /// tests construct it directly (default `false`) and are unaffected.
+    reject_self_contained_call_indirect: bool,
     /// #237: native-pointer ABI — wasm statics become `__synth_wasm_data`-
     /// relative (MOVW/MOVT), so a `base=0` host-pointer trampoline doesn't
     /// mis-address them.
@@ -2489,6 +2502,7 @@ impl InstructionSelector {
             bounds_check: BoundsCheckConfig::None,
             num_imports: 0,
             relocatable: false,
+            reject_self_contained_call_indirect: false,
             native_pointer_abi: false,
             linear_memory_bytes: 0,
             wasm_data_base: 0,
@@ -2527,6 +2541,7 @@ impl InstructionSelector {
             bounds_check,
             num_imports: 0,
             relocatable: false,
+            reject_self_contained_call_indirect: false,
             native_pointer_abi: false,
             linear_memory_bytes: 0,
             wasm_data_base: 0,
@@ -2656,6 +2671,29 @@ impl InstructionSelector {
         table_index: u32,
         type_index: u32,
     ) -> Result<ResolvedCallIndirectGuards> {
+        // #275: SELF-CONTAINED image path — decline LOUDLY. The R11 table-region
+        // layout contract (see `CallIndirectGuards`) requires an external
+        // runtime/harness to place the contiguous funcref-pointer region at
+        // R11+offset. R11 is the LINEAR-MEMORY base; in a `--relocatable`
+        // host-linked object the runtime supplies that region, but a
+        // self-contained ELF has no such runtime — nothing populates the
+        // region, so the pointer load `ldr ip, [r11, idx*4]` reads function
+        // pointers from linear-memory DATA (a silent miscompile: the dispatched
+        // "function pointer" is whatever data byte lives at that linmem offset).
+        // The sound fix (a dedicated, Thumb-bit-set func-pointer table + a
+        // non-R11 table base) is silicon-gated (#275); until it lands, refuse
+        // rather than emit the colliding dispatch (AFD-008).
+        if self.reject_self_contained_call_indirect {
+            return Err(synth_core::Error::synthesis(format!(
+                "call_indirect (table {table_index}, expected type {type_index}): \
+                 the self-contained Cortex-M image has no runtime to populate the \
+                 R11 funcref-table region (R11 is the linear-memory base), so the \
+                 dispatch would read function pointers from linear-memory data — a \
+                 silent miscompile. Declining (use --relocatable for a host-linked \
+                 object whose runtime places the table region, or await the \
+                 dedicated func-table fix) — #275"
+            )));
+        }
         let n_tables = self.call_indirect_guards.tables.len();
         let table = self
             .call_indirect_guards
@@ -2796,6 +2834,17 @@ impl InstructionSelector {
     /// builder) instead of dispatching through `__meld_dispatch_import`.
     pub fn set_relocatable(&mut self, relocatable: bool) {
         self.relocatable = relocatable;
+    }
+
+    /// #275: on the SELF-CONTAINED image path, decline `call_indirect` loudly
+    /// rather than emit the R11-table dispatch — R11 is the linear-memory
+    /// base and no runtime populates the funcref table region there, so the
+    /// dispatch reads function pointers from linear-memory data (a SILENT
+    /// MISCOMPILE). The backend sets this from `!config.relocatable`; the
+    /// `--relocatable`/host-linked path (where a runtime provides the table
+    /// region) leaves it `false` and keeps emitting the guarded dispatch.
+    pub fn set_reject_self_contained_call_indirect(&mut self, reject: bool) {
+        self.reject_self_contained_call_indirect = reject;
     }
 
     /// #237: enable the native-pointer ABI and supply the active data-segment
