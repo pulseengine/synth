@@ -160,12 +160,25 @@ struct AapcsParamLayout {
 /// For an all-i32 signature this is exactly `index_to_reg(i)` for `i < 4` and
 /// NSAA `(i-4)*4` beyond, so both maps are byte-identical to the legacy
 /// sequential scheme whenever no i64/f64 param is present.
-fn aapcs_param_layout(num_params: u32, params_i64: &[bool]) -> AapcsParamLayout {
+fn aapcs_param_layout(
+    num_params: u32,
+    params_i64: &[bool],
+    params_f32: &[bool],
+) -> AapcsParamLayout {
     let mut regs = std::collections::HashMap::new();
     let mut stack = std::collections::HashMap::new();
     let mut next: u8 = 0; // NCRN: next free core arg-register index (0..=4)
     let mut nsaa: i32 = 0; // next stacked-argument byte offset from entry SP
     for i in 0..num_params {
+        // #719: under the AAPCS-VFP (hard-float) calling convention an f32 param
+        // is passed in a single-precision S-register from the INDEPENDENT VFP
+        // argument pool (seeded separately into `f32_home` at S0,S1,…), so it
+        // consumes neither a core register nor an NSAA stack slot — the core
+        // walk must skip it. `(f32, i32)` therefore maps i32→R0 (not R1). Empty
+        // `params_f32` ⇒ no skips ⇒ byte-identical to the legacy layout.
+        if params_f32.get(i as usize).copied().unwrap_or(false) {
+            continue;
+        }
         let is_wide = params_i64.get(i as usize).copied().unwrap_or(false);
         if is_wide {
             if !next.is_multiple_of(2) {
@@ -200,7 +213,9 @@ fn aapcs_param_layout(num_params: u32, params_i64: &[bool]) -> AapcsParamLayout 
 /// Test-only: the selector itself uses the full layout.
 #[cfg(test)]
 fn aapcs_param_regs(num_params: u32, params_i64: &[bool]) -> std::collections::HashMap<u32, Reg> {
-    aapcs_param_layout(num_params, params_i64).regs
+    // Test helper covers integer signatures only (f32 param homing is exercised
+    // by the #719 execution differential); pass no f32 params.
+    aapcs_param_layout(num_params, params_i64, &[]).regs
 }
 
 /// True if any declared i64/f64 param of this function lands (wholly or its
@@ -1273,6 +1288,7 @@ fn compute_local_layout(
     wasm_ops: &[WasmOp],
     num_params: u32,
     params_i64: &[bool],
+    params_f32: &[bool],
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
     force_spill_area: bool,
@@ -1284,7 +1300,7 @@ fn compute_local_layout(
     let i64_set = infer_i64_locals(wasm_ops, func_ret_i64, type_ret_i64);
     // #503-i64: the width-aware AAPCS assignment — which params are register-
     // resident and which live on the caller's stack (and at what NSAA offset).
-    let aapcs = aapcs_param_layout(num_params, params_i64);
+    let aapcs = aapcs_param_layout(num_params, params_i64, params_f32);
 
     // Collect non-param local indices, in ascending order for deterministic layout.
     let mut used: BTreeSet<u32> = BTreeSet::new();
@@ -7201,7 +7217,7 @@ impl InstructionSelector {
         // back to a loud skip (warning + absent symbol), never wrong code.
         // (Empty `params_i64` ⇒ all-i32 ⇒ this is a no-op and every existing
         // fixture stays byte-identical.)
-        let param_layout = aapcs_param_layout(num_params, &self.params_i64);
+        let param_layout = aapcs_param_layout(num_params, &self.params_i64, &self.params_f32);
         let has_reg_i64_param = (0..num_params).any(|i| {
             self.params_i64.get(i as usize).copied().unwrap_or(false)
                 && param_layout.regs.contains_key(&i)
@@ -7274,6 +7290,7 @@ impl InstructionSelector {
             wasm_ops,
             num_params,
             &self.params_i64,
+            &self.params_f32,
             &self.func_ret_i64,
             &self.type_ret_i64,
             self.spill_on_exhaustion,
@@ -7593,23 +7610,18 @@ impl InstructionSelector {
                         self.target_name
                     )));
                 }
-                // Phase-1 honest declines (never a miscompile):
-                //  * mixed f32 + integer params — AAPCS-VFP uses independent
-                //    core (R0..R3) and VFP (S0..S15) argument pools, so an f32
-                //    param must not consume a core slot; the phase-1 core-reg
-                //    layout is not yet VFP-aware.
-                let has_int_param =
-                    (0..num_params).any(|i| !params_f32.get(i as usize).copied().unwrap_or(false));
-                if has_f32_param && has_int_param {
-                    return Err(synth_core::Error::synthesis(
-                        "GI-FPU-002 phase 1: mixed f32/integer parameter lists \
-                         are not yet lowered (AAPCS-VFP independent register \
-                         pools) — declining the function"
-                            .to_string(),
-                    ));
-                }
+                // #719: mixed f32 + integer params are now lowered — AAPCS-VFP's
+                // independent core (R0..R3) and VFP (S0..S15) argument pools are
+                // modelled by `aapcs_param_layout`/`compute_local_layout` skipping
+                // f32 params in the core walk (so `(f32, i32)` maps i32→R0, not
+                // R1) while the f32-home seed below assigns S(k) from the VFP
+                // pool. No decline here anymore.
+                //
+                // Phase-1 honest decline (never a miscompile):
                 //  * any call — S0..S15 are caller-saved, so an f32 value or
-                //    param home would be clobbered across a bl (phase 1b).
+                //    param home would be clobbered across a bl (phase 1b, #719
+                //    scopes this out; the full spill/rehome across call sites is
+                //    the next f32 increment).
                 if wasm_ops
                     .iter()
                     .any(|o| matches!(o, WasmOp::Call(_) | WasmOp::CallIndirect { .. }))
@@ -15329,24 +15341,24 @@ mod tests {
     #[test]
     fn test_503_aapcs_stack_offsets() {
         // (i32 x4, i64): p4 wide @ nsaa 0.
-        let l = aapcs_param_layout(5, &[false, false, false, false, true]);
+        let l = aapcs_param_layout(5, &[false, false, false, false, true], &[]);
         assert_eq!(l.stack.get(&4), Some(&(0, true)));
         // (i32 x5, i64): p4 narrow @ 0, p5 wide @ 8 (4-byte alignment hole).
-        let l = aapcs_param_layout(6, &[false, false, false, false, false, true]);
+        let l = aapcs_param_layout(6, &[false, false, false, false, false, true], &[]);
         assert_eq!(l.stack.get(&4), Some(&(0, false)));
         assert_eq!(l.stack.get(&5), Some(&(8, true)));
         // (i32 x3, i64): even-align spills the pair with only 4 params.
-        let l = aapcs_param_layout(4, &[false, false, false, true]);
+        let l = aapcs_param_layout(4, &[false, false, false, true], &[]);
         assert_eq!(l.stack.get(&3), Some(&(0, true)));
         assert_eq!(l.regs.get(&3), None);
         // (i64, i32 x3): p1=R2, p2=R3, p3 narrow @ 0 (no back-fill).
-        let l = aapcs_param_layout(4, &[true, false, false, false]);
+        let l = aapcs_param_layout(4, &[true, false, false, false], &[]);
         assert_eq!(l.regs.get(&0), Some(&Reg::R0));
         assert_eq!(l.regs.get(&1), Some(&Reg::R2));
         assert_eq!(l.regs.get(&2), Some(&Reg::R3));
         assert_eq!(l.stack.get(&3), Some(&(0, false)));
         // all-i32 x6: legacy (k-4)*4 formula, byte-identical.
-        let l = aapcs_param_layout(6, &[false; 6]);
+        let l = aapcs_param_layout(6, &[false; 6], &[]);
         assert_eq!(l.stack.get(&4), Some(&(0, false)));
         assert_eq!(l.stack.get(&5), Some(&(4, false)));
     }
@@ -21233,7 +21245,18 @@ mod tests {
     fn test_compute_local_layout_no_locals() {
         // Function with only params and no LocalGet/Set produces zero frame.
         let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), WasmOp::I32Add];
-        let layout = compute_local_layout(&ops, 2, &[], &[], &[], false, false, 0, I64_SPILL_SLOTS);
+        let layout = compute_local_layout(
+            &ops,
+            2,
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+            0,
+            I64_SPILL_SLOTS,
+        );
         assert_eq!(layout.frame_size, 0);
         assert!(layout.locals.is_empty());
     }
@@ -21246,7 +21269,18 @@ mod tests {
             WasmOp::LocalSet(1),
             WasmOp::LocalGet(1),
         ];
-        let layout = compute_local_layout(&ops, 1, &[], &[], &[], false, false, 0, I64_SPILL_SLOTS);
+        let layout = compute_local_layout(
+            &ops,
+            1,
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+            0,
+            I64_SPILL_SLOTS,
+        );
         assert!(layout.locals.contains_key(&1));
         let (off, is_i64) = layout.locals[&1];
         assert_eq!(off, 0);
@@ -21263,7 +21297,18 @@ mod tests {
             WasmOp::LocalSet(0),
             WasmOp::LocalGet(0),
         ];
-        let layout = compute_local_layout(&ops, 0, &[], &[], &[], false, false, 0, I64_SPILL_SLOTS);
+        let layout = compute_local_layout(
+            &ops,
+            0,
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+            0,
+            I64_SPILL_SLOTS,
+        );
         let (off, is_i64) = layout.locals[&0];
         assert_eq!(off, 0);
         assert!(is_i64);
@@ -21283,7 +21328,18 @@ mod tests {
             WasmOp::I64Const(2),
             WasmOp::LocalSet(1),
         ];
-        let layout = compute_local_layout(&ops, 0, &[], &[], &[], false, false, 0, I64_SPILL_SLOTS);
+        let layout = compute_local_layout(
+            &ops,
+            0,
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+            0,
+            I64_SPILL_SLOTS,
+        );
         let (off0, is_i64_0) = layout.locals[&0];
         let (off1, is_i64_1) = layout.locals[&1];
         assert_eq!(off0, 0);
@@ -21305,7 +21361,18 @@ mod tests {
             WasmOp::I32Add,
             WasmOp::LocalSet(2),
         ];
-        let layout = compute_local_layout(&ops, 2, &[], &[], &[], false, false, 0, I64_SPILL_SLOTS);
+        let layout = compute_local_layout(
+            &ops,
+            2,
+            &[],
+            &[],
+            &[],
+            &[],
+            false,
+            false,
+            0,
+            I64_SPILL_SLOTS,
+        );
         // Only idx 2 should be in the layout.
         assert!(!layout.locals.contains_key(&0));
         assert!(!layout.locals.contains_key(&1));
