@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.40.0] - 2026-07-11
+
+**A five-lane North-Star feature hub: the f32 hard-float path completes and
+becomes sound, the verified selector now generates its own Rocq model, the
+beat-LLVM lane collapses branchless clamps, the gust size gap is quantified and
+pinned, and a self-contained `call_indirect` silent miscompile becomes an honest
+decline.**
+
+### Fixed
+
+- **Self-contained `--cortex-m` `call_indirect` no longer silently miscompiles
+  (#275, soundness).** On the self-contained path the dispatch read the
+  function-pointer table from `[R11, idx*4]`, but R11 is the *linear-memory*
+  base and nothing populates a funcref table there (only the `--relocatable`
+  runtime does) — so it dispatched through linear-memory *data*. It now declines
+  LOUDLY with a precise message pointing at `--relocatable`, per the AFD-008
+  "unlowerable op must Err, never silently continue" contract. The relocatable
+  path (where the runtime places the table) is byte-untouched — #642/#650/#664/
+  #676 differentials all still pass. The dedicated func-table fix (a non-R11
+  table base) is a silicon-gated follow-up.
+- **f32 `i32.trunc_f32_s/u` now TRAP on NaN/±∞/out-of-range instead of silently
+  saturating (#709, soundness).** The v0.39.0 hard-float path lowered trunc to a
+  bare saturating `VCVT` (NaN→0, overflow→saturated) where WASM Core §4.3.3
+  requires a trap. Now a domain guard (reusing the div-by-zero `Cmp;BNE;UDF`
+  idiom) precedes the — now provably in-range — `VCVT`: signed valid iff
+  `-2³¹ ≤ x < 2³¹`, unsigned iff `-1.0 < x < 2³²`; every compare against NaN is
+  false, so NaN traps for free. 48/48 vs wasmtime incl. the full trap table.
+- **f32 comparisons no longer silently return 0 (#709 prerequisite, soundness).**
+  A flag-setting `MOVS Rd,#0` emitted *after* `VMRS` clobbered the transferred
+  FPSCR flags, so every v0.39.0 f32 compare returned 0 on hardware — it shipped
+  because the #619 harness skipped compare *execution* on a false premise
+  (unicorn does model `VMRS`→APSR). Fixed by ordering the `#0` before the `VCMP`
+  (byte sizes unchanged); the harness now execution-tests compares (60/60).
+
+### Added
+
+- **f32.load + i32.reinterpret_f32 / f32.reinterpret_i32 lowering (#708, #369).**
+  `f32.load` lowers via the proven i32.load address path into a core reg then a
+  bit-exact `VMOV Sd,Rd`; the reinterprets are pure `VMOV` bit-casts. This
+  unblocks the falcon float path — its float functions START with an f32 load or
+  reinterpret, so all 24 were declining; 20 now compile (f64 = phase 2).
+  FPU-gated, honest-reject on M0/M3; f32.store declined loudly (not needed).
+- **The verified selector now generates its own Rocq model (#667, VCR-ISA-001).**
+  The shipped DSL rule table emits `VcrSelRulesGenerated.v` + a per-rule
+  `reflexivity` Qed proving `Gen.rule_X = rule_X`, wired into `//coq:verify_proofs`
+  — Coq's kernel is now the model↔selector divergence gate, directly closing the
+  #682 vacuous-proof class. +40 generated-vs-model gate lemmas (proof count
+  472→512, framed as gate lemmas, not new correctness proofs).
+- **gust hot-path size-gap attribution + tracked size oracle (#390, VCR-PERF-001).**
+  A harness attributes synth's `.text` size into causal buckets (spill/reload,
+  addressing-mode, const, prologue, guard) and a CI test pins it. Measured:
+  gust_poll 740 B vs LLVM's 208 B = 3.56×, overhead led by spill/reload (~31%).
+
+### Changed
+
+- **fact-spec collapses branchless `select` clamps (#494 ph3, VCR-PERF-002).**
+  The proof-carrying specialization pass now handles the branchless `select`
+  form a real optimizing front-end (and LLVM) lowers `clamp()` to — under a
+  ValueRange premise it discharges an ordeal QF_BV obligation per select and
+  deletes the dead arm+condition+mux. gust_mix 50 B → 14 B (−72%) on a shape
+  LLVM structurally can't beat. Opt-in (verify feature + SYNTH_FACT_SPEC),
+  frozen-safe; the 0.45× *cycle* floor remains gale's silicon measurement.
+
 ## [0.39.1] - 2026-07-11
 
 **A single-fix release that unblocks the gust:os multi-provider OS node — the

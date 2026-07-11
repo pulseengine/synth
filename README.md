@@ -216,7 +216,9 @@ Mechanized proofs in Rocq 9 show that `compile_wasm_to_arm` preserves WASM seman
   incl. 40 Qed selector-DSL rule theorems (Synth/VcrSelRules.v, 1:1 with
      coq/vcr_sel_rules.manifest), 7 Qed VCR-SEL-001 pilot lemmas
      (Synth/VcrSelPilot.v, #386), 92 Qed Sail/ASL bridge lemmas
-     (ARM/SailArmBridge.v, VCR-ISA-001)
+     (ARM/SailArmBridge.v, VCR-ISA-001), and 40 Qed generated-vs-model GATE
+     lemmas (Synth/VcrSelRulesGenCheck.v, #667) — reflexivity checks that the
+     generated model equals the shipped rules, NOT new correctness proofs
 ```
 
 i32 and i64 operations have full T1 (result-correspondence) proofs; i64 parity landed in v0.11.0. Division proofs were re-admitted after updating Compilation.v to emit trap guard sequences (CMP+BCondOffset+UDF) matching the actual compiler — the sequential exec_program model needs PC-relative branching support to verify these. The f32, f64, and SIMD instruction selection has T2 existence proofs but not T1 result-correspondence.

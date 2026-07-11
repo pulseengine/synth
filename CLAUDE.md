@@ -90,7 +90,10 @@ cd coq && make proofs
 ### Proof Status
 
 See `coq/STATUS.md` for the complete coverage matrix. Current: 512 Qed / 6 Admitted
-(+2 `admit.` tactics) across `coq/Synth/`. This count is CI-gated: `claims.yaml` +
+(+2 `admit.` tactics) across `coq/Synth/`, of which 40 are VCR-ISA-001 (#667)
+generated-vs-model GATE lemmas (`VcrSelRulesGenCheck.v`, `reflexivity` checks that
+the generated model equals the shipped selector — NOT new correctness proofs).
+This count is CI-gated: `claims.yaml` +
 `scripts/claim_check.py` re-derive it on every commit — when a proof lands, update
 the docs AND `claims.yaml` in the same PR. Proofs are tiered:
 T1 (result-correspondence), T2 (existence-only), T3 (admitted). Remaining admits:
