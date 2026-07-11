@@ -668,9 +668,9 @@ dependencies = [
 
 [[package]]
 name = "ordeal-lrat"
-version = "0.9.1"
+version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3affdf66f317047ddc588c7df4fbe5a463ee8f40a1e23f30115a8f8c7dffe82a"
+checksum = "a1e39ce9c934f0aa2841e665b38bf13997979b3d5d9dbe1329d100378a692d12"
 
 [[package]]
 name = "page_size"
@@ -1181,7 +1181,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wasmparser 0.253.0",
- "wast",
+ "wast 253.0.0",
  "wat",
 ]
 
@@ -1259,7 +1259,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tracing",
- "wast",
+ "wast 253.0.0",
  "wat",
 ]
 
@@ -1569,6 +1569,19 @@ dependencies = [
 
 [[package]]
 name = "wast"
+version = "252.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "942a3449d6a593fccc111a6241c8df52bda168af30e40bf9580d4394d7374c65"
+dependencies = [
+ "bumpalo",
+ "leb128fmt",
+ "memchr",
+ "unicode-width",
+ "wasm-encoder 0.252.0",
+]
+
+[[package]]
+name = "wast"
 version = "253.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3264542f8965c5d84fb1085d924bfba9a6314bb228eff13a2de14d7627664d0"
@@ -1582,11 +1595,11 @@ dependencies = [
 
 [[package]]
 name = "wat"
-version = "1.253.0"
+version = "1.252.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4bfc5ce906144200c972ec617470aa35bd847472e170b26dde3e80541c674055"
+checksum = "c72a4ba7088f7bac94cf516e49882bdf97068904a563768cf249efc839ec42cb"
 dependencies = [
- "wast",
+ "wast 252.0.0",
 ]
 
 [[package]]
