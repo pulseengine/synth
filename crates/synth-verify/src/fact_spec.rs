@@ -585,6 +585,152 @@ impl<'a> Pass<'a> {
         }
     }
 
+    /// Discharge the select-collapse obligation for the branchless `select`
+    /// at op `i`. The operands are `(val1, val2, cond)` in wasm select order
+    /// (`val1` deepest, `cond` on top); the runtime result is
+    /// `(cond != 0) ? val1 : val2`. When a value-range premise pins the
+    /// condition CONSTANT under `P` the select collapses to one operand — the
+    /// branchless sibling of the Phase-2 no-else `if` elision, and the shape
+    /// gust_mix's `clamp` actually uses (`max`/`min` via `select`).
+    ///
+    /// Two mutually exclusive obligations, both certificate-checked QF_BV.
+    /// `UNSAT(P ∧ cond ≠ 0)` means `cond` is always 0, so the result is `val2`
+    /// (delete `val1`'s producer slice plus the condition-slice-through-
+    /// `select`). `UNSAT(P ∧ cond == 0)` means `cond` is always non-zero, so
+    /// the result is `val1` (delete the `val2`+condition+`select` contiguous
+    /// slice). Anything else (Sat both ways = genuinely non-constant; Unknown;
+    /// an impure/non-contiguous erasable slice) DECLINES LOUDLY and the general
+    /// branchless select stands. Returns the surviving operand's `Val` on
+    /// admit, `None` on decline.
+    fn try_collapse_select(&mut self, i: usize, val1: &Val, val2: &Val, cond: &Val) -> Option<Val> {
+        if self.premises.is_empty() {
+            self.decline(format!(
+                "op#{i} select — no premise reaches this site (no usable value-range fact)"
+            ));
+            return None;
+        }
+        // The condition slice must be a pure, contiguous producer ending
+        // immediately before the `select` — otherwise deleting it could drop
+        // live work (`local.tee`) or leave a gap.
+        let Some(sc) = cond.start else {
+            self.decline(format!(
+                "op#{i} select — condition slice is impure or non-contiguous (not erasable)"
+            ));
+            return None;
+        };
+        if cond.created + 1 != i {
+            self.decline(format!(
+                "op#{i} select — condition is not produced immediately before the select \
+                 (non-contiguous)"
+            ));
+            return None;
+        }
+
+        // Obligation B first (the clamp shape: the guard condition is
+        // constant-FALSE, so the identity operand `val2` survives).
+        let mut solver = new_solver();
+        for p in &self.premises {
+            solver.assert(p);
+        }
+        solver.assert(&cond.bv.ne(BV::from_i64(0, 32)));
+        match solver.check() {
+            CheckOutcome::Unsat => {
+                // cond ≡ 0 ⇒ result = val2. Delete val1's slice AND the
+                // condition-slice-through-select. val2 (kept) sits between.
+                let Some(s1) = val1.start else {
+                    self.decline(format!(
+                        "op#{i} select proven false-arm (UNSAT cond ≠ 0) but the val1 slice \
+                         is not erasable (impure/non-contiguous) — collapse declined"
+                    ));
+                    return None;
+                };
+                if val1.created >= sc {
+                    self.decline(format!(
+                        "op#{i} select — val1 slice overlaps the condition slice; collapse \
+                         declined"
+                    ));
+                    return None;
+                }
+                self.deletions.push((s1, val1.created));
+                self.deletions.push((sc, i));
+                self.admitted.push(format!(
+                    "{}: op#{i} select — collapsed to the false-arm (val2): \
+                     UNSAT(P ∧ cond ≠ 0) via {} (certificate-checked QF_BV; every Unsat \
+                     carries an LRAT proof validated by ordeal-lrat); deleted val1 slice \
+                     [{s1}..={}] + condition/select [{sc}..={i}]; P = {{{}}}; cond = {}",
+                    self.func,
+                    solver.name(),
+                    val1.created,
+                    self.premise_desc.join(" ∧ "),
+                    cond.bv,
+                ));
+                return Some(val2.clone());
+            }
+            CheckOutcome::Sat => { /* cond can be non-zero — try obligation A */ }
+            CheckOutcome::Unknown(reason) => {
+                self.decline(format!(
+                    "op#{i} select — false-arm obligation Unknown ({reason}); conservative \
+                     decline"
+                ));
+                return None;
+            }
+        }
+
+        // Obligation A: cond ≡ non-zero ⇒ result = val1. Delete the
+        // val2+condition+select contiguous slice.
+        let mut solver = new_solver();
+        for p in &self.premises {
+            solver.assert(p);
+        }
+        solver.assert(&cond.bv.eq(BV::from_i64(0, 32)));
+        match solver.check() {
+            CheckOutcome::Unsat => {
+                let Some(s2) = val2.start else {
+                    self.decline(format!(
+                        "op#{i} select proven true-arm (UNSAT cond == 0) but the val2 slice \
+                         is not erasable (impure/non-contiguous) — collapse declined"
+                    ));
+                    return None;
+                };
+                if val2.created + 1 != sc {
+                    self.decline(format!(
+                        "op#{i} select — val2 slice not adjacent to the condition slice \
+                         (non-contiguous); collapse declined"
+                    ));
+                    return None;
+                }
+                // [s2 ..= i] is one contiguous pure range (val2 + cond + select).
+                self.deletions.push((s2, i));
+                self.admitted.push(format!(
+                    "{}: op#{i} select — collapsed to the true-arm (val1): \
+                     UNSAT(P ∧ cond == 0) via {} (certificate-checked QF_BV; every Unsat \
+                     carries an LRAT proof validated by ordeal-lrat); deleted val2/condition/\
+                     select [{s2}..={i}]; P = {{{}}}; cond = {}",
+                    self.func,
+                    solver.name(),
+                    self.premise_desc.join(" ∧ "),
+                    cond.bv,
+                ));
+                Some(val1.clone())
+            }
+            CheckOutcome::Sat => {
+                let cex = self.counterexample(solver.as_ref());
+                self.decline(format!(
+                    "op#{i} select — condition is not constant under P (both arms reachable; \
+                     counterexample: {cex}); branchless select retained"
+                ));
+                None
+            }
+            CheckOutcome::Unknown(reason) => {
+                self.decline(format!(
+                    "op#{i} select — true-arm obligation Unknown ({reason}); conservative \
+                     decline"
+                ));
+                None
+            }
+        }
+    }
+
     fn walk(&mut self) {
         if self.range_facts.is_empty() && self.nonzero_facts.is_empty() {
             self.decline(
@@ -786,6 +932,49 @@ impl<'a> Pass<'a> {
                     }
                     i = end + 1;
                     continue;
+                }
+                // #494 Phase 3: branchless `select` — the sibling of the
+                // Phase-2 no-else `if` elision, and the shape gust_mix's
+                // clamp actually lowers to (`max`/`min` via select). A
+                // value-range premise that pins the condition constant
+                // collapses it to one operand (stream deletion, like `if`).
+                WasmOp::Select => {
+                    let (Some(cond), Some(val2), Some(val1)) =
+                        (self.stack.pop(), self.stack.pop(), self.stack.pop())
+                    else {
+                        self.decline(format!("op#{i} select on underflowing symbolic stack"));
+                        return;
+                    };
+                    // Only the plain i32 `select` (0x1B) is tracked; a typed
+                    // select over i64/f-operands declines and havocs.
+                    if cond.bv.get_size() != 32
+                        || val1.bv.get_size() != 32
+                        || val2.bv.get_size() != 32
+                    {
+                        self.decline(format!(
+                            "op#{i} select on non-32-bit operand(s) — only i32 select is tracked"
+                        ));
+                        let v = self.fresh_var(format!("fs_sel{i}"));
+                        self.push(v, None, i);
+                        i += 1;
+                        continue;
+                    }
+                    match self.try_collapse_select(i, &val1, &val2, &cond) {
+                        // Admitted: the surviving operand's producer slice
+                        // stays; the other operand + condition slice + the
+                        // `select` were recorded for deletion. `start = None`
+                        // keeps the collapsed result out of any later erasable
+                        // slice (conservative).
+                        Some(surviving) => self.push(surviving.bv, None, i),
+                        // Declined (loud): the branchless select stands. Havoc
+                        // the result — a fresh var means any obligation over it
+                        // downstream is Sat, so it can never seed an unsound
+                        // chained collapse.
+                        None => {
+                            let v = self.fresh_var(format!("fs_sel{i}"));
+                            self.push(v, None, i);
+                        }
+                    }
                 }
                 // Function-final `End` (top-level): done.
                 WasmOp::End => break,
@@ -999,6 +1188,119 @@ mod tests {
         assert!(!r.changed());
         assert_eq!(r.ops, ops);
         assert!(!r.declined.is_empty(), "the no-fact case is a loud decline");
+    }
+
+    // ---- #494 Phase 3: branchless select-collapse ----
+
+    /// gust_mix's clamp lowered branchlessly via `select` (the shape LLVM
+    /// emits): `max(v,1000)` = `(v<1000)?1000:v`, `min(v,2000)` =
+    /// `(v>2000)?2000:v`. No `If`/`End` — no block_arity entries.
+    fn select_clamp_ops() -> Vec<WasmOp> {
+        vec![
+            LocalGet(0),    // 0   ch          ← fact target
+            I32Const(476),  // 1
+            I32Add,         // 2   v = ch+476
+            LocalSet(1),    // 3
+            I32Const(1000), // 4   val1 (low clamp)
+            LocalGet(1),    // 5   val2 = v
+            LocalGet(1),    // 6   cond slice
+            I32Const(1000), // 7
+            I32LtS,         // 8   cond = v < 1000
+            Select,         // 9   → max(v,1000)
+            LocalSet(1),    // 10
+            I32Const(2000), // 11  val1 (high clamp)
+            LocalGet(1),    // 12  val2 = v
+            LocalGet(1),    // 13  cond slice
+            I32Const(2000), // 14
+            I32GtS,         // 15  cond = v > 2000
+            Select,         // 16  → min(v,2000) = result
+            End,            // 17
+        ]
+    }
+
+    #[test]
+    fn select_clamp_collapses_both_selects_under_the_proven_bound_494() {
+        let ops = select_clamp_ops();
+        let r = specialize_function("gust_mix", &ops, &[], &[fact(0, 524, 1524)], &[]);
+        assert_eq!(r.admitted.len(), 2, "declines: {:?}", r.declined);
+        assert!(r.changed());
+        assert_eq!(
+            r.ops,
+            vec![
+                LocalGet(0),
+                I32Const(476),
+                I32Add,
+                LocalSet(1),
+                LocalGet(1), // val2 of select 1 (identity survives)
+                LocalSet(1),
+                LocalGet(1), // val2 of select 2 (identity survives)
+                End,
+            ],
+            "both branchless clamps must collapse to the identity operand"
+        );
+        assert_eq!(r.kept, vec![0, 1, 2, 3, 5, 10, 12, 17]);
+        for line in &r.admitted {
+            assert!(line.contains("UNSAT"), "{line}");
+            assert!(line.contains("certificate-checked"), "{line}");
+            assert!(line.contains("select"), "{line}");
+            assert!(line.contains("[524, 1524]"), "{line}");
+        }
+    }
+
+    #[test]
+    fn select_clamp_wrong_bound_is_sat_and_declines_byte_identically_494() {
+        // ch ∈ [0, 4000]: ch=0 → v=476 < 1000 so the low clamp genuinely
+        // fires; both selects are non-constant ⇒ loud Sat decline, no rewrite.
+        let ops = select_clamp_ops();
+        let r = specialize_function("gust_mix", &ops, &[], &[fact(0, 0, 4000)], &[]);
+        assert_eq!(r.admitted.len(), 0);
+        assert!(!r.changed());
+        assert_eq!(r.ops, ops, "declined ⇒ byte-identical op stream");
+        assert!(
+            r.declined
+                .iter()
+                .any(|d| d.contains("not constant") && d.contains("counterexample")),
+            "declines must be loud and carry a model: {:?}",
+            r.declined
+        );
+    }
+
+    #[test]
+    fn select_collapses_to_true_arm_when_condition_proven_nonzero_494() {
+        // result = cond ? val1 : val2 with cond ≡ 1 (fact ∈ [1,1]) ⇒ keep val1.
+        let ops = vec![
+            I32Const(111), // 0  val1
+            I32Const(222), // 1  val2
+            LocalGet(0),   // 2  cond ← fact ∈ [1,1] (always non-zero)
+            Select,        // 3  → val1
+            End,           // 4
+        ];
+        let r = specialize_function("f", &ops, &[], &[fact(2, 1, 1)], &[]);
+        assert_eq!(r.admitted.len(), 1, "declines: {:?}", r.declined);
+        assert_eq!(r.ops, vec![I32Const(111), End]);
+        assert!(
+            r.admitted[0].contains("true-arm") && r.admitted[0].contains("cond == 0"),
+            "{}",
+            r.admitted[0]
+        );
+    }
+
+    #[test]
+    fn select_without_constraining_premise_declines_no_false_collapse_494() {
+        // A TRUE ValueRange fact exists (so the walk runs) but targets val1,
+        // not the condition; the select's condition carries no premise ⇒
+        // non-constant ⇒ Sat decline, byte-identical.
+        let ops = vec![
+            I32Const(111), // 0  val1 ← fact ∈ [111,111] (true, non-constraining)
+            I32Const(222), // 1  val2
+            LocalGet(0),   // 2  cond — unconstrained
+            Select,        // 3
+            End,           // 4
+        ];
+        let r = specialize_function("f", &ops, &[], &[fact(0, 111, 111)], &[]);
+        assert_eq!(r.admitted.len(), 0);
+        assert!(!r.changed());
+        assert_eq!(r.ops, ops);
     }
 
     #[test]

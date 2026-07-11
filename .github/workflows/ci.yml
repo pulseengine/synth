@@ -416,6 +416,17 @@ jobs:
         run: python scripts/repro/fact_spec_div_494_differential.py --expect-decline
       - name: Run RED force-admit divergence demonstration
         run: python scripts/repro/fact_spec_div_494_differential.py --force-admit
+      # #494 phase 3 — branchless select-collapse: the sibling of the Phase-2
+      # if-elision on the shape LLVM actually emits (min/max clamp via select).
+      # In-bounds differential (specialized ≡ wasmtime ≡ unspecialized over the
+      # proven bound; 2 collapses + gust_mix 50 B -> 14 B shrink required) and
+      # the wrong-bound loud-decline byte-identity leg.
+      - name: Run select-collapse in-bounds differential (proven bound)
+        run: python scripts/repro/fact_spec_select_494_differential.py
+      - name: Run select-collapse wrong-bound loud-decline path
+        run: >
+          python scripts/repro/fact_spec_select_494_differential.py
+          --fact-lo 0 --fact-hi 4000 --expect-decline
 
   rv32-shift-fold-oracle:
     name: rv32 immediate-shift-fold execution oracle
