@@ -71,15 +71,16 @@ I32_INPUTS = [0, 1, -1, 7, -7, 2147483647, -2147483648, 100000]
 TRUNC_INPUTS = [0.0, 1.9, -1.9, 2.5, -2.5, 123.75, -123.75, 2000000.5]
 
 BINOP_F32 = ["fadd", "fsub", "fmul", "fdiv"]
-# NOTE: the f32 comparisons (flt/fgt/…) compile to VCMP.F32 + VMRS APSR_nzcv,
-# FPSCR + IT + MOV. unicorn does NOT model the VMRS FPSCR->APSR flag transfer
-# (the APSR flags stay 0, so every predicated set reads false and the result is
-# uniformly 0) — an EMULATOR gap, not a synth defect. The compare ENCODING is
-# byte-pinned in crates/synth-backend/tests/f32_vfp_encoding_test.rs and the MI
-# (a<b) / GT (a>b) condition selection is verified by inspection, so we exercise
-# the compares at COMPILE time (they are in the fixture) but do not execution-
-# differentiate them here. Arithmetic, convert, and trunc use no flag transfer
-# and are fully validated below.
+CMP_F32 = ["flt", "fgt"]
+# The f32 comparisons compile to VCMP.F32 + VMRS APSR_nzcv, FPSCR + IT + MOV.
+# HISTORY (#709): this harness ORIGINALLY skipped compare execution on the
+# premise that "unicorn does not model the VMRS FPSCR->APSR transfer." That
+# premise was FALSE — unicorn transfers the N/Z/C/V bits correctly — and the
+# skip is exactly why a shipped compare bug went unnoticed: the encoder emitted
+# a flag-setting `MOVS Rd,#0` AFTER the VMRS, clobbering the transferred flags,
+# so every f32 comparison returned 0. The encoder now materializes the #0
+# BEFORE the VCMP (byte reorder, sizes unchanged), and the compares are
+# execution-differentiated here against wasmtime on FPU-boundary values.
 
 
 def compile_elf(out, target):
@@ -179,6 +180,19 @@ def main():
                 fails += 1
                 print(f"MISMATCH {fn}({a},{b}): synth 0x{got:08x} ({bits_f32(got)}) "
                       f"!= wasmtime 0x{want:08x} ({bits_f32(want)})")
+
+    # #709: the f32 comparisons now execution-differentiate (the flag-clobber
+    # bug is fixed). Result is an i32 (0/1) in R0.
+    for fn in CMP_F32:
+        wf = inst.exports(store)[fn]
+        for a, b in F32_PAIRS:
+            uc = run_unicorn(text, base, syms[fn], s0_bits=f32_bits(a), s1_bits=f32_bits(b))
+            got = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+            want = wf(store, a, b) & 0xFFFFFFFF
+            checked += 1
+            if got != want:
+                fails += 1
+                print(f"MISMATCH {fn}({a},{b}): synth {got} != wasmtime {want}")
 
     wf = inst.exports(store)["trunc_s"]
     for a in TRUNC_INPUTS:
