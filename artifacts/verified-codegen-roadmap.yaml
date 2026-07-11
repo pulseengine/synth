@@ -1063,7 +1063,7 @@ artifacts:
 
   - id: VCR-VER-002
     type: sys-verification
-    title: "Trap-preservation gate: dropping a WASM trap can no longer pass"
+    title: "Trap-preservation VC catches dropped WASM traps (div/rem, memory OOB, call_indirect, unreachable); live-validator wiring in progress"
     description: >
       Make trap-preservation a checkable, oracle-gated proof obligation so a
       lowering that DROPS a WASM trap (div-by-zero / overflow guard, OOB
@@ -1112,7 +1112,7 @@ artifacts:
       all classes, on the live path) needs a may_trap flag threaded through the
       ArmState exec model, or decoding the emitted guard bytes in
       expansion_validator.
-    status: in-progress
+    status: proposed
     tags: [verification, trap-preservation, soundness, ordeal]
     links:
       - type: verifies
@@ -1120,7 +1120,7 @@ artifacts:
       - type: refines
         target: VCR-VER-001
     fields:
-      method: formal
+      method: formal-verification
       preconditions:
         - "ordeal 0.9.0 `ordeal::trap` module available (ordeal#59)"
       steps:

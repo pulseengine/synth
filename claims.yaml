@@ -167,13 +167,13 @@ claims:
   # exec-model trap flag (documented follow-on in the roadmap entry).
   - id: SYNTH-VCR-VER-002-STATUS
     doc: artifacts/verified-codegen-roadmap.yaml
-    text: "Trap-preservation gate: dropping a WASM trap can no longer pass"
+    text: "Trap-preservation VC catches dropped WASM traps (div/rem, memory OOB, call_indirect, unreachable); live-validator wiring in progress"
     evidence:
       - kind: yaml-field
         path: artifacts/verified-codegen-roadmap.yaml
         id: VCR-VER-002
         field: status
-        equals: in-progress
+        equals: proposed
       - kind: file-exists
         path: crates/synth-verify/src/trap.rs
       - kind: file-exists
