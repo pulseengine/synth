@@ -279,15 +279,20 @@ Each instruction is assigned to exactly ONE bucket by
 `size_attribution_390.py::classify`; the buckets plus the `productive` residual
 and `align_pad` sum to the measured `.text B` column (the script asserts this).
 
-**Key finding — the `productive` residual is the target floor.** For gust_poll
-the `productive` bucket (the irreducible loads/stores/arithmetic/branches) is
-**194 B, within 7 % of the cited LLVM size (208 B)**. The other ~546 B is
-attributable overhead the perf lanes can remove. In other words: synth already
-emits roughly the *right amount* of real work — the 3.56x gap is almost entirely
-the six overhead buckets, dominated by `spill_reload` (228 B, ~31 % of the whole
-function) exactly as issue #390 predicted. For gust_mix, only 6 B of the 32 B
-(the `bl` + `uxth`) is productive; the rest is unused callee-save, frame setup,
-and un-coalesced copies around a one-line wrapper.
+**Key finding — the gap lives in the overhead buckets, not in doing too much
+real work.** For gust_poll the `productive` bucket (the loads/stores/arithmetic/
+branches that do the function's actual work) is **194 B — comparable in magnitude
+to LLVM's *entire* 208 B output**, while the other ~546 B is the six attributable
+overhead buckets, dominated by `spill_reload` (228 B, ~31 % of the whole
+function) exactly as issue #390 predicted. This is NOT a like-for-like floor:
+LLVM's 208 B is its total (its own prologue/spills), and some of synth's
+`productive` bytes are inflated 32-bit encodings (`ldr.w rD,[fp,ip]`) that a
+folded reg-base/scaled-index form could shrink to a 16-bit `ldr` — so removing
+the overhead buckets will not by itself reach 208 B. The load-bearing conclusion
+is directional: synth already emits roughly the right amount of real work; the
+3.56x gap is overhead-dominated, and the buckets rank where the payoff is. For
+gust_mix, only 6 B of the 32 B (the `bl` + `uxth`) is productive; the rest is
+unused callee-save, frame setup, and un-coalesced copies around a one-line wrapper.
 
 ### Bucket definitions (match rules) and per-bucket opportunity
 
