@@ -6814,18 +6814,20 @@ impl ArmEncoder {
         let mut bytes = Vec::new();
         let rd_bits = reg_to_bits(rd);
 
-        // VCMP.F32 Sn, Sm
-        let sn_num = vfp_sreg_to_num(sn)?;
-        let sm_num = vfp_sreg_to_num(sm)?;
-        let (vd, d) = encode_sreg(sn_num);
-        let (vm, m) = encode_sreg(sm_num);
-        let vcmp = 0xEEB40A40 | (d << 22) | (vd << 12) | (m << 5) | vm;
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(vcmp));
+        // #709 (bug found under #708/#709): the `MOVS Rd,#0` below is a
+        // FLAG-SETTING 16-bit move. Emitting it AFTER `VMRS APSR_nzcv, FPSCR`
+        // (as the original code did) clobbered the N/Z/C/V flags the VMRS just
+        // transferred from the VFP compare, so the following `IT<cond>` read
+        // stale flags and every f32 comparison silently returned 0 (verified:
+        // `flt(1.0,2.0)` → 0 on Cortex-M4F). The 619 harness never caught it
+        // because it deliberately skipped compare EXECUTION on a false premise
+        // (unicorn DOES model VMRS→APSR). Fix: materialize the `#0` FIRST, then
+        // VCMP+VMRS set the flags the `IT` consumes. Instruction sizes are
+        // unchanged (pure reorder), so the estimator↔encoder oracle (#511) is
+        // untouched — only the byte ORDER differs.
 
-        // VMRS APSR_nzcv, FPSCR: 0xEEF1FA10
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(0xEEF1FA10));
-
-        // MOVS Rd, #0 (16-bit): 0010 0 Rd(3) 0000 0000
+        // MOVS Rd, #0 (16-bit): 0010 0 Rd(3) 0000 0000 — its flag side effect
+        // is immediately overwritten by the VMRS below.
         if rd_bits < 8 {
             let movs_zero: u16 = 0x2000 | ((rd_bits as u16) << 8);
             bytes.extend_from_slice(&movs_zero.to_le_bytes());
@@ -6836,6 +6838,17 @@ impl ArmEncoder {
             bytes.extend_from_slice(&hw1.to_le_bytes());
             bytes.extend_from_slice(&hw2.to_le_bytes());
         }
+
+        // VCMP.F32 Sn, Sm
+        let sn_num = vfp_sreg_to_num(sn)?;
+        let sm_num = vfp_sreg_to_num(sm)?;
+        let (vd, d) = encode_sreg(sn_num);
+        let (vm, m) = encode_sreg(sm_num);
+        let vcmp = 0xEEB40A40 | (d << 22) | (vd << 12) | (m << 5) | vm;
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vcmp));
+
+        // VMRS APSR_nzcv, FPSCR: 0xEEF1FA10 (sets the flags IT consumes)
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(0xEEF1FA10));
 
         // IT<cond> — If-Then for conditional MOV
         // IT encoding: 1011 1111 cond(4) mask(4)

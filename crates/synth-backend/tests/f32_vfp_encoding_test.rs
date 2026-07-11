@@ -275,19 +275,26 @@ fn test_f32_eq_comparison_thumb() {
             sm: VfpReg::S0,
         })
         .unwrap();
-    // Should be: VCMP(4) + VMRS(4) + MOVS(2) + IT(2) + MOV(2) = 14 bytes
+    // #709: MOVS Rd,#0 is emitted BEFORE the VCMP so its flag side-effect is
+    // overwritten by VMRS (a MOVS after VMRS clobbered the transferred flags,
+    // making every f32 compare return 0). Order: MOVS(2) + VCMP(4) + VMRS(4) +
+    // IT(2) + MOV(2) = 14 bytes (sizes unchanged; only the byte order moved).
     assert_eq!(
         bytes.len(),
         14,
         "F32 comparison should be 14 bytes for low regs"
     );
 
-    // First 4 bytes: VCMP.F32 S0, S0
-    let vcmp = thumb_bytes_to_word(&bytes[0..4]);
+    // First 2 bytes: MOVS R0, #0 (its flags are overwritten by the VMRS below).
+    let movs = u16::from_le_bytes([bytes[0], bytes[1]]);
+    assert_eq!(movs, 0x2000, "MOVS R0, #0 must precede the VCMP (#709)");
+
+    // Bytes 2..6: VCMP.F32 S0, S0
+    let vcmp = thumb_bytes_to_word(&bytes[2..6]);
     assert_eq!(vcmp, 0xEEB40A40, "VCMP.F32 S0, S0");
 
-    // Next 4 bytes: VMRS APSR_nzcv, FPSCR
-    let vmrs = thumb_bytes_to_word(&bytes[4..8]);
+    // Bytes 6..10: VMRS APSR_nzcv, FPSCR — sets the flags the IT consumes.
+    let vmrs = thumb_bytes_to_word(&bytes[6..10]);
     assert_eq!(vmrs, 0xEEF1FA10, "VMRS APSR_nzcv, FPSCR");
 }
 
