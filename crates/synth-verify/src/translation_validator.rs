@@ -26,6 +26,16 @@ use synth_core::WasmOp;
 use synth_synthesis::{ArmOp, Reg, SynthesisRule};
 use thiserror::Error;
 
+/// Whether a div/rem ARM lowering carries its trap guard: synth guards a
+/// divide with a `Cmp`/branch/`Udf` sequence, so the presence of a `Udf`
+/// (the `undefined`/trap instruction) is the structural signal that the
+/// divide-by-zero (and, for signed, overflow) trap is still enforced. Its
+/// absence means the guard was dropped — the #633/#666/#642 shape.
+/// (VCR-VER-002, #166.)
+fn arm_sequence_has_trap_guard(arm_ops: &[ArmOp]) -> bool {
+    arm_ops.iter().any(|op| matches!(op, ArmOp::Udf { .. }))
+}
+
 /// Verification error types
 #[derive(Debug, Error)]
 pub enum VerificationError {
@@ -267,6 +277,82 @@ impl TranslationValidator {
         Ok(ValidationResult::Verified)
     }
 
+    /// VCR-VER-002 (#166): mandatory **trap-preservation** obligation for a
+    /// div/rem lowering — that the ARM sequence preserves the WASM op's trap
+    /// (`÷0`, plus `INT_MIN/-1` for the signed ops) *and* its value, discharged
+    /// by [`crate::trap::prove_trap_equivalence`].
+    ///
+    /// The WASM trap condition is derivable from the operands. The ARM
+    /// lowering's trap condition is derived **structurally** from `arm_ops`:
+    /// synth guards a divide with a `Cmp`/branch/`Udf` sequence (see
+    /// `synth_synthesis::contracts::division`), so a `Udf` in the sequence ⇒
+    /// the guard is present and the lowering traps on the same condition; its
+    /// absence ⇒ the guard was dropped (the #633/#666/#642 shape) and the
+    /// lowering never traps — which this gate reports `Invalid`.
+    ///
+    /// # Soundness scope
+    ///
+    /// Sound in the **reject** direction: a div/rem lowering with no `Udf` is
+    /// reported `Invalid`, catching the whole trap-drop class. Presence of a
+    /// `Udf` is a *necessary* structural signal but does not by itself prove the
+    /// guard fires on *exactly* `÷0 ∨ overflow`.
+    ///
+    // VCR-VER-002 follow-on: fully AUTO-deriving `opt.may_trap` from the shipped
+    // lowering (rather than the structural `Udf`-presence proxy) needs a
+    // `may_trap` flag threaded through the `ArmState` exec model so the
+    // encoder's `Cmp`/`Bne`/`Udf` expansion produces a derived trap term — or,
+    // equivalently, decoding the emitted guard bytes in `expansion_validator`.
+    // Until then the other partial-op classes (load/store, call_indirect,
+    // unreachable) have no ARM trap term on this value-only path and remain
+    // gated at the unit level (`tests/trap_preservation.rs`), not here.
+    pub fn verify_div_rem_trap_preservation(
+        &self,
+        wasm_op: &WasmOp,
+        arm_ops: &[ArmOp],
+    ) -> Result<ValidationResult, VerificationError> {
+        let Some(div_op) = crate::trap::div_op(wasm_op) else {
+            return Err(VerificationError::UnsupportedOperation(format!(
+                "trap-preservation gate applies to div/rem only, got {wasm_op:?}"
+            )));
+        };
+
+        // Symbolic operands, matching `verify_equivalence_parameterized`'s
+        // naming: dividend = input_0 (R0), divisor = input_1 (R1).
+        let dividend = BV::new_const("input_0", 32);
+        let divisor = BV::new_const("input_1", 32);
+        let inputs = vec![dividend.clone(), divisor.clone()];
+
+        let wasm_value = self.wasm_encoder.encode_op(wasm_op, &inputs);
+        let arm_value = self.encode_arm_sequence(arm_ops, &inputs)?;
+
+        let orig = crate::trap::DefineOrTrap {
+            value: wasm_value,
+            may_trap: crate::trap::trap_div(div_op, &dividend, &divisor),
+        };
+        let arm_may_trap = if arm_sequence_has_trap_guard(arm_ops) {
+            crate::trap::trap_div(div_op, &dividend, &divisor)
+        } else {
+            crate::term::Bool::from_bool(false)
+        };
+        let opt = crate::trap::DefineOrTrap {
+            value: arm_value,
+            may_trap: arm_may_trap,
+        };
+
+        Ok(match crate::trap::prove_trap_equivalence(&orig, &opt) {
+            crate::trap::TrapVerdict::Preserved => ValidationResult::Verified,
+            crate::trap::TrapVerdict::Dropped(model) => ValidationResult::Invalid {
+                counterexample: model
+                    .into_iter()
+                    .filter_map(|(n, v)| i64::try_from(v).ok().map(|x| (n, x)))
+                    .collect(),
+            },
+            crate::trap::TrapVerdict::Unknown => ValidationResult::Unknown {
+                reason: "trap-preservation VC returned Unknown (conservative reject)".to_string(),
+            },
+        })
+    }
+
     /// Get number of inputs required for a WASM operation
     fn get_num_inputs(&self, wasm_op: &WasmOp) -> usize {
         use WasmOp::*;
@@ -334,6 +420,92 @@ mod tests {
                 registers: 2,
             },
         }
+    }
+
+    // --- VCR-VER-002 (#166): div/rem trap-preservation wired into the validator ---
+
+    #[test]
+    fn div_lowering_without_guard_is_rejected_as_trap_drop() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            // Bare UDIV — the value is right but the ÷0 guard is missing
+            // (the #633/#666 shape). The trap-preservation gate must reject it.
+            let arm_ops = [ArmOp::Udiv {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            }];
+            let result = validator
+                .verify_div_rem_trap_preservation(&WasmOp::I32DivU, &arm_ops)
+                .unwrap();
+            match result {
+                ValidationResult::Invalid { counterexample } => {
+                    // The counterexample must exhibit the dropped trap: divisor 0.
+                    let divisor = counterexample.iter().find(|(n, _)| n == "input_1");
+                    assert_eq!(
+                        divisor.map(|(_, v)| *v),
+                        Some(0),
+                        "trap-drop counterexample must set the divisor to 0"
+                    );
+                }
+                other => panic!("unguarded div must be Invalid, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn div_lowering_with_guard_preserves_the_trap() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            // Guarded divide: CMP divisor,#0 ; UDF (trap) ; UDIV. The structural
+            // Udf ⇒ the ÷0 trap is enforced; value matches WASM ⇒ Verified.
+            let arm_ops = [
+                ArmOp::Cmp {
+                    rn: Reg::R1,
+                    op2: Operand2::Imm(0),
+                },
+                ArmOp::Udf { imm: 0 },
+                ArmOp::Udiv {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    rm: Reg::R1,
+                },
+            ];
+            let result = validator
+                .verify_div_rem_trap_preservation(&WasmOp::I32DivU, &arm_ops)
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    #[test]
+    fn signed_div_guard_preserves_both_zero_and_overflow_traps() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let arm_ops = [
+                ArmOp::Udf { imm: 0 }, // structural guard present
+                ArmOp::Sdiv {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    rm: Reg::R1,
+                },
+            ];
+            let result = validator
+                .verify_div_rem_trap_preservation(&WasmOp::I32DivS, &arm_ops)
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    #[test]
+    fn trap_preservation_gate_rejects_non_div_ops() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let err = validator
+                .verify_div_rem_trap_preservation(&WasmOp::I32Add, &[])
+                .unwrap_err();
+            assert!(matches!(err, VerificationError::UnsupportedOperation(_)));
+        });
     }
 
     #[test]
