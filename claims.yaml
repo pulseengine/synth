@@ -161,6 +161,24 @@ claims:
       - kind: file-exists
         path: scripts/repro/vcr_ver_001_gate.md
 
+  # VCR-VER-002 (#166): trap-preservation gate over ordeal 0.9's trap module.
+  # in-progress, not implemented: div/rem wired mandatorily into the validator;
+  # the other partial-op classes are gated at the unit level pending the
+  # exec-model trap flag (documented follow-on in the roadmap entry).
+  - id: SYNTH-VCR-VER-002-STATUS
+    doc: artifacts/verified-codegen-roadmap.yaml
+    text: "Trap-preservation gate: dropping a WASM trap can no longer pass"
+    evidence:
+      - kind: yaml-field
+        path: artifacts/verified-codegen-roadmap.yaml
+        id: VCR-VER-002
+        field: status
+        equals: in-progress
+      - kind: file-exists
+        path: crates/synth-verify/src/trap.rs
+      - kind: file-exists
+        path: crates/synth-verify/tests/trap_preservation.rs
+
   - id: SYNTH-VCR-SEL-001-STATUS
     doc: README.md
     text: "increments 1–4 shipped default-on (`SYNTH_SEL_DSL`, opt-out `SYNTH_NO_SEL_DSL=1`)"
