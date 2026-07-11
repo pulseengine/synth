@@ -358,6 +358,14 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/bulk_local_clobber_677_differential.py
       - name: Run bulk-memory mask-coverage oracle (#679, thumb2)
         run: SYNTH=./target/debug/synth python scripts/repro/bulk_mask_679_differential.py
+      # #708/#709: f32.load/reinterpret bit-casts + i32.trunc_f32 trap table.
+      - name: Run f32 load/reinterpret + trunc-trap oracle (#708/#709, m4f)
+        run: SYNTH=./target/debug/synth python scripts/repro/f32_mem_trunc_708_709_differential.py
+      # #719: the falcon f32 residual — f32.store, abs/neg/copysign, local.set/
+      # tee, and mixed f32/int AAPCS-VFP params — bit-exact vs wasmtime on m4f,
+      # including the copysign ±0/NaN-sign/±inf sign edges. m3 honest-reject.
+      - name: Run f32 store/abs/neg/copysign/local + mixed-param oracle (#719, m4f)
+        run: SYNTH=./target/debug/synth python scripts/repro/f32_ops_719_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b)
