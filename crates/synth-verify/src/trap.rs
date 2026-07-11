@@ -185,7 +185,10 @@ fn verdict(result: CheckResult) -> TrapVerdict {
 /// ops whose value synth models (div/rem). [`TrapVerdict::Preserved`] ⟹ the
 /// lowering preserves both traps and values.
 pub fn prove_trap_equivalence(orig: &DefineOrTrap, opt: &DefineOrTrap) -> TrapVerdict {
-    verdict(ot::prove_trap_equivalence(&orig.to_ordeal(), &opt.to_ordeal()))
+    verdict(ot::prove_trap_equivalence(
+        &orig.to_ordeal(),
+        &opt.to_ordeal(),
+    ))
 }
 
 /// Trap-clause-only gate (`orig.may_trap ⇔ opt.may_trap`) — for ops whose value

@@ -1089,21 +1089,29 @@ artifacts:
       (Dropped/Sat) and a trap-PRESERVING lowering accepted (Preserved/Unsat)
       — including both call_indirect TypeTrap modes (Runtime and
       StaticallyDischarged). Proves the gate rejects the exact bug shapes.
-      (4) div/rem trap-preservation wired MANDATORILY into
-      TranslationValidator::verify_div_rem_trap_preservation (full VC, ARM
-      trap condition derived structurally from the Udf guard); an unguarded
-      div/rem is rejected with a divisor==0 counterexample.
+      (4) a DEDICATED always-checks div/rem trap-preservation method,
+      TranslationValidator::verify_div_rem_trap_preservation (full VC, ARM trap
+      condition derived structurally from the Udf guard), exercised by unit
+      tests: an unguarded i32 div/rem is rejected with a divisor==0
+      counterexample, a guarded one accepted.
 
-      DOCUMENTED GAP (why in-progress, not implemented): the validator's ARM
-      side is value-only (ArmState has no trap flag) and the div guard is an
-      encoder-expansion artifact, so div/rem's ARM trap term is derived from a
-      structural Udf-presence proxy — sound in the REJECT direction but not a
-      full proof the guard fires on exactly div0-or-overflow. The other partial
-      classes (load/store, call_indirect, unreachable) have no ARM trap term on
-      this path and remain gated at the unit level. Closing the gap (auto-
-      deriving opt.may_trap from the shipped lowering for all classes) needs a
-      may_trap flag threaded through the ArmState exec model, or decoding the
-      emitted guard bytes in expansion_validator.
+      DOCUMENTED GAP (why in-progress, not implemented):
+      - The live validation entry points (verify_rule -> verify_equivalence ->
+        verify_equivalence_parameterized) are STILL value-only and do NOT yet
+        invoke the new method — making it a mandatory conjunct on the live path
+        requires updating the value-only div-rule fixtures
+        (comprehensive_verification.rs) to carry the guard, so it is deferred.
+      - The validator's ARM side is value-only (ArmState has no trap flag) and
+        the div guard is an encoder-expansion artifact, so div/rem's ARM trap
+        term is a structural Udf-presence proxy — sound in the REJECT direction
+        but not a full proof the guard fires on exactly div0-or-overflow. The
+        method currently handles i32 only (32-bit operands).
+      - The other partial classes (load/store, call_indirect, unreachable) have
+        no ARM trap term on this path and remain gated at the unit level.
+      Closing the gap (auto-deriving opt.may_trap from the shipped lowering for
+      all classes, on the live path) needs a may_trap flag threaded through the
+      ArmState exec model, or decoding the emitted guard bytes in
+      expansion_validator.
     status: in-progress
     tags: [verification, trap-preservation, soundness, ordeal]
     links:

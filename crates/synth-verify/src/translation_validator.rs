@@ -315,6 +315,17 @@ impl TranslationValidator {
                 "trap-preservation gate applies to div/rem only, got {wasm_op:?}"
             )));
         };
+        // This method models 32-bit operands only; `div_op` also maps the i64
+        // variants (VCR-VER-002 follow-on: i64 needs 64-bit operand terms +
+        // the register-pair ARM value model).
+        if !matches!(
+            wasm_op,
+            WasmOp::I32DivS | WasmOp::I32DivU | WasmOp::I32RemS | WasmOp::I32RemU
+        ) {
+            return Err(VerificationError::UnsupportedOperation(format!(
+                "trap-preservation gate currently supports i32 div/rem only, got {wasm_op:?}"
+            )));
+        }
 
         // Symbolic operands, matching `verify_equivalence_parameterized`'s
         // naming: dividend = input_0 (R0), divisor = input_1 (R1).
@@ -505,6 +516,12 @@ mod tests {
                 .verify_div_rem_trap_preservation(&WasmOp::I32Add, &[])
                 .unwrap_err();
             assert!(matches!(err, VerificationError::UnsupportedOperation(_)));
+            // i64 div/rem is a div op but this method models 32-bit only —
+            // it must Err rather than build wrong-width terms.
+            let err64 = validator
+                .verify_div_rem_trap_preservation(&WasmOp::I64DivU, &[])
+                .unwrap_err();
+            assert!(matches!(err64, VerificationError::UnsupportedOperation(_)));
         });
     }
 
