@@ -9,6 +9,13 @@
   (func (export "fdiv") (param f32 f32) (result f32) local.get 0 local.get 1 f32.div)
   (func (export "flt")  (param f32 f32) (result i32) local.get 0 local.get 1 f32.lt)
   (func (export "fgt")  (param f32 f32) (result i32) local.get 0 local.get 1 f32.gt)
+  ;; #712: all SIX comparisons go through encode_thumb_f32_compare — the
+  ;; flag-clobber (MOVS after VMRS) hit every one, but the 619 harness only
+  ;; exercised flt/fgt, so eq/ne/le/ge were fixed-but-ungated. Cover all six.
+  (func (export "feq")  (param f32 f32) (result i32) local.get 0 local.get 1 f32.eq)
+  (func (export "fne")  (param f32 f32) (result i32) local.get 0 local.get 1 f32.ne)
+  (func (export "fle")  (param f32 f32) (result i32) local.get 0 local.get 1 f32.le)
+  (func (export "fge")  (param f32 f32) (result i32) local.get 0 local.get 1 f32.ge)
   (func (export "trunc_s") (param f32) (result i32) local.get 0 i32.trunc_f32_s)
   (func (export "conv_s")  (param i32) (result f32) local.get 0 f32.convert_i32_s)
   (func (export "conv_u")  (param i32) (result f32) local.get 0 f32.convert_i32_u))
