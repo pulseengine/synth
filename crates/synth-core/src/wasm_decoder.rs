@@ -1910,13 +1910,26 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         // proven `i32.load` address sequence (`[R11,idx]`→absolute-base rewrite +
         // bounds guard) into a core register, then a bit-exact `VMOV Sd,Rd`
         // (reinterpret) — a VLDR loads the same 4 bytes, so the bit pattern is
-        // identical. `f32.store` STAYS dropped (falcon's #369 inventory needs
-        // only the load + reinterpret; the store loud-skips at decode until a
-        // consumer needs it — never a silent miscompile).
+        // identical.
         F32Load { memarg } => Some(WasmOp::F32Load {
             offset: memarg.offset as u32,
             align: memarg.align as u32,
         }),
+        // #719 (phase 1b): `f32.store` — the VFP-store twin of `f32.load`. The
+        // selector moves the S-register value into a core register (`VMOV Rn,Sn`,
+        // a reinterpret) and reuses the PROVEN `i32.store` address path; a VSTR
+        // would write the same 4 bytes, so the stored word is bit-exact. (falcon
+        // has 10 f32.store functions, #719.)
+        F32Store { memarg } => Some(WasmOp::F32Store {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        // #719 (phase 1b): scalar f32 sign-family math — `VABS.F32` / `VNEG.F32`
+        // and the `copysign` sign-bit splice. Pure single-precision VFP, no
+        // numeric approximation; bit-exact across ±0.0 / NaN-sign / ±inf.
+        F32Abs => Some(WasmOp::F32Abs),
+        F32Neg => Some(WasmOp::F32Neg),
+        F32Copysign => Some(WasmOp::F32Copysign),
         // #708 (phase 1b): the f32<->i32 bit-casts. Pure `VMOV` between a core
         // register and a single-precision S-register — no numeric conversion.
         F32ReinterpretI32 => Some(WasmOp::F32ReinterpretI32),

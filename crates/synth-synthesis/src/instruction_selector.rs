@@ -2023,6 +2023,15 @@ fn is_scope_f32_op(op: &WasmOp) -> bool {
             | F32Load { .. }
             | F32ReinterpretI32
             | I32ReinterpretF32
+            // #719 (phase 1b): f32.store (lowered in the main `select_with_stack`
+            // match — needs `self`'s address machinery, like F32Load) + the
+            // sign-family math ops. Listed here so the FPU gate (m3 honest-reject)
+            // and the S-register result-homing fire for a function whose only f32
+            // op is one of these.
+            | F32Store { .. }
+            | F32Abs
+            | F32Neg
+            | F32Copysign
     )
 }
 
@@ -2035,9 +2044,9 @@ fn try_lower_f32(
     op: &WasmOp,
     idx: usize,
     params_f32: &[bool],
-    f32_home: &std::collections::HashMap<u32, VfpReg>,
+    f32_home: &mut std::collections::HashMap<u32, VfpReg>,
     vfp_used: &mut [bool; 16],
-    vfp_home: &[bool; 16],
+    vfp_home: &mut [bool; 16],
     stack: &mut Vec<StackVal>,
     next_temp: &mut u8,
     spill: &mut SpillState,
@@ -2071,15 +2080,47 @@ fn try_lower_f32(
             let top_is_float = stack.last().and_then(|v| v.as_float()).is_some();
             let target_is_f32 =
                 f32_home.contains_key(i) || params_f32.get(*i as usize).copied().unwrap_or(false);
-            if top_is_float || target_is_f32 {
-                Err(synth_core::Error::synthesis(
-                    "GI-FPU-002 phase 1: f32 local.set/local.tee is not yet \
-                     lowered (VFP home write-back) — declining the function"
-                        .to_string(),
-                ))
-            } else {
-                Ok(false)
+            if !(top_is_float || target_is_f32) {
+                // Not an f32 local — let the integer LocalSet/Tee handle it.
+                return Ok(false);
             }
+            // #719 (phase 1b): f32 VFP home write-back. Copy the top-of-stack
+            // f32 value into the local's STABLE home S-register (allocated once
+            // per local, pinned as a home so no temp ever reallocates it), and
+            // for `local.tee` leave the value on the operand stack.
+            let src = pop_float(stack)?;
+            let home = if let Some(&h) = f32_home.get(i) {
+                h
+            } else {
+                // A fresh non-param f32 local: allocate + pin a home S-register.
+                let h = alloc_vfp_temp(vfp_used)?;
+                if let Some(hi) = vfp_s_index(h) {
+                    vfp_home[hi] = true;
+                }
+                f32_home.insert(*i, h);
+                h
+            };
+            if home != src {
+                // S->S copy is bit-exact via the proven core round-trip (the
+                // phase-1 ArmOp set has no `VMOV.F32 Sd,Sm`): `VMOV Rt,src`
+                // (reinterpret to a core scratch) then `VMOV home,Rt`. Both
+                // moves copy all 32 bits, so ±0.0/NaN/±inf are preserved.
+                let rt = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+                instructions.push(ArmInstruction {
+                    op: ArmOp::I32ReinterpretF32 { rd: rt, sm: src },
+                    source_line: Some(idx),
+                });
+                instructions.push(ArmInstruction {
+                    op: ArmOp::F32ReinterpretI32 { sd: home, rm: rt },
+                    source_line: Some(idx),
+                });
+            }
+            // Free the source temp unless it is itself a permanent home.
+            free_vfp_temp(vfp_used, vfp_home, src);
+            if matches!(op, LocalTee(_)) {
+                stack.push(StackVal::Float { sreg: home });
+            }
+            Ok(true)
         }
         F32Add | F32Sub | F32Mul | F32Div => {
             let sm = pop_float(stack)?;
@@ -2093,6 +2134,43 @@ fn try_lower_f32(
             };
             instructions.push(ArmInstruction {
                 op: arm,
+                source_line: Some(idx),
+            });
+            free_vfp_temp(vfp_used, vfp_home, sm);
+            free_vfp_temp(vfp_used, vfp_home, sn);
+            stack.push(StackVal::Float { sreg: sd });
+            Ok(true)
+        }
+        // #719 (phase 1b): sign-family unary math. `VABS.F32` clears the sign
+        // bit; `VNEG.F32` flips it. Both are pure single-precision VFP and
+        // bit-exact on ±0.0/NaN/±inf (sign-only edits, no value change).
+        F32Abs | F32Neg => {
+            let sm = pop_float(stack)?;
+            let sd = alloc_vfp_temp(vfp_used)?;
+            let arm = if matches!(op, F32Abs) {
+                ArmOp::F32Abs { sd, sm }
+            } else {
+                ArmOp::F32Neg { sd, sm }
+            };
+            instructions.push(ArmInstruction {
+                op: arm,
+                source_line: Some(idx),
+            });
+            free_vfp_temp(vfp_used, vfp_home, sm);
+            stack.push(StackVal::Float { sreg: sd });
+            Ok(true)
+        }
+        // #719 (phase 1b): `f32.copysign(a, b)` = magnitude of `a` with sign of
+        // `b`. Stack order is `[a, b]` (b on top), so `sm` (popped first) is the
+        // SIGN source `b` and `sn` is the MAGNITUDE source `a` — matching the
+        // encoder's `sd = |sn| | sign(sm)` sign-bit splice. Bit-exact including
+        // the ±0.0/NaN-sign/±inf sign-only edits.
+        F32Copysign => {
+            let sm = pop_float(stack)?; // sign source (b)
+            let sn = pop_float(stack)?; // magnitude source (a)
+            let sd = alloc_vfp_temp(vfp_used)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::F32Copysign { sd, sn, sm },
                 source_line: Some(idx),
             });
             free_vfp_temp(vfp_used, vfp_home, sm);
@@ -7604,9 +7682,9 @@ impl InstructionSelector {
                     op,
                     idx,
                     &params_f32,
-                    &f32_home,
+                    &mut f32_home,
                     &mut vfp_used,
-                    &vfp_home,
+                    &mut vfp_home,
                     &mut stack,
                     &mut next_temp,
                     &mut spill,
@@ -8949,6 +9027,76 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     stack.push(StackVal::Float { sreg: sd });
+                }
+
+                // #719 (phase 1b): `f32.store` — the VFP-store twin of `f32.load`
+                // (falcon has 10). VSTR takes only a `[Rn,#imm]` address, and the
+                // phase-1 selector does not model the static-data/native-pointer
+                // address rewrites, so we bit-cast the S-register value into a core
+                // register (`VMOV Rn,Sn`, a reinterpret) and store it with the
+                // PROVEN integer path (`generate_store_with_bounds_check`). A VSTR
+                // would write the identical 4 bytes, so the stored word is exact.
+                // Honest-decline the native-pointer static-data + const static-data
+                // address modes we don't yet lower (symmetric to F32Load) — never
+                // a silent miscompile; falcon's dynamic-index stores are unaffected.
+                F32Store { offset, .. } => {
+                    if self.native_pointer_abi
+                        && self.wasm_data_base > 0
+                        && *offset >= self.wasm_data_base
+                    {
+                        return Err(synth_core::Error::synthesis(
+                            "GI-FPU-002 phase 1b: f32.store to the static-data \
+                             region under the native-pointer ABI is not yet \
+                             lowered (#359 address relocation) — declining"
+                                .to_string(),
+                        ));
+                    }
+                    if let Some(eff) = self.try_fold_const_addr_store(wasm_ops, idx, *offset)
+                        && self.static_data_addend(eff).is_some()
+                    {
+                        return Err(synth_core::Error::synthesis(
+                            "GI-FPU-002 phase 1b: f32.store to a constant \
+                             static-data address is not yet lowered (#237 \
+                             relocation) — declining"
+                                .to_string(),
+                        ));
+                    }
+                    // WASM f32.store pops: value (f32) first, then address (i32).
+                    let sval = pop_float(&mut stack)?;
+                    // Bit-cast the f32 value into a core register (VMOV Rn,Sn).
+                    let value = alloc_temp_or_spill(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::I32ReinterpretF32 {
+                            rd: value,
+                            sm: sval,
+                        },
+                        source_line: Some(idx),
+                    });
+                    free_vfp_temp(&mut vfp_used, &vfp_home, sval);
+                    let addr = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
+                    let store_ops =
+                        self.generate_store_with_bounds_check(value, addr, *offset as i32, 4);
+                    for op in store_ops {
+                        instructions.push(ArmInstruction {
+                            op,
+                            source_line: Some(idx),
+                        });
+                    }
+                    // Store pushes nothing.
                 }
 
                 // Memory operations need stack-aware handling

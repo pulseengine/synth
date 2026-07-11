@@ -7051,23 +7051,23 @@ impl ArmEncoder {
             &Reg::R0,
         )?));
 
-        // AND.W R12, R12, #0x80000000
-        // Thumb-2 modified immediate: 0x80000000 = constant 0x80 with rotation
-        // Using T1 encoding: 11110 i 0 0000 S Rn | 0 imm3 Rd imm8
-        // 0x80000000: i=0, imm3=0b001, imm8=0x00 (rotation=4, value=0x80)
-        // Actually encoding #0x80000000 as modified constant:
-        // bit pattern 1 followed by 31 zeros: enc = 0b0100_00000000 = 0x0100? No.
-        // ARM modified immediate: abcdefgh rotated. 0x80000000 = 0x80 ROR 2 = enc 0x0102
-        // Actually: value = abcdefgh ROR (2*rot). 0x80 = 10000000, ROR 2 gives 0x20000000.
-        // For 0x80000000: 0x02 ROR 2 = 0x80000000. So imm12 = (1<<8) | 0x02 = 0x102
-        let hw1: u16 = 0xF000 | 12; // AND.W R12, R12, #modified_const (i=0, Rn=R12)
-        let hw2: u16 = (0x1 << 12) | (12 << 8) | 0x02; // imm3=1, Rd=R12, imm8=0x02
+        // AND.W R12, R12, #0x80000000  (isolate the sign bit of the sign source)
+        // Thumb-2 T1 data-processing modified immediate: 11110 i 0 0000 S Rn |
+        // 0 imm3 Rd imm8, where the 12-bit constant is i:imm3:imm8. When the
+        // 5-bit rotation `rot = i:imm3:imm8[7]` is >= 8, the value is
+        // `(0x80 | imm8[6:0]) ROR rot`. For 0x80000000: 0x80 ROR 8 = 0x80000000,
+        // so rot=8 (i=0, imm3=0b100), imm8=0x00. (#719: the previous encoding
+        // used imm3=1/imm8=0x02, which decodes to #0x00020002 — a wrong mask that
+        // spliced bits 17 and 1 instead of the sign bit; copysign was never
+        // execution-differentiated until #719 caught it.)
+        let hw1: u16 = 0xF000 | 12; // AND.W R12, R12, #imm (i=0, S=0, Rn=R12)
+        let hw2: u16 = (0x4 << 12) | (12 << 8); // imm3=4, Rd=R12, imm8=0 → #0x80000000
         bytes.extend_from_slice(&hw1.to_le_bytes());
         bytes.extend_from_slice(&hw2.to_le_bytes());
 
-        // BIC.W R0, R0, #0x80000000 (R0 = register 0, fields are zero)
-        let hw1: u16 = 0xF020; // BIC.W R0, R0, #modified_const (i=0, Rn=R0)
-        let hw2: u16 = (0x1 << 12) | 0x02; // imm3=1, Rd=R0, imm8=0x02
+        // BIC.W R0, R0, #0x80000000  (clear the sign bit of the magnitude source)
+        let hw1: u16 = 0xF020; // BIC.W R0, R0, #imm (i=0, S=0, Rn=R0)
+        let hw2: u16 = 0x4 << 12; // imm3=4, Rd=R0, imm8=0 → #0x80000000
         bytes.extend_from_slice(&hw1.to_le_bytes());
         bytes.extend_from_slice(&hw2.to_le_bytes());
 
