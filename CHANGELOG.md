@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.41.0] - 2026-07-11
+
+**f32 op-completeness for falcon + a soundness-gate hardening.**
+
+### Added
+
+- **f32 op-completeness (#719, #369, GI-FPU-002).** After v0.40.0 landed f32
+  load/reinterpret, falcon's float functions skipped on the next unsupported op.
+  Now lowered: `f32.store` (`VMOV Rn,Sn` + the proven i32.store address path),
+  `f32.abs`/`f32.neg`/`f32.copysign` (sign-bit ops, verified against ±0.0, ±inf,
+  NaN-sign), `f32.local.set`/`tee` (VFP home write-back), and **mixed f32/int
+  parameter lists** (AAPCS-VFP independent register pools — `(param i32 f32)` →
+  i32 in R0, f32 in S0). 156/156 bit-exact vs wasmtime on cortex-m4f. This clears
+  ~18 of falcon's remaining f32 skips. `f32` live across a call (S0–S15
+  caller-saved spill/rehome) is declined LOUDLY — the honest-skip, a documented
+  follow-on; f64 is phase 2.
+
+### Changed
+
+- **The f32 soundness oracles are now CI-gated (#712).** #712 reported all six
+  f32 comparisons returning value-independent wrong results — the `MOVS`-after-
+  `VMRS` flag clobber, already fixed in v0.40.0 (#716) but only *gated* on `flt`/
+  `fgt`, leaving `eq`/`ne`/`le`/`ge` fixed-but-ungated (the vacuous-harness
+  pattern that let the bug ship). Now: the compare oracle covers all six
+  (84/84), and the f32 soundness differentials (compares + trunc-trap +
+  load/reinterpret + the #719 op set) run in CI on every PR — the f32 path can no
+  longer silently regress. Also made the differential NaN-aware: WASM leaves a
+  NaN result's sign/payload non-deterministic (§4.3.3), so `f32.div(-0.0,0.0)` is
+  compared as NaN==NaN, not bit-exact (which diverged by wasmtime version), while
+  signed-zero and ±inf stay bit-exact.
+
 ## [0.40.0] - 2026-07-11
 
 **A five-lane North-Star feature hub: the f32 hard-float path completes and
