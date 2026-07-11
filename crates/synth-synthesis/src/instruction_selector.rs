@@ -2015,6 +2015,14 @@ fn is_scope_f32_op(op: &WasmOp) -> bool {
             | F32ConvertI32U
             | I32TruncF32S
             | I32TruncF32U
+            // #708 (phase 1b): un-dropped f32 memory-load + f32<->i32 bitcasts.
+            // `F32Load` itself is lowered in the main `select_with_stack` match
+            // (it needs `self`'s bounds/base-rewrite machinery); listing it here
+            // trips the FPU gate (m3 honest-reject) and the S0 result-homing for
+            // a function whose only f32 op is the load.
+            | F32Load { .. }
+            | F32ReinterpretI32
+            | I32ReinterpretF32
     )
 }
 
@@ -2131,15 +2139,128 @@ fn try_lower_f32(
             Ok(true)
         }
         I32TruncF32S | I32TruncF32U => {
+            // #709 (SOUNDNESS): WASM Core §4.3.3 requires `i32.trunc_f32_{s,u}`
+            // to TRAP on NaN, ±∞, or an out-of-integer-range operand. ARM
+            // `VCVT.S32.F32`/`VCVT.U32.F32` instead SATURATE (NaN→0), so the
+            // bare VCVT was a silent miscompile. Emit a domain guard BEFORE the
+            // conversion; the VCVT then provably never saturates.
+            //
+            // Valid range (both bounds exactly representable in f32):
+            //   trunc_f32_s: -2^31 <= x < 2^31   (lo=-2147483648, hi=2147483648)
+            //   trunc_f32_u:  -1.0 <  x < 2^32   (lo=-1.0,        hi=4294967296)
+            // The guard reuses the div-by-zero trap idiom (`Cmp; B<cond> +0 to
+            // skip; Udf`) driven by the SHIPPED f32 compares, whose condition
+            // codes are ORDERED (F32Lt=MI, F32Ge=GE, F32Gt=GT) — every compare
+            // against NaN yields 0, so a NaN fails the in-range test and falls
+            // to the UDF. Two guards (upper then lower); NaN is caught by the
+            // first. `F32Lt` is STRICT, so `x == 2^31` (and `x == -1.0` for the
+            // unsigned lower bound via strict `F32Gt`) correctly traps.
+            let signed = matches!(op, I32TruncF32S);
             let sm = pop_float(stack)?;
             let rd = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
-            let arm = if matches!(op, I32TruncF32S) {
+
+            // (hi_bound, lo_bound, lower-guard-is-inclusive-GE-vs-strict-GT)
+            let (hi, lo) = if signed {
+                (2147483648.0_f32, -2147483648.0_f32) // 2^31, -2^31
+            } else {
+                (4294967296.0_f32, -1.0_f32) // 2^32, -1.0
+            };
+
+            // A guard: materialize `bound` into a scratch S-reg, set `rd` to the
+            // ordered compare result (`sm <cmp> bound`), then trap unless `rd!=0`.
+            let mut emit_guard = |bound: f32, cmp_is_lt: bool| -> Result<()> {
+                let s_bound = alloc_vfp_temp(vfp_used)?;
+                instructions.push(ArmInstruction {
+                    op: ArmOp::F32Const {
+                        sd: s_bound,
+                        value: bound,
+                    },
+                    source_line: Some(idx),
+                });
+                // Upper guard uses F32Lt (x < hi); lower guard uses F32Ge for the
+                // signed inclusive `x >= -2^31` and F32Gt for the unsigned strict
+                // `x > -1.0`. All three set rd=1 only when the ordered relation
+                // holds (rd=0 on NaN).
+                let cmp = if cmp_is_lt {
+                    ArmOp::F32Lt {
+                        rd,
+                        sn: sm,
+                        sm: s_bound,
+                    }
+                } else if signed {
+                    ArmOp::F32Ge {
+                        rd,
+                        sn: sm,
+                        sm: s_bound,
+                    }
+                } else {
+                    ArmOp::F32Gt {
+                        rd,
+                        sn: sm,
+                        sm: s_bound,
+                    }
+                };
+                instructions.push(ArmInstruction {
+                    op: cmp,
+                    source_line: Some(idx),
+                });
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Cmp {
+                        rn: rd,
+                        op2: Operand2::Imm(0),
+                    },
+                    source_line: Some(idx),
+                });
+                // Skip the UDF when in-range (rd != 0); else fall through to trap.
+                instructions.push(ArmInstruction {
+                    op: ArmOp::BCondOffset {
+                        cond: Condition::NE,
+                        offset: 0,
+                    },
+                    source_line: Some(idx),
+                });
+                instructions.push(ArmInstruction {
+                    op: ArmOp::Udf { imm: 0 },
+                    source_line: Some(idx),
+                });
+                free_vfp_temp(vfp_used, vfp_home, s_bound);
+                Ok(())
+            };
+
+            emit_guard(hi, true)?; // upper: x < hi (also traps NaN)
+            emit_guard(lo, false)?; // lower: x >= lo (signed) / x > lo (unsigned)
+
+            // In-range: the saturating VCVT is now provably exact.
+            let arm = if signed {
                 ArmOp::I32TruncF32S { rd, sm }
             } else {
                 ArmOp::I32TruncF32U { rd, sm }
             };
             instructions.push(ArmInstruction {
                 op: arm,
+                source_line: Some(idx),
+            });
+            free_vfp_temp(vfp_used, vfp_home, sm);
+            stack.push(StackVal::i32(rd));
+            Ok(true)
+        }
+        F32ReinterpretI32 => {
+            // #708: i32 bits → f32 (VMOV Sd, Rm). Pure bit-cast, no conversion.
+            let rm = pop_operand(stack, next_temp, instructions, spill, reserved, idx)?;
+            let sd = alloc_vfp_temp(vfp_used)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::F32ReinterpretI32 { sd, rm },
+                source_line: Some(idx),
+            });
+            stack.push(StackVal::Float { sreg: sd });
+            Ok(true)
+        }
+        I32ReinterpretF32 => {
+            // #708: f32 bits → i32 (VMOV Rd, Sm). Pure bit-cast, no conversion.
+            let sm = pop_float(stack)?;
+            let rd = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+            instructions.push(ArmInstruction {
+                op: ArmOp::I32ReinterpretF32 { rd, sm },
                 source_line: Some(idx),
             });
             free_vfp_temp(vfp_used, vfp_home, sm);
@@ -2937,6 +3058,72 @@ impl InstructionSelector {
                 "Replacement::Inline not implemented — would silently emit NOP".to_string(),
             )),
         }
+    }
+
+    /// #709: the `i32.trunc_f32_{s,u}` domain guard (WASM Core §4.3.3), as a
+    /// sequence of `ArmOp`s to prepend before the saturating VCVT. Mirrors the
+    /// execution-oracle'd guard in the free-function `try_lower_f32`; see there
+    /// for the condition-code / NaN reasoning. Trap unless the operand is in the
+    /// exactly-representable valid range (signed: `-2^31 <= x < 2^31`; unsigned:
+    /// `-1.0 < x < 2^32`). Ordered compares (F32Lt=MI, F32Ge=GE, F32Gt=GT) each
+    /// yield 0 on NaN, so a NaN fails the in-range test and falls to the UDF.
+    fn f32_trunc_range_guard(&mut self, rd: Reg, sm: VfpReg, signed: bool) -> Vec<ArmOp> {
+        let (hi, lo) = if signed {
+            (2147483648.0_f32, -2147483648.0_f32) // 2^31, -2^31
+        } else {
+            (4294967296.0_f32, -1.0_f32) // 2^32, -1.0
+        };
+        let s_hi = self.alloc_vfp_reg();
+        let s_lo = self.alloc_vfp_reg();
+        let lower = if signed {
+            ArmOp::F32Ge {
+                rd,
+                sn: sm,
+                sm: s_lo,
+            } // inclusive x >= -2^31
+        } else {
+            ArmOp::F32Gt {
+                rd,
+                sn: sm,
+                sm: s_lo,
+            } // strict x > -1.0
+        };
+        vec![
+            // Upper bound: trap unless x < hi (also traps NaN).
+            ArmOp::F32Const {
+                sd: s_hi,
+                value: hi,
+            },
+            ArmOp::F32Lt {
+                rd,
+                sn: sm,
+                sm: s_hi,
+            },
+            ArmOp::Cmp {
+                rn: rd,
+                op2: Operand2::Imm(0),
+            },
+            ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            },
+            ArmOp::Udf { imm: 0 },
+            // Lower bound: trap unless x >= lo (signed) / x > lo (unsigned).
+            ArmOp::F32Const {
+                sd: s_lo,
+                value: lo,
+            },
+            lower,
+            ArmOp::Cmp {
+                rn: rd,
+                op2: Operand2::Imm(0),
+            },
+            ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            },
+            ArmOp::Udf { imm: 0 },
+        ]
     }
 
     /// Select default ARM instruction(s) for a WASM operation (no pattern match)
@@ -4206,13 +4393,22 @@ impl InstructionSelector {
                 vec![ArmOp::I32ReinterpretF32 { rd, sm }]
             }
 
+            // #709: domain guard before the saturating VCVT (see the identical,
+            // execution-oracle'd guard in `try_lower_f32`). This `select_default`
+            // path is the legacy pattern-matcher's fallback and is NOT reached by
+            // the shipping compile path (`select_with_stack`), so it is untested
+            // by the #709 differential — guarded here for soundness parity only.
             I32TruncF32S if self.fpu.is_some() => {
                 let sm = self.alloc_vfp_reg();
-                vec![ArmOp::I32TruncF32S { rd, sm }]
+                let mut seq = self.f32_trunc_range_guard(rd, sm, true);
+                seq.push(ArmOp::I32TruncF32S { rd, sm });
+                seq
             }
             I32TruncF32U if self.fpu.is_some() => {
                 let sm = self.alloc_vfp_reg();
-                vec![ArmOp::I32TruncF32U { rd, sm }]
+                let mut seq = self.f32_trunc_range_guard(rd, sm, false);
+                seq.push(ArmOp::I32TruncF32U { rd, sm });
+                seq
             }
 
             // F32 rounding pseudo-ops — emit ArmOp variants, encoder expands to
@@ -8630,6 +8826,80 @@ impl InstructionSelector {
                         });
                         stack.push(StackVal::i32(dst));
                     }
+                }
+
+                // #708 (phase 1b): `f32.load` — the VFP-load twin of the i32
+                // load. VLDR takes only a `[Rn,#imm]` address (no index reg) and
+                // the phase-1 selector does not model the static-data/native-
+                // pointer address rewrites, so rather than reinvent the address
+                // machinery we LOAD the 4-byte word with the PROVEN integer path
+                // (`generate_load_with_bounds_check`: the `[R11,idx]`→absolute-
+                // base rewrite + optional bounds guard) into a core register,
+                // then bit-cast it into an S-register with `VMOV Sd,Rd`. A VLDR
+                // would load the identical 4 bytes, so the result bit pattern is
+                // exact. Honest-decline the native-pointer static-data address
+                // mode (#359) we don't yet lower here — never a silent miscompile.
+                F32Load { offset, .. } => {
+                    if self.native_pointer_abi
+                        && self.wasm_data_base > 0
+                        && *offset >= self.wasm_data_base
+                    {
+                        return Err(synth_core::Error::synthesis(
+                            "GI-FPU-002 phase 1b: f32.load from the static-data \
+                             region under the native-pointer ABI is not yet \
+                             lowered (#359 address relocation) — declining"
+                                .to_string(),
+                        ));
+                    }
+                    // The i32.load path (#95/#237) relocates a CONST effective
+                    // address that lands in the static-data region; this f32.load
+                    // arm only lowers the dynamic-index (branch-3) form, so a
+                    // const static-data address would mis-address. Detect it with
+                    // the same helpers and DECLINE loudly (never a silent
+                    // miscompile). Dynamic-index loads — falcon's shape — are
+                    // unaffected (`try_fold_const_addr` returns None).
+                    if let Some(eff) = self.try_fold_const_addr(wasm_ops, idx, *offset)
+                        && self.static_data_addend(eff).is_some()
+                    {
+                        return Err(synth_core::Error::synthesis(
+                            "GI-FPU-002 phase 1b: f32.load from a constant \
+                             static-data address is not yet lowered (#237 \
+                             relocation) — declining"
+                                .to_string(),
+                        ));
+                    }
+                    let addr = pop_operand(
+                        &mut stack,
+                        &mut next_temp,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
+                    // Core scratch for the loaded 32-bit word.
+                    let dst = alloc_temp_or_spill(
+                        &mut next_temp,
+                        &mut stack,
+                        &mut instructions,
+                        &mut spill,
+                        &live_params,
+                        idx,
+                    )?;
+                    let load_ops =
+                        self.generate_load_with_bounds_check(dst, addr, *offset as i32, 4);
+                    for op in load_ops {
+                        instructions.push(ArmInstruction {
+                            op,
+                            source_line: Some(idx),
+                        });
+                    }
+                    // Bit-cast the loaded word into an S-register (VMOV Sd,Rd).
+                    let sd = alloc_vfp_temp(&mut vfp_used)?;
+                    instructions.push(ArmInstruction {
+                        op: ArmOp::F32ReinterpretI32 { sd, rm: dst },
+                        source_line: Some(idx),
+                    });
+                    stack.push(StackVal::Float { sreg: sd });
                 }
 
                 // Memory operations need stack-aware handling

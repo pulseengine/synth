@@ -1906,10 +1906,21 @@ fn convert_operator(op: &wasmparser::Operator) -> Option<WasmOp> {
         F32Gt => Some(WasmOp::F32Gt),
         F32Ge => Some(WasmOp::F32Ge),
         F32Const { value } => Some(WasmOp::F32Const(f32::from_bits(value.bits()))),
-        // F32Load / F32Store (linear-memory f32 access) stay dropped in phase 1
-        // — VFP VLDR/VSTR take a [Rn,#imm] address, so the computed base+offset
-        // needs an extra materialization the phase-1 selector does not yet emit.
-        // They loud-skip at decode (phase 1b).
+        // #708 (phase 1b): `f32.load` un-dropped. The selector lowers it as the
+        // proven `i32.load` address sequence (`[R11,idx]`→absolute-base rewrite +
+        // bounds guard) into a core register, then a bit-exact `VMOV Sd,Rd`
+        // (reinterpret) — a VLDR loads the same 4 bytes, so the bit pattern is
+        // identical. `f32.store` STAYS dropped (falcon's #369 inventory needs
+        // only the load + reinterpret; the store loud-skips at decode until a
+        // consumer needs it — never a silent miscompile).
+        F32Load { memarg } => Some(WasmOp::F32Load {
+            offset: memarg.offset as u32,
+            align: memarg.align as u32,
+        }),
+        // #708 (phase 1b): the f32<->i32 bit-casts. Pure `VMOV` between a core
+        // register and a single-precision S-register — no numeric conversion.
+        F32ReinterpretI32 => Some(WasmOp::F32ReinterpretI32),
+        I32ReinterpretF32 => Some(WasmOp::I32ReinterpretF32),
         F32ConvertI32S => Some(WasmOp::F32ConvertI32S),
         F32ConvertI32U => Some(WasmOp::F32ConvertI32U),
         I32TruncF32S => Some(WasmOp::I32TruncF32S),
