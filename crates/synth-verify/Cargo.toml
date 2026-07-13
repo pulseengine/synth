@@ -30,7 +30,7 @@ synth-opt = { path = "../synth-opt", version = "0.41.0" }
 synth-synthesis = { path = "../synth-synthesis", version = "0.41.0", optional = true }
 
 # Default SMT engine: pure-Rust, certificate-checked QF_BV solver (#553)
-ordeal = "0.4"
+ordeal = "0.9"
 
 # Z3: optional differential oracle (feature `z3-solver`) — no longer default.
 # Default features only (NO `static-link-z3`/`bundled`): z3-sys links the
