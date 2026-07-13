@@ -36,7 +36,7 @@ ordeal = "0.9"
 # Default features only (NO `static-link-z3`/`bundled`): z3-sys links the
 # system libz3 (`libz3-dev`) instead of compiling z3 from source or downloading
 # a prebuilt — kills the flaky `build.rs` GitHub download (HTTP 403/502, #553).
-z3 = { version = "0.19", optional = true }
+z3 = { version = "0.20", optional = true }
 
 # Error handling
 anyhow.workspace = true
