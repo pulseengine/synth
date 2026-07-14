@@ -1061,6 +1061,80 @@ artifacts:
         differential bit-identical and cycles equal-or-better; no new cost-gate
         introduced.
 
+  - id: VCR-VER-002
+    type: sys-verification
+    title: "Trap-preservation VC catches dropped WASM traps (div/rem, memory OOB, call_indirect, unreachable); live-validator wiring in progress"
+    description: >
+      Make trap-preservation a checkable, oracle-gated proof obligation so a
+      lowering that DROPS a WASM trap (div-by-zero / overflow guard, OOB
+      bounds check, call_indirect bounds/null/type, unreachable) can no longer
+      pass value-only equivalence — the systematic end of the per-op
+      soundness whack-a-mole (#633/#666/#665/#642/#709).
+
+      Foundation: consume ordeal 0.9.0's new `ordeal::trap` module (co-designed
+      in ordeal#59 / TR-019) — QF_BV trap-condition builders over operand/
+      pointer bits plus trap-preservation VCs (`prove_trap_equivalence`,
+      `prove_trap_condition_equivalence`). Boundary held: ordeal classifies
+      bits, never models op values (consumer-supplied) or floating point;
+      soundness is that of the certificate-checked pipeline (Unsat carries an
+      LRAT proof, re-checked before acceptance).
+
+      STATUS in-progress (v0.40.x). LANDED:
+      (1) synth-verify bumped ordeal 0.4 -> 0.9.
+      (2) `synth_verify::trap` wrapper maps synth WASM ops to trap conditions
+      over synth's own BV/Bool and exposes the gate as a `TrapVerdict`
+      {Preserved | Dropped(model) | Unknown}.
+      (3) RED-FIRST non-vacuity gate (tests/trap_preservation.rs, 6 tests, 5
+      op classes): for each class a trap-DROPPING lowering is CAUGHT
+      (Dropped/Sat) and a trap-PRESERVING lowering accepted (Preserved/Unsat)
+      — including both call_indirect TypeTrap modes (Runtime and
+      StaticallyDischarged). Proves the gate rejects the exact bug shapes.
+      (4) a DEDICATED always-checks div/rem trap-preservation method,
+      TranslationValidator::verify_div_rem_trap_preservation (full VC, ARM trap
+      condition derived structurally from the Udf guard), exercised by unit
+      tests: an unguarded i32 div/rem is rejected with a divisor==0
+      counterexample, a guarded one accepted.
+
+      DOCUMENTED GAP (why in-progress, not implemented):
+      - The live validation entry points (verify_rule -> verify_equivalence ->
+        verify_equivalence_parameterized) are STILL value-only and do NOT yet
+        invoke the new method — making it a mandatory conjunct on the live path
+        requires updating the value-only div-rule fixtures
+        (comprehensive_verification.rs) to carry the guard, so it is deferred.
+      - The validator's ARM side is value-only (ArmState has no trap flag) and
+        the div guard is an encoder-expansion artifact, so div/rem's ARM trap
+        term is a structural Udf-presence proxy — sound in the REJECT direction
+        but not a full proof the guard fires on exactly div0-or-overflow. The
+        method currently handles i32 only (32-bit operands).
+      - The other partial classes (load/store, call_indirect, unreachable) have
+        no ARM trap term on this path and remain gated at the unit level.
+      Closing the gap (auto-deriving opt.may_trap from the shipped lowering for
+      all classes, on the live path) needs a may_trap flag threaded through the
+      ArmState exec model, or decoding the emitted guard bytes in
+      expansion_validator.
+    status: proposed
+    tags: [verification, trap-preservation, soundness, ordeal]
+    links:
+      - type: verifies
+        target: VCR-001
+      - type: refines
+        target: VCR-VER-001
+    fields:
+      method: formal-verification
+      preconditions:
+        - "ordeal 0.9.0 `ordeal::trap` module available (ordeal#59)"
+      steps:
+        - "Bump synth-verify to ordeal 0.9; build + tests green"
+        - "Wrap ordeal::trap over synth BV/Bool (synth_verify::trap)"
+        - "Red-first gate: Sat-on-drop / Unsat-on-preserve for every op class"
+        - "Wire div/rem trap-preservation into the translation validator"
+      pass-criteria: >
+        A trap-dropping lowering is rejected (Sat/Dropped) and a
+        trap-preserving lowering accepted (Unsat/Preserved) for every partial-op
+        class in the unit gate; div/rem trap-preservation is a mandatory
+        validator obligation. Full auto-derivation for all classes is the
+        documented exec-model follow-on.
+
   # ---------------------------------------------------------------------------
   # Parallel ROI tracks (measured 2026-06-06): the allocator (VCR-RA-001) is the
   # north-star but the const-remat is partly FORCED by the 9-register pool, so

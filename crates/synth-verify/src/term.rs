@@ -690,6 +690,13 @@ impl Bool {
         &self.term
     }
 
+    /// Wrap a raw `ordeal::BoolTerm` — used by the trap module (`trap.rs`),
+    /// which builds predicates via `ordeal::trap::*` and needs to lift them
+    /// back into the crate's `Bool` (the field is private to this module).
+    pub(crate) fn from_ordeal(term: BoolTerm) -> Bool {
+        Bool { term }
+    }
+
     /// A fresh free (symbolic) boolean variable.
     ///
     /// ordeal's fragment has no boolean variables, so this is encoded as

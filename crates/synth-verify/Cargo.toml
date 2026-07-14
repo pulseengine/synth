@@ -29,7 +29,8 @@ synth-opt = { path = "../synth-opt", version = "0.41.0" }
 # ARM synthesis (optional, behind 'arm' feature)
 synth-synthesis = { path = "../synth-synthesis", version = "0.41.0", optional = true }
 
-# Default SMT engine: pure-Rust, certificate-checked QF_BV solver (#553)
+# Default SMT engine: pure-Rust, certificate-checked QF_BV solver (#553).
+# 0.9 adds the `ordeal::trap` module (trap-preservation VCs, VCR-VER-002 / #166).
 ordeal = "0.9"
 
 # Z3: optional differential oracle (feature `z3-solver`) — no longer default.
