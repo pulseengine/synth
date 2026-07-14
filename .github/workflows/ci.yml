@@ -372,8 +372,20 @@ jobs:
       # #719: the falcon f32 residual — f32.store, abs/neg/copysign, local.set/
       # tee, and mixed f32/int AAPCS-VFP params — bit-exact vs wasmtime on m4f,
       # including the copysign ±0/NaN-sign/±inf sign edges. m3 honest-reject.
+      # #719 phase 2 extension (same harness): f32 live ACROSS an integer call
+      # (spill/reload around the bl, non-vacuous — the callee clobbers S0/S1)
+      # + float-signature-callee loud-decline pinned via symtab absence.
       - name: Run f32 store/abs/neg/copysign/local + mixed-param oracle (#719, m4f)
         run: SYNTH=./target/debug/synth python scripts/repro/f32_ops_719_differential.py
+      # #369 (GI-FPU-002 phase 2): the scalar f64 subset on cortex-m7dp —
+      # const/promote_f32/arith/compare/load/store + f64-across-call, bit-exact
+      # (NaN==NaN per Core §4.3.3) vs wasmtime under unicorn. Pins the
+      # #712-class f64 compare flag-clobber fix (MOVS after VMRS returned
+      # stale-flag results), the m4f/m3 honest-reject (single-precision / no
+      # FPU), and the f64-ABI-boundary loud-declines (f64 params, f64-returning
+      # calls).
+      - name: Run f64 const/promote/arith/compare/mem + across-call oracle (#369, m7dp)
+        run: SYNTH=./target/debug/synth python scripts/repro/f64_369_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b)

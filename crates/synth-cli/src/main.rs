@@ -1395,6 +1395,10 @@ fn compile_command(
     // Empty for the demo path (no module signature).
     let mut current_func_params_f32: Vec<bool> = Vec::new();
     let mut func_params_f32_all: Vec<Vec<bool>> = Vec::new();
+    // GI-FPU-002 phase 2 (#369): declared f64-param masks (hard-float targets
+    // decline f64-param functions loudly).
+    let mut current_func_params_f64: Vec<bool> = Vec::new();
+    let mut func_params_f64_all: Vec<Vec<bool>> = Vec::new();
     // GI-FPU-002 phase 2 (#719/#369): the CURRENT function's f32/f64 return flag
     // (epilogue soundness guard, see CompileConfig) + the per-function/per-type
     // return-float tables (call-site decline of f32/f64-signature callees).
@@ -1475,6 +1479,7 @@ fn compile_command(
             let module_func_params_i64 = module.func_params_i64;
             let module_func_arg_counts = module.func_arg_counts;
             func_params_f32_all = module.func_params_f32.clone();
+            func_params_f64_all = module.func_params_f64.clone();
             // GI-FPU-002 phase 2 (#719/#369): per-function/per-type f32/f64
             // return tables (epilogue guard + call-site callee-signature decline).
             func_ret_f32_all = module.func_ret_f32.clone();
@@ -1531,6 +1536,10 @@ fn compile_command(
             // GI-FPU-002 (#619/#369): THIS function's declared f32-param mask.
             if let Some(p) = func_params_f32_all.get(func.index as usize) {
                 current_func_params_f32 = p.clone();
+            }
+            // GI-FPU-002 phase 2 (#369): THIS function's declared f64-param mask.
+            if let Some(p) = func_params_f64_all.get(func.index as usize) {
+                current_func_params_f64 = p.clone();
             }
             // GI-FPU-002 phase 2 (#719/#369): THIS function's f32/f64 return flag.
             current_func_ret_f32 = func_ret_f32_all
@@ -1648,6 +1657,9 @@ fn compile_command(
         // GI-FPU-002 (#619/#369): AAPCS-VFP f32-param homing.
         current_func_params_f32,
         func_params_f32: func_params_f32_all,
+        // GI-FPU-002 phase 2 (#369): f64-param loud-decline masks.
+        current_func_params_f64,
+        func_params_f64: func_params_f64_all,
         // GI-FPU-002 phase 2 (#719/#369): f32/f64 return-soundness guard +
         // call-site callee-signature decline tables.
         current_func_ret_f32,
@@ -2403,6 +2415,7 @@ fn compile_all_exports(
         all_type_ret_i64,  // #311: per-type returns-i64 (call_indirect)
         all_func_params_i64, // #359: per-function declared param widths (stack-arg ABI)
         all_func_params_f32, // GI-FPU-002: per-function declared f32-param mask (AAPCS-VFP)
+        all_func_params_f64, // GI-FPU-002 phase 2 (#369): per-function declared f64-param mask
         all_func_ret_f32,  // GI-FPU-002 phase 2 (#719/#369): per-function returns-f32
         all_func_ret_f64,  // GI-FPU-002 phase 2 (#719/#369): per-function returns-f64
         all_type_ret_f32,  // GI-FPU-002 phase 2 (#719/#369): per-type returns-f32 (call_indirect)
@@ -2507,6 +2520,7 @@ fn compile_all_exports(
             Vec::new(),
             Vec::new(), // #359: WAST fixture suite is i32-only — no stack params
             Vec::new(), // GI-FPU-002: WAST fixture suite is i32-only — no f32 params
+            Vec::new(), // GI-FPU-002 phase 2: WAST fixture suite is i32-only — no f64 params
             Vec::new(), // GI-FPU-002 phase 2: WAST fixture suite is i32-only — no f32 returns
             Vec::new(), // GI-FPU-002 phase 2: WAST fixture suite is i32-only — no f64 returns
             Vec::new(), // GI-FPU-002 phase 2: WAST fixture suite is i32-only — no f32-ret types
@@ -2607,6 +2621,7 @@ fn compile_all_exports(
             module.type_ret_i64,
             module.func_params_i64,
             module.func_params_f32,
+            module.func_params_f64,
             module.func_ret_f32,
             module.func_ret_f64,
             module.type_ret_f32,
@@ -2692,6 +2707,8 @@ fn compile_all_exports(
         // GI-FPU-002 (#619/#369): per-function AAPCS-VFP f32-param homing.
         func_params_f32: all_func_params_f32.clone(),
         current_func_params_f32: Vec::new(),
+        func_params_f64: all_func_params_f64.clone(),
+        current_func_params_f64: Vec::new(),
         // GI-FPU-002 phase 2 (#719/#369): set per function in the compile loop;
         // the per-function/per-type tables feed the call-site callee-signature
         // decline in the selector.
@@ -2766,6 +2783,13 @@ fn compile_all_exports(
                 && !p.is_empty()
             {
                 fc.current_func_params_f32 = p.clone();
+            }
+            // GI-FPU-002 phase 2 (#369): THIS function's declared f64-param mask.
+            if let Some(p) = all_func_params_f64
+                .get(func.index as usize)
+                .filter(|p| !p.is_empty())
+            {
+                fc.current_func_params_f64 = p.clone();
             }
             // GI-FPU-002 phase 2 (#719/#369): THIS function's f32/f64 return flag.
             fc.current_func_ret_f32 = all_func_ret_f32

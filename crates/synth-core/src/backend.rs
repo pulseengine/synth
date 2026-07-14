@@ -193,6 +193,15 @@ pub struct CompileConfig {
     /// Set per function from [`func_params_f32`], mirroring
     /// [`current_func_params_i64`]. Empty ⇒ no f32 params.
     pub current_func_params_f32: Vec<bool>,
+    /// GI-FPU-002 phase 2 (#369): per-function declared f64-param mask (full
+    /// index, imports first) and the CURRENT function's slice. Hard-float
+    /// targets decline f64-param functions loudly — the legacy width
+    /// inference treats an f64 param as an i64 CORE-register pair, which
+    /// reads the wrong registers under AAPCS-VFP (the caller put it in a
+    /// D-register). Empty ⇒ no f64 params (byte-identical legacy path).
+    pub func_params_f64: Vec<Vec<bool>>,
+    /// See [`func_params_f64`](Self::func_params_f64).
+    pub current_func_params_f64: Vec<bool>,
     /// GI-FPU-002 phase 2 (#719/#369): whether the function CURRENTLY being
     /// compiled returns f32. Set per function from the decoder's `func_ret_f32`.
     /// The direct selector's epilogue uses it to loudly decline a result that
@@ -395,6 +404,8 @@ impl Default for CompileConfig {
             current_func_ret_f64: false,
             // GI-FPU-002 phase 2 (#719/#369): empty ⇒ callees assumed
             // non-float-returning (hand-built op streams).
+            func_params_f64: Vec::new(),
+            current_func_params_f64: Vec::new(),
             func_ret_f32: Vec::new(),
             func_ret_f64: Vec::new(),
             type_ret_f32: Vec::new(),

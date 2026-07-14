@@ -96,6 +96,12 @@ impl Backend for ArmBackend {
                 .func_params_f32
                 .get(func.index as usize)
                 .filter(|p| !p.is_empty());
+            // GI-FPU-002 phase 2 (#369): THIS function's declared f64-param
+            // mask (hard-float targets decline f64 params loudly).
+            let params_f64 = config
+                .func_params_f64
+                .get(func.index as usize)
+                .filter(|p| !p.is_empty());
             // GI-FPU-002 phase 2 (#719/#369): THIS function's declared f32/f64
             // return flag, so the epilogue soundness guard fires on every driver
             // path (not only the CLI loops).
@@ -111,6 +117,7 @@ impl Backend for ArmBackend {
                 .unwrap_or(false);
             let func_config = if params.is_some()
                 || params_f32.is_some()
+                || params_f64.is_some()
                 || !func.block_arity.is_empty()
                 || declared_params.is_some()
                 || ret_f32
@@ -119,6 +126,7 @@ impl Backend for ArmBackend {
                 Some(CompileConfig {
                     current_func_params_i64: params.cloned().unwrap_or_default(),
                     current_func_params_f32: params_f32.cloned().unwrap_or_default(),
+                    current_func_params_f64: params_f64.cloned().unwrap_or_default(),
                     current_func_ret_f32: ret_f32,
                     current_func_ret_f64: ret_f64,
                     current_func_block_arity: func.block_arity.clone(),
@@ -415,6 +423,9 @@ fn compile_wasm_to_arm(
         // GI-FPU-002 (#619/#369): declared f32-param mask — home hard-float f32
         // args in S0..S15 (AAPCS-VFP) instead of the R0..R3 integer path.
         selector.set_params_f32(config.current_func_params_f32.clone());
+        // GI-FPU-002 phase 2 (#369): declared f64-param mask — hard-float
+        // targets decline f64-param functions loudly (no D-register homing yet).
+        selector.set_params_f64(config.current_func_params_f64.clone());
         // GI-FPU-002 phase 2 (#719/#369): THIS function's f32/f64 return flag, so
         // the epilogue loudly declines a float result reaching it in a core
         // register (never a silent integer R0 return where a caller reads S0/D0).
