@@ -1063,11 +1063,12 @@ artifacts:
 
   - id: VCR-VER-002
     type: sys-verification
-    title: "Trap-preservation VC catches dropped WASM traps (div/rem, memory OOB, call_indirect, unreachable); live-validator wiring in progress"
+    title: "Trap-preservation VC catches dropped WASM traps (div/rem, memory OOB, call_indirect, unreachable, float→int trunc); live-validator wiring in progress"
     description: >
       Make trap-preservation a checkable, oracle-gated proof obligation so a
       lowering that DROPS a WASM trap (div-by-zero / overflow guard, OOB
-      bounds check, call_indirect bounds/null/type, unreachable) can no longer
+      bounds check, call_indirect bounds/null/type, unreachable, float→int
+      truncation NaN/∞/out-of-range) can no longer
       pass value-only equivalence — the systematic end of the per-op
       soundness whack-a-mole (#633/#666/#665/#642/#709).
 
@@ -1094,6 +1095,27 @@ artifacts:
       condition derived structurally from the Udf guard), exercised by unit
       tests: an unguarded i32 div/rem is rejected with a divisor==0
       counterexample, a guarded one accepted.
+      (5) Phase B (ordeal 0.9.1, ordeal#59/TR-020): the float->int TRUNC trap
+      class (#709). ordeal's `trap_trunc` classifies the trap predicate
+      (NaN / +-inf / out-of-range) purely over the float operand's BIT PATTERN
+      - exponent-field patterns plus sign-split monotonic magnitude threshold
+      compares; floats enter as BV32/BV64, no FP theory. synth_verify::trap
+      maps all six WasmOp trunc variants (i32/i64.trunc_f32/f64_s/u as decoded;
+      i64.trunc_f32_* are not WasmOp variants) via trunc_op + trap_trunc,
+      trap-clause-only VC (synth models no float->int value). Red-first gate
+      extended (11 tests total): for all six variants a guard-dropping lowering
+      is CAUGHT (Dropped/Sat) with a counterexample validated as genuinely
+      trapping against the real-float reference, an identical-guard lowering
+      accepted (Preserved/Unsat, LRAT re-checked); a signedness-confused guard
+      (unsigned range check on trunc_f32_s - the VCVT-saturate partial-drop
+      shape) is caught; and the classifier ENCODING itself is eval-tested
+      against the synth #709 boundary table (the reference-oracle check
+      ordeal#59 called for: 2^31/0x4F000000 traps signed, -2^31/0xCF000000
+      in range, -1.0 traps unsigned, 2^32 traps, NaN/+-inf trap, 3e9/-3e9
+      trap, 2.5/0.5/-0.0 in range, plus f64 and i64-target anchors) - both
+      directly via ordeal::eval and at ground inputs through the
+      certificate-checked pipeline, with a wrong-expectation non-vacuity
+      control.
 
       DOCUMENTED GAP (why in-progress, not implemented):
       - The live validation entry points (verify_rule -> verify_equivalence ->
@@ -1106,7 +1128,8 @@ artifacts:
         term is a structural Udf-presence proxy — sound in the REJECT direction
         but not a full proof the guard fires on exactly div0-or-overflow. The
         method currently handles i32 only (32-bit operands).
-      - The other partial classes (load/store, call_indirect, unreachable) have
+      - The other partial classes (load/store, call_indirect, unreachable,
+        float->int trunc) have
         no ARM trap term on this path and remain gated at the unit level.
       Closing the gap (auto-deriving opt.may_trap from the shipped lowering for
       all classes, on the live path) needs a may_trap flag threaded through the
@@ -1123,11 +1146,13 @@ artifacts:
       method: formal-verification
       preconditions:
         - "ordeal 0.9.0 `ordeal::trap` module available (ordeal#59)"
+        - "ordeal 0.9.1 `trap_trunc` float→int classifier available (ordeal#59/TR-020)"
       steps:
         - "Bump synth-verify to ordeal 0.9; build + tests green"
         - "Wrap ordeal::trap over synth BV/Bool (synth_verify::trap)"
         - "Red-first gate: Sat-on-drop / Unsat-on-preserve for every op class"
         - "Wire div/rem trap-preservation into the translation validator"
+        - "Phase B: map the six WasmOp trunc variants to ordeal 0.9.1 trap_trunc; eval-gate the classifier against the #709 boundary table"
       pass-criteria: >
         A trap-dropping lowering is rejected (Sat/Dropped) and a
         trap-preserving lowering accepted (Unsat/Preserved) for every partial-op

@@ -165,9 +165,11 @@ claims:
   # in-progress, not implemented: div/rem wired mandatorily into the validator;
   # the other partial-op classes are gated at the unit level pending the
   # exec-model trap flag (documented follow-on in the roadmap entry).
+  # Phase B (ordeal 0.9.1, ordeal#59/TR-020): float→int trunc trap class
+  # covered — trunc_op/trap_trunc wrapper + #709 boundary-table eval gate.
   - id: SYNTH-VCR-VER-002-STATUS
     doc: artifacts/verified-codegen-roadmap.yaml
-    text: "Trap-preservation VC catches dropped WASM traps (div/rem, memory OOB, call_indirect, unreachable); live-validator wiring in progress"
+    text: "Trap-preservation VC catches dropped WASM traps (div/rem, memory OOB, call_indirect, unreachable, float→int trunc); live-validator wiring in progress"
     evidence:
       - kind: yaml-field
         path: artifacts/verified-codegen-roadmap.yaml
