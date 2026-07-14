@@ -209,13 +209,29 @@ fn assert_frozen(cases: &[(&str, &str, usize)], backend: &str, target: &str) {
 /// `frozen_fixtures_uxth_fold_escape_hatch_restores_old_bytes`). Prior
 /// goldens were control_step 158b036b…/300, flight_seam 1e1d2b75…/726,
 /// flight_seam_flat d11849db…/866.
+/// Goldens RE-FROZEN for the #390 stack-fwd strengthening (v0.42 lane):
+/// `forward_stack_reloads` upgraded to a conditional-branch-transparent
+/// holder-lattice walk (forwards/deletes reloads across `br_if`
+/// compare→branch ladders — joins still reset all state). control_step
+/// 314→308 (−6), flight_seam_flat 1014→1010 (−4); flight_seam and
+/// signed_div_const are byte-identical. Execution differentials re-run green
+/// on the new default bytes BEFORE this re-pin: the full
+/// scripts/repro/*_differential.py sweep (86/87 — u64_unpack_riscv is
+/// env-broken identically on the old bytes) incl. flight_seam flat+inlined
+/// flight_algo 0x07FDF307, control_step, frame_slot_dce, const_cse,
+/// spill_rung_581, and the NEW gust_spill_fwd_390_differential.py
+/// (gust_poll state+return vs wasmtime in default + both lever opt-outs).
+/// `SYNTH_NO_STACK_FWD=1` restores the prior stack-fwd-off bytes (asserted by
+/// `frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes`, pins
+/// untouched). Prior goldens were control_step f962794f…/314,
+/// flight_seam_flat 64388237…/1014.
 #[test]
 fn frozen_fixtures_text_is_bit_identical_oracle_001() {
     let cases = [
         (
             "control_step.wasm",
-            "f962794f128223b5212fc5cc25bb8393bcae758e89b93c07eb23deb4fffe5c0d",
-            314usize,
+            "b365a29ef47ddd3e5ef8755d54cbd0d46c504af64dd24d08e9500385f674d892",
+            308usize,
         ),
         (
             "flight_seam.wasm",
@@ -224,8 +240,8 @@ fn frozen_fixtures_text_is_bit_identical_oracle_001() {
         ),
         (
             "flight_seam_flat.wasm",
-            "643882379d3c25cd1acc34129f5456d54b6864b127184c1f81823daeb267401c",
-            1014,
+            "7d3145c4ed0493cd326f867ab068930a64f3813bce60d031b19f535d0f800998",
+            1010,
         ),
         (
             "signed_div_const.wasm",
@@ -336,18 +352,25 @@ fn frozen_fixtures_stack_fwd_escape_hatch_restores_old_bytes() {
 /// #242), which would otherwise rewrite traffic these goldens pin.
 #[test]
 fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
-    // (fixture, PRE-flip golden sha256, PRE-flip len) — the pre-spill-realloc
-    // goldens (the SYNTH_STACK_FWD-era defaults).
+    // (fixture, opt-out golden sha256, len). RE-DERIVED at the #390 stack-fwd
+    // strengthening: stack-fwd stays ON in this config, and its
+    // conditional-branch-transparent forwarding now catches (earlier in the
+    // pipeline) the same reloads spill-realloc's stage 1 forwarded — so these
+    // are no longer the historical pre-spill-realloc defaults byte-for-byte.
+    // The gate's TRIPWIRE semantics are unchanged: `SYNTH_SPILL_REALLOC=0`
+    // must land exactly here, so any stage-2/3 leak into the opt-out path
+    // still reddens. Prior pins were flight_seam b590aea8…/902,
+    // flight_seam_flat 49ebf8a1…/1046.
     let old = [
         (
             "flight_seam.wasm",
-            "b590aea84d62b5dd58702a1a4dd5628683615b0482f1610bdf700509f8c8e360",
-            902usize,
+            "d8af257f82594e0a41d75c2fba2aaee62041fff54863342f4a9c3aebe39e10f3",
+            894usize,
         ),
         (
             "flight_seam_flat.wasm",
-            "49ebf8a1b48d96f66ad4d91f401cd78ce8bcbacc9340941039301a18aba2ec83",
-            1046,
+            "b521284d672f0b420ba0db65281259f5824fdd7fe39a217730529fd6f5661006",
+            1038,
         ),
     ];
     for &(wasm, golden, golden_len) in &old {
@@ -421,13 +444,16 @@ fn frozen_fixtures_spill_realloc_escape_hatch_restores_old_bytes() {
 /// control_step (uxth) and flight_seam (dead-frame).
 #[test]
 fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
-    // (fixture, PRE-flip golden sha256, PRE-flip len) — the pre-const-CSE
-    // goldens (the SYNTH_BASE_CSE-flip-era defaults).
+    // (fixture, opt-out golden sha256, len). control_step RE-DERIVED at the
+    // #390 stack-fwd strengthening (stack-fwd stays ON in this config and now
+    // forwards −6 B of control_step's reload traffic; prior pin was
+    // 93ef2610…/324); flight_seam is untouched by that change. The tripwire
+    // semantics are unchanged: `SYNTH_CONST_CSE=0` must land exactly here.
     let old = [
         (
             "control_step.wasm",
-            "93ef2610ce177e30e28767182ceecfa455d4e69968429145c967f16d7b2e22f1",
-            324usize,
+            "5771a1a1e74e2aedfd07daa526b7b8301022cc76c5d3ed79c0adb2c81404c838",
+            318usize,
         ),
         (
             "flight_seam.wasm",
@@ -505,8 +531,12 @@ fn frozen_fixtures_const_cse_escape_hatch_restores_old_bytes() {
 /// above locks them.)
 #[test]
 fn frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes() {
-    // (fixture, PRE-flip golden sha256, PRE-flip len) — the const-CSE-flip-era
-    // defaults.
+    // (fixture, opt-out golden sha256, len). flight_seam_flat RE-DERIVED at
+    // the #390 stack-fwd strengthening (stack-fwd stays ON in this config;
+    // the holder-lattice walk deletes a now-no-op reload, −4 B; prior pin was
+    // d62bdfa3…/1034); flight_seam is untouched by that change. The tripwire
+    // semantics are unchanged: `SYNTH_DEAD_FRAME_ELIM=0` must land exactly
+    // here.
     let old = [
         (
             "flight_seam.wasm",
@@ -515,8 +545,8 @@ fn frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes() {
         ),
         (
             "flight_seam_flat.wasm",
-            "d62bdfa3faed21aef1ad943d824817f3adb04f0f400c1dd498690a437dd2bf43",
-            1034,
+            "aacd064cefc3087fe63e969796c5f87e659f3c8724a4d0999c817de38ef824a1",
+            1030,
         ),
     ];
     for &(wasm, golden, golden_len) in &old {
@@ -586,12 +616,15 @@ fn frozen_fixtures_dead_frame_elim_escape_hatch_restores_old_bytes() {
 /// `=0` alone lands exactly on the previous shipped default.
 #[test]
 fn frozen_fixtures_uxth_fold_escape_hatch_restores_old_bytes() {
-    // (fixture, PRE-flip golden sha256, PRE-flip len) — the const-CSE-flip-era
-    // default.
+    // (fixture, opt-out golden sha256, len). RE-DERIVED at the #390 stack-fwd
+    // strengthening (stack-fwd stays ON in this config and forwards −6 B of
+    // control_step's reload traffic; prior pin was fdcfbac1…/320). The
+    // tripwire semantics are unchanged: `SYNTH_UXTH_FOLD=0` must land exactly
+    // here.
     let old = [(
         "control_step.wasm",
-        "fdcfbac168dcd71ae4a981103f618bb661ffb74c9fd2248c876e5c9b007a65fe",
-        320usize,
+        "3a488afa1612a5698d3a1817a4ad526f9e3cde9f62a324195027a48780b635e6",
+        314usize,
     )];
     for &(wasm, golden, golden_len) in &old {
         let elf = format!("/tmp/frozen_nouxth_{wasm}.elf");

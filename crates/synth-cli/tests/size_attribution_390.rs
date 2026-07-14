@@ -95,8 +95,18 @@ fn per_function_sizes() -> BTreeMap<String, u64> {
 /// gust_poll/gust_mix are gale's #390 benchmark functions; func_0 is the kiln
 /// `transition` body, func_1 the internal `mix`. To repin after a deliberate
 /// size change, run the test and copy the printed REPIN block.
+///
+/// REPINNED (#390 spill-reduction, v0.42 lane): gust_poll 740 → 724 (−16 B by
+/// this oracle's symbol-delta method; machine code is 722 + 2 B alignment
+/// pad, −18) — `forward_stack_reloads` upgraded to a
+/// conditional-branch-transparent holder-lattice walk (19 reloads forwarded /
+/// deleted across gust_poll's br_if compare→branch ladders). Correctness
+/// evidence on the new bytes BEFORE this repin: the full
+/// scripts/repro/*_differential.py sweep incl. the new
+/// gust_spill_fwd_390_differential.py (gust_poll state+return vs wasmtime in
+/// default + both lever opt-outs).
 const LOCKED: &[(&str, u64)] = &[
-    ("gust_poll", 740),
+    ("gust_poll", 724),
     ("gust_mix", 32),
     ("func_0", 408),
     ("func_1", 76),
