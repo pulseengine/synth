@@ -5,11 +5,14 @@ GENERATED FILE — DO NOT EDIT BY HAND.
 Emitted by [crate::sel_dsl::generate_rocq_lowering_source] from the
 shipped rule table [crates/synth-synthesis/src/sel_dsl/mod.rs] (RULES),
 the SAME table that produces the shipped Rust lowering
-([sel_dsl/generated.rs]). Each [Gen.rule_X] below is proven equal to the
-hand-written [rule_X] of [VcrSelRules.v] by a [reflexivity] Qed in
-[VcrSelRulesGenCheck.v] — so the Rocq model the theorems are ABOUT cannot
-silently diverge from the shipped selector for the covered ops (the #682
-vacuous-proof failure mode, closed at the instruction-sequence level).
+([sel_dsl/generated.rs]). This module is the SINGLE SOURCE of the Rocq
+model definitions: [VcrSelRules.v] re-exports every rule
+([Definition rule_X := Gen.rule_X]) and states the correctness theorems
+directly about these generated sequences — so the model the theorems
+are ABOUT cannot silently diverge from the shipped selector for the
+covered ops (the #682 vacuous-proof failure mode, closed at the
+instruction-sequence level: a RULES change regenerates this file and
+the matching correctness Qed stops compiling).
 
 Pinned up-to-date by the [rocq_generated_lowering_is_up_to_date] cargo
 test; regenerate with

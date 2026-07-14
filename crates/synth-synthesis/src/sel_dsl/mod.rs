@@ -1418,21 +1418,24 @@ pub fn generate_lowering_source() -> String {
 
 // ─── VCR-ISA-001 (#667): generate the Rocq model from the shipped selector ────
 //
-// The functions below turn the SAME [`RULES`] table into the Rocq lowering
-// `Definition`s that `coq/Synth/Synth/VcrSelRules.v` proves correct. Today those
-// definitions are HAND-WRITTEN in `VcrSelRules.v` and can silently diverge from
-// the shipped selector (the #682 vacuous-proof incident: a Qed certified a
-// hardware-wrong program because the model had drifted). Generating them from
-// `RULES` closes that divergence at the *instruction-sequence* level (the
-// existing `//coq:vcr_sel_rules_coverage` gate only pins the rule NAMES).
+// The function below turns the SAME [`RULES`] table into the Rocq lowering
+// `Definition`s that `coq/Synth/Synth/VcrSelRules.v` proves correct. The
+// generated `Module Gen` (`VcrSelRulesGenerated.v`) is the SINGLE SOURCE of
+// those definitions: `VcrSelRules.v` re-exports them (`Definition rule_X :=
+// Gen.rule_X`) and states the 40 correctness theorems directly about them —
+// there is no hand-written copy of the sequences left to diverge from the
+// shipped selector (the #682 vacuous-proof incident: a Qed certified a
+// hardware-wrong program because the model had drifted; the
+// `//coq:vcr_sel_rules_coverage` gate only pins the rule NAMES).
 //
-// The emitted `Gen.<rule>` module is checked against the hand-written
-// `<rule>` by a Coq `reflexivity` proof per rule (see
-// `coq/Synth/Synth/VcrSelRulesGenCheck.v`): Coq's kernel — not a Rust text
-// normalizer — is the oracle, so the fiddly spots (the `SetCond` →
-// two-instruction expansion, the i32 `MOV<cc>` vs i64 `Cond_*` mapping) cannot
-// hide a false green. The `.v` artifacts are committed and pinned up-to-date by
-// the tests below.
+// The divergence gate is Coq's kernel — not a Rust text normalizer — so the
+// fiddly spots (the `SetCond` → two-instruction expansion, the i32 `MOV<cc>`
+// vs i64 `Cond_*` mapping) cannot hide a false green: change `RULES`,
+// regenerate, and the matching correctness Qed in `VcrSelRules.v` stops
+// compiling under `//coq:verify_proofs`. (The former `VcrSelRulesGenCheck.v`
+// reflexivity cross-check compared `Gen.rule_X` against a hand-written mirror;
+// with the mirror gone it is subsumed by the correctness proofs themselves.)
+// The `.v` artifact is committed and pinned up-to-date by the tests below.
 
 /// Render one [`TemplateOp`] as the Coq `arm_instr` term(s) it denotes. A
 /// `SetCond` expands to the TWO-instruction `MOV rd #0; MOV<cc> rd #1` shape
@@ -1518,7 +1521,8 @@ fn coq_instrs(t: &TemplateOp) -> Vec<String> {
 
 /// Emit the Coq `Definition <name> (<binders> : arm_reg) : arm_program := [..].`
 /// for one rule — the register-polymorphic ARM sequence the shipped selector
-/// emits, in the exact surface syntax `VcrSelRules.v` hand-writes.
+/// emits, as it appears inside `Module Gen` of the generated
+/// `VcrSelRulesGenerated.v` (the single source `VcrSelRules.v` re-exports).
 pub fn emit_rocq_definition(rule: &SelRule) -> String {
     let binders: Vec<&str> = rule.params.iter().map(|p| p.coq_name()).collect();
     let instrs: Vec<String> = rule.seq.iter().flat_map(coq_instrs).collect();
@@ -1531,8 +1535,10 @@ pub fn emit_rocq_definition(rule: &SelRule) -> String {
 }
 
 /// Generate `coq/Synth/Synth/VcrSelRulesGenerated.v` from [`RULES`] — the whole
-/// rule table's lowerings wrapped in a `Module Gen`, so the cross-check file can
-/// state `Gen.<rule> = <rule>` without a name collision.
+/// rule table's lowerings wrapped in a `Module Gen`. This is the SINGLE SOURCE
+/// of the Rocq model definitions: `VcrSelRules.v` re-exports every rule
+/// (`Definition rule_X := Gen.rule_X`) and proves the correctness theorems
+/// directly about the generated sequences.
 ///
 /// Committed to the tree and pinned by
 /// [`tests::rocq_generated_lowering_is_up_to_date`]; regenerate with
@@ -1547,11 +1553,14 @@ pub fn generate_rocq_lowering_source() -> String {
          Emitted by [crate::sel_dsl::generate_rocq_lowering_source] from the\n\
          shipped rule table [crates/synth-synthesis/src/sel_dsl/mod.rs] (RULES),\n\
          the SAME table that produces the shipped Rust lowering\n\
-         ([sel_dsl/generated.rs]). Each [Gen.rule_X] below is proven equal to the\n\
-         hand-written [rule_X] of [VcrSelRules.v] by a [reflexivity] Qed in\n\
-         [VcrSelRulesGenCheck.v] — so the Rocq model the theorems are ABOUT cannot\n\
-         silently diverge from the shipped selector for the covered ops (the #682\n\
-         vacuous-proof failure mode, closed at the instruction-sequence level).\n\
+         ([sel_dsl/generated.rs]). This module is the SINGLE SOURCE of the Rocq\n\
+         model definitions: [VcrSelRules.v] re-exports every rule\n\
+         ([Definition rule_X := Gen.rule_X]) and states the correctness theorems\n\
+         directly about these generated sequences — so the model the theorems\n\
+         are ABOUT cannot silently diverge from the shipped selector for the\n\
+         covered ops (the #682 vacuous-proof failure mode, closed at the\n\
+         instruction-sequence level: a RULES change regenerates this file and\n\
+         the matching correctness Qed stops compiling).\n\
          \n\
          Pinned up-to-date by the [rocq_generated_lowering_is_up_to_date] cargo\n\
          test; regenerate with\n\
@@ -1574,48 +1583,6 @@ pub fn generate_rocq_lowering_source() -> String {
         out.push('\n');
     }
     out.push_str("\nEnd Gen.\n");
-    out
-}
-
-/// Generate `coq/Synth/Synth/VcrSelRulesGenCheck.v` — one `reflexivity` Qed per
-/// rule asserting the generated `Gen.<rule>` equals the hand-written `<rule>` of
-/// `VcrSelRules.v`. This is the divergence GATE: Coq's kernel checks the two
-/// lowerings are convertible, so any edit to either side that changes the
-/// emitted sequence fails to compile under `//coq:verify_proofs`.
-///
-/// Committed and pinned by [`tests::rocq_gencheck_is_up_to_date`].
-pub fn generate_rocq_gencheck_source() -> String {
-    let mut out = String::new();
-    out.push_str(
-        "(** * VCR-ISA-001 (#667): generated-vs-hand-written lowering cross-check.\n\
-         \n\
-         GENERATED FILE — DO NOT EDIT BY HAND.\n\
-         \n\
-         Emitted by [crate::sel_dsl::generate_rocq_gencheck_source]. One\n\
-         [reflexivity] Qed per rule proving the GENERATED lowering\n\
-         ([VcrSelRulesGenerated.Gen.rule_X], emitted straight from the shipped\n\
-         [sel_dsl::RULES] table) is definitionally equal to the HAND-WRITTEN\n\
-         [VcrSelRules.rule_X] the correctness theorems are stated about. If the\n\
-         shipped selector's sequence for a covered op ever diverges from the\n\
-         model, the matching [reflexivity] stops type-checking — the gate goes\n\
-         red under [//coq:verify_proofs]. Coq's kernel is the oracle; there is no\n\
-         text normalizer to get wrong (the #682 lesson).\n\
-         \n\
-         Pinned up-to-date by the [rocq_gencheck_is_up_to_date] cargo test;\n\
-         regenerate with\n\
-         [SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl]. *)\n\
-         \n\
-         Require Import Synth.ARM.ArmInstructions.\n\
-         Require Import Synth.Synth.VcrSelRules.\n\
-         Require Import Synth.Synth.VcrSelRulesGenerated.\n",
-    );
-    for rule in RULES {
-        out.push('\n');
-        out.push_str(&format!(
-            "Lemma check_{name} : Gen.{name} = {name}.\nProof. reflexivity. Qed.\n",
-            name = rule.name
-        ));
-    }
     out
 }
 
@@ -1648,10 +1615,10 @@ mod tests {
 
     /// VCR-ISA-001 (#667): the generated Rocq lowerings
     /// (`coq/Synth/Synth/VcrSelRulesGenerated.v`) are the committed output of
-    /// the SAME rule table, emitted straight from `RULES`. Any edit to the
-    /// table (or the file) without regenerating fails here; the Coq
-    /// `reflexivity` cross-check (`VcrSelRulesGenCheck.v`) then proves the
-    /// generated lowerings equal the hand-written model. Regenerate with
+    /// the SAME rule table, emitted straight from `RULES` — and the SINGLE
+    /// SOURCE of the model definitions `VcrSelRules.v` re-exports and proves
+    /// correct. Any edit to the table (or the file) without regenerating
+    /// fails here. Regenerate with
     /// `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.
     #[test]
     fn rocq_generated_lowering_is_up_to_date() {
@@ -1669,55 +1636,42 @@ mod tests {
         );
     }
 
-    /// VCR-ISA-001 (#667): the generated cross-check file
-    /// (`coq/Synth/Synth/VcrSelRulesGenCheck.v`, one `reflexivity` Qed per
-    /// rule) is the committed output of `RULES`. Regenerate with
-    /// `SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl`.
+    /// VCR-ISA-001 (#667) "generate, don't mirror": `VcrSelRules.v` carries NO
+    /// hand-written copy of any rule's instruction sequence — every rule is a
+    /// re-export of the generated model (`Definition rule_X := Gen.rule_X.`),
+    /// so the correctness theorems are stated directly about the sequences
+    /// [`RULES`] emits. This is the fast Rust-side smoke of the single-source
+    /// property; the real gate is Coq's kernel (a RULES change regenerates
+    /// `VcrSelRulesGenerated.v` and the matching correctness Qed stops
+    /// compiling under `//coq:verify_proofs`).
     #[test]
-    fn rocq_gencheck_is_up_to_date() {
-        let path = crate_root().join("../../coq/Synth/Synth/VcrSelRulesGenCheck.v");
-        let expected = generate_rocq_gencheck_source();
-        if std::env::var("SYNTH_SEL_DSL_REGEN").is_ok() {
-            std::fs::write(&path, &expected).expect("write VcrSelRulesGenCheck.v");
-        }
-        let actual = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-        assert_eq!(
-            actual, expected,
-            "coq/Synth/Synth/VcrSelRulesGenCheck.v is stale relative to the RULES \
-             table — regenerate with SYNTH_SEL_DSL_REGEN=1 cargo test -p synth-synthesis sel_dsl"
-        );
-    }
-
-    /// The generated Rocq `Definition` bodies must match the hand-written
-    /// `VcrSelRules.v` lowerings verbatim (whitespace-normalized). This is the
-    /// fast Rust-side smoke of the same property the Coq `reflexivity` gate
-    /// proves definitionally — it catches a drift even without a Coq build.
-    #[test]
-    fn generated_definitions_match_handwritten_vcr_sel_rules() {
+    fn vcr_sel_rules_reexports_generated_model() {
         let v_path = crate_root().join("../../coq/Synth/Synth/VcrSelRules.v");
         let v = std::fs::read_to_string(&v_path)
             .unwrap_or_else(|e| panic!("read {}: {e}", v_path.display()));
-        // Collapse all runs of whitespace to a single space for comparison.
+        assert!(
+            v.contains("Require Import Synth.Synth.VcrSelRulesGenerated."),
+            "VcrSelRules.v must import the generated model (VcrSelRulesGenerated)"
+        );
+        // Collapse whitespace runs so alignment padding doesn't matter.
         let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let v_norm = norm(&v);
         for rule in RULES {
-            let generated = norm(&emit_rocq_definition(rule));
-            // Find `Definition <name> ` ... up to the terminating `.` that ends
-            // the definition (the body is a `[..]` list, no interior periods).
+            let reexport = format!("Definition {name} := Gen.{name}.", name = rule.name);
+            assert!(
+                v_norm.contains(&reexport),
+                "rule {} is not a re-export of the generated model — expected \
+                 `{reexport}` in VcrSelRules.v (no hand-written sequence copies; \
+                 VCR-ISA-001 single-source)",
+                rule.name
+            );
+            // A second `Definition <name> ` occurrence would be a shadowing
+            // hand-written copy sneaking back in.
             let needle = format!("Definition {} ", rule.name);
-            let start = v
-                .find(&needle)
-                .unwrap_or_else(|| panic!("no `{needle}` in VcrSelRules.v"));
-            let rest = &v[start..];
-            let end = rest
-                .find(".\n")
-                .or_else(|| rest.find(".\r\n"))
-                .unwrap_or_else(|| panic!("unterminated Definition {}", rule.name));
-            let handwritten = norm(&rest[..=end]);
             assert_eq!(
-                generated, handwritten,
-                "generated Rocq lowering for {} diverges from the hand-written \
-                 VcrSelRules.v Definition (VCR-ISA-001 divergence)",
+                v_norm.matches(&needle).count(),
+                1,
+                "rule {} must have exactly one Definition (the Gen re-export)",
                 rule.name
             );
         }
