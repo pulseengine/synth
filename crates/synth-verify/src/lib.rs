@@ -36,7 +36,8 @@ pub mod solver;
 pub mod term;
 
 // Trap-preservation obligations over `ordeal::trap` (VCR-VER-002, #166): maps
-// WASM partial ops (div/rem, load/store, call_indirect, unreachable) to trap
+// WASM partial ops (div/rem, load/store, call_indirect, unreachable,
+// float→int trunc) to trap
 // conditions and gates a lowering on preserving them. Backend-agnostic (builds
 // on `term`), so always available like `wasm_semantics`.
 pub mod trap;

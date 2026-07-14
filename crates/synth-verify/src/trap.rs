@@ -1,7 +1,8 @@
 //! Trap-preservation obligations (VCR-VER-002, synth #166 / ordeal#59).
 //!
-//! WASM operations like `div_s`, `load`/`store`, `call_indirect`, and
-//! `unreachable` are **partial**: they trap on some inputs. A validator that
+//! WASM operations like `div_s`, `load`/`store`, `call_indirect`,
+//! `unreachable`, and the float→int truncations (`iN.trunc_fM_s/u`) are
+//! **partial**: they trap on some inputs. A validator that
 //! proves only *value* equivalence over a total model cannot see a lowering that
 //! **drops a trap** — deleting a trapping guard looks value-equal
 //! (synth#633/#666/#665/#642/#709). This module is the thin synth-facing layer
@@ -27,13 +28,22 @@
 //!   *contents* nor table *values*, so these use
 //!   [`prove_trap_condition_equivalence`] (trap clause only). This is the
 //!   ordeal#59 agreement.
+//! - **float→int trunc** (`i32/i64.trunc_f{32,64}_{s,u}`, Phase B) — the trap
+//!   predicate is a pure bit-pattern classifier over the float OPERAND's bits
+//!   (NaN/±∞ exponent patterns + sign-split monotonic magnitude thresholds,
+//!   ordeal 0.9.1's `trap_trunc`; floats enter as BV32/BV64, no FP theory).
+//!   synth's QF_BV model carries no float→int *value* function, so this class
+//!   uses [`prove_trap_condition_equivalence`] (trap clause only) — exactly
+//!   the #709 soundness surface: ARM `VCVT` saturates where WASM traps, so a
+//!   lowering that keeps the saturated value but drops the guard is the bug
+//!   shape this clause rejects.
 
 use crate::term::{BV, Bool};
 use ordeal::CheckResult;
 use ordeal::trap as ot;
 use synth_core::WasmOp;
 
-pub use ordeal::trap::DivOp;
+pub use ordeal::trap::{DivOp, FpFmt, IntTarget};
 
 /// A value paired with the condition under which the op **traps** instead of
 /// producing it — the synth-`BV`/`Bool` mirror of [`ordeal::trap::DefineOrTrap`].
@@ -128,6 +138,40 @@ pub fn trap_div(op: DivOp, dividend: &BV, divisor: &BV) -> Bool {
     ))
 }
 
+/// Map a float→int truncation [`WasmOp`] to its
+/// `(float format, integer target, signedness)` triple; `None` for any
+/// non-trunc op. Covers all six trunc variants synth's decoder produces
+/// (`i64.trunc_f32_s/u` are not `WasmOp` variants; the raw [`trap_trunc`]
+/// builder still covers those shapes if they ever land).
+pub fn trunc_op(op: &WasmOp) -> Option<(FpFmt, IntTarget, bool)> {
+    Some(match op {
+        WasmOp::I32TruncF32S => (FpFmt::F32, IntTarget::I32, true),
+        WasmOp::I32TruncF32U => (FpFmt::F32, IntTarget::I32, false),
+        WasmOp::I32TruncF64S => (FpFmt::F64, IntTarget::I32, true),
+        WasmOp::I32TruncF64U => (FpFmt::F64, IntTarget::I32, false),
+        WasmOp::I64TruncF64S => (FpFmt::F64, IntTarget::I64, true),
+        WasmOp::I64TruncF64U => (FpFmt::F64, IntTarget::I64, false),
+        _ => return None,
+    })
+}
+
+/// Trap condition for `iN.trunc_fM_s/u` (WASM float→int truncation, #709):
+/// `NaN ∨ ±∞ ∨ out-of-range` classified purely over the float operand's
+/// **bit pattern** (`bits` is the BV32/BV64 the float travels as — no FP
+/// theory). Pass the triple from [`trunc_op`]. `bits` must be exactly
+/// `fmt.total_bits()` wide (32 for f32, 64 for f64) — a width mismatch is an
+/// internal bug, so it panics loud rather than returning an ill-sorted term.
+pub fn trap_trunc(bits: &BV, fmt: FpFmt, target: IntTarget, signed: bool) -> Bool {
+    assert_eq!(
+        bits.get_size(),
+        fmt.total_bits(),
+        "trap_trunc: float operand term must be {} bits wide for {:?}",
+        fmt.total_bits(),
+        fmt
+    );
+    Bool::from_ordeal(ot::trap_trunc(bits.term(), fmt, target, signed))
+}
+
 /// Trap condition for `unreachable`: an unconditional trap.
 pub fn trap_always() -> Bool {
     Bool::from_ordeal(ot::trap_always())
@@ -192,7 +236,8 @@ pub fn prove_trap_equivalence(orig: &DefineOrTrap, opt: &DefineOrTrap) -> TrapVe
 }
 
 /// Trap-clause-only gate (`orig.may_trap ⇔ opt.may_trap`) — for ops whose value
-/// synth does not model (load/store, call_indirect, unreachable).
+/// synth does not model (load/store, call_indirect, unreachable, float→int
+/// trunc).
 /// [`TrapVerdict::Preserved`] ⟹ the lowering neither drops nor spuriously adds
 /// the trap.
 pub fn prove_trap_condition_equivalence(orig_may_trap: &Bool, opt_may_trap: &Bool) -> TrapVerdict {
