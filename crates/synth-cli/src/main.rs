@@ -3307,6 +3307,67 @@ struct NativeGlobalsLayout {
     shadow_stack_size: Option<u32>,
 }
 
+/// #739: scan encoded Thumb-2 text for an UN-RELOCATED `MOVW`/`MOVT` pair (same
+/// `rd`) materializing a constant `k` in `[lo, hi)` — the baked static-region
+/// address class the `--shadow-stack-size` rebase cannot see.
+///
+/// This is the oracle-vacuity fix (the #712-class lesson: a gate that cannot
+/// SEE the access class it guards is a VACUOUS gate). The shrink's in-range /
+/// rebase walk covers RELOCATED accesses (`__synth_wasm_data + C`) only; a
+/// selector path that bakes the linmem offset as a plain immediate (`movw
+/// ip,#0xC; movt ip,#0x10` = 0x10000C, NO reloc — the #739 miscompile) is
+/// invisible to every reloc-walking check, so pre-fix the shrink shipped an
+/// un-rebased OOB access and still logged "all reservation accesses in-range".
+///
+/// `reloc_offsets` are the function's relocation offsets: a legitimate
+/// MovwAbs/MovtAbs symbol materialization carries relocations on the pair and
+/// is skipped. Any surviving un-relocated pair in the window is either the
+/// baked-offset bug class or a scalar VALUE coinciding with the window — both
+/// are declined LOUDLY by the caller (a rare false decline on a coincident
+/// scalar is sound; a silent OOB is not). Scope: PAIRS only — a pair is
+/// emitted only for constants > 0xFFFF, which covers any 64 KiB+ `sp_init`
+/// (including the meld `--memory shared` 1 MiB geometry of #739); offsets
+/// below 64 KiB bake as a lone MOVW and are held out of this scan (a
+/// lone-MOVW window would false-positive on `MOVW+MVN` inverted-constant
+/// materializations) — that sub-window is guarded by the selector-side
+/// static classification itself.
+///
+/// Returns the text offset and the materialized constant of the first hit.
+fn find_baked_static_movw_movt(
+    code: &[u8],
+    reloc_offsets: &[u32],
+    lo: u32,
+    hi: u32,
+) -> Option<(usize, u32)> {
+    // Thumb-2 MOVW (T3) / MOVT (T1) imm16 = imm4:i:imm3:imm8.
+    fn imm16(code: &[u8], off: usize) -> u32 {
+        let hw1 = u16::from_le_bytes([code[off], code[off + 1]]) as u32;
+        let hw2 = u16::from_le_bytes([code[off + 2], code[off + 3]]) as u32;
+        ((hw1 & 0xF) << 12) | (((hw1 >> 10) & 1) << 11) | (((hw2 >> 12) & 0x7) << 8) | (hw2 & 0xFF)
+    }
+    let mut off = 0usize;
+    while off + 8 <= code.len() {
+        // MOVW (hw1 & 0xFBF0 == 0xF240) immediately followed by MOVT
+        // (hw1 & 0xFBF0 == 0xF2C0) on the same rd — the selector's
+        // full-constant materialization shape.
+        let hw1_w = u16::from_le_bytes([code[off], code[off + 1]]);
+        let hw1_t = u16::from_le_bytes([code[off + 4], code[off + 5]]);
+        let rd_w = (u16::from_le_bytes([code[off + 2], code[off + 3]]) >> 8) & 0xF;
+        let rd_t = (u16::from_le_bytes([code[off + 6], code[off + 7]]) >> 8) & 0xF;
+        if hw1_w & 0xFBF0 == 0xF240 && hw1_t & 0xFBF0 == 0xF2C0 && rd_w == rd_t {
+            let k = (imm16(code, off + 4) << 16) | imm16(code, off);
+            let has_reloc = reloc_offsets
+                .iter()
+                .any(|&r| (r as usize) < off + 8 && off < (r + 4) as usize);
+            if !has_reloc && k >= lo && k < hi {
+                return Some((off, k));
+            }
+        }
+        off += 2;
+    }
+    None
+}
+
 fn build_relocatable_elf(
     funcs: &[ElfFunction],
     imports: &[ImportEntry],
@@ -3379,6 +3440,25 @@ fn build_relocatable_elf(
         .flat_map(|f| &f.relocations)
         .any(|r| r.symbol == "__synth_wasm_data" || r.symbol == "__synth_globals");
     let emit_wasm_data = needs_wasm_data && linear_memory_bytes > 0;
+    // #739: `--shadow-stack-size` on a module whose generated code carries NO
+    // `__synth_wasm_data`/`__synth_globals` relocation would silently skip
+    // BOTH the region emission and the shrink (`native_layout` = None below).
+    // The pre-fix #739 fixture hit exactly this: every static access was
+    // BAKED (un-relocated), so the object shipped with its 1 MiB of statics
+    // dropped, the SP global gone, and the flag ignored — vacuously "green".
+    // Refuse loudly instead: the integrator asked to shrink a reservation
+    // that the emitted code never references.
+    if let Some(ng) = &native_globals
+        && ng.shadow_stack_size.is_some()
+        && !emit_wasm_data
+    {
+        anyhow::bail!(
+            "--shadow-stack-size: no __synth_wasm_data/__synth_globals relocation \
+             reaches the native-pointer region (linear memory {linear_memory_bytes} B), \
+             so there is no reservation to shrink — refusing rather than silently \
+             ignoring the flag. VCR-MEM-001/#739."
+        );
+    }
     // #237 (gale, mutex-on-silicon): under the native-pointer ABI the region
     // is sized to the USED extent — data-segment end + shadow stack (the SP
     // global's init is the stack top; the stack grows down inside the
@@ -3728,6 +3808,46 @@ fn build_relocatable_elf(
                     }
                     let new_c = c - down;
                     all_code[pos..pos + 4].copy_from_slice(&new_c.to_le_bytes());
+                }
+            }
+            // #739 oracle-vacuity fix (the #712-class lesson: a gate that
+            // cannot SEE the access class it guards is a VACUOUS gate — it
+            // passed green on a live miscompile). The in-range/rebase walk
+            // above covers RELOCATED static accesses only (`__synth_wasm_data
+            // + C`). A selector path that BAKES a static-region address as a
+            // plain un-relocated `MOVW/MOVT` immediate (the #739 miscompile:
+            // `movw ip,#0xC; movt ip,#0x10` = 0x10000C with no reloc) is
+            // invisible to every reloc-walking check, so the shrink would ship
+            // an un-rebased OOB access and still log "all reservation accesses
+            // in-range". Scan the encoded Thumb-2 text for un-relocated
+            // MOVW/MOVT pairs (same rd) that materialize a constant inside the
+            // original static region `[sp_init, linear_memory_bytes)`: the
+            // selector relocates every static-region ADDRESS it emits (LdrSym
+            // literal pool / MovwSym+MovtSym, all reloc-carrying), so any such
+            // un-relocated pair is either the baked-offset bug class or a
+            // scalar VALUE that happens to fall in the window — both decline
+            // LOUDLY (a rare false decline on a coincident scalar is sound; a
+            // silent OOB is not). Scope: pairs only — a pair is emitted only
+            // for constants > 0xFFFF, which covers any 64 KiB+ sp_init
+            // (including the meld `--memory shared` 1 MiB geometry #739 is
+            // about); offsets below 64 KiB bake as a lone MOVW and are held
+            // out of this scan (a lone-MOVW window would false-positive on
+            // MOVW+MVN inverted-constant materializations) — that sub-window
+            // is guarded by the selector-side classification itself.
+            for func in funcs.iter() {
+                let reloc_offsets: Vec<u32> = func.relocations.iter().map(|r| r.offset).collect();
+                if let Some((off, k)) =
+                    find_baked_static_movw_movt(&func.code, &reloc_offsets, sp, linear_memory_bytes)
+                {
+                    anyhow::bail!(
+                        "--shadow-stack-size: the encoded text bakes the static-region \
+                         address {k:#x} (>= sp_init {sp:#x}, < linear memory \
+                         {linear_memory_bytes:#x}) as an un-relocated MOVW/MOVT \
+                         immediate at text offset {off:#x} — the rebase walks \
+                         relocations and CANNOT re-base it, so the shrunk layout \
+                         would access out of range (silent miscompile, #739). \
+                         Refusing. VCR-MEM-001/#739."
+                    );
                 }
             }
             // Re-base the shadow-stack global slot(s): every MUTABLE global whose
@@ -5749,6 +5869,66 @@ fn link_firmware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- #739: baked static-region MOVW/MOVT scan (oracle-vacuity fix) --------
+
+    /// The EXACT pre-fix miscompile bytes (from the #739 red disasm):
+    /// `movw r12,#0xc; movt r12,#0x10` = 0x10000C, no relocation. The scan
+    /// must see it — this is the access class the reloc-walking in-range
+    /// oracle was blind to (vacuous gate, the #712-class lesson).
+    const BAKED_10000C: [u8; 8] = [0x40, 0xF2, 0x0C, 0x0C, 0xC0, 0xF2, 0x10, 0x0C];
+
+    #[test]
+    fn baked_static_pair_is_detected_739() {
+        assert_eq!(
+            find_baked_static_movw_movt(&BAKED_10000C, &[], 0x100000, 0x110000),
+            Some((0, 0x10000C)),
+            "the pre-fix baked 0x10000C pair must be flagged"
+        );
+    }
+
+    /// A relocation covering the pair marks it as a legitimate
+    /// MovwAbs/MovtAbs symbol materialization — not flagged.
+    #[test]
+    fn relocated_pair_is_not_flagged_739() {
+        assert_eq!(
+            find_baked_static_movw_movt(&BAKED_10000C, &[0], 0x100000, 0x110000),
+            None
+        );
+        // A reloc on the MOVT half alone also covers the pair.
+        assert_eq!(
+            find_baked_static_movw_movt(&BAKED_10000C, &[4], 0x100000, 0x110000),
+            None
+        );
+    }
+
+    /// Constants outside `[lo, hi)` (scalars below sp_init, host pointers past
+    /// the linear memory) never fire.
+    #[test]
+    fn out_of_window_pair_is_not_flagged_739() {
+        assert_eq!(
+            find_baked_static_movw_movt(&BAKED_10000C, &[], 0x200000, 0x300000),
+            None,
+            "below-window constant must not be flagged"
+        );
+        assert_eq!(
+            find_baked_static_movw_movt(&BAKED_10000C, &[], 0x100000, 0x10000C),
+            None,
+            "hi bound is exclusive"
+        );
+    }
+
+    /// A MOVW/MOVT with DIFFERENT destination registers is two unrelated
+    /// materializations, not a 32-bit constant — never flagged.
+    #[test]
+    fn mismatched_rd_pair_is_not_flagged_739() {
+        let mut bytes = BAKED_10000C;
+        bytes[7] = 0x05; // movt r5 instead of r12
+        assert_eq!(
+            find_baked_static_movw_movt(&bytes, &[], 0x100000, 0x110000),
+            None
+        );
+    }
 
     // ---- #543 Phase 1: `--volatile-segment` parsing ---------------------------
 
