@@ -193,6 +193,33 @@ pub struct CompileConfig {
     /// Set per function from [`func_params_f32`], mirroring
     /// [`current_func_params_i64`]. Empty ⇒ no f32 params.
     pub current_func_params_f32: Vec<bool>,
+    /// GI-FPU-002 phase 2 (#719/#369): whether the function CURRENTLY being
+    /// compiled returns f32. Set per function from the decoder's `func_ret_f32`.
+    /// The direct selector's epilogue uses it to loudly decline a result that
+    /// reaches the return in a core register instead of an S-register (a call
+    /// that returned f32 as integer-tagged R0 would otherwise be a silent
+    /// miscompile — the AAPCS-VFP caller reads S0). `false` for hand-built op
+    /// streams / non-f32 returns (byte-identical to before).
+    pub current_func_ret_f32: bool,
+    /// GI-FPU-002 phase 2 (#719/#369): whether the function CURRENTLY being
+    /// compiled returns f64 (D0 under AAPCS-VFP). Same epilogue-soundness role.
+    pub current_func_ret_f64: bool,
+    /// GI-FPU-002 phase 2 (#719/#369): per-function (full index, imports first)
+    /// "returns f32/f64" tables. The direct selector declines a `call` to an
+    /// f32/f64-returning callee LOUDLY at the call site — the result arrives in
+    /// S0/D0 (AAPCS-VFP), which this increment does not marshal into the operand
+    /// stack; tagging it as an integer R0 would be a silent miscompile. Also the
+    /// source for [`current_func_ret_f32`]/[`current_func_ret_f64`] in the
+    /// per-function driver loops. Empty ⇒ callees assumed non-float-returning
+    /// (hand-built op streams; byte-identical legacy behaviour).
+    pub func_ret_f32: Vec<bool>,
+    /// See [`func_ret_f32`](Self::func_ret_f32).
+    pub func_ret_f64: Vec<bool>,
+    /// GI-FPU-002 phase 2 (#719/#369): per-type "returns f32/f64" — the
+    /// `call_indirect` analogue of [`func_ret_f32`](Self::func_ret_f32).
+    pub type_ret_f32: Vec<bool>,
+    /// See [`type_ret_f32`](Self::type_ret_f32).
+    pub type_ret_f64: Vec<bool>,
     /// #457: DECLARED parameter count of the function CURRENTLY being compiled,
     /// from the module's type section (`func_arg_counts[func.index]`). Set per
     /// function by the driver loops like [`current_func_params_i64`].
@@ -362,6 +389,16 @@ impl Default for CompileConfig {
             current_func_params_i64: Vec::new(),
             func_params_f32: Vec::new(),
             current_func_params_f32: Vec::new(),
+            // GI-FPU-002 phase 2 (#719/#369): false ⇒ non-float return (or a
+            // hand-built op stream); driver loops set it per function.
+            current_func_ret_f32: false,
+            current_func_ret_f64: false,
+            // GI-FPU-002 phase 2 (#719/#369): empty ⇒ callees assumed
+            // non-float-returning (hand-built op streams).
+            func_ret_f32: Vec::new(),
+            func_ret_f64: Vec::new(),
+            type_ret_f32: Vec::new(),
+            type_ret_f64: Vec::new(),
             // #457: None ⇒ declared signature unknown ⇒ param-count inference
             // only (unit tests / hand-built op streams); driver loops fill it.
             current_func_param_count: None,

@@ -310,6 +310,24 @@ pub struct DecodedModule {
     /// f32. The direct selector homes hard-float f32 args in S0..S15 (AAPCS-VFP),
     /// which op-stream inference cannot recover for a pure-passthrough f32 param.
     pub func_params_f32: Vec<Vec<bool>>,
+    /// GI-FPU-002 phase 2 (#719/#369): whether each *function* (full index,
+    /// imports first) returns f32. The direct selector's epilogue homes an f32
+    /// result in S0 (AAPCS-VFP); when the result value transited a core register
+    /// (e.g. it came from a call that returned f32 as an integer-tagged R0), the
+    /// epilogue must loudly decline rather than emit the integer R0 return (a
+    /// silent miscompile — the caller reads S0). Op-stream inference cannot see a
+    /// pure-passthrough f32 return, so it is carried from the declared signature.
+    pub func_ret_f32: Vec<bool>,
+    /// GI-FPU-002 phase 2 (#719/#369): whether each *function* returns f64 (D0
+    /// under AAPCS-VFP). Same epilogue-soundness role as `func_ret_f32`.
+    pub func_ret_f64: Vec<bool>,
+    /// GI-FPU-002 phase 2 (#719/#369): whether each *function type* returns
+    /// f32 / f64 — the `call_indirect` analogue of `func_ret_f32`/`func_ret_f64`
+    /// (the selector loudly declines an indirect call whose static type returns
+    /// a float this increment does not marshal, rather than tag S0/D0 as R0).
+    pub type_ret_f32: Vec<bool>,
+    /// See [`Self::type_ret_f32`].
+    pub type_ret_f64: Vec<bool>,
     /// Defined globals with their initializers (#237). Empty if the module has
     /// no global section. Used by the native-pointer ABI to make a global whose
     /// initializer is a linear-memory address (e.g. `$__stack_pointer`)
@@ -591,6 +609,13 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     let mut func_arg_counts: Vec<u32> = Vec::new();
     let mut type_ret_i64: Vec<bool> = Vec::new();
     let mut func_ret_i64: Vec<bool> = Vec::new();
+    // GI-FPU-002 phase 2 (#719/#369): per-type / per-function f32/f64 return
+    // flags, so the direct selector's epilogue can loudly decline an f32/f64
+    // result that reaches it in a core register (never a silent R0 return).
+    let mut type_ret_f32: Vec<bool> = Vec::new();
+    let mut func_ret_f32: Vec<bool> = Vec::new();
+    let mut type_ret_f64: Vec<bool> = Vec::new();
+    let mut func_ret_f64: Vec<bool> = Vec::new();
     // #359: declared param widths per type / per function (full index).
     let mut type_params_i64: Vec<Vec<bool>> = Vec::new();
     let mut func_params_i64: Vec<Vec<bool>> = Vec::new();
@@ -692,8 +717,24 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                                 .collect::<Vec<bool>>(),
                             _ => Vec::new(),
                         };
+                        // GI-FPU-002 phase 2: f32/f64 return flags for this type.
+                        let (ret_f32, ret_f64) = match &sub_ty.composite_type.inner {
+                            wasmparser::CompositeInnerType::Func(func_ty) => (
+                                func_ty
+                                    .results()
+                                    .first()
+                                    .is_some_and(|t| *t == wasmparser::ValType::F32),
+                                func_ty
+                                    .results()
+                                    .first()
+                                    .is_some_and(|t| *t == wasmparser::ValType::F64),
+                            ),
+                            _ => (false, false),
+                        };
                         type_arg_counts.push(count);
                         type_ret_i64.push(ret_i64);
+                        type_ret_f32.push(ret_f32);
+                        type_ret_f64.push(ret_f64);
                         type_params_i64.push(params_i64);
                         type_params_f32.push(params_f32);
                         // #680: v128 anywhere in the signature.
@@ -736,6 +777,18 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                                 .push(type_arg_counts.get(type_idx as usize).copied().unwrap_or(0));
                             func_ret_i64.push(
                                 type_ret_i64
+                                    .get(type_idx as usize)
+                                    .copied()
+                                    .unwrap_or(false),
+                            );
+                            func_ret_f32.push(
+                                type_ret_f32
+                                    .get(type_idx as usize)
+                                    .copied()
+                                    .unwrap_or(false),
+                            );
+                            func_ret_f64.push(
+                                type_ret_f64
                                     .get(type_idx as usize)
                                     .copied()
                                     .unwrap_or(false),
@@ -808,6 +861,18 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                         .push(type_arg_counts.get(type_idx as usize).copied().unwrap_or(0));
                     func_ret_i64.push(
                         type_ret_i64
+                            .get(type_idx as usize)
+                            .copied()
+                            .unwrap_or(false),
+                    );
+                    func_ret_f32.push(
+                        type_ret_f32
+                            .get(type_idx as usize)
+                            .copied()
+                            .unwrap_or(false),
+                    );
+                    func_ret_f64.push(
+                        type_ret_f64
                             .get(type_idx as usize)
                             .copied()
                             .unwrap_or(false),
@@ -1096,6 +1161,10 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         type_ret_i64,
         func_params_i64,
         func_params_f32,
+        func_ret_f32,
+        func_ret_f64,
+        type_ret_f32,
+        type_ret_f64,
         globals,
         elem_func_indices,
         table_size: table_sizes.first().copied().flatten(),

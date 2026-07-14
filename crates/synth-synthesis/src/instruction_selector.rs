@@ -704,6 +704,97 @@ fn stack_live_regs(stack: &[StackVal]) -> Vec<Reg> {
     live
 }
 
+/// GI-FPU-002 phase 2 (#719): the distinct single-precision S-register indices
+/// (0..16) holding a live f32 value at a call site — every operand-stack `Float`
+/// entry plus every pinned param/local home (`vfp_home`). These reside in
+/// S0..S15, which are AAPCS-VFP CALLER-saved, so each must be spilled before a
+/// `bl` and reloaded after. Reloading a home that is never read again is
+/// harmless, so the pinned-home union is a sound overapproximation.
+fn vfp_live_set(stack: &[StackVal], vfp_home: &[bool; 16]) -> Vec<usize> {
+    let mut set = [false; 16];
+    for v in stack {
+        if let Some(sreg) = v.as_float()
+            && let Some(k) = vfp_s_index(sreg)
+        {
+            set[k] = true;
+        }
+    }
+    for (k, &h) in vfp_home.iter().enumerate() {
+        if h {
+            set[k] = true;
+        }
+    }
+    (0..16).filter(|&k| set[k]).collect()
+}
+
+/// GI-FPU-002 phase 2 (#719): spill every live f32 S-register (see
+/// [`vfp_live_set`]) to the VFP call-spill area before a `bl`, mirroring the
+/// #188 integer [`InstructionSelector::preserve_caller_saved`]. Slot for `S(k)`
+/// is `vfp_spill_base + k*4`. Returns the `(sreg, slot_offset)` pairs to reload.
+/// Ok-or-Err (#180/#185): `VSTR`/`VLDR` encode the byte offset as `imm8*4`, so
+/// the reachable range is `0..=1020`; beyond it the encoder silently masks the
+/// offset, so a too-large slot declines loudly instead of writing a wrong
+/// address.
+fn preserve_vfp_caller_saved(
+    instructions: &mut Vec<ArmInstruction>,
+    stack: &[StackVal],
+    vfp_home: &[bool; 16],
+    layout: &LocalLayout,
+    idx: usize,
+) -> Result<Vec<(VfpReg, i32)>> {
+    let live = vfp_live_set(stack, vfp_home);
+    if live.is_empty() {
+        return Ok(Vec::new());
+    }
+    let base = layout.vfp_spill_base.ok_or_else(|| {
+        synth_core::Error::synthesis(
+            "GI-FPU-002 phase 2: VFP call-spill area not reserved despite an f32 \
+             value live across a call (compiler bug: compute_local_layout mismatch)"
+                .to_string(),
+        )
+    })?;
+    let mut preserved: Vec<(VfpReg, i32)> = Vec::with_capacity(live.len());
+    for k in live {
+        let off = base + (k as i32) * 4;
+        if off > 1020 {
+            return Err(synth_core::Error::synthesis(format!(
+                "GI-FPU-002 phase 2: VFP spill slot offset {off} exceeds the \
+                 VSTR/VLDR [sp,#imm] range (1020) — frame too large; declining \
+                 (#719/#369)"
+            )));
+        }
+        let sreg = index_to_vfp_reg(k as u8);
+        instructions.push(ArmInstruction {
+            op: ArmOp::F32Store {
+                sd: sreg,
+                addr: MemAddr::imm(Reg::SP, off),
+            },
+            source_line: Some(idx),
+        });
+        preserved.push((sreg, off));
+    }
+    Ok(preserved)
+}
+
+/// GI-FPU-002 phase 2 (#719): reload the f32 S-registers spilled by
+/// [`preserve_vfp_caller_saved`] after a call returns. The `bl` clobbered
+/// S0..S15, so each spilled value is restored from its VFP call-spill slot.
+fn restore_vfp_caller_saved(
+    instructions: &mut Vec<ArmInstruction>,
+    preserved: &[(VfpReg, i32)],
+    idx: usize,
+) {
+    for &(sreg, off) in preserved {
+        instructions.push(ArmInstruction {
+            op: ArmOp::F32Load {
+                sd: sreg,
+                addr: MemAddr::imm(Reg::SP, off),
+            },
+            source_line: Some(idx),
+        });
+    }
+}
+
 /// Allocate a temporary register, skipping any reserved by the virtual stack.
 /// Returns Error if all allocatable registers are in use.
 fn alloc_temp_safe(next_temp: &mut u8, stack: &[StackVal], reserved: &[Reg]) -> Result<Reg> {
@@ -1210,6 +1301,16 @@ struct LocalLayout {
     /// AAPCS-clobbering branch-and-link. `None` when the function contains no
     /// calls (no scratch reserved). See the `Call` lowering for usage.
     spill_base: Option<i32>,
+    /// GI-FPU-002 phase 2 (#719/#369): byte offset (from SP) of the VFP
+    /// call-spill area — 16 word slots (one per single-precision S-register
+    /// S0..S15, indexed by S-register number: `S(k)` at `vfp_spill_base + k*4`).
+    /// Live f32 values (operand-stack `Float` entries + pinned param/local
+    /// homes) are `VSTR`ed here before a `bl` and `VLDR`ed back after, since
+    /// S0..S15 are AAPCS-VFP caller-saved. `None` when the function has no f32
+    /// AND-a-call (no area reserved; every previously-compiling function keeps
+    /// its frame byte-identical — an f32 function with a call previously
+    /// declined outright). The analogue of `spill_base` for the VFP file.
+    vfp_spill_base: Option<i32>,
     /// Byte offset (from SP) of the i64 register-pair spill area (#171): up to
     /// `I64_SPILL_SLOTS` 8-byte slots. `alloc_consecutive_pair` spills a deep
     /// i64 value here when the consecutive-pair budget is exhausted and reloads
@@ -1430,6 +1531,24 @@ fn compute_local_layout(
         }
     }
 
+    // GI-FPU-002 phase 2 (#719/#369): reserve the VFP call-spill area — 16 word
+    // slots, one per single-precision S-register (S0..S15), when the function has
+    // BOTH an f32 value/param AND a call. Live f32 values are VSTR'd here around
+    // each `bl` (S0..S15 are caller-saved). Gated on `has_f32 && has_call`, and an
+    // f32 function WITH a call previously declined outright, so no
+    // previously-compiling function's frame changes (frozen-safe). Placed after
+    // every other frame field so the existing local/spill/param offsets are
+    // unchanged.
+    let has_f32 = params_f32.iter().take(num_params as usize).any(|&f| f)
+        || wasm_ops.iter().any(is_scope_f32_op);
+    let vfp_spill_base = if has_f32 && has_call {
+        let base = offset;
+        offset += 16 * 4;
+        Some(base)
+    } else {
+        None
+    };
+
     // Round frame to 8-byte multiple for AAPCS SP alignment.
     let frame_size = (offset + 7) & !7;
 
@@ -1464,6 +1583,7 @@ fn compute_local_layout(
         locals,
         frame_size,
         spill_base,
+        vfp_spill_base,
         i64_spill_base,
         param_slots,
         incoming_params,
@@ -2441,6 +2561,28 @@ pub struct InstructionSelector {
     /// homed in an AAPCS-VFP argument S-register (S0..S15) rather than the
     /// R0..R3 integer path. Empty ⇒ no f32 params (byte-identical legacy path).
     params_f32: Vec<bool>,
+    /// GI-FPU-002 phase 2 (#719/#369): whether the function being compiled
+    /// returns f32 / f64. The epilogue homes a float result in S0 (f32) / D0
+    /// (f64); if the top-of-stack at return is NOT a `Float` (e.g. a call that
+    /// returned f32 arrived as an integer-tagged R0), the epilogue loudly
+    /// declines rather than emit the integer R0 return — the AAPCS-VFP caller
+    /// reads S0/D0, so an R0 return is a silent miscompile. `false` ⇒ non-float
+    /// return (byte-identical legacy path).
+    ret_f32: bool,
+    ret_f64: bool,
+    /// GI-FPU-002 phase 2 (#719/#369): per-CALLEE float-signature tables (full
+    /// function index / type index). A call whose callee RETURNS f32/f64 (result
+    /// arrives in S0/D0, which this increment does not marshal onto the operand
+    /// stack) or takes an f32 PARAM (argument must be marshalled into the VFP
+    /// S0.. pool, not R0..R3) is declined LOUDLY at the call site — tagging the
+    /// S0/D0 result as an integer R0, or passing an f32 arg in a core register,
+    /// would be a silent miscompile. Empty ⇒ callees assumed integer-signature
+    /// (hand-built op streams; byte-identical legacy behaviour).
+    callee_ret_f32: Vec<bool>,
+    callee_ret_f64: Vec<bool>,
+    callee_type_ret_f32: Vec<bool>,
+    callee_type_ret_f64: Vec<bool>,
+    callee_params_f32: Vec<Vec<bool>>,
     /// #643: byte width of each defined global's storage slot, indexed by
     /// global index — 4 for i32/f32, 8 for i64/f64, 16 for v128. The globals
     /// table (R9-relative) is laid out by SUMMING these widths, NOT `idx * 4`:
@@ -2605,6 +2747,13 @@ impl InstructionSelector {
             type_ret_i64: Vec::new(),
             params_i64: Vec::new(),
             params_f32: Vec::new(),
+            ret_f32: false,
+            ret_f64: false,
+            callee_ret_f32: Vec::new(),
+            callee_ret_f64: Vec::new(),
+            callee_type_ret_f32: Vec::new(),
+            callee_type_ret_f64: Vec::new(),
+            callee_params_f32: Vec::new(),
             global_widths: Vec::new(),
             block_arity: Vec::new(),
             func_arg_counts: Vec::new(),
@@ -2644,6 +2793,13 @@ impl InstructionSelector {
             type_ret_i64: Vec::new(),
             params_i64: Vec::new(),
             params_f32: Vec::new(),
+            ret_f32: false,
+            ret_f64: false,
+            callee_ret_f32: Vec::new(),
+            callee_ret_f64: Vec::new(),
+            callee_type_ret_f32: Vec::new(),
+            callee_type_ret_f64: Vec::new(),
+            callee_params_f32: Vec::new(),
             global_widths: Vec::new(),
             block_arity: Vec::new(),
             func_arg_counts: Vec::new(),
@@ -2990,6 +3146,90 @@ impl InstructionSelector {
     /// f32 args in their AAPCS-VFP argument S-registers (S0..S15).
     pub fn set_params_f32(&mut self, params_f32: Vec<bool>) {
         self.params_f32 = params_f32;
+    }
+
+    /// GI-FPU-002 phase 2 (#719/#369): record whether the function about to be
+    /// compiled returns f32 / f64, so the epilogue can loudly decline a float
+    /// result that reaches it in a core register (a silent-miscompile guard —
+    /// see the `ret_f32` field).
+    pub fn set_ret_float(&mut self, ret_f32: bool, ret_f64: bool) {
+        self.ret_f32 = ret_f32;
+        self.ret_f64 = ret_f64;
+    }
+
+    /// GI-FPU-002 phase 2 (#719/#369): register the per-callee float-signature
+    /// tables (see the `callee_ret_f32` field), so `Call`/`CallIndirect` can
+    /// loudly decline a float-ABI call boundary this increment does not marshal.
+    pub fn set_float_call_signatures(
+        &mut self,
+        func_ret_f32: Vec<bool>,
+        func_ret_f64: Vec<bool>,
+        type_ret_f32: Vec<bool>,
+        type_ret_f64: Vec<bool>,
+        func_params_f32: Vec<Vec<bool>>,
+    ) {
+        self.callee_ret_f32 = func_ret_f32;
+        self.callee_ret_f64 = func_ret_f64;
+        self.callee_type_ret_f32 = type_ret_f32;
+        self.callee_type_ret_f64 = type_ret_f64;
+        self.callee_params_f32 = func_params_f32;
+    }
+
+    /// GI-FPU-002 phase 2 (#719/#369): loudly decline a `call` whose callee has
+    /// a float ABI at the boundary this increment does not marshal — an f32/f64
+    /// RETURN (the result arrives in S0/D0; tagging it as an integer R0 would be
+    /// a silent miscompile: any use reads the wrong register file) or an f32
+    /// PARAM (the argument belongs in the AAPCS-VFP S0.. pool, not R0..R3).
+    /// Live f32 values ACROSS the call are handled (spill/reload around the BL);
+    /// only the callee's own float signature declines. Ok-or-Err.
+    fn check_callee_float_signature(&self, func_idx: u32) -> Result<()> {
+        let i = func_idx as usize;
+        let ret_f32 = self.callee_ret_f32.get(i).copied().unwrap_or(false);
+        let ret_f64 = self.callee_ret_f64.get(i).copied().unwrap_or(false);
+        if ret_f32 || ret_f64 {
+            return Err(synth_core::Error::synthesis(format!(
+                "GI-FPU-002 phase 2: call to func_{func_idx} which returns {} — \
+                 the AAPCS-VFP result arrives in {} and this increment does not \
+                 marshal a float call result; declining loudly (#719/#369)",
+                if ret_f64 { "f64" } else { "f32" },
+                if ret_f64 { "D0" } else { "S0" },
+            )));
+        }
+        if self
+            .callee_params_f32
+            .get(i)
+            .is_some_and(|p| p.iter().any(|&f| f))
+        {
+            return Err(synth_core::Error::synthesis(format!(
+                "GI-FPU-002 phase 2: call to func_{func_idx} which takes an f32 \
+                 parameter — the argument belongs in the AAPCS-VFP S-register \
+                 pool, which this increment does not marshal; declining loudly \
+                 (#719/#369)"
+            )));
+        }
+        Ok(())
+    }
+
+    /// GI-FPU-002 phase 2 (#719/#369): the `call_indirect` analogue of
+    /// [`Self::check_callee_float_signature`], keyed by the static type index.
+    /// (The f32-ARG side needs no type-level check: every f32 producer pushes a
+    /// `Float` operand, which the integer `pop_call_args` path already rejects
+    /// loudly.)
+    fn check_indirect_float_signature(&self, type_idx: u32) -> Result<()> {
+        let i = type_idx as usize;
+        let ret_f32 = self.callee_type_ret_f32.get(i).copied().unwrap_or(false);
+        let ret_f64 = self.callee_type_ret_f64.get(i).copied().unwrap_or(false);
+        if ret_f32 || ret_f64 {
+            return Err(synth_core::Error::synthesis(format!(
+                "GI-FPU-002 phase 2: call_indirect of type {type_idx} which \
+                 returns {} — the AAPCS-VFP result arrives in {} and this \
+                 increment does not marshal a float call result; declining \
+                 loudly (#719/#369)",
+                if ret_f64 { "f64" } else { "f32" },
+                if ret_f64 { "D0" } else { "S0" },
+            )));
+        }
+        Ok(())
     }
 
     /// #509: register the blocktype-arity side-table of the function about to
@@ -7437,10 +7677,20 @@ impl InstructionSelector {
         for i in 0..num_params.min(4) {
             if let Some(&(off, is_i64)) = layout.param_slots.get(&i) {
                 // #503-i64: `param_slots` only contains REGISTER-resident
-                // params now, and every reg-resident param below a stack spill
-                // is sequential from R0 (a wide reg param + has_call is
-                // declined above), so `index_to_reg(i)` is its true home.
-                let reg = index_to_reg(i as u8);
+                // params now, so the AAPCS map has this index. #719 phase 2:
+                // the home must come from the AAPCS-VFP-aware map, NOT the raw
+                // `index_to_reg(i)` — under mixed f32/int params the integer
+                // pool skips f32 indices (e.g. `(f32, i32)` homes the i32 in
+                // R0, not R1), and backing the wrong register fed the callee
+                // caller garbage (caught by the xhome execution differential).
+                // For an all-i32 signature the two maps are identical, so
+                // every previously-compiling function is byte-identical.
+                let reg = param_aapcs.get(&i).copied().ok_or_else(|| {
+                    synth_core::Error::synthesis(format!(
+                        "param {i} has a frame-backing slot but no AAPCS home \
+                         register (compiler bug: param_slots/aapcs mismatch)"
+                    ))
+                })?;
                 let op = if is_i64 {
                     ArmOp::I64Str {
                         rdlo: reg,
@@ -7617,21 +7867,19 @@ impl InstructionSelector {
                 // R1) while the f32-home seed below assigns S(k) from the VFP
                 // pool. No decline here anymore.
                 //
-                // Phase-1 honest decline (never a miscompile):
-                //  * any call — S0..S15 are caller-saved, so an f32 value or
-                //    param home would be clobbered across a bl (phase 1b, #719
-                //    scopes this out; the full spill/rehome across call sites is
-                //    the next f32 increment).
-                if wasm_ops
-                    .iter()
-                    .any(|o| matches!(o, WasmOp::Call(_) | WasmOp::CallIndirect { .. }))
-                {
-                    return Err(synth_core::Error::synthesis(
-                        "GI-FPU-002 phase 1: f32 in a function with a call is \
-                         not yet lowered (S0..S15 are caller-saved) — declining"
-                            .to_string(),
-                    ));
-                }
+                // #719 phase 2: f32 values LIVE ACROSS A CALL are now spilled and
+                // reloaded around each `bl` (S0..S15 are caller-saved) via the
+                // VFP call-spill area (`layout.vfp_spill_base`) — the exact analogue
+                // of the #188 integer caller-saved preservation, emitted at the
+                // Call/CallIndirect sites below. Two float-ABI-at-the-call cases
+                // that this increment does NOT marshal still decline SOUNDLY through
+                // pre-existing guards (never a miscompile):
+                //  * passing an f32 as a call ARGUMENT — `pop_call_args`→`pop_operand`
+                //    rejects a `Float` operand (an integer op never pops an f32).
+                //  * a call that RETURNS f32/f64 — its result is pushed as an
+                //    integer-tagged R0; any later f32 op `pop_float`s it → Err, and
+                //    an f32/f64 function return is caught by the epilogue
+                //    `ret_f32`/`ret_f64` soundness guard above.
                 // Seed f32-param homes. With no mixed params, the k-th param is
                 // the k-th f32 param, homed in AAPCS-VFP arg register S(k).
                 let mut vfp_arg: u8 = 0;
@@ -10327,6 +10575,12 @@ impl InstructionSelector {
                 }
 
                 Call(func_idx) => {
+                    // GI-FPU-002 phase 2 (#719/#369): decline LOUDLY when the
+                    // callee's own signature is a float ABI at the boundary
+                    // (f32/f64 return in S0/D0, f32 params in the VFP pool) —
+                    // this increment marshals live f32 values ACROSS the call
+                    // but not float arguments/results INTO/OUT OF it.
+                    self.check_callee_float_signature(*func_idx)?;
                     let is_import = *func_idx < self.num_imports;
                     // #197: a relocatable host-link import is a *direct* AAPCS
                     // call (`BL func_N` → wasm field name), so it marshals args
@@ -10386,6 +10640,18 @@ impl InstructionSelector {
                         &mut instructions,
                         &stack_live_regs(&stack),
                         &local_to_reg,
+                        &layout,
+                        idx,
+                    )?;
+                    // #719 phase 2: spill every live f32 value (S0..S15 caller-saved)
+                    // to the VFP call-spill area before the BL — the VFP analogue of
+                    // the #188 integer preservation above. Disjoint register file
+                    // and disjoint frame slots, so order vs the integer spill and
+                    // the R0..R3 arg move is immaterial.
+                    let vfp_preserved = preserve_vfp_caller_saved(
+                        &mut instructions,
+                        &stack,
+                        &vfp_home,
                         &layout,
                         idx,
                     )?;
@@ -10454,6 +10720,11 @@ impl InstructionSelector {
                         ret_i64,
                         idx,
                     )?;
+                    // #719 phase 2: reload the f32 S-registers the BL clobbered.
+                    // The callee returns in R0 (a float-returning callee is
+                    // declined by the epilogue guard), so reloading S0..S15 here
+                    // cannot destroy the integer result.
+                    restore_vfp_caller_saved(&mut instructions, &vfp_preserved, idx);
                     // Push the call's return value as a live operand (spilled to
                     // the frame if no register was free to hold it — #171).
                     stack.push(result_reg);
@@ -10476,6 +10747,12 @@ impl InstructionSelector {
                     // table.grow/table.set are unsupported ops that loud-skip
                     // their functions). If any input is missing, DECLINE
                     // loudly — never emit an unchecked indirect branch.
+                    // GI-FPU-002 phase 2 (#719/#369): decline loudly when the
+                    // static callee type RETURNS f32/f64 (S0/D0 result, not yet
+                    // marshalled). f32 ARGS need no type-level check here: every
+                    // f32 producer pushes a `Float` operand, which the integer
+                    // `pop_call_args` path below already rejects loudly.
+                    self.check_indirect_float_signature(*type_index)?;
                     let (table_size, table_byte_offset, null_check, type_check) =
                         self.resolve_call_indirect_guards(*table_index, *type_index)?;
 
@@ -10556,6 +10833,16 @@ impl InstructionSelector {
                         &layout,
                         idx,
                     )?;
+                    // #719 phase 2: spill live f32 values across the indirect call
+                    // (S0..S15 caller-saved). The relocated table index on `stack`
+                    // is an integer, invisible to `vfp_live_set`.
+                    let vfp_preserved = preserve_vfp_caller_saved(
+                        &mut instructions,
+                        &stack,
+                        &vfp_home,
+                        &layout,
+                        idx,
+                    )?;
 
                     // #195: marshal args into R0–R3 (after preservation, last
                     // writes before the indirect branch). The relocated table
@@ -10615,6 +10902,9 @@ impl InstructionSelector {
                         ret_i64,
                         idx,
                     )?;
+                    // #719 phase 2: reload the f32 S-registers the indirect call
+                    // clobbered.
+                    restore_vfp_caller_saved(&mut instructions, &vfp_preserved, idx);
                     stack.push(result_reg);
                 }
 
@@ -13435,6 +13725,28 @@ impl InstructionSelector {
         // If the producing S-register is not already S0, copy it there via a
         // core scratch (phase 1 has no VMOV Sd,Sm op; R12/IP is caller-saved,
         // safe to clobber at the epilogue). Skip the integer return-value move.
+        // GI-FPU-002 phase 2 (#719/#369) SOUNDNESS: a function that RETURNS f32
+        // or f64 must present its result in an S/D register (a `Float` stack
+        // entry). If the top-of-stack is anything else — most importantly an
+        // integer-tagged `Reg` produced by a call that returned f32/f64 as R0
+        // (#719 "f32 in a fn with a call": the call result is pushed as an
+        // integer operand) — emitting the integer R0 return would be a SILENT
+        // MISCOMPILE: the AAPCS-VFP caller reads S0/D0. Decline loudly instead
+        // (skip-and-continue). This also catches the pre-existing pure-passthrough
+        // shape `(func (result f32) (call $g))` that never entered the VFP path.
+        if self.ret_f32 || self.ret_f64 {
+            let top_is_float = stack.last().and_then(|v| v.as_float()).is_some();
+            if !top_is_float {
+                return Err(synth_core::Error::synthesis(format!(
+                    "GI-FPU-002 phase 2: function returns {} but its result reached \
+                     the epilogue in a core register (e.g. an f32/f64-returning \
+                     call's R0 result) — refusing to emit an integer R0 return \
+                     where an AAPCS-VFP caller reads {} (declining, #719/#369)",
+                    if self.ret_f64 { "f64" } else { "f32" },
+                    if self.ret_f64 { "D0" } else { "S0" },
+                )));
+            }
+        }
         let f32_result = stack.last().and_then(|v| v.as_float());
         if let Some(sreg) = f32_result {
             if vfp_s_index(sreg) != Some(0) {
@@ -15390,24 +15702,132 @@ mod tests {
         assert_eq!(l.regs.get(&1), None);
     }
 
-    /// #719: f32-across-a-call is DECLINED loudly this round (S0..S15 are
-    /// caller-saved; the spill/rehome across call sites is the next increment).
-    /// The function must Err (loud skip), never silently miscompile.
+    /// #719 phase 2: f32 ACROSS a call now LOWERS — the live f32 param home
+    /// (S0, caller-saved) is VSTR'd to the VFP call-spill area before the BL
+    /// and VLDR'd back after it (the VFP analogue of the #188 integer
+    /// preservation). Execution correctness is gated by
+    /// `scripts/repro/f32_ops_719_differential.py` (xcall/xhome cases).
     #[test]
-    fn test_719_f32_with_call_declines_loudly() {
+    fn test_719_f32_across_call_spills_and_reloads() {
         let mut selector = fresh_selector();
         selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
-        selector.set_params_f32(vec![true]); // one f32 param
-        let ops = vec![WasmOp::LocalGet(0), WasmOp::Call(0)];
-        let result = selector.select_with_stack(&ops, 1);
+        selector.set_params_f32(vec![true]); // one f32 param, homed in S0
+        // Read the f32 param AFTER an integer call: the home must survive.
+        let ops = vec![
+            WasmOp::Call(0),
+            WasmOp::Drop,
+            WasmOp::LocalGet(0),
+            WasmOp::I32ReinterpretF32,
+        ];
+        let instructions = selector
+            .select_with_stack(&ops, 1)
+            .expect("f32 live across an integer call must now lower (#719 phase 2)");
+        // Find the BL; a VSTR (F32Store to [SP,#off]) must precede it and a
+        // VLDR (F32Load from the same slot) must follow it, both for S0.
+        let bl_at = instructions
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Bl { .. }))
+            .expect("call must emit a BL");
+        let vstr_before = instructions[..bl_at].iter().any(|i| {
+            matches!(&i.op, ArmOp::F32Store { sd, addr }
+                if *sd == VfpReg::S0 && addr.base == Reg::SP)
+        });
+        let vldr_after = instructions[bl_at..].iter().any(|i| {
+            matches!(&i.op, ArmOp::F32Load { sd, addr }
+                if *sd == VfpReg::S0 && addr.base == Reg::SP)
+        });
         assert!(
-            result.is_err(),
-            "f32-in-a-function-with-a-call must decline"
+            vstr_before,
+            "live f32 home S0 must be VSTR'd to the frame before the BL"
         );
-        let err = result.unwrap_err().to_string();
         assert!(
-            err.contains("caller-saved") && err.contains("call"),
-            "decline must name the caller-saved-across-call cause, got: {err}"
+            vldr_after,
+            "live f32 home S0 must be VLDR'd back after the BL"
+        );
+    }
+
+    /// #719 phase 2: a call whose CALLEE has a float signature (f32/f64 return
+    /// in S0/D0, or an f32 param in the VFP pool) is declined LOUDLY at the
+    /// call site — this increment does not marshal a float ABI at the call
+    /// boundary, and tagging an S0 result as integer R0 (or passing an f32 arg
+    /// in a core register) would be a silent miscompile.
+    #[test]
+    fn test_719_float_signature_callee_declines_loudly() {
+        // Callee returns f32.
+        let mut selector = fresh_selector();
+        selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
+        selector.set_float_call_signatures(
+            vec![true], // func 0 returns f32
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let r = selector.select_with_stack(&[WasmOp::Call(0), WasmOp::Drop], 0);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.to_string().contains("returns f32")),
+            "call to an f32-returning callee must decline loudly: {r:?}"
+        );
+        // Callee takes an f32 param.
+        let mut selector = fresh_selector();
+        selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
+        selector.set_func_arg_counts(vec![1], Vec::new());
+        selector.set_float_call_signatures(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![vec![true]], // func 0 takes (f32)
+        );
+        let r = selector.select_with_stack(&[WasmOp::I32Const(1), WasmOp::Call(0)], 0);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.to_string().contains("f32 parameter")),
+            "call to an f32-param callee must decline loudly: {r:?}"
+        );
+        // call_indirect whose static type returns f64.
+        let mut selector = fresh_selector();
+        selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
+        selector.set_float_call_signatures(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            vec![true], // type 0 returns f64
+            Vec::new(),
+        );
+        let r = selector.select_with_stack(
+            &[
+                WasmOp::I32Const(0),
+                WasmOp::CallIndirect {
+                    type_index: 0,
+                    table_index: 0,
+                },
+            ],
+            0,
+        );
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.to_string().contains("returns f64")),
+            "call_indirect of an f64-returning type must decline loudly: {r:?}"
+        );
+    }
+
+    /// #719 phase 2 epilogue soundness guard: a function DECLARED to return
+    /// f32 whose result reaches the epilogue in a core register (here: an
+    /// integer constant — the well-typed analogue is an f32-returning call's
+    /// R0-tagged result) must decline loudly, never emit the integer R0 return
+    /// (the AAPCS-VFP caller reads S0).
+    #[test]
+    fn test_719_ret_f32_core_register_result_declines_loudly() {
+        let mut selector = fresh_selector();
+        selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
+        selector.set_ret_float(true, false);
+        let r = selector.select_with_stack(&[WasmOp::I32Const(7)], 0);
+        assert!(
+            r.as_ref()
+                .is_err_and(|e| e.to_string().contains("core register")),
+            "an f32-returning function with a core-register result must decline: {r:?}"
         );
     }
 
@@ -21809,6 +22229,7 @@ mod tests {
             locals: std::collections::HashMap::new(),
             frame_size: 0,
             spill_base: None,
+            vfp_spill_base: None,
             i64_spill_base: 0,
             param_slots: std::collections::HashMap::new(),
             incoming_params: std::collections::HashMap::new(),

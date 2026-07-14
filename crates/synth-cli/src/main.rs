@@ -1395,6 +1395,15 @@ fn compile_command(
     // Empty for the demo path (no module signature).
     let mut current_func_params_f32: Vec<bool> = Vec::new();
     let mut func_params_f32_all: Vec<Vec<bool>> = Vec::new();
+    // GI-FPU-002 phase 2 (#719/#369): the CURRENT function's f32/f64 return flag
+    // (epilogue soundness guard, see CompileConfig) + the per-function/per-type
+    // return-float tables (call-site decline of f32/f64-signature callees).
+    let mut current_func_ret_f32 = false;
+    let mut current_func_ret_f64 = false;
+    let mut func_ret_f32_all: Vec<bool> = Vec::new();
+    let mut func_ret_f64_all: Vec<bool> = Vec::new();
+    let mut type_ret_f32_all: Vec<bool> = Vec::new();
+    let mut type_ret_f64_all: Vec<bool> = Vec::new();
     // #457: declared param count of THIS function — caps the access-pattern
     // param inference (a read-before-write local is otherwise indistinguishable
     // from a param). None for the demo path (no module signature).
@@ -1466,6 +1475,12 @@ fn compile_command(
             let module_func_params_i64 = module.func_params_i64;
             let module_func_arg_counts = module.func_arg_counts;
             func_params_f32_all = module.func_params_f32.clone();
+            // GI-FPU-002 phase 2 (#719/#369): per-function/per-type f32/f64
+            // return tables (epilogue guard + call-site callee-signature decline).
+            func_ret_f32_all = module.func_ret_f32.clone();
+            func_ret_f64_all = module.func_ret_f64.clone();
+            type_ret_f32_all = module.type_ret_f32.clone();
+            type_ret_f64_all = module.type_ret_f64.clone();
             // VCR-PERF-002 Phase 1 (#494): whatever facts loom forwarded
             // (empty for a section-less module — the overwhelmingly common
             // case — and for any malformed section, per the fail-safe rule).
@@ -1517,6 +1532,15 @@ fn compile_command(
             if let Some(p) = func_params_f32_all.get(func.index as usize) {
                 current_func_params_f32 = p.clone();
             }
+            // GI-FPU-002 phase 2 (#719/#369): THIS function's f32/f64 return flag.
+            current_func_ret_f32 = func_ret_f32_all
+                .get(func.index as usize)
+                .copied()
+                .unwrap_or(false);
+            current_func_ret_f64 = func_ret_f64_all
+                .get(func.index as usize)
+                .copied()
+                .unwrap_or(false);
             // #457: THIS function's declared param count from the type section.
             current_func_param_count = module_func_arg_counts.get(func.index as usize).copied();
             current_func_block_arity = func.block_arity.clone();
@@ -1624,6 +1648,14 @@ fn compile_command(
         // GI-FPU-002 (#619/#369): AAPCS-VFP f32-param homing.
         current_func_params_f32,
         func_params_f32: func_params_f32_all,
+        // GI-FPU-002 phase 2 (#719/#369): f32/f64 return-soundness guard +
+        // call-site callee-signature decline tables.
+        current_func_ret_f32,
+        current_func_ret_f64,
+        func_ret_f32: func_ret_f32_all,
+        func_ret_f64: func_ret_f64_all,
+        type_ret_f32: type_ret_f32_all,
+        type_ret_f64: type_ret_f64_all,
         // #457: declared param count — caps the param-count inference so a
         // read-before-write local lands in a zero-inited frame slot.
         current_func_param_count,
@@ -2371,6 +2403,10 @@ fn compile_all_exports(
         all_type_ret_i64,  // #311: per-type returns-i64 (call_indirect)
         all_func_params_i64, // #359: per-function declared param widths (stack-arg ABI)
         all_func_params_f32, // GI-FPU-002: per-function declared f32-param mask (AAPCS-VFP)
+        all_func_ret_f32,  // GI-FPU-002 phase 2 (#719/#369): per-function returns-f32
+        all_func_ret_f64,  // GI-FPU-002 phase 2 (#719/#369): per-function returns-f64
+        all_type_ret_f32,  // GI-FPU-002 phase 2 (#719/#369): per-type returns-f32 (call_indirect)
+        all_type_ret_f64,  // GI-FPU-002 phase 2 (#719/#369): per-type returns-f64 (call_indirect)
         all_wsc_facts,     // VCR-PERF-002 Phase 1 (#494): loom wsc.facts premises
         all_call_indirect_guards, // #642: table size + closed-world type verdicts
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
@@ -2471,6 +2507,10 @@ fn compile_all_exports(
             Vec::new(),
             Vec::new(), // #359: WAST fixture suite is i32-only — no stack params
             Vec::new(), // GI-FPU-002: WAST fixture suite is i32-only — no f32 params
+            Vec::new(), // GI-FPU-002 phase 2: WAST fixture suite is i32-only — no f32 returns
+            Vec::new(), // GI-FPU-002 phase 2: WAST fixture suite is i32-only — no f64 returns
+            Vec::new(), // GI-FPU-002 phase 2: WAST fixture suite is i32-only — no f32-ret types
+            Vec::new(), // GI-FPU-002 phase 2: WAST fixture suite is i32-only — no f64-ret types
             Vec::new(), // #494: facts are a loom-emitted-.wasm channel; WAST fixtures carry none
             // #642: the multi-module WAST merge has no single table image to
             // verify — the default guards DECLINE any call_indirect (the WAST
@@ -2567,6 +2607,10 @@ fn compile_all_exports(
             module.type_ret_i64,
             module.func_params_i64,
             module.func_params_f32,
+            module.func_ret_f32,
+            module.func_ret_f64,
+            module.type_ret_f32,
+            module.type_ret_f64,
             module.wsc_facts,
             guards, // #642
         )
@@ -2648,6 +2692,15 @@ fn compile_all_exports(
         // GI-FPU-002 (#619/#369): per-function AAPCS-VFP f32-param homing.
         func_params_f32: all_func_params_f32.clone(),
         current_func_params_f32: Vec::new(),
+        // GI-FPU-002 phase 2 (#719/#369): set per function in the compile loop;
+        // the per-function/per-type tables feed the call-site callee-signature
+        // decline in the selector.
+        current_func_ret_f32: false,
+        current_func_ret_f64: false,
+        func_ret_f32: all_func_ret_f32.clone(),
+        func_ret_f64: all_func_ret_f64.clone(),
+        type_ret_f32: all_type_ret_f32.clone(),
+        type_ret_f64: all_type_ret_f64.clone(),
         // #543 Phase 1: threaded but not yet consumed (inert plumbing). The
         // Phase-2 back-off (const-CSE + #468 base-CSE decline inside these ranges)
         // lives on the optimized path this config feeds. See VCR-DMA-001.
@@ -2714,6 +2767,15 @@ fn compile_all_exports(
             {
                 fc.current_func_params_f32 = p.clone();
             }
+            // GI-FPU-002 phase 2 (#719/#369): THIS function's f32/f64 return flag.
+            fc.current_func_ret_f32 = all_func_ret_f32
+                .get(func.index as usize)
+                .copied()
+                .unwrap_or(false);
+            fc.current_func_ret_f64 = all_func_ret_f64
+                .get(func.index as usize)
+                .copied()
+                .unwrap_or(false);
             fc.current_func_block_arity = func.block_arity.clone();
             // #457: THIS function's DECLARED param count, so the backends can
             // cap the access-pattern param inference that mistook a
