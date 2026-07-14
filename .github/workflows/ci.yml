@@ -386,6 +386,15 @@ jobs:
       # calls).
       - name: Run f64 const/promote/arith/compare/mem + across-call oracle (#369, m7dp)
         run: SYNTH=./target/debug/synth python scripts/repro/f64_369_differential.py
+      # #739: static ABOVE sp_init under --shadow-stack-size — the sub-word
+      # load/store arms previously BAKED the linmem offset as an un-relocated
+      # MOVW/MOVT immediate (invisible to the #678 reloc-walking rebase AND to
+      # the reloc-walking in-range oracle, which passed on the miscompile — a
+      # vacuous gate, the #712-class lesson). Store/load through the above-SP
+      # static after the shrink must match wasmtime, with .bss/.data mapped at
+      # SEPARATE bases so a baked absolute offset cannot accidentally resolve.
+      - name: Run above-SP static shadow-stack-shrink oracle (#739, cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/repro/static_above_sp_739_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b)
