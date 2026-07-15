@@ -164,6 +164,7 @@ fn aapcs_param_layout(
     num_params: u32,
     params_i64: &[bool],
     params_f32: &[bool],
+    params_f64_vfp: &[bool],
 ) -> AapcsParamLayout {
     let mut regs = std::collections::HashMap::new();
     let mut stack = std::collections::HashMap::new();
@@ -176,7 +177,16 @@ fn aapcs_param_layout(
         // consumes neither a core register nor an NSAA stack slot — the core
         // walk must skip it. `(f32, i32)` therefore maps i32→R0 (not R1). Empty
         // `params_f32` ⇒ no skips ⇒ byte-identical to the legacy layout.
-        if params_f32.get(i as usize).copied().unwrap_or(false) {
+        //
+        // GI-FPU-002 phase 3 (#369): same for a VFP-HOMED f64 param (D-register
+        // from the same independent pool, back-fill assignment via
+        // `vfp_param_layout`). `params_f64_vfp` is non-empty ONLY on a
+        // double-precision target where the D-homing applies — on soft-float
+        // the caller passes an empty slice and the f64 keeps its ABI-correct
+        // core-pair treatment through `params_i64` (which lumps i64/f64).
+        if params_f32.get(i as usize).copied().unwrap_or(false)
+            || params_f64_vfp.get(i as usize).copied().unwrap_or(false)
+        {
             continue;
         }
         let is_wide = params_i64.get(i as usize).copied().unwrap_or(false);
@@ -264,9 +274,9 @@ fn vfp_param_layout(
 /// Test-only: the selector itself uses the full layout.
 #[cfg(test)]
 fn aapcs_param_regs(num_params: u32, params_i64: &[bool]) -> std::collections::HashMap<u32, Reg> {
-    // Test helper covers integer signatures only (f32 param homing is exercised
-    // by the #719 execution differential); pass no f32 params.
-    aapcs_param_layout(num_params, params_i64, &[]).regs
+    // Test helper covers integer signatures only (f32/f64 param homing is
+    // exercised by the #719/#369 execution differentials); pass no float params.
+    aapcs_param_layout(num_params, params_i64, &[], &[]).regs
 }
 
 /// True if any declared i64/f64 param of this function lands (wholly or its
@@ -1488,6 +1498,7 @@ fn compute_local_layout(
     num_params: u32,
     params_i64: &[bool],
     params_f32: &[bool],
+    params_f64_vfp: &[bool],
     func_ret_i64: &[bool],
     type_ret_i64: &[bool],
     force_spill_area: bool,
@@ -1500,7 +1511,9 @@ fn compute_local_layout(
     let i64_set = infer_i64_locals(wasm_ops, func_ret_i64, type_ret_i64);
     // #503-i64: the width-aware AAPCS assignment — which params are register-
     // resident and which live on the caller's stack (and at what NSAA offset).
-    let aapcs = aapcs_param_layout(num_params, params_i64, params_f32);
+    // `params_f64_vfp` is non-empty only on a double-precision target, where
+    // an f64 param is D-register-homed and skipped by the core walk (#369).
+    let aapcs = aapcs_param_layout(num_params, params_i64, params_f32, params_f64_vfp);
 
     // Collect non-param local indices, in ascending order for deterministic layout.
     let mut used: BTreeSet<u32> = BTreeSet::new();
@@ -1639,6 +1652,9 @@ fn compute_local_layout(
     // every other frame field so the existing local/spill/param offsets are
     // unchanged.
     let has_f32 = params_f32.iter().take(num_params as usize).any(|&f| f)
+        // GI-FPU-002 phase 3 (#369): a D-homed f64 param's home is the aliased
+        // S-word pair, preserved across calls by the same 16-slot area.
+        || params_f64_vfp.iter().take(num_params as usize).any(|&f| f)
         || wasm_ops.iter().any(is_scope_f32_op)
         // GI-FPU-002 phase 2 (#369): f64 values live in D0..D7, which alias
         // S0..S15 — a live double across a call is preserved by the SAME
@@ -2716,8 +2732,10 @@ fn is_scope_f64_op(op: &WasmOp) -> bool {
 fn try_lower_f64(
     op: &WasmOp,
     idx: usize,
+    params_f64: &[bool],
+    f64_home: &mut std::collections::HashMap<u32, VfpReg>,
     vfp_used: &mut [bool; 16],
-    vfp_home: &[bool; 16],
+    vfp_home: &mut [bool; 16],
     stack: &mut Vec<StackVal>,
     next_temp: &mut u8,
     spill: &mut SpillState,
@@ -2725,7 +2743,95 @@ fn try_lower_f64(
     reserved: &[Reg],
 ) -> Result<bool> {
     use WasmOp::*;
+    /// Bit-exact D→D copy via the proven core round-trip (`VMOV r,r,Dm` +
+    /// `VMOV Dd,r,r`) — the lowered ArmOp set has no `VMOV.F64 Dd,Dm`, and
+    /// both moves copy all 64 bits, so ±0.0/NaN/±inf are preserved.
+    fn emit_d_copy(
+        dd: VfpReg,
+        dm: VfpReg,
+        idx: usize,
+        stack: &mut Vec<StackVal>,
+        next_temp: &mut u8,
+        spill: &mut SpillState,
+        instructions: &mut Vec<ArmInstruction>,
+        reserved: &[Reg],
+    ) -> Result<()> {
+        let rlo = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx)?;
+        // Keep `rlo` visibly live while allocating `rhi` (same trick as
+        // the F64Const materialization below).
+        stack.push(StackVal::i32(rlo));
+        let rhi = alloc_temp_or_spill(next_temp, stack, instructions, spill, reserved, idx);
+        stack.pop();
+        let rhi = rhi?;
+        instructions.push(ArmInstruction {
+            op: ArmOp::I64ReinterpretF64 {
+                rdlo: rlo,
+                rdhi: rhi,
+                dm,
+            },
+            source_line: Some(idx),
+        });
+        instructions.push(ArmInstruction {
+            op: ArmOp::F64ReinterpretI64 {
+                dd,
+                rmlo: rlo,
+                rmhi: rhi,
+            },
+            source_line: Some(idx),
+        });
+        Ok(())
+    }
     match op {
+        // GI-FPU-002 phase 3 (#369): f64 param/local D-register homes —
+        // the double-precision mirror of the f32 home machinery above.
+        LocalGet(i) => {
+            if let Some(&home) = f64_home.get(i) {
+                // Read-only reference to the home D-register (a `local.set`
+                // writes THROUGH the stable home, so no defensive copy).
+                stack.push(StackVal::Double { dreg: home });
+                Ok(true)
+            } else {
+                Ok(false) // not an f64 local — integer/f32 paths handle it
+            }
+        }
+        LocalSet(i) | LocalTee(i) => {
+            let top_is_double = matches!(stack.last(), Some(StackVal::Double { .. }));
+            let target_is_f64 =
+                f64_home.contains_key(i) || params_f64.get(*i as usize).copied().unwrap_or(false);
+            if !(top_is_double || target_is_f64) {
+                return Ok(false); // not an f64 local — fall through
+            }
+            let src = pop_double(stack)?;
+            let home = if let Some(&h) = f64_home.get(i) {
+                h
+            } else {
+                // A fresh non-param f64 local: allocate + pin a home D-register.
+                let h = alloc_vfp_dtemp(vfp_used)?;
+                if let Some(d) = vfp_d_index(h) {
+                    vfp_home[2 * d] = true;
+                    vfp_home[2 * d + 1] = true;
+                }
+                f64_home.insert(*i, h);
+                h
+            };
+            if home != src {
+                emit_d_copy(
+                    home,
+                    src,
+                    idx,
+                    stack,
+                    next_temp,
+                    spill,
+                    instructions,
+                    reserved,
+                )?;
+            }
+            free_vfp_dtemp(vfp_used, vfp_home, src);
+            if matches!(op, LocalTee(_)) {
+                stack.push(StackVal::Double { dreg: home });
+            }
+            Ok(true)
+        }
         F64Const(v) => {
             // Materialize the 64-bit pattern via TWO allocator-owned core
             // temps (MOVW/MOVT each) + `VMOV Dd, lo, hi`. Deliberately NOT
@@ -7996,7 +8102,22 @@ impl InstructionSelector {
         // back to a loud skip (warning + absent symbol), never wrong code.
         // (Empty `params_i64` ⇒ all-i32 ⇒ this is a no-op and every existing
         // fixture stays byte-identical.)
-        let param_layout = aapcs_param_layout(num_params, &self.params_i64, &self.params_f32);
+        // GI-FPU-002 phase 3 (#369): on a DOUBLE-precision target an f64 param
+        // is homed in a VFP D-register (AAPCS-VFP), so the core walk skips it —
+        // exactly like an f32 param. Everywhere else (soft-float; and m4f,
+        // where the function declines below) the slice is empty and the f64
+        // keeps its core-pair treatment via `params_i64`.
+        let params_f64_vfp: Vec<bool> = if matches!(self.fpu, Some(FPUPrecision::Double)) {
+            self.params_f64.clone()
+        } else {
+            Vec::new()
+        };
+        let param_layout = aapcs_param_layout(
+            num_params,
+            &self.params_i64,
+            &self.params_f32,
+            &params_f64_vfp,
+        );
         let has_reg_i64_param = (0..num_params).any(|i| {
             self.params_i64.get(i as usize).copied().unwrap_or(false)
                 && param_layout.regs.contains_key(&i)
@@ -8091,6 +8212,7 @@ impl InstructionSelector {
             num_params,
             &self.params_i64,
             &self.params_f32,
+            &params_f64_vfp,
             &self.func_ret_i64,
             &self.type_ret_i64,
             self.spill_on_exhaustion,
@@ -8284,8 +8406,12 @@ impl InstructionSelector {
         // is reserved via `i64_pair_hi`) instead of an i32 entry that left the hi
         // unreserved — the exact direct-path #518 mechanism (a following
         // `i64.const` was then allocated into the param's hi register).
+        // GI-FPU-002 phase 3 (#369): a D-HOMED f64 param (double-precision
+        // target) is NOT a core-register pair — `params_i64` lumps i64/f64 by
+        // width, but its home is the VFP D-register, so seeding it here would
+        // make `LocalGet` push a phantom core pair. Skip the VFP-homed ones.
         for (k, &wide) in self.params_i64.iter().take(num_params as usize).enumerate() {
-            if wide {
+            if wide && !params_f64_vfp.get(k).copied().unwrap_or(false) {
                 i64_locals.insert(k as u32);
             }
         }
@@ -8441,25 +8567,6 @@ impl InstructionSelector {
                 //    integer-tagged R0; any later f32 op `pop_float`s it → Err, and
                 //    an f32/f64 function return is caught by the epilogue
                 //    `ret_f32`/`ret_f64` soundness guard above.
-                // Seed f32-param homes. With no mixed params, the k-th param is
-                // the k-th f32 param, homed in AAPCS-VFP arg register S(k).
-                let mut vfp_arg: u8 = 0;
-                for i in 0..num_params {
-                    if params_f32.get(i as usize).copied().unwrap_or(false) {
-                        if vfp_arg >= 16 {
-                            return Err(synth_core::Error::synthesis(
-                                "GI-FPU-002 phase 1: more than 16 f32 params \
-                                 (VFP arg registers exhausted) — declining"
-                                    .to_string(),
-                            ));
-                        }
-                        let home = index_to_vfp_reg(vfp_arg);
-                        vfp_used[vfp_arg as usize] = true;
-                        vfp_home[vfp_arg as usize] = true;
-                        f32_home.insert(i, home);
-                        vfp_arg += 1;
-                    }
-                }
             }
             // GI-FPU-002 phase 2 (#369): scalar f64 capability gates. The
             // lowered f64 subset needs DOUBLE-precision VFP (cortex-m7dp);
@@ -8479,25 +8586,51 @@ impl InstructionSelector {
                     }
                 )));
             }
-            // GI-FPU-002 phase 2 (#369): f64 PARAMS are not yet homed (an f64
-            // param arrives in D0..D7 under AAPCS-VFP). On a hard-float target
-            // the legacy width-inference treats it as an i64 CORE-register
-            // pair — reading R0:R1 where the caller put D0, and shifting every
-            // later integer param's home — a silent wrong-argument class, so
-            // decline LOUDLY. Soft-float targets (no FPU) genuinely pass f64
-            // in core registers, so the i64-pair treatment is ABI-correct
-            // there and stays.
-            if fpu.is_some()
+            // GI-FPU-002 phase 3 (#369): f64 PARAMS. On a DOUBLE-precision
+            // target the param is homed in its AAPCS-VFP D-register (seeded
+            // below via `vfp_param_layout`). On a SINGLE-precision target
+            // (m4f/m7) the AAPCS-VFP caller still puts it in D0.., but every
+            // f64 OP declines there — decline the function symmetrically
+            // rather than home a value nothing can use (and the legacy
+            // i64-pair reading of R0:R1 would be a silent wrong-argument
+            // miscompile). Soft-float targets (no FPU) genuinely pass f64 in
+            // core registers, so the i64-pair treatment is ABI-correct there
+            // and stays.
+            if matches!(fpu, Some(FPUPrecision::Single))
                 && (0..num_params)
                     .any(|i| self.params_f64.get(i as usize).copied().unwrap_or(false))
             {
                 return Err(synth_core::Error::synthesis(format!(
-                    "GI-FPU-002 phase 2: an f64 parameter arrives in a VFP \
-                     D-register under AAPCS-VFP, which '{}' hard-float lowering \
-                     does not yet home — declining loudly (an i64-pair reading \
-                     of R0:R1 would be a silent wrong-argument miscompile, #369)",
+                    "GI-FPU-002 phase 3: an f64 parameter arrives in a VFP \
+                     D-register under AAPCS-VFP, but '{}' has a \
+                     single-precision FPU — no f64 op can consume it; \
+                     declining loudly (#369)",
                     self.target_name
                 )));
+            }
+        }
+        // GI-FPU-002 phase 3 (#369): seed the float-param homes from the
+        // AAPCS-VFP argument layout — f32 params in S-registers, f64 params
+        // (double-precision targets only; `params_f64_vfp` is empty otherwise)
+        // in D-registers, with back-fill allocation: `(f32, f64, f32)` homes
+        // S0, D1(=S2:S3), S1. For an f32-only signature this degenerates to
+        // the sequential `S0, S1, …` seeding it replaces (byte-identical).
+        let mut f64_home: std::collections::HashMap<u32, VfpReg> = std::collections::HashMap::new();
+        if fpu.is_some() {
+            let seeds = vfp_param_layout(num_params, &params_f32, &params_f64_vfp)
+                .map_err(|e| synth_core::Error::synthesis(format!("GI-FPU-002 phase 3: {e}")))?;
+            for (i, home) in seeds {
+                if let Some(d) = vfp_d_index(home) {
+                    vfp_used[2 * d] = true;
+                    vfp_used[2 * d + 1] = true;
+                    vfp_home[2 * d] = true;
+                    vfp_home[2 * d + 1] = true;
+                    f64_home.insert(i, home);
+                } else if let Some(s) = vfp_s_index(home) {
+                    vfp_used[s] = true;
+                    vfp_home[s] = true;
+                    f32_home.insert(i, home);
+                }
             }
         }
 
@@ -8564,8 +8697,10 @@ impl InstructionSelector {
                 && try_lower_f64(
                     op,
                     idx,
+                    &params_f64_vfp,
+                    &mut f64_home,
                     &mut vfp_used,
-                    &vfp_home,
+                    &mut vfp_home,
                     &mut stack,
                     &mut next_temp,
                     &mut spill,
@@ -16999,24 +17134,24 @@ mod tests {
     #[test]
     fn test_503_aapcs_stack_offsets() {
         // (i32 x4, i64): p4 wide @ nsaa 0.
-        let l = aapcs_param_layout(5, &[false, false, false, false, true], &[]);
+        let l = aapcs_param_layout(5, &[false, false, false, false, true], &[], &[]);
         assert_eq!(l.stack.get(&4), Some(&(0, true)));
         // (i32 x5, i64): p4 narrow @ 0, p5 wide @ 8 (4-byte alignment hole).
-        let l = aapcs_param_layout(6, &[false, false, false, false, false, true], &[]);
+        let l = aapcs_param_layout(6, &[false, false, false, false, false, true], &[], &[]);
         assert_eq!(l.stack.get(&4), Some(&(0, false)));
         assert_eq!(l.stack.get(&5), Some(&(8, true)));
         // (i32 x3, i64): even-align spills the pair with only 4 params.
-        let l = aapcs_param_layout(4, &[false, false, false, true], &[]);
+        let l = aapcs_param_layout(4, &[false, false, false, true], &[], &[]);
         assert_eq!(l.stack.get(&3), Some(&(0, true)));
         assert_eq!(l.regs.get(&3), None);
         // (i64, i32 x3): p1=R2, p2=R3, p3 narrow @ 0 (no back-fill).
-        let l = aapcs_param_layout(4, &[true, false, false, false], &[]);
+        let l = aapcs_param_layout(4, &[true, false, false, false], &[], &[]);
         assert_eq!(l.regs.get(&0), Some(&Reg::R0));
         assert_eq!(l.regs.get(&1), Some(&Reg::R2));
         assert_eq!(l.regs.get(&2), Some(&Reg::R3));
         assert_eq!(l.stack.get(&3), Some(&(0, false)));
         // all-i32 x6: legacy (k-4)*4 formula, byte-identical.
-        let l = aapcs_param_layout(6, &[false; 6], &[]);
+        let l = aapcs_param_layout(6, &[false; 6], &[], &[]);
         assert_eq!(l.stack.get(&4), Some(&(0, false)));
         assert_eq!(l.stack.get(&5), Some(&(4, false)));
     }
@@ -17026,23 +17161,23 @@ mod tests {
     #[test]
     fn test_719_aapcs_vfp_mixed_param_pools() {
         // (i32, f32): i32 -> R0, f32 skipped (VFP-homed elsewhere).
-        let l = aapcs_param_layout(2, &[false, false], &[false, true]);
+        let l = aapcs_param_layout(2, &[false, false], &[false, true], &[]);
         assert_eq!(l.regs.get(&0), Some(&Reg::R0));
         assert_eq!(l.regs.get(&1), None); // f32 not in the core pool
         assert!(l.stack.is_empty());
         // (f32, i32): the discriminator — i32 -> R0, NOT R1.
-        let l = aapcs_param_layout(2, &[false, false], &[true, false]);
+        let l = aapcs_param_layout(2, &[false, false], &[true, false], &[]);
         assert_eq!(l.regs.get(&0), None); // f32 skipped
         assert_eq!(l.regs.get(&1), Some(&Reg::R0)); // i32 back-to-R0
         // (f32, i32, i32, i32, i32): four i32s fill R0..R3, the 5th spills @ nsaa 0
         // (the f32 never took a core slot).
-        let l = aapcs_param_layout(5, &[false; 5], &[true, false, false, false, false]);
+        let l = aapcs_param_layout(5, &[false; 5], &[true, false, false, false, false], &[]);
         assert_eq!(l.regs.get(&1), Some(&Reg::R0));
         assert_eq!(l.regs.get(&2), Some(&Reg::R1));
         assert_eq!(l.regs.get(&3), Some(&Reg::R2));
         assert_eq!(l.regs.get(&4), Some(&Reg::R3));
         // (i32, f32, i32): both i32s are R0, R1; f32 consumes nothing.
-        let l = aapcs_param_layout(3, &[false; 3], &[false, true, false]);
+        let l = aapcs_param_layout(3, &[false; 3], &[false, true, false], &[]);
         assert_eq!(l.regs.get(&0), Some(&Reg::R0));
         assert_eq!(l.regs.get(&2), Some(&Reg::R1));
         assert_eq!(l.regs.get(&1), None);
@@ -17384,17 +17519,36 @@ mod tests {
     /// keeps compiling.
     #[test]
     fn test_369_f64_param_declines_on_hard_float_only() {
-        // Hard-float: decline.
+        // GI-FPU-002 phase 3: DOUBLE-precision target — the f64 param is now
+        // HOMED in its AAPCS-VFP D-register (D0). Returning it homes D0->D0
+        // (no move needed); the load-bearing pin is that the function LOWERS
+        // and no core-pair read of R0:R1 appears.
+        let ops_ret = vec![WasmOp::LocalGet(0)];
         let mut selector = fresh_selector();
         selector.set_target(Some(FPUPrecision::Double), "cortex-m7dp");
         selector.set_params_i64(vec![true]); // width table lumps f64 as wide
         selector.set_params_f64(vec![true]);
+        selector.set_ret_float(false, true);
+        let instructions = selector
+            .select_with_stack(&ops_ret, 1)
+            .expect("an f64 param on m7dp must home in D0 (#369 phase 3)");
+        assert!(
+            !instructions
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::I64Ldr { .. })),
+            "the D-homed f64 param must never be read as a core pair: {instructions:#?}"
+        );
+        // Single-precision (m4f): no f64 op can consume the D0 param — decline.
         let ops = vec![WasmOp::I32Const(7)];
+        let mut selector = fresh_selector();
+        selector.set_target(Some(FPUPrecision::Single), "cortex-m4f");
+        selector.set_params_i64(vec![true]);
+        selector.set_params_f64(vec![true]);
         let r = selector.select_with_stack(&ops, 1);
         assert!(
             r.as_ref()
-                .is_err_and(|e| e.to_string().contains("f64 parameter")),
-            "an f64 param on hard-float must decline loudly: {r:?}"
+                .is_err_and(|e| e.to_string().contains("single-precision")),
+            "an f64 param on m4f must decline loudly: {r:?}"
         );
         // Soft-float (no FPU): the i64-pair treatment is the correct ABI.
         let mut selector = fresh_selector();
@@ -17404,6 +17558,86 @@ mod tests {
         selector
             .select_with_stack(&ops, 1)
             .expect("an f64 param on a soft-float target keeps compiling");
+    }
+
+    /// GI-FPU-002 phase 3 (#369): AAPCS-VFP BACK-FILL — `(f32, f64, f32)`
+    /// homes S0, D1(=S2:S3), S1: the second f32 back-fills the S1 hole the
+    /// f64's even-aligned pair skipped. Pinned via the integer core walk
+    /// (an i32 4th param still maps to R0) and the homed adds lowering.
+    #[test]
+    fn test_369_mixed_float_param_backfill_homes() {
+        let mut selector = fresh_selector();
+        selector.set_target(Some(FPUPrecision::Double), "cortex-m7dp");
+        selector.set_params_i64(vec![false, true, false, false]);
+        selector.set_params_f32(vec![true, false, true, false]);
+        selector.set_params_f64(vec![false, true, false, false]);
+        selector.set_ret_float(false, true);
+        // f64 result: promote(p0) + p1 + promote(p2), and p3 (i32) is dropped
+        // via a store-free use: just drop it — keeps the core walk observable.
+        let ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::F64PromoteF32,
+            WasmOp::LocalGet(1),
+            WasmOp::F64Add,
+            WasmOp::LocalGet(2),
+            WasmOp::F64PromoteF32,
+            WasmOp::F64Add,
+        ];
+        let instructions = selector
+            .select_with_stack(&ops, 4)
+            .expect("mixed (f32,f64,f32,i32) params must lower on m7dp");
+        // p0 promotes from its S0 home; p2 from the BACK-FILLED S1 (not S4).
+        assert!(
+            instructions
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::F64PromoteF32 { sm: VfpReg::S0, .. })),
+            "p0 must promote from its S0 home: {instructions:#?}"
+        );
+        assert!(
+            instructions
+                .iter()
+                .any(|i| matches!(&i.op, ArmOp::F64PromoteF32 { sm: VfpReg::S1, .. })),
+            "p2 must promote from the back-filled S1 home (not S4): {instructions:#?}"
+        );
+    }
+
+    /// GI-FPU-002 phase 3 (#369): an f64 PARAM HOME (D0 = S0:S1) is preserved
+    /// across an integer call by the VFP call-spill machinery — both aliased
+    /// words stored before the BL and reloaded after.
+    #[test]
+    fn test_369_f64_param_home_survives_call() {
+        let mut selector = fresh_selector();
+        selector.set_target(Some(FPUPrecision::Double), "cortex-m7dp");
+        selector.set_params_i64(vec![true]);
+        selector.set_params_f64(vec![true]);
+        selector.set_ret_float(false, true);
+        selector.set_func_arg_counts(vec![0], Vec::new());
+        let ops = vec![
+            WasmOp::Call(0), // integer call clobbers S0..S15
+            WasmOp::Drop,
+            WasmOp::LocalGet(0), // read the f64 param AFTER the call
+        ];
+        let instructions = selector
+            .select_with_stack(&ops, 1)
+            .expect("f64 param live across a call must lower");
+        let bl_at = instructions
+            .iter()
+            .position(|i| matches!(&i.op, ArmOp::Bl { .. }))
+            .expect("must emit the BL");
+        for (what, sd) in [("S0 (D0 lo)", VfpReg::S0), ("S1 (D0 hi)", VfpReg::S1)] {
+            assert!(
+                instructions[..bl_at]
+                    .iter()
+                    .any(|i| matches!(&i.op, ArmOp::F32Store { sd: s, .. } if *s == sd)),
+                "{what} must be spilled before the BL: {instructions:#?}"
+            );
+            assert!(
+                instructions[bl_at..]
+                    .iter()
+                    .any(|i| matches!(&i.op, ArmOp::F32Load { sd: s, .. } if *s == sd)),
+                "{what} must be reloaded after the BL: {instructions:#?}"
+            );
+        }
     }
 
     /// GI-FPU-002 phase 2 (#369): a live f64 across an integer call is
@@ -23351,6 +23585,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             false,
             false,
             false,
@@ -23372,6 +23607,7 @@ mod tests {
         let layout = compute_local_layout(
             &ops,
             1,
+            &[],
             &[],
             &[],
             &[],
@@ -23401,6 +23637,7 @@ mod tests {
         let layout = compute_local_layout(
             &ops,
             0,
+            &[],
             &[],
             &[],
             &[],
@@ -23437,6 +23674,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             false,
             false,
             false,
@@ -23467,6 +23705,7 @@ mod tests {
         let layout = compute_local_layout(
             &ops,
             2,
+            &[],
             &[],
             &[],
             &[],

@@ -77,11 +77,70 @@
     f64.add
     f64.store)
 
-  ;; ---- honest-decline shapes (must be ABSENT from the symtab) ---------------
-  ;; f64 PARAM on a hard-float target: arrives in D0 (AAPCS-VFP); the legacy
-  ;; i64-pair reading of R0:R1 would be a silent wrong-argument miscompile.
-  (func (export "bad_dparam") (param f64 i32) (result i32)
-    local.get 1)
+  ;; ---- GI-FPU-002 phase 3 (#369): f64 PARAMS homed in D-registers -----------
+  ;; dparam(f64 x, i32 addr): mem[addr] = x. x arrives in D0, addr in R0 (the
+  ;; core walk SKIPS the D-homed f64) — the legacy i64-pair reading of R0:R1
+  ;; would store garbage.
+  (func (export "dparam") (param f64 i32)
+    local.get 1 local.get 0 f64.store)
+
+  ;; AAPCS-VFP BACK-FILL: (f32, f64, f32, i32) homes S0, D1(=S2:S3), S1, R0 —
+  ;; the second f32 back-fills the S1 hole the f64's even-aligned pair skipped.
+  ;; dparam_mix(a, b, c, addr): mem[addr] = promote(a) + b + promote(c).
+  (func (export "dparam_mix") (param f32 f64 f32 i32)
+    local.get 3
+    local.get 0 f64.promote_f32
+    local.get 1 f64.add
+    local.get 2 f64.promote_f32 f64.add
+    f64.store)
+
+  ;; f64 PARAM HOME (D0 = S0:S1) live ACROSS an integer call whose callee
+  ;; genuinely clobbers S0/S1. dparam_home(x, b, addr): mem[addr] =
+  ;; promote(f32(fhelp(b))) + x  (x read AFTER the bl).
+  (func (export "dparam_home") (param f64 i32 i32)
+    local.get 2
+    local.get 1 call $fhelp f32.reinterpret_i32 f64.promote_f32
+    local.get 0 f64.add
+    f64.store)
+
+  ;; ---- GI-FPU-002 phase 3 (#369): f64 ARGS marshalled into D0/D1 ------------
+  ;; $dscale does real double-precision arithmetic on BOTH its D-register args,
+  ;; so passing either in a core pair (or in the wrong D-register) diverges.
+  (func $dscale (param f64 f64) (result f64)
+    local.get 0 local.get 1 f64.mul f64.const 2.5 f64.add)
+  (func $dmix (param f64 i32) (result f64)
+    local.get 0
+    local.get 1 f32.reinterpret_i32 f64.promote_f32
+    f64.add)
+
+  ;; in-place sources: mem[0] -> D0, mem[8] -> D1 == the argument registers.
+  (func (export "dcallargs") (param i32)
+    local.get 0
+    (f64.load (i32.const 0))
+    (f64.load (i32.const 8))
+    call $dscale
+    f64.store)
+
+  ;; CROSS-SWAPPED sources: y lives in the D0 local home, x is loaded into D1;
+  ;; the call wants x in D0 and y in D1 — the two-phase frame staging must
+  ;; swap them (and the D0 home doubles as a home-register argument source).
+  (func (export "dcallswap") (param i32)
+    (local f64)
+    (local.set 1 (f64.load (i32.const 8)))  ;; y -> D0 local home
+    local.get 0
+    (f64.load (i32.const 0))                ;; x -> D1
+    local.get 1                             ;; y (home D0)
+    call $dscale                            ;; wants x in D0, y in D1
+    f64.store)
+
+  ;; MIXED int + f64 args: the core pool takes only the i32 (R0), the f64
+  ;; goes to D0. dcallmix(addr, n): mem[addr] = $dmix(mem[0], n).
+  (func (export "dcallmix") (param i32 i32)
+    local.get 0
+    (f64.load (i32.const 0))
+    local.get 1
+    call $dmix
+    f64.store)
 
   ;; ---- GI-FPU-002 phase 3 (#369): f64 RESULT marshalled out of D0 -----------
   ;; The callee does real double-precision arithmetic (writes D0 and scratch),

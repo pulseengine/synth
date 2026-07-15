@@ -35,10 +35,15 @@ import wasmtime
 from elftools.elf.elffile import ELFFile
 from unicorn import UC_ARCH_ARM, UC_MODE_THUMB, Uc
 from unicorn.arm_const import (
+    UC_ARM_REG_D0,
+    UC_ARM_REG_D1,
     UC_ARM_REG_LR,
     UC_ARM_REG_R0,
     UC_ARM_REG_R1,
+    UC_ARM_REG_R2,
     UC_ARM_REG_R11,
+    UC_ARM_REG_S0,
+    UC_ARM_REG_S1,
     UC_ARM_REG_SP,
 )
 
@@ -119,7 +124,8 @@ def new_uc(text, text_base):
     return uc
 
 
-def run(text, base, addr, mem0=None, mem8=None, r0=None, r1=None):
+def run(text, base, addr, mem0=None, mem8=None, r0=None, r1=None, r2=None,
+        d0=None, d1=None, s0=None, s1=None):
     uc = new_uc(text, base)
     if mem0 is not None:
         uc.mem_write(MEMBASE + 0, struct.pack("<Q", mem0))
@@ -129,6 +135,16 @@ def run(text, base, addr, mem0=None, mem8=None, r0=None, r1=None):
         uc.reg_write(UC_ARM_REG_R0, r0 & 0xFFFFFFFF)
     if r1 is not None:
         uc.reg_write(UC_ARM_REG_R1, r1 & 0xFFFFFFFF)
+    if r2 is not None:
+        uc.reg_write(UC_ARM_REG_R2, r2 & 0xFFFFFFFF)
+    if d0 is not None:
+        uc.reg_write(UC_ARM_REG_D0, d0 & 0xFFFFFFFFFFFFFFFF)
+    if d1 is not None:
+        uc.reg_write(UC_ARM_REG_D1, d1 & 0xFFFFFFFFFFFFFFFF)
+    if s0 is not None:
+        uc.reg_write(UC_ARM_REG_S0, s0 & 0xFFFFFFFF)
+    if s1 is not None:
+        uc.reg_write(UC_ARM_REG_S1, s1 & 0xFFFFFFFF)
     uc.reg_write(UC_ARM_REG_LR, 0x38000 | 1)
     uc.emu_start(addr | 1, 0x38000, count=400)
     return uc
@@ -177,7 +193,8 @@ def main():
             _, _, syms = load(out)
             leaked = [s for s in
                       ("dconst", "dadd", "dlt", "dpromote", "dxcall",
-                       "dretcall")
+                       "dretcall", "dparam", "dparam_mix", "dcallargs",
+                       "dcallswap", "dcallmix")
                       if s in syms]
             if leaked:
                 sys.exit(f"FAIL: f64 functions {leaked} must be REJECTED on "
@@ -312,21 +329,101 @@ def main():
                 print(f"[dretcall] (0x{a:016x},0x{b:016x}) -> 0x{got:016x} OK "
                       f"(D0 result marshalled)")
 
-    # ---- honest declines on m7dp: absent from the symtab ---------------------
-    for fn in ("bad_dparam",):
-        checked += 1
-        if fn in syms:
-            fail(f"{fn} COMPILED — an f64 ABI boundary this increment does "
-                 f"not marshal must decline loudly")
-        else:
-            print(f"[{fn}] absent from symtab OK (loud decline)")
+    # ---- GI-FPU-002 phase 3 (#369): f64 PARAMS homed in D-registers ---------
+    # dparam(f64 x, i32 addr): mem[addr] = x. x in D0, addr in R0 (core walk
+    # skips the D-homed f64); R0:R1 poisoned-by-addr, R1 poisoned explicitly.
+    if need("dparam"):
+        for a, _ in PAIRS:
+            uc = run(text, base, syms["dparam"], d0=a, r0=RESULT_ADDR,
+                     r1=0xBADC0DE)
+            got = struct.unpack("<Q", bytes(
+                uc.mem_read(MEMBASE + RESULT_ADDR, 8)))[0]
+            want = wasm_store_result("dparam", bits_f64(a), RESULT_ADDR)
+            checked += 1
+            if not f64_bits_eq(got, want):
+                fail(f"dparam(0x{a:016x}) -> 0x{got:016x} "
+                     f"!= wasmtime 0x{want:016x}")
+            else:
+                print(f"[dparam] 0x{a:016x} -> stored bit-exact OK (D0 home)")
+
+    # dparam_mix(f32 a, f64 b, f32 c, i32 addr): back-fill homes S0, D1, S1 —
+    # c read from the back-filled S1 (a sequential-S misassignment diverges).
+    if need("dparam_mix"):
+        for ab, b64, cb in ((0x3FC00000, D(2.25), 0x40200000),
+                            (0x80000000, D(-0.0), 0x00000000),
+                            (0xC2F60000, D(1e10), 0x00000001),
+                            (0x7F800000, D(-1.5), 0x3F800000)):
+            uc = run(text, base, syms["dparam_mix"], s0=ab, s1=cb, d1=b64,
+                     r0=RESULT_ADDR, r1=0xBADC0DE)
+            got = struct.unpack("<Q", bytes(
+                uc.mem_read(MEMBASE + RESULT_ADDR, 8)))[0]
+            want = wasm_store_result("dparam_mix", bits_f32(ab),
+                                     bits_f64(b64), bits_f32(cb), RESULT_ADDR)
+            checked += 1
+            if not f64_bits_eq(got, want):
+                fail(f"dparam_mix(0x{ab:08x},0x{b64:016x},0x{cb:08x}) -> "
+                     f"0x{got:016x} != wasmtime 0x{want:016x}")
+            else:
+                print(f"[dparam_mix] -> 0x{got:016x} OK (S0/D1/S1 back-fill)")
+
+    # dparam_home(f64 x, i32 b, i32 addr): the D0 param home must survive an
+    # integer call whose callee clobbers S0/S1 (=D0).
+    if need("dparam_home"):
+        for (a, _), b32 in zip(PAIRS, PROMOTE_BITS):
+            uc = run(text, base, syms["dparam_home"], d0=a, r0=b32,
+                     r1=RESULT_ADDR)
+            got = struct.unpack("<Q", bytes(
+                uc.mem_read(MEMBASE + RESULT_ADDR, 8)))[0]
+            want = wasm_store_result("dparam_home", bits_f64(a), b32,
+                                     RESULT_ADDR)
+            checked += 1
+            if not f64_bits_eq(got, want):
+                fail(f"dparam_home(0x{a:016x},0x{b32:08x}) -> 0x{got:016x} "
+                     f"!= wasmtime 0x{want:016x}")
+            else:
+                print(f"[dparam_home] (0x{a:016x},0x{b32:08x}) -> "
+                      f"0x{got:016x} OK (D0 home across bl)")
+
+    # ---- GI-FPU-002 phase 3 (#369): f64 ARGS marshalled into D0/D1 ----------
+    # dcallargs: in-place sources; dcallswap: CROSS-SWAPPED sources through the
+    # two-phase staging (D0 local home <-> D1 temp); dcallmix: int+f64 mixed.
+    for fn in ("dcallargs", "dcallswap"):
+        if not need(fn):
+            continue
+        for a, b in PAIRS:
+            uc = run(text, base, syms[fn], mem0=a, mem8=b, r0=RESULT_ADDR)
+            got = struct.unpack("<Q", bytes(
+                uc.mem_read(MEMBASE + RESULT_ADDR, 8)))[0]
+            set_wasm_mem(a, b)
+            want = wasm_store_result(fn, RESULT_ADDR)
+            checked += 1
+            if not f64_bits_eq(got, want):
+                fail(f"{fn}(0x{a:016x}, 0x{b:016x}) -> 0x{got:016x} "
+                     f"!= wasmtime 0x{want:016x}")
+        print(f"[{fn}] {len(PAIRS)} edge pairs OK (D-file args marshalled)")
+    if need("dcallmix"):
+        for (a, _), b32 in zip(PAIRS, PROMOTE_BITS):
+            uc = run(text, base, syms["dcallmix"], mem0=a, r0=RESULT_ADDR,
+                     r1=b32)
+            got = struct.unpack("<Q", bytes(
+                uc.mem_read(MEMBASE + RESULT_ADDR, 8)))[0]
+            set_wasm_mem(a, 0)
+            want = wasm_store_result("dcallmix", RESULT_ADDR, b32)
+            checked += 1
+            if not f64_bits_eq(got, want):
+                fail(f"dcallmix(0x{a:016x},0x{b32:08x}) -> 0x{got:016x} "
+                     f"!= wasmtime 0x{want:016x}")
+            else:
+                print(f"[dcallmix] (0x{a:016x},0x{b32:08x}) -> 0x{got:016x} "
+                      f"OK (mixed int+f64 args)")
 
     if fails:
         sys.exit(f"\nFAIL: {fails}/{checked} f64 #369 results diverged")
     print(f"\nGREEN: {checked}/{checked} f64 #369 results bit-exact vs wasmtime "
           f"(const/promote/arith/compare/load/store + f64-across-call + "
-          f"phase-3 D0-result call marshalling on cortex-m7dp; m4f + m3 "
-          f"honest-reject + f64-param loud-decline confirmed).")
+          f"phase-3 f64 param D-homes (incl. back-fill + across-call) + "
+          f"D0/D1 argument + D0 result call marshalling on cortex-m7dp; "
+          f"m4f + m3 honest-reject confirmed).")
 
 
 if __name__ == "__main__":
