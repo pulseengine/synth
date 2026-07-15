@@ -335,6 +335,17 @@ pub struct CompileConfig {
     /// divisor-nonzero fact alone NEVER lands here: divisor ≠ 0 does not
     /// exclude -1 (#633/#634 two-guard distinction). Empty ⇒ guard emitted.
     pub fact_div_ovf_elide: Vec<usize>,
+    /// #494 bounds-elision (#390 `guard_bool`): op indices of i32 memory
+    /// accesses whose `--safety-bounds software` inline guard is proven dead
+    /// — the fact-spec pass discharged
+    /// `UNSAT(P ∧ trap_mem_oob(zext64(index) + offset, size,
+    /// min_memory_bytes))` per site through the certificate-checked ordeal
+    /// solver BEFORE the driver set this field (ordeal 0.9.1 `trap_mem_oob`
+    /// shape, wraparound-safe 64-bit extension). Consumed by the ARM direct
+    /// selector (`select_with_stack`); every other path ignores it (guards
+    /// stay — sound). Empty (the default) ⇒ every guard is emitted,
+    /// byte-identical to today.
+    pub fact_mem_bounds_elide: Vec<usize>,
     /// #642: `call_indirect` guard inputs — the compile-time table size for
     /// the runtime bounds check and the per-expected-type closed-world type
     /// verdicts — computed from the decoded module by
@@ -429,6 +440,7 @@ impl Default for CompileConfig {
             // every div/rem trap guard is emitted, byte-identical.
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
+            fact_mem_bounds_elide: Vec::new(),
             // #642: no guard inputs ⇒ every call_indirect lowering declines
             // loudly (never an unchecked indirect branch). Driver loops fill
             // this from the decoded module.
