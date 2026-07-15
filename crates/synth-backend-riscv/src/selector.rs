@@ -2371,14 +2371,21 @@ impl Selector {
     /// Behaviour by mode:
     /// - `None` / `Pmp`: pass-through (no instructions emitted; PMP handles
     ///   faults via hardware). Returns `(addr, offset)`.
-    /// - `Software { mem_size }`: emit
-    ///   `addi guard, addr, +(offset + access_size - 1)`
-    ///   `lui/addi mlim, mem_size`
-    ///   `bgeu guard, mlim, Ltrap`
+    /// - `Software { mem_size }`: emit (#752 wraparound-safe shape)
+    ///   `lui/addi mlim, (mem_size - k)`  with `k = offset + access_size`
+    ///   `bltu mlim, addr, Ltrap`
     ///   `j Lok ; Ltrap: ebreak ; Lok:`
-    ///   The check guards the last byte of the access, matching the ARM
-    ///   software-bounds-check from §3.1. Returns `(addr, offset)` — the
-    ///   access itself is unchanged, the guard traps first when OOB.
+    ///   Exact against WASM Core's `addr + offset + size > mem_size` for
+    ///   EVERY addr: `mem_size` is compile-time, so `mem_size - k` is a
+    ///   constant (`k > mem_size` degenerates to an unconditional `ebreak` —
+    ///   every access is OOB) and no runtime add can wrap. The RETIRED shape
+    ///   `addi guard, addr, +(offset+size-1); bgeu guard, mlim` computed the
+    ///   end address mod 2^32, so accesses in the top `offset+size-1` bytes
+    ///   of the address space wrapped small and escaped the trap — the
+    ///   RISC-V twin of the ARM #752 escape. Matches the ARM
+    ///   software-bounds guard (`software_bounds_guard`). Returns
+    ///   `(addr, offset)` — the access itself is unchanged, the guard traps
+    ///   first when OOB.
     /// - `Mask { mask }` (#655, the #651 class — RISC-V twin of ARM PR #654):
     ///   compute `masked = min((operand + offset) & mask, size - access_size)`
     ///   and return `(masked, 0)`. The static offset is folded BEFORE the AND
@@ -2402,44 +2409,34 @@ impl Selector {
         match self.options.bounds {
             RvBoundsMode::None | RvBoundsMode::Pmp => Ok((addr, offset)),
             RvBoundsMode::Software { mem_size } => {
-                let end_byte = offset.checked_add(access_size.saturating_sub(1)).ok_or(
-                    SelectorError::ImmediateTooLarge {
-                        value: offset as i64 + access_size as i64,
-                        context: "bounds-check end byte",
-                    },
-                )?;
-                let guard = self.alloc_temp();
-                if end_byte == 0 {
-                    self.out.push(RiscVOp::Addi {
-                        rd: guard,
-                        rs1: addr,
-                        imm: 0,
-                    });
-                } else if end_byte < 2048 {
-                    self.out.push(RiscVOp::Addi {
-                        rd: guard,
-                        rs1: addr,
-                        imm: end_byte as i32,
-                    });
-                } else {
-                    // Materialise the offset into a temporary, then add.
-                    let off_tmp = self.alloc_temp();
-                    emit_load_imm(&mut self.out, off_tmp, end_byte as i32);
-                    self.out.push(RiscVOp::Add {
-                        rd: guard,
-                        rs1: addr,
-                        rs2: off_tmp,
-                    });
+                // #752: wraparound-safe. WASM Core's check is EXACT
+                // arithmetic: trap iff addr + offset + access_size >
+                // mem_size. Computing the end address at runtime
+                // (`addi guard, addr, end`) wraps mod 2^32 for addresses in
+                // the top `offset+size-1` bytes of the address space and let
+                // the OOB access through. `mem_size` is compile-time here,
+                // so compare the ADDRESS against the constant
+                // `mem_size - k` instead — no runtime add, no wrap.
+                let k = u64::from(offset) + u64::from(access_size);
+                if k > u64::from(mem_size) {
+                    // offset + size alone exceeds the bound: addr + k >
+                    // mem_size for EVERY addr >= 0 — unconditional trap
+                    // (strictly more total than the old ImmediateTooLarge
+                    // decline for offsets past u32::MAX).
+                    self.out.push(RiscVOp::Ebreak);
+                    return Ok((addr, offset));
                 }
+                // mem_size >= k, so mem_size - k is exact in u32:
+                // in-bounds iff addr <=u mem_size - k.
                 let mlim = self.alloc_temp();
-                emit_load_imm(&mut self.out, mlim, mem_size as i32);
+                emit_load_imm(&mut self.out, mlim, (mem_size - k as u32) as i32);
                 let ok_label = self.fresh_label("Lbnd_ok");
                 let trap_label = self.fresh_label("Lbnd_trap");
-                // bgeu guard, mlim, Lbnd_trap → branch to trap when OOB
+                // bltu mlim, addr, Lbnd_trap → trap when addr >u mem_size - k
                 self.out.push(RiscVOp::Branch {
-                    cond: Branch::Geu,
-                    rs1: guard,
-                    rs2: mlim,
+                    cond: Branch::Ltu,
+                    rs1: mlim,
+                    rs2: addr,
                     label: trap_label.clone(),
                 });
                 // happy path falls through to the load/store; insert an
@@ -5548,7 +5545,7 @@ mod tests {
     }
 
     #[test]
-    fn rv32_software_bounds_emits_bgeu_and_ebreak() {
+    fn rv32_software_bounds_emits_bltu_and_ebreak() {
         let opts = SelectorOptions {
             bounds: RvBoundsMode::Software { mem_size: 0x10000 },
             signed_div_overflow_trap: true,
@@ -5565,22 +5562,78 @@ mod tests {
             1,
             opts,
         );
-        // Expect at least one BGEU against the memsize and one ebreak in the
-        // trap basic block.
+        // #752 wraparound-safe shape: BLTU mlim, addr (mlim = mem_size - k,
+        // compile-time) and one ebreak in the trap basic block. The retired
+        // shape ADD-computed the end address at runtime (wraps mod 2^32).
         assert!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Ltu,
+                    ..
+                }
+            )) >= 1,
+            "expected at least one bltu for the bounds check, got: {:?}",
+            out
+        );
+        assert!(
+            count(&out, |op| matches!(op, RiscVOp::Ebreak)) >= 1,
+            "expected an ebreak in the trap path"
+        );
+        // #752: the guard must NOT contain a runtime add of the address —
+        // the wraparound escape was exactly that `addi guard, addr, end`.
+        assert_eq!(
             count(&out, |op| matches!(
                 op,
                 RiscVOp::Branch {
                     cond: Branch::Geu,
                     ..
                 }
-            )) >= 1,
-            "expected at least one bgeu for the bounds check, got: {:?}",
-            out
+            )),
+            0,
+            "the retired end-address bgeu shape must be gone: {out:?}"
+        );
+    }
+
+    /// #752: `offset + access_size > mem_size` means every address is OOB —
+    /// the guard degenerates to an unconditional ebreak instead of wrapping
+    /// on the end-address computation. (A memory smaller than the access
+    /// width is the compile-time-visible instance; big OFFSETS past imm12
+    /// still loud-decline in `offset_to_imm` before the access is emitted.)
+    #[test]
+    fn rv32_software_bounds_offset_past_bound_always_traps_752() {
+        let opts = SelectorOptions {
+            bounds: RvBoundsMode::Software { mem_size: 2 },
+            signed_div_overflow_trap: true,
+        };
+        let out = s_with_opts(
+            &[
+                WasmOp::LocalGet(0),
+                WasmOp::I32Load {
+                    offset: 0, // 0 + 4 > mem_size = 2
+                    align: 2,
+                },
+                WasmOp::Drop,
+                WasmOp::End,
+            ],
+            1,
+            opts,
         );
         assert!(
             count(&out, |op| matches!(op, RiscVOp::Ebreak)) >= 1,
-            "expected an ebreak in the trap path"
+            "expected an unconditional ebreak: {out:?}"
+        );
+        // No bounds branch at all: the trap is unconditional.
+        assert_eq!(
+            count(&out, |op| matches!(
+                op,
+                RiscVOp::Branch {
+                    cond: Branch::Ltu | Branch::Geu,
+                    ..
+                }
+            )),
+            0,
+            "always-OOB access must not emit a conditional guard: {out:?}"
         );
     }
 
@@ -6102,12 +6155,12 @@ mod tests {
             count(&load, |op| matches!(
                 op,
                 RiscVOp::Branch {
-                    cond: Branch::Geu,
+                    cond: Branch::Ltu,
                     ..
                 }
             )) >= 1
                 && count(&load, |op| matches!(op, RiscVOp::Ebreak)) >= 1,
-            "software mode must guard i64.load (bgeu + ebreak), got: {load:?}"
+            "software mode must guard i64.load (#752 bltu + ebreak), got: {load:?}"
         );
         let mask = SelectorOptions {
             bounds: RvBoundsMode::Mask { mask: 0xFFFF },

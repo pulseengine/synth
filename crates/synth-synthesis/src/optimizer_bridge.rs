@@ -47,25 +47,22 @@ fn fold_mem_offset(base: u32, offset: u32) -> (u32, i32) {
     }
 }
 
-/// #377: inline software bounds guard for an optimized-path linear-memory
-/// access — the mirror of the direct selector's check shape
-/// (`generate_load_with_bounds_check`): trap unless
-/// `addr + offset + access_size - 1 < R10` (R10 = memory size in bytes,
-/// initialized by startup code).
+/// #377/#752: inline software bounds guard for an optimized-path
+/// linear-memory access — DELEGATES to the direct selector's
+/// [`InstructionSelector::software_bounds_guard`] so both codegen paths share
+/// the one wraparound-safe shape (single source, no mirror to drift): trap
+/// iff `addr + offset + access_size > R10` in EXACT arithmetic (R10 = memory
+/// size in bytes, initialized by startup code). The previous mirror computed
+/// the end address with a wrapping 32-bit ADD, so accesses at the top of the
+/// address space escaped the trap (#752).
 ///
-/// ```text
-/// ADD  R12, Raddr, #(offset + access_size - 1)   ; end address (wasm space)
-/// CMP  R12, R10
-/// BLO  +0                                        ; in-bounds: skip the UDF
-/// UDF  #0                                        ; out-of-bounds: trap
-/// ```
-///
-/// The trap is an inline `UDF` (the #374 bulk-memory / div-by-zero pattern),
-/// NOT a `Bhs Trap_Handler` label branch — the label form resolves to an
-/// offset-0 fallthrough no-op in a self-contained image (the second half of
-/// #377). `BLO +0` targets `branch_byte + 4`, exactly skipping the 2-byte UDF —
-/// the same pre-resolved numeric-guard geometry as the DivS/DivU zero traps,
-/// which every downstream pass (`resolved_branch_geometry*`) already maps.
+/// The traps are inline `UDF`s behind `BCond +0` skips (the #374
+/// bulk-memory / div-by-zero pattern), NOT `Bhs Trap_Handler` label branches
+/// — the label form resolves to an offset-0 fallthrough no-op in a
+/// self-contained image (the second half of #377). Each skip targets
+/// `branch_byte + 4`, exactly skipping the 2-byte UDF — the same
+/// pre-resolved numeric-guard geometry as the DivS/DivU zero traps, which
+/// every downstream pass (`resolved_branch_geometry*`) already maps.
 ///
 /// R12 is free here: it is the encoder scratch (never allocator-assigned), and
 /// every access sequence below re-materializes its base into R12 AFTER this
@@ -76,21 +73,13 @@ fn push_software_bounds_guard(
     offset: u32,
     access_size: u32,
 ) {
-    use crate::rules::{Operand2, Reg};
-    arm_instrs.push(ArmOp::Add {
-        rd: Reg::R12,
-        rn: r_addr,
-        op2: Operand2::Imm((offset + access_size - 1) as i32),
-    });
-    arm_instrs.push(ArmOp::Cmp {
-        rn: Reg::R12,
-        op2: Operand2::Reg(Reg::R10),
-    });
-    arm_instrs.push(ArmOp::BCondOffset {
-        cond: Condition::LO,
-        offset: 0,
-    });
-    arm_instrs.push(ArmOp::Udf { imm: 0 });
+    arm_instrs.extend(
+        crate::instruction_selector::InstructionSelector::software_bounds_guard(
+            r_addr,
+            offset as i32,
+            access_size,
+        ),
+    );
 }
 
 /// The DEFAULT linear-memory base the optimized (absolute) path materializes.
@@ -7830,32 +7819,48 @@ mod tests {
         bridge.ir_to_arm(&ir, num_params)
     }
 
-    /// The #377 guard shape: `ADD R12,addr,#end; CMP R12,R10; BLO +0; UDF #0`
-    /// immediately before the access. Returns how many complete guards appear.
+    /// The #377/#752 wraparound-safe guard shape immediately before the
+    /// access: `SUB R12,R10,#k; CMP R10,R12; BHS +0; UDF; CMP addr,R12;
+    /// BLS +0; UDF`. Returns how many complete guards appear.
     fn count_guards(ops: &[ArmOp]) -> usize {
         use crate::rules::{Operand2, Reg};
-        ops.windows(4)
+        ops.windows(7)
             .filter(|w| {
                 matches!(
                     &w[0],
-                    ArmOp::Add {
+                    ArmOp::Sub {
                         rd: Reg::R12,
+                        rn: Reg::R10,
                         op2: Operand2::Imm(_),
-                        ..
                     }
                 ) && matches!(
                     &w[1],
                     ArmOp::Cmp {
-                        rn: Reg::R12,
-                        op2: Operand2::Reg(Reg::R10)
+                        rn: Reg::R10,
+                        op2: Operand2::Reg(Reg::R12)
                     }
                 ) && matches!(
                     &w[2],
                     ArmOp::BCondOffset {
-                        cond: Condition::LO,
+                        cond: Condition::HS,
                         offset: 0
                     }
                 ) && matches!(&w[3], ArmOp::Udf { imm: 0 })
+                    && matches!(
+                        &w[4],
+                        ArmOp::Cmp {
+                            op2: Operand2::Reg(Reg::R12),
+                            ..
+                        }
+                    )
+                    && matches!(
+                        &w[5],
+                        ArmOp::BCondOffset {
+                            cond: Condition::LS,
+                            offset: 0
+                        }
+                    )
+                    && matches!(&w[6], ArmOp::Udf { imm: 0 })
             })
             .count()
     }
@@ -7919,14 +7924,15 @@ mod tests {
                 "exactly one guard under Software: {ops:?} → {sw:?}"
             );
             assert!(
-                sw.len() == none.len() + 4,
-                "guard adds exactly 4 ops: {ops:?}"
+                sw.len() == none.len() + 7,
+                "guard adds exactly 7 ops (#752 wraparound-safe shape): {ops:?}"
             );
         }
     }
 
-    /// #377: the guard end-offset is `offset + access_size - 1` (the last byte
-    /// of the access, mirroring the direct selector's check).
+    /// #377/#752: the guard constant is `k = offset + access_size` subtracted
+    /// from the bound (`SUB R12, R10, #k`) — the SAME shape as the direct
+    /// selector's `software_bounds_guard` (it IS that function; no mirror).
     #[test]
     fn optimized_path_software_guard_uses_end_of_access_377() {
         use crate::rules::{Operand2, Reg};
@@ -7942,13 +7948,13 @@ mod tests {
         assert!(
             sw.iter().any(|op| matches!(
                 op,
-                ArmOp::Add {
+                ArmOp::Sub {
                     rd: Reg::R12,
-                    op2: Operand2::Imm(7),
-                    ..
+                    rn: Reg::R10,
+                    op2: Operand2::Imm(8),
                 }
             )),
-            "end offset must be 4 (offset) + 4 (size) - 1 = 7: {sw:?}"
+            "guard constant must be k = 4 (offset) + 4 (size) = 8: {sw:?}"
         );
     }
 

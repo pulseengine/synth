@@ -1002,33 +1002,46 @@ mod tests {
         });
     }
 
-    // --- i32 load/store OOB (LIVE, #377 class) ---
+    // --- i32 load/store OOB (LIVE, #377/#752 class) ---
 
-    /// The SHIPPED software-bounds guard shape
-    /// (instruction_selector.rs generate_load_with_bounds_check):
-    /// ADD R12, addr, #(offset+size-1) ; CMP R12, R10 ; BLO +0 ; UDF ; LDR.
-    fn shipped_software_bounds_load(offset: i32, access_size: u32) -> Vec<ArmOp> {
+    /// The SHIPPED software-bounds lowering at the gate's register
+    /// convention (address = R0 = `input_0`): the guard prefix comes from
+    /// `InstructionSelector::software_bounds_guard` — THE function every
+    /// emission site calls, public precisely so this gate pins the real
+    /// shipped shape and no hand-maintained mirror can drift (the VCR-ORACLE
+    /// lesson) — composed with the trailing access op per the generators'
+    /// documented contract (`result.last() is Ldr/Ldrb/.../Str
+    /// [R11, addr, #offset]`, pinned by the selector unit tests). The full
+    /// selector is not used directly because it homes a bare op's address in
+    /// an allocator-chosen register, not the gate's `input_0`.
+    fn shipped_software_bounds_ops(wasm_op: &WasmOp) -> Vec<ArmOp> {
+        use synth_synthesis::instruction_selector::InstructionSelector;
         use synth_synthesis::rules::MemAddr;
-        vec![
-            ArmOp::Add {
-                rd: Reg::R12,
-                rn: Reg::R0,
-                op2: Operand2::Imm(offset + access_size as i32 - 1),
-            },
-            ArmOp::Cmp {
-                rn: Reg::R12,
-                op2: Operand2::Reg(Reg::R10),
-            },
-            ArmOp::BCondOffset {
-                cond: Condition::LO,
-                offset: 0,
-            },
-            ArmOp::Udf { imm: 0 },
-            ArmOp::Ldr {
-                rd: Reg::R0,
-                addr: MemAddr::reg_imm(Reg::R11, Reg::R0, offset),
-            },
-        ]
+        let (offset, size) = match wasm_op {
+            WasmOp::I32Load { offset, .. } | WasmOp::I32Store { offset, .. } => (*offset, 4u32),
+            WasmOp::I32Load16S { offset, .. }
+            | WasmOp::I32Load16U { offset, .. }
+            | WasmOp::I32Store16 { offset, .. } => (*offset, 2),
+            WasmOp::I32Load8S { offset, .. }
+            | WasmOp::I32Load8U { offset, .. }
+            | WasmOp::I32Store8 { offset, .. } => (*offset, 1),
+            other => panic!("not a guarded i32 access: {other:?}"),
+        };
+        let addr = MemAddr::reg_imm(Reg::R11, Reg::R0, offset as i32);
+        let access = match wasm_op {
+            WasmOp::I32Load { .. } => ArmOp::Ldr { rd: Reg::R0, addr },
+            WasmOp::I32Load8S { .. } => ArmOp::Ldrsb { rd: Reg::R0, addr },
+            WasmOp::I32Load8U { .. } => ArmOp::Ldrb { rd: Reg::R0, addr },
+            WasmOp::I32Load16S { .. } => ArmOp::Ldrsh { rd: Reg::R0, addr },
+            WasmOp::I32Load16U { .. } => ArmOp::Ldrh { rd: Reg::R0, addr },
+            WasmOp::I32Store { .. } => ArmOp::Str { rd: Reg::R1, addr },
+            WasmOp::I32Store8 { .. } => ArmOp::Strb { rd: Reg::R1, addr },
+            WasmOp::I32Store16 { .. } => ArmOp::Strh { rd: Reg::R1, addr },
+            other => panic!("not a guarded i32 access: {other:?}"),
+        };
+        let mut ops = InstructionSelector::software_bounds_guard(Reg::R0, offset as i32, size);
+        ops.push(access);
+        ops
     }
 
     /// RED-FIRST: a load with the bounds guard stripped derives trap = false
@@ -1058,9 +1071,9 @@ mod tests {
         });
     }
 
-    /// A byte load's shipped guard (`end = addr + 0`) is EXACT: the 32-bit
-    /// end-address compute cannot wrap for size 1 / offset 0, so the derived
-    /// trap condition (addr >=u R10) matches WASM's (addr + 1 >u R10).
+    /// A byte load's shipped guard is exact for size 1 / offset 0 (it was the
+    /// ONE class the old ADD-computed guard already got right) and stays
+    /// Verified under the #752 wraparound-safe shape.
     #[test]
     fn byte_load_software_bounds_guard_preserves_the_trap() {
         with_verification_context(|| {
@@ -1071,24 +1084,28 @@ mod tests {
                         offset: 0,
                         align: 0,
                     },
-                    &shipped_software_bounds_load(0, 1),
+                    &shipped_software_bounds_ops(&WasmOp::I32Load8U {
+                        offset: 0,
+                        align: 0,
+                    }),
                 )
                 .unwrap();
             assert_eq!(result, ValidationResult::Verified);
         });
     }
 
-    /// FINDING (documented divergence): for multi-byte accesses the shipped
-    /// software-bounds guard computes `addr + (offset+size-1)` in WRAPPING
-    /// 32-bit arithmetic, while WASM's effective-address check is exact. At
-    /// `addr >= 0x1_0000_0000 - (offset+size-1)` the end-address wraps to a
-    /// small value, the BLO guard passes, and the access escapes below the
-    /// linear-memory base — WASM requires a trap. The derived gate exhibits
-    /// exactly that dropped-trap counterexample. Pinned Invalid until the
-    /// selector's guard is made wraparound-safe — filed as #752 (the
-    /// #377/#651 follow-up).
+    /// #752 CLOSED (was the pinned `word_load_software_bounds_guard_wraps_at_
+    /// address_top` finding): the old shape computed `addr + (offset+size-1)`
+    /// in WRAPPING 32-bit arithmetic, so at `addr >= 0x1_0000_0000 -
+    /// (offset+size-1)` the end address wrapped small, the BLO guard passed,
+    /// and the access escaped below the linear-memory base — the derived gate
+    /// exhibited the dropped-trap counterexample at `addr >= 0xFFFF_FFFD`.
+    /// The shipped guard is now the wraparound-safe SUB-from-bound shape
+    /// (`software_bounds_guard`): this asserts the WHOLE class Verified, i.e.
+    /// the divergence is unsatisfiable for EVERY addr including the top of
+    /// the address space.
     #[test]
-    fn word_load_software_bounds_guard_wraps_at_address_top() {
+    fn word_load_software_bounds_guard_survives_the_address_top_752() {
         with_verification_context(|| {
             let validator = TranslationValidator::new();
             let result = validator
@@ -1097,7 +1114,159 @@ mod tests {
                         offset: 0,
                         align: 2,
                     },
-                    &shipped_software_bounds_load(0, 4),
+                    &shipped_software_bounds_ops(&WasmOp::I32Load {
+                        offset: 0,
+                        align: 2,
+                    }),
+                )
+                .unwrap();
+            assert_eq!(
+                result,
+                ValidationResult::Verified,
+                "the #752 wraparound divergence must be closed for every addr"
+            );
+        });
+    }
+
+    /// #752: every guarded access width and a non-zero static offset verify —
+    /// the wrap escape was specifically the multi-byte / non-zero-offset
+    /// class, so gate the whole family (loads via the shipped selector).
+    #[test]
+    fn all_load_widths_software_bounds_guard_verify_752() {
+        let cases: Vec<WasmOp> = vec![
+            WasmOp::I32Load {
+                offset: 4,
+                align: 2,
+            },
+            WasmOp::I32Load8S {
+                offset: 3,
+                align: 0,
+            },
+            WasmOp::I32Load8U {
+                offset: 1,
+                align: 0,
+            },
+            WasmOp::I32Load16S {
+                offset: 2,
+                align: 1,
+            },
+            WasmOp::I32Load16U {
+                offset: 0,
+                align: 1,
+            },
+        ];
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            for wasm_op in &cases {
+                let result = validator
+                    .verify_trap_preservation(wasm_op, &shipped_software_bounds_ops(wasm_op))
+                    .unwrap();
+                assert_eq!(result, ValidationResult::Verified, "{wasm_op:?}");
+            }
+        });
+    }
+
+    /// #752: the store guards use the same `software_bounds_guard` prefix —
+    /// all three widths, with non-zero static offsets on the subword forms.
+    #[test]
+    fn store_software_bounds_guard_verifies_752() {
+        let cases: Vec<WasmOp> = vec![
+            WasmOp::I32Store {
+                offset: 0,
+                align: 2,
+            },
+            WasmOp::I32Store8 {
+                offset: 5,
+                align: 0,
+            },
+            WasmOp::I32Store16 {
+                offset: 3,
+                align: 1,
+            },
+        ];
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            for wasm_op in &cases {
+                let result = validator
+                    .verify_trap_preservation(wasm_op, &shipped_software_bounds_ops(wasm_op))
+                    .unwrap();
+                assert_eq!(result, ValidationResult::Verified, "{wasm_op:?}");
+            }
+        });
+    }
+
+    /// #752: a static offset past the SUBW imm12 reach takes the MOVW
+    /// materialization arm of the guard — Verified, i.e. the register-built
+    /// constant is derived with the same exactness as the immediate form.
+    #[test]
+    fn large_offset_software_bounds_guard_verifies_752() {
+        let wasm_op = WasmOp::I32Load {
+            offset: 0x2000,
+            align: 2,
+        };
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_trap_preservation(&wasm_op, &shipped_software_bounds_ops(&wasm_op))
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    /// #752: `offset + size > u32::MAX` can never be in bounds — the guard
+    /// degenerates to an unconditional UDF and the gate agrees with WASM's
+    /// always-trap on the class.
+    #[test]
+    fn offset_overflow_software_bounds_guard_always_traps_752() {
+        let wasm_op = WasmOp::I32Load {
+            offset: u32::MAX,
+            align: 2,
+        };
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_trap_preservation(&wasm_op, &shipped_software_bounds_ops(&wasm_op))
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    /// REGRESSION PIN (the #752 finding itself): the RETIRED ADD-computed
+    /// guard shape must stay Invalid, with the counterexample at the top of
+    /// the address space — proving the gate still catches the wraparound
+    /// class if anything ever re-emits it.
+    #[test]
+    fn retired_add_computed_guard_stays_invalid_at_the_address_top_752() {
+        use synth_synthesis::rules::{Condition, MemAddr, Operand2};
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let arm_ops = [
+                ArmOp::Add {
+                    rd: Reg::R12,
+                    rn: Reg::R0,
+                    op2: Operand2::Imm(3), // offset 0 + size 4 - 1
+                },
+                ArmOp::Cmp {
+                    rn: Reg::R12,
+                    op2: Operand2::Reg(Reg::R10),
+                },
+                ArmOp::BCondOffset {
+                    cond: Condition::LO,
+                    offset: 0,
+                },
+                ArmOp::Udf { imm: 0 },
+                ArmOp::Ldr {
+                    rd: Reg::R0,
+                    addr: MemAddr::reg_imm(Reg::R11, Reg::R0, 0),
+                },
+            ];
+            let result = validator
+                .verify_trap_preservation(
+                    &WasmOp::I32Load {
+                        offset: 0,
+                        align: 2,
+                    },
+                    &arm_ops,
                 )
                 .unwrap();
             match result {
@@ -1113,19 +1282,15 @@ mod tests {
                          of the address space, got addr {addr:#x}"
                     );
                 }
-                other => panic!(
-                    "expected the pinned wraparound divergence (Invalid), got {other:?} — \
-                     if this is now Verified the selector guard was fixed: \
-                     flip this test to Verified and close the finding"
-                ),
+                other => panic!("the retired wrapping guard must stay Invalid, got {other:?}"),
             }
         });
     }
 
-    /// The gate is satisfiable by a correct guard: a wraparound-safe bound
-    /// check (trap iff bound < k, else iff addr >u bound - k, k = offset+size)
-    /// verifies for word accesses — proving the mem-OOB class gate is not
-    /// vacuously red.
+    /// The gate is satisfiable by more than one correct guard: the issue's
+    /// reference shape (trap iff bound < k, else iff addr >u bound - k,
+    /// k = offset+size) also verifies — the mem-OOB class gate is not pinned
+    /// to the shipped shape.
     #[test]
     fn wraparound_safe_bounds_guard_verifies() {
         use synth_synthesis::rules::MemAddr;

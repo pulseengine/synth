@@ -12,8 +12,12 @@ NEITHER path actually trapped. This harness is the value-level gate for both:
 
 For each path and each vector, **wasmtime is ground truth**; **unicorn** runs
 synth's Thumb-2 output. Vectors cover in-bounds, exact-boundary (must NOT
-trap), first-OOB (must trap: the guard is end-inclusive `addr+off+size-1 <
-size`), and far-OOB. The inline trap is a `UDF` -> UC_ERR_INSN_INVALID: that IS
+trap), first-OOB (must trap), far-OOB, and — #752 — the top-of-address-space
+wraparound class (`addr >= 2^32 - (offset+size-1)`), where the RETIRED guard
+shape ADD-computed the end address mod 2^32 and let the OOB access escape
+below the linear-memory base. The shipped guard is the wraparound-safe
+SUB-from-bound shape (trap iff `mem_size < k`, else iff
+`addr >u mem_size - k`, `k = offset+size`). The inline trap is a `UDF` -> UC_ERR_INSN_INVALID: that IS
 the wasm trap (on silicon UsageFault/HardFault). Any OTHER unicorn fault (e.g.
 WRITE_UNMAPPED) means an out-of-bounds access was let through — reported as ERR,
 never counted as a match. On pre-fix main the OOB vectors FAIL on both paths.
@@ -22,11 +26,7 @@ Covers all four optimized-path memory opcodes: MemStore (`st`), MemLoad
 (`ld`), MemStoreSubword (`st16`), MemLoadSubword (`ld8`).
 
 Run:
-  synth compile scripts/repro/safety_bounds_377.wat -o /tmp/sb377_opt.elf \
-        --target cortex-m4 --all-exports --safety-bounds software
-  synth compile scripts/repro/safety_bounds_377.wat -o /tmp/sb377_dir.elf \
-        --target cortex-m4 --all-exports --safety-bounds software --no-optimize
-  /tmp/synthvenv/bin/python scripts/repro/safety_bounds_377_differential.py
+  SYNTH=./target/debug/synth python scripts/repro/safety_bounds_377_differential.py
 Exits nonzero on any mismatch.
 """
 
@@ -85,7 +85,23 @@ VECTORS = [
     ("st16", MEM_BYTES - 1, 0xBABE, True),     # straddle -> trap
     ("ld8", MEM_BYTES - 1, 0, False),          # last byte readable
     ("ld8", MEM_BYTES, 0, True),               # one past -> trap
+    # --- #752: top-of-address-space wraparound class ---
+    # The retired guard ADD-computed `addr + offset + size - 1` mod 2^32: for
+    # addr >= 2^32 - (offset+size-1) the end address wrapped small, BLO
+    # passed, and the access escaped the trap (reading/writing below the
+    # linear-memory base). WASM requires a trap on every one of these.
+    ("st", 0xFFFFFFF9, 0x752C0DE0, True),      # end 0xFFFFFFF9+7 wraps to 0
+    ("st", 0xFFFFFFFC, 0x752C0DE1, True),      # end wraps to 3 (escaped pre-fix)
+    ("ld", 0xFFFFFFFC, 0, True),               # the issue's 0xFFFFFFFC size-4 case
+    ("ld", 0xFFFFFFFE, 0, True),               # end wraps to 1 (escaped pre-fix)
+    ("st16", 0xFFFFFFFF, 0xBEEF, True),        # end wraps to 0 (escaped pre-fix)
+    ("ld8", 0xFFFFFFFF, 0, True),              # size-1/offset-0: exact either way
 ]
+
+
+def to_i32(x):
+    """wasmtime takes SIGNED i32 params; synth vectors are u32 addresses."""
+    return x - (1 << 32) if x >= (1 << 31) else x
 
 
 def pattern():
@@ -93,7 +109,6 @@ def pattern():
 
 
 def compile_elves():
-    subprocess.run(["wat2wasm", WASM, "-o", "/tmp/sb377.wasm"], check=True)
     outs = {}
     for name, extra in (("optimized", []), ("direct", ["--no-optimize"])):
         elf = f"/tmp/sb377_{name}.elf"
@@ -132,9 +147,9 @@ def wasmtime_run(module, engine, fn, a, v):
     ret = None
     try:
         if fn.startswith("st"):
-            inst.exports(store)[fn](store, a, v)
+            inst.exports(store)[fn](store, to_i32(a), to_i32(v))
         else:
-            ret = inst.exports(store)[fn](store, a)
+            ret = inst.exports(store)[fn](store, to_i32(a))
         trapped = False
     except wasmtime.Trap:
         trapped = True
@@ -175,7 +190,8 @@ def unicorn_run(code, base, syms, fn, a, v):
 def main():
     elves = compile_elves()
     engine = wasmtime.Engine()
-    module = wasmtime.Module(engine, open("/tmp/sb377.wasm", "rb").read())
+    # wasmtime-py accepts wat text directly (no wabt needed on CI runners).
+    module = wasmtime.Module(engine, open(WASM).read())
 
     total_fails = 0
     for path_name, elf in elves.items():

@@ -354,6 +354,14 @@ jobs:
       # elision never fires unsoundly (red-tested at land time).
       - name: Run i32 shift-mask oracle with mask elision ON (#686)
         run: SYNTH_SHIFT_MASK_ELIDE=1 SYNTH=./target/debug/synth python scripts/repro/i32_shift_mask_682_differential.py
+      # #752: the software bounds guard must trap the top-of-address-space
+      # wraparound class — the retired shape ADD-computed the end address
+      # mod 2^32, so `addr >= 2^32 - (offset+size-1)` wrapped small, passed
+      # the BLO, and the OOB access escaped below the linear-memory base.
+      # 19 vectors (in-bounds, exact-boundary, first-OOB, far-OOB, and six
+      # #752 top-of-space rows) x BOTH codegen paths, wasmtime ground truth.
+      - name: Run software-bounds wraparound oracle (#752/#377, thumb2 both paths)
+        run: SYNTH=./target/debug/synth python scripts/repro/safety_bounds_377_differential.py
       - name: Run bulk-memory operand-clobber oracle (#677, thumb2)
         run: SYNTH=./target/debug/synth python scripts/repro/bulk_local_clobber_677_differential.py
       - name: Run bulk-memory mask-coverage oracle (#679, thumb2)

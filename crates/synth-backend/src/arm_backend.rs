@@ -1906,15 +1906,16 @@ mod tests {
             n.code, s.code,
             "#377: software bounds must CHANGE optimized-path codegen (was a silent no-op)"
         );
-        // Thumb-2 `UDF #0` is 0xDE00 (LE bytes: 00 DE); `CMP ip, sl` (T2
-        // high-reg) is 0x45D4 (LE: D4 45). Both must appear — one guard per
-        // access, trap inline.
+        // Thumb-2 `UDF #0` is 0xDE00 (LE bytes: 00 DE); the #752
+        // wraparound-safe guard's borrow check `CMP sl, ip` (16-bit
+        // high-reg form) is 0x45E2 (LE: E2 45). Both must appear — one
+        // guard per access, traps inline.
         let has_udf = s.code.windows(2).any(|w| w == [0x00, 0xDE]);
-        let has_cmp_ip_sl = s.code.windows(2).any(|w| w == [0xD4, 0x45]);
+        let has_cmp_sl_ip = s.code.windows(2).any(|w| w == [0xE2, 0x45]);
         assert!(has_udf, "#377: inline UDF trap missing from optimized path");
         assert!(
-            has_cmp_ip_sl,
-            "#377: CMP ip, sl bounds compare missing from optimized path"
+            has_cmp_sl_ip,
+            "#377/#752: CMP sl, ip bounds borrow-check missing from optimized path"
         );
         // And `none` must contain NO UDF (the function has no other trap).
         assert!(

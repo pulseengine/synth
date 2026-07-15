@@ -167,16 +167,18 @@ Spectre-v1 mitigation (see `docs/spectre-policy.md` row #3); it does not
 fault on OOB, it wraps, which is wrong for ASIL-D — only use for `fuzz`
 profile where wrap-on-fault is acceptable.
 
-**Slow path — software CMP/BHS.** Already implemented at
-`instruction_selector.rs:2950`:
+**Slow path — software bounds check.** Implemented as
+`InstructionSelector::software_bounds_guard` (the #752 wraparound-safe
+shape — the earlier ADD-computed end address wrapped mod 2^32 at the top
+of the address space and escaped the trap):
 ```
-ADD temp, addr_reg, #(offset + access_size - 1)
-CMP temp, R10            ; R10 = linear-mem size
-BHS Trap_Handler
-LDR rd, [R11, addr_reg, #offset]
+SUB  R12, R10, #k        ; k = offset + access_size, R10 = linear-mem size
+CMP  R10, R12 ; BHS +0 ; UDF   ; mem_size < k  => every access traps
+CMP  addr, R12 ; BLS +0 ; UDF  ; addr > mem_size - k => trap
+LDR  rd, [R11, addr_reg, #offset]
 ```
-Cost: ~3 cycles + 1 mispredict penalty on M7. ~25 % bytecode size
-inflation on memory-heavy WASM. This is the only portable mode for
+Cost: ~5 cycles + 1 mispredict penalty on M7. ~35 % bytecode size
+inflation on memory-heavy WASM (16 B/guard). This is the only portable mode for
 Cortex-M0/M0+ (no MPU) and bare RV32I cores without PMP.
 
 **Trade-off.** Default for `--safety asil-d` is **soft + mpu** —

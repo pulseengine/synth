@@ -212,7 +212,8 @@ fn flag_off_with_facts_is_byte_identical_494() {
 
 /// THE BOUNDS-ELISION GATE (byte evidence): under `slot ∈ [0, 63]` all eight
 /// software bounds guards are certificate-elided — the UDFs vanish and the
-/// function sheds exactly 8 × 10 B of guard code (#390's `guard_bool` class).
+/// function sheds exactly 8 × 16 B of guard code (#390's `guard_bool` class;
+/// the #752 wraparound-safe guard is 16 B).
 #[test]
 fn proven_slot_bound_elides_all_eight_guards_494() {
     let base = fixture_wasm();
@@ -220,16 +221,26 @@ fn proven_slot_bound_elides_all_eight_guards_494() {
     let b = compile(&base, "proven_base", false, true);
     let s = compile(&facts, "proven_spec", true, true);
 
-    // Baseline guard census: eight inline guards, one per access.
-    assert_eq!(b.halfword_count("poll", UDF0), 8, "baseline guards present");
+    // Baseline guard census: eight inline guards, one per access — the #752
+    // wraparound-safe shape carries TWO UDF arms per guard (bound < k, and
+    // addr > bound - k).
+    assert_eq!(
+        b.halfword_count("poll", UDF0),
+        16,
+        "baseline guards present"
+    );
     assert_eq!(s.halfword_count("poll", UDF0), 0, "all guards elided");
 
     // The measured byte win — pinned exactly so a regression (or an
     // improvement) shows as a required update, like the size oracle.
     let (b_len, s_len) = (b.func("poll").len(), s.func("poll").len());
-    assert_eq!(b_len, 184, "baseline poll size drifted");
+    assert_eq!(b_len, 232, "baseline poll size drifted");
     assert_eq!(s_len, 104, "specialized poll size drifted");
-    assert_eq!(b_len - s_len, 80, "8 guards x 10 B (ADD.w+CMP+BLO+UDF)");
+    assert_eq!(
+        b_len - s_len,
+        128,
+        "8 guards x 16 B (#752 shape: SUB.W+CMP+BHS+UDF+CMP+BLS+UDF)"
+    );
 
     // Certificate trail: one ADMIT per access, naming the obligation.
     let admits = s.stderr.matches("fact-spec: ADMIT").count();
@@ -267,7 +278,7 @@ fn oob_admissible_bound_declines_and_restores_guards_byte_identically_494() {
         s.text, b.text,
         "declined build must be byte-identical to baseline"
     );
-    assert_eq!(s.halfword_count("poll", UDF0), 8, "all guards retained");
+    assert_eq!(s.halfword_count("poll", UDF0), 16, "all guards retained");
 }
 
 /// Marks without `--safety-bounds software`: nothing to strip — the

@@ -10,7 +10,8 @@ SPECIALIZED (SYNTH_FACT_SPEC=1 + software bounds), UNSPECIALIZED (software
 bounds, no fact-spec) and the unguarded FLOOR (no --safety-bounds) — then:
 
   1. BYTE EVIDENCE: reports the measured poll shrink (symtab deltas; the
-     guarded baseline carries 8 × 10 B of ADD/CMP/BLO/UDF guard — the #390
+     guarded baseline carries 8 × 16 B of the #752 wraparound-safe
+     SUB/CMP/BHS/UDF/CMP/BLS/UDF guard — the #390
      `guard_bool` instruction class; gust_poll's whole guard_bool bucket is
      108 B) and asserts the specialized `.text` is BYTE-IDENTICAL to the
      unguarded floor: under the proven premise the sandbox bounds-guard tax
@@ -317,11 +318,12 @@ def main():
     s_len = func_size(spec_elf, "poll")
     f_len = func_size(floor_elf, "poll")
     print(f"poll: guarded {b_len} B -> specialized {s_len} B "
-          f"(-{b_len - s_len} B = 8 guards x 10 B ADD/CMP/BLO/UDF; the #390 "
+          f"(-{b_len - s_len} B = 8 guards x 16 B SUB/CMP/BHS/UDF/CMP/BLS/UDF, "
+          f"the #752 wraparound-safe shape; the #390 "
           f"guard_bool instruction class — gust_poll's whole guard_bool "
           f"bucket is 108 B); unguarded floor {f_len} B")
-    if b_len - s_len != 80:
-        sys.exit(f"byte win drifted: expected exactly 80 B "
+    if b_len - s_len != 128:
+        sys.exit(f"byte win drifted: expected exactly 128 B "
                  f"(got {b_len - s_len})")
     scode, sbase, ssyms = load(spec_elf)
     fcode, _, _ = load(floor_elf)
