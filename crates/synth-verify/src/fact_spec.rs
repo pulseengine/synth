@@ -2141,21 +2141,30 @@ mod tests {
     /// `base = slot*16 + 256`, then field loads/stores at static offsets.
     fn poll_ops() -> Vec<WasmOp> {
         vec![
-            LocalGet(0),                        // 0  slot ← fact target
-            I32Const(4),                        // 1
-            I32Shl,                             // 2  slot*16
-            I32Const(256),                      // 3
-            I32Add,                             // 4  base
-            LocalSet(1),                        // 5
-            LocalGet(1),                        // 6
-            I32Load8U { offset: 0, align: 0 },  // 7  → mark (byte)
-            LocalGet(1),                        // 8
-            I32Load { offset: 4, align: 2 },    // 9  → mark (word)
-            I32Add,                             // 10
-            LocalGet(1),                        // 11
-            I32Const(7),                        // 12
-            I32Store16 { offset: 2, align: 1 }, // 13 → mark (halfword store)
-            End,                                // 14
+            LocalGet(0),   // 0  slot ← fact target
+            I32Const(4),   // 1
+            I32Shl,        // 2  slot*16
+            I32Const(256), // 3
+            I32Add,        // 4  base
+            LocalSet(1),   // 5
+            LocalGet(1),   // 6
+            I32Load8U {
+                offset: 0,
+                align: 0,
+            }, // 7  → mark (byte)
+            LocalGet(1),   // 8
+            I32Load {
+                offset: 4,
+                align: 2,
+            }, // 9  → mark (word)
+            I32Add,        // 10
+            LocalGet(1),   // 11
+            I32Const(7),   // 12
+            I32Store16 {
+                offset: 2,
+                align: 1,
+            }, // 13 → mark (halfword store)
+            End,           // 14
         ]
     }
 
@@ -2194,8 +2203,7 @@ mod tests {
         assert!(
             r.declined
                 .iter()
-                .any(|d| d.contains("bounds-guard obligation Sat")
-                    && d.contains("counterexample")),
+                .any(|d| d.contains("bounds-guard obligation Sat") && d.contains("counterexample")),
             "declines must be loud and carry a model: {:?}",
             r.declined
         );
@@ -2222,10 +2230,13 @@ mod tests {
         // A TRUE fact exists (so the walk runs) but targets the stored VALUE,
         // not the index — the index is unconstrained ⇒ Sat ⇒ loud decline.
         let ops = vec![
-            LocalGet(0),                      // 0  index — unconstrained
-            LocalGet(1),                      // 1  value ← fact (non-constraining)
-            I32Store { offset: 0, align: 2 }, // 2
-            End,                              // 3
+            LocalGet(0), // 0  index — unconstrained
+            LocalGet(1), // 1  value ← fact (non-constraining)
+            I32Store {
+                offset: 0,
+                align: 2,
+            }, // 2
+            End,         // 3
         ];
         let r = specialize_function("f", &ops, &[], &[fact(1, 0, 63)], &[], 65536);
         assert_eq!(r.elide_mem_bounds, Vec::<usize>::new());
@@ -2246,9 +2257,12 @@ mod tests {
         // address is infinite-precision (4294967040 + 512 > 65536 ⇒ TRAPS).
         // The 64-bit zero-extension keeps the obligation Sat ⇒ guard retained.
         let ops = vec![
-            LocalGet(0),                         // 0 ← fact [-256, -256]
-            I32Load { offset: 0x200, align: 2 }, // 1
-            End,                                 // 2
+            LocalGet(0), // 0 ← fact [-256, -256]
+            I32Load {
+                offset: 0x200,
+                align: 2,
+            }, // 1
+            End,         // 2
         ];
         let r = specialize_function("f", &ops, &[], &[fact(0, -256, -256)], &[], 65536);
         assert_eq!(
@@ -2273,9 +2287,12 @@ mod tests {
         // trap iff ea + size > mem size) and per the guard's `>u`. One past
         // (65533) must decline.
         let ops = vec![
-            LocalGet(0),                     // 0 ← fact
-            I32Load { offset: 0, align: 2 }, // 1
-            End,                             // 2
+            LocalGet(0), // 0 ← fact
+            I32Load {
+                offset: 0,
+                align: 2,
+            }, // 1
+            End,         // 2
         ];
         let ok = specialize_function("f", &ops, &[], &[fact(0, 0, 65532)], &[], 65536);
         assert_eq!(ok.elide_mem_bounds, vec![1], "declines: {:?}", ok.declined);
@@ -2288,20 +2305,23 @@ mod tests {
         // A clamp elision rewrites the stream; a downstream load's mark must
         // land on the REWRITTEN index (the selector keys by its own op index).
         let ops = vec![
-            LocalGet(0),                     // 0  ← fact [524, 1524]
-            I32Const(476),                   // 1
-            I32Add,                          // 2
-            LocalSet(1),                     // 3
-            LocalGet(1),                     // 4  -+ low clamp (elided 4..=10)
-            I32Const(1000),                  // 5   |
-            I32LtS,                          // 6   |
-            If,                              // 7   |
-            I32Const(1000),                  // 8   |
-            LocalSet(1),                     // 9   |
-            End,                             // 10 -+
-            LocalGet(0),                     // 11  index = ch ∈ [524, 1524]
-            I32Load { offset: 0, align: 2 }, // 12  → mark (rewritten index 5)
-            End,                             // 13
+            LocalGet(0),    // 0  ← fact [524, 1524]
+            I32Const(476),  // 1
+            I32Add,         // 2
+            LocalSet(1),    // 3
+            LocalGet(1),    // 4  -+ low clamp (elided 4..=10)
+            I32Const(1000), // 5   |
+            I32LtS,         // 6   |
+            If,             // 7   |
+            I32Const(1000), // 8   |
+            LocalSet(1),    // 9   |
+            End,            // 10 -+
+            LocalGet(0),    // 11  index = ch ∈ [524, 1524]
+            I32Load {
+                offset: 0,
+                align: 2,
+            }, // 12  → mark (rewritten index 5)
+            End,            // 13
         ];
         let r = specialize_function("f", &ops, &[(0, 0)], &[fact(0, 524, 1524)], &[], 65536);
         assert!(r.changed(), "declines: {:?}", r.declined);

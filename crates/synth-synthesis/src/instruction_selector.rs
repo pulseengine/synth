@@ -3009,10 +3009,11 @@ pub struct InstructionSelector {
     fact_div_ovf_elide: Vec<usize>,
     /// #494 bounds-elision (#390 `guard_bool`): op indices of i32 memory
     /// accesses whose `--safety-bounds software` inline guard is proven dead
-    /// — the fact-spec pass discharged `UNSAT(P ∧ trap_mem_oob(zext64(index)
-    /// + offset, size, min_memory_bytes))` per site through the
-    /// certificate-checked ordeal solver BEFORE selection. Empty (the
-    /// default) ⇒ every guard is emitted, byte-identical to today.
+    /// — the fact-spec pass discharged
+    /// `UNSAT(P ∧ trap_mem_oob(zext64(index) + offset, size,
+    /// min_memory_bytes))` per site through the certificate-checked ordeal
+    /// solver BEFORE selection. Empty (the default) ⇒ every guard is
+    /// emitted, byte-identical to today.
     fact_mem_bounds_elide: Vec<usize>,
     /// #642: `call_indirect` guard inputs — compile-time table size (for the
     /// encoder's runtime bounds guard) + per-expected-type closed-world type
