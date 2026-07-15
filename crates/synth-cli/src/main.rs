@@ -2422,8 +2422,8 @@ fn compile_all_exports(
         all_type_ret_f64,  // GI-FPU-002 phase 2 (#719/#369): per-type returns-f64 (call_indirect)
         all_wsc_facts,     // VCR-PERF-002 Phase 1 (#494): loom wsc.facts premises
         all_extra_memory_segments, // #406: (mem_idx>0, offset, bytes) init segments on non-default memories
-        multi_memory_decline, // #406: decode-level reason multi-memory must decline (if any)
-        all_call_indirect_guards, // #642: table size + closed-world type verdicts
+        multi_memory_decline,      // #406: decode-level reason multi-memory must decline (if any)
+        all_call_indirect_guards,  // #642: table size + closed-world type verdicts
     ) = if path.extension().is_some_and(|ext| ext == "wast") {
         info!("Parsing WAST (extracting all modules)...");
         let contents = String::from_utf8(file_bytes).context("WAST file is not valid UTF-8")?;

@@ -3488,13 +3488,16 @@ impl InstructionSelector {
                  --native-pointer-abi or keep the module single-memory"
             )));
         }
-        self.memory_pages.get(memory as usize).copied().ok_or_else(|| {
-            synth_core::Error::synthesis(format!(
-                "multi-memory: op targets memory {memory} but the module context \
+        self.memory_pages
+            .get(memory as usize)
+            .copied()
+            .ok_or_else(|| {
+                synth_core::Error::synthesis(format!(
+                    "multi-memory: op targets memory {memory} but the module context \
                  declares {} memories (#406)",
-                self.memory_pages.len()
-            ))
-        })
+                    self.memory_pages.len()
+                ))
+            })
     }
 
     /// #237: under the native-pointer ABI, a const effective address `addr`
@@ -10994,13 +10997,7 @@ impl InstructionSelector {
                                 &[live_params.as_slice(), &[addr, dst]].concat(),
                                 idx,
                             )?;
-                            Self::emit_sym_addr(
-                                &mut instructions,
-                                base,
-                                &sym,
-                                *offset as i32,
-                                idx,
-                            );
+                            Self::emit_sym_addr(&mut instructions, base, &sym, *offset as i32, idx);
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Add {
                                     rd: base,
@@ -11053,13 +11050,7 @@ impl InstructionSelector {
                                 &[live_params.as_slice(), &[addr, value]].concat(),
                                 idx,
                             )?;
-                            Self::emit_sym_addr(
-                                &mut instructions,
-                                base,
-                                &sym,
-                                *offset as i32,
-                                idx,
-                            );
+                            Self::emit_sym_addr(&mut instructions, base, &sym, *offset as i32, idx);
                             instructions.push(ArmInstruction {
                                 op: ArmOp::Add {
                                     rd: base,
@@ -11070,9 +11061,18 @@ impl InstructionSelector {
                             });
                             let mem = MemAddr::imm(base, 0);
                             let store_op = match inner_op.as_ref() {
-                                I32Store { .. } => ArmOp::Str { rd: value, addr: mem },
-                                I32Store8 { .. } => ArmOp::Strb { rd: value, addr: mem },
-                                I32Store16 { .. } => ArmOp::Strh { rd: value, addr: mem },
+                                I32Store { .. } => ArmOp::Str {
+                                    rd: value,
+                                    addr: mem,
+                                },
+                                I32Store8 { .. } => ArmOp::Strb {
+                                    rd: value,
+                                    addr: mem,
+                                },
+                                I32Store16 { .. } => ArmOp::Strh {
+                                    rd: value,
+                                    addr: mem,
+                                },
                                 _ => unreachable!(),
                             };
                             instructions.push(ArmInstruction {

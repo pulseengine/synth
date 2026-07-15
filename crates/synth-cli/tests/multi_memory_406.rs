@@ -50,7 +50,7 @@ fn wat_file(name: &str, wat: &str) -> PathBuf {
     p
 }
 
-fn compile(input: &PathBuf, extra: &[&str]) -> std::process::Output {
+fn compile(input: &std::path::Path, extra: &[&str]) -> std::process::Output {
     let out = std::env::temp_dir()
         .join("synth_mem406_tests")
         .join(format!(
@@ -66,7 +66,10 @@ fn compile(input: &PathBuf, extra: &[&str]) -> std::process::Output {
         out.to_str().unwrap(),
     ];
     args.extend_from_slice(extra);
-    Command::new(synth()).args(&args).output().expect("run synth")
+    Command::new(synth())
+        .args(&args)
+        .output()
+        .expect("run synth")
 }
 
 fn stderr(out: &std::process::Output) -> String {
@@ -97,10 +100,14 @@ fn assert_refused(out: &std::process::Output, must_mention: &[&str], ctx: &str) 
 /// placed. (Execution equivalence is the python differential's job.)
 #[test]
 fn two_memories_relocatable_green() {
-    let out = compile(&two_mem_fixture(), &["--relocatable", "--target", "cortex-m3"]);
+    let out = compile(
+        &two_mem_fixture(),
+        &["--relocatable", "--target", "cortex-m3"],
+    );
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     let bytes = std::fs::read(
-        std::env::temp_dir().join("synth_mem406_tests/mem406_multi_memory_relocatabletargetcortexm3.o"),
+        std::env::temp_dir()
+            .join("synth_mem406_tests/mem406_multi_memory_relocatabletargetcortexm3.o"),
     )
     .expect("read object");
     let obj = object::File::parse(&*bytes).expect("parse ELF");
@@ -148,25 +155,31 @@ fn three_memories_relocatable_green() {
     let f = wat_file("three_mem.wat", wat);
     let out = compile(&f, &["--relocatable", "--target", "cortex-m3"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
-    let bytes =
-        std::fs::read(std::env::temp_dir().join("synth_mem406_tests/three_mem_relocatabletargetcortexm3.o"))
-            .expect("read object");
+    let bytes = std::fs::read(
+        std::env::temp_dir().join("synth_mem406_tests/three_mem_relocatabletargetcortexm3.o"),
+    )
+    .expect("read object");
     let obj = object::File::parse(&*bytes).expect("parse ELF");
 
-    let mem1 = obj.section_by_name(".synth.wasm_mem_1").expect("mem 1 region");
+    let mem1 = obj
+        .section_by_name(".synth.wasm_mem_1")
+        .expect("mem 1 region");
     assert_eq!(mem1.size(), 2 * 65536);
     assert_eq!(
         mem1.kind(),
         SectionKind::UninitializedData,
         "zero-init memory ships NOBITS (no flash cost)"
     );
-    let mem2 = obj.section_by_name(".synth.wasm_mem_2").expect("mem 2 region");
+    let mem2 = obj
+        .section_by_name(".synth.wasm_mem_2")
+        .expect("mem 2 region");
     assert_eq!(mem2.size(), 65536);
     assert_eq!(&mem2.data().expect("progbits")[8..12], b"\x01\x02\x03\x04");
 
     for name in ["__synth_wasm_data_1", "__synth_wasm_data_2"] {
         assert!(
-            obj.symbols().any(|s| s.name() == Ok(name) && !s.is_undefined()),
+            obj.symbols()
+                .any(|s| s.name() == Ok(name) && !s.is_undefined()),
             "{name} must be defined"
         );
     }
@@ -180,7 +193,11 @@ fn three_memories_relocatable_green() {
 #[test]
 fn multi_memory_without_relocatable_refuses() {
     let out = compile(&two_mem_fixture(), &["--target", "cortex-m3"]);
-    assert_refused(&out, &["multi-memory", "#406", "--relocatable"], "plain object path");
+    assert_refused(
+        &out,
+        &["multi-memory", "#406", "--relocatable"],
+        "plain object path",
+    );
 }
 
 /// Self-contained --cortex-m image: same single-base refusal.
@@ -195,7 +212,12 @@ fn multi_memory_self_contained_cortex_m_refuses() {
 fn multi_memory_native_pointer_abi_refuses() {
     let out = compile(
         &two_mem_fixture(),
-        &["--relocatable", "--native-pointer-abi", "--target", "cortex-m3"],
+        &[
+            "--relocatable",
+            "--native-pointer-abi",
+            "--target",
+            "cortex-m3",
+        ],
     );
     assert_refused(
         &out,
@@ -234,7 +256,11 @@ fn multi_memory_riscv_refuses() {
 #[test]
 fn multi_memory_aarch64_refuses() {
     let out = compile(&two_mem_fixture(), &["-b", "aarch64", "--relocatable"]);
-    assert_refused(&out, &["multi-memory", "#406", "aarch64"], "aarch64 backend");
+    assert_refused(
+        &out,
+        &["multi-memory", "#406", "aarch64"],
+        "aarch64 backend",
+    );
 }
 
 /// Cross-memory memory.copy has no phase-1 lowering: the function loud-skips
@@ -317,5 +343,9 @@ fn segment_overflowing_memory_k_refuses() {
         (i32.load $b (local.get $p))))"#;
     let f = wat_file("overflow_seg.wat", wat);
     let out = compile(&f, &["--relocatable", "--target", "cortex-m3"]);
-    assert_refused(&out, &["multi-memory", "#406", "overflows"], "overflowing segment");
+    assert_refused(
+        &out,
+        &["multi-memory", "#406", "overflows"],
+        "overflowing segment",
+    );
 }

@@ -53,28 +53,58 @@ pub enum WasmOp {
     I32Const(i32),
 
     // Memory
-    I32Load { offset: u32, align: u32 },
-    I32Store { offset: u32, align: u32 },
+    I32Load {
+        offset: u32,
+        align: u32,
+    },
+    I32Store {
+        offset: u32,
+        align: u32,
+    },
 
     // Sub-word loads (i32)
-    I32Load8S { offset: u32, align: u32 }, // byte load, sign-extend to i32
-    I32Load8U { offset: u32, align: u32 }, // byte load, zero-extend to i32
-    I32Load16S { offset: u32, align: u32 }, // halfword load, sign-extend to i32
-    I32Load16U { offset: u32, align: u32 }, // halfword load, zero-extend to i32
+    I32Load8S {
+        offset: u32,
+        align: u32,
+    }, // byte load, sign-extend to i32
+    I32Load8U {
+        offset: u32,
+        align: u32,
+    }, // byte load, zero-extend to i32
+    I32Load16S {
+        offset: u32,
+        align: u32,
+    }, // halfword load, sign-extend to i32
+    I32Load16U {
+        offset: u32,
+        align: u32,
+    }, // halfword load, zero-extend to i32
 
     // Sub-word stores (i32)
-    I32Store8 { offset: u32, align: u32 },  // store low byte
-    I32Store16 { offset: u32, align: u32 }, // store low halfword
+    I32Store8 {
+        offset: u32,
+        align: u32,
+    }, // store low byte
+    I32Store16 {
+        offset: u32,
+        align: u32,
+    }, // store low halfword
 
     // Control flow
     Block,
     Loop,
     Br(u32),   // Branch to label
     BrIf(u32), // Conditional branch
-    BrTable { targets: Vec<u32>, default: u32 },
+    BrTable {
+        targets: Vec<u32>,
+        default: u32,
+    },
     Return,
     Call(u32),
-    CallIndirect { type_index: u32, table_index: u32 },
+    CallIndirect {
+        type_index: u32,
+        table_index: u32,
+    },
     LocalGet(u32),
     LocalSet(u32),
     LocalTee(u32),
@@ -106,7 +136,10 @@ pub enum WasmOp {
     /// `memory.size`/`memory.grow` are NOT wrapped — their variants already
     /// carry the memory index. Invariant (decoder-enforced): `memory > 0` and
     /// `op` is never itself a `MultiMemory`.
-    MultiMemory { memory: u32, op: Box<WasmOp> },
+    MultiMemory {
+        memory: u32,
+        op: Box<WasmOp>,
+    },
 
     // More ops
     Drop,
@@ -158,21 +191,54 @@ pub enum WasmOp {
 
     // i64 Constants and Memory
     I64Const(i64),
-    I64Load { offset: u32, align: u32 },
-    I64Store { offset: u32, align: u32 },
+    I64Load {
+        offset: u32,
+        align: u32,
+    },
+    I64Store {
+        offset: u32,
+        align: u32,
+    },
 
     // Sub-word loads (i64) — load sub-word, extend to i64
-    I64Load8S { offset: u32, align: u32 },
-    I64Load8U { offset: u32, align: u32 },
-    I64Load16S { offset: u32, align: u32 },
-    I64Load16U { offset: u32, align: u32 },
-    I64Load32S { offset: u32, align: u32 },
-    I64Load32U { offset: u32, align: u32 },
+    I64Load8S {
+        offset: u32,
+        align: u32,
+    },
+    I64Load8U {
+        offset: u32,
+        align: u32,
+    },
+    I64Load16S {
+        offset: u32,
+        align: u32,
+    },
+    I64Load16U {
+        offset: u32,
+        align: u32,
+    },
+    I64Load32S {
+        offset: u32,
+        align: u32,
+    },
+    I64Load32U {
+        offset: u32,
+        align: u32,
+    },
 
     // Sub-word stores (i64) — store low N bits
-    I64Store8 { offset: u32, align: u32 },
-    I64Store16 { offset: u32, align: u32 },
-    I64Store32 { offset: u32, align: u32 },
+    I64Store8 {
+        offset: u32,
+        align: u32,
+    },
+    I64Store16 {
+        offset: u32,
+        align: u32,
+    },
+    I64Store32 {
+        offset: u32,
+        align: u32,
+    },
 
     // Conversion operations
     I64ExtendI32S, // Sign-extend i32 to i64
@@ -216,8 +282,14 @@ pub enum WasmOp {
 
     // f32 Constants and Memory
     F32Const(f32),
-    F32Load { offset: u32, align: u32 },
-    F32Store { offset: u32, align: u32 },
+    F32Load {
+        offset: u32,
+        align: u32,
+    },
+    F32Store {
+        offset: u32,
+        align: u32,
+    },
 
     // f32 Conversions
     F32ConvertI32S,    // Convert signed i32 to f32
@@ -262,8 +334,14 @@ pub enum WasmOp {
 
     // f64 Constants and Memory
     F64Const(f64),
-    F64Load { offset: u32, align: u32 },
-    F64Store { offset: u32, align: u32 },
+    F64Load {
+        offset: u32,
+        align: u32,
+    },
+    F64Store {
+        offset: u32,
+        align: u32,
+    },
 
     // f64 Conversions
     F64ConvertI32S,    // Convert signed i32 to f64
@@ -284,9 +362,15 @@ pub enum WasmOp {
     // Targets ARM Cortex-M55 Helium MVE (M-Profile Vector Extension)
 
     // v128 Constants and Memory
-    V128Const([u8; 16]),                   // 128-bit constant
-    V128Load { offset: u32, align: u32 },  // v128.load
-    V128Store { offset: u32, align: u32 }, // v128.store
+    V128Const([u8; 16]), // 128-bit constant
+    V128Load {
+        offset: u32,
+        align: u32,
+    }, // v128.load
+    V128Store {
+        offset: u32,
+        align: u32,
+    }, // v128.store
 
     // v128 Bitwise operations
     V128And,    // v128.and

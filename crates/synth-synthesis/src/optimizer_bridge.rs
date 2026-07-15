@@ -2771,9 +2771,10 @@ impl OptimizerBridge {
         }
         // #406: same for `memory.size`/`memory.grow` on a non-default memory —
         // the optimized path's lowering reads R10 / emits -1 for MEMORY 0.
-        if let Some(ms_op) = wasm_ops.iter().find(
-            |op| matches!(op, WasmOp::MemorySize(k) | WasmOp::MemoryGrow(k) if *k != 0),
-        ) {
+        if let Some(ms_op) = wasm_ops
+            .iter()
+            .find(|op| matches!(op, WasmOp::MemorySize(k) | WasmOp::MemoryGrow(k) if *k != 0))
+        {
             return Err(Error::UnsupportedInstruction(format!(
                 "optimized lowering path does not support {ms_op:?} on a \
                  non-default memory (R10 is memory 0's size register) — issue #406"
