@@ -148,6 +148,15 @@ pub struct CompileConfig {
     /// → `[R11=0 + addr]`.
     pub linear_memory_bytes: u32,
 
+    /// VCR-MEM-002 phase 1 (#406): initial size in 64 KiB pages of EACH linear
+    /// memory, indexed by memory index. Consulted only by the multi-memory
+    /// lowering arms (loads/stores wrapped in `WasmOp::MultiMemory`,
+    /// `memory.size`/`grow` with a non-zero index) — memory-0 lowering never
+    /// reads it, so single-memory output is byte-identical whether it is set
+    /// or empty. Empty (the default) means "no multi-memory context": any
+    /// multi-memory op then declines loudly.
+    pub memory_pages: Vec<u32>,
+
     /// #237: the wasm stack-pointer global as `(index, init_value)`, if the
     /// module has one. Under `native_pointer_abi` the backend register-promotes
     /// it: `global.get` materializes `__synth_wasm_data + init` (the real stack
@@ -335,6 +344,17 @@ pub struct CompileConfig {
     /// divisor-nonzero fact alone NEVER lands here: divisor ≠ 0 does not
     /// exclude -1 (#633/#634 two-guard distinction). Empty ⇒ guard emitted.
     pub fact_div_ovf_elide: Vec<usize>,
+    /// #494 bounds-elision (#390 `guard_bool`): op indices of i32 memory
+    /// accesses whose `--safety-bounds software` inline guard is proven dead
+    /// — the fact-spec pass discharged
+    /// `UNSAT(P ∧ trap_mem_oob(zext64(index) + offset, size,
+    /// min_memory_bytes))` per site through the certificate-checked ordeal
+    /// solver BEFORE the driver set this field (ordeal 0.9.1 `trap_mem_oob`
+    /// shape, wraparound-safe 64-bit extension). Consumed by the ARM direct
+    /// selector (`select_with_stack`); every other path ignores it (guards
+    /// stay — sound). Empty (the default) ⇒ every guard is emitted,
+    /// byte-identical to today.
+    pub fact_mem_bounds_elide: Vec<usize>,
     /// #642: `call_indirect` guard inputs — the compile-time table size for
     /// the runtime bounds check and the per-expected-type closed-world type
     /// verdicts — computed from the decoded module by
@@ -389,6 +409,9 @@ impl Default for CompileConfig {
             linmem_base: OPTIMIZED_LINMEM_BASE,
             native_pointer_abi: false,
             linear_memory_bytes: 0,
+            // #406: empty ⇒ no multi-memory context ⇒ multi-memory ops decline
+            // loudly; memory-0 lowering never reads it.
+            memory_pages: Vec::new(),
             stack_pointer_global: None,
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),
@@ -429,6 +452,7 @@ impl Default for CompileConfig {
             // every div/rem trap guard is emitted, byte-identical.
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
+            fact_mem_bounds_elide: Vec::new(),
             // #642: no guard inputs ⇒ every call_indirect lowering declines
             // loudly (never an unchecked indirect branch). Driver loops fill
             // this from the decoded module.

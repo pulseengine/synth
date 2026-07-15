@@ -2753,6 +2753,34 @@ impl OptimizerBridge {
             )));
         }
 
+        // VCR-MEM-002 phase 1 (#406): the optimized path has no per-memory
+        // base — `wasm_to_ir` would drop a `MultiMemory` load/store to the
+        // catch-all `Opcode::Nop` (the #120/#93 silent-drop class) or, worse,
+        // alias it onto the one absolute linmem base. Decline up front; the
+        // direct selector lowers it on --relocatable (and declines loudly
+        // everywhere else).
+        if let Some(mm_op) = wasm_ops
+            .iter()
+            .find(|op| matches!(op, WasmOp::MultiMemory { .. }))
+        {
+            return Err(Error::UnsupportedInstruction(format!(
+                "optimized lowering path does not support multi-memory ops \
+                 ({mm_op:?}); only the direct selector on --relocatable lowers \
+                 a non-default memory — issue #406"
+            )));
+        }
+        // #406: same for `memory.size`/`memory.grow` on a non-default memory —
+        // the optimized path's lowering reads R10 / emits -1 for MEMORY 0.
+        if let Some(ms_op) = wasm_ops
+            .iter()
+            .find(|op| matches!(op, WasmOp::MemorySize(k) | WasmOp::MemoryGrow(k) if *k != 0))
+        {
+            return Err(Error::UnsupportedInstruction(format!(
+                "optimized lowering path does not support {ms_op:?} on a \
+                 non-default memory (R10 is memory 0's size register) — issue #406"
+            )));
+        }
+
         // #372: the optimized path also has no IR opcode for full-width
         // `i64.load`/`i64.store` — it would drop them to a stub (`ld64` -> `bx
         // lr`). Decline so the backend falls back to the direct selector, which

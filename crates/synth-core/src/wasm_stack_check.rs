@@ -206,6 +206,11 @@ fn stack_effect_or_bail(op: &WasmOp) -> StackEffect {
         // three i32 operands and push nothing.
         MemoryCopy | MemoryFill => modeled(3, 0),
 
+        // ---- multi-memory (#406) ----------------------------------------
+        // A wrapped load/store has exactly its inner op's stack effect — the
+        // memory index changes the BASE it addresses, not the operand shape.
+        MultiMemory { op, .. } => stack_effect_or_bail(op),
+
         // ---- select / nop -----------------------------------------------
         // select: pops two values and a condition (i32), pushes one value
         Select => modeled(3, 1),

@@ -278,8 +278,24 @@ pub struct DecodedModule {
     pub functions: Vec<FunctionOps>,
     /// Linear memories
     pub memories: Vec<WasmMemory>,
-    /// Data segments (offset, data) for memory initialization
+    /// Data segments (offset, data) for memory initialization.
+    ///
+    /// MEMORY 0 ONLY — the legacy single-memory field every existing consumer
+    /// reads; its shape and contents are unchanged by multi-memory (#406).
+    /// Segments targeting memory > 0 live in
+    /// [`Self::extra_memory_data_segments`].
     pub data_segments: Vec<(u32, Vec<u8>)>,
+    /// VCR-MEM-002 phase 1 (#406): active const-offset data segments on
+    /// NON-DEFAULT memories, as `(memory_index, offset, bytes)` with
+    /// `memory_index > 0`. Previously these were silently dropped (memory k
+    /// shipped uninitialized while its loads compiled). Declaration order.
+    pub extra_memory_data_segments: Vec<(u32, u32, Vec<u8>)>,
+    /// VCR-MEM-002 phase 1 (#406): `Some(reason)` when the module contains a
+    /// multi-memory shape decode cannot lower (e.g. an active data segment on
+    /// memory > 0 with a non-constant offset). The multi-memory compile path
+    /// must decline LOUDLY with this reason; single-memory modules never set
+    /// it.
+    pub multi_memory_decline: Option<String>,
     /// Import entries (module name, field name, kind)
     pub imports: Vec<ImportEntry>,
     /// Number of imported functions (for distinguishing import calls from local calls)
@@ -605,6 +621,11 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
     let mut functions = Vec::new();
     let mut memories = Vec::new();
     let mut data_segments = Vec::new();
+    // VCR-MEM-002 phase 1 (#406): (memory_index, offset, bytes) for active
+    // const-offset data segments on memory > 0, and the first decode-level
+    // reason multi-memory lowering must be declined (if any).
+    let mut extra_memory_data_segments: Vec<(u32, u32, Vec<u8>)> = Vec::new();
+    let mut multi_memory_decline: Option<String> = None;
     let mut globals: Vec<WasmGlobal> = Vec::new();
     let mut imports = Vec::new();
     let mut func_index = 0u32;
@@ -1013,13 +1034,41 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
                 for data in reader {
                     let data = data.context("Failed to parse data segment")?;
                     if let wasmparser::DataKind::Active {
-                        memory_index: 0,
+                        memory_index,
                         offset_expr,
                     } = data.kind
                     {
                         let mut ops = offset_expr.get_operators_reader();
-                        if let Ok(wasmparser::Operator::I32Const { value }) = ops.read() {
-                            data_segments.push((value as u32, data.data.to_vec()));
+                        let const_off = match ops.read() {
+                            Ok(wasmparser::Operator::I32Const { value }) => Some(value as u32),
+                            _ => None,
+                        };
+                        if memory_index == 0 {
+                            // Memory-0 behavior unchanged (frozen): a const-
+                            // offset segment is captured, anything else keeps
+                            // the legacy drop.
+                            if let Some(off) = const_off {
+                                data_segments.push((off, data.data.to_vec()));
+                            }
+                        } else if let Some(off) = const_off {
+                            // VCR-MEM-002 phase 1 (#406): capture non-default-
+                            // memory segments — previously they were silently
+                            // DROPPED (memory k's init data never shipped).
+                            extra_memory_data_segments.push((
+                                memory_index,
+                                off,
+                                data.data.to_vec(),
+                            ));
+                        } else {
+                            // A non-const offset on a non-default memory cannot
+                            // be placed at compile time — record it so the
+                            // multi-memory compile path declines LOUDLY instead
+                            // of shipping memory k uninitialized.
+                            multi_memory_decline.get_or_insert(format!(
+                                "active data segment on memory {memory_index} has a \
+                                 non-constant offset expression — cannot be placed \
+                                 at compile time (multi-memory phase 1, #406)"
+                            ));
                         }
                     }
                 }
@@ -1187,6 +1236,8 @@ pub fn decode_wasm_module(wasm_bytes: &[u8]) -> Result<DecodedModule> {
         functions,
         memories,
         data_segments,
+        extra_memory_data_segments,
+        multi_memory_decline,
         imports,
         num_imported_funcs,
         func_arg_counts,
@@ -1572,13 +1623,46 @@ fn decode_function_body(
                      for this target (#680)"
                 ));
             }
+            // VCR-MEM-002 phase 1 (#406): a load/store whose memarg targets a
+            // NON-DEFAULT memory must carry its index — dropping it silently
+            // aliased every memory onto the one R11 base (a store to memory
+            // `$b` clobbered memory `$a`). memidx 0 stays the bare variant, so
+            // single-memory streams are bit-identical by construction.
+            let wasm_op = match memarg_memory_index(&op) {
+                Some(mem) if mem > 0 => WasmOp::MultiMemory {
+                    memory: mem,
+                    op: Box::new(wasm_op),
+                },
+                _ => wasm_op,
+            };
             ops.push(wasm_op);
             op_offsets.push(offset as u32);
         } else if unsupported.is_none() && !is_intentionally_ignored(&op) {
-            // The op was DROPPED by `convert_operator` (`_ => None`) and is not
-            // an intentional no-op (Nop) — record it so the
-            // function is loud-skipped rather than silently miscompiled (#369).
-            unsupported = Some(format!("{op:?}"));
+            // #406 phase 1: bulk-memory ops on a non-default memory (including
+            // the cross-memory `memory.copy` dst_mem != src_mem form) have no
+            // lowering yet — name the decline precisely instead of the generic
+            // dropped-op message.
+            unsupported = match &op {
+                wasmparser::Operator::MemoryCopy { dst_mem, src_mem }
+                    if *dst_mem != 0 || *src_mem != 0 =>
+                {
+                    Some(format!(
+                        "memory.copy dst_mem={dst_mem} src_mem={src_mem}: \
+                         cross-/non-default-memory memory.copy is not lowered \
+                         in multi-memory phase 1 (#406) — only memory-0 \
+                         memory.copy is supported"
+                    ))
+                }
+                wasmparser::Operator::MemoryFill { mem } if *mem != 0 => Some(format!(
+                    "memory.fill mem={mem}: non-default-memory memory.fill is \
+                     not lowered in multi-memory phase 1 (#406) — only \
+                     memory-0 memory.fill is supported"
+                )),
+                // The op was DROPPED by `convert_operator` (`_ => None`) and is
+                // not an intentional no-op (Nop) — record it so the function is
+                // loud-skipped rather than silently miscompiled (#369).
+                _ => Some(format!("{op:?}")),
+            };
         }
     }
 
@@ -1628,6 +1712,48 @@ fn is_simd_operator(op: &wasmparser::Operator) -> bool {
         (impl_one @$proposal:ident) => { false };
     }
     wasmparser::for_each_operator!(define_match_operator)
+}
+
+/// VCR-MEM-002 phase 1 (#406): the `memarg.memory` index of a load/store
+/// operator that [`convert_operator`] lowers, `None` for every other op.
+///
+/// MIRROR PIN: this list must cover exactly the memarg-carrying arms of
+/// `convert_operator` (every `{ memarg }` load/store it returns `Some` for).
+/// A memarg op missing HERE but lowered THERE would silently drop a non-zero
+/// memory index again — the pre-#406 aliasing bug. Ops `convert_operator`
+/// drops (`_ => None`) loud-skip their function regardless, so they need no
+/// entry. `memory.size`/`grow`/`copy`/`fill` carry their indices in their own
+/// `WasmOp` variants / decode-time declines, not via this helper.
+fn memarg_memory_index(op: &wasmparser::Operator) -> Option<u32> {
+    use wasmparser::Operator::*;
+    match op {
+        I32Load { memarg }
+        | I32Store { memarg }
+        | I64Load { memarg }
+        | I64Store { memarg }
+        | I32Load8S { memarg }
+        | I32Load8U { memarg }
+        | I32Load16S { memarg }
+        | I32Load16U { memarg }
+        | I32Store8 { memarg }
+        | I32Store16 { memarg }
+        | I64Load8S { memarg }
+        | I64Load8U { memarg }
+        | I64Load16S { memarg }
+        | I64Load16U { memarg }
+        | I64Load32S { memarg }
+        | I64Load32U { memarg }
+        | I64Store8 { memarg }
+        | I64Store16 { memarg }
+        | I64Store32 { memarg }
+        | F32Load { memarg }
+        | F32Store { memarg }
+        | F64Load { memarg }
+        | F64Store { memarg }
+        | V128Load { memarg }
+        | V128Store { memarg } => Some(memarg.memory),
+        _ => None,
+    }
 }
 
 /// Convert a wasmparser Operator to our WasmOp enum

@@ -311,17 +311,26 @@ fn compile_wasm_to_arm(
     // walk never crosses (it stops at the first untracked op, so no mark can
     // follow one). Defense in depth: if the fold fired at all, drop the marks
     // loudly rather than risk keying a guard elision to the wrong op.
-    let (fact_div_zero_elide, fact_div_ovf_elide): (&[usize], &[usize]) = if rewritten.len()
-        == wasm_ops.len()
-    {
-        (&config.fact_div_zero_elide, &config.fact_div_ovf_elide)
+    let (fact_div_zero_elide, fact_div_ovf_elide, fact_mem_bounds_elide): (
+        &[usize],
+        &[usize],
+        &[usize],
+    ) = if rewritten.len() == wasm_ops.len() {
+        (
+            &config.fact_div_zero_elide,
+            &config.fact_div_ovf_elide,
+            &config.fact_mem_bounds_elide,
+        )
     } else {
-        if !config.fact_div_zero_elide.is_empty() || !config.fact_div_ovf_elide.is_empty() {
+        if !config.fact_div_zero_elide.is_empty()
+            || !config.fact_div_ovf_elide.is_empty()
+            || !config.fact_mem_bounds_elide.is_empty()
+        {
             eprintln!(
-                "fact-spec: DECLINE div-guard elision marks dropped — the                      memory.grow(0) fold shifted op indices (#494 defensive gate);                      general lowering emitted"
+                "fact-spec: DECLINE guard elision marks dropped — the                      memory.grow(0) fold shifted op indices (#494 defensive gate);                      general lowering emitted"
             );
         }
-        (&[], &[])
+        (&[], &[], &[])
     };
     let wasm_ops: &[WasmOp] = &rewritten;
 
@@ -415,6 +424,10 @@ fn compile_wasm_to_arm(
         selector.set_reject_self_contained_call_indirect(!config.relocatable);
         // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
         selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
+        // VCR-MEM-002 phase 1 (#406): per-memory initial page counts — enables
+        // the multi-memory arms (memory-0 lowering never reads it; empty ⇒
+        // every multi-memory op declines loudly).
+        selector.set_memory_pages(config.memory_pages.clone());
         // #311: i64 call results are register PAIRS — tag them.
         selector.set_result_types(config.func_ret_i64.clone(), config.type_ret_i64.clone());
         // #359: declared param widths of THIS function, so the AAPCS stack-arg
@@ -485,6 +498,9 @@ fn compile_wasm_to_arm(
         // marks (empty in every compile without SYNTH_FACT_SPEC + facts).
         selector
             .set_fact_div_guard_elisions(fact_div_zero_elide.to_vec(), fact_div_ovf_elide.to_vec());
+        // #494 bounds-elision: certificate-discharged memory bounds-guard
+        // marks (empty in every compile without SYNTH_FACT_SPEC + facts).
+        selector.set_fact_mem_bounds_elisions(fact_mem_bounds_elide.to_vec());
         selector.select_with_stack(wasm_ops, num_params)
     };
     let select_direct = || -> Result<Vec<ArmInstruction>, String> {
@@ -660,7 +676,11 @@ fn compile_wasm_to_arm(
     // them. Route marked functions direct (the #507/#509 honest-degradation
     // pattern). Never fires without SYNTH_FACT_SPEC + facts + a discharged
     // obligation, so every existing compile keeps its path byte-identical.
-    let has_fact_div_elide = !fact_div_zero_elide.is_empty() || !fact_div_ovf_elide.is_empty();
+    let has_fact_div_elide = !fact_div_zero_elide.is_empty()
+        || !fact_div_ovf_elide.is_empty()
+        // #494 bounds-elision: memory bounds-guard marks are direct-selector
+        // keyed for the same reason (IR passes renumber instructions).
+        || !fact_mem_bounds_elide.is_empty();
     // #643: the optimized path's global lowering is width-naive — `GlobalGet`/
     // `GlobalSet` are single-word `[R9, idx*4]` accesses, which (a) silently
     // dropped the high word of every i64 global and (b) mis-address every

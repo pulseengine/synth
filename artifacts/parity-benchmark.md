@@ -22,8 +22,18 @@ Regenerate everything on this page:
   `arm-none-eabi-gcc -Os`, and within 2 B of the **12 B LLVM floor** (CITED
   #494). C has no channel to carry the range premise — the native compiler
   must keep both compares; synth carries the proof (#494).
+- **Sandbox bounds checks become FREE under a proven premise**: the
+  gust_poll-shaped record-array kernel under `--safety-bounds software`
+  carries 8 inline guards (**184 B**); with
+  the premise slot∈[0,63] every guard falls to a per-site ordeal certificate
+  (`UNSAT(P ∧ trap_mem_oob(zext64(index)+offset, size, min_mem))`) —
+  **104 B, byte-identical to the unguarded
+  floor**. The sandbox-safety tax native C never pays drops to exactly zero
+  for wasm-AOT too, and only when proven (#494 × #390 `guard_bool`; wrong
+  premise ⇒ Sat ⇒ loud decline, guards retained).
 - **General register allocation is still the gap**: gust_poll is
-  **740 B vs 208 B** (CITED #390) = 3.56×, with
+  **724 B vs 208 B** (CITED #390) =
+  3.48x, with
   `spill_reload` alone ~31% of the function
   (`artifacts/size_attribution_390.md` — the productive-work residual, 194 B,
   is already comparable to LLVM's entire output; the gap is overhead buckets).
@@ -37,7 +47,7 @@ Regenerate everything on this page:
 
 ## Pinned toolchain (versions that produced the MEASURED numbers)
 
-- **synth**: `synth 0.41.0` (debug build, `--features verify` — the fact-spec row needs the ordeal solver)
+- **synth**: `synth 0.42.0` (debug build, `--features verify` — the fact-spec row needs the ordeal solver)
 - **arm-none-eabi-gcc**: `arm-none-eabi-gcc (Arm GNU Toolchain 13.2.rel1 (Build arm-13.7)) 13.2.1 20231009`
 - **arm-none-eabi-objdump**: `GNU objdump (Arm GNU Toolchain 13.2.rel1 (Build arm-13.7)) 2.41.0.20231009`
 - **wat2wasm**: `1.0.39`
@@ -71,7 +81,7 @@ Regenerate everything on this page:
 
 | kernel | path | .text B | provenance | vs native ref | cycles |
 |---|---|---|---|---|---|
-| gust_poll | synth AOT (default) | 740 | MEASURED | 3.56x | OPEN — gale silicon (DWT) |
+| gust_poll | synth AOT (default) | 724 | MEASURED | 3.48x | OPEN — gale silicon (DWT) |
 | gust_poll | native rustc/LLVM thumbv7m | 208 | CITED #390 | ref | OPEN — gale silicon (DWT) |
 | gust_mix (Q8 wrapper) | synth AOT (default) | 32 | MEASURED | 2.67x | OPEN — gale silicon (DWT) |
 | gust_mix (Q8 wrapper) | native rustc/LLVM thumbv7m | 12 | CITED #390 | ref | OPEN — gale silicon (DWT) |
@@ -79,6 +89,9 @@ Regenerate everything on this page:
 | gust_mix clamp | synth AOT + SYNTH_FACT_SPEC=1 (proven ch∈[524,1524]) | 14 | MEASURED (2 ordeal ADMITs) | 0.54x | OPEN — gale silicon (DWT) |
 | gust_mix clamp | native C — arm-none-eabi-gcc -Os | 26 | MEASURED | ref | OPEN — gale silicon (DWT) |
 | gust_mix clamp | native LLVM floor (gale gust_floor_bench) | 12 | CITED #494 | 0.46x | OPEN — gale silicon (DWT) |
+| gust_poll bounds (8 sw guards) | synth AOT --safety-bounds software (no facts) | 184 | MEASURED | 1.77x | OPEN — gale silicon (DWT) |
+| gust_poll bounds (8 sw guards) | synth AOT sw bounds + SYNTH_FACT_SPEC=1 (proven slot∈[0,63]) | 104 | MEASURED (8 ordeal ADMITs) | 1.00x | OPEN — gale silicon (DWT) |
+| gust_poll bounds (8 sw guards) | synth AOT unguarded floor (no --safety-bounds) — group ref | 104 | MEASURED | ref | OPEN — gale silicon (DWT) |
 | flat_flight | synth AOT (default) | 458 | MEASURED | 2.54x | OPEN — gale silicon (DWT) |
 | flat_flight | native C — arm-none-eabi-gcc -Os | 180 | MEASURED | ref | OPEN — gale silicon (DWT) |
 | falcon_axis (f32) | synth AOT (cortex-m4f, VFP) | 72 | MEASURED | 1.64x | OPEN — gale silicon (DWT) |
@@ -87,7 +100,10 @@ Regenerate everything on this page:
 Synth-side byte numbers are pinned by
 `crates/synth-cli/tests/parity_benchmark_735.rs` (default rows) and its
 verify-feature test (fact-spec row) — prose and measurement cannot drift
-apart without reddening CI.
+apart without reddening CI. The bounds-group rows are pinned by
+`crates/synth-cli/tests/fact_spec_bounds_494.rs` (guarded 184 B /
+specialized 104 B, 8-ADMIT non-vacuity, floor byte-identity) in the same
+fact-spec CI job.
 
 ## Falsification — one command per row group
 
@@ -104,6 +120,11 @@ table line (nonzero exit on any failure):
     # gust_mix clamp under the proven premise (needs a verify-feature synth;
     # fails loudly unless BOTH elisions are certificate-ADMITted)
     SYNTH=$CARGO_TARGET_DIR/debug/synth python3 scripts/repro/parity_benchmark/run.py --only clamp_spec
+
+    # gust_poll bounds group: software guards vs certified elision vs the
+    # unguarded floor (needs a verify-feature synth; fails loudly unless all
+    # EIGHT elisions are certificate-ADMITted)
+    SYNTH=$CARGO_TARGET_DIR/debug/synth python3 scripts/repro/parity_benchmark/run.py --only bounds
 
     # flat_flight: synth vs the in-tree C source it was compiled from
     SYNTH=$CARGO_TARGET_DIR/debug/synth python3 scripts/repro/parity_benchmark/run.py --only flat_flight
@@ -124,13 +145,14 @@ The gap is CLOSING release-over-release, lever by lever, each evidence-gated:
 
 | datum | then | now (this page) | source |
 |---|---|---|---|
-| gust_poll .text | 816 B (v0.11.50, CITED #390) | 740 B MEASURED | levers v0.12–v0.41 |
+| gust_poll .text | 816 B (v0.11.50, CITED #390) | 724 B MEASURED | levers v0.12–v0.41 |
 | gust_mix (Q8) .text | 44 B (v0.11.50, CITED #390) | 32 B MEASURED | uxth-fold, const-CSE, shift-mask-elide |
 | gust_mix clamp (proven premise) | no lever | 14 B MEASURED vs 12 B LLVM floor | #494 fact-spec (v0.31+) |
 | flat_flight frame traffic | 17 spills (#209, CITED) | Belady optimum, frame traffic 0 (since v0.24.0) | VCR-RA-001 |
 
 Open, tracked, and honestly not yet won: general regalloc overhead
-(gust_poll 3.56×, spill_reload ~31%, #390/#242 Track A), flat_flight at
+(gust_poll 3.48x,
+spill_reload ~31%, #390/#242 Track A), flat_flight at
 2.54x vs gcc, falcon f32 at
 1.64x vs gcc (constant materialization
 via `movw/movt+vmov` instead of a literal pool, unused callee-save push), and
