@@ -1,16 +1,15 @@
 (** * I32 Operations Correctness
 
     This file contains correctness proofs for all i32 WebAssembly operations.
-    Total: 29 theorems — 28 Qed, 1 Admitted
+    Total: 29 theorems — 29 Qed, 0 Admitted
 
     Strategy:
     - Arithmetic (add, sub, mul, and, or, xor): synth_binop_proof tactic
-    - Division (divu) + remainder (rems, remu): Qed against the
+    - Division (divs, divu) + remainder (rems, remu): Qed against the
       branch-taking executor exec_program_br — the trap guard's BCondOffset
-      actually skips the UDF (#73)
-    - Division (divs): Admitted — same trap-guard restatement pending, but
-      the divs model carries the extra INT_MIN/-1 (overflow) guard on top
-      of the divide-by-zero guard (no new executor capability needed)
+      actually skips the UDF (#73); divs discharges the DOUBLE guard
+      (divide-by-zero + INT_MIN/-1 overflow) with a case split on the
+      dividend-is-INT_MIN compare
     - Comparisons: flag-correspondence lemmas from ArmFlagLemmas.v
     - Bit manipulation: axiom-based (I32.clz/rbit/popcnt)
     - Shifts: Qed — mod-32 mask + register shift (#682)
@@ -80,26 +79,182 @@ Proof. synth_binop_proof. Qed.
     [exec_program_br] (ArmSemantics.v) is the model that can take the
     guard's skip.
 
-    Status: [i32_divu_correct], [i32_rems_correct] and [i32_remu_correct]
-    are DISCHARGED against [exec_program_br] below (guard + UDIV/SDIV + MLS
-    tail). Only [i32_divs_correct] remains Admitted — its model carries the
-    extra INT_MIN/-1 (overflow) guard on top of the divide-by-zero guard;
-    the same restatement applies but needs no new executor capability. *)
+    Status: ALL FOUR div/rem theorems are DISCHARGED against
+    [exec_program_br] below (guard + UDIV/SDIV + MLS tail);
+    [i32_divs_correct] closes the family with the INT_MIN/-1 double-guard
+    case split — the last i32 admit of #73. *)
 
+(** i32.div_s — the LAST div/rem trap-guard proof, discharged against the
+    branch-taking executor [exec_program_br] (#73). The compiled sequence
+    carries the DOUBLE guard: CMP R1,#0; BNE +1; UDF (divide-by-zero), then
+    MOVW/MOVT R2 := 0x80000000; CMP R0,R2; BNE +3 — and only when the
+    dividend IS INT_MIN — CMN R1,#1; BNE +1; UDF (INT_MIN/-1 overflow);
+    finally SDIV. [I32.divs v1 v2 = Some result] supplies both guard
+    discharges: the divisor is non-zero (first BNE taken), and NOT
+    (signed v1 = INT_MIN ∧ signed v2 = -1) — so when the second CMP finds
+    the dividend equal to 0x80000000 the CMN must find the divisor ≠ -1
+    (third BNE taken). Both paths land on the SDIV, whose model is
+    [I32.divs] itself.
+
+    [I32.valid_unsigned v2] is the same register-normalization hypothesis
+    as in [i32_divu_correct] (raw [v2 =? 0] model guard vs the CMP's
+    [v2 mod 2^32] Z-flag). The INT_MIN and -1 guard comparisons need no
+    such hypothesis: [I32.signed] already works mod 2^32, exactly like the
+    flags. This restatement is only provable because [I32.divs]'s overflow
+    guard now tests the signed interpretation (see Integers.v) — against
+    the old raw-representative guard the theorem was FALSE at
+    v1 = 0x80000000, v2 = 0xFFFFFFFF (model said Some, hardware traps). *)
 Theorem i32_divs_correct : forall wstate astate v1 v2 stack' result,
   wstate.(stack) = VI32 v2 :: VI32 v1 :: stack' ->
   get_reg astate R0 = v1 ->
   get_reg astate R1 = v2 ->
+  I32.valid_unsigned v2 ->
   I32.divs v1 v2 = Some result ->
   exec_wasm_instr I32DivS wstate =
     Some (mkWasmState (VI32 result :: stack')
             wstate.(locals) wstate.(globals) wstate.(memory)) ->
   exists astate',
-    exec_program (compile_wasm_to_arm I32DivS) astate = Some astate' /\
+    exec_program_br (compile_wasm_to_arm I32DivS) astate = Some astate' /\
     get_reg astate' R0 = result.
 Proof.
-  (* Admitted: requires PC-relative branching model to skip UDF trap guard *)
-Admitted.
+  intros wstate astate v1 v2 stack' result Hstack HR0 HR1 Hval Hdivs Hwasm.
+  (* Peel the divs guards: the divisor is non-zero, and the INT_MIN/-1
+     overflow conjunction is false. *)
+  assert (Hnz : v2 <> 0).
+  { unfold I32.divs in Hdivs.
+    destruct (Z.eqb_spec v2 0); [discriminate | assumption]. }
+  assert (Hovf : (Z.eqb (I32.signed v1) I32.min_signed
+                  && Z.eqb (I32.signed v2) (-1))%bool = false).
+  { unfold I32.divs in Hdivs.
+    destruct (Z.eqb_spec v2 0); [discriminate |].
+    destruct ((Z.eqb (I32.signed v1) I32.min_signed
+               && Z.eqb (I32.signed v2) (-1))%bool) eqn:E;
+      [discriminate | reflexivity]. }
+  (* The Z flag latched by CMP R1,#0 is false (divu precedent). *)
+  assert (Hz : compute_z_flag (I32.sub v2 I32.zero) = false).
+  { rewrite z_flag_sub_eq.
+    unfold I32.eq.
+    replace (I32.unsigned I32.zero) with 0 by reflexivity.
+    apply Z.eqb_neq.
+    unfold I32.unsigned.
+    rewrite Z.mod_small; [exact Hnz |].
+    unfold I32.valid_unsigned, I32.max_unsigned, I32.modulus in *. lia. }
+  unfold exec_program_br.
+  change (length (compile_wasm_to_arm I32DivS)) with 11%nat.
+  (* pc = 0: CMP R1,#0 latches the flags, registers untouched. *)
+  erewrite (exec_program_pc_instr _ _ _ _ (CMP R1 (Imm I32.zero)));
+    [| reflexivity | exact I].
+  cbn [exec_instr eval_operand2].
+  (* pc = 1: BNE +1 — Z=0, branch TAKEN, skips the ÷0 UDF. *)
+  erewrite (exec_program_pc_bcond _ _ _ _ Cond_NE 1); [| reflexivity].
+  rewrite flags_set_flags.
+  cbn [eval_condition].
+  rewrite flag_z_update_flags_arith.
+  rewrite HR1, Hz.
+  cbn [negb].
+  (* pc = 3: MOVW R2,#0 — low half of INT_MIN. *)
+  erewrite (exec_program_pc_instr _ _ _ _ (MOVW R2 (I32.repr 0)));
+    [| reflexivity | exact I].
+  cbn [exec_instr].
+  (* pc = 4: MOVT R2,#0x8000 — R2 = 0x80000000 = 2147483648. *)
+  erewrite (exec_program_pc_instr _ _ _ _ (MOVT R2 (I32.repr 32768)));
+    [| reflexivity | exact I].
+  cbn [exec_instr].
+  rewrite get_set_reg_eq.
+  replace (I32.or (I32.and (I32.repr 0) (I32.repr 65535))
+             (I32.shl (I32.repr 32768) (I32.repr 16)))
+    with 2147483648 by reflexivity.
+  (* pc = 5: CMP R0,R2 — compares the dividend against INT_MIN. *)
+  erewrite (exec_program_pc_instr _ _ _ _ (CMP R0 (Reg R2)));
+    [| reflexivity | exact I].
+  cbn [exec_instr eval_operand2].
+  rewrite get_set_reg_eq.
+  rewrite !(get_set_reg_neq _ R2 R0) by discriminate.
+  rewrite !get_reg_set_flags.
+  rewrite HR0.
+  (* pc = 6: BNE +3 — case split on dividend = INT_MIN. *)
+  erewrite (exec_program_pc_bcond _ _ _ _ Cond_NE 3); [| reflexivity].
+  rewrite flags_set_flags.
+  cbn [eval_condition].
+  rewrite flag_z_update_flags_arith.
+  rewrite z_flag_sub_eq.
+  destruct (I32.eq v1 2147483648) eqn:Hmin; cbn [negb].
+  - (* Dividend IS INT_MIN: fall through to the CMN R1,#1 overflow guard,
+       which must find the divisor ≠ -1 (else divs would have trapped). *)
+    assert (Hsv1 : I32.signed v1 = I32.min_signed).
+    { unfold I32.eq in Hmin.
+      apply Z.eqb_eq in Hmin.
+      replace (I32.unsigned 2147483648) with 2147483648 in Hmin
+        by reflexivity.
+      unfold I32.signed. rewrite Hmin. reflexivity. }
+    assert (Hsv2 : Z.eqb (I32.signed v2) (-1) = false).
+    { rewrite Hsv1, Z.eqb_refl in Hovf. cbn [andb] in Hovf. exact Hovf. }
+    apply Z.eqb_neq in Hsv2.
+    (* The Z flag latched by CMN R1,#1 is therefore false. *)
+    assert (Hz3 : compute_z_flag (I32.add v2 I32.one) = false).
+    { unfold compute_z_flag, I32.eq.
+      replace (I32.unsigned I32.zero) with 0 by reflexivity.
+      apply Z.eqb_neq. intro Heq0.
+      apply Hsv2.
+      unfold I32.unsigned, I32.add, I32.repr in Heq0.
+      change I32.one with 1 in Heq0.
+      rewrite Zmod_mod in Heq0.
+      assert (Hu : v2 mod I32.modulus = I32.modulus - 1).
+      { assert (HM : 0 < I32.modulus) by (unfold I32.modulus; lia).
+        assert (Hb : 0 <= v2 mod I32.modulus < I32.modulus)
+          by (apply Z.mod_pos_bound; lia).
+        rewrite <- Zplus_mod_idemp_l in Heq0.
+        destruct (Z.eqb_spec (v2 mod I32.modulus) (I32.modulus - 1))
+          as [E | E]; [exact E |].
+        rewrite Z.mod_small in Heq0; lia. }
+      unfold I32.signed, I32.unsigned.
+      rewrite Hu.
+      reflexivity. }
+    (* pc = 7: CMN R1,#1 latches Z = (v2 + 1 == 0). *)
+    erewrite (exec_program_pc_instr _ _ _ _ (CMN R1 (Imm I32.one)));
+      [| reflexivity | exact I].
+    cbn [exec_instr eval_operand2].
+    rewrite !get_reg_set_flags.
+    rewrite !(get_set_reg_neq _ R2 R1) by discriminate.
+    rewrite !get_reg_set_flags.
+    rewrite HR1.
+    (* pc = 8: BNE +1 — divisor ≠ -1, branch TAKEN, skips the overflow UDF. *)
+    erewrite (exec_program_pc_bcond _ _ _ _ Cond_NE 1); [| reflexivity].
+    rewrite flags_set_flags.
+    cbn [eval_condition].
+    rewrite flag_z_update_flags_arith.
+    rewrite Hz3.
+    cbn [negb].
+    (* pc = 10: SDIV R0,R0,R1 — the model is I32.divs itself. *)
+    erewrite (exec_program_pc_instr _ _ _ _ (SDIV R0 R0 R1));
+      [| reflexivity | exact I].
+    cbn [exec_instr].
+    rewrite !get_reg_set_flags.
+    rewrite !(get_set_reg_neq _ R2 R0) by discriminate.
+    rewrite !(get_set_reg_neq _ R2 R1) by discriminate.
+    rewrite !get_reg_set_flags.
+    rewrite HR0, HR1, Hdivs.
+    cbn beta iota.
+    (* pc = 11: off the end — the program completed. *)
+    rewrite exec_program_pc_done; [| reflexivity].
+    eexists. split.
+    + reflexivity.
+    + apply get_set_reg_eq.
+  - (* Dividend ≠ INT_MIN: branch straight to the SDIV. *)
+    erewrite (exec_program_pc_instr _ _ _ _ (SDIV R0 R0 R1));
+      [| reflexivity | exact I].
+    cbn [exec_instr].
+    rewrite !get_reg_set_flags.
+    rewrite !(get_set_reg_neq _ R2 R0) by discriminate.
+    rewrite !(get_set_reg_neq _ R2 R1) by discriminate.
+    rewrite !get_reg_set_flags.
+    rewrite HR0, HR1, Hdivs.
+    cbn beta iota.
+    rewrite exec_program_pc_done; [| reflexivity].
+    eexists. split.
+    + reflexivity.
+    + apply get_set_reg_eq.
+Qed.
 
 (** i32.div_u — the FIRST trap-guard proof discharged against the
     branch-taking executor [exec_program_br] (#73): the compiled sequence
@@ -739,11 +894,10 @@ Qed.
 
 (** ** Summary
 
-    I32 theorems: 29 total — 28 Qed, 1 Admitted
-    - Arithmetic: 6 Qed (Add, Sub, Mul, DivU, RemS, RemU — DivU/RemS/RemU
-      against the branch-taking exec_program_br, #73), 1 Admitted (DivS —
-      trap-guard restatement against exec_program_br pending, extra
-      INT_MIN/-1 overflow guard)
+    I32 theorems: 29 total — 29 Qed, 0 Admitted
+    - Arithmetic: 7 Qed (Add, Sub, Mul, DivS, DivU, RemS, RemU — the four
+      div/rem trap-guard proofs against the branch-taking exec_program_br,
+      #73; DivS discharges the INT_MIN/-1 double guard)
     - Bitwise: 8 Qed (And, Or, Xor, Shl, ShrU, ShrS, Rotl, Rotr)
     - Comparison: 11 Qed (EQZ, EQ, NE, LtS, LtU, GtS, GtU, LeS, LeU, GeS, GeU)
     - Bit manipulation: 3 Qed (CLZ/CTZ/POPCNT using axiomatized I32.clz/ctz/popcnt)

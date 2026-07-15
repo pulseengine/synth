@@ -5,6 +5,7 @@
 //! captures its behavior, including register updates and condition flags.
 
 use crate::term::{BV, Bool};
+use std::collections::HashMap;
 use synth_synthesis::rules::{ArmOp, Operand2, Reg, VfpReg};
 
 /// ARM processor state representation in SMT
@@ -23,6 +24,13 @@ pub struct ArmState {
     pub locals: Vec<BV>,
     /// Global variables (for WASM verification)
     pub globals: Vec<BV>,
+    /// VCR-VER-002 (#166): the accumulated condition under which the executed
+    /// sequence TRAPS (reaches a `UDF`). `false` in a fresh state; `encode_op`
+    /// sets it unconditionally on a `Udf`, and the branch-taking executor
+    /// [`ArmSemantics::encode_sequence_br`] conditions it on the path guard the
+    /// `UDF` is reached under — this is the ARM-side trap term the
+    /// trap-preservation VC compares against the WASM op's trap condition.
+    pub may_trap: Bool,
 }
 
 /// ARM condition flags
@@ -70,6 +78,7 @@ impl ArmState {
             memory,
             locals,
             globals,
+            may_trap: Bool::from_bool(false),
         }
     }
 
@@ -1818,6 +1827,15 @@ impl ArmSemantics {
                 state.set_reg(rd, result);
             }
 
+            // VCR-VER-002 (#166): UDF is the WASM trap sink — executing it
+            // raises UsageFault. In the straight-line model (no path guards)
+            // reaching a UDF means the sequence traps unconditionally; the
+            // branch-taking executor [`Self::encode_sequence_br`] instead
+            // conditions this on the guard the UDF is reached under.
+            ArmOp::Udf { .. } => {
+                state.may_trap = Bool::from_bool(true);
+            }
+
             _ => {
                 // Unsupported operations - no state change
             }
@@ -2143,6 +2161,437 @@ impl ArmSemantics {
         x = x.bvlshr(BV::from_i64(24, 32));
 
         x
+    }
+}
+
+// ===========================================================================
+// VCR-VER-002 (#166): branch-taking guarded executor — DERIVES the ARM trap
+// condition from the emitted guard/branch/UDF structure
+// ===========================================================================
+
+/// Path guard: the condition under which an instruction executes. `Always`
+/// keeps the straight-line common case free of `ite` merging.
+#[derive(Clone)]
+enum Guard {
+    Always,
+    Cond(Bool),
+}
+
+impl Guard {
+    fn and_cond(&self, c: &Bool) -> Guard {
+        match self {
+            Guard::Always => Guard::Cond(c.clone()),
+            Guard::Cond(g) => Guard::Cond(Bool::and(&[g, c])),
+        }
+    }
+}
+
+/// Merge an incoming edge guard into the guard map at `at`.
+fn merge_guard(incoming: &mut HashMap<usize, Guard>, at: usize, g: Guard) {
+    match (incoming.get(&at), g) {
+        (Some(Guard::Always), _) => {}
+        (_, Guard::Always) => {
+            incoming.insert(at, Guard::Always);
+        }
+        (Some(Guard::Cond(a)), Guard::Cond(b)) => {
+            let merged = Bool::or(&[a, &b]);
+            incoming.insert(at, Guard::Cond(merged));
+        }
+        (None, g @ Guard::Cond(_)) => {
+            incoming.insert(at, g);
+        }
+    }
+}
+
+/// Boolean if-then-else (the term API only has BV ite).
+fn bool_ite(c: &Bool, t: &Bool, e: &Bool) -> Bool {
+    Bool::or(&[&Bool::and(&[c, t]), &Bool::and(&[&c.not(), e])])
+}
+
+/// IEEE 754 single-precision NaN test over the raw bit pattern:
+/// exponent all-ones with a non-zero fraction.
+fn f32_is_nan(x: &BV) -> Bool {
+    let exp_ones = x.extract(30, 23).eq(BV::from_u64(0xFF, 8));
+    let frac_nonzero = x.extract(22, 0).eq(BV::from_u64(0, 23)).not();
+    Bool::and(&[&exp_ones, &frac_nonzero])
+}
+
+/// Ordered `a < b` over IEEE 754 single-precision BIT PATTERNS, assuming
+/// neither operand is NaN (the callers conjoin the NaN exclusion). Uses the
+/// sign/magnitude case split; `+0.0 == -0.0` (neither is less).
+fn f32_ordered_lt(a: &BV, b: &BV) -> Bool {
+    let a_neg = a.extract(31, 31).eq(BV::from_u64(1, 1));
+    let b_neg = b.extract(31, 31).eq(BV::from_u64(1, 1));
+    let a_mag = a.extract(30, 0);
+    let b_mag = b.extract(30, 0);
+    let zero31 = BV::from_u64(0, 31);
+    let both_zero = Bool::and(&[&a_mag.eq(&zero31), &b_mag.eq(&zero31)]);
+    // (neg, neg): larger magnitude is smaller; (neg, pos): a < b unless both
+    // are zeros; (pos, neg): never; (pos, pos): magnitude order.
+    let neg_neg = b_mag.bvult(&a_mag);
+    let neg_pos = both_zero.not();
+    let pos_pos = a_mag.bvult(&b_mag);
+    bool_ite(
+        &a_neg,
+        &bool_ite(&b_neg, &neg_neg, &neg_pos),
+        &bool_ite(&b_neg, &Bool::from_bool(false), &pos_pos),
+    )
+}
+
+/// The three ordered VFP comparison results the trunc guards use, as total
+/// functions over the operands' bit patterns (result is 0 on any NaN — the
+/// unordered case — exactly the ARM `VCMP`+`VMRS`+`IT` materialization the
+/// `F32Lt`/`F32Gt`/`F32Ge` pseudo-ops stand for).
+fn f32_cmp_result(kind: F32CmpKind, a: &BV, b: &BV) -> Bool {
+    let ordered = Bool::and(&[&f32_is_nan(a).not(), &f32_is_nan(b).not()]);
+    let rel = match kind {
+        F32CmpKind::Lt => f32_ordered_lt(a, b),
+        F32CmpKind::Gt => f32_ordered_lt(b, a),
+        F32CmpKind::Ge => f32_ordered_lt(a, b).not(),
+    };
+    Bool::and(&[&ordered, &rel])
+}
+
+#[derive(Clone, Copy)]
+enum F32CmpKind {
+    Lt,
+    Gt,
+    Ge,
+}
+
+impl ArmSemantics {
+    /// Branch-taking guarded symbolic execution of an ARM sequence,
+    /// deriving `state.may_trap` from the emitted guard structure
+    /// (VCR-VER-002, #166).
+    ///
+    /// Forward-branch DAG execution over the op list: every instruction
+    /// carries the disjunction of the path conditions that reach it
+    /// (if-conversion), `BCondOffset` routes guards forward, and a `Udf`
+    /// accumulates its path guard into [`ArmState::may_trap`] — and does NOT
+    /// fall through (a trap halts execution, so the code after a guarded
+    /// `UDF` is reached only via the guard's skip branch). This makes the ARM
+    /// trap condition a DERIVED term: a lowering whose guard was dropped,
+    /// inverted, or aimed at the wrong register derives a trap condition that
+    /// fails the preservation VC — unlike the previous structural
+    /// `Udf`-presence proxy, which only saw that *some* trap existed.
+    ///
+    /// Branch targets are resolved in bytes via the shipped byte-size
+    /// estimator (`synth_synthesis::optimizer_bridge::estimate_arm_byte_size`,
+    /// the #511 estimator that CI pins against the encoder), matching the
+    /// encoder's `target = branch + 4 + 2*offset` halfword rule. A target
+    /// that lands mid-instruction, a backward branch (loop), an op outside
+    /// the modeled subset, or any label/call control flow is a loud `Err` —
+    /// never a silent accept.
+    pub fn encode_sequence_br(
+        &self,
+        arm_ops: &[ArmOp],
+        state: &mut ArmState,
+    ) -> Result<(), String> {
+        use synth_synthesis::optimizer_bridge::estimate_arm_byte_size;
+
+        // Byte offset of each op (the estimator is the pinned encoder mirror).
+        let mut offsets = Vec::with_capacity(arm_ops.len());
+        let mut off = 0usize;
+        for op in arm_ops {
+            offsets.push(off);
+            off += estimate_arm_byte_size(op);
+        }
+        let total_len = off;
+        let boundaries: std::collections::HashSet<usize> = offsets.iter().copied().collect();
+
+        let mut incoming: HashMap<usize, Guard> = HashMap::new();
+        incoming.insert(0, Guard::Always);
+
+        for (i, op) in arm_ops.iter().enumerate() {
+            let o = offsets[i];
+            // Unreached instruction (e.g. dead code behind an unconditional
+            // trap): no incoming edge, skip — it can never execute.
+            let Some(g) = incoming.get(&o).cloned() else {
+                continue;
+            };
+            let next = o + estimate_arm_byte_size(op);
+
+            match op {
+                ArmOp::BCondOffset { cond, offset } => {
+                    if *offset < 0 {
+                        return Err(
+                            "backward branch (loop) outside the trap-derivation subset — held out"
+                                .to_string(),
+                        );
+                    }
+                    // Encoder rule: offset is the halfword displacement,
+                    // target = branch_addr + 4 + 2*offset.
+                    let target = o + 4 + 2 * (*offset as usize);
+                    if target != total_len && !boundaries.contains(&target) {
+                        return Err(format!(
+                            "BCondOffset target {target} lands mid-instruction \
+                             (sequence len {total_len}) — estimator/encoder drift or \
+                             malformed guard"
+                        ));
+                    }
+                    let c = self.evaluate_condition(cond, &state.flags);
+                    merge_guard(&mut incoming, target, g.and_cond(&c));
+                    merge_guard(&mut incoming, next, g.and_cond(&c.not()));
+                }
+
+                ArmOp::Udf { .. } => {
+                    // The trap fires exactly under this path guard; execution
+                    // never continues past it (no fall-through edge).
+                    state.may_trap = match &g {
+                        Guard::Always => Bool::from_bool(true),
+                        Guard::Cond(gb) => Bool::or(&[&state.may_trap, gb]),
+                    };
+                }
+
+                // Label/relative/indirect control flow has no derivable local
+                // trap semantics here — loud decline, never a silent accept.
+                ArmOp::B { .. }
+                | ArmOp::BOffset { .. }
+                | ArmOp::Bcc { .. }
+                | ArmOp::Bhs { .. }
+                | ArmOp::Blo { .. }
+                | ArmOp::Bl { .. }
+                | ArmOp::Blx { .. }
+                | ArmOp::Bx { .. }
+                | ArmOp::Label { .. }
+                | ArmOp::Call { .. }
+                | ArmOp::CallIndirect { .. }
+                | ArmOp::BrTable { .. }
+                | ArmOp::Push { .. }
+                | ArmOp::Pop { .. } => {
+                    return Err(format!(
+                        "op {op:?} outside the trap-derivation subset — loud decline"
+                    ));
+                }
+
+                _ => {
+                    match &g {
+                        Guard::Always => self.exec_trap_subset_op(op, state)?,
+                        Guard::Cond(gb) => {
+                            // Guarded (if-converted) execution: snapshot the
+                            // register/flag/VFP state, execute, ite-merge
+                            // under the guard. Sound because these ops touch
+                            // only registers/flags/VFP (the subset check in
+                            // exec_trap_subset_op rejects everything else).
+                            //
+                            // Only components the op actually CHANGED are
+                            // merged — `ite(g, x, x) ≡ x`, and wrapping every
+                            // untouched register on every guarded step nests
+                            // the SDIV/UDIV operands in ite chains, blowing
+                            // the div/rem trap VC off a CDCL cliff (observed:
+                            // the div_s double-guard query ran 45+ min / 5 GB
+                            // with the unconditional merge, sub-second
+                            // without).
+                            let regs_before = state.registers.clone();
+                            let vfp_before = state.vfp_registers.clone();
+                            let flags_before = ConditionFlags {
+                                n: state.flags.n.clone(),
+                                z: state.flags.z.clone(),
+                                c: state.flags.c.clone(),
+                                v: state.flags.v.clone(),
+                            };
+                            self.exec_trap_subset_op(op, state)?;
+                            for (r, before) in regs_before.iter().enumerate() {
+                                if !state.registers[r].same_term(before) {
+                                    state.registers[r] = gb.ite(&state.registers[r], before);
+                                }
+                            }
+                            for (r, before) in vfp_before.iter().enumerate() {
+                                if !state.vfp_registers[r].same_term(before) {
+                                    state.vfp_registers[r] =
+                                        gb.ite(&state.vfp_registers[r], before);
+                                }
+                            }
+                            if !state.flags.n.same_term(&flags_before.n) {
+                                state.flags.n = bool_ite(gb, &state.flags.n, &flags_before.n);
+                            }
+                            if !state.flags.z.same_term(&flags_before.z) {
+                                state.flags.z = bool_ite(gb, &state.flags.z, &flags_before.z);
+                            }
+                            if !state.flags.c.same_term(&flags_before.c) {
+                                state.flags.c = bool_ite(gb, &state.flags.c, &flags_before.c);
+                            }
+                            if !state.flags.v.same_term(&flags_before.v) {
+                                state.flags.v = bool_ite(gb, &state.flags.v, &flags_before.v);
+                            }
+                        }
+                    }
+                    merge_guard(&mut incoming, next, g);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Whether the sequence's branch structure is VALUE-DEAD: every op inside
+    /// a branch-skipped span writes no register/VFP state (`Udf`, `Cmp`,
+    /// `Cmn`, nested `BCondOffset` only), and no op anywhere in the sequence
+    /// turns flags into a register value (`SetCond`).
+    ///
+    /// Under this condition the final REGISTER state is path-independent —
+    /// every register-writing op executes on every path, in program order —
+    /// so the straight-line value pass
+    /// [`Self::encode_sequence_value_straightline`] computes exactly the
+    /// registers any non-trapping real path produces. The flag writes a taken
+    /// branch skips (e.g. the div_s overflow guard's `CMN` behind `BNE +3`)
+    /// can only influence which PATH is taken — the trap side, which
+    /// [`Self::encode_sequence_br`] derives with full path sensitivity — and
+    /// never a register value, because `SetCond` (the only flag→register op
+    /// in the modeled subset) is excluded outright.
+    ///
+    /// This is what lets the div/rem trap VC keep its value clause
+    /// STRUCTURALLY aligned with the WASM side (`bvsdiv`/`MLS` terms
+    /// identical after canonicalization): an `ite(guard, …)` wrapper on an
+    /// SDIV/MLS operand un-shares the 32×32 multiplier/divider circuits and
+    /// sends the UNSAT proof off the CDCL cliff term.rs documents (observed:
+    /// rem_s value clause 15+ min with the ite, sub-second without).
+    pub fn branch_spans_are_value_dead(arm_ops: &[ArmOp]) -> bool {
+        use synth_synthesis::optimizer_bridge::estimate_arm_byte_size;
+
+        let mut offsets = Vec::with_capacity(arm_ops.len());
+        let mut off = 0usize;
+        for op in arm_ops {
+            offsets.push(off);
+            off += estimate_arm_byte_size(op);
+        }
+
+        // No flag→register materialization anywhere in the sequence.
+        if arm_ops.iter().any(|op| matches!(op, ArmOp::SetCond { .. })) {
+            return false;
+        }
+
+        for (i, op) in arm_ops.iter().enumerate() {
+            if let ArmOp::BCondOffset { offset, .. } = op {
+                if *offset < 0 {
+                    return false; // backward branch — not this subset at all
+                }
+                // Fall-through = next instruction; encoder rule for the
+                // target: branch_addr + 4 + 2*offset (same as
+                // `encode_sequence_br`). The skipped span is [fall-through,
+                // target).
+                let span_start = offsets[i] + estimate_arm_byte_size(op);
+                let span_end = offsets[i] + 4 + 2 * (*offset as usize);
+                for (j, skipped) in arm_ops.iter().enumerate() {
+                    if offsets[j] >= span_start && offsets[j] < span_end {
+                        match skipped {
+                            ArmOp::Udf { .. }
+                            | ArmOp::Cmp { .. }
+                            | ArmOp::Cmn { .. }
+                            | ArmOp::BCondOffset { .. } => {}
+                            _ => return false, // a register/VFP write is skippable
+                        }
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Straight-line VALUE execution of a trap-guarded sequence: branches and
+    /// `UDF`s are register no-ops, every other op executes unconditionally
+    /// via the same modeled subset as the branch-taking executor.
+    ///
+    /// ONLY sound when [`Self::branch_spans_are_value_dead`] holds (see its
+    /// doc for the argument); callers must check it first. Produces ite-free
+    /// register terms, keeping the trap VC's value clause structurally
+    /// aligned with the WASM encoding.
+    pub fn encode_sequence_value_straightline(
+        &self,
+        arm_ops: &[ArmOp],
+        state: &mut ArmState,
+    ) -> Result<(), String> {
+        for op in arm_ops {
+            match op {
+                ArmOp::BCondOffset { .. } | ArmOp::Udf { .. } => {}
+                _ => self.exec_trap_subset_op(op, state)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Execute one non-branch op of the trap-derivation subset. Ops the
+    /// shipped trap-guarded lowerings use but `encode_op` leaves unmodeled
+    /// (`Cmn`, `Movw`, `Movt`, the ordered VFP compares) get explicit
+    /// semantics here; a WHITELIST of register-only value ops delegates to
+    /// `encode_op`; anything else is a loud `Err` — `encode_op`'s silent
+    /// `_ => {}` default must never green-wash a trap derivation.
+    fn exec_trap_subset_op(&self, op: &ArmOp, state: &mut ArmState) -> Result<(), String> {
+        match op {
+            // CMN: compare negated — flags from rn + op2.
+            ArmOp::Cmn { rn, op2 } => {
+                let a = state.get_reg(rn).clone();
+                let b = self.evaluate_operand2(op2, state);
+                let result = a.bvadd(&b);
+                self.update_flags_add(state, &a, &b, &result);
+                Ok(())
+            }
+            ArmOp::Movw { rd, imm16 } => {
+                state.set_reg(rd, BV::from_u64(*imm16 as u64, 32));
+                Ok(())
+            }
+            ArmOp::Movt { rd, imm16 } => {
+                let low = state.get_reg(rd).bvand(BV::from_u64(0xFFFF, 32));
+                let v = low.bvor(BV::from_u64((*imm16 as u64) << 16, 32));
+                state.set_reg(rd, v);
+                Ok(())
+            }
+            // Ordered VFP compares (the #709 trunc guards): real bit-pattern
+            // semantics — result register is 1 iff the ordered relation
+            // holds, 0 on NaN. encode_op models these as uninterpreted
+            // symbols, which cannot drive a trap derivation.
+            ArmOp::F32Lt { rd, sn, sm } => {
+                let a = state.get_vfp_reg(sn).clone();
+                let b = state.get_vfp_reg(sm).clone();
+                let r = self.bool_to_bv32(&f32_cmp_result(F32CmpKind::Lt, &a, &b));
+                state.set_reg(rd, r);
+                Ok(())
+            }
+            ArmOp::F32Gt { rd, sn, sm } => {
+                let a = state.get_vfp_reg(sn).clone();
+                let b = state.get_vfp_reg(sm).clone();
+                let r = self.bool_to_bv32(&f32_cmp_result(F32CmpKind::Gt, &a, &b));
+                state.set_reg(rd, r);
+                Ok(())
+            }
+            ArmOp::F32Ge { rd, sn, sm } => {
+                let a = state.get_vfp_reg(sn).clone();
+                let b = state.get_vfp_reg(sm).clone();
+                let r = self.bool_to_bv32(&f32_cmp_result(F32CmpKind::Ge, &a, &b));
+                state.set_reg(rd, r);
+                Ok(())
+            }
+            // Register/flag-only value ops the covered lowerings use:
+            // delegate to the existing encode_op semantics.
+            ArmOp::Cmp { .. }
+            | ArmOp::Add { .. }
+            | ArmOp::Sub { .. }
+            | ArmOp::Rsb { .. }
+            | ArmOp::Mov { .. }
+            | ArmOp::And { .. }
+            | ArmOp::Orr { .. }
+            | ArmOp::Eor { .. }
+            | ArmOp::Mul { .. }
+            | ArmOp::Mls { .. }
+            | ArmOp::Sdiv { .. }
+            | ArmOp::Udiv { .. }
+            | ArmOp::SetCond { .. }
+            | ArmOp::Nop
+            | ArmOp::F32Const { .. }
+            | ArmOp::I32TruncF32S { .. }
+            | ArmOp::I32TruncF32U { .. }
+            // Ldr/Str: the value model treats loads as fresh symbols and
+            // stores as no-ops (no memory-contents model) — fine for a trap
+            // derivation, where only the guard's flags/registers matter.
+            | ArmOp::Ldr { .. }
+            | ArmOp::Str { .. } => {
+                self.encode_op(op, state);
+                Ok(())
+            }
+            other => Err(format!(
+                "op {other:?} outside the trap-derivation subset — loud decline"
+            )),
+        }
     }
 }
 

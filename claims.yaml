@@ -29,20 +29,20 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-README
     doc: README.md
-    text: "472 Qed / 6 Admitted"
+    text: "473 Qed / 5 Admitted"
     evidence:
       - kind: count-eq                       # ALL THREE README spots must agree —
-        pattern: '472 Qed / 6 Admitted'      # a verbatim check alone greens if one
+        pattern: '473 Qed / 5 Admitted'      # a verbatim check alone greens if one
         glob: ['README.md']                  # of them drifts while another matches
         expect: 3
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 472
+        expect: 473
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 6
+        expect: 5
       - kind: count-eq                       # the "+2 admit. tactics" disclosure
         pattern: '^\s*admit\.'
         glob: ['coq/Synth/**/*.v']
@@ -50,33 +50,33 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "472 Qed / 6 Admitted"
+    text: "473 Qed / 5 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 472
+        expect: 473
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 6
+        expect: 5
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "472 Qed / 6 Admitted"
+    text: "473 Qed / 5 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '472 Qed / 6 Admitted'
+        pattern: '473 Qed / 5 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 472
+        expect: 473
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 6
+        expect: 5
 
   # ---------------------------------------------------------------------------
   # The admit breakdown the docs disclose — per-file, so a new admit anywhere
@@ -84,12 +84,12 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-ADMIT-BREAKDOWN
     doc: README.md
-    text: "1 i32 division trap guard"
+    text: "0 division admits"
     evidence:
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/Synth/CorrectnessI32.v']
-        expect: 1
+        expect: 0
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/Synth/Compilation.v']

@@ -89,7 +89,7 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 472 Qed / 6 Admitted
+See `coq/STATUS.md` for the complete coverage matrix. Current: 473 Qed / 5 Admitted
 (+2 `admit.` tactics) across `coq/Synth/`. The 40 selector-DSL rule theorems
 (`VcrSelRules.v`) are stated directly about the GENERATED model (VCR-ISA-001
 #667: `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v` emitted
@@ -99,9 +99,9 @@ reflexivity gate was retired as vacuous once the hand-written mirror was gone
 `scripts/claim_check.py` re-derive it on every commit — when a proof lands, update
 the docs AND `claims.yaml` in the same PR. Proofs are tiered:
 T1 (result-correspondence), T2 (existence-only), T3 (admitted). Remaining admits:
-1 i32 division trap guard (div_s INT_MIN/-1 double guard, #73 — div_u/rem_s/rem_u
-discharged against `exec_program_br`), 2 Compilation.v,
-1 CorrectnessSimple.v, 2 ArmRefinement.v — 0 i64 admits.
+2 Compilation.v, 1 CorrectnessSimple.v, 2 ArmRefinement.v — 0 division admits
+(all four i32 div/rem trap guards discharged against `exec_program_br`, #73)
+and 0 i64 admits.
 All i32 AND i64 operations have T1 proofs (i64 T1 parity since v0.11.0).
 
 ### Claim-verification gate
