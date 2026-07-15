@@ -3450,9 +3450,10 @@ impl InstructionSelector {
     /// the linker places the `__synth_wasm_data` region anywhere, and (b) it is
     /// invisible to the `--shadow-stack-size` static down-shift (#678) and the
     /// post-link in-range oracle, which walk RELOCATIONS (the #739 silent OOB
-    /// miscompile). Callers either relocate the base via
-    /// [`Self::emit_wasm_data_addr`] (i32 word + sub-word accesses) or decline
-    /// loudly with a typed `Err` (i64 pair accesses, not yet relocated) —
+    /// miscompile). Callers relocate the base via
+    /// [`Self::emit_wasm_data_addr`]: i32 word + sub-word accesses (#744) and
+    /// the i64 pair / narrow accesses (#746). The float load/store arms still
+    /// decline loudly with a typed `Err` (GI-FPU-002, not yet relocated) —
     /// never bake.
     fn is_native_pointer_static_offset(&self, offset: u32) -> bool {
         self.native_pointer_abi && self.wasm_data_base > 0 && offset >= self.wasm_data_base
@@ -10422,21 +10423,6 @@ impl InstructionSelector {
                 | I64Load16U { offset, .. }
                 | I64Load32S { offset, .. }
                 | I64Load32U { offset, .. } => {
-                    // #739: a static-region memarg offset must not reach the
-                    // raw `[R11 + addr + #offset]` lowering below — it would
-                    // bake an un-relocated linmem offset (invisible to the
-                    // #678 `--shadow-stack-size` rebase → silent OOB). The i64
-                    // pair lowering does not yet model the relocated base;
-                    // decline loudly (the function loud-skips), never bake.
-                    if self.is_native_pointer_static_offset(*offset) {
-                        return Err(synth_core::Error::synthesis(format!(
-                            "#739: i64 sub-word load with static-region memarg offset {offset} \
-                             (>= wasm_data_base {}) under the native-pointer ABI is not yet \
-                             relocated — declining rather than baking an un-rebased linmem \
-                             offset",
-                            self.wasm_data_base
-                        )));
-                    }
                     let addr = pop_operand(
                         &mut stack,
                         &mut next_temp,
@@ -10454,6 +10440,104 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
+
+                    if self.is_native_pointer_static_offset(*offset) {
+                        // #746 (the #739 residual): a dynamic-index i64
+                        // NARROW load whose constant memarg `offset` lands in
+                        // the static-data region. Pre-fix this arm declined
+                        // loudly (#744 relocated only the i32 sub-word arms);
+                        // the raw path below would bake the linmem offset as
+                        // an un-relocated MOVW/MOVT immediate — invisible to
+                        // the #678 `--shadow-stack-size` rebase → silent OOB.
+                        // Relocate the base to `__synth_wasm_data + offset` +
+                        // the dynamic index, load the low half through it,
+                        // then fill the high half (sign / zero extend) —
+                        // exactly the #744 sub-word branch, plus the hi fill.
+                        let base = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[live_params.as_slice(), &[addr, dst_lo, dst_hi]].concat(),
+                            idx,
+                        )?;
+                        Self::emit_wasm_data_addr(&mut instructions, base, *offset as i32, idx);
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Add {
+                                rd: base,
+                                rn: base,
+                                op2: Operand2::Reg(addr),
+                            },
+                            source_line: Some(idx),
+                        });
+                        let mem = MemAddr::imm(base, 0);
+                        let (load_op, sign_extend) = match op {
+                            I64Load8S { .. } => (
+                                ArmOp::Ldrsb {
+                                    rd: dst_lo,
+                                    addr: mem,
+                                },
+                                true,
+                            ),
+                            I64Load8U { .. } => (
+                                ArmOp::Ldrb {
+                                    rd: dst_lo,
+                                    addr: mem,
+                                },
+                                false,
+                            ),
+                            I64Load16S { .. } => (
+                                ArmOp::Ldrsh {
+                                    rd: dst_lo,
+                                    addr: mem,
+                                },
+                                true,
+                            ),
+                            I64Load16U { .. } => (
+                                ArmOp::Ldrh {
+                                    rd: dst_lo,
+                                    addr: mem,
+                                },
+                                false,
+                            ),
+                            I64Load32S { .. } => (
+                                ArmOp::Ldr {
+                                    rd: dst_lo,
+                                    addr: mem,
+                                },
+                                true,
+                            ),
+                            I64Load32U { .. } => (
+                                ArmOp::Ldr {
+                                    rd: dst_lo,
+                                    addr: mem,
+                                },
+                                false,
+                            ),
+                            _ => unreachable!(),
+                        };
+                        let hi_fill = if sign_extend {
+                            ArmOp::Asr {
+                                rd: dst_hi,
+                                rn: dst_lo,
+                                shift: 31,
+                            }
+                        } else {
+                            ArmOp::Mov {
+                                rd: dst_hi,
+                                op2: Operand2::Imm(0),
+                            }
+                        };
+                        for arm_op in [load_op, hi_fill] {
+                            instructions.push(ArmInstruction {
+                                op: arm_op,
+                                source_line: Some(idx),
+                            });
+                        }
+                        cf.add_instruction();
+                        stack.push(StackVal::i64(dst_lo));
+                        continue;
+                    }
 
                     let ops: Vec<ArmOp> = match op {
                         I64Load8S { .. } => {
@@ -10558,17 +10642,6 @@ impl InstructionSelector {
                 I64Store8 { offset, .. }
                 | I64Store16 { offset, .. }
                 | I64Store32 { offset, .. } => {
-                    // #739: see the i64 sub-word load arm — decline loudly,
-                    // never bake an un-relocated static-region offset.
-                    if self.is_native_pointer_static_offset(*offset) {
-                        return Err(synth_core::Error::synthesis(format!(
-                            "#739: i64 sub-word store with static-region memarg offset {offset} \
-                             (>= wasm_data_base {}) under the native-pointer ABI is not yet \
-                             relocated — declining rather than baking an un-rebased linmem \
-                             offset",
-                            self.wasm_data_base
-                        )));
-                    }
                     // Pop i64 value (lo register) and address
                     let value_lo = pop_operand(
                         &mut stack,
@@ -10586,6 +10659,58 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
+
+                    if self.is_native_pointer_static_offset(*offset) {
+                        // #746 (symmetric to the i64 narrow load): a
+                        // dynamic-index i64 narrow store into the static-data
+                        // region must relocate its base to `__synth_wasm_data
+                        // + offset` + the dynamic index (only the LOW half is
+                        // stored — wrapping semantics, same as the raw path).
+                        // Pre-fix this arm declined loudly (#744 relocated
+                        // only the i32 sub-word arms); the raw path below
+                        // would bake the linmem offset as an un-relocated
+                        // MOVW/MOVT immediate (silent OOB once
+                        // `--shadow-stack-size` shrinks the reservation).
+                        let base = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[live_params.as_slice(), &[addr, value_lo]].concat(),
+                            idx,
+                        )?;
+                        Self::emit_wasm_data_addr(&mut instructions, base, *offset as i32, idx);
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Add {
+                                rd: base,
+                                rn: base,
+                                op2: Operand2::Reg(addr),
+                            },
+                            source_line: Some(idx),
+                        });
+                        let mem = MemAddr::imm(base, 0);
+                        let arm_op = match op {
+                            I64Store8 { .. } => ArmOp::Strb {
+                                rd: value_lo,
+                                addr: mem,
+                            },
+                            I64Store16 { .. } => ArmOp::Strh {
+                                rd: value_lo,
+                                addr: mem,
+                            },
+                            I64Store32 { .. } => ArmOp::Str {
+                                rd: value_lo,
+                                addr: mem,
+                            },
+                            _ => unreachable!(),
+                        };
+                        instructions.push(ArmInstruction {
+                            op: arm_op,
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        continue;
+                    }
 
                     let ops: Vec<ArmOp> = match op {
                         I64Store8 { .. } => self.generate_subword_store_with_bounds_check(
@@ -12752,17 +12877,6 @@ impl InstructionSelector {
                 }
 
                 I64Load { offset, .. } => {
-                    // #739: see the i64 sub-word load arm — decline loudly,
-                    // never bake an un-relocated static-region offset.
-                    if self.is_native_pointer_static_offset(*offset) {
-                        return Err(synth_core::Error::synthesis(format!(
-                            "#739: i64.load with static-region memarg offset {offset} \
-                             (>= wasm_data_base {}) under the native-pointer ABI is not yet \
-                             relocated — declining rather than baking an un-rebased linmem \
-                             offset",
-                            self.wasm_data_base
-                        )));
-                    }
                     // Pop address from stack
                     let addr = pop_operand(
                         &mut stack,
@@ -12788,30 +12902,65 @@ impl InstructionSelector {
                         idx,
                     )?;
 
-                    // Generate bounds-checked i64 load into the allocated pair
-                    let load_ops =
-                        self.generate_i64_load_into_regs(dst_lo, dst_hi, addr, *offset as i32);
-                    for arm_op in load_ops {
+                    if self.is_native_pointer_static_offset(*offset) {
+                        // #746 (the #739 residual): a DYNAMIC-index i64 load
+                        // whose constant memarg `offset` lands in the
+                        // static-data region (gale's gust:os `log.line`
+                        // bulk-copies its message via i64.load from static
+                        // data ABOVE sp_init). Pre-fix this arm DECLINED
+                        // loudly (#744 gave only the sub-word arms the
+                        // relocation treatment); the raw path below would
+                        // BAKE the linmem offset as an un-relocated
+                        // MOVW/MOVT immediate — invisible to the #678
+                        // `--shadow-stack-size` rebase → silent OOB.
+                        // Relocate the base to `__synth_wasm_data + offset`
+                        // (the ELF builder retargets it to the owning
+                        // segment symbol) and add the dynamic index —
+                        // exactly the I32Load #359 branch, with the I64Ldr
+                        // pair form. The base temp stays disjoint from the
+                        // dst pair: I64Ldr reads its base for BOTH halves,
+                        // so neither half may alias it.
+                        let base = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[live_params.as_slice(), &[addr, dst_lo, dst_hi]].concat(),
+                            idx,
+                        )?;
+                        Self::emit_wasm_data_addr(&mut instructions, base, *offset as i32, idx);
                         instructions.push(ArmInstruction {
-                            op: arm_op,
+                            op: ArmOp::Add {
+                                rd: base,
+                                rn: base,
+                                op2: Operand2::Reg(addr),
+                            },
                             source_line: Some(idx),
                         });
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I64Ldr {
+                                rdlo: dst_lo,
+                                rdhi: dst_hi,
+                                addr: MemAddr::imm(base, 0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else {
+                        // Generate bounds-checked i64 load into the allocated pair
+                        let load_ops =
+                            self.generate_i64_load_into_regs(dst_lo, dst_hi, addr, *offset as i32);
+                        for arm_op in load_ops {
+                            instructions.push(ArmInstruction {
+                                op: arm_op,
+                                source_line: Some(idx),
+                            });
+                        }
                     }
                     stack.push(StackVal::i64(dst_lo));
                 }
 
                 I64Store { offset, .. } => {
-                    // #739: see the i64 sub-word load arm — decline loudly,
-                    // never bake an un-relocated static-region offset.
-                    if self.is_native_pointer_static_offset(*offset) {
-                        return Err(synth_core::Error::synthesis(format!(
-                            "#739: i64.store with static-region memarg offset {offset} \
-                             (>= wasm_data_base {}) under the native-pointer ABI is not yet \
-                             relocated — declining rather than baking an un-rebased linmem \
-                             offset",
-                            self.wasm_data_base
-                        )));
-                    }
                     // WASM i64.store pops: value first, then address
                     let value_lo = pop_operand(
                         &mut stack,
@@ -12831,14 +12980,55 @@ impl InstructionSelector {
                     )?;
                     let value_hi = i64_pair_hi(value_lo)?;
 
-                    // Generate bounds-checked i64 store from the value pair
-                    let store_ops =
-                        self.generate_i64_store_from_regs(value_lo, value_hi, addr, *offset as i32);
-                    for arm_op in store_ops {
+                    if self.is_native_pointer_static_offset(*offset) {
+                        // #746 (symmetric to the I64Load arm): a dynamic-index
+                        // i64 store into the static-data region must relocate
+                        // its base to `__synth_wasm_data + offset` + the
+                        // dynamic index — pre-fix this arm declined loudly
+                        // (#744 relocated only the sub-word arms); the raw
+                        // path below would bake the linmem offset as an
+                        // un-relocated MOVW/MOVT immediate (silent OOB once
+                        // `--shadow-stack-size` shrinks the reservation).
+                        let base = alloc_temp_or_spill(
+                            &mut next_temp,
+                            &mut stack,
+                            &mut instructions,
+                            &mut spill,
+                            &[live_params.as_slice(), &[addr, value_lo, value_hi]].concat(),
+                            idx,
+                        )?;
+                        Self::emit_wasm_data_addr(&mut instructions, base, *offset as i32, idx);
                         instructions.push(ArmInstruction {
-                            op: arm_op,
+                            op: ArmOp::Add {
+                                rd: base,
+                                rn: base,
+                                op2: Operand2::Reg(addr),
+                            },
                             source_line: Some(idx),
                         });
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::I64Str {
+                                rdlo: value_lo,
+                                rdhi: value_hi,
+                                addr: MemAddr::imm(base, 0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    } else {
+                        // Generate bounds-checked i64 store from the value pair
+                        let store_ops = self.generate_i64_store_from_regs(
+                            value_lo,
+                            value_hi,
+                            addr,
+                            *offset as i32,
+                        );
+                        for arm_op in store_ops {
+                            instructions.push(ArmInstruction {
+                                op: arm_op,
+                                source_line: Some(idx),
+                            });
+                        }
                     }
                     // Store doesn't push anything to stack
                 }
@@ -24787,13 +24977,20 @@ mod tests {
         );
     }
 
-    /// #739: i64 accesses with a static-region memarg offset are not yet
-    /// relocated — they must DECLINE with a typed Err (loud-skip), never fall
-    /// through to the raw path and bake the offset (silent OOB).
+    /// #746 (the #739 residual): i64 WIDE accesses with a static-region memarg
+    /// offset get the #744 relocation treatment — relocate the base to
+    /// `__synth_wasm_data + offset` + the dynamic index (LdrSym, reloc-visible
+    /// to the #678 `--shadow-stack-size` rebase), never bake the linmem offset
+    /// as a Movw/Movt immediate, and never decline (pre-#746 these arms
+    /// loud-declined, skipping gale's gust:os log-emit function entirely).
     #[test]
-    fn test_739_i64_static_offset_declines_loudly() {
+    fn test_746_i64_wide_static_offset_is_relocated() {
         let db = RuleDatabase::new();
-        let ops = vec![
+        let is_data_sym = |i: &ArmInstruction| matches!(&i.op, ArmOp::LdrSym { symbol, .. } if symbol == "__synth_wasm_data");
+        let baked_movt = |i: &ArmInstruction| matches!(&i.op, ArmOp::Movt { imm16, .. } if *imm16 == (1048584u32 >> 16) as u16);
+
+        // (memory 17) = 1114112 bytes; sp_init = 0x100000; static at 0x100008.
+        let load_ops = vec![
             WasmOp::LocalGet(0),
             WasmOp::I64Load {
                 offset: 1048584,
@@ -24805,11 +25002,49 @@ mod tests {
         sel.set_relocatable(true);
         sel.set_native_pointer_abi(true, 1114112);
         sel.set_native_pointer_stack(0, 1048576);
-        let err = sel.select_with_stack(&ops, 1).unwrap_err();
+        let ln = sel.select_with_stack(&load_ops, 1).unwrap();
         assert!(
-            err.to_string().contains("#739"),
-            "i64 static-region access must decline loudly naming #739. got: {err}"
+            ln.iter().any(is_data_sym),
+            "dynamic i64 static load must relocate via LdrSym __synth_wasm_data. got: {ln:#?}"
         );
+        assert!(
+            ln.iter()
+                .any(|i| matches!(&i.op, ArmOp::I64Ldr { addr, .. } if addr.offset_reg.is_none())),
+            "i64.load must go through the relocated base (pair load, no index reg). got: {ln:#?}"
+        );
+        assert!(
+            !ln.iter().any(baked_movt),
+            "the static offset must NOT be baked as a Movt immediate (#746). got: {ln:#?}"
+        );
+
+        let store_ops = vec![
+            WasmOp::LocalGet(0),
+            WasmOp::I64Const(0x1122_3344_5566_7788),
+            WasmOp::I64Store {
+                offset: 1048584,
+                align: 3,
+            },
+            WasmOp::End,
+        ];
+        let mut sel_s = InstructionSelector::new(db.rules().to_vec());
+        sel_s.set_relocatable(true);
+        sel_s.set_native_pointer_abi(true, 1114112);
+        sel_s.set_native_pointer_stack(0, 1048576);
+        let sn = sel_s.select_with_stack(&store_ops, 1).unwrap();
+        assert!(
+            sn.iter().any(is_data_sym),
+            "dynamic i64 static store must relocate via LdrSym __synth_wasm_data. got: {sn:#?}"
+        );
+        assert!(
+            sn.iter()
+                .any(|i| matches!(&i.op, ArmOp::I64Str { addr, .. } if addr.offset_reg.is_none())),
+            "i64.store must go through the relocated base (pair store, no index reg). got: {sn:#?}"
+        );
+        assert!(
+            !sn.iter().any(baked_movt),
+            "the static offset must NOT be baked as a Movt immediate (#746). got: {sn:#?}"
+        );
+
         // Below the static base the raw path is untouched (frozen behavior).
         let low_ops = vec![
             WasmOp::LocalGet(0),
@@ -24823,10 +25058,149 @@ mod tests {
         sel_low.set_relocatable(true);
         sel_low.set_native_pointer_abi(true, 1114112);
         sel_low.set_native_pointer_stack(0, 1048576);
+        let low = sel_low.select_with_stack(&low_ops, 1).unwrap();
         assert!(
-            sel_low.select_with_stack(&low_ops, 1).is_ok(),
-            "below-base i64 access must keep compiling"
+            !low.iter().any(is_data_sym),
+            "below-base i64 access must keep the raw [R11+addr+#off] path. got: {low:#?}"
         );
+    }
+
+    /// #746: the i64 NARROW load/store arms (i64.load8/16/32, i64.store8/16/32)
+    /// with a static-region memarg offset relocate like the #744 i32 sub-word
+    /// arms, with the correct hi-half fill (sign vs zero extend) on loads.
+    #[test]
+    fn test_746_i64_narrow_static_offset_is_relocated() {
+        let db = RuleDatabase::new();
+        let is_data_sym = |i: &ArmInstruction| matches!(&i.op, ArmOp::LdrSym { symbol, .. } if symbol == "__synth_wasm_data");
+
+        // (op, expected mem op predicate, hi fill is sign-extend)
+        type OpPred = fn(&ArmOp) -> bool;
+        let load_cases: Vec<(WasmOp, OpPred, bool)> = vec![
+            (
+                WasmOp::I64Load8U {
+                    offset: 1048588,
+                    align: 0,
+                },
+                (|op| matches!(op, ArmOp::Ldrb { .. })) as OpPred,
+                false,
+            ),
+            (
+                WasmOp::I64Load8S {
+                    offset: 1048588,
+                    align: 0,
+                },
+                |op| matches!(op, ArmOp::Ldrsb { .. }),
+                true,
+            ),
+            (
+                WasmOp::I64Load16U {
+                    offset: 1048588,
+                    align: 1,
+                },
+                |op| matches!(op, ArmOp::Ldrh { .. }),
+                false,
+            ),
+            (
+                WasmOp::I64Load16S {
+                    offset: 1048588,
+                    align: 1,
+                },
+                |op| matches!(op, ArmOp::Ldrsh { .. }),
+                true,
+            ),
+            (
+                WasmOp::I64Load32U {
+                    offset: 1048588,
+                    align: 2,
+                },
+                |op| matches!(op, ArmOp::Ldr { .. }),
+                false,
+            ),
+            (
+                WasmOp::I64Load32S {
+                    offset: 1048588,
+                    align: 2,
+                },
+                |op| matches!(op, ArmOp::Ldr { .. }),
+                true,
+            ),
+        ];
+        for (op, mem_pred, sign) in load_cases {
+            let ops = vec![WasmOp::LocalGet(0), op.clone(), WasmOp::End];
+            let mut sel = InstructionSelector::new(db.rules().to_vec());
+            sel.set_relocatable(true);
+            sel.set_native_pointer_abi(true, 1114112);
+            sel.set_native_pointer_stack(0, 1048576);
+            let n = sel.select_with_stack(&ops, 1).unwrap();
+            assert!(
+                n.iter().any(is_data_sym),
+                "{op:?}: must relocate via LdrSym __synth_wasm_data. got: {n:#?}"
+            );
+            assert!(
+                n.iter().any(|i| mem_pred(&i.op)),
+                "{op:?}: wrong memory-op form. got: {n:#?}"
+            );
+            let hi_ok = if sign {
+                n.iter()
+                    .any(|i| matches!(&i.op, ArmOp::Asr { shift: 31, .. }))
+            } else {
+                n.iter().any(|i| {
+                    matches!(
+                        &i.op,
+                        ArmOp::Mov {
+                            op2: Operand2::Imm(0),
+                            ..
+                        }
+                    )
+                })
+            };
+            assert!(hi_ok, "{op:?}: missing hi-half fill. got: {n:#?}");
+        }
+
+        let store_cases: Vec<(WasmOp, OpPred)> = vec![
+            (
+                WasmOp::I64Store8 {
+                    offset: 1048588,
+                    align: 0,
+                },
+                (|op| matches!(op, ArmOp::Strb { .. })) as OpPred,
+            ),
+            (
+                WasmOp::I64Store16 {
+                    offset: 1048588,
+                    align: 1,
+                },
+                |op| matches!(op, ArmOp::Strh { .. }),
+            ),
+            (
+                WasmOp::I64Store32 {
+                    offset: 1048588,
+                    align: 2,
+                },
+                |op| matches!(op, ArmOp::Str { .. }),
+            ),
+        ];
+        for (op, mem_pred) in store_cases {
+            let ops = vec![
+                WasmOp::LocalGet(0),
+                WasmOp::I64Const(0x0102_0304_0506_0708),
+                op.clone(),
+                WasmOp::End,
+            ];
+            let mut sel = InstructionSelector::new(db.rules().to_vec());
+            sel.set_relocatable(true);
+            sel.set_native_pointer_abi(true, 1114112);
+            sel.set_native_pointer_stack(0, 1048576);
+            let n = sel.select_with_stack(&ops, 1).unwrap();
+            assert!(
+                n.iter().any(is_data_sym),
+                "{op:?}: must relocate via LdrSym __synth_wasm_data. got: {n:#?}"
+            );
+            assert!(
+                n.iter().any(|i| mem_pred(&i.op)),
+                "{op:?}: wrong memory-op form. got: {n:#?}"
+            );
+        }
     }
 
     /// #237: register-promote the stack-pointer global so a dissolved leaf object
