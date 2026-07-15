@@ -148,6 +148,15 @@ pub struct CompileConfig {
     /// → `[R11=0 + addr]`.
     pub linear_memory_bytes: u32,
 
+    /// VCR-MEM-002 phase 1 (#406): initial size in 64 KiB pages of EACH linear
+    /// memory, indexed by memory index. Consulted only by the multi-memory
+    /// lowering arms (loads/stores wrapped in `WasmOp::MultiMemory`,
+    /// `memory.size`/`grow` with a non-zero index) — memory-0 lowering never
+    /// reads it, so single-memory output is byte-identical whether it is set
+    /// or empty. Empty (the default) means "no multi-memory context": any
+    /// multi-memory op then declines loudly.
+    pub memory_pages: Vec<u32>,
+
     /// #237: the wasm stack-pointer global as `(index, init_value)`, if the
     /// module has one. Under `native_pointer_abi` the backend register-promotes
     /// it: `global.get` materializes `__synth_wasm_data + init` (the real stack
@@ -389,6 +398,9 @@ impl Default for CompileConfig {
             linmem_base: OPTIMIZED_LINMEM_BASE,
             native_pointer_abi: false,
             linear_memory_bytes: 0,
+            // #406: empty ⇒ no multi-memory context ⇒ multi-memory ops decline
+            // loudly; memory-0 lowering never reads it.
+            memory_pages: Vec::new(),
             stack_pointer_global: None,
             func_ret_i64: Vec::new(),
             type_ret_i64: Vec::new(),

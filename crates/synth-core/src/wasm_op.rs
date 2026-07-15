@@ -91,6 +91,23 @@ pub enum WasmOp {
     MemoryCopy, // memory.copy: copy `len` bytes from `src` to `dst` (memmove semantics)
     MemoryFill, // memory.fill: set `len` bytes at `dst` to the low byte of `val`
 
+    /// VCR-MEM-002 phase 1 (#406): a load/store whose `memarg` targets a
+    /// NON-DEFAULT linear memory (`memidx > 0`, multi-memory proposal). The
+    /// decoder wraps the plain memory-0 variant instead of DROPPING the index
+    /// (the pre-#406 silent aliasing: every memory lowered to the one R11
+    /// base, so a store to memory `$b` clobbered memory `$a`). Keeping
+    /// memory-0 ops as the bare variants means every existing single-memory
+    /// match arm — and therefore every frozen fixture byte — is untouched by
+    /// construction; the multi-memory-aware path (the `--relocatable` direct
+    /// selector) unwraps this and addresses via the per-memory base symbol
+    /// (`__synth_wasm_data_<k>`), and every other path declines LOUDLY
+    /// (never a silent alias).
+    ///
+    /// `memory.size`/`memory.grow` are NOT wrapped — their variants already
+    /// carry the memory index. Invariant (decoder-enforced): `memory > 0` and
+    /// `op` is never itself a `MultiMemory`.
+    MultiMemory { memory: u32, op: Box<WasmOp> },
+
     // More ops
     Drop,
     Select,

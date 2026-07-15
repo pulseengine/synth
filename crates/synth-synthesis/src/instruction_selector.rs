@@ -1880,6 +1880,10 @@ pub fn infer_i64_locals(
 fn wasm_stack_effect(op: &WasmOp) -> (usize, usize) {
     use WasmOp::*;
     match op {
+        // Multi-memory (#406): a wrapped load/store has exactly its inner
+        // op's operand shape — only the addressed base differs.
+        MultiMemory { op, .. } => wasm_stack_effect(op),
+
         // Binary ops: pop 2, push 1
         I32Add | I32Sub | I32Mul | I32DivS | I32DivU | I32RemS | I32RemU | I32And | I32Or
         | I32Xor | I32Shl | I32ShrS | I32ShrU | I32Rotl | I32Rotr | I32Eq | I32Ne | I32LtS
@@ -2836,6 +2840,14 @@ pub struct InstructionSelector {
     /// relative (MOVW/MOVT), so a `base=0` host-pointer trampoline doesn't
     /// mis-address them.
     native_pointer_abi: bool,
+    /// VCR-MEM-002 phase 1 (#406): initial size in 64 KiB pages of each linear
+    /// memory, indexed by memory index. Consulted ONLY by the multi-memory
+    /// arms (`MultiMemory` wraps, `memory.size`/`grow` with index > 0):
+    /// memory-0 lowering never reads it, so single-memory output is
+    /// byte-identical whether it is set or empty. Empty (the default and every
+    /// legacy caller) means "no multi-memory context" — any multi-memory op
+    /// then declines loudly.
+    memory_pages: Vec<u32>,
     /// #237: wasm linear-memory minimum size in bytes — the static-data extent
     /// (initialized `(data)` + zero-init/BSS). A const address below this is a
     /// static (symbol-relative under the flag).
@@ -3053,6 +3065,7 @@ impl InstructionSelector {
             relocatable: false,
             reject_self_contained_call_indirect: false,
             native_pointer_abi: false,
+            memory_pages: Vec::new(),
             linear_memory_bytes: 0,
             wasm_data_base: 0,
             sp_global: None,
@@ -3100,6 +3113,7 @@ impl InstructionSelector {
             relocatable: false,
             reject_self_contained_call_indirect: false,
             native_pointer_abi: false,
+            memory_pages: Vec::new(),
             linear_memory_bytes: 0,
             wasm_data_base: 0,
             sp_global: None,
@@ -3420,6 +3434,67 @@ impl InstructionSelector {
     pub fn set_native_pointer_abi(&mut self, enabled: bool, linear_memory_bytes: u32) {
         self.native_pointer_abi = enabled;
         self.linear_memory_bytes = linear_memory_bytes;
+    }
+
+    /// VCR-MEM-002 phase 1 (#406): per-memory initial page counts, indexed by
+    /// memory index. Enables the multi-memory lowering arms (`MultiMemory`
+    /// loads/stores via `__synth_wasm_data_<k>`, per-memory `memory.size`).
+    /// Memory-0 lowering never consults this, so setting it on a
+    /// single-memory module changes nothing. Empty (default) declines every
+    /// multi-memory op loudly.
+    pub fn set_memory_pages(&mut self, memory_pages: Vec<u32>) {
+        self.memory_pages = memory_pages;
+    }
+
+    /// #406: the per-memory base symbol the ELF/link layer defines for memory
+    /// `k`. Memory 0 keeps the historical `__synth_wasm_data` name
+    /// (frozen-safe); memory k > 0 is `__synth_wasm_data_<k>`.
+    fn wasm_data_symbol(memory: u32) -> String {
+        if memory == 0 {
+            "__synth_wasm_data".to_string()
+        } else {
+            format!("__synth_wasm_data_{memory}")
+        }
+    }
+
+    /// VCR-MEM-002 phase 1 (#406): validate that an op on non-default memory
+    /// `memory` is lowerable in THIS selector configuration and return the
+    /// memory's initial page count. The typed declines (never silent):
+    ///
+    /// * not `--relocatable` → a self-contained image has exactly one runtime
+    ///   linear-memory base (R11); nothing places a second region.
+    /// * `--native-pointer-abi` → the static-data classification
+    ///   (`static_data_addend`, `__synth_wasm_data` region layers #345/#354/
+    ///   #383/#678/#739) is memory-0-only; combining is a later phase.
+    /// * unknown index → the module declared fewer memories (or the driver
+    ///   never supplied the table — legacy/unit-test construction).
+    fn multi_memory_pages(&self, memory: u32) -> synth_core::Result<u32> {
+        if !self.relocatable {
+            return Err(synth_core::Error::synthesis(format!(
+                "multi-memory: an op on memory {memory} cannot be lowered into a \
+                 self-contained image — there is only ONE runtime linear-memory \
+                 base (R11), so every memory would alias it (a store to memory \
+                 {memory} silently clobbering memory 0). Compile with \
+                 --relocatable: the host-linked object addresses memory {memory} \
+                 via its own `__synth_wasm_data_{memory}` region symbol, which \
+                 the runtime places (VCR-MEM-002 phase 1, #406)"
+            )));
+        }
+        if self.native_pointer_abi {
+            return Err(synth_core::Error::synthesis(format!(
+                "multi-memory: an op on memory {memory} is not lowered under \
+                 --native-pointer-abi — the static-data region classification \
+                 (#345/#354/#678) is memory-0-only in phase 1 (#406). Drop \
+                 --native-pointer-abi or keep the module single-memory"
+            )));
+        }
+        self.memory_pages.get(memory as usize).copied().ok_or_else(|| {
+            synth_core::Error::synthesis(format!(
+                "multi-memory: op targets memory {memory} but the module context \
+                 declares {} memories (#406)",
+                self.memory_pages.len()
+            ))
+        })
     }
 
     /// #237: under the native-pointer ABI, a const effective address `addr`
@@ -4235,14 +4310,48 @@ impl InstructionSelector {
             }
 
             // Memory management
-            MemorySize(_mem_idx) => {
+            MemorySize(mem_idx) => {
                 // On embedded with fixed memory, return memory size in pages.
                 // R10 holds memory size in bytes; divide by 65536 (page size) via LSR #16.
+                // #406: R10 is MEMORY 0's size — reading it for memory k > 0
+                // silently returned the wrong memory's size. Decline; the
+                // per-memory lowering lives in select_with_stack.
+                if *mem_idx != 0 {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "memory.size on memory {mem_idx}: select_default has no \
+                         per-memory size lowering (R10 is memory 0's size \
+                         register) — multi-memory is lowered only by \
+                         select_with_stack on --relocatable (#406)"
+                    )));
+                }
                 vec![ArmOp::MemorySize { rd }]
             }
-            MemoryGrow(_mem_idx) => {
+            MemoryGrow(mem_idx) => {
                 // On embedded with fixed memory, always return -1 (cannot grow).
+                // #406: `-1` is memory-agnostic, but keep the blind path
+                // memory-0-only — a multi-memory module belongs to
+                // select_with_stack (--relocatable).
+                if *mem_idx != 0 {
+                    return Err(synth_core::Error::synthesis(format!(
+                        "memory.grow on memory {mem_idx}: multi-memory is lowered \
+                         only by select_with_stack on --relocatable (#406)"
+                    )));
+                }
                 vec![ArmOp::MemoryGrow { rd, rn }]
+            }
+
+            // VCR-MEM-002 phase 1 (#406): select_default is the blind-alloc
+            // fallback — it does not track the operand stack, and it has no
+            // per-memory base plumbing. The real multi-memory lowering lives
+            // in select_with_stack (--relocatable); here we loud-decline
+            // (the GI-FPU-001/#372 contract), never alias memory 0.
+            MultiMemory { memory, op } => {
+                return Err(synth_core::Error::synthesis(format!(
+                    "multi-memory: {op:?} on memory {memory} is lowered only by \
+                     the stack-tracking selector (select_with_stack) on the \
+                     --relocatable path — select_default would alias it onto \
+                     memory 0's base (#406)"
+                )));
             }
 
             // FIXME: select_default LocalGet/Set ignores index (hardcoded SP+0).
@@ -10740,7 +10849,7 @@ impl InstructionSelector {
                 }
 
                 // Memory management
-                MemorySize(_mem_idx) => {
+                MemorySize(mem_idx) => {
                     let dst = alloc_temp_or_spill(
                         &mut next_temp,
                         &mut stack,
@@ -10749,14 +10858,56 @@ impl InstructionSelector {
                         &live_params,
                         idx,
                     )?;
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::MemorySize { rd: dst },
-                        source_line: Some(idx),
-                    });
+                    if *mem_idx == 0 {
+                        // Memory 0: runtime size register (R10 >> 16 = pages),
+                        // byte-identical to the pre-#406 lowering.
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::MemorySize { rd: dst },
+                            source_line: Some(idx),
+                        });
+                    } else {
+                        // VCR-MEM-002 phase 1 (#406): memory k > 0 has no
+                        // runtime size register (R10 belongs to memory 0 —
+                        // reading it here silently returned memory 0's size).
+                        // Its size is FIXED at the declared initial page count:
+                        // `memory.grow` on this backend always lowers to the
+                        // fixed-memory -1 (see `ArmOp::MemoryGrow`), so the
+                        // size can never change — materialize the constant.
+                        // The runtime contract is that the embedder maps the
+                        // `__synth_wasm_data_<k>` region at exactly its
+                        // declared initial size (the ELF NOBITS/PROGBITS
+                        // section is emitted at that size).
+                        let pages = self.multi_memory_pages(*mem_idx)?;
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Movw {
+                                rd: dst,
+                                imm16: (pages & 0xFFFF) as u16,
+                            },
+                            source_line: Some(idx),
+                        });
+                        if pages > 0xFFFF {
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Movt {
+                                    rd: dst,
+                                    imm16: ((pages >> 16) & 0xFFFF) as u16,
+                                },
+                                source_line: Some(idx),
+                            });
+                        }
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
-                MemoryGrow(_mem_idx) => {
+                MemoryGrow(mem_idx) => {
+                    // VCR-MEM-002 phase 1 (#406): the fixed-memory `-1`
+                    // lowering below is memory-agnostic (no state read), so it
+                    // is equally correct for memory k > 0 — but only in a
+                    // configuration whose multi-memory context is validated
+                    // (relocatable, known index). Same typed declines as the
+                    // load/store path.
+                    if *mem_idx != 0 {
+                        self.multi_memory_pages(*mem_idx)?;
+                    }
                     // Pop the requested number of pages from stack
                     let pages = pop_operand(
                         &mut stack,
@@ -10779,6 +10930,166 @@ impl InstructionSelector {
                         source_line: Some(idx),
                     });
                     stack.push(StackVal::i32(dst));
+                }
+
+                // =========================================================
+                // Multi-memory (#406, VCR-MEM-002 phase 1)
+                // =========================================================
+                // A load/store on a NON-DEFAULT memory (memidx > 0). R11 is
+                // memory 0's base; memory k is addressed base-independently
+                // via its own `__synth_wasm_data_<k>` region symbol (Abs32
+                // literal-pool load, the #345 link-survivable form), which
+                // build_relocatable_elf defines at the base of memory k's
+                // NOBITS/PROGBITS section:
+                //
+                //     LDR  base, =__synth_wasm_data_k + memarg.offset
+                //     ADD  base, base, addr
+                //     LDR/STR[B/H] value, [base]
+                //
+                // Phase-1 scope: the i32 access family only. i64/f32/f64/v128
+                // accesses and `--safety-bounds` on memory k decline LOUDLY
+                // (typed Err → loud-skip), never alias memory 0.
+                MultiMemory {
+                    memory,
+                    op: inner_op,
+                } => {
+                    // Validates the configuration (relocatable, no
+                    // native-pointer ABI, known index) — pages unused here.
+                    self.multi_memory_pages(*memory)?;
+                    if self.bounds_check != BoundsCheckConfig::None {
+                        return Err(synth_core::Error::synthesis(format!(
+                            "multi-memory: --safety-bounds is not lowered for an \
+                             op on memory {memory} in phase 1 — the bounds \
+                             machinery (R10/mask) is memory-0-only (#406)"
+                        )));
+                    }
+                    let sym = Self::wasm_data_symbol(*memory);
+                    match inner_op.as_ref() {
+                        I32Load { offset, .. }
+                        | I32Load8S { offset, .. }
+                        | I32Load8U { offset, .. }
+                        | I32Load16S { offset, .. }
+                        | I32Load16U { offset, .. } => {
+                            let addr = pop_operand(
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            let dst = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &[live_params.as_slice(), &[addr]].concat(),
+                                idx,
+                            )?;
+                            let base = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &[live_params.as_slice(), &[addr, dst]].concat(),
+                                idx,
+                            )?;
+                            Self::emit_sym_addr(
+                                &mut instructions,
+                                base,
+                                &sym,
+                                *offset as i32,
+                                idx,
+                            );
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Add {
+                                    rd: base,
+                                    rn: base,
+                                    op2: Operand2::Reg(addr),
+                                },
+                                source_line: Some(idx),
+                            });
+                            let mem = MemAddr::imm(base, 0);
+                            let load_op = match inner_op.as_ref() {
+                                I32Load { .. } => ArmOp::Ldr { rd: dst, addr: mem },
+                                I32Load8U { .. } => ArmOp::Ldrb { rd: dst, addr: mem },
+                                I32Load8S { .. } => ArmOp::Ldrsb { rd: dst, addr: mem },
+                                I32Load16U { .. } => ArmOp::Ldrh { rd: dst, addr: mem },
+                                I32Load16S { .. } => ArmOp::Ldrsh { rd: dst, addr: mem },
+                                _ => unreachable!(),
+                            };
+                            instructions.push(ArmInstruction {
+                                op: load_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instructions(3);
+                            stack.push(StackVal::i32(dst));
+                        }
+                        I32Store { offset, .. }
+                        | I32Store8 { offset, .. }
+                        | I32Store16 { offset, .. } => {
+                            // WASM store pops: value first, then address.
+                            let value = pop_operand(
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            let addr = pop_operand(
+                                &mut stack,
+                                &mut next_temp,
+                                &mut instructions,
+                                &mut spill,
+                                &live_params,
+                                idx,
+                            )?;
+                            let base = alloc_temp_or_spill(
+                                &mut next_temp,
+                                &mut stack,
+                                &mut instructions,
+                                &mut spill,
+                                &[live_params.as_slice(), &[addr, value]].concat(),
+                                idx,
+                            )?;
+                            Self::emit_sym_addr(
+                                &mut instructions,
+                                base,
+                                &sym,
+                                *offset as i32,
+                                idx,
+                            );
+                            instructions.push(ArmInstruction {
+                                op: ArmOp::Add {
+                                    rd: base,
+                                    rn: base,
+                                    op2: Operand2::Reg(addr),
+                                },
+                                source_line: Some(idx),
+                            });
+                            let mem = MemAddr::imm(base, 0);
+                            let store_op = match inner_op.as_ref() {
+                                I32Store { .. } => ArmOp::Str { rd: value, addr: mem },
+                                I32Store8 { .. } => ArmOp::Strb { rd: value, addr: mem },
+                                I32Store16 { .. } => ArmOp::Strh { rd: value, addr: mem },
+                                _ => unreachable!(),
+                            };
+                            instructions.push(ArmInstruction {
+                                op: store_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instructions(3);
+                        }
+                        other => {
+                            return Err(synth_core::Error::synthesis(format!(
+                                "multi-memory: {other:?} on memory {memory} is not \
+                                 lowered in phase 1 — only the i32 load/store \
+                                 family is (#406); wider/float accesses on a \
+                                 non-default memory decline loudly"
+                            )));
+                        }
+                    }
                 }
 
                 // =========================================================

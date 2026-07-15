@@ -415,6 +415,10 @@ fn compile_wasm_to_arm(
         selector.set_reject_self_contained_call_indirect(!config.relocatable);
         // #237: native-pointer ABI — wasm statics become __synth_wasm_data-relative.
         selector.set_native_pointer_abi(config.native_pointer_abi, config.linear_memory_bytes);
+        // VCR-MEM-002 phase 1 (#406): per-memory initial page counts — enables
+        // the multi-memory arms (memory-0 lowering never reads it; empty ⇒
+        // every multi-memory op declines loudly).
+        selector.set_memory_pages(config.memory_pages.clone());
         // #311: i64 call results are register PAIRS — tag them.
         selector.set_result_types(config.func_ret_i64.clone(), config.type_ret_i64.clone());
         // #359: declared param widths of THIS function, so the AAPCS stack-arg
