@@ -25,9 +25,13 @@ and shrank gust_scale's .text — so a silently-dead lever cannot pass.
 Red-path knob (the wrong-bound demonstration in the #494 PR):
   --fact-lo/--fact-hi set the premise loom "claims". With a too-wide bound
   (e.g. --fact-lo 0 --fact-hi 4000) the identity obligation is Sat (x can reach
-  1000, so x % 1000 ≠ x) and synth DECLINES; the op survives (general div/rem
-  lowering) and the build is byte-identical to the baseline. Pass
-  --expect-decline to assert that green decline path.
+  1000, so x % 1000 ≠ x) and synth DECLINES the identity loudly; the op SURVIVES
+  and computes the true modulo. (The pre-existing nonzero-divisor zero-guard
+  elision — #494 phase 2b — may still shrink the declined build, so it is NOT
+  byte-identical to the OFF baseline; that is a separate, sound lever.) Pass
+  --expect-decline to sweep OUT-OF-BOUND values (x >= divisor, the region the
+  identity would have miscompiled) and assert the surviving rem_u is still the
+  true modulo — the real safety property, stronger than a byte proxy.
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=./target/debug/synth python scripts/repro/fact_spec_rem_494_differential.py
@@ -182,14 +186,50 @@ def main():
     print(f"{FUNC} size: unspecialized {bsize} B -> specialized {ssize} B "
           f"(clang -Os baseline for `x % {DIVISOR}` = 24 B)")
 
+    # wasmtime ground truth (shared by both paths).
+    eng = wasmtime.Engine()
+    mod = wasmtime.Module(eng, wasm)
+    st = wasmtime.Store(eng)
+    inst = wasmtime.Instance(st, mod, [])
+    gs = inst.exports(st)[FUNC]
+
+    def sweep(xs):
+        """Assert specialized ≡ wasmtime ≡ unspecialized on every x in `xs`."""
+        fails = 0
+        for x in xs:
+            gt = gs(st, x) & 0xFFFFFFFF
+            got_spec = run_arm(scode, sbase, ssyms[FUNC], x)
+            got_base = run_arm(bcode, bbase, bsyms[FUNC], x)
+            if not (got_spec == gt == got_base):
+                fails += 1
+                if fails <= 10:
+                    print(f"FAIL x={x}: wasmtime={gt} "
+                          f"specialized={got_spec} unspecialized={got_base}")
+        return fails
+
     if args.expect_decline:
+        # The identity must have declined loudly. The op SURVIVES and computes
+        # the TRUE modulo — so we prove correctness by sweeping OUT-OF-BOUND
+        # values (x >= divisor, where x % C != x), the exact region the identity
+        # would have miscompiled. NB: the pre-existing nonzero-divisor zero-guard
+        # elision (#494 phase 2b) may still shrink the declined build vs the
+        # baseline — that is a separate, sound lever and does NOT make the build
+        # byte-identical; the safety property is that the surviving op is still
+        # the true modulo, which we verify by execution, not by a byte proxy.
         if admits != 0:
-            sys.exit(f"expected DECLINE under bound [{args.fact_lo},{args.fact_hi}] "
-                     f"but the identity elision was admitted")
-        if scode != bcode:
-            sys.exit("declined build must be byte-identical to baseline")
-        print("ORACLE: PASS (declined loudly, general rem_u lowering emitted)")
-        return
+            sys.exit(f"expected the identity to DECLINE under bound "
+                     f"[{args.fact_lo},{args.fact_hi}] but it was admitted")
+        # Values >= divisor exercise the non-identity region; keep them within
+        # the (too-wide) declared bound so wasmtime/unspec agree on ground truth.
+        oob = [x for x in [1000, 1001, 1500, 2048, 3000, 4000]
+               if args.fact_lo <= x <= args.fact_hi]
+        fails = sweep(oob)
+        print(f"swept {len(oob)} out-of-bound (x >= {DIVISOR}) values on "
+              f"[{args.fact_lo}, {args.fact_hi}] — the region the identity would "
+              f"have miscompiled")
+        print("ORACLE:", "PASS (declined loudly; surviving rem_u computes the "
+              "true modulo)" if fails == 0 else f"FAIL ({fails}/{len(oob)})")
+        sys.exit(1 if fails else 0)
 
     # Non-vacuity: the identity elision must actually have fired and shrunk.
     if admits != 1:
@@ -198,29 +238,11 @@ def main():
     if ssize >= bsize:
         sys.exit("specialized gust_scale did not shrink — elision did not reach codegen")
 
-    # wasmtime ground truth.
-    eng = wasmtime.Engine()
-    mod = wasmtime.Module(eng, wasm)
-    st = wasmtime.Store(eng)
-    inst = wasmtime.Instance(st, mod, [])
-    gs = inst.exports(st)[FUNC]
-
-    fails = 0
-    checked = 0
-    for x in GRID:
-        if not (args.fact_lo <= x <= args.fact_hi):
-            continue
-        checked += 1
-        gt = gs(st, x) & 0xFFFFFFFF
-        got_spec = run_arm(scode, sbase, ssyms[FUNC], x)
-        got_base = run_arm(bcode, bbase, bsyms[FUNC], x)
-        if not (got_spec == gt == got_base):
-            fails += 1
-            if fails <= 10:
-                print(f"FAIL x={x}: wasmtime={gt} "
-                      f"specialized={got_spec} unspecialized={got_base}")
-    print(f"swept {checked} in-bounds x values on [{args.fact_lo}, {args.fact_hi}]")
-    print("ORACLE:", "PASS" if fails == 0 else f"FAIL ({fails}/{checked})")
+    inbounds = [x for x in GRID if args.fact_lo <= x <= args.fact_hi]
+    fails = sweep(inbounds)
+    print(f"swept {len(inbounds)} in-bounds x values on "
+          f"[{args.fact_lo}, {args.fact_hi}]")
+    print("ORACLE:", "PASS" if fails == 0 else f"FAIL ({fails}/{len(inbounds)})")
     sys.exit(1 if fails else 0)
 
 
