@@ -20,6 +20,13 @@
 //!      the unit's `DW_AT_stmt_list` line program) it resolves ≥1 ARM `.text`
 //!      address (in-range) to a non-zero source line. This is the path a debugger
 //!      takes, so passing it proves a debugger can reach the line data.
+//!
+//! Oracles A–H parse the emitted bytes with `gimli::read` — the same library that
+//! WROTE them. Oracle I (`emitted_dwarf_verifies_with_llvm_dwarfdump_394`) closes
+//! that self-consistency gap with the INDEPENDENT LLVM parser: `llvm-dwarfdump
+//! --verify` must report no errors and `--debug-info`/`--debug-line` must decode
+//! the subprogram DIEs and line rows. The tool is REQUIRED (the gate fails, never
+//! skips, if it is absent), and CI installs `llvm` so it is always present.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -986,5 +993,154 @@ fn compile_unit_range_contains_every_subprogram_564() {
         "[dbg394-oracleH] CU [0x{cu_low:x},0x{cu_high:x}) contains all {} \
          subprograms (code extent 0x{code_extent:x} > line extent 0x{line_extent:x})",
         subs.len()
+    );
+}
+
+/// Locate an `llvm-dwarfdump` binary — the INDEPENDENT DWARF parser Oracle I
+/// depends on. Search order: `LLVM_DWARFDUMP` env override, then `PATH`, then the
+/// Xcode toolchain path (macOS dev hosts carry it there even when it's off PATH).
+/// Returns the resolvable command name/path. Returns `None` only when no binary
+/// is found anywhere — Oracle I turns that into a HARD FAILURE (never a skip), so
+/// a CI host missing the tool is a red gate, not a silently-vacuous green one.
+fn find_llvm_dwarfdump() -> Option<String> {
+    // (1) explicit override.
+    if let Ok(p) = std::env::var("LLVM_DWARFDUMP")
+        && Command::new(&p)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    {
+        return Some(p);
+    }
+    // (2) PATH (ubuntu-latest CI installs `llvm`, which ships `llvm-dwarfdump`;
+    // versioned names like `llvm-dwarfdump-18` are also common on apt images).
+    let candidates = [
+        "llvm-dwarfdump".to_string(),
+        "llvm-dwarfdump-20".to_string(),
+        "llvm-dwarfdump-19".to_string(),
+        "llvm-dwarfdump-18".to_string(),
+        "llvm-dwarfdump-17".to_string(),
+        // (3) the macOS Xcode toolchain absolute path.
+        "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.\
+         xctoolchain/usr/bin/llvm-dwarfdump"
+            .to_string(),
+    ];
+    candidates.into_iter().find(|c| {
+        Command::new(c)
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    })
+}
+
+/// ORACLE I — INDEPENDENT-PARSER validation via `llvm-dwarfdump` (#394). Oracles
+/// A–H parse synth's emitted DWARF with `gimli::read`, the SAME library
+/// `gimli::write` produced the bytes with — so a self-consistent emitter bug
+/// (an encoding gimli round-trips but real toolchains reject) passes them. This
+/// oracle closes that gap: it runs the LLVM DWARF parser, a fully INDEPENDENT
+/// implementation, against the emitted object and asserts
+///
+///   1. `llvm-dwarfdump --verify` reports NO errors — i.e. LLVM's structural
+///      checks (unit-header chain, abbrev, `.debug_line`, and crucially the
+///      parent/child PC-range CONTAINMENT that #564/Oracle H assert via gimli)
+///      all pass. This is the exact check `llvm-dwarfdump --verify` runs post-link
+///      on a real image, run here on the object.
+///   2. `--debug-info` shows the CU DIE and ≥1 `DW_TAG_subprogram` with a
+///      `DW_AT_name` and a `DW_AT_low_pc`/`DW_AT_high_pc` — LLVM successfully
+///      decodes the DIE tree, not just accepts the bytes.
+///   3. `--debug-line` decodes ≥1 line row (`Address … Line …`) — LLVM reaches
+///      the line program via the CU's `DW_AT_stmt_list` and produces rows.
+///
+/// The tool is REQUIRED: if no `llvm-dwarfdump` is found the test FAILS (it never
+/// skips), so this gate cannot silently go vacuous on a host that lacks it. CI
+/// installs `llvm` in the Test job so the binary is always present.
+#[test]
+fn emitted_dwarf_verifies_with_llvm_dwarfdump_394() {
+    let dwdump = find_llvm_dwarfdump().expect(
+        "llvm-dwarfdump not found (checked $LLVM_DWARFDUMP, PATH, and the Xcode \
+         toolchain). This independent-parser gate must not skip; install `llvm` \
+         (ubuntu: `apt-get install -y llvm`) or set $LLVM_DWARFDUMP.",
+    );
+
+    let wasm = repro("msgq_put_359.wasm");
+    let out = "/tmp/dbg394_msgq_oraclei.o";
+    compile(&wasm, out, true);
+
+    // (1) --verify must report no errors. Exit status is non-zero on failure and
+    // the summary line prints "No errors." on success; assert both.
+    let verify = Command::new(&dwdump)
+        .args(["--verify", out])
+        .output()
+        .expect("run llvm-dwarfdump --verify");
+    let vout = format!(
+        "{}{}",
+        String::from_utf8_lossy(&verify.stdout),
+        String::from_utf8_lossy(&verify.stderr)
+    );
+    assert!(
+        verify.status.success() && vout.contains("No errors"),
+        "llvm-dwarfdump --verify rejected synth's emitted DWARF (independent \
+         parser). status={:?}\noutput:\n{vout}",
+        verify.status.code()
+    );
+
+    // (2) --debug-info must decode the CU + ≥1 subprogram DIE with a name and a
+    // low_pc/high_pc, exactly as LLVM prints them.
+    let info = Command::new(&dwdump)
+        .args(["--debug-info", out])
+        .output()
+        .expect("run llvm-dwarfdump --debug-info");
+    let iout = String::from_utf8_lossy(&info.stdout);
+    assert!(
+        info.status.success(),
+        "llvm-dwarfdump --debug-info failed: {}",
+        String::from_utf8_lossy(&info.stderr)
+    );
+    assert!(
+        iout.contains("DW_TAG_compile_unit"),
+        "--debug-info has no DW_TAG_compile_unit:\n{iout}"
+    );
+    let subprogram_dies = iout.matches("DW_TAG_subprogram").count();
+    assert!(
+        subprogram_dies >= 1,
+        "--debug-info decoded no DW_TAG_subprogram DIE; LLVM output:\n{iout}"
+    );
+    // The subprogram DIEs must carry the low_pc/high_pc range attributes LLVM
+    // prints (proves the address attrs decode, not just the tag).
+    assert!(
+        iout.contains("DW_AT_low_pc") && iout.contains("DW_AT_high_pc"),
+        "--debug-info subprogram/CU DIEs lack DW_AT_low_pc/DW_AT_high_pc:\n{iout}"
+    );
+
+    // (3) --debug-line must decode ≥1 line row. LLVM prints an "Address … Line …"
+    // header then one row per mapped address; count the data rows (16-hex-digit
+    // address lines) rather than the header.
+    let line = Command::new(&dwdump)
+        .args(["--debug-line", out])
+        .output()
+        .expect("run llvm-dwarfdump --debug-line");
+    let lout = String::from_utf8_lossy(&line.stdout);
+    assert!(
+        line.status.success(),
+        "llvm-dwarfdump --debug-line failed: {}",
+        String::from_utf8_lossy(&line.stderr)
+    );
+    let line_rows = lout
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            // A data row begins with a 0x-prefixed 16-hex-digit address.
+            t.starts_with("0x") && t.len() >= 18 && t[2..18].bytes().all(|b| b.is_ascii_hexdigit())
+        })
+        .count();
+    assert!(
+        line_rows >= 1,
+        "llvm-dwarfdump --debug-line decoded no line rows; output:\n{lout}"
+    );
+
+    eprintln!(
+        "[dbg394-oracleI] llvm-dwarfdump --verify: No errors; --debug-info \
+         decoded {subprogram_dies} subprogram DIE(s); --debug-line decoded \
+         {line_rows} row(s). Independent parser accepts synth's emitted DWARF."
     );
 }

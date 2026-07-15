@@ -23,6 +23,17 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - name: Install llvm-dwarfdump (independent DWARF parser gate, #394)
+        # The `--debug-line` DWARF gate's Oracle I
+        # (emitted_dwarf_verifies_with_llvm_dwarfdump_394) validates synth's
+        # emitted `.debug_info`/`.debug_line` with the INDEPENDENT LLVM parser
+        # (`llvm-dwarfdump --verify`), not gimli::read. That test FAILS (never
+        # skips) when the tool is absent, so it must be present here. The `llvm`
+        # package provides the unversioned `llvm-dwarfdump` on PATH.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends llvm
+          llvm-dwarfdump --version
       - name: Cache Cargo dependencies
         uses: actions/cache@v6
         with:
