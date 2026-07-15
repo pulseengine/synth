@@ -44,3 +44,12 @@ rule_i64_le_s
 rule_i64_le_u
 rule_i64_ge_s
 rule_i64_ge_u
+rule_i64_clz
+rule_i64_ctz
+rule_i64_popcnt
+rule_i64_mul
+rule_i64_shl
+rule_i64_shr_u
+rule_i64_shr_s
+rule_i64_rotl
+rule_i64_rotr

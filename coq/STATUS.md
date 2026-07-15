@@ -1,6 +1,6 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-07-15 (recount: 476 Qed / 5 Admitted, +2 admit., crude
+**Last Updated: 2026-07-15 (recount: 485 Qed / 5 Admitted, +2 admit., crude
 `grep "Qed\."` over `coq/Synth/**/*.v` — same method as prior recounts; the
 -40 vs the prior 512 are the retired VCR-ISA-001 #667 cross-check lemmas of
 `VcrSelRulesGenCheck.v`: `VcrSelRules.v` now DEFINES every `rule_X` as the
@@ -167,7 +167,7 @@ and predates the VcrSelRules (42), VcrSelPilot (7) and SailArmBridge (92) Qed;
 see the per-file breakdown below for current per-file counts. The T3 row and
 the headline total are re-derived by the claim gate.
 
-**Total: 476 Qed / 5 Admitted (+2 admit.) across all files** (recount 2026-07-15, CI-gated via `claims.yaml`)
+**Total: 485 Qed / 5 Admitted (+2 admit.) across all files** (recount 2026-07-15, CI-gated via `claims.yaml`)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,
@@ -485,7 +485,7 @@ stepped proof closing with `I32.clz_rbit`;
 tier: the encoder's CMP-lo/SBCS-hi expansion is below the flat executor,
 see `docs/design/vcr-sel-001-increment-4.md`).
 
-**41 Qed / 0 Admitted**, same T1 bound as the pilot ("the ARM sequence
+**50 Qed / 0 Admitted**, same T1 bound as the pilot ("the ARM sequence
 computes the named result", not WASM refinement). These 48 Qed (pilot +
 rules) are included in the recount above.
 
@@ -522,9 +522,9 @@ Every op family the shipped ARM selectors lower, as of increment 4
 | i32.const | 1 | 0 | 1 | 0 |
 | i64 pair ALU (add/sub/and/or/xor) | 5 | **5** | 0 | 0 |
 | i64 comparisons (eqz + eq..ge_u) | 11 | **11**¹ | 0 | 0 |
-| i64 mul/div/rem | 4 | 0 | 4 | 0 |
-| i64 shifts/rotates (pair pseudo-ops) | 5 | 0 | 5 | 0 |
-| i64 bit-manip (clz/ctz/popcnt) | 3 | 0 | 3 | 0 |
+| i64 mul/div/rem | 4 | **1** | 3 | 0 |
+| i64 shifts/rotates (pair pseudo-ops) | 5 | **5**¹ | 0 | 0 |
+| i64 bit-manip (clz/ctz/popcnt) | 3 | **3**¹ | 0 | 0 |
 | i64 wrap/extend (wrap_i64, extend_i32_s/u) | 3 | 0 | 3 | 0 |
 | i64 sign-extend (extend8/16/32_s) | 3 | 0 | 0 | 3 |
 | i64.const | 1 | 0 | 1 | 0 |
@@ -535,13 +535,15 @@ Every op family the shipped ARM selectors lower, as of increment 4
 | locals/globals (get/set/tee) | 5 | 0 | 5 | 0 |
 | parametric (drop/select/nop) | 3 | 0 | 3 | 0 |
 | control flow (block/loop/br/br_if/return/call/…) | ~10 | 0 | 0 | ~10 |
-| **Total (≈)** | **155** | **41 (26%)** | **95 (61%)** | **19 (12%)** |
+| **Total (≈)** | **155** | **50 (32%)** | **86 (55%)** | **19 (12%)** |
 
-¹ pseudo-op tier: `popcnt`, `i64.eqz` and the ten binary i64 comparisons are
-proven at the `ArmOp` pseudo-op boundary (the selector's emission, which is
-what the DSL owns); the encoder expansions below that boundary
-(shift-and-add popcnt, the CMP-lo/SBCS-hi chain) are covered by the
-differential oracles, not Rocq — see `docs/design/vcr-sel-001-increment-4.md`.
+¹ pseudo-op tier: `i32.popcnt`, `i64.eqz`, the ten binary i64 comparisons, and
+the VCR-ISA-001 wave-2 i64 shapes (`clz`/`ctz`/`popcnt`, `mul`/`shl`/`shr_u`/
+`shr_s`, `rotl`/`rotr`) are proven at the `ArmOp` pseudo-op boundary (the
+selector's emission, which is what the DSL owns); the encoder expansions below
+that boundary (shift-and-add popcnt, the CMP-lo/SBCS-hi chain, the funnel-shift
+and UMULL+MLA sequences) are covered by the differential oracles, not Rocq —
+see `docs/design/vcr-sel-001-increment-4.md`.
 ² the 4 i32 div/rem model proofs are the T3 trap-guard admits (#73,
 `BCondOffset` executor gap).
 ³ the f32/f64 model rows ride the 21 VFP axioms; the shipped ARM path

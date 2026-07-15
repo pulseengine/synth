@@ -724,3 +724,194 @@ pub fn rule_i64_ge_u(rd: Reg, rn_lo: Reg, rn_hi: Reg, rm_lo: Reg, rm_hi: Reg) ->
         cond: Condition::HS,
     }]
 }
+
+/// `i64.clz`: rd = count-leading-zeros of (rn_hi:rn_lo), as i32
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_clz_correct` (Qed).
+pub fn rule_i64_clz(rd: Reg, rn_lo: Reg, rn_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64Clz {
+        rd,
+        rnlo: rn_lo,
+        rnhi: rn_hi,
+    }]
+}
+
+/// `i64.ctz`: rd = count-trailing-zeros of (rn_hi:rn_lo), as i32
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_ctz_correct` (Qed).
+pub fn rule_i64_ctz(rd: Reg, rn_lo: Reg, rn_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64Ctz {
+        rd,
+        rnlo: rn_lo,
+        rnhi: rn_hi,
+    }]
+}
+
+/// `i64.popcnt`: rd = population-count of (rn_hi:rn_lo), as i32
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_popcnt_correct` (Qed).
+pub fn rule_i64_popcnt(rd: Reg, rn_lo: Reg, rn_hi: Reg) -> Vec<ArmOp> {
+    vec![ArmOp::I64Popcnt {
+        rd,
+        rnlo: rn_lo,
+        rnhi: rn_hi,
+    }]
+}
+
+/// `i64.mul`: (rd_hi:rd_lo) = (rn_hi:rn_lo) * (rm_hi:rm_lo)
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_mul_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_mul(
+    rd_lo: Reg,
+    rd_hi: Reg,
+    rn_lo: Reg,
+    rn_hi: Reg,
+    rm_lo: Reg,
+    rm_hi: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_mul: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64Mul {
+        rd_lo,
+        rd_hi,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+    }])
+}
+
+/// `i64.shl`: (rd_hi:rd_lo) = (rn_hi:rn_lo) << (rm_lo mod 64)
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_shl_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_shl(
+    rd_lo: Reg,
+    rd_hi: Reg,
+    rn_lo: Reg,
+    rn_hi: Reg,
+    rm_lo: Reg,
+    rm_hi: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_shl: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64Shl {
+        rd_lo,
+        rd_hi,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+    }])
+}
+
+/// `i64.shr_u`: (rd_hi:rd_lo) = (rn_hi:rn_lo) >> (rm_lo mod 64) (logical)
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_shr_u_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_shr_u(
+    rd_lo: Reg,
+    rd_hi: Reg,
+    rn_lo: Reg,
+    rn_hi: Reg,
+    rm_lo: Reg,
+    rm_hi: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_shr_u: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64ShrU {
+        rd_lo,
+        rd_hi,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+    }])
+}
+
+/// `i64.shr_s`: (rd_hi:rd_lo) = (rn_hi:rn_lo) >> (rm_lo mod 64) (arithmetic)
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_shr_s_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_shr_s(
+    rd_lo: Reg,
+    rd_hi: Reg,
+    rn_lo: Reg,
+    rn_hi: Reg,
+    rm_lo: Reg,
+    rm_hi: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_shr_s: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64ShrS {
+        rd_lo,
+        rd_hi,
+        rn_lo,
+        rn_hi,
+        rm_lo,
+        rm_hi,
+    }])
+}
+
+/// `i64.rotl`: (rd_hi:rd_lo) = (rn_hi:rn_lo) rotate-left (shift mod 64)
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_rotl_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_rotl(
+    rd_lo: Reg,
+    rd_hi: Reg,
+    rn_lo: Reg,
+    rn_hi: Reg,
+    rm_lo: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_rotl: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64Rotl {
+        rdlo: rd_lo,
+        rdhi: rd_hi,
+        rnlo: rn_lo,
+        rnhi: rn_hi,
+        shift: rm_lo,
+    }])
+}
+
+/// `i64.rotr`: (rd_hi:rd_lo) = (rn_hi:rn_lo) rotate-right (shift mod 64)
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_rotr_correct` (Qed).
+///
+/// Side condition: `rd_hi` must not alias `rd_lo` (hypothesis of the theorem;
+/// violation is a loud `Err`, never a silent misassemble).
+pub fn rule_i64_rotr(
+    rd_lo: Reg,
+    rd_hi: Reg,
+    rn_lo: Reg,
+    rn_hi: Reg,
+    rm_lo: Reg,
+) -> Result<Vec<ArmOp>, &'static str> {
+    if rd_hi == rd_lo {
+        return Err("rule_i64_rotr: side condition violated: rd_hi must not alias rd_lo");
+    }
+    Ok(vec![ArmOp::I64Rotr {
+        rdlo: rd_lo,
+        rdhi: rd_hi,
+        rnlo: rn_lo,
+        rnhi: rn_hi,
+        shift: rm_lo,
+    }])
+}
