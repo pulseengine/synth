@@ -20,21 +20,11 @@
 
 use crate::arm_semantics::{ArmSemantics, ArmState};
 use crate::solver::{CheckOutcome, new_solver};
-use crate::term::BV;
+use crate::term::{BV, Bool};
 use crate::wasm_semantics::WasmSemantics;
 use synth_core::WasmOp;
 use synth_synthesis::{ArmOp, Reg, SynthesisRule};
 use thiserror::Error;
-
-/// Whether a div/rem ARM lowering carries its trap guard: synth guards a
-/// divide with a `Cmp`/branch/`Udf` sequence, so the presence of a `Udf`
-/// (the `undefined`/trap instruction) is the structural signal that the
-/// divide-by-zero (and, for signed, overflow) trap is still enforced. Its
-/// absence means the guard was dropped — the #633/#666/#642 shape.
-/// (VCR-VER-002, #166.)
-fn arm_sequence_has_trap_guard(arm_ops: &[ArmOp]) -> bool {
-    arm_ops.iter().any(|op| matches!(op, ArmOp::Udf { .. }))
-}
 
 /// Verification error types
 #[derive(Debug, Error)]
@@ -70,6 +60,23 @@ pub enum ValidationResult {
 
     /// Verification inconclusive (timeout or unsupported operations)
     Unknown { reason: String },
+}
+
+/// Module facts that define the WASM-side `call_indirect` trap condition
+/// (VCR-VER-002, #166): what the SPEC demands for the dispatched table, to be
+/// checked against the guards the selector actually resolved into the
+/// `ArmOp::CallIndirect` pseudo-op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallIndirectSpec {
+    /// The dispatched table's element count (compile-time, per #642).
+    pub table_size: u32,
+    /// Whether the table may contain uninitialized (null) slots — if so, the
+    /// lowering MUST carry the #664 null check.
+    pub may_have_null_slot: bool,
+    /// `Some(expected_type_id)` when the table is heterogeneous and WASM's
+    /// §4.4.8 type check must be discharged at RUNTIME (#676); `None` when
+    /// the closed-world verdict discharges it at compile time.
+    pub heterogeneous_expected_type: Option<u32>,
 }
 
 /// Translation validator over the configured SMT engine (see
@@ -128,7 +135,40 @@ impl TranslationValidator {
             }
         };
 
+        // VCR-VER-002 (#166): PARTIAL ops (they trap on some inputs) MUST go
+        // through the trap-preservation VC — a value-only proof over a total
+        // model cannot see a dropped trap, and for div/rem the value-only
+        // query is not even well-posed (SMT bvsdiv is total where WASM
+        // traps). The trap VC subsumes the value obligation where the value
+        // is modeled (div/rem: trap clause AND guarded value clause).
+        if Self::is_trap_gated_op(wasm_op) {
+            return self.verify_trap_preservation(wasm_op, &arm_ops);
+        }
+
         self.verify_equivalence(wasm_op, &arm_ops)
+    }
+
+    /// The partial-op surface whose lowerings are MANDATORILY routed through
+    /// the trap-preservation VC by [`Self::verify_rule`].
+    fn is_trap_gated_op(wasm_op: &WasmOp) -> bool {
+        matches!(
+            wasm_op,
+            WasmOp::I32DivS
+                | WasmOp::I32DivU
+                | WasmOp::I32RemS
+                | WasmOp::I32RemU
+                | WasmOp::Unreachable
+                | WasmOp::I32Load { .. }
+                | WasmOp::I32Load8S { .. }
+                | WasmOp::I32Load8U { .. }
+                | WasmOp::I32Load16S { .. }
+                | WasmOp::I32Load16U { .. }
+                | WasmOp::I32Store { .. }
+                | WasmOp::I32Store8 { .. }
+                | WasmOp::I32Store16 { .. }
+                | WasmOp::I32TruncF32S
+                | WasmOp::I32TruncF32U
+        )
     }
 
     /// Verify equivalence between a WASM operation and ARM operations
@@ -277,34 +317,83 @@ impl TranslationValidator {
         Ok(ValidationResult::Verified)
     }
 
-    /// VCR-VER-002 (#166): mandatory **trap-preservation** obligation for a
-    /// div/rem lowering — that the ARM sequence preserves the WASM op's trap
-    /// (`÷0`, plus `INT_MIN/-1` for the signed ops) *and* its value, discharged
-    /// by [`crate::trap::prove_trap_equivalence`].
+    /// VCR-VER-002 (#166): mandatory **trap-preservation** obligation for the
+    /// partial-op lowerings whose ARM trap condition synth can DERIVE from the
+    /// emitted sequence. The ARM side is no longer a structural `Udf`-presence
+    /// proxy: [`ArmSemantics::encode_sequence_br`] threads a `may_trap` term
+    /// through the exec model — guard branches condition it, `UDF` execution
+    /// accumulates it — so a dropped, inverted, or wrong-register guard
+    /// derives a trap condition that fails the VC.
     ///
-    /// The WASM trap condition is derivable from the operands. The ARM
-    /// lowering's trap condition is derived **structurally** from `arm_ops`:
-    /// synth guards a divide with a `Cmp`/branch/`Udf` sequence (see
-    /// `synth_synthesis::contracts::division`), so a `Udf` in the sequence ⇒
-    /// the guard is present and the lowering traps on the same condition; its
-    /// absence ⇒ the guard was dropped (the #633/#666/#642 shape) and the
-    /// lowering never traps — which this gate reports `Invalid`.
+    /// # Covered classes (LIVE, derived ARM trap term)
     ///
-    /// # Soundness scope
+    /// | class | VC | operand convention |
+    /// |---|---|---|
+    /// | i32 div/rem | full ([`crate::trap::prove_trap_equivalence`]: trap AND guarded value) | dividend R0, divisor R1, result R0 |
+    /// | `unreachable` | trap-condition only | none |
+    /// | i32 load/store (all widths) | trap-condition only (no memory-contents model) | address R0 (+ store value R1), linear-memory size R10 |
+    /// | `i32.trunc_f32_s/u` | trap-condition only (no float→int value model) | operand S0, result R0 |
     ///
-    /// Sound in the **reject** direction: a div/rem lowering with no `Udf` is
-    /// reported `Invalid`, catching the whole trap-drop class. Presence of a
-    /// `Udf` is a *necessary* structural signal but does not by itself prove the
-    /// guard fires on *exactly* `÷0 ∨ overflow`.
+    /// `call_indirect` goes through
+    /// [`Self::verify_call_indirect_trap_preservation`] (it needs module
+    /// facts as the spec side).
     ///
-    // VCR-VER-002 follow-on: fully AUTO-deriving `opt.may_trap` from the shipped
-    // lowering (rather than the structural `Udf`-presence proxy) needs a
-    // `may_trap` flag threaded through the `ArmState` exec model so the
-    // encoder's `Cmp`/`Bne`/`Udf` expansion produces a derived trap term — or,
-    // equivalently, decoding the emitted guard bytes in `expansion_validator`.
-    // Until then the other partial-op classes (load/store, call_indirect,
-    // unreachable) have no ARM trap term on this value-only path and remain
-    // gated at the unit level (`tests/trap_preservation.rs`), not here.
+    /// # Held out, honestly
+    ///
+    /// - **i64 div/rem** — needs 64-bit operand terms + the register-pair ARM
+    ///   value model; still gated at the unit level
+    ///   (`tests/trap_preservation.rs`) and by the CI execution oracles.
+    /// - **`i32.trunc_f64_s/u`** — the guard drives f64 (D-register)
+    ///   compares, which the 32-bit VFP register model does not carry yet;
+    ///   unit-gated (`trap_trunc` classifier) + the m4f CI execution oracle.
+    pub fn verify_trap_preservation(
+        &self,
+        wasm_op: &WasmOp,
+        arm_ops: &[ArmOp],
+    ) -> Result<ValidationResult, VerificationError> {
+        match wasm_op {
+            WasmOp::I32DivS | WasmOp::I32DivU | WasmOp::I32RemS | WasmOp::I32RemU => {
+                self.verify_div_rem_trap_preservation(wasm_op, arm_ops)
+            }
+            WasmOp::Unreachable => {
+                let (_state, arm_trap) = self.derive_arm_state(arm_ops, &[], None)?;
+                Ok(Self::condition_verdict(&crate::trap::trap_always(), &arm_trap))
+            }
+            WasmOp::I32Load { offset, .. }
+            | WasmOp::I32Load8S { offset, .. }
+            | WasmOp::I32Load8U { offset, .. }
+            | WasmOp::I32Load16S { offset, .. }
+            | WasmOp::I32Load16U { offset, .. }
+            | WasmOp::I32Store { offset, .. }
+            | WasmOp::I32Store8 { offset, .. }
+            | WasmOp::I32Store16 { offset, .. } => {
+                let size: u64 = match wasm_op {
+                    WasmOp::I32Load8S { .. }
+                    | WasmOp::I32Load8U { .. }
+                    | WasmOp::I32Store8 { .. } => 1,
+                    WasmOp::I32Load16S { .. }
+                    | WasmOp::I32Load16U { .. }
+                    | WasmOp::I32Store16 { .. } => 2,
+                    _ => 4,
+                };
+                self.verify_mem_trap_preservation(arm_ops, *offset, size)
+            }
+            WasmOp::I32TruncF32S | WasmOp::I32TruncF32U => {
+                let signed = matches!(wasm_op, WasmOp::I32TruncF32S);
+                self.verify_trunc_f32_trap_preservation(arm_ops, signed)
+            }
+            other => Err(VerificationError::UnsupportedOperation(format!(
+                "trap-preservation gate does not cover {other:?} \
+                 (i64 div/rem and trunc_f64 are unit-gated — see method docs)"
+            ))),
+        }
+    }
+
+    /// i32 div/rem trap preservation (VCR-VER-002, #166): full VC — the trap
+    /// clause AND the guarded value clause — with the ARM trap term DERIVED
+    /// from the emitted guard structure by the branch-taking executor.
+    /// Operands: dividend = `input_0` (R0), divisor = `input_1` (R1),
+    /// result in R0.
     pub fn verify_div_rem_trap_preservation(
         &self,
         wasm_op: &WasmOp,
@@ -334,23 +423,215 @@ impl TranslationValidator {
         let inputs = vec![dividend.clone(), divisor.clone()];
 
         let wasm_value = self.wasm_encoder.encode_op(wasm_op, &inputs);
-        let arm_value = self.encode_arm_sequence(arm_ops, &inputs)?;
+        let (state, arm_may_trap) = self.derive_arm_state(arm_ops, &inputs, None)?;
+        let arm_value = self.arm_encoder.extract_result(&state, &Reg::R0);
 
         let orig = crate::trap::DefineOrTrap {
             value: wasm_value,
             may_trap: crate::trap::trap_div(div_op, &dividend, &divisor),
-        };
-        let arm_may_trap = if arm_sequence_has_trap_guard(arm_ops) {
-            crate::trap::trap_div(div_op, &dividend, &divisor)
-        } else {
-            crate::term::Bool::from_bool(false)
         };
         let opt = crate::trap::DefineOrTrap {
             value: arm_value,
             may_trap: arm_may_trap,
         };
 
-        Ok(match crate::trap::prove_trap_equivalence(&orig, &opt) {
+        Ok(Self::trap_verdict_to_result(
+            crate::trap::prove_trap_equivalence(&orig, &opt),
+        ))
+    }
+
+    /// i32 load/store OOB trap preservation (VCR-VER-002, #166 / #377):
+    /// trap-condition-only VC (synth models no memory contents). The WASM
+    /// side is ordeal's wraparound-safe bound check on the effective address
+    /// (`addr + offset + size >u mem_size`, exact 33-bit arithmetic); the ARM
+    /// side is DERIVED from the emitted software-bounds guard. Operand
+    /// convention: address = `input_0` (R0), store value (if any) = `input_1`
+    /// (R1), linear-memory size = R10 (the shipped ABI register).
+    pub fn verify_mem_trap_preservation(
+        &self,
+        arm_ops: &[ArmOp],
+        offset: u32,
+        access_size: u64,
+    ) -> Result<ValidationResult, VerificationError> {
+        let addr = BV::new_const("input_0", 32);
+        let value = BV::new_const("input_1", 32);
+        let inputs = vec![addr.clone(), value];
+
+        let mut state = ArmState::new_symbolic();
+        // The WASM-side bound is THE SAME symbol the ARM guard compares
+        // against: R10 = linear-memory size in bytes (shipped ABI).
+        let mem_bound = state.get_reg(&Reg::R10).clone();
+        Self::seed_inputs(&mut state, &inputs)?;
+        self.arm_encoder
+            .encode_sequence_br(arm_ops, &mut state)
+            .map_err(VerificationError::UnsupportedOperation)?;
+        let arm_trap = state.may_trap.clone();
+
+        // WASM Core: ea = addr + offset (exact), trap iff ea + size > bound.
+        // Folding the static offset into the size operand keeps ordeal's
+        // 33-bit zero-extended arithmetic exact: zext(addr) + zext(off+size).
+        let static_bytes = offset as u64 + access_size;
+        let wasm_trap = if static_bytes > u32::MAX as u64 {
+            // offset + size alone exceeds the 32-bit bound: every access traps.
+            crate::trap::trap_always()
+        } else {
+            crate::trap::trap_mem_oob(&addr, &BV::from_u64(static_bytes, 32), &mem_bound)
+        };
+
+        Ok(Self::condition_verdict(&wasm_trap, &arm_trap))
+    }
+
+    /// `i32.trunc_f32_s/u` trap preservation (VCR-VER-002, #166 / #709):
+    /// trap-condition-only VC (synth's QF_BV model carries no float→int
+    /// value function). The WASM side is ordeal 0.9.1's bit-pattern trunc
+    /// classifier (`NaN ∨ ±∞ ∨ out-of-range`); the ARM side is DERIVED from
+    /// the emitted domain guard (`F32Const` bound + ordered VFP compare +
+    /// `Cmp`/branch/`Udf`), with the ordered compares given real bit-pattern
+    /// semantics in the executor. Operand convention: float operand = S0.
+    pub fn verify_trunc_f32_trap_preservation(
+        &self,
+        arm_ops: &[ArmOp],
+        signed: bool,
+    ) -> Result<ValidationResult, VerificationError> {
+        use synth_synthesis::rules::VfpReg;
+        let bits = BV::new_const("input_0", 32);
+
+        let mut state = ArmState::new_symbolic();
+        state.set_vfp_reg(&VfpReg::S0, bits.clone());
+        self.arm_encoder
+            .encode_sequence_br(arm_ops, &mut state)
+            .map_err(VerificationError::UnsupportedOperation)?;
+        let arm_trap = state.may_trap.clone();
+
+        let wasm_trap = crate::trap::trap_trunc(
+            &bits,
+            crate::trap::FpFmt::F32,
+            crate::trap::IntTarget::I32,
+            signed,
+        );
+
+        Ok(Self::condition_verdict(&wasm_trap, &arm_trap))
+    }
+
+    /// `call_indirect` trap preservation (VCR-VER-002, #166 / #642 #664 #676):
+    /// trap-condition-only VC. The WASM-side spec comes from MODULE FACTS the
+    /// caller supplies ([`CallIndirectSpec`]); the ARM side is derived from
+    /// the `ArmOp::CallIndirect` pseudo-op's guard fields (`table_size`,
+    /// `null_check`, `type_check`) through the SAME pinned ordeal builder —
+    /// a selector that resolves the wrong table size, drops the null check on
+    /// a table with uninitialized slots (#664), or skips the runtime type
+    /// check on a heterogeneous table (#676) is reported `Invalid`.
+    ///
+    /// # Trust boundary
+    ///
+    /// This certifies the SELECTOR's guard resolution at the pseudo-op level;
+    /// the encoder's expansion of those fields into `CMP`/`BLO`/`UDF`/`BLX`
+    /// bytes is separately execution-gated (the unicorn call_indirect CI
+    /// jobs). Statically-discharged clauses are modeled by a provably
+    /// non-null slot term (`slot | 1`), keeping ordeal's builder the single
+    /// spec source.
+    pub fn verify_call_indirect_trap_preservation(
+        &self,
+        arm_op: &ArmOp,
+        spec: &CallIndirectSpec,
+    ) -> Result<ValidationResult, VerificationError> {
+        let ArmOp::CallIndirect {
+            table_size,
+            null_check,
+            type_check,
+            ..
+        } = arm_op
+        else {
+            return Err(VerificationError::UnsupportedOperation(format!(
+                "call_indirect trap gate needs the CallIndirect pseudo-op, got {arm_op:?}"
+            )));
+        };
+
+        let index = BV::new_const("input_0", 32);
+        let slot = BV::new_const("slot_ptr", 32);
+        let nonnull_slot = slot.bvor(BV::from_u64(1, 32));
+        let actual_ty = BV::new_const("slot_type_id", 32);
+
+        let build = |size: u32, may_null: bool, expected: Option<u32>| {
+            let expected_bv = expected.map(|e| BV::from_u64(e as u64, 32));
+            let size_bv = BV::from_u64(size as u64, 32);
+            let slot_term = if may_null { &slot } else { &nonnull_slot };
+            let type_trap = match &expected_bv {
+                Some(e) => crate::trap::TypeTrap::Runtime {
+                    actual_type_id: &actual_ty,
+                    expected_id: e,
+                },
+                None => crate::trap::TypeTrap::StaticallyDischarged,
+            };
+            crate::trap::trap_call_indirect(&crate::trap::CallIndirect {
+                index: &index,
+                table_size: &size_bv,
+                slot_ptr: slot_term,
+                type_trap,
+            })
+        };
+
+        let wasm_trap = build(
+            spec.table_size,
+            spec.may_have_null_slot,
+            spec.heterogeneous_expected_type,
+        );
+        let arm_trap = build(
+            *table_size,
+            *null_check,
+            type_check.as_ref().map(|(expected, _)| *expected),
+        );
+
+        Ok(Self::condition_verdict(&wasm_trap, &arm_trap))
+    }
+
+    /// Seed integer operand registers (R0..R2) and run the branch-taking
+    /// executor, returning the post-state and the DERIVED trap condition.
+    fn derive_arm_state(
+        &self,
+        arm_ops: &[ArmOp],
+        inputs: &[BV],
+        vfp_s0: Option<&BV>,
+    ) -> Result<(ArmState, Bool), VerificationError> {
+        let mut state = ArmState::new_symbolic();
+        Self::seed_inputs(&mut state, inputs)?;
+        if let Some(bits) = vfp_s0 {
+            state.set_vfp_reg(&synth_synthesis::rules::VfpReg::S0, bits.clone());
+        }
+        self.arm_encoder
+            .encode_sequence_br(arm_ops, &mut state)
+            .map_err(VerificationError::UnsupportedOperation)?;
+        let trap = state.may_trap.clone();
+        Ok((state, trap))
+    }
+
+    fn seed_inputs(state: &mut ArmState, inputs: &[BV]) -> Result<(), VerificationError> {
+        for (i, input) in inputs.iter().enumerate() {
+            let reg = match i {
+                0 => Reg::R0,
+                1 => Reg::R1,
+                2 => Reg::R2,
+                _ => {
+                    return Err(VerificationError::UnsupportedOperation(format!(
+                        "Too many inputs: {}",
+                        inputs.len()
+                    )));
+                }
+            };
+            state.set_reg(&reg, input.clone());
+        }
+        Ok(())
+    }
+
+    /// Run the trap-condition-only VC and map the verdict.
+    fn condition_verdict(wasm_trap: &Bool, arm_trap: &Bool) -> ValidationResult {
+        Self::trap_verdict_to_result(crate::trap::prove_trap_condition_equivalence(
+            wasm_trap, arm_trap,
+        ))
+    }
+
+    fn trap_verdict_to_result(verdict: crate::trap::TrapVerdict) -> ValidationResult {
+        match verdict {
             crate::trap::TrapVerdict::Preserved => ValidationResult::Verified,
             crate::trap::TrapVerdict::Dropped(model) => ValidationResult::Invalid {
                 counterexample: model
@@ -361,7 +642,7 @@ impl TranslationValidator {
             crate::trap::TrapVerdict::Unknown => ValidationResult::Unknown {
                 reason: "trap-preservation VC returned Unknown (conservative reject)".to_string(),
             },
-        })
+        }
     }
 
     /// Get number of inputs required for a WASM operation
@@ -417,6 +698,7 @@ impl TranslationValidator {
 mod tests {
     use super::*;
     use crate::with_verification_context;
+    use synth_synthesis::rules::Condition;
     use synth_synthesis::{Cost, Operand2, Pattern, Replacement};
 
     fn create_test_rule(wasm_op: WasmOp, arm_op: ArmOp) -> SynthesisRule {
@@ -464,37 +746,140 @@ mod tests {
         });
     }
 
+    /// The SHIPPED ÷0 guard shape (instruction_selector.rs I32DivU /
+    /// optimizer_bridge.rs DivU): CMP divisor,#0 ; BNE +0 (skip the UDF) ;
+    /// UDF ; UDIV. The derived trap term is (divisor == 0) — exactly WASM's.
+    fn shipped_divu_guard() -> Vec<ArmOp> {
+        vec![
+            ArmOp::Cmp {
+                rn: Reg::R1,
+                op2: Operand2::Imm(0),
+            },
+            ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            },
+            ArmOp::Udf { imm: 0 },
+            ArmOp::Udiv {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            },
+        ]
+    }
+
+    /// The SHIPPED div_s DOUBLE guard (optimizer_bridge.rs DivS): the ÷0
+    /// guard plus the INT_MIN/-1 overflow guard (MOVW/MOVT 0x80000000 into
+    /// R12 ; CMP dividend ; BNE +3 ; CMN divisor,#1 ; BNE +0 ; UDF #1).
+    fn shipped_divs_double_guard() -> Vec<ArmOp> {
+        vec![
+            ArmOp::Cmp {
+                rn: Reg::R1,
+                op2: Operand2::Imm(0),
+            },
+            ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            },
+            ArmOp::Udf { imm: 0 },
+            ArmOp::Movw {
+                rd: Reg::R12,
+                imm16: 0,
+            },
+            ArmOp::Movt {
+                rd: Reg::R12,
+                imm16: 0x8000,
+            },
+            ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Reg(Reg::R12),
+            },
+            ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 3,
+            },
+            ArmOp::Cmn {
+                rn: Reg::R1,
+                op2: Operand2::Imm(1),
+            },
+            ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            },
+            ArmOp::Udf { imm: 1 },
+            ArmOp::Sdiv {
+                rd: Reg::R0,
+                rn: Reg::R0,
+                rm: Reg::R1,
+            },
+        ]
+    }
+
     #[test]
     fn div_lowering_with_guard_preserves_the_trap() {
         with_verification_context(|| {
             let validator = TranslationValidator::new();
-            // Guarded divide: CMP divisor,#0 ; UDF (trap) ; UDIV. The structural
-            // Udf ⇒ the ÷0 trap is enforced; value matches WASM ⇒ Verified.
-            let arm_ops = [
-                ArmOp::Cmp {
-                    rn: Reg::R1,
-                    op2: Operand2::Imm(0),
-                },
-                ArmOp::Udf { imm: 0 },
-                ArmOp::Udiv {
-                    rd: Reg::R0,
-                    rn: Reg::R0,
-                    rm: Reg::R1,
-                },
-            ];
             let result = validator
-                .verify_div_rem_trap_preservation(&WasmOp::I32DivU, &arm_ops)
+                .verify_div_rem_trap_preservation(&WasmOp::I32DivU, &shipped_divu_guard())
                 .unwrap();
             assert_eq!(result, ValidationResult::Verified);
         });
     }
 
+    /// The derived gate is STRICTER than the retired Udf-presence proxy: a
+    /// guard with the branch polarity inverted (BEQ instead of BNE — the UDF
+    /// fires exactly when the divide is fine) still contains a Udf, so the
+    /// proxy called it Verified; the derived trap term is (divisor != 0),
+    /// which fails the VC.
     #[test]
-    fn signed_div_guard_preserves_both_zero_and_overflow_traps() {
+    fn div_guard_with_inverted_polarity_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let mut arm_ops = shipped_divu_guard();
+            arm_ops[1] = ArmOp::BCondOffset {
+                cond: Condition::EQ,
+                offset: 0,
+            };
+            let result = validator
+                .verify_div_rem_trap_preservation(&WasmOp::I32DivU, &arm_ops)
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "inverted guard polarity must be Invalid, got {result:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn signed_div_double_guard_preserves_both_zero_and_overflow_traps() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_div_rem_trap_preservation(&WasmOp::I32DivS, &shipped_divs_double_guard())
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    /// RED-FIRST for the div_s overflow class (#633-shape at i32): stripping
+    /// ONLY the INT_MIN/-1 overflow guard keeps a Udf in the sequence (the ÷0
+    /// guard), so the retired structural proxy called this Verified. The
+    /// derived trap term is only (divisor == 0), and the VC finds the dropped
+    /// overflow trap with the INT_MIN/-1 counterexample.
+    #[test]
+    fn signed_div_with_overflow_guard_stripped_is_rejected() {
         with_verification_context(|| {
             let validator = TranslationValidator::new();
             let arm_ops = [
-                ArmOp::Udf { imm: 0 }, // structural guard present
+                ArmOp::Cmp {
+                    rn: Reg::R1,
+                    op2: Operand2::Imm(0),
+                },
+                ArmOp::BCondOffset {
+                    cond: Condition::NE,
+                    offset: 0,
+                },
+                ArmOp::Udf { imm: 0 },
                 ArmOp::Sdiv {
                     rd: Reg::R0,
                     rn: Reg::R0,
@@ -504,7 +889,558 @@ mod tests {
             let result = validator
                 .verify_div_rem_trap_preservation(&WasmOp::I32DivS, &arm_ops)
                 .unwrap();
+            match result {
+                ValidationResult::Invalid { counterexample } => {
+                    let get = |n: &str| {
+                        counterexample
+                            .iter()
+                            .find(|(name, _)| name == n)
+                            .map(|(_, v)| *v)
+                    };
+                    assert_eq!(
+                        get("input_0"),
+                        Some(i32::MIN as u32 as i64),
+                        "dropped overflow trap must exhibit dividend INT_MIN: {counterexample:?}"
+                    );
+                    assert_eq!(
+                        get("input_1"),
+                        Some(u32::MAX as i64),
+                        "dropped overflow trap must exhibit divisor -1: {counterexample:?}"
+                    );
+                }
+                other => panic!("overflow-guard-stripped div_s must be Invalid, got {other:?}"),
+            }
+        });
+    }
+
+    /// rem_s carries ONLY the ÷0 guard — WASM rem_s(INT_MIN, -1) is 0, not a
+    /// trap — and the derived gate agrees.
+    #[test]
+    fn rems_single_zero_guard_is_exactly_right() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let arm_ops = [
+                ArmOp::Cmp {
+                    rn: Reg::R1,
+                    op2: Operand2::Imm(0),
+                },
+                ArmOp::BCondOffset {
+                    cond: Condition::NE,
+                    offset: 0,
+                },
+                ArmOp::Udf { imm: 0 },
+                ArmOp::Sdiv {
+                    rd: Reg::R2,
+                    rn: Reg::R0,
+                    rm: Reg::R1,
+                },
+                ArmOp::Mls {
+                    rd: Reg::R0,
+                    rn: Reg::R2,
+                    rm: Reg::R1,
+                    ra: Reg::R0,
+                },
+            ];
+            let result = validator
+                .verify_div_rem_trap_preservation(&WasmOp::I32RemS, &arm_ops)
+                .unwrap();
             assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    // --- unreachable (LIVE, #665 class) ---
+
+    #[test]
+    fn unreachable_udf_lowering_preserves_the_trap() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_trap_preservation(&WasmOp::Unreachable, &[ArmOp::Udf { imm: 0 }])
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    #[test]
+    fn unreachable_lowered_to_nop_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            // The #665 shape: unreachable silently became a no-op.
+            let result = validator
+                .verify_trap_preservation(&WasmOp::Unreachable, &[ArmOp::Nop])
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "trap-dropping unreachable lowering must be Invalid, got {result:?}"
+            );
+        });
+    }
+
+    // --- i32 load/store OOB (LIVE, #377 class) ---
+
+    /// The SHIPPED software-bounds guard shape
+    /// (instruction_selector.rs generate_load_with_bounds_check):
+    /// ADD R12, addr, #(offset+size-1) ; CMP R12, R10 ; BLO +0 ; UDF ; LDR.
+    fn shipped_software_bounds_load(offset: i32, access_size: u32) -> Vec<ArmOp> {
+        use synth_synthesis::rules::MemAddr;
+        vec![
+            ArmOp::Add {
+                rd: Reg::R12,
+                rn: Reg::R0,
+                op2: Operand2::Imm(offset + access_size as i32 - 1),
+            },
+            ArmOp::Cmp {
+                rn: Reg::R12,
+                op2: Operand2::Reg(Reg::R10),
+            },
+            ArmOp::BCondOffset {
+                cond: Condition::LO,
+                offset: 0,
+            },
+            ArmOp::Udf { imm: 0 },
+            ArmOp::Ldr {
+                rd: Reg::R0,
+                addr: MemAddr::reg_imm(Reg::R11, Reg::R0, offset),
+            },
+        ]
+    }
+
+    /// RED-FIRST: a load with the bounds guard stripped derives trap = false
+    /// and is rejected against the WASM OOB condition.
+    #[test]
+    fn load_without_bounds_guard_is_rejected() {
+        use synth_synthesis::rules::MemAddr;
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let arm_ops = [ArmOp::Ldr {
+                rd: Reg::R0,
+                addr: MemAddr::reg_imm(Reg::R11, Reg::R0, 0),
+            }];
+            let result = validator
+                .verify_trap_preservation(
+                    &WasmOp::I32Load {
+                        offset: 0,
+                        align: 2,
+                    },
+                    &arm_ops,
+                )
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "guard-stripped load must be Invalid, got {result:?}"
+            );
+        });
+    }
+
+    /// A byte load's shipped guard (`end = addr + 0`) is EXACT: the 32-bit
+    /// end-address compute cannot wrap for size 1 / offset 0, so the derived
+    /// trap condition (addr >=u R10) matches WASM's (addr + 1 >u R10).
+    #[test]
+    fn byte_load_software_bounds_guard_preserves_the_trap() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_trap_preservation(
+                    &WasmOp::I32Load8U {
+                        offset: 0,
+                        align: 0,
+                    },
+                    &shipped_software_bounds_load(0, 1),
+                )
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    /// FINDING (documented divergence): for multi-byte accesses the shipped
+    /// software-bounds guard computes `addr + (offset+size-1)` in WRAPPING
+    /// 32-bit arithmetic, while WASM's effective-address check is exact. At
+    /// `addr >= 0x1_0000_0000 - (offset+size-1)` the end-address wraps to a
+    /// small value, the BLO guard passes, and the access escapes below the
+    /// linear-memory base — WASM requires a trap. The derived gate exhibits
+    /// exactly that dropped-trap counterexample. Pinned Invalid until the
+    /// selector's guard is made wraparound-safe (tracked as a #377/#651
+    /// follow-up filed with this gate).
+    #[test]
+    fn word_load_software_bounds_guard_wraps_at_address_top() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_trap_preservation(
+                    &WasmOp::I32Load {
+                        offset: 0,
+                        align: 2,
+                    },
+                    &shipped_software_bounds_load(0, 4),
+                )
+                .unwrap();
+            match result {
+                ValidationResult::Invalid { counterexample } => {
+                    let addr = counterexample
+                        .iter()
+                        .find(|(n, _)| n == "input_0")
+                        .map(|(_, v)| *v)
+                        .expect("counterexample must assign the address");
+                    assert!(
+                        addr >= 0xFFFF_FFFD,
+                        "the divergence is the 32-bit end-address wrap at the top \
+                         of the address space, got addr {addr:#x}"
+                    );
+                }
+                other => panic!(
+                    "expected the pinned wraparound divergence (Invalid), got {other:?} — \
+                     if this is now Verified the selector guard was fixed: \
+                     flip this test to Verified and close the finding"
+                ),
+            }
+        });
+    }
+
+    /// The gate is satisfiable by a correct guard: a wraparound-safe bound
+    /// check (trap iff bound < k, else iff addr >u bound - k, k = offset+size)
+    /// verifies for word accesses — proving the mem-OOB class gate is not
+    /// vacuously red.
+    #[test]
+    fn wraparound_safe_bounds_guard_verifies() {
+        use synth_synthesis::rules::MemAddr;
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let k = 4; // offset 0, size 4
+            let arm_ops = [
+                // CMP R10, #k ; BHS +0 ; UDF   — bound < k ⇒ every access traps
+                ArmOp::Cmp {
+                    rn: Reg::R10,
+                    op2: Operand2::Imm(k),
+                },
+                ArmOp::BCondOffset {
+                    cond: Condition::HS,
+                    offset: 0,
+                },
+                ArmOp::Udf { imm: 0 },
+                // SUB R12, R10, #k ; CMP addr, R12 ; BLS +0 ; UDF — exact on
+                // the bound >= k path (no wrap possible)
+                ArmOp::Sub {
+                    rd: Reg::R12,
+                    rn: Reg::R10,
+                    op2: Operand2::Imm(k),
+                },
+                ArmOp::Cmp {
+                    rn: Reg::R0,
+                    op2: Operand2::Reg(Reg::R12),
+                },
+                ArmOp::BCondOffset {
+                    cond: Condition::LS,
+                    offset: 0,
+                },
+                ArmOp::Udf { imm: 0 },
+                ArmOp::Ldr {
+                    rd: Reg::R0,
+                    addr: MemAddr::reg_imm(Reg::R11, Reg::R0, 0),
+                },
+            ];
+            let result = validator
+                .verify_trap_preservation(
+                    &WasmOp::I32Load {
+                        offset: 0,
+                        align: 2,
+                    },
+                    &arm_ops,
+                )
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    // --- i32.trunc_f32_s/u (LIVE, #709 class) ---
+
+    /// The SHIPPED trunc domain-guard shape (instruction_selector.rs
+    /// I32TruncF32S/U): per bound, F32Const scratch ; ordered compare into
+    /// R0 ; CMP R0,#0 ; BNE +0 (in-range skips) ; UDF — then the VCVT.
+    /// Operand in S0, bound scratch S1 (the gate's register convention).
+    fn shipped_trunc_f32_guard(signed: bool) -> Vec<ArmOp> {
+        use synth_synthesis::rules::VfpReg;
+        let (hi, lo) = if signed {
+            (2147483648.0_f32, -2147483648.0_f32)
+        } else {
+            (4294967296.0_f32, -1.0_f32)
+        };
+        let mut ops = Vec::new();
+        let mut guard = |bound: f32, upper: bool| {
+            ops.push(ArmOp::F32Const {
+                sd: VfpReg::S1,
+                value: bound,
+            });
+            let cmp = if upper {
+                ArmOp::F32Lt {
+                    rd: Reg::R0,
+                    sn: VfpReg::S0,
+                    sm: VfpReg::S1,
+                }
+            } else if signed {
+                ArmOp::F32Ge {
+                    rd: Reg::R0,
+                    sn: VfpReg::S0,
+                    sm: VfpReg::S1,
+                }
+            } else {
+                ArmOp::F32Gt {
+                    rd: Reg::R0,
+                    sn: VfpReg::S0,
+                    sm: VfpReg::S1,
+                }
+            };
+            ops.push(cmp);
+            ops.push(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            });
+            ops.push(ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            });
+            ops.push(ArmOp::Udf { imm: 0 });
+        };
+        guard(hi, true);
+        guard(lo, false);
+        drop(guard);
+        if signed {
+            ops.push(ArmOp::I32TruncF32S {
+                rd: Reg::R0,
+                sm: VfpReg::S0,
+            });
+        } else {
+            ops.push(ArmOp::I32TruncF32U {
+                rd: Reg::R0,
+                sm: VfpReg::S0,
+            });
+        }
+        ops
+    }
+
+    #[test]
+    fn trunc_f32_s_domain_guard_preserves_the_trap() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_trap_preservation(&WasmOp::I32TruncF32S, &shipped_trunc_f32_guard(true))
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    #[test]
+    fn trunc_f32_u_domain_guard_preserves_the_trap() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_trap_preservation(&WasmOp::I32TruncF32U, &shipped_trunc_f32_guard(false))
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    /// RED-FIRST for the #709 class: the bare saturating VCVT (guards
+    /// stripped) never traps — rejected with a counterexample.
+    #[test]
+    fn trunc_f32_without_domain_guard_is_rejected() {
+        use synth_synthesis::rules::VfpReg;
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let arm_ops = [ArmOp::I32TruncF32S {
+                rd: Reg::R0,
+                sm: VfpReg::S0,
+            }];
+            let result = validator
+                .verify_trap_preservation(&WasmOp::I32TruncF32S, &arm_ops)
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "guard-stripped trunc must be Invalid, got {result:?}"
+            );
+        });
+    }
+
+    /// Half a domain guard (upper bound only) drops the lower-bound trap.
+    #[test]
+    fn trunc_f32_with_only_upper_guard_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let mut arm_ops = shipped_trunc_f32_guard(true);
+            // Strip the second (lower-bound) guard: 5 ops per guard block.
+            arm_ops.drain(5..10);
+            let result = validator
+                .verify_trap_preservation(&WasmOp::I32TruncF32S, &arm_ops)
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "upper-only trunc guard must be Invalid, got {result:?}"
+            );
+        });
+    }
+
+    // --- call_indirect (LIVE at the pseudo-op guard level, #642/#664/#676) ---
+
+    fn call_indirect_pseudo(
+        table_size: u32,
+        null_check: bool,
+        type_check: Option<(u32, u32)>,
+    ) -> ArmOp {
+        ArmOp::CallIndirect {
+            rd: Reg::R0,
+            type_idx: 0,
+            table_index_reg: Reg::R0,
+            table_size,
+            table_byte_offset: 0,
+            null_check,
+            type_check,
+        }
+    }
+
+    #[test]
+    fn call_indirect_matching_guards_preserve_the_traps() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            // Homogeneous table, all slots initialized: bounds clause only.
+            let result = validator
+                .verify_call_indirect_trap_preservation(
+                    &call_indirect_pseudo(8, false, None),
+                    &CallIndirectSpec {
+                        table_size: 8,
+                        may_have_null_slot: false,
+                        heterogeneous_expected_type: None,
+                    },
+                )
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+            // Null-slot table + runtime type check, guards resolved.
+            let result = validator
+                .verify_call_indirect_trap_preservation(
+                    &call_indirect_pseudo(8, true, Some((3, 32))),
+                    &CallIndirectSpec {
+                        table_size: 8,
+                        may_have_null_slot: true,
+                        heterogeneous_expected_type: Some(3),
+                    },
+                )
+                .unwrap();
+            assert_eq!(result, ValidationResult::Verified);
+        });
+    }
+
+    /// RED-FIRST for the #664 class: table has uninitialized slots but the
+    /// selector resolved `null_check: false` — the null trap is dropped.
+    #[test]
+    fn call_indirect_dropped_null_check_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_call_indirect_trap_preservation(
+                    &call_indirect_pseudo(8, false, None),
+                    &CallIndirectSpec {
+                        table_size: 8,
+                        may_have_null_slot: true,
+                        heterogeneous_expected_type: None,
+                    },
+                )
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "dropped null check must be Invalid, got {result:?}"
+            );
+        });
+    }
+
+    /// RED-FIRST for the #642 class: the selector resolved the WRONG table
+    /// size — indices in the gap escape the bounds trap.
+    #[test]
+    fn call_indirect_wrong_table_size_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_call_indirect_trap_preservation(
+                    &call_indirect_pseudo(16, false, None),
+                    &CallIndirectSpec {
+                        table_size: 8,
+                        may_have_null_slot: false,
+                        heterogeneous_expected_type: None,
+                    },
+                )
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "wrong bounds size must be Invalid, got {result:?}"
+            );
+        });
+    }
+
+    /// RED-FIRST for the #676 class: heterogeneous table but the runtime
+    /// type check was dropped.
+    #[test]
+    fn call_indirect_dropped_type_check_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_call_indirect_trap_preservation(
+                    &call_indirect_pseudo(8, true, None),
+                    &CallIndirectSpec {
+                        table_size: 8,
+                        may_have_null_slot: true,
+                        heterogeneous_expected_type: Some(3),
+                    },
+                )
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "dropped type check must be Invalid, got {result:?}"
+            );
+        });
+    }
+
+    // --- verify_rule routes partial ops through the trap VC (mandatory) ---
+
+    #[test]
+    fn verify_rule_routes_partial_ops_through_the_trap_gate() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            // A bare-UDIV rule: value-plausible, trap-dropping. verify_rule
+            // must report Invalid (via the trap VC), not silently value-check.
+            let rule = SynthesisRule {
+                name: "i32.div_u → bare UDIV (trap-dropping)".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32DivU),
+                replacement: Replacement::ArmInstr(ArmOp::Udiv {
+                    rd: Reg::R0,
+                    rn: Reg::R0,
+                    rm: Reg::R1,
+                }),
+                cost: Cost {
+                    cycles: 1,
+                    code_size: 4,
+                    registers: 2,
+                },
+            };
+            let result = validator.verify_rule(&rule).unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "verify_rule must reject the trap-dropping div rule, got {result:?}"
+            );
+
+            // The guarded shape goes green through the same entry point.
+            let rule = SynthesisRule {
+                name: "i32.div_u → guarded UDIV".into(),
+                priority: 0,
+                pattern: Pattern::WasmInstr(WasmOp::I32DivU),
+                replacement: Replacement::ArmSequence(shipped_divu_guard()),
+                cost: Cost {
+                    cycles: 4,
+                    code_size: 10,
+                    registers: 2,
+                },
+            };
+            assert_eq!(
+                validator.verify_rule(&rule).unwrap(),
+                ValidationResult::Verified
+            );
         });
     }
 

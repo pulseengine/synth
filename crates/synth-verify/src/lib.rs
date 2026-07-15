@@ -90,7 +90,9 @@ pub use fact_spec::{FactSpecResult, specialize_function};
 pub use solver::{BvSolver, CheckOutcome, OrdealSolver, new_solver};
 pub use term::{BV, Bool};
 #[cfg(feature = "arm")]
-pub use translation_validator::{TranslationValidator, ValidationResult, VerificationError};
+pub use translation_validator::{
+    CallIndirectSpec, TranslationValidator, ValidationResult, VerificationError,
+};
 #[cfg(feature = "arm")]
 pub use validator_pattern::{
     CertifiedSelection, SolverResultKind, ValidationError as PatternValidationError, Validator,
