@@ -83,6 +83,33 @@
 //! the driver threads them to the direct selector, which omits exactly that
 //! guard. Sat / Unknown / no-premise ⇒ loud decline, the guard is emitted.
 //!
+//! # The memory bounds-guard obligation (#494 × #390 `guard_bool`)
+//!
+//! Under `--safety-bounds software` every i32 linear-memory access carries a
+//! 4-instruction inline guard (`ADD ip, addr, #(offset+size-1); CMP ip, R10;
+//! BLO +0; UDF #0` — see `generate_load_with_bounds_check`). When a premise
+//! on the INDEX proves the access in-bounds, the guard is provably dead:
+//!
+//! ```text
+//! UNSAT( P ∧ trap_mem_oob(zext64(index) + offset, size, min_memory_bytes) )
+//! ```
+//!
+//! The encoding is [`crate::trap::trap_mem_oob`] (ordeal 0.9.1's shape,
+//! `addr + size >u mem_bound` wraparound-safe), posed at width 64 — the
+//! 32-bit index is ZERO-extended and the static memarg `offset` added at 64
+//! bits, so the `index + offset` sum can never wrap the obligation into a
+//! false Unsat (WASM's effective address is `i + offset` at infinite
+//! precision for a 32-bit memory). `min_memory_bytes` is the module's
+//! DECLARED minimum linear-memory size: the runtime extent (R10) is always
+//! ≥ the declared minimum, so an access proven inside the minimum is inside
+//! every reachable runtime bound. Like div/rem, a memory op can trap, so it
+//! is TRACKED but never DELETED — the discharged obligation becomes a
+//! per-site mark ([`FactSpecResult::elide_mem_bounds`]) the direct selector
+//! consumes by emitting the access WITHOUT the software guard. Sat /
+//! Unknown / no-premise / unknown memory size ⇒ loud decline, the guard is
+//! emitted. Loaded values are havocked to fresh variables (memory contents
+//! are not modeled); stores need no memory model for the same reason.
+//!
 //! # Flag gating
 //!
 //! The driver only invokes this pass when `SYNTH_FACT_SPEC` is set (default
@@ -122,6 +149,13 @@ pub struct FactSpecResult {
     /// SEPARATE obligation (`UNSAT(P ∧ dividend == INT_MIN ∧ divisor == -1)`);
     /// a divisor-nonzero fact alone never lands here (#633/#634).
     pub elide_div_ovf: Vec<usize>,
+    /// #494 bounds-elision (#390 `guard_bool`): indices (into the RETURNED
+    /// `ops` stream) of i32 memory accesses whose `--safety-bounds software`
+    /// guard was certificate-elided —
+    /// `UNSAT(P ∧ trap_mem_oob(zext64(index) + offset, size,
+    /// min_memory_bytes))` discharged per site (ordeal 0.9.1 `trap_mem_oob`
+    /// shape, wraparound-safe 64-bit extension).
+    pub elide_mem_bounds: Vec<usize>,
     /// True when `ops` differs from the input (at least one region deletion).
     stream_changed: bool,
 }
@@ -155,16 +189,27 @@ struct Val {
 /// slice (`CompileConfig::current_func_facts`); `params_i64` is the declared
 /// param-width table (`CompileConfig::current_func_params_i64` — `true` ⇒
 /// param `k` is 64-bit), which fixes the symbolic width of a param
-/// `local.get` (Phase 2b tracks i64 divisors). Total: every input yields a
-/// result — inapplicable shapes surface as loud declines, never errors.
+/// `local.get` (Phase 2b tracks i64 divisors); `linear_memory_bytes` is the
+/// module's DECLARED minimum linear-memory size in bytes
+/// (`CompileConfig::linear_memory_bytes`; `0` = unknown — every memory
+/// bounds-guard obligation then declines loudly). Total: every input yields
+/// a result — inapplicable shapes surface as loud declines, never errors.
 pub fn specialize_function(
     func_name: &str,
     ops: &[WasmOp],
     block_arity: &[(u8, u8)],
     facts: &[WscFact],
     params_i64: &[bool],
+    linear_memory_bytes: u32,
 ) -> FactSpecResult {
-    let mut pass = Pass::new(func_name, ops, block_arity, facts, params_i64);
+    let mut pass = Pass::new(
+        func_name,
+        ops,
+        block_arity,
+        facts,
+        params_i64,
+        linear_memory_bytes,
+    );
     pass.walk();
     pass.finish()
 }
@@ -198,6 +243,9 @@ struct Pass<'a> {
     nonzero_facts: HashSet<usize>,
     /// Declared param widths (`true` ⇒ 64-bit) — fixes `local.get` widths.
     params_i64: &'a [bool],
+    /// The module's DECLARED minimum linear-memory size in bytes; `0` =
+    /// unknown (bounds-guard obligations decline).
+    mem_bound: u32,
     sem: WasmSemantics,
     stack: Vec<Val>,
     locals: HashMap<u32, BV>,
@@ -214,6 +262,9 @@ struct Pass<'a> {
     zero_marks: Vec<usize>,
     /// #494 phase 2b: ORIGINAL op indices marked for overflow-guard elision.
     ovf_marks: Vec<usize>,
+    /// #494 bounds-elision: ORIGINAL op indices of memory accesses whose
+    /// software bounds guard was certificate-proven dead.
+    mem_marks: Vec<usize>,
 }
 
 impl<'a> Pass<'a> {
@@ -223,6 +274,7 @@ impl<'a> Pass<'a> {
         block_arity: &'a [(u8, u8)],
         facts: &'a [WscFact],
         params_i64: &'a [bool],
+        mem_bound: u32,
     ) -> Self {
         let mut opener_ordinal = HashMap::new();
         let mut ord = 0usize;
@@ -262,8 +314,10 @@ impl<'a> Pass<'a> {
             range_facts,
             nonzero_facts,
             params_i64,
-            // No memory model needed: memory ops are outside the tracked
-            // fragment (the walk stops there).
+            mem_bound,
+            // No memory model needed: loaded values are havocked to fresh
+            // variables (only the ACCESS BOUND is reasoned about, never the
+            // contents), so stores need no modeling either.
             sem: WasmSemantics::new_with_memory(Vec::new()),
             stack: Vec::new(),
             locals: HashMap::new(),
@@ -276,6 +330,7 @@ impl<'a> Pass<'a> {
             declined: Vec::new(),
             zero_marks: Vec::new(),
             ovf_marks: Vec::new(),
+            mem_marks: Vec::new(),
         }
     }
 
@@ -484,6 +539,111 @@ impl<'a> Pass<'a> {
             CheckOutcome::Unknown(reason) => {
                 self.decline(format!(
                     "op#{i} {op_name} — overflow-guard obligation Unknown ({reason});                      conservative decline, the #633 overflow guard is RETAINED"
+                ));
+            }
+        }
+    }
+
+    /// #494 bounds-elision (#390 `guard_bool`): discharge the software
+    /// bounds-guard obligation for the i32 memory access at `i` (`op_name`,
+    /// byte width `access_size`, static memarg `offset`, index value `addr`),
+    /// recording an elision mark for the lowering:
+    ///
+    /// ```text
+    /// UNSAT( P ∧ trap_mem_oob(zext64(addr) + offset, access_size,
+    ///                         min_memory_bytes) )
+    /// ```
+    ///
+    /// The trap condition is [`crate::trap::trap_mem_oob`] (ordeal 0.9.1's
+    /// `addr + size >u mem_bound`, wraparound-safe), posed at width 64: the
+    /// 32-bit index is ZERO-extended and `offset` added at 64 bits, so the
+    /// effective-address sum cannot wrap into a false Unsat — exactly WASM's
+    /// infinite-precision `i + offset`. Proving the access inside the
+    /// DECLARED minimum memory (`mem_bound`) proves it inside every runtime
+    /// extent R10 can hold (runtime size ≥ declared minimum). Sat / Unknown
+    /// / no-premise / unknown memory size ⇒ loud decline; the guard is
+    /// emitted.
+    fn try_elide_mem_bounds(
+        &mut self,
+        i: usize,
+        op_name: &str,
+        access_size: u32,
+        offset: u32,
+        addr: &Val,
+    ) {
+        if self.mem_bound == 0 {
+            self.decline(format!(
+                "op#{i} {op_name} — linear-memory size unknown (no module memory \
+                 context); bounds guard retained"
+            ));
+            return;
+        }
+        if self.premises.is_empty() {
+            self.decline(format!(
+                "op#{i} {op_name} — no premise reaches this site; bounds guard retained"
+            ));
+            return;
+        }
+        // Wraparound-safe width extension: zext the 32-bit index to 64 bits,
+        // add the static offset at 64 bits (no 2^64 wrap is reachable:
+        // index < 2^32, offset < 2^32, size ≤ 8).
+        let ea = addr
+            .bv
+            .zero_ext(32)
+            .bvadd(BV::from_u64(u64::from(offset), 64));
+        let trap = crate::trap::trap_mem_oob(
+            &ea,
+            &BV::from_u64(u64::from(access_size), 64),
+            &BV::from_u64(u64::from(self.mem_bound), 64),
+        );
+        let mut solver = new_solver();
+        for p in &self.premises {
+            solver.assert(p);
+        }
+        solver.assert(&trap);
+        match solver.check() {
+            CheckOutcome::Unsat => {
+                self.mem_marks.push(i);
+                self.admitted.push(format!(
+                    "{}: op#{i} {op_name} (offset={offset}, {access_size} B) — software \
+                     bounds guard elided: UNSAT(P ∧ trap_mem_oob(zext64(index) + offset, \
+                     size, {} B declared-min memory)) via {} (certificate-checked QF_BV; \
+                     every Unsat carries an LRAT proof validated by ordeal-lrat); \
+                     P = {{{}}}; index = {}",
+                    self.func,
+                    self.mem_bound,
+                    solver.name(),
+                    self.premise_desc.join(" ∧ "),
+                    addr.bv,
+                ));
+            }
+            CheckOutcome::Sat => {
+                let cex = self.counterexample(solver.as_ref());
+                if force_admit_unsound() {
+                    // RED-TEAM lever (debug builds only): admit the Sat site
+                    // anyway so the differential oracle can demonstrate the
+                    // divergence. Screams, and still logs the model.
+                    self.mem_marks.push(i);
+                    self.admitted.push(format!(
+                        "{}: op#{i} {op_name} — bounds guard elided by UNSOUND FORCED \
+                         ADMIT (SYNTH_FACT_SPEC_FORCE_ADMIT, red-team oracle lever, \
+                         debug builds only) — obligation was Sat (counterexample: \
+                         {cex}); NEVER use in production",
+                        self.func,
+                    ));
+                } else {
+                    self.decline(format!(
+                        "op#{i} {op_name} — bounds-guard obligation Sat (the access can \
+                         exceed the {} B declared-min memory under P; counterexample: \
+                         {cex}); guard retained",
+                        self.mem_bound,
+                    ));
+                }
+            }
+            CheckOutcome::Unknown(reason) => {
+                self.decline(format!(
+                    "op#{i} {op_name} — bounds-guard obligation Unknown ({reason}); \
+                     conservative decline, guard retained"
                 ));
             }
         }
@@ -1002,6 +1162,70 @@ impl<'a> Pass<'a> {
                     self.attach_fact(i, &v);
                     self.push(v, None, i);
                 }
+                // #494 bounds-elision: i32 memory LOADS — TRACKED, never
+                // DELETED (an OOB access traps, so the op is not effect-free;
+                // same discipline as div/rem). The walk discharges the
+                // per-site software bounds-guard obligation and marks the op
+                // for the lowering; the loaded value is havocked to a fresh
+                // variable (memory contents are not modeled) with
+                // `start = None` (a possibly-trapping op never sits inside an
+                // erasable condition slice). Downstream soundness: if the
+                // access traps, nothing after it executes (any later admitted
+                // elision is vacuous on that path).
+                WasmOp::I32Load { offset, .. }
+                | WasmOp::I32Load8S { offset, .. }
+                | WasmOp::I32Load8U { offset, .. }
+                | WasmOp::I32Load16S { offset, .. }
+                | WasmOp::I32Load16U { offset, .. } => {
+                    let Some(a) = self.stack.pop() else {
+                        self.decline(format!("op#{i} memory load on empty symbolic stack"));
+                        return;
+                    };
+                    if a.bv.get_size() != 32 {
+                        self.decline(format!("op#{i} memory load on a non-32-bit index"));
+                        return;
+                    }
+                    let (op_name, size) = match op {
+                        WasmOp::I32Load { .. } => ("i32.load", 4),
+                        WasmOp::I32Load8S { .. } => ("i32.load8_s", 1),
+                        WasmOp::I32Load8U { .. } => ("i32.load8_u", 1),
+                        WasmOp::I32Load16S { .. } => ("i32.load16_s", 2),
+                        _ => ("i32.load16_u", 2),
+                    };
+                    self.try_elide_mem_bounds(i, op_name, size, *offset, &a);
+                    // Havoc the loaded value; `start = None` keeps a possibly-
+                    // trapping op out of every erasable condition slice.
+                    let n = self.fresh;
+                    self.fresh += 1;
+                    let v = self.fresh_var(format!("fs_m{n}"));
+                    self.attach_fact(i, &v);
+                    self.push(v, None, i);
+                }
+                // #494 bounds-elision: i32 memory STORES — same obligation
+                // over the index. No memory model is needed: loads are always
+                // havocked, so a store's effect on the symbolic state is
+                // vacuous; only the guard obligation is discharged.
+                WasmOp::I32Store { offset, .. }
+                | WasmOp::I32Store8 { offset, .. }
+                | WasmOp::I32Store16 { offset, .. } => {
+                    let (Some(val), Some(a)) = (self.stack.pop(), self.stack.pop()) else {
+                        self.decline(format!(
+                            "op#{i} memory store on underflowing symbolic stack"
+                        ));
+                        return;
+                    };
+                    if a.bv.get_size() != 32 || val.bv.get_size() != 32 {
+                        self.decline(format!("op#{i} memory store on a non-32-bit operand"));
+                        return;
+                    }
+                    let (op_name, size) = match op {
+                        WasmOp::I32Store { .. } => ("i32.store", 4),
+                        WasmOp::I32Store8 { .. } => ("i32.store8", 1),
+                        _ => ("i32.store16", 2),
+                    };
+                    self.try_elide_mem_bounds(i, op_name, size, *offset, &a);
+                    // Store pushes nothing.
+                }
                 WasmOp::If => {
                     let Some(cond) = self.stack.pop() else {
                         self.decline(format!("op#{i} `if` on empty symbolic stack"));
@@ -1111,6 +1335,7 @@ impl<'a> Pass<'a> {
             declined,
             zero_marks,
             ovf_marks,
+            mem_marks,
             ..
         } = self;
         if deletions.is_empty() {
@@ -1123,6 +1348,7 @@ impl<'a> Pass<'a> {
                 // No rewrite ⇒ original indices ARE the output indices.
                 elide_div_zero: zero_marks,
                 elide_div_ovf: ovf_marks,
+                elide_mem_bounds: mem_marks,
                 stream_changed: false,
             };
         }
@@ -1163,6 +1389,7 @@ impl<'a> Pass<'a> {
             block_arity: out_arity,
             elide_div_zero: remap(zero_marks),
             elide_div_ovf: remap(ovf_marks),
+            elide_mem_bounds: remap(mem_marks),
             kept,
             admitted,
             declined,
@@ -1216,7 +1443,7 @@ mod tests {
     #[test]
     fn clamp_shape_elides_both_branches_under_the_proven_bound_494() {
         let ops = clamp_ops();
-        let r = specialize_function("gust_mix", &ops, CLAMP_ARITY, &[fact(0, 524, 1524)], &[]);
+        let r = specialize_function("gust_mix", &ops, CLAMP_ARITY, &[fact(0, 524, 1524)], &[], 0);
         assert_eq!(r.admitted.len(), 2, "declines: {:?}", r.declined);
         assert!(r.changed());
         assert_eq!(
@@ -1246,7 +1473,7 @@ mod tests {
         // ch ∈ [0, 4000] does NOT make the clamp dead (ch=0 → v=476 < 1000):
         // the obligation is Sat and BOTH sites decline with a counterexample.
         let ops = clamp_ops();
-        let r = specialize_function("gust_mix", &ops, CLAMP_ARITY, &[fact(0, 0, 4000)], &[]);
+        let r = specialize_function("gust_mix", &ops, CLAMP_ARITY, &[fact(0, 0, 4000)], &[], 0);
         assert_eq!(r.admitted.len(), 0);
         assert!(!r.changed());
         assert_eq!(r.ops, ops, "declined ⇒ byte-identical op stream");
@@ -1265,7 +1492,7 @@ mod tests {
         // ch ∈ [524, 4000]: v ≥ 1000 so the LOW clamp is dead, but v can
         // exceed 2000 so the HIGH clamp must survive.
         let ops = clamp_ops();
-        let r = specialize_function("gust_mix", &ops, CLAMP_ARITY, &[fact(0, 524, 4000)], &[]);
+        let r = specialize_function("gust_mix", &ops, CLAMP_ARITY, &[fact(0, 524, 4000)], &[], 0);
         assert_eq!(r.admitted.len(), 1, "declines: {:?}", r.declined);
         assert_eq!(r.declined.len(), 1);
         assert_eq!(
@@ -1292,7 +1519,7 @@ mod tests {
     #[test]
     fn no_facts_changes_nothing_494() {
         let ops = clamp_ops();
-        let r = specialize_function("gust_mix", &ops, CLAMP_ARITY, &[], &[]);
+        let r = specialize_function("gust_mix", &ops, CLAMP_ARITY, &[], &[], 0);
         assert!(!r.changed());
         assert_eq!(r.ops, ops);
         assert!(!r.declined.is_empty(), "the no-fact case is a loud decline");
@@ -1329,7 +1556,7 @@ mod tests {
     #[test]
     fn select_clamp_collapses_both_selects_under_the_proven_bound_494() {
         let ops = select_clamp_ops();
-        let r = specialize_function("gust_mix", &ops, &[], &[fact(0, 524, 1524)], &[]);
+        let r = specialize_function("gust_mix", &ops, &[], &[fact(0, 524, 1524)], &[], 0);
         assert_eq!(r.admitted.len(), 2, "declines: {:?}", r.declined);
         assert!(r.changed());
         assert_eq!(
@@ -1360,7 +1587,7 @@ mod tests {
         // ch ∈ [0, 4000]: ch=0 → v=476 < 1000 so the low clamp genuinely
         // fires; both selects are non-constant ⇒ loud Sat decline, no rewrite.
         let ops = select_clamp_ops();
-        let r = specialize_function("gust_mix", &ops, &[], &[fact(0, 0, 4000)], &[]);
+        let r = specialize_function("gust_mix", &ops, &[], &[fact(0, 0, 4000)], &[], 0);
         assert_eq!(r.admitted.len(), 0);
         assert!(!r.changed());
         assert_eq!(r.ops, ops, "declined ⇒ byte-identical op stream");
@@ -1383,7 +1610,7 @@ mod tests {
             Select,        // 3  → val1
             End,           // 4
         ];
-        let r = specialize_function("f", &ops, &[], &[fact(2, 1, 1)], &[]);
+        let r = specialize_function("f", &ops, &[], &[fact(2, 1, 1)], &[], 0);
         assert_eq!(r.admitted.len(), 1, "declines: {:?}", r.declined);
         assert_eq!(r.ops, vec![I32Const(111), End]);
         assert!(
@@ -1405,7 +1632,7 @@ mod tests {
             Select,        // 3
             End,           // 4
         ];
-        let r = specialize_function("f", &ops, &[], &[fact(0, 111, 111)], &[]);
+        let r = specialize_function("f", &ops, &[], &[fact(0, 111, 111)], &[], 0);
         assert_eq!(r.admitted.len(), 0);
         assert!(!r.changed());
         assert_eq!(r.ops, ops);
@@ -1437,7 +1664,7 @@ mod tests {
             LocalGet(1),    // 16
             End,            // 17
         ];
-        let r = specialize_function("f", &ops, CLAMP_ARITY, &[fact(0, 524, 1524)], &[]);
+        let r = specialize_function("f", &ops, CLAMP_ARITY, &[fact(0, 524, 1524)], &[], 0);
         assert_eq!(
             r.admitted.len(),
             0,
@@ -1461,7 +1688,7 @@ mod tests {
             LocalGet(1), // 8
             End,         // 9
         ];
-        let r = specialize_function("f", &ops, &[(0, 0)], &[fact(0, 0, 0)], &[]);
+        let r = specialize_function("f", &ops, &[(0, 0)], &[fact(0, 0, 0)], &[], 0);
         assert_eq!(r.admitted.len(), 0);
         assert!(
             r.declined.iter().any(|d| d.contains("else")),
@@ -1490,7 +1717,7 @@ mod tests {
             End,         // 11
         ];
         let arity = &[(0, 0), (0, 0), (0, 1)];
-        let r = specialize_function("f", &ops, arity, &[fact(0, 5, 5)], &[]);
+        let r = specialize_function("f", &ops, arity, &[fact(0, 5, 5)], &[], 0);
         assert_eq!(r.admitted.len(), 1, "declines: {:?}", r.declined);
         // The condition slice starts at op 0 (LocalGet feeds the eqz), so the
         // whole deleted range is [0..=8]; only the trailing block survives.
@@ -1517,7 +1744,7 @@ mod tests {
             End,         // 6
             End,         // 7
         ];
-        let r = specialize_function("f", &ops, &[(0, 0)], &[fact(0, 1, 1)], &[]);
+        let r = specialize_function("f", &ops, &[(0, 0)], &[fact(0, 1, 1)], &[], 0);
         assert_eq!(r.admitted.len(), 0);
         assert!(
             r.declined
@@ -1537,7 +1764,7 @@ mod tests {
             Drop,          // 2
             End,           // 3
         ];
-        let r = specialize_function("f", &ops, &[], &[fact(0, 1, 2)], &[]);
+        let r = specialize_function("f", &ops, &[], &[fact(0, 1, 2)], &[], 0);
         assert!(!r.changed());
         assert!(
             r.declined.iter().any(|d| d.contains("outside the tracked")),
@@ -1576,7 +1803,7 @@ mod tests {
             End,         // 11
         ];
         let facts = [fact(1, 1, 100), fact(5, 1, 100), fact(9, 1, 100)];
-        let r = specialize_function("f", &ops, &[], &facts, &[]);
+        let r = specialize_function("f", &ops, &[], &facts, &[], 0);
         assert_eq!(
             r.elide_div_zero,
             vec![2, 6, 10],
@@ -1610,7 +1837,7 @@ mod tests {
             I32DivS,     // 2
             End,         // 3
         ];
-        let r = specialize_function("f", &ops, &[], &[nonzero_fact(1)], &[]);
+        let r = specialize_function("f", &ops, &[], &[nonzero_fact(1)], &[], 0);
         assert_eq!(r.elide_div_zero, vec![2], "declines: {:?}", r.declined);
         assert_eq!(
             r.elide_div_ovf,
@@ -1631,7 +1858,7 @@ mod tests {
         // divisor ∈ [1, 100] excludes BOTH 0 and -1 — the two obligations
         // are discharged independently and both guards fall.
         let ops = vec![LocalGet(0), LocalGet(1), I32DivS, End];
-        let r = specialize_function("f", &ops, &[], &[fact(1, 1, 100)], &[]);
+        let r = specialize_function("f", &ops, &[], &[fact(1, 1, 100)], &[], 0);
         assert_eq!(r.elide_div_zero, vec![2], "declines: {:?}", r.declined);
         assert_eq!(r.elide_div_ovf, vec![2]);
         assert_eq!(r.admitted.len(), 2, "one certificate line per obligation");
@@ -1650,7 +1877,7 @@ mod tests {
         // divisor ∈ [0, 100]: divisor == 0 is P-admissible — the obligation
         // is Sat, the decline is loud and carries a model, no mark is set.
         let ops = vec![LocalGet(0), LocalGet(1), I32DivU, End];
-        let r = specialize_function("f", &ops, &[], &[fact(1, 0, 100)], &[]);
+        let r = specialize_function("f", &ops, &[], &[fact(1, 0, 100)], &[], 0);
         assert_eq!(r.elide_div_zero, Vec::<usize>::new());
         assert!(
             r.declined
@@ -1667,7 +1894,7 @@ mod tests {
         // carrying a divisor-nonzero fact — the zero guard is proven dead,
         // the INT64_MIN/-1 overflow guard (#633/#634) is RETAINED.
         let ops = vec![LocalGet(0), LocalGet(1), I64DivS, End];
-        let r = specialize_function("f", &ops, &[], &[nonzero_fact(1)], &[true, true]);
+        let r = specialize_function("f", &ops, &[], &[nonzero_fact(1)], &[true, true], 0);
         assert_eq!(r.elide_div_zero, vec![2], "declines: {:?}", r.declined);
         assert_eq!(
             r.elide_div_ovf,
@@ -1684,7 +1911,7 @@ mod tests {
     #[test]
     fn i64_div_s_positive_range_discharges_both_obligations_494() {
         let ops = vec![LocalGet(0), LocalGet(1), I64DivS, End];
-        let r = specialize_function("f", &ops, &[], &[fact(1, 1, 1000)], &[true, true]);
+        let r = specialize_function("f", &ops, &[], &[fact(1, 1, 1000)], &[true, true], 0);
         assert_eq!(r.elide_div_zero, vec![2], "declines: {:?}", r.declined);
         assert_eq!(r.elide_div_ovf, vec![2]);
     }
@@ -1695,7 +1922,7 @@ mod tests {
         // 32-bit — the width check declines rather than building a
         // wrong-width obligation.
         let ops = vec![LocalGet(0), LocalGet(1), I64DivU, End];
-        let r = specialize_function("f", &ops, &[], &[nonzero_fact(1)], &[]);
+        let r = specialize_function("f", &ops, &[], &[nonzero_fact(1)], &[], 0);
         assert_eq!(r.elide_div_zero, Vec::<usize>::new());
         assert!(
             r.declined.iter().any(|d| d.contains("unexpected width")),
@@ -1716,7 +1943,7 @@ mod tests {
         ];
         // A fact on op 0 (the dividend): premises exist but do not constrain
         // the divisor — Sat, decline.
-        let r = specialize_function("f", &ops, &[], &[fact(0, 1, 5)], &[]);
+        let r = specialize_function("f", &ops, &[], &[fact(0, 1, 5)], &[], 0);
         assert_eq!(r.elide_div_zero, Vec::<usize>::new());
         assert!(
             r.declined
@@ -1749,7 +1976,7 @@ mod tests {
             I32DivU,        // 13  → zero mark (rewritten index 6)
             End,            // 14
         ];
-        let r = specialize_function("f", &ops, &[(0, 0)], &[fact(0, 524, 1524)], &[]);
+        let r = specialize_function("f", &ops, &[(0, 0)], &[fact(0, 524, 1524)], &[], 0);
         assert!(r.changed(), "declines: {:?}", r.declined);
         assert_eq!(r.kept, vec![0, 1, 2, 3, 11, 12, 13, 14]);
         assert_eq!(
@@ -1803,6 +2030,7 @@ mod tests {
             &[],
             &[fact(0, 0, 2047), fact(3, 0, 2047)],
             &[],
+            0,
         );
         assert_eq!(r.admitted.len(), 2, "declines: {:?}", r.declined);
         assert!(r.changed());
@@ -1838,6 +2066,7 @@ mod tests {
             &[],
             &[fact(0, 0, 0xFFF), fact(3, 0, 0xFFF)],
             &[],
+            0,
         );
         assert_eq!(r.admitted.len(), 0);
         assert!(!r.changed());
@@ -1862,7 +2091,7 @@ mod tests {
             I32And,          // 2
             End,             // 3
         ];
-        let r = specialize_function("f", &ops, &[], &[fact(1, 0x7FF, 0x7FF)], &[]);
+        let r = specialize_function("f", &ops, &[], &[fact(1, 0x7FF, 0x7FF)], &[], 0);
         assert_eq!(r.admitted.len(), 0);
         assert!(!r.changed());
         assert_eq!(r.ops, ops);
@@ -1879,7 +2108,7 @@ mod tests {
             I32And,          // 2
             End,             // 3
         ];
-        let r = specialize_function("f", &ops, &[], &[fact(0, -1, 2047)], &[]);
+        let r = specialize_function("f", &ops, &[], &[fact(0, -1, 2047)], &[], 0);
         assert_eq!(
             r.admitted.len(),
             0,
@@ -1892,7 +2121,7 @@ mod tests {
     #[test]
     fn mask_elision_no_facts_changes_nothing_494() {
         let ops = pack_lanes_ops();
-        let r = specialize_function("gust_kernel", &ops, &[], &[], &[]);
+        let r = specialize_function("gust_kernel", &ops, &[], &[], &[], 0);
         assert!(!r.changed());
         assert_eq!(r.ops, ops);
         assert!(!r.declined.is_empty(), "the no-fact case is a loud decline");
@@ -1901,8 +2130,186 @@ mod tests {
     #[test]
     fn out_of_range_value_id_is_vacuous_494() {
         let ops = clamp_ops();
-        let r = specialize_function("f", &ops, CLAMP_ARITY, &[fact(999, 524, 1524)], &[]);
+        let r = specialize_function("f", &ops, CLAMP_ARITY, &[fact(999, 524, 1524)], &[], 0);
         assert!(!r.changed());
         assert_eq!(r.ops, ops);
+    }
+
+    // ========= #494 bounds-elision (#390 guard_bool): memory bounds guards =========
+
+    /// The gust_poll shape: a record array indexed by a proven-bounded slot —
+    /// `base = slot*16 + 256`, then field loads/stores at static offsets.
+    fn poll_ops() -> Vec<WasmOp> {
+        vec![
+            LocalGet(0),                        // 0  slot ← fact target
+            I32Const(4),                        // 1
+            I32Shl,                             // 2  slot*16
+            I32Const(256),                      // 3
+            I32Add,                             // 4  base
+            LocalSet(1),                        // 5
+            LocalGet(1),                        // 6
+            I32Load8U { offset: 0, align: 0 },  // 7  → mark (byte)
+            LocalGet(1),                        // 8
+            I32Load { offset: 4, align: 2 },    // 9  → mark (word)
+            I32Add,                             // 10
+            LocalGet(1),                        // 11
+            I32Const(7),                        // 12
+            I32Store16 { offset: 2, align: 1 }, // 13 → mark (halfword store)
+            End,                                // 14
+        ]
+    }
+
+    #[test]
+    fn bounded_index_elides_all_mem_bounds_guards_494() {
+        // slot ∈ [0, 63] ⇒ base ∈ [256, 1264]; every access's last byte is
+        // < 65536, so all three obligations fall to
+        // UNSAT(P ∧ trap_mem_oob(...)). Marks only — the stream is untouched.
+        let ops = poll_ops();
+        let r = specialize_function("poll", &ops, &[], &[fact(0, 0, 63)], &[], 65536);
+        assert_eq!(
+            r.elide_mem_bounds,
+            vec![7, 9, 13],
+            "declines: {:?}",
+            r.declined
+        );
+        assert!(!r.changed(), "guard marks never rewrite the op stream");
+        assert_eq!(r.ops, ops);
+        assert_eq!(r.admitted.len(), 3);
+        for line in &r.admitted {
+            assert!(line.contains("bounds guard elided"), "{line}");
+            assert!(line.contains("trap_mem_oob"), "{line}");
+            assert!(line.contains("certificate-checked"), "{line}");
+            assert!(line.contains("[0, 63]"), "{line}");
+        }
+    }
+
+    #[test]
+    fn oob_admissible_bound_is_sat_and_declines_494() {
+        // slot ∈ [0, 8192]: slot = 4096 ⇒ base = 65792 > 65536 — the access
+        // can genuinely escape, the obligation is Sat, the guard stays.
+        let ops = poll_ops();
+        let r = specialize_function("poll", &ops, &[], &[fact(0, 0, 8192)], &[], 65536);
+        assert_eq!(r.elide_mem_bounds, Vec::<usize>::new());
+        assert_eq!(r.admitted.len(), 0);
+        assert!(
+            r.declined
+                .iter()
+                .any(|d| d.contains("bounds-guard obligation Sat")
+                    && d.contains("counterexample")),
+            "declines must be loud and carry a model: {:?}",
+            r.declined
+        );
+    }
+
+    #[test]
+    fn unknown_memory_size_declines_mem_bounds_494() {
+        // linear_memory_bytes == 0 (no module memory context): the bound of
+        // the obligation does not exist — decline loudly, never guess.
+        let ops = poll_ops();
+        let r = specialize_function("poll", &ops, &[], &[fact(0, 0, 63)], &[], 0);
+        assert_eq!(r.elide_mem_bounds, Vec::<usize>::new());
+        assert!(
+            r.declined
+                .iter()
+                .any(|d| d.contains("linear-memory size unknown")),
+            "{:?}",
+            r.declined
+        );
+    }
+
+    #[test]
+    fn unconstrained_index_declines_mem_bounds_494() {
+        // A TRUE fact exists (so the walk runs) but targets the stored VALUE,
+        // not the index — the index is unconstrained ⇒ Sat ⇒ loud decline.
+        let ops = vec![
+            LocalGet(0),                      // 0  index — unconstrained
+            LocalGet(1),                      // 1  value ← fact (non-constraining)
+            I32Store { offset: 0, align: 2 }, // 2
+            End,                              // 3
+        ];
+        let r = specialize_function("f", &ops, &[], &[fact(1, 0, 63)], &[], 65536);
+        assert_eq!(r.elide_mem_bounds, Vec::<usize>::new());
+        assert!(
+            r.declined
+                .iter()
+                .any(|d| d.contains("bounds-guard obligation Sat")),
+            "{:?}",
+            r.declined
+        );
+    }
+
+    #[test]
+    fn wraparound_index_plus_offset_never_falsely_unsat_494() {
+        // THE WIDTH-EXTENSION GOTCHA: index = -256 (0xFFFFFF00 unsigned) with
+        // offset = 0x200. A naive 32-bit encoding wraps the effective address
+        // to 0x104 — "in bounds" — and would falsely elide; WASM's effective
+        // address is infinite-precision (4294967040 + 512 > 65536 ⇒ TRAPS).
+        // The 64-bit zero-extension keeps the obligation Sat ⇒ guard retained.
+        let ops = vec![
+            LocalGet(0),                         // 0 ← fact [-256, -256]
+            I32Load { offset: 0x200, align: 2 }, // 1
+            End,                                 // 2
+        ];
+        let r = specialize_function("f", &ops, &[], &[fact(0, -256, -256)], &[], 65536);
+        assert_eq!(
+            r.elide_mem_bounds,
+            Vec::<usize>::new(),
+            "a wrapped effective address must NOT elide the guard: {:?}",
+            r.admitted
+        );
+        assert!(
+            r.declined
+                .iter()
+                .any(|d| d.contains("bounds-guard obligation Sat")),
+            "{:?}",
+            r.declined
+        );
+    }
+
+    #[test]
+    fn access_ending_exactly_at_bound_is_in_bounds_boundary_494() {
+        // Boundary semantics: a 4-byte load at index 65532 ends exactly AT
+        // the bound (addr + size == mem_bound) — in bounds per WASM (§4.4.5:
+        // trap iff ea + size > mem size) and per the guard's `>u`. One past
+        // (65533) must decline.
+        let ops = vec![
+            LocalGet(0),                     // 0 ← fact
+            I32Load { offset: 0, align: 2 }, // 1
+            End,                             // 2
+        ];
+        let ok = specialize_function("f", &ops, &[], &[fact(0, 0, 65532)], &[], 65536);
+        assert_eq!(ok.elide_mem_bounds, vec![1], "declines: {:?}", ok.declined);
+        let over = specialize_function("f", &ops, &[], &[fact(0, 0, 65533)], &[], 65536);
+        assert_eq!(over.elide_mem_bounds, Vec::<usize>::new());
+    }
+
+    #[test]
+    fn mem_marks_are_remapped_through_a_clamp_elision_494() {
+        // A clamp elision rewrites the stream; a downstream load's mark must
+        // land on the REWRITTEN index (the selector keys by its own op index).
+        let ops = vec![
+            LocalGet(0),                     // 0  ← fact [524, 1524]
+            I32Const(476),                   // 1
+            I32Add,                          // 2
+            LocalSet(1),                     // 3
+            LocalGet(1),                     // 4  -+ low clamp (elided 4..=10)
+            I32Const(1000),                  // 5   |
+            I32LtS,                          // 6   |
+            If,                              // 7   |
+            I32Const(1000),                  // 8   |
+            LocalSet(1),                     // 9   |
+            End,                             // 10 -+
+            LocalGet(0),                     // 11  index = ch ∈ [524, 1524]
+            I32Load { offset: 0, align: 2 }, // 12  → mark (rewritten index 5)
+            End,                             // 13
+        ];
+        let r = specialize_function("f", &ops, &[(0, 0)], &[fact(0, 524, 1524)], &[], 65536);
+        assert!(r.changed(), "declines: {:?}", r.declined);
+        assert_eq!(r.kept, vec![0, 1, 2, 3, 11, 12, 13]);
+        assert_eq!(
+            r.elide_mem_bounds,
+            vec![5],
+            "mark remapped from original op#12 to rewritten op#5"
+        );
     }
 }
