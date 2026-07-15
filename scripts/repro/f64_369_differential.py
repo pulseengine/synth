@@ -1,26 +1,29 @@
 #!/usr/bin/env python3
-"""#369 (GI-FPU-002 phase 2) — EXECUTION-validate the scalar f64 subset on
+"""#369 (GI-FPU-002 phases 2+3) — EXECUTION-validate scalar f64 on
 cortex-m7dp (double-precision VFP).
 
-Lowered set (everything else f64 stays decode-dropped -> loud-skip):
+Lowered set (still decode-dropped -> loud-skip: only i64<->f64 conversions
+and the f64<->i64 reinterprets, which need lowered pair plumbing):
   * f64.const            — full 64-bit pattern via 2x MOVW/MOVT + VMOV Dd,lo,hi
-  * f64.promote_f32      — VCVT.F64.F32 (falcon's 3-function blocker)
+  * f64.promote_f32 / f32.demote_f64 — VCVT (round-to-nearest-even demote)
   * add/sub/mul/div      — VADD/VSUB/VMUL/VDIV .F64
   * abs/neg/sqrt         — VABS/VNEG/VSQRT .F64
-  * eq/ne/lt/le/gt/ge    — VCMP.F64 + VMRS + IT (NaN-audited ordered set; the
-                           encoder shipped the SAME #712 flag-clobber bug the
-                           f32 compares had — MOVS after VMRS — fixed here)
+  * ceil/floor/trunc/nearest — single VRINT{P,M,Z,N}.F64 (FPv5)
+  * min/max              — VMINNM/VMAXNM + the VS-guarded NaN fix-up
+  * copysign             — VABS + conditional VNEG (R12-only scratch)
+  * eq/ne/lt/le/gt/ge    — VCMP.F64 + VMRS + IT (NaN-audited ordered set)
+  * f64.convert_i32_s/u  — VCVT staged through the dest's own S-alias
+  * i32.trunc_f64_s/u    — #709-twin domain guard: TRAPS (UDF) out of range
   * f64.load/f64.store   — two PROVEN bounds-checked 4-byte integer accesses
-  * f64 live ACROSS an integer call — D0..D7 are caller-saved, preserved as
-                           aliased S-word pairs by the #719 VFP call-spill
+  * f64 live ACROSS calls, f64 PARAMS in AAPCS-VFP D-homes (back-fill
+    layout), and the marshalled call boundary (D0/D1 args, D0 results)
 
 Each op is differentiated under unicorn vs wasmtime, BIT-EXACT on the 64-bit
 result pattern with NaN==NaN per WASM Core §4.3.3 (NaN sign/payload is
 non-deterministic; mirrors f32_bits_eq in f32_vfp_619_differential.py).
 
 Honest rejections pinned: the whole fixture on cortex-m4f (single-precision)
-and cortex-m3 (no FPU); f64-param functions and f64-returning CALLS on m7dp
-(absent from the symtab — loud decline, never a miscompile).
+and cortex-m3 (no FPU).
 
 Run (needs wasmtime + unicorn + pyelftools):
   SYNTH=/path/to/synth python scripts/repro/f64_369_differential.py
