@@ -1727,24 +1727,31 @@ artifacts:
       the ARM `line_map` and a new object-branch side-table `BranchMap`
       (`crate::backend::BranchClass`, captured at the ARM encode loop parallel to
       `line_map` — the one datum post-hoc CLI derivation could not recover: which
-      emitted instruction IS a conditional branch vs a predicated move). Covered
-      kinds (BOUNDED v1): `preserved` (br_if/br), `folded-predication` (select →
-      IT-block predicated move, no branch), `split-into-object-branches`
-      (br_table, `count` = object branches), `eliminated-constant` (fact-spec-
-      dropped source branch, derived from the `kept` set). Every entry carries its
-      object realization (`object_pcs`), and a per-function `object_cond_branches`
-      list reconciles every REAL object conditional branch back to its source
-      condition — an object branch no covered source op explains is surfaced with
-      `resolved: false` + a note (i64-expansion / trap-guard), NOT hidden. The
-      reconciliation gate (`provenance_reconciliation_396`, CI job
-      `provenance-gate`) is non-vacuous: it asserts clauses (a) every object cond
-      branch resolves and (b) the folded select is recorded folded with its
-      predicated object PC — verified RED under an adversarial mislabel of
-      SelectMove. FOLLOW-UP (uncovered in v1, named): the optimized `ir_to_arm`
-      path still sets `source_line: None` so its `branch_map` is unpopulated
-      (ARM direct + Thumb selector path covered); i64-expansion/trap-guard object
-      branches are surfaced-unresolved rather than reconciled; RISC-V/AArch64
-      carry no `branch_map`; witness#130 `object-disposition` end-to-end compose.
+      emitted instruction IS a conditional branch vs a predicated move).
+      GATE-EXERCISED kinds (BOUNDED v1): `preserved` (br_if/br),
+      `folded-predication` (select → IT-block predicated move, no branch),
+      `split-into-object-branches` (br_table, `count` = object branches) — all
+      three asserted on the reconciliation fixture. `eliminated-constant`
+      (fact-spec-dropped source branch, derived from the `kept` set) is WIRED in
+      the schema + emitter with the correct byte-offset join key, but not yet
+      gate-exercised (fact-spec deletions today are pure condition slices +
+      proven-dead `if` regions; a fixture that drops a covered branch op is a v1
+      follow-up). Every entry carries its object realization (`object_pcs`), and a
+      per-function `object_cond_branches` list reconciles every REAL object
+      conditional branch back to its source condition — an object branch no
+      covered source op explains is surfaced with `resolved: false` + a note
+      (i64-expansion / trap-guard), NOT hidden. The reconciliation gate
+      (`provenance_reconciliation_396`, CI job `provenance-gate`) is non-vacuous:
+      it asserts clauses (a) every object cond branch resolves and (b) the folded
+      select is recorded folded with its predicated object PC — verified RED under
+      an adversarial mislabel of SelectMove. FOLLOW-UP (uncovered in v1, named):
+      the optimized `ir_to_arm` path may drop `source_line` on some op shapes
+      (verified: this fixture keeps it on both the direct AND optimized paths) —
+      a function whose `line_map` came back all-None is LOUD-DECLINED from the
+      sidecar (warn + skip) rather than mislabeled; i64-expansion/trap-guard
+      object branches are surfaced-unresolved rather than reconciled; RISC-V/
+      AArch64 carry no `branch_map`; the eliminated-constant fixture; witness#130
+      `object-disposition` end-to-end compose.
     status: implemented
     tags: [witness, mcdc, traceability, provenance, vcr-dbg, decision, integration]
     links:

@@ -39,9 +39,11 @@
 //!
 //! ## Bounded v1 — covered vs uncovered
 //!
-//! COVERED solidly: `br_if`, `br` (preserved), `select` (folded-predication),
-//! `br_table` (split), constant-eliminated branch ops. Every object conditional
-//! branch that does NOT resolve to one of these source ops is surfaced in
+//! GATE-EXERCISED: `br_if`, `br` (preserved), `select` (folded-predication),
+//! `br_table` (split). `eliminated-constant` is WIRED (schema + emitter, correct
+//! byte-offset join key) but not yet gate-exercised — a fixture that drops a
+//! covered branch op is a v1 follow-up. Every object conditional branch that does
+//! NOT resolve to one of the covered source ops is surfaced in
 //! `object_cond_branches` with `resolved: false` and a `note` (e.g. an `i64`
 //! expansion branch or a div/mem trap guard) — an "only-in-synth"-style
 //! divergence the consumer SEES rather than a silent gap. Naming the uncovered
