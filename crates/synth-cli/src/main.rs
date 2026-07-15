@@ -69,6 +69,10 @@ struct SpecializedFn {
     /// certificate-elided (a SEPARATE obligation — divisor-nonzero alone
     /// never lands here, #633/#634).
     elide_div_ovf: Vec<usize>,
+    /// #494 bounds-elision (#390 `guard_bool`): i32 memory-access sites whose
+    /// `--safety-bounds software` guard was certificate-elided — threaded to
+    /// `CompileConfig::fact_mem_bounds_elide` for the direct selector.
+    elide_mem_bounds: Vec<usize>,
 }
 
 /// Run the fact-spec pass (value-range facts ⇒ dead conditional-branch
@@ -85,6 +89,7 @@ fn maybe_fact_spec(
     block_arity: &[(u8, u8)],
     facts: &[WscFact],
     params_i64: &[bool],
+    linear_memory_bytes: u32,
 ) -> Option<SpecializedFn> {
     if !fact_spec_enabled() || facts.is_empty() {
         return None;
@@ -97,6 +102,7 @@ fn maybe_fact_spec(
             block_arity,
             facts,
             params_i64,
+            linear_memory_bytes,
         );
         // Loud by contract: every decline names its site and reason; every
         // admit carries the certificate line (the evidence trail).
@@ -106,16 +112,22 @@ fn maybe_fact_spec(
         for line in &r.admitted {
             eprintln!("fact-spec: ADMIT {line}");
         }
-        if r.changed() || !r.elide_div_zero.is_empty() || !r.elide_div_ovf.is_empty() {
+        if r.changed()
+            || !r.elide_div_zero.is_empty()
+            || !r.elide_div_ovf.is_empty()
+            || !r.elide_mem_bounds.is_empty()
+        {
             eprintln!(
                 "fact-spec: '{func_name}' specialized — {} elision(s) admitted, \
-                 {} declined ({} → {} ops, {} zero-guard + {} overflow-guard marks)",
+                 {} declined ({} → {} ops, {} zero-guard + {} overflow-guard + \
+                 {} bounds-guard marks)",
                 r.admitted.len(),
                 r.declined.len(),
                 ops.len(),
                 r.ops.len(),
                 r.elide_div_zero.len(),
                 r.elide_div_ovf.len(),
+                r.elide_mem_bounds.len(),
             );
             return Some(SpecializedFn {
                 ops: r.ops,
@@ -123,13 +135,21 @@ fn maybe_fact_spec(
                 kept: r.kept,
                 elide_div_zero: r.elide_div_zero,
                 elide_div_ovf: r.elide_div_ovf,
+                elide_mem_bounds: r.elide_mem_bounds,
             });
         }
         None
     }
     #[cfg(not(feature = "verify"))]
     {
-        let _ = (func_name, ops, block_arity, facts, params_i64);
+        let _ = (
+            func_name,
+            ops,
+            block_arity,
+            facts,
+            params_i64,
+            linear_memory_bytes,
+        );
         // Decline loudly (the design doc's rule): without the solver the
         // obligation cannot be discharged, so no elision may fire — but the
         // user asked for specialization, so say why nothing happens.
@@ -1624,12 +1644,16 @@ fn compile_command(
     let mut wasm_ops = wasm_ops;
     let mut fact_div_zero_elide = Vec::new();
     let mut fact_div_ovf_elide = Vec::new();
+    let mut fact_mem_bounds_elide = Vec::new();
     if let Some(spec) = maybe_fact_spec(
         &func_name,
         &wasm_ops,
         &current_func_block_arity,
         &current_func_facts,
         &current_func_params_i64,
+        // The plain per-function path has no module memory context — every
+        // memory bounds-guard obligation declines loudly (0 = unknown).
+        0,
     ) {
         wasm_ops = spec.ops;
         current_func_block_arity = spec.block_arity;
@@ -1637,6 +1661,7 @@ fn compile_command(
         // keyed by index into the (possibly rewritten) stream above.
         fact_div_zero_elide = spec.elide_div_zero;
         fact_div_ovf_elide = spec.elide_div_ovf;
+        fact_mem_bounds_elide = spec.elide_mem_bounds;
     }
 
     info!("WASM operations: {:?}", wasm_ops);
@@ -1685,6 +1710,7 @@ fn compile_command(
         // empty unless SYNTH_FACT_SPEC + facts + a discharged obligation.
         fact_div_zero_elide,
         fact_div_ovf_elide,
+        fact_mem_bounds_elide,
         // #642: call_indirect guard inputs — the default declines every
         // call_indirect lowering, so the demo path (no module) stays safe.
         call_indirect_guards,
@@ -2916,6 +2942,9 @@ fn compile_all_exports(
             &func_config.current_func_block_arity,
             &func_config.current_func_facts,
             &func_config.current_func_params_i64,
+            // #494 bounds-elision: the module's declared minimum memory size
+            // bounds every reachable runtime extent (R10 ≥ declared min).
+            func_config.linear_memory_bytes,
         );
         let (ops_for_compile, op_offsets_for_elf): (&[WasmOp], Vec<u32>) = match &spec {
             Some(s) => {
@@ -2925,6 +2954,7 @@ fn compile_all_exports(
                 // is about to consume.
                 func_config.fact_div_zero_elide = s.elide_div_zero.clone();
                 func_config.fact_div_ovf_elide = s.elide_div_ovf.clone();
+                func_config.fact_mem_bounds_elide = s.elide_mem_bounds.clone();
                 (
                     &s.ops,
                     s.kept

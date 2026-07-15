@@ -3,7 +3,7 @@
 //! `scripts/repro/parity_benchmark/run.py --report`).
 //!
 //! The benchmark's prose says "AOT-wasm ≥ native today on certified-elision
-//! shapes; general regalloc still 3.56x" — this test makes those MEASURED
+//! shapes; general regalloc still ~3.5x" — this test makes those MEASURED
 //! numbers machine-checked so the document cannot drift from measurement:
 //! a size regression reddens CI, and a size WIN reddens it too, forcing a
 //! deliberate repin + report regeneration (the pin going DOWN is the visible

@@ -75,6 +75,14 @@ unused callee-save, frame setup, and un-coalesced copies around a one-line wrapp
   `cmp rN,#0`, `cmn`, dead mod-32 shift mask (`and ip,rN,#31`), `udf`.
   Comparisons feeding a `br_if` materialize a bool then re-`cmp #0` instead of
   branching off flags. Opportunity: branch-on-flags peephole + shift-mask elide.
+  PREMISE-GATED LEVER (#494 bounds-elision, v0.43+): under `--safety-bounds
+  software` each memory access adds a 10 B ADD/CMP/BLO/UDF guard to this
+  class; with `SYNTH_FACT_SPEC=1` + a `wsc.facts` range premise on the index,
+  each guard falls to a per-site ordeal certificate
+  (`UNSAT(P ∧ trap_mem_oob(...))`) — measured on the gust_poll-shaped
+  fixture: 184 → 104 B, byte-identical to the unguarded floor
+  (`fact_spec_bounds_494_differential.py`). The numbers on THIS page are the
+  default path (no `--safety-bounds`, no facts) and are unchanged by it.
 - **copy_move** (Pass 5) — plain `mov rD, rS`. Un-coalesced identity/near-identity
   copies. Opportunity: copy coalescing (pairs with the allocator).
 - **productive** — residual: real arithmetic, the memory loads/stores themselves,

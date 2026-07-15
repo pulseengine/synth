@@ -14,6 +14,10 @@ Kernels (all in-tree; see artifacts/parity-benchmark.md for provenance):
   gust_mix_q8  scripts/repro/gust_kernel.wasm      (Q8 mix wrapper)
   clamp        scripts/repro/fact_spec_clamp_494.wat  (gust_mix clamp shape)
                + native twin  scripts/repro/parity_benchmark/gust_mix_clamp.c
+  bounds       scripts/repro/fact_spec_bounds_494.wat (gust_poll-shaped record
+               array; --safety-bounds software guard tax vs certified elision
+               vs the unguarded floor — synth-internal group, no C twin: C has
+               no sandbox bounds checks)
   flat_flight  scripts/repro/flat_flight/flat_flight.loom.wasm
                + native twin  scripts/repro/flat_flight/flat_flight.c
   falcon_axis  scripts/repro/parity_benchmark/falcon_axis.wat  (f32, VFP)
@@ -61,6 +65,7 @@ REPORT = REPO / "artifacts" / "parity-benchmark.md"
 
 GUST_KERNEL = REPO / "scripts/repro/gust_kernel.wasm"
 CLAMP_WAT = REPO / "scripts/repro/fact_spec_clamp_494.wat"
+BOUNDS_WAT = REPO / "scripts/repro/fact_spec_bounds_494.wat"
 FLAT_FLIGHT_WASM = REPO / "scripts/repro/flat_flight/flat_flight.loom.wasm"
 FLAT_FLIGHT_C = REPO / "scripts/repro/flat_flight/flat_flight.c"
 FLAT_FLIGHT_INC = REPO / "scripts/repro/flat_flight"
@@ -200,7 +205,8 @@ def func_sizes(elf: Path) -> dict:
     return out
 
 
-def synth_compile(wasm: Path, out: Path, target: str, fact_spec: bool = False) -> str:
+def synth_compile(wasm: Path, out: Path, target: str, fact_spec: bool = False,
+                  extra_args=()) -> str:
     env = dict(os.environ)
     env.pop("SYNTH_FACT_SPEC", None)
     if fact_spec:
@@ -208,6 +214,7 @@ def synth_compile(wasm: Path, out: Path, target: str, fact_spec: bool = False) -
     cmd = [
         synth_bin(), "compile", str(wasm),
         "-o", str(out), "-b", "arm", "--target", target, "--all-exports",
+        *extra_args,
     ]
     r = subprocess.run(cmd, capture_output=True, text=True, env=env)
     if r.returncode != 0:
@@ -276,6 +283,37 @@ def measure(tmp: Path, only=None) -> dict:
                 )
             m["clamp_spec_synth"] = func_sizes(elf)["gust_mix"]
             m["clamp_spec_admits"] = admits
+
+    if want("bounds"):
+        # #494 bounds-elision × #390 guard_bool: the gust_poll-shaped
+        # record-array kernel under `--safety-bounds software` (8 inline
+        # ADD/CMP/BLO/UDF guards) vs the same build under the proven premise
+        # slot ∈ [0, 63] (every guard ordeal-certificate-elided) vs the
+        # unguarded floor (no --safety-bounds — the group's reference).
+        base = tmp / "bounds_base.wasm"
+        wat2wasm(BOUNDS_WAT, base)
+        sw = ("--safety-bounds", "software")
+        guarded = tmp / "bounds_guarded.o"
+        synth_compile(base, guarded, "cortex-m4", extra_args=sw)
+        m["bounds_guarded_synth"] = func_sizes(guarded)["poll"]
+        floor = tmp / "bounds_floor.o"
+        synth_compile(base, floor, "cortex-m4")
+        m["bounds_floor_synth"] = func_sizes(floor)["poll"]
+        facts = tmp / "bounds_facts.wasm"
+        facts.write_bytes(with_range_fact(base.read_bytes(), 0, 63))
+        spec = tmp / "bounds_spec.o"
+        stderr = synth_compile(facts, spec, "cortex-m4", fact_spec=True,
+                               extra_args=sw)
+        admits = stderr.count("fact-spec: ADMIT")
+        if admits != 8:
+            sys.exit(
+                f"bounds: expected 8 certificate ADMITs, got {admits}.\n"
+                "The fact-spec pass needs the ordeal solver — build synth "
+                "with `cargo build -p synth-cli --features verify` and "
+                "point $SYNTH at it.\n--- synth stderr ---\n" + stderr
+            )
+        m["bounds_spec_synth"] = func_sizes(spec)["poll"]
+        m["bounds_spec_admits"] = admits
 
     if want("flat_flight"):
         elf = tmp / "ff_synth.o"
@@ -357,6 +395,24 @@ def table_lines(m: dict) -> list:
         L.append(("gust_mix clamp", "native LLVM floor (gale gust_floor_bench)",
                   CITED["clamp_llvm_floor"], "CITED #494",
                   ratio(CITED["clamp_llvm_floor"], ref), CYCLES_OPEN))
+    if "bounds_guarded_synth" in m:
+        # The group's reference is synth's OWN unguarded floor: native C has
+        # no sandbox bounds checks at all, so the honest comparison for the
+        # guard tax is guarded-vs-floor (and the specialized build lands ON
+        # the floor, byte-identical — asserted by fact_spec_bounds_494.rs and
+        # the differential harness).
+        ref = m.get("bounds_floor_synth")
+        L.append(("gust_poll bounds (8 sw guards)",
+                  "synth AOT --safety-bounds software (no facts)",
+                  m["bounds_guarded_synth"], "MEASURED",
+                  ratio(m["bounds_guarded_synth"], ref), CYCLES_OPEN))
+        L.append(("gust_poll bounds (8 sw guards)",
+                  "synth AOT sw bounds + SYNTH_FACT_SPEC=1 (proven slot∈[0,63])",
+                  m["bounds_spec_synth"], "MEASURED (8 ordeal ADMITs)",
+                  ratio(m["bounds_spec_synth"], ref), CYCLES_OPEN))
+        L.append(("gust_poll bounds (8 sw guards)",
+                  "synth AOT unguarded floor (no --safety-bounds) — group ref",
+                  m["bounds_floor_synth"], "MEASURED", "ref", CYCLES_OPEN))
     if "flat_flight_synth" in m:
         ref = m.get("flat_flight_gcc")
         L.append(("flat_flight", "synth AOT (default)", m["flat_flight_synth"],
@@ -432,8 +488,18 @@ Regenerate everything on this page:
   `arm-none-eabi-gcc -Os`, and within 2 B of the **12 B LLVM floor** (CITED
   #494). C has no channel to carry the range premise — the native compiler
   must keep both compares; synth carries the proof (#494).
+- **Sandbox bounds checks become FREE under a proven premise**: the
+  gust_poll-shaped record-array kernel under `--safety-bounds software`
+  carries 8 inline guards (**{m.get('bounds_guarded_synth', '—')} B**); with
+  the premise slot∈[0,63] every guard falls to a per-site ordeal certificate
+  (`UNSAT(P ∧ trap_mem_oob(zext64(index)+offset, size, min_mem))`) —
+  **{m.get('bounds_spec_synth', '—')} B, byte-identical to the unguarded
+  floor**. The sandbox-safety tax native C never pays drops to exactly zero
+  for wasm-AOT too, and only when proven (#494 × #390 `guard_bool`; wrong
+  premise ⇒ Sat ⇒ loud decline, guards retained).
 - **General register allocation is still the gap**: gust_poll is
-  **{m.get('gust_poll_synth', '—')} B vs 208 B** (CITED #390) = 3.56×, with
+  **{m.get('gust_poll_synth', '—')} B vs 208 B** (CITED #390) =
+  {ratio(m.get('gust_poll_synth'), CITED['gust_poll_llvm'])}, with
   `spill_reload` alone ~31% of the function
   (`artifacts/size_attribution_390.md` — the productive-work residual, 194 B,
   is already comparable to LLVM's entire output; the gap is overhead buckets).
@@ -481,7 +547,10 @@ Regenerate everything on this page:
 Synth-side byte numbers are pinned by
 `crates/synth-cli/tests/parity_benchmark_735.rs` (default rows) and its
 verify-feature test (fact-spec row) — prose and measurement cannot drift
-apart without reddening CI.
+apart without reddening CI. The bounds-group rows are pinned by
+`crates/synth-cli/tests/fact_spec_bounds_494.rs` (guarded 184 B /
+specialized 104 B, 8-ADMIT non-vacuity, floor byte-identity) in the same
+fact-spec CI job.
 
 ## Falsification — one command per row group
 
@@ -498,6 +567,11 @@ table line (nonzero exit on any failure):
     # gust_mix clamp under the proven premise (needs a verify-feature synth;
     # fails loudly unless BOTH elisions are certificate-ADMITted)
     SYNTH=$CARGO_TARGET_DIR/debug/synth python3 scripts/repro/parity_benchmark/run.py --only clamp_spec
+
+    # gust_poll bounds group: software guards vs certified elision vs the
+    # unguarded floor (needs a verify-feature synth; fails loudly unless all
+    # EIGHT elisions are certificate-ADMITted)
+    SYNTH=$CARGO_TARGET_DIR/debug/synth python3 scripts/repro/parity_benchmark/run.py --only bounds
 
     # flat_flight: synth vs the in-tree C source it was compiled from
     SYNTH=$CARGO_TARGET_DIR/debug/synth python3 scripts/repro/parity_benchmark/run.py --only flat_flight
@@ -524,7 +598,8 @@ The gap is CLOSING release-over-release, lever by lever, each evidence-gated:
 | flat_flight frame traffic | 17 spills (#209, CITED) | Belady optimum, frame traffic 0 (since v0.24.0) | VCR-RA-001 |
 
 Open, tracked, and honestly not yet won: general regalloc overhead
-(gust_poll 3.56×, spill_reload ~31%, #390/#242 Track A), flat_flight at
+(gust_poll {ratio(m.get('gust_poll_synth'), CITED['gust_poll_llvm'])},
+spill_reload ~31%, #390/#242 Track A), flat_flight at
 {ratio(m.get('flat_flight_synth'), ff_gcc)} vs gcc, falcon f32 at
 {ratio(m.get('falcon_synth'), falcon_gcc)} vs gcc (constant materialization
 via `movw/movt+vmov` instead of a literal pool, unused callee-save push), and
@@ -538,7 +613,7 @@ attribution), #209 (perf epic), #242 (North Star).
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--only", choices=[
-        "gust_poll", "gust_mix_q8", "clamp", "clamp_spec",
+        "gust_poll", "gust_mix_q8", "clamp", "clamp_spec", "bounds",
         "flat_flight", "falcon_axis",
     ], help="re-measure a single row group (falsification mode)")
     ap.add_argument("--report", action="store_true",

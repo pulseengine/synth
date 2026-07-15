@@ -3019,6 +3019,14 @@ pub struct InstructionSelector {
     /// (`UNSAT(P ∧ dividend == INT_MIN ∧ divisor == -1)`; divisor ≠ 0 alone
     /// never justifies it, #633/#634). Empty ⇒ guard emitted.
     fact_div_ovf_elide: Vec<usize>,
+    /// #494 bounds-elision (#390 `guard_bool`): op indices of i32 memory
+    /// accesses whose `--safety-bounds software` inline guard is proven dead
+    /// — the fact-spec pass discharged
+    /// `UNSAT(P ∧ trap_mem_oob(zext64(index) + offset, size,
+    /// min_memory_bytes))` per site through the certificate-checked ordeal
+    /// solver BEFORE selection. Empty (the default) ⇒ every guard is
+    /// emitted, byte-identical to today.
+    fact_mem_bounds_elide: Vec<usize>,
     /// #642: `call_indirect` guard inputs — compile-time table size (for the
     /// encoder's runtime bounds guard) + per-expected-type closed-world type
     /// verdicts (the compile-time discharge of the §4.4.8 type check). Set
@@ -3099,6 +3107,7 @@ impl InstructionSelector {
             sel_dsl: sel_dsl_from_env(),
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
+            fact_mem_bounds_elide: Vec::new(),
             call_indirect_guards: synth_core::CallIndirectGuards::default(),
         }
     }
@@ -3147,6 +3156,7 @@ impl InstructionSelector {
             sel_dsl: sel_dsl_from_env(),
             fact_div_zero_elide: Vec::new(),
             fact_div_ovf_elide: Vec::new(),
+            fact_mem_bounds_elide: Vec::new(),
             call_indirect_guards: synth_core::CallIndirectGuards::default(),
         }
     }
@@ -3219,6 +3229,38 @@ impl InstructionSelector {
     pub fn set_fact_div_guard_elisions(&mut self, zero: Vec<usize>, ovf: Vec<usize>) {
         self.fact_div_zero_elide = zero;
         self.fact_div_ovf_elide = ovf;
+    }
+
+    /// #494 bounds-elision (#390 `guard_bool`): per-site memory bounds-guard
+    /// elision marks, keyed by op index into the stream fed to
+    /// `select_with_stack`. Every mark was discharged by the fact-spec pass
+    /// (`UNSAT(P ∧ trap_mem_oob(zext64(index) + offset, size,
+    /// min_memory_bytes))`, ordeal 0.9.1 shape, certificate-checked) BEFORE
+    /// selection — this setter only CONSUMES marks, it never derives them.
+    /// Empty (the default) ⇒ every guard is emitted, byte-identical to today.
+    pub fn set_fact_mem_bounds_elisions(&mut self, marks: Vec<usize>) {
+        self.fact_mem_bounds_elide = marks;
+    }
+
+    /// #494 bounds-elision: strip the certificate-elided SOFTWARE bounds
+    /// guard from a generated access sequence, keeping the access op itself
+    /// (always the LAST element — the generators' documented contract,
+    /// `result.last() is Ldr/Str/...`; under `Software` the access op's
+    /// address is identical to the `None`-mode emission, so stripping the
+    /// guard prefix yields exactly the unguarded lowering). No-op unless the
+    /// op index carries a mark AND the mode is `Software` — `Masking`
+    /// rewrites the address itself (a different scheme than the proven-dead
+    /// compare-and-trap), so a mark never applies to it.
+    fn apply_mem_bounds_elision(&self, idx: usize, ops: Vec<ArmOp>) -> Vec<ArmOp> {
+        if self.bounds_check != BoundsCheckConfig::Software
+            || !self.fact_mem_bounds_elide.contains(&idx)
+        {
+            return ops;
+        }
+        // Software mode emits [ADD, CMP, BLO, UDF, access] — exactly 5 ops.
+        debug_assert_eq!(ops.len(), 5, "software bounds guard shape drifted");
+        let last = ops.len() - 1;
+        ops.into_iter().skip(last).collect()
     }
 
     /// #642: thread the module's `call_indirect` guard inputs (compile-time
@@ -10159,9 +10201,13 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     } else {
-                        // Generate load with optional bounds checking
-                        let load_ops =
-                            self.generate_load_with_bounds_check(dst, addr, *offset as i32, 4);
+                        // Generate load with optional bounds checking.
+                        // #494 bounds-elision: a certificate-discharged mark
+                        // for THIS op index strips the software guard.
+                        let load_ops = self.apply_mem_bounds_elision(
+                            idx,
+                            self.generate_load_with_bounds_check(dst, addr, *offset as i32, 4),
+                        );
                         for op in load_ops {
                             instructions.push(ArmInstruction {
                                 op,
@@ -10263,9 +10309,13 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     } else {
-                        // Generate store with optional bounds checking
-                        let store_ops =
-                            self.generate_store_with_bounds_check(value, addr, *offset as i32, 4);
+                        // Generate store with optional bounds checking.
+                        // #494 bounds-elision: a certificate-discharged mark
+                        // for THIS op index strips the software guard.
+                        let store_ops = self.apply_mem_bounds_elision(
+                            idx,
+                            self.generate_store_with_bounds_check(value, addr, *offset as i32, 4),
+                        );
                         for op in store_ops {
                             instructions.push(ArmInstruction {
                                 op,
@@ -10381,12 +10431,17 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     } else {
-                        let load_ops = self.generate_subword_load_with_bounds_check(
-                            dst,
-                            addr,
-                            *offset as i32,
-                            access_size,
-                            sign_extend,
+                        // #494 bounds-elision: a certificate-discharged mark
+                        // for THIS op index strips the software guard.
+                        let load_ops = self.apply_mem_bounds_elision(
+                            idx,
+                            self.generate_subword_load_with_bounds_check(
+                                dst,
+                                addr,
+                                *offset as i32,
+                                access_size,
+                                sign_extend,
+                            ),
                         );
                         for arm_op in load_ops {
                             instructions.push(ArmInstruction {
@@ -10506,11 +10561,16 @@ impl InstructionSelector {
                         });
                         cf.add_instruction();
                     } else {
-                        let store_ops = self.generate_subword_store_with_bounds_check(
-                            value,
-                            addr,
-                            *offset as i32,
-                            access_size,
+                        // #494 bounds-elision: a certificate-discharged mark
+                        // for THIS op index strips the software guard.
+                        let store_ops = self.apply_mem_bounds_elision(
+                            idx,
+                            self.generate_subword_store_with_bounds_check(
+                                value,
+                                addr,
+                                *offset as i32,
+                                access_size,
+                            ),
                         );
                         for arm_op in store_ops {
                             instructions.push(ArmInstruction {

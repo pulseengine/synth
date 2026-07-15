@@ -433,7 +433,7 @@ jobs:
         run: SYNTH=./target/debug/synth python scripts/repro/multi_memory_406_differential.py
 
   fact-spec-oracle:
-    name: fact-spec elision oracle (#494 phases 2 + 2b + 3+)
+    name: fact-spec elision oracle (#494 phases 2 + 2b + 3+ + bounds)
     # VCR-PERF-002 Phase 2 (#494): the proof-carrying-specialization lever
     # (SYNTH_FACT_SPEC, default off; per-elision ordeal obligation). Built
     # with the `verify` feature (the solver lives in synth-verify — pure-Rust
@@ -444,8 +444,11 @@ jobs:
     # green path. Phase 2b (divisor-nonzero, kind 3): the div/rem trap-guard
     # elision byte gates + differential (incl. the two-guard distinction — the
     # i64 INT64_MIN/-1 overflow guard is RETAINED under a nonzero-only fact —
-    # and the RED force-admit divergence demo, debug-build lever). Isolated
-    # job: emulation deps pip-installed here ONLY.
+    # and the RED force-admit divergence demo, debug-build lever). Bounds
+    # elision (#494 × #390 guard_bool): the software memory bounds guard falls
+    # to a per-site certificate — byte gates, 1024-case sweep, retained-trap,
+    # decline and RED legs (steps below). Isolated job: emulation deps
+    # pip-installed here ONLY.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -514,6 +517,24 @@ jobs:
         run: >
           python scripts/repro/fact_spec_mask_494_differential.py
           --fact-lo 0 --fact-hi 4095 --expect-decline
+      # #494 bounds-elision × #390 guard_bool — the `--safety-bounds software`
+      # memory bounds guard falls to a per-site certificate:
+      # UNSAT(P ∧ trap_mem_oob(zext64(index) + offset, size, min_memory_bytes))
+      # (ordeal 0.9.1 trap_mem_oob shape, wraparound-safe 64-bit extension).
+      # Byte gates (poll 184 -> 104 B, all 8 guard UDFs gone, specialized
+      # .text BYTE-IDENTICAL to the unguarded floor), the 1024-case in-bounds
+      # sweep vs wasmtime + unspecialized (return value + full memory image),
+      # the retained-trap leg (out-of-premise inputs still trap on the
+      # UNSPECIALIZED path), the Sat loud-decline byte-identity leg, and the
+      # RED force-admit sandbox-escape demonstration (debug-build lever).
+      - name: Run bounds-elision gates (#494 bounds byte evidence)
+        run: cargo test -p synth-cli --features verify --test fact_spec_bounds_494
+      - name: Run bounds-elision in-bounds differential (green)
+        run: python scripts/repro/fact_spec_bounds_494_differential.py
+      - name: Run bounds-including-OOB loud-decline path
+        run: python scripts/repro/fact_spec_bounds_494_differential.py --expect-decline
+      - name: Run RED bounds force-admit divergence demonstration
+        run: python scripts/repro/fact_spec_bounds_494_differential.py --force-admit
 
   rv32-shift-fold-oracle:
     name: rv32 immediate-shift-fold execution oracle
