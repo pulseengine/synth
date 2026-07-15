@@ -17,6 +17,7 @@
 //! | multi-memory, self-contained --cortex-m| refuse (same)                  |
 //! | multi-memory × `--native-pointer-abi`  | refuse (static region is mem-0)|
 //! | multi-memory × `--shadow-stack-size`   | refuse (shrinks mem-0 geometry)|
+//! | multi-memory × `--safety-bounds mpu`   | refuse (MPU-startup interlock)  |
 //! | multi-memory on riscv / aarch64        | refuse (no per-memory base)    |
 //! | cross-/non-default memory.copy/fill    | loud-skip naming the op        |
 //! | i64/f32 access on memory k > 0         | loud-skip (i32 family only)    |
@@ -244,6 +245,33 @@ fn multi_memory_shadow_stack_refuses() {
     // The native-pointer-abi gate may fire first — either way it must be a
     // loud multi-memory refusal, and the flag combo must never compile.
     assert_refused(&out, &["multi-memory", "#406"], "--shadow-stack-size combo");
+}
+
+/// --safety-bounds mpu: per-memory MPU isolation is an architectural interlock
+/// (Lane B). Programming one MPU region per memory needs synth to emit the
+/// startup that writes MPU_RBAR/RASR — the SELF-CONTAINED reset handler — but
+/// multi-memory only compiles on --relocatable (host owns startup, synth emits
+/// no MPU programming), and the self-contained path declines multi-memory (one
+/// R11 base). So no path both emits synth's startup AND lowers > 1 memory; the
+/// cross-memory OOB fault gate cannot be armed. Refuse rather than accept a
+/// silent MPU no-op. Blocked on self-contained multi-memory (#406 phase 2).
+#[test]
+fn multi_memory_safety_bounds_mpu_refuses() {
+    let out = compile(
+        &two_mem_fixture(),
+        &[
+            "--relocatable",
+            "--safety-bounds",
+            "mpu",
+            "--target",
+            "cortex-m3",
+        ],
+    );
+    assert_refused(
+        &out,
+        &["multi-memory", "#406", "mpu"],
+        "per-memory MPU isolation interlock",
+    );
 }
 
 /// riscv / aarch64: no per-memory base lowering — refuse the module.

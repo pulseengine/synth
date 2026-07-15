@@ -2756,6 +2756,34 @@ fn compile_all_exports(
                 all_memories.len()
             );
         }
+        // #406 / Lane B: per-memory MPU isolation is an architectural interlock,
+        // NOT yet realizable — refuse loudly rather than accept `--safety-bounds
+        // mpu` as a silent no-op (the #377 passthrough) on a multi-memory image.
+        // Programming an MPU region per memory needs synth to emit the startup
+        // that writes MPU_RBAR/RASR — i.e. the SELF-CONTAINED reset handler. But
+        // multi-memory only compiles on `--relocatable` (an ET_REL object whose
+        // startup the HOST linker/runtime owns, where synth writes no MPU
+        // programming), and the self-contained path DECLINES multi-memory above
+        // (one R11 base, every memory aliases). So there is no path today on
+        // which synth both emits its own startup AND lowers > 1 memory — the
+        // cross-memory OOB fault gate cannot be armed. Blocked on self-contained
+        // multi-memory (#406 phase 2). The single-memory `--safety-bounds mpu`
+        // remains the #377 hardware-enforcement passthrough.
+        if safety_bounds == SafetyBounds::Mpu {
+            anyhow::bail!(
+                "multi-memory (#406): per-memory MPU isolation (--safety-bounds \
+                 mpu) is not yet realizable for a module with {} linear \
+                 memories. Programming one MPU region per memory requires synth \
+                 to emit the startup that writes MPU_RBAR/RASR — the \
+                 self-contained reset handler — but multi-memory compiles ONLY \
+                 on --relocatable, where the host owns startup and synth emits \
+                 no MPU programming; the self-contained path in turn declines \
+                 multi-memory (one R11 base). Refusing rather than accepting a \
+                 silent MPU no-op. Blocked on self-contained multi-memory \
+                 (#406 phase 2)",
+                all_memories.len()
+            );
+        }
     }
 
     // Log import information
