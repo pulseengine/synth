@@ -147,6 +147,13 @@ impl ProvenanceMap {
     }
 }
 
+/// Is this a source op the map covers as a branch/condition? Returns its
+/// mnemonic if so. Public so the CLI can classify eliminated (fact-spec-dropped)
+/// ops with the SAME coverage predicate the emitter uses.
+pub fn covered_source_op_name(op: &WasmOp) -> Option<&'static str> {
+    source_op_name(op)
+}
+
 /// Is this a source op the map covers as a branch/condition?
 fn source_op_name(op: &WasmOp) -> Option<&'static str> {
     match op {
