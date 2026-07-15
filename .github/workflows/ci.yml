@@ -472,6 +472,14 @@ jobs:
       # miscompile). Guards that the call-crossing static copy stays correct.
       - name: Run multi-chunk static-copy control oracle (#757, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/repro/wide_static_copy_757_differential.py
+      # #757 v0.45 investigation: a RawVec-grow + memmove reconstruction of gale's
+      # exact characterization (a >=9-byte static above wasm_data_base copied via a
+      # bump-allocator memmove reached through a grow-call spill/reload). Seven such
+      # faithful shapes ALL compile byte-correct vs wasmtime — the miscompile does
+      # NOT reproduce from the issue text; it needs gale's exact loom.wasm/os-tl-cm3.o.
+      # Kept as a regression guard that the RawVec-grow copy path stays correct.
+      - name: Run #757 RawVec-grow memmove reconstruction (cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/repro/mem757_rawvec_memcopy_differential.py
       # #740: the Thumb-2 B<cond>.W (T3) arm packed `halfword_offset >> 1`,
       # HALVING every conditional branch spanning > 254 bytes — gust_poll's
       # loop-head `br_if` to an outer block end landed mid-shape (spurious
