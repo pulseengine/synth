@@ -224,7 +224,11 @@ fn proven_slot_bound_elides_all_eight_guards_494() {
     // Baseline guard census: eight inline guards, one per access — the #752
     // wraparound-safe shape carries TWO UDF arms per guard (bound < k, and
     // addr > bound - k).
-    assert_eq!(b.halfword_count("poll", UDF0), 16, "baseline guards present");
+    assert_eq!(
+        b.halfword_count("poll", UDF0),
+        16,
+        "baseline guards present"
+    );
     assert_eq!(s.halfword_count("poll", UDF0), 0, "all guards elided");
 
     // The measured byte win — pinned exactly so a regression (or an
