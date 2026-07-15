@@ -75,6 +75,21 @@ def f32_bits(x):
     return struct.unpack("<I", struct.pack("<f", x))[0]
 
 
+def is_nan32(bits):
+    b = bits & 0xFFFFFFFF
+    return (b & 0x7F800000) == 0x7F800000 and (b & 0x007FFFFF) != 0
+
+
+def f32_bits_eq(got, want):
+    """WASM leaves the sign+payload of a NaN result NON-DETERMINISTIC (Core
+    4.3.3 NaN propagation) -- a bit-exact compare of a NaN is over-specified
+    and diverges by wasmtime version. NaN==NaN regardless of bits; every
+    non-NaN result stays bit-exact (mirrors f32_vfp_619_differential.py)."""
+    if is_nan32(got) and is_nan32(want):
+        return True
+    return (got & 0xFFFFFFFF) == (want & 0xFFFFFFFF)
+
+
 def bits_f32(b):
     return struct.unpack("<f", struct.pack("<I", b & 0xFFFFFFFF))[0]
 
@@ -283,11 +298,56 @@ def main():
             else:
                 print(f"[mix_add] (0x{xb:08x},0x{yb:08x}) -> 0x{got:08x} OK")
 
+    # ---- #719 phase 2: f32 live ACROSS an integer call (spill/reload) ------
+    # The callee $fhelp has an integer signature but uses VFP internally, so
+    # the BL genuinely clobbers the caller's low S-registers -- these cases are
+    # non-vacuous at the value level, not just compile-level. NaN-aware compare:
+    # xcall/xcall2 do real f32 adds whose NaN payloads are non-deterministic.
+    for fn, wname, arity in (("xcall", "xcall", 1), ("xcall2", "xcall2", 1)):
+        if not need(fn):
+            continue
+        for b in EDGE_BITS:
+            uc = run(text, base, syms[fn], r0=b, s0=0x7F7FFFFF, s1=0x7F7FFFFF)
+            got = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+            want = exp[wname](store, b) & 0xFFFFFFFF
+            checked += 1
+            if not f32_bits_eq(got, want):
+                nonlocal_fail(f"{fn}(0x{b:08x}) -> 0x{got:08x} != wasmtime 0x{want:08x}")
+            else:
+                print(f"[{fn}] 0x{b:08x} -> 0x{got:08x} OK (f32 live across bl)")
+
+    # xhome(f32 x, i32 b): the f32 PARAM HOME S0 must survive the call. S1..
+    # poisoned so a wrong reload source shows up.
+    if need("xhome"):
+        for xb, b in ((0x3FC00000, 0x40000000), (0x80000001, 0x7F800000),
+                      (0xC2F60000, 0x00000001)):
+            uc = run(text, base, syms["xhome"], r0=b, s0=xb, s1=0xDEADBEEF)
+            got = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+            want = exp["xhome"](store, bits_f32(xb), b) & 0xFFFFFFFF
+            checked += 1
+            if got != want:
+                nonlocal_fail(f"xhome(0x{xb:08x},0x{b:08x}) -> 0x{got:08x} "
+                              f"!= wasmtime 0x{want:08x}")
+            else:
+                print(f"[xhome] (0x{xb:08x},0x{b:08x}) -> 0x{got:08x} OK "
+                      f"(param home across bl)")
+
+    # ---- #719 phase 2: float-signature callees must DECLINE (skip), never
+    # miscompile: their symbols must be ABSENT from the symtab.
+    for fn in ("bad_ret_f32_call", "bad_f32_arg_call"):
+        checked += 1
+        if fn in syms:
+            nonlocal_fail(f"{fn} COMPILED -- a float-signature call boundary "
+                          f"must decline loudly (S0/D0 not marshalled)")
+        else:
+            print(f"[{fn}] absent from symtab OK (loud decline)")
+
     if fails:
         sys.exit(f"\nFAIL: {fails}/{checked} f32 #719 results diverged")
     print(f"\nGREEN: {checked}/{checked} f32 #719 results bit-exact vs wasmtime "
-          f"(abs/neg/copysign/store/local.set/tee + mixed AAPCS-VFP params; "
-          f"m3 honest-reject confirmed).")
+          f"(abs/neg/copysign/store/local.set/tee + mixed AAPCS-VFP params + "
+          f"phase-2 f32-across-call spill/reload; m3 honest-reject + "
+          f"float-signature-callee loud-decline confirmed).")
 
 
 if __name__ == "__main__":

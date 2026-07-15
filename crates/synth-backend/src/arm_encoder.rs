@@ -7098,16 +7098,15 @@ impl ArmEncoder {
         let mut bytes = Vec::new();
         let rd_bits = reg_to_bits(rd);
 
-        // VCMP.F64 Dn, Dm
-        let dn_num = vfp_dreg_to_num(dn)?;
-        let dm_num = vfp_dreg_to_num(dm)?;
-        let (vd, d) = encode_dreg(dn_num);
-        let (vm, m) = encode_dreg(dm_num);
-        let vcmp = 0xEEB40B40 | (d << 22) | (vd << 12) | (m << 5) | vm;
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(vcmp));
-
-        // VMRS APSR_nzcv, FPSCR
-        bytes.extend_from_slice(&vfp_to_thumb_bytes(0xEEF1FA10));
+        // #712-class fix (found at f64-phase-2 wiring, #369): the 16-bit
+        // `MOVS Rd,#0` is FLAG-SETTING. The original order emitted it AFTER
+        // `VMRS APSR_nzcv, FPSCR`, clobbering the N/Z/C/V flags the VMRS just
+        // transferred, so the following `IT<cond>` read stale flags and every
+        // f64 comparison silently returned 0 — the exact bug the f32 compare
+        // encoder shipped with and #712 fixed. Same fix: materialize the `#0`
+        // FIRST (its flag side effect is overwritten by the VMRS), then
+        // VCMP+VMRS set the flags the IT consumes. Pure reorder — sizes
+        // unchanged.
 
         // MOVS Rd, #0
         if rd_bits < 8 {
@@ -7119,6 +7118,17 @@ impl ArmEncoder {
             bytes.extend_from_slice(&hw1.to_le_bytes());
             bytes.extend_from_slice(&hw2.to_le_bytes());
         }
+
+        // VCMP.F64 Dn, Dm
+        let dn_num = vfp_dreg_to_num(dn)?;
+        let dm_num = vfp_dreg_to_num(dm)?;
+        let (vd, d) = encode_dreg(dn_num);
+        let (vm, m) = encode_dreg(dm_num);
+        let vcmp = 0xEEB40B40 | (d << 22) | (vd << 12) | (m << 5) | vm;
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(vcmp));
+
+        // VMRS APSR_nzcv, FPSCR (sets the flags the IT consumes)
+        bytes.extend_from_slice(&vfp_to_thumb_bytes(0xEEF1FA10));
 
         // IT<cond>
         let it: u16 = 0xBF00 | ((cond_code as u16) << 4) | 0x8;

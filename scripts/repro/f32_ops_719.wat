@@ -68,4 +68,56 @@
   (func (export "mix_add") (param i32 f32 f32) (result f32)
     local.get 1
     local.get 2
-    f32.add))
+    f32.add)
+
+  ;; ---- #719 phase 2: f32 live ACROSS an integer call ------------------------
+  ;; Helper with an INTEGER signature that uses VFP internally: its own f32
+  ;; lowering allocates S0/S1, so a call to it GENUINELY clobbers the caller's
+  ;; low S-registers -- the spill/reload differential is non-vacuous without any
+  ;; host code. fhelp(bits) = bits(-f32(bits)).
+  (func $fhelp (param i32) (result i32)
+    local.get 0 f32.reinterpret_i32 f32.neg i32.reinterpret_f32)
+
+  ;; f32 TEMP live across the call: x + f32(-x_bits reinterpreted back).
+  ;; xcall(b) = bits(f32(b) + f32(fhelp(b))) = bits(x + (-x)).
+  (func (export "xcall") (param i32) (result i32)
+    local.get 0 f32.reinterpret_i32      ;; live f32 temp in an S-register
+    local.get 0 call $fhelp              ;; integer call; callee clobbers S0/S1
+    f32.reinterpret_i32
+    f32.add
+    i32.reinterpret_f32)
+
+  ;; f32 PARAM HOME (S0) live across the call: read the param AFTER the bl.
+  ;; xhome(x, b) = bits(x) + fhelp(b)  (f32 home read post-call, plus the
+  ;; integer result -- proves BOTH register files survive).
+  (func (export "xhome") (param f32 i32) (result i32)
+    local.get 1 call $fhelp
+    local.get 0 i32.reinterpret_f32
+    i32.add)
+
+  ;; MULTIPLE live f32 values across the call: a non-param f32 LOCAL home and
+  ;; an f32 temp, both live across the bl.
+  ;; xcall2(b) = bits(((-x) + (-x)) + |x|) where x = f32(b); local 1 = |x| home.
+  (func (export "xcall2") (param i32) (result i32)
+    (local f32)
+    local.get 0 f32.reinterpret_i32 f32.abs
+    local.set 1                          ;; f32 local home, live across the call
+    local.get 0 f32.reinterpret_i32 f32.neg  ;; f32 temp, live across the call
+    local.get 0 call $fhelp              ;; clobbers low S-registers
+    f32.reinterpret_i32
+    f32.add
+    local.get 1
+    f32.add
+    i32.reinterpret_f32)
+
+  ;; ---- #719 phase 2: float-signature callees DECLINE loudly -----------------
+  ;; These callers must be SKIPPED (absent from the symtab), never miscompiled:
+  ;; the callee's f32 result arrives in S0 / its f32 arg belongs in S0, which
+  ;; this increment does not marshal at the call boundary.
+  (func $retf (result f32) f32.const 1.5)
+  (func (export "bad_ret_f32_call") (result i32)
+    call $retf i32.reinterpret_f32)
+  (func $takef (param f32) (result i32)
+    local.get 0 i32.reinterpret_f32)
+  (func (export "bad_f32_arg_call") (param i32) (result i32)
+    local.get 0 f32.reinterpret_i32 call $takef))
