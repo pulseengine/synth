@@ -965,6 +965,121 @@ impl<'a> Pass<'a> {
         }
     }
 
+    /// #494 Phase 3+ (beyond-parity): constant-divisor `i32.rem_u` IDENTITY
+    /// elision. When the divisor is a *literal* `i32.const C` with `C != 0` and
+    /// the dividend `a` is proven small enough that `a rem_u C == a` on every
+    /// P-admissible input (`UNSAT(P ∧ (a bvurem C) ≠ a)`), the whole `rem_u`
+    /// dissolves to the identity — its const-divisor operand and the op itself
+    /// are deleted and `a` flows through unchanged.
+    ///
+    /// This is the ONE total subset of the "div/rem never deleted" rule: WASM
+    /// `i32.rem_u` traps ONLY on divisor == 0, and rem has no INT_MIN/-1
+    /// overflow (that's `div_s`). A LITERAL nonzero constant divisor makes the
+    /// op unconditionally total — no-trap comes from the literal directly, NOT
+    /// from P — so unlike the variable-divisor path (which only elides the
+    /// *guard* and keeps the op), the whole effect-free op is deletable exactly
+    /// like the redundant mask. A variable divisor proven nonzero would NOT
+    /// qualify (its zero-guard is a control-flow effect); only a syntactic
+    /// `i32.const C, C != 0` is accepted.
+    ///
+    /// clang cannot do this: a dissolved primitive gives LLVM no range on the
+    /// dividend, so `-Os` lowers `x % C` (non-pow2 C) to the full
+    /// reciprocal-multiply-subtract sequence (movw+movt+umull+lsr+mov+mls,
+    /// ~22 B on Thumb-2); the WASM-level fact makes the entire sequence dead.
+    ///
+    /// Only the common wasm order (`dividend ; i32.const C ; rem_u`) is handled;
+    /// anything else DECLINES LOUDLY and the general div/rem path stands.
+    /// Returns the surviving dividend's `Val` on admit (deletion recorded),
+    /// `None` on decline.
+    fn try_elide_const_rem(&mut self, i: usize, a: &Val, b: &Val, result_bv: &BV) -> Option<Val> {
+        // Divisor MUST be a syntactic literal `i32.const C` with `C != 0` — the
+        // no-trap obligation is discharged by the literal itself, never by P.
+        let WasmOp::I32Const(c) = self.ops[b.created] else {
+            self.decline(format!(
+                "op#{i} i32.rem_u — divisor is not a literal i32.const (a variable divisor \
+                 carries a trapping zero-guard; the whole op is not effect-free — general \
+                 rem_u retained)"
+            ));
+            return None;
+        };
+        if c == 0 {
+            self.decline(format!(
+                "op#{i} i32.rem_u — literal divisor is 0 (traps unconditionally); general \
+                 rem_u retained"
+            ));
+            return None;
+        }
+        if self.premises.is_empty() {
+            self.decline(format!(
+                "op#{i} i32.rem_u — no premise reaches this site (no usable value-range fact \
+                 on the dividend)"
+            ));
+            return None;
+        }
+        // The const-divisor operand `b` must be a pure, contiguous producer
+        // sitting immediately between `a`'s slice and the `rem_u` — otherwise
+        // deleting it could drop live work or leave a gap. (An `i32.const`
+        // always has a pure single-op slice; this mirrors try_elide_mask.)
+        let Some(sb) = b.start else {
+            self.decline(format!(
+                "op#{i} i32.rem_u — const-divisor slice is impure or non-contiguous \
+                 (not erasable)"
+            ));
+            return None;
+        };
+        if a.created + 1 != sb || b.created + 1 != i {
+            self.decline(format!(
+                "op#{i} i32.rem_u — const divisor is not produced immediately before the \
+                 rem_u (non-contiguous)"
+            ));
+            return None;
+        }
+        let mut solver = new_solver();
+        for p in &self.premises {
+            solver.assert(p);
+        }
+        // UNSAT(P ∧ (dividend bvurem C) ≠ dividend) ⇒ the modulo never changes
+        // the dividend under P ⇒ the rem_u is the identity, so the general and
+        // the specialized (result = dividend) lowerings agree on every P input.
+        // `result_bv` is the real `a.bv.bvurem(C)` term (WasmSemantics), so the
+        // check is non-vacuous.
+        solver.assert(&result_bv.ne(&a.bv));
+        match solver.check() {
+            CheckOutcome::Unsat => {
+                self.deletions.push((sb, i));
+                self.admitted.push(format!(
+                    "{}: op#{i} i32.rem_u — constant-divisor modulo elided to identity \
+                     (dividend proven < divisor): divisor is literal i32.const {c} (≠0 ⇒ \
+                     no trap), UNSAT(P ∧ (dividend bvurem {c}) ≠ dividend) via {} \
+                     (certificate-checked QF_BV; every Unsat carries an LRAT proof validated \
+                     by ordeal-lrat); deleted const/rem_u [{sb}..={i}]; P = {{{}}}; \
+                     dividend = {}",
+                    self.func,
+                    solver.name(),
+                    self.premise_desc.join(" ∧ "),
+                    a.bv,
+                ));
+                Some(a.clone())
+            }
+            CheckOutcome::Sat => {
+                let cex = self.counterexample(solver.as_ref());
+                self.decline(format!(
+                    "op#{i} i32.rem_u — modulo is not the identity under P (dividend can \
+                     reach or exceed the divisor {c}; counterexample: {cex}); general rem_u \
+                     retained"
+                ));
+                None
+            }
+            CheckOutcome::Unknown(reason) => {
+                self.decline(format!(
+                    "op#{i} i32.rem_u — identity obligation Unknown ({reason}); conservative \
+                     decline, general rem_u retained"
+                ));
+                None
+            }
+        }
+    }
+
     fn walk(&mut self) {
         if self.range_facts.is_empty() && self.nonzero_facts.is_empty() {
             self.decline(
@@ -1123,9 +1238,57 @@ impl<'a> Pass<'a> {
                 // soundness: if the op traps, nothing after it executes (any
                 // later admitted elision is vacuous on that path); if it does
                 // not, its result is havocked to a fresh variable.
+                // #494 Phase 3+ (beyond-parity): `i32.rem_u` — tracked like the
+                // other div/rem ops, but additionally attempts the
+                // constant-divisor IDENTITY elision (a literal nonzero divisor
+                // + a proven-narrow dividend makes the modulo the identity, and
+                // the whole effect-free op is deletable — the ONE total subset
+                // of the "div/rem never deleted" rule). A NON-eliding rem_u
+                // takes the EXACT general div/rem path below (guard obligations
+                // + havoc), so flag-off stays byte-identical.
+                WasmOp::I32RemU => {
+                    let (Some(b), Some(a)) = (self.stack.pop(), self.stack.pop()) else {
+                        self.decline(format!("op#{i} div/rem on underflowing symbolic stack"));
+                        return;
+                    };
+                    if a.bv.get_size() != 32 || b.bv.get_size() != 32 {
+                        self.decline(format!(
+                            "op#{i} i32.rem_u on operands of unexpected width (symbolic widths \
+                             {}/{}, expected 32)",
+                            a.bv.get_size(),
+                            b.bv.get_size()
+                        ));
+                        return;
+                    }
+                    // The real bvurem term (WasmSemantics) — non-vacuous VC.
+                    let bv = self.sem.encode_op(op, &[a.bv.clone(), b.bv.clone()]);
+                    match self.try_elide_const_rem(i, &a, &b, &bv) {
+                        // Admitted: the const/rem_u slice was recorded for
+                        // deletion; the surviving dividend flows through.
+                        // `start = None` keeps the collapsed result out of any
+                        // later erasable slice (conservative, like the mask
+                        // and select-collapse admits).
+                        Some(surviving) => self.push(surviving.bv, None, i),
+                        // Declined (loud): fall to the EXACT general div/rem
+                        // path — discharge the guard obligations, then havoc.
+                        None => {
+                            self.try_elide_div_guards(i, "i32.rem_u", false, &a, &b);
+                            let n = self.fresh;
+                            self.fresh += 1;
+                            let v = self.fresh_var(format!("fs_d{n}"));
+                            self.attach_fact(i, &v);
+                            self.push(v, None, i);
+                        }
+                    }
+                }
+                // #494 phase 2b: i32/i64 div/rem — TRACKED (upgrading the
+                // phase-2 hard stop), never DELETED. The op can trap, so its
+                // result carries `start = None` (it can never sit inside an
+                // erasable condition slice); the walk instead discharges the
+                // per-site guard obligations (see the module docs' two-guard
+                // distinction) and marks the op for the lowering.
                 WasmOp::I32DivU
                 | WasmOp::I32DivS
-                | WasmOp::I32RemU
                 | WasmOp::I32RemS
                 | WasmOp::I64DivU
                 | WasmOp::I64DivS
@@ -1138,7 +1301,6 @@ impl<'a> Pass<'a> {
                     let (op_name, expect, is_div_s) = match op {
                         WasmOp::I32DivU => ("i32.div_u", 32, false),
                         WasmOp::I32DivS => ("i32.div_s", 32, true),
-                        WasmOp::I32RemU => ("i32.rem_u", 32, false),
                         WasmOp::I32RemS => ("i32.rem_s", 32, false),
                         WasmOp::I64DivU => ("i64.div_u", 64, false),
                         WasmOp::I64DivS => ("i64.div_s", 64, true),
@@ -2331,5 +2493,136 @@ mod tests {
             vec![5],
             "mark remapped from original op#12 to rewritten op#5"
         );
+    }
+
+    // ============ #494 Phase 3+: constant-divisor rem_u identity =============
+
+    fn const_rem_ops() -> Vec<WasmOp> {
+        // `x rem_u 1000` — under x ∈ [0, 999] the modulo is the identity.
+        vec![
+            LocalGet(0),    // 0  x  ← fact target
+            I32Const(1000), // 1  divisor (literal, ≠0)
+            I32RemU,        // 2  x % 1000
+            End,            // 3
+        ]
+    }
+
+    #[test]
+    fn const_rem_u_identity_elided_under_proven_narrow_dividend_494() {
+        let ops = const_rem_ops();
+        let r = specialize_function("gust_scale", &ops, &[], &[fact(0, 0, 999)], &[], 0);
+        assert_eq!(r.admitted.len(), 1, "declines: {:?}", r.declined);
+        assert!(r.changed());
+        assert_eq!(
+            r.ops,
+            vec![LocalGet(0), End],
+            "the const-divisor + rem_u dissolve to the identity dividend"
+        );
+        assert_eq!(r.kept, vec![0, 3]);
+        // Never a div-guard mark: the op was DELETED, not guarded.
+        assert!(r.elide_div_zero.is_empty());
+        assert!(r.elide_div_ovf.is_empty());
+        let line = &r.admitted[0];
+        assert!(line.contains("i32.rem_u"), "{line}");
+        assert!(line.contains("elided to identity"), "{line}");
+        assert!(line.contains("literal i32.const 1000"), "{line}");
+        assert!(
+            line.contains("UNSAT(P ∧ (dividend bvurem 1000) ≠ dividend)"),
+            "{line}"
+        );
+        assert!(line.contains("certificate-checked"), "{line}");
+    }
+
+    #[test]
+    fn const_rem_u_wrong_bound_is_sat_and_declines_byte_identically_494() {
+        // x ∈ [0, 4000] admits x ≥ 1000, so x % 1000 ≠ x — Sat ⇒ loud decline.
+        // The stream is untouched and the general div/rem path runs (marks the
+        // zero guard? no — divisor is a nonzero literal, so the zero-guard
+        // obligation is discharged by the guard elision, but the OP survives).
+        let ops = const_rem_ops();
+        let r = specialize_function("gust_scale", &ops, &[], &[fact(0, 0, 4000)], &[], 0);
+        assert_eq!(
+            r.admitted
+                .iter()
+                .filter(|l| l.contains("elided to identity"))
+                .count(),
+            0,
+            "identity must NOT be admitted under a too-wide bound"
+        );
+        assert!(!r.stream_changed, "declined identity ⇒ op stream untouched");
+        assert_eq!(r.ops, ops, "declined ⇒ byte-identical op stream");
+        assert!(
+            r.declined
+                .iter()
+                .any(|d| d.contains("not the identity") && d.contains("counterexample")),
+            "identity decline must be loud and carry a model: {:?}",
+            r.declined
+        );
+    }
+
+    #[test]
+    fn const_rem_u_variable_divisor_declines_identity_and_keeps_op_494() {
+        // Divisor is a param (local.get 1), NOT a literal — the op carries a
+        // trapping zero-guard, so the whole op is NOT deletable. Identity
+        // declines; the general div/rem path stands (op survives). A
+        // divisor-nonzero fact still discharges the ZERO GUARD (guard elision),
+        // but never the op deletion.
+        let ops = vec![
+            LocalGet(0), // 0  x   ← range fact [0, 999]
+            LocalGet(1), // 1  d   ← divisor-nonzero fact
+            I32RemU,     // 2  x % d
+            End,         // 3
+        ];
+        let facts = [fact(0, 0, 999), nonzero_fact(1)];
+        let r = specialize_function("f", &ops, &[], &facts, &[], 0);
+        assert!(!r.stream_changed, "variable divisor ⇒ op never deleted");
+        assert_eq!(r.ops, ops);
+        assert_eq!(
+            r.elide_div_zero,
+            vec![2],
+            "zero guard still discharged by the nonzero fact"
+        );
+        assert!(
+            r.declined
+                .iter()
+                .any(|d| d.contains("not a literal i32.const")),
+            "identity must decline on a non-literal divisor: {:?}",
+            r.declined
+        );
+    }
+
+    #[test]
+    fn const_rem_u_no_fact_declines_byte_identically_494() {
+        // No range fact on the dividend ⇒ identity declines; the general path
+        // runs. The literal divisor is nonzero so the zero-guard is elidable
+        // ONLY with a fact — here there's none, so nothing is admitted and the
+        // stream is untouched.
+        let ops = const_rem_ops();
+        let r = specialize_function("gust_scale", &ops, &[], &[fact(99, 0, 0)], &[], 0);
+        assert!(!r.stream_changed, "no dividend fact ⇒ op stream untouched");
+        assert_eq!(r.ops, ops);
+        assert_eq!(
+            r.admitted
+                .iter()
+                .filter(|l| l.contains("elided to identity"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn const_rem_u_pow2_divisor_still_elides_under_narrow_bound_494() {
+        // Even a power-of-two divisor elides when the dividend is proven narrow
+        // (the win is smaller — clang folds pow2 rem to an `and` — but the
+        // proof is identical and sound). x ∈ [0, 255], x rem_u 256 == x.
+        let ops = vec![
+            LocalGet(0),   // 0  ← fact [0, 255]
+            I32Const(256), // 1
+            I32RemU,       // 2
+            End,           // 3
+        ];
+        let r = specialize_function("f", &ops, &[], &[fact(0, 0, 255)], &[], 0);
+        assert_eq!(r.admitted.len(), 1, "declines: {:?}", r.declined);
+        assert_eq!(r.ops, vec![LocalGet(0), End]);
     }
 }
