@@ -395,6 +395,16 @@ jobs:
       # SEPARATE bases so a baked absolute offset cannot accidentally resolve.
       - name: Run above-SP static shadow-stack-shrink oracle (#739, cortex-m3)
         run: SYNTH=./target/debug/synth python scripts/repro/static_above_sp_739_differential.py
+      # #746 (the #739 residual): the i64/WIDE static-region arms — i64.load/
+      # i64.store pair accesses plus the i64 narrow loads/stores (load8/16/32,
+      # store8/16/32) — get the #744 relocation treatment instead of the loud
+      # decline that skipped gale's gust:os log-emit function. i64 store/load
+      # round-trips + narrow sign/zero-extend reads through an above-sp_init
+      # static after the --shadow-stack-size shrink must match wasmtime
+      # (unicorn, .bss/.data at SEPARATE bases). RED on v0.42.0 (compile
+      # declines, nothing to emit) -> GREEN with the relocated arms.
+      - name: Run i64/wide above-SP static shrink oracle (#746, cortex-m3)
+        run: SYNTH=./target/debug/synth python scripts/repro/wide_static_746_differential.py
 
   fact-spec-oracle:
     name: fact-spec elision oracle (#494 phases 2 + 2b + 3+)
