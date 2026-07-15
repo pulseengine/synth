@@ -195,20 +195,20 @@ fn spill_realloc_no_grow_and_fires_on_flight_seam_242() {
             "no function may grow flag-on: {name} off={o}B on={n}B"
         );
     }
-    assert!(
-        on["flight_algo"] < off["flight_algo"],
-        "the spike must shrink flight_seam::flight_algo (measured 306→300 B): off={}B on={}B",
-        off["flight_algo"],
-        on["flight_algo"]
-    );
-    let fired = forwarded_total(&on_err);
-    assert!(
-        fired >= 3,
-        "expected ≥3 reloads forwarded on flight_seam (measured 3); got {fired} — the pass went inert"
-    );
+    // #390 UPDATE: the conditional-branch-transparent `forward_stack_reloads`
+    // (which runs in BOTH configs — it is the SYNTH_NO_STACK_FWD lever, not
+    // this one) now forwards flight_seam's 3 stage-1 reloads before this pass
+    // ever sees them, so the flag-on/flag-off byte delta on flight_seam is
+    // ZERO and the old "must shrink flight_algo / ≥3 forwarded" firing claims
+    // are structurally unsatisfiable here. The lever's NON-VACUITY is owned by
+    // the flat_flight block below (stage 2 Belady re-choice + stage 3
+    // whole-function slot liveness — shapes stack-fwd structurally cannot
+    // touch: every holder is clobbered). flight_seam keeps the NO-GROW claim.
+    let _ = &on_err;
     eprintln!(
-        "[spill-realloc-242] flight_seam::flight_algo off={}B on={}B, {} reload(s) forwarded",
-        off["flight_algo"], on["flight_algo"], fired
+        "[spill-realloc-242] flight_seam::flight_algo off={}B on={}B (stage-1 \
+         subsumed by stack-fwd since #390 — non-vacuity owned by flat_flight)",
+        off["flight_algo"], on["flight_algo"]
     );
 
     // flat_flight — the Belady re-choice target. Stage 1 has nothing to

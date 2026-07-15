@@ -435,28 +435,49 @@ pub fn fuse_cmp_select_with_stats(
 /// #209, epic #242). synth lowers every wasm local to a frame slot, so a
 /// `local.set` then `local.get` of the same local emits `str rX,[sp,#N]; … ;
 /// ldr rY,[sp,#N]` — a memory store-then-reload of one slot (≈18 % of the hot
-/// fixture's instructions are sp traffic; an M4 stack load is ~2 cycles). When the
-/// stored register `rX` still holds the value at the `ldr` — nothing rewrites `rX`,
-/// nothing rewrites slot `N`, `sp` does not move, and there is no call / branch /
-/// label between (the forward scan bails via `reg_effect → None` on any of those,
-/// the same soundness lynchpin as [`fuse_cmp_select`]) — the `ldr` is replaced by
-/// `mov rY, rX` (~1 cycle). The `str` is KEPT: the slot may still be read past a
-/// boundary the scan bailed at. Removal-of-a-load + rename only ⇒ NO new instruction
-/// form (no validator change) and labels/branch offsets are untouched.
+/// fixture's instructions are sp traffic; an M4 stack load is ~2 cycles). A
+/// single forward walk tracks, per slot `#N`, the set of registers PROVABLY
+/// holding slot `N`'s value (the same holder lattice as
+/// [`spill_forward_segment`]: the feeding `str rX,[sp,#N]` seeds `rX`, an
+/// earlier reload seeds its target, and `mov rZ,rY` copies value identity).
+/// A reload `ldr rY,[sp,#N]` with a surviving holder `rX` is replaced by
+/// `mov rY, rX` (~1 cycle) — or DELETED outright when `rY` itself still holds
+/// the value (the reload is a no-op; an identity `mov rY,rY` would be strictly
+/// worse than the deletion the downstream [`spill_forward_segment`] used to
+/// perform on that shape). The `str` is KEPT: the slot may still be read past
+/// a boundary the walk reset at. Replacements are 1-for-1 and deletions only
+/// shrink; label-form branches are re-resolved after this pass
+/// (`resolve_label_branches`), and a deletion inside a resolved numeric
+/// branch→target span is declined (see GEOMETRY below), so branch offsets
+/// stay valid.
+///
+/// BARRIERS — the holder state is fully reset at every point another edge can
+/// enter or the walk cannot model: a `Label` / call / unmodeled op
+/// (`reg_effect → None`, the same soundness lynchpin as [`fuse_cmp_select`]),
+/// an UNCONDITIONAL branch (the code after it is reachable only via a join),
+/// a resolved-branch TARGET (`geo.targets`, an invisible join — #606), any
+/// `[sp]` access that cannot be pinned to a single whole-word slot
+/// (register-offset or sub-word), `Push`/`Pop`, and any SP def. A CONDITIONAL
+/// branch, however, is TRANSPARENT (#390): on the fall-through edge it has no
+/// register or memory effect, and a rewrite site is only ever executed on that
+/// edge. The taken edge cannot re-enter the window unseen — every label-form
+/// branch (`B`/`Bcc`/`Bhs`/`Blo`/`BrTable`) targets a `Label` instruction and
+/// every numeric branch's target is in `geo.targets` (or the geometry mapping
+/// failed and the whole function declined), both of which reset the state. So
+/// the feeding def still dominates each rewritten reload with only the walked
+/// instructions between them on any execution — the forwarding invariant is
+/// path-insensitive here. This is what lets the pass fire across the
+/// compare→branch ladders the direct selector emits for `br_if` chains
+/// (gust_poll's dominant spill shape, the #390 `spill_reload` bucket).
 ///
 /// RESOLVED-BRANCH GEOMETRY (#606, the #604 hazard class): on the optimized
 /// path the stream arrives with ALREADY-RESOLVED `BOffset`/`BCondOffset`
-/// displacements that are never re-resolved, so (1) a branch TARGET is an
-/// invisible join — the forward scan stops there (`rX` proven on the
-/// fall-through edge is unproven on the taken edge, e.g. a loop back-edge
-/// re-entering between the `str` and the `ldr`), and (2) a replacement inside
-/// a branch→target span must be exactly byte-size-neutral (a 32-bit `ldr.w`
+/// displacements that are never re-resolved, so a replacement inside a
+/// branch→target span must be exactly byte-size-neutral (a 32-bit `ldr.w`
 /// folding to a 16-bit `mov` would shift the pre-resolved displacement — the
 /// `nested(1,)` overshoot class). An unmappable stream declines wholesale.
-/// Today's optimized-path streams cannot present the firing shape (the
-/// eviction store's source register is redefined immediately after it) — the
-/// gate turns that accidental safety into a structural one. Returns the
-/// rewritten stream and the number of reloads forwarded (0 ⇒ input unchanged).
+/// Returns the rewritten stream and the number of reloads forwarded (0 ⇒
+/// input unchanged).
 pub fn forward_stack_reloads(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>, usize) {
     use crate::optimizer_bridge::estimate_arm_byte_size;
     let n = instrs.len();
@@ -465,68 +486,158 @@ pub fn forward_stack_reloads(instrs: &[ArmInstruction]) -> (Vec<ArmInstruction>,
     let Some(geo) = resolved_branch_geometry_labels_as_zero(instrs) else {
         return (instrs.to_vec(), 0);
     };
-    let mut out = instrs.to_vec();
     let mut rewrites = 0usize;
+    // Staged edits: index → Some(op) = replace, None = delete. Applied at the
+    // end so the walk's indices stay aligned with `geo`'s.
+    let mut staged: BTreeMap<usize, Option<ArmOp>> = BTreeMap::new();
+    // slot #N → set of registers currently holding slot N's value. State is
+    // tracked over the ORIGINAL stream: every committed edit leaves the
+    // identical register state by construction (the mov writes — and the
+    // deleted reload's target already holds — the exact value the load would
+    // have fetched), so the facts remain valid for the rewritten stream.
+    let mut holders: BTreeMap<i32, BTreeSet<Reg>> = BTreeMap::new();
 
-    for i in 0..n {
-        // [i] must be `str rX, [sp, #N]` (immediate slot, no register offset).
-        let (rx, slot) = match &instrs[i].op {
-            ArmOp::Str { rd, addr } if addr.base == Reg::SP && addr.offset_reg.is_none() => {
-                (*rd, addr.offset)
-            }
-            _ => continue,
-        };
-        // Forward `rX` into same-slot loads until it (or the slot, or sp) changes
-        // or the scan reaches an op it cannot reason past.
-        for j in (i + 1)..n {
-            // #606: a resolved-branch TARGET is an invisible join — a taken
-            // edge enters here with an unproven `rX`. Stop the scan.
-            if geo.targets.contains(&j) {
-                break;
-            }
-            // A reload of the same slot ⇒ rewrite to `mov rY, rX`. `rX` is still
-            // the live source, so keep scanning — a later same-slot load forwards too.
-            if let ArmOp::Ldr { rd: ry, addr } = &out[j].op
-                && addr.base == Reg::SP
-                && addr.offset_reg.is_none()
-                && addr.offset == slot
-            {
-                let ry = *ry;
-                let mov = ArmOp::Mov {
-                    rd: ry,
-                    op2: Operand2::Reg(rx),
-                };
-                // #606 span byte-freeze: inside a branch→target span the
-                // replacement must not change the instruction's byte size, or
-                // the pre-resolved displacement overshoots. Keep the `ldr`
-                // (it re-reads the same value, so scanning continues soundly).
-                if geo.frozen[j]
-                    && estimate_arm_byte_size(&mov) != estimate_arm_byte_size(&out[j].op)
-                {
+    for (j, ins) in instrs.iter().enumerate() {
+        // #606: a resolved-branch TARGET is an invisible join — a taken edge
+        // enters here with unproven register state. Reset everything.
+        if geo.targets.contains(&j) {
+            holders.clear();
+        }
+        match &ins.op {
+            // Full-word reload of a pinnable slot — the forwarding candidate.
+            ArmOp::Ldr { rd, addr } if sp_slot(addr).is_some() => {
+                let slot = sp_slot(addr).unwrap();
+                let rd = *rd;
+                if rd == Reg::SP {
+                    // `ldr sp,[sp,#N]` redefines the frame pointer: every slot
+                    // name is invalidated. (Never emitted today; sound anyway.)
+                    holders.clear();
                     continue;
                 }
-                out[j].op = mov;
-                rewrites += 1;
-                continue;
+                let known = holders.get(&slot).cloned().unwrap_or_default();
+                if !is_reserved_reg(rd) && known.contains(&rd) {
+                    // rd already holds the slot's value — the reload is a
+                    // no-op; delete it. #606: a deletion inside a resolved
+                    // branch→target span would shift the displacement — keep
+                    // the `ldr` there (it re-reads the same value; state below
+                    // is identical either way).
+                    if !geo.frozen[j] {
+                        staged.insert(j, None);
+                        rewrites += 1;
+                    }
+                } else if !is_reserved_reg(rd) && !known.is_empty() {
+                    let rx = *known.iter().next().unwrap(); // lowest: deterministic
+                    let mov = ArmOp::Mov {
+                        rd,
+                        op2: Operand2::Reg(rx),
+                    };
+                    // #606 span byte-freeze: inside a branch→target span the
+                    // replacement must not change the instruction's byte size,
+                    // or the pre-resolved displacement overshoots. Keep the
+                    // `ldr` (it re-reads the same value — state below is
+                    // identical either way).
+                    if !(geo.frozen[j]
+                        && estimate_arm_byte_size(&mov) != estimate_arm_byte_size(&ins.op))
+                    {
+                        staged.insert(j, Some(mov));
+                        rewrites += 1;
+                    }
+                }
+                // Either way rd now holds the slot's value.
+                for set in holders.values_mut() {
+                    set.remove(&rd);
+                }
+                if !is_reserved_reg(rd) {
+                    holders.entry(slot).or_default().insert(rd);
+                }
             }
-            // A store that could land in slot N (same immediate, or any register
-            // offset we cannot resolve) ⇒ the slot's value may change; stop.
-            if let ArmOp::Str { addr, .. } = &instrs[j].op
-                && addr.base == Reg::SP
-                && (addr.offset_reg.is_some() || addr.offset == slot)
+            // Full-word store to a pinnable slot: the slot now holds rd's value.
+            ArmOp::Str { rd, addr } if sp_slot(addr).is_some() => {
+                let slot = sp_slot(addr).unwrap();
+                let mut set = BTreeSet::new();
+                if !is_reserved_reg(*rd) {
+                    set.insert(*rd);
+                }
+                holders.insert(slot, set);
+            }
+            // Any [sp] access we cannot pin to a single whole-word slot:
+            // register offset (unresolvable) or sub-word (partial overlap).
+            ArmOp::Ldr { addr, .. } | ArmOp::Str { addr, .. } if addr.base == Reg::SP => {
+                holders.clear();
+            }
+            ArmOp::Ldrb { addr, .. }
+            | ArmOp::Ldrsb { addr, .. }
+            | ArmOp::Ldrh { addr, .. }
+            | ArmOp::Ldrsh { addr, .. }
+            | ArmOp::Strb { addr, .. }
+            | ArmOp::Strh { addr, .. }
+                if addr.base == Reg::SP =>
             {
-                break;
+                holders.clear();
             }
-            match reg_effect(&instrs[j].op) {
-                // `rX` clobbered or the frame pointer moved ⇒ value no longer valid.
-                Some(eff) if eff.defs.contains(&rx) || eff.defs.contains(&Reg::SP) => break,
-                Some(_) => {}
-                // call / branch / label / unmodeled op ⇒ cannot reason past it.
-                None => break,
+            // SP moves + stack memory touched — every slot name is invalidated.
+            ArmOp::Push { .. } | ArmOp::Pop { .. } => {
+                holders.clear();
             }
+            // Register-to-register copy propagates value identity.
+            ArmOp::Mov {
+                rd,
+                op2: Operand2::Reg(rm),
+            } if rd != rm => {
+                let (rd, rm) = (*rd, *rm);
+                let member: Vec<i32> = holders
+                    .iter()
+                    .filter(|(_, s)| s.contains(&rm))
+                    .map(|(k, _)| *k)
+                    .collect();
+                for set in holders.values_mut() {
+                    set.remove(&rd);
+                }
+                if !is_reserved_reg(rd) {
+                    for k in member {
+                        if let Some(s) = holders.get_mut(&k) {
+                            s.insert(rd);
+                        }
+                    }
+                }
+            }
+            // #390: CONDITIONAL branches are transparent (see the doc block).
+            ArmOp::BCondOffset { .. }
+            | ArmOp::Bcc { .. }
+            | ArmOp::Bhs { .. }
+            | ArmOp::Blo { .. } => {}
+            op => match reg_effect(op) {
+                Some(eff) => {
+                    if eff.defs.contains(&Reg::SP) {
+                        holders.clear();
+                    }
+                    for d in &eff.defs {
+                        for set in holders.values_mut() {
+                            set.remove(d);
+                        }
+                    }
+                }
+                // Label / unconditional branch / call / unmodeled op ⇒ another
+                // edge may enter here or effects are unknown. Reset.
+                None => holders.clear(),
+            },
         }
     }
 
+    if staged.is_empty() {
+        return (instrs.to_vec(), 0);
+    }
+    let mut out: Vec<ArmInstruction> = Vec::with_capacity(n);
+    for (j, ins) in instrs.iter().enumerate() {
+        match staged.get(&j) {
+            None => out.push(ins.clone()),
+            Some(None) => {} // deleted no-op reload
+            Some(Some(op)) => out.push(ArmInstruction {
+                op: op.clone(),
+                source_line: ins.source_line,
+            }),
+        }
+    }
     (out, rewrites)
 }
 
