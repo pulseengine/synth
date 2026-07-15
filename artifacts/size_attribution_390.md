@@ -15,11 +15,11 @@ thumbv7m baseline (gust_poll 208 B, gust_mix 12 B, 3.9x) is **CITED** from issue
 
 | function | synth .text (measured) | LLVM (cited #390) | ratio | #390 cited synth |
 |---|---|---|---|---|
-| gust_poll | 724 B | 208 B | 3.48x | 816 B (v0.11.50) |
+| gust_poll | 716 B | 208 B | 3.44x | 816 B (v0.11.50) |
 | gust_mix  | 32 B | 12 B | 2.67x | 44 B (v0.11.50) |
 
 synth has already shrunk since #390 was filed (levers landed v0.12–v0.39): the
-gap is now ~3.48x / ~2.67x, not 3.9x / 3.7x. In particular the
+gap is now ~3.44x / ~2.67x, not 3.9x / 3.7x. In particular the
 `and #0xffff -> uxth` peephole (issue Pass 5) has landed — gust_mix now emits
 `uxth r3, r0`, not the `movw+and` pair. Still open: spill churn, address
 re-materialization, the shadow-stack dance, and bool materialization.
@@ -28,7 +28,7 @@ re-materialization, the shadow-stack dance, and bool materialization.
 
 | function | .text B | spill_reload | addr_materialize | redundant_const | prologue_shadow | guard_bool | copy_move | productive | align_pad |
 |---|---|---|---|---|---|---|---|---|---|
-| gust_poll | 724 | 200 | 56 | 62 | 36 | 108 | 66 | 194 | 2 |
+| gust_poll | 716 | 196 | 56 | 62 | 36 | 108 | 66 | 192 | 0 |
 | gust_mix | 32 | 4 | 0 | 0 | 16 | 0 | 6 | 6 | 0 |
 | func_0 | 408 | 8 | 44 | 130 | 8 | 46 | 14 | 156 | 2 |
 | func_1 | 76 | 0 | 0 | 28 | 8 | 12 | 8 | 20 | 0 |
