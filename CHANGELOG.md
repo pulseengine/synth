@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.44.0] - 2026-07-15
+
+**Five-lane hub: two more live trap classes, an extended verified-selector model,
+multi-memory coverage + honest isolation decline, a size win, and de-circularized
+DWARF.** Every lane oracle-gated; coordinator re-verified each soundness oracle
+before merge. Builds on the v0.43.1 clean base.
+
+### Added (verification)
+
+- **i64 div/rem + i32.trunc_f64 wired into the LIVE trap validator (#756).** The
+  VCR-VER-002 derived-ARM-trap-term validator goes from 5 → **7 live trap
+  classes**. i64 div/rem carries its zero/overflow guards as pseudo-op fields
+  (ARM32 has no 64-bit divide) — the trap term is reconstructed from those fields,
+  so a guard elided without a discharged fact is rejected. i32.trunc_f64_s/u gets
+  real `VCMP.F64` domain-guard semantics. Red-first gate proven non-vacuous
+  (dropped guard → Sat/caught; preserved → Unsat/accepted) across all classes.
+  **Residual:** `i64.trunc_f64_s/u` is NOT wired live — the selector loud-declines
+  it (no i64 register pairs on 32-bit ARM ⇒ no shipped lowering to validate); its
+  classifier stays unit-gated (documented in the roadmap).
+- **Verified-selector model extended 40 → 41 ops (VCR-ISA-001, #667 lineage).**
+  `i32.eqz` joins the generate-not-mirror Rocq model (new `rule_i32_eqz` in the
+  shipped `sel_dsl::RULES`, regenerated `Gen` module, `rule_i32_eqz_correct` Qed
+  stated directly about the generated model). **473 → 474 Qed / 5 Admitted.**
+  Byte-invisible (bit-identical under `SYNTH_NO_SEL_DSL=1`); the drift-guard holds
+  (flipping `MOVEQ→MOVNE` in the generated rule breaks the eqz Qed).
+
+### Added (capability)
+
+- **Multi-memory phase 2 — coverage hardening + honest isolation decline (#406).**
+  A new multi-segment static-data differential exercises multi-chunk/multi-segment
+  data across BOTH the self-contained and relocatable paths (varied offsets,
+  page-straddling, overlap-later-wins, near-globals) — 26/26 green, anti-vacuity
+  proven (neutering the reset copy goes RED). Per-memory MPU isolation is
+  **loud-declined**, not silently no-op'd: an architectural interlock (MPU
+  programming needs synth's own startup = self-contained path, but multi-memory
+  compiles only on `--relocatable` = host owns startup) means no path both emits
+  the startup and lowers >1 memory. `--safety-bounds mpu` on a multi-memory module
+  now refuses loudly naming the interlock; single-memory `mpu` unchanged.
+
+### Changed (size / optimization)
+
+- **Redundant-store elimination in `forward_stack_reloads` (#390).** A full-word
+  `str rd,[sp,#N]` whose slot the holder lattice PROVES already holds `rd` is a
+  no-op and is deleted. **gust_poll 724 → 716 B.** Reuses the same conservative
+  lattice that powers shipped reload-forwarding; `holders` left unchanged on
+  deletion; #606 frozen-span guard preserved; OVERWRITE-ONLY / sub-word-hole
+  invariants untouched. Only gust_poll's bytes change; all differentials green on
+  the new bytes.
+
+### Changed (test infrastructure)
+
+- **DWARF verification de-circularized (#394).** The `.debug_line`/`.debug_info`
+  emission (already shipped) was only checked with `gimli::read` — the same library
+  `gimli::write` emitted the bytes with, so a self-consistent emitter bug could
+  pass every oracle. Added an INDEPENDENT-parser gate (`llvm-dwarfdump --verify`
+  must report "No errors" + decode the CU/subprogram DIEs + line rows); fails hard
+  (never skips) when the tool is absent; CI installs `llvm`.
+
+### Known issues (still open)
+
+- **#757 — accepted residual for this release.** The wide-static *copy* path
+  carries a miscompile confirmed on gale's silicon but NOT reproducible from the
+  issue text (seven faithful reconstructions all byte-identical vs wasmtime; the
+  symptom decodes to `base + 12` with the correct relocation base = wrong runtime
+  offset, not wrong relocation). This release WIDENS static-data coverage (#406's
+  26/26 differential found no miscompile) but does not close #757 — it stays open,
+  blocked on the reporter's reduced module. Narrow, external-blocked, common shapes
+  green: documented acceptance, not a fix.
+- **#761 — latent self-contained linmem/globals top-of-SRAM overlap** (impact
+  unverified), filed for investigation.
+
 ## [0.43.1] - 2026-07-15
 
 **Soundness patch — the default `--cortex-m` path now ships its initialized data.**
