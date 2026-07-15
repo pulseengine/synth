@@ -89,11 +89,13 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 512 Qed / 6 Admitted
-(+2 `admit.` tactics) across `coq/Synth/`, of which 40 are VCR-ISA-001 (#667)
-generated-vs-model GATE lemmas (`VcrSelRulesGenCheck.v`, `reflexivity` checks that
-the generated model equals the shipped selector — NOT new correctness proofs).
-This count is CI-gated: `claims.yaml` +
+See `coq/STATUS.md` for the complete coverage matrix. Current: 472 Qed / 6 Admitted
+(+2 `admit.` tactics) across `coq/Synth/`. The 40 selector-DSL rule theorems
+(`VcrSelRules.v`) are stated directly about the GENERATED model (VCR-ISA-001
+#667: `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v` emitted
+from the shipped `sel_dsl::RULES`); the former 40-lemma `VcrSelRulesGenCheck.v`
+reflexivity gate was retired as vacuous once the hand-written mirror was gone
+(512 → 472). This count is CI-gated: `claims.yaml` +
 `scripts/claim_check.py` re-derive it on every commit — when a proof lands, update
 the docs AND `claims.yaml` in the same PR. Proofs are tiered:
 T1 (result-correspondence), T2 (existence-only), T3 (admitted). Remaining admits:
@@ -132,13 +134,16 @@ frozen and oracle-gated every step:
   0.45× floor; phase 1 facts ingestion landed, PR #624).
 - **Track B (semantics):** `VCR-ISA-001` Sail-generated Rocq ISA model —
   approved, Sail/ASL bridge spike landed (92 Qed, `coq/Synth/ARM/SailArmBridge.v`);
-  first "generate the model from the shipped selector" increment landed (#667):
-  the shipped `sel_dsl::RULES` table now EMITS the 40 covered ops' Rocq lowerings
-  (`coq/Synth/Synth/VcrSelRulesGenerated.v`, `Module Gen`), each proven equal to
-  the hand-written `VcrSelRules.rule_X` by a `reflexivity` Qed
-  (`VcrSelRulesGenCheck.v`, 40 Qed) — Coq's kernel is the divergence gate, so the
+  "generate, don't mirror" landed (#667): the shipped `sel_dsl::RULES` table
+  EMITS the 40 covered ops' Rocq lowerings
+  (`coq/Synth/Synth/VcrSelRulesGenerated.v`, `Module Gen`), and `VcrSelRules.v`
+  DEFINES `rule_X := Gen.rule_X` — the generated file is the single model
+  source, the 40 correctness Qed are stated directly about it, and a
+  selector-table change regenerates `Gen` and breaks the matching proof, so the
   #682 model↔selector drift is unrepresentable at the instruction-sequence level
-  for those ops. `VCR-WASM-001` WasmCert-Coq source semantics — proposed.
+  for those ops (the interim `VcrSelRulesGenCheck.v` reflexivity gate was
+  retired as vacuous/subsumed). `VCR-WASM-001` WasmCert-Coq source semantics —
+  proposed.
 - **Track C (validation):** the differential oracles are CI-gated jobs
   (cmp-select, RV32 shift-fold/const-addr-fold, callee-saved, spill-frame,
   symtab-based frozen-fixture differentials).

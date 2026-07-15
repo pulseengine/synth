@@ -212,6 +212,11 @@ rocq_library(
 # universally-quantified T1 theorem per rule in
 # crates/synth-synthesis/src/sel_dsl (naming 1:1: rule_X <-> rule_X_correct).
 # Coverage-gated by :vcr_sel_rules_coverage below.
+# VCR-ISA-001 (#667) "generate, don't mirror": the rule_X definitions are
+# re-exports of the GENERATED Gen.rule_X (:vcr_sel_rules_generated), so the
+# correctness theorems are stated directly about the sequences the shipped
+# sel_dsl::RULES table emits — a table change regenerates Gen and breaks the
+# matching Qed here (the divergence gate IS the correctness proof).
 rocq_library(
     name = "vcr_sel_rules",
     srcs = ["Synth/Synth/VcrSelRules.v"],
@@ -223,6 +228,7 @@ rocq_library(
         ":tactics",
         ":arm_flag_lemmas",
         ":correctness_tactics",
+        ":vcr_sel_rules_generated",
     ],
 )
 
@@ -248,9 +254,10 @@ rocq_library(
 
 # VCR-ISA-001 (#667): the selector rule table's Rocq lowerings GENERATED from
 # the shipped sel_dsl::RULES (crates/synth-synthesis) — the same table that
-# emits the shipped Rust lowering. Wrapped in `Module Gen` so the cross-check
-# below can name both `Gen.rule_X` and the hand-written `rule_X`. Committed +
-# pinned up-to-date by the cargo test `rocq_generated_lowering_is_up_to_date`.
+# emits the shipped Rust lowering. Wrapped in `Module Gen`; the SINGLE source
+# of the model definitions (:vcr_sel_rules re-exports rule_X := Gen.rule_X).
+# Committed + pinned up-to-date by the cargo test
+# `rocq_generated_lowering_is_up_to_date`.
 rocq_library(
     name = "vcr_sel_rules_generated",
     srcs = ["Synth/Synth/VcrSelRulesGenerated.v"],
@@ -263,29 +270,13 @@ rocq_library(
     ],
 )
 
-# VCR-ISA-001 (#667) divergence GATE: one `reflexivity` Qed per rule proving the
-# GENERATED lowering (Gen.rule_X) equals the HAND-WRITTEN VcrSelRules.rule_X the
-# correctness theorems are about. If the shipped selector's sequence for a
-# covered op ever drifts from the model, the matching reflexivity stops
-# type-checking and this target (part of :verify_proofs) goes red — Coq's kernel
-# is the oracle, closing the #682 model-vs-selector divergence at the
-# instruction-sequence level. Committed + pinned by the cargo test
-# `rocq_gencheck_is_up_to_date`.
-rocq_library(
-    name = "vcr_sel_rules_gencheck",
-    srcs = ["Synth/Synth/VcrSelRulesGenCheck.v"],
-    include_path = "Synth",
-    # Requiring VcrSelRules pulls its whole transitive loadpath (the rocq rules
-    # do not propagate deps automatically), so list the same set vcr_sel_rules
-    # carries plus the two new libraries this file names.
-    deps = _CORRECTNESS_FULL_DEPS + [
-        ":tactics",
-        ":arm_flag_lemmas",
-        ":correctness_tactics",
-        ":vcr_sel_rules",
-        ":vcr_sel_rules_generated",
-    ],
-)
+# NOTE (VCR-ISA-001 #667, increment 2): the former :vcr_sel_rules_gencheck
+# target (VcrSelRulesGenCheck.v, 40 `reflexivity` Qed proving Gen.rule_X equals
+# a hand-written mirror) is RETIRED — VcrSelRules.v now DEFINES rule_X :=
+# Gen.rule_X, so there is no hand-written copy to cross-check and the
+# reflexivity lemmas would be vacuous (Gen.rule_X = Gen.rule_X). The divergence
+# gate is now the 40 correctness Qed in :vcr_sel_rules themselves, which are
+# stated directly about the generated sequences.
 
 # Master index: imports all correctness proofs
 rocq_library(
@@ -316,7 +307,6 @@ rocq_proof_test(
         ":vcr_sel_pilot",
         ":vcr_sel_rules",
         ":vcr_sel_rules_generated",
-        ":vcr_sel_rules_gencheck",
         ":vcr_sel_expansion",
     ],
 )

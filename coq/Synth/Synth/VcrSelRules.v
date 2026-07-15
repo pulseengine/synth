@@ -6,10 +6,20 @@
       Rust rule [rule_i32_add]  <->  [Definition rule_i32_add]
                                 <->  [Theorem rule_i32_add_correct]
 
-    Each [Definition] below is the register-polymorphic ARM sequence the
-    generated Rust lowering ([sel_dsl/generated.rs]) emits — byte-for-byte the
-    hand-written [select_default] arm it mirrors (pinned by the Rust-side
-    mirror test). The theorems prove the T1 bound carried over from the pilot
+    VCR-ISA-001 (#667) "generate, don't mirror": each [Definition rule_X]
+    below is a RE-EXPORT of the GENERATED [Gen.rule_X]
+    ([VcrSelRulesGenerated.v], emitted by
+    [crate::sel_dsl::generate_rocq_lowering_source] from the SAME shipped
+    RULES table that produces the Rust lowering [sel_dsl/generated.rs]).
+    There is no hand-written copy of the instruction sequences left in this
+    file — the generated file is the single source for the 40 covered ops,
+    so the model cannot drift from the shipped selector (the #682
+    vacuous-proof failure mode). If the shipped table changes, regeneration
+    changes [Gen.rule_X], and the matching correctness theorem below stops
+    compiling: the 40 Qed themselves are the divergence gate (strictly
+    stronger than the retired [VcrSelRulesGenCheck.v] reflexivity check,
+    which could only compare against a hand-written mirror).
+    The theorems prove the T1 bound carried over from the pilot
     ([VcrSelPilot.v], the 2026-06-20 go/abandon measurement): the emitted ARM
     sequence computes the op's I32 result in [rd] for EVERY register
     assignment satisfying the rule's side conditions — not full WASM
@@ -88,25 +98,31 @@ Require Import Synth.ARM.ArmFlagLemmas.
    ({and,or,xor}_{lo,hi}_combine) proven for the fixed-register i64
    bitwise ancestors live in CorrectnessI64.v — imported, not duplicated. *)
 Require Import Synth.Synth.CorrectnessI64.
+(* VCR-ISA-001 (#667): the GENERATED lowerings — the single source the
+   [Definition rule_X := Gen.rule_X] re-exports below bind against. *)
+Require Import Synth.Synth.VcrSelRulesGenerated.
 Import ListNotations.
 
 Open Scope Z_scope.
 
-(** ** The rule lowerings — 1:1 with sel_dsl::RULES / sel_dsl::generated *)
+(** ** The rule lowerings — RE-EXPORTED from the generated [Gen] module
+    ([VcrSelRulesGenerated.v]), 1:1 with sel_dsl::RULES / sel_dsl::generated.
+    Every [rule_X] is definitionally [Gen.rule_X]; the sequences themselves
+    are documented in the section comments below and live ONLY in the
+    generated file. *)
 
-Definition rule_i32_add (rd rn rm : arm_reg) : arm_program := [ADD rd rn (Reg rm)].
-Definition rule_i32_sub (rd rn rm : arm_reg) : arm_program := [SUB rd rn (Reg rm)].
-Definition rule_i32_mul (rd rn rm : arm_reg) : arm_program := [MUL rd rn rm].
-Definition rule_i32_and (rd rn rm : arm_reg) : arm_program := [AND rd rn (Reg rm)].
-Definition rule_i32_or  (rd rn rm : arm_reg) : arm_program := [ORR rd rn (Reg rm)].
-Definition rule_i32_xor (rd rn rm : arm_reg) : arm_program := [EOR rd rn (Reg rm)].
+Definition rule_i32_add := Gen.rule_i32_add.
+Definition rule_i32_sub := Gen.rule_i32_sub.
+Definition rule_i32_mul := Gen.rule_i32_mul.
+Definition rule_i32_and := Gen.rule_i32_and.
+Definition rule_i32_or  := Gen.rule_i32_or.
+Definition rule_i32_xor := Gen.rule_i32_xor.
 
 (** Tier B: two instructions through a scratch register [rs] — rotate left by
     [rm] = rotate right by (32 - [rm]). [RSB] writes the scratch in
     instruction 1 before [ROR] reads the value register in instruction 2, so
     [rs] must not alias [rn]: the side condition the rule table carries. *)
-Definition rule_i32_rotl (rd rn rm rs : arm_reg) : arm_program :=
-  [RSB rs rm (Imm (I32.repr 32)); ROR_reg rd rn rs].
+Definition rule_i32_rotl := Gen.rule_i32_rotl.
 
 (** ** Increment 2: i32 register shifts + rotr.
 
@@ -123,13 +139,10 @@ Definition rule_i32_rotl (rd rn rm rs : arm_reg) : arm_program :=
     passes R12 (never allocatable, #212), so the condition always holds.
     ROR is exempt: rotation is cyclic, so Rm[7:0] mod 32 = WASM semantics. *)
 
-Definition rule_i32_shl   (rd rn rm rs : arm_reg) : arm_program :=
-  [AND rs rm (Imm (I32.repr 31)); LSL_reg rd rn rs].
-Definition rule_i32_shr_s (rd rn rm rs : arm_reg) : arm_program :=
-  [AND rs rm (Imm (I32.repr 31)); ASR_reg rd rn rs].
-Definition rule_i32_shr_u (rd rn rm rs : arm_reg) : arm_program :=
-  [AND rs rm (Imm (I32.repr 31)); LSR_reg rd rn rs].
-Definition rule_i32_rotr  (rd rn rm : arm_reg) : arm_program := [ROR_reg rd rn rm].
+Definition rule_i32_shl   := Gen.rule_i32_shl.
+Definition rule_i32_shr_s := Gen.rule_i32_shr_s.
+Definition rule_i32_shr_u := Gen.rule_i32_shr_u.
+Definition rule_i32_rotr  := Gen.rule_i32_rotr.
 
 (** The mask identity: ANDing the amount with 31 does not change the
     mod-32 shift the I32 semantics performs. Z-level plumbing first. *)
@@ -153,26 +166,16 @@ Qed.
     conditions: the flags transfer is through NZCV, not a register, so the
     theorems below hold for EVERY rd/rn/rm assignment. *)
 
-Definition rule_i32_eq (rd rn rm : arm_reg) : arm_program :=
-  [CMP rn (Reg rm); MOV rd (Imm I32.zero); MOVEQ rd (Imm I32.one)].
-Definition rule_i32_ne (rd rn rm : arm_reg) : arm_program :=
-  [CMP rn (Reg rm); MOV rd (Imm I32.zero); MOVNE rd (Imm I32.one)].
-Definition rule_i32_lt_s (rd rn rm : arm_reg) : arm_program :=
-  [CMP rn (Reg rm); MOV rd (Imm I32.zero); MOVLT rd (Imm I32.one)].
-Definition rule_i32_lt_u (rd rn rm : arm_reg) : arm_program :=
-  [CMP rn (Reg rm); MOV rd (Imm I32.zero); MOVLO rd (Imm I32.one)].
-Definition rule_i32_gt_s (rd rn rm : arm_reg) : arm_program :=
-  [CMP rn (Reg rm); MOV rd (Imm I32.zero); MOVGT rd (Imm I32.one)].
-Definition rule_i32_gt_u (rd rn rm : arm_reg) : arm_program :=
-  [CMP rn (Reg rm); MOV rd (Imm I32.zero); MOVHI rd (Imm I32.one)].
-Definition rule_i32_le_s (rd rn rm : arm_reg) : arm_program :=
-  [CMP rn (Reg rm); MOV rd (Imm I32.zero); MOVLE rd (Imm I32.one)].
-Definition rule_i32_le_u (rd rn rm : arm_reg) : arm_program :=
-  [CMP rn (Reg rm); MOV rd (Imm I32.zero); MOVLS rd (Imm I32.one)].
-Definition rule_i32_ge_s (rd rn rm : arm_reg) : arm_program :=
-  [CMP rn (Reg rm); MOV rd (Imm I32.zero); MOVGE rd (Imm I32.one)].
-Definition rule_i32_ge_u (rd rn rm : arm_reg) : arm_program :=
-  [CMP rn (Reg rm); MOV rd (Imm I32.zero); MOVHS rd (Imm I32.one)].
+Definition rule_i32_eq   := Gen.rule_i32_eq.
+Definition rule_i32_ne   := Gen.rule_i32_ne.
+Definition rule_i32_lt_s := Gen.rule_i32_lt_s.
+Definition rule_i32_lt_u := Gen.rule_i32_lt_u.
+Definition rule_i32_gt_s := Gen.rule_i32_gt_s.
+Definition rule_i32_gt_u := Gen.rule_i32_gt_u.
+Definition rule_i32_le_s := Gen.rule_i32_le_s.
+Definition rule_i32_le_u := Gen.rule_i32_le_u.
+Definition rule_i32_ge_s := Gen.rule_i32_ge_s.
+Definition rule_i32_ge_u := Gen.rule_i32_ge_u.
 
 (** ** The discharge tactic — verbatim [synth_binop_proof] (Tactics.v) modulo
     the lowering-unfold target, as measured by the pilot. *)
@@ -180,7 +183,11 @@ Ltac synth_binop_proof_poly :=
   intros wstate astate v1 v2 stack' rd rn rm Hstack HR0 HR1 Hwasm;
   unfold rule_i32_add, rule_i32_sub, rule_i32_mul,
          rule_i32_and, rule_i32_or, rule_i32_xor,
-         rule_i32_shl, rule_i32_shr_s, rule_i32_shr_u, rule_i32_rotr;
+         rule_i32_shl, rule_i32_shr_s, rule_i32_shr_u, rule_i32_rotr,
+         Gen.rule_i32_add, Gen.rule_i32_sub, Gen.rule_i32_mul,
+         Gen.rule_i32_and, Gen.rule_i32_or, Gen.rule_i32_xor,
+         Gen.rule_i32_shl, Gen.rule_i32_shr_s, Gen.rule_i32_shr_u,
+         Gen.rule_i32_rotr;
   unfold exec_program, exec_instr;
   simpl;
   rewrite HR0, HR1;
@@ -282,7 +289,7 @@ Theorem rule_i32_rotl_correct : forall wstate astate v1 v2 stack' rd rn rm rs,
     get_reg astate' rd = I32.rotl v1 v2.
 Proof.
   intros wstate astate v1 v2 stack' rd rn rm rs Hne Hstack HR0 HR1 Hwasm.
-  unfold rule_i32_rotl.
+  unfold rule_i32_rotl, Gen.rule_i32_rotl.
   set (s1 := set_reg astate rs (I32.sub (I32.repr 32) (get_reg astate rm))).
   set (s2 := set_reg s1 rd (I32.rotr (get_reg s1 rn) (get_reg s1 rs))).
   exists s2. split.
@@ -312,7 +319,7 @@ Theorem rule_i32_shl_correct : forall wstate astate v1 v2 stack' rd rn rm rs,
     get_reg astate' rd = I32.shl v1 v2.
 Proof.
   intros wstate astate v1 v2 stack' rd rn rm rs Hne Hstack HR0 HR1 Hwasm.
-  unfold rule_i32_shl.
+  unfold rule_i32_shl, Gen.rule_i32_shl.
   set (s1 := set_reg astate rs (I32.and (get_reg astate rm) (I32.repr 31))).
   set (s2 := set_reg s1 rd (I32.shl (get_reg s1 rn) (get_reg s1 rs))).
   exists s2. split.
@@ -340,7 +347,7 @@ Theorem rule_i32_shr_s_correct : forall wstate astate v1 v2 stack' rd rn rm rs,
     get_reg astate' rd = I32.shrs v1 v2.
 Proof.
   intros wstate astate v1 v2 stack' rd rn rm rs Hne Hstack HR0 HR1 Hwasm.
-  unfold rule_i32_shr_s.
+  unfold rule_i32_shr_s, Gen.rule_i32_shr_s.
   set (s1 := set_reg astate rs (I32.and (get_reg astate rm) (I32.repr 31))).
   set (s2 := set_reg s1 rd (I32.shrs (get_reg s1 rn) (get_reg s1 rs))).
   exists s2. split.
@@ -368,7 +375,7 @@ Theorem rule_i32_shr_u_correct : forall wstate astate v1 v2 stack' rd rn rm rs,
     get_reg astate' rd = I32.shru v1 v2.
 Proof.
   intros wstate astate v1 v2 stack' rd rn rm rs Hne Hstack HR0 HR1 Hwasm.
-  unfold rule_i32_shr_u.
+  unfold rule_i32_shr_u, Gen.rule_i32_shr_u.
   set (s1 := set_reg astate rs (I32.and (get_reg astate rm) (I32.repr 31))).
   set (s2 := set_reg s1 rd (I32.shru (get_reg s1 rn) (get_reg s1 rs))).
   exists s2. split.
@@ -403,7 +410,11 @@ Ltac synth_cmp_binop_proof_poly flag_lemma :=
   intros wstate astate v1 v2 stack' rd rn rm Hstack HR0 HR1 Hwasm;
   unfold rule_i32_eq, rule_i32_ne, rule_i32_lt_s, rule_i32_lt_u,
          rule_i32_gt_s, rule_i32_gt_u, rule_i32_le_s, rule_i32_le_u,
-         rule_i32_ge_s, rule_i32_ge_u;
+         rule_i32_ge_s, rule_i32_ge_u,
+         Gen.rule_i32_eq, Gen.rule_i32_ne, Gen.rule_i32_lt_s,
+         Gen.rule_i32_lt_u, Gen.rule_i32_gt_s, Gen.rule_i32_gt_u,
+         Gen.rule_i32_le_s, Gen.rule_i32_le_u, Gen.rule_i32_ge_s,
+         Gen.rule_i32_ge_u;
   simpl;
   rewrite HR0, HR1; simpl;
   rewrite flag_lemma;
@@ -442,7 +453,7 @@ Theorem rule_i32_ne_correct : forall wstate astate v1 v2 stack' rd rn rm,
     get_reg astate' rd = (if I32.ne v1 v2 then I32.one else I32.zero).
 Proof.
   intros wstate astate v1 v2 stack' rd rn rm Hstack HR0 HR1 Hwasm.
-  unfold rule_i32_ne; simpl.
+  unfold rule_i32_ne, Gen.rule_i32_ne; simpl.
   rewrite HR0, HR1; simpl.
   rewrite <- flags_ne.
   destruct (compute_z_flag (I32.sub v1 v2));
@@ -462,7 +473,7 @@ Theorem rule_i32_lt_s_correct : forall wstate astate v1 v2 stack' rd rn rm,
     get_reg astate' rd = (if I32.lts v1 v2 then I32.one else I32.zero).
 Proof.
   intros wstate astate v1 v2 stack' rd rn rm Hstack HR0 HR1 Hwasm.
-  unfold rule_i32_lt_s; simpl.
+  unfold rule_i32_lt_s, Gen.rule_i32_lt_s; simpl.
   rewrite HR0, HR1; simpl.
   rewrite <- nv_flag_sub_lts.
   destruct (Bool.eqb (compute_n_flag (I32.sub v1 v2)) (compute_v_flag_sub v1 v2));
@@ -482,7 +493,7 @@ Theorem rule_i32_lt_u_correct : forall wstate astate v1 v2 stack' rd rn rm,
     get_reg astate' rd = (if I32.ltu v1 v2 then I32.one else I32.zero).
 Proof.
   intros wstate astate v1 v2 stack' rd rn rm Hstack HR0 HR1 Hwasm.
-  unfold rule_i32_lt_u; simpl.
+  unfold rule_i32_lt_u, Gen.rule_i32_lt_u; simpl.
   rewrite HR0, HR1; simpl.
   rewrite <- flags_ltu.
   destruct (compute_c_flag_sub v1 v2);
@@ -572,21 +583,15 @@ Proof. synth_cmp_binop_proof_poly flags_geu. Qed.
     register pair; operand 1 is (rnlo, rnhi), operand 2 is (rmlo, rmhi),
     the result pair is (rdlo, rdhi). *)
 
-Definition rule_i64_add (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [ADDS rdlo rnlo (Reg rmlo); ADC rdhi rnhi (Reg rmhi)].
-Definition rule_i64_sub (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [SUBS rdlo rnlo (Reg rmlo); SBC rdhi rnhi (Reg rmhi)].
-Definition rule_i64_and (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [AND rdlo rnlo (Reg rmlo); AND rdhi rnhi (Reg rmhi)].
-Definition rule_i64_or (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [ORR rdlo rnlo (Reg rmlo); ORR rdhi rnhi (Reg rmhi)].
-Definition rule_i64_xor (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [EOR rdlo rnlo (Reg rmlo); EOR rdhi rnhi (Reg rmhi)].
+Definition rule_i64_add := Gen.rule_i64_add.
+Definition rule_i64_sub := Gen.rule_i64_sub.
+Definition rule_i64_and := Gen.rule_i64_and.
+Definition rule_i64_or  := Gen.rule_i64_or.
+Definition rule_i64_xor := Gen.rule_i64_xor.
 
 (** i64.eqz — unary, single [I64SetCondZ] pseudo-op (the SetCondZ shape);
     the 0/1 result is a single i32 register, so no pair side conditions. *)
-Definition rule_i64_eqz (rd rnlo rnhi : arm_reg) : arm_program :=
-  [I64SetCondZ rd rnlo rnhi].
+Definition rule_i64_eqz := Gen.rule_i64_eqz.
 
 (** ** Increment-3 discharge tactics.
 
@@ -605,7 +610,7 @@ Definition rule_i64_eqz (rd rnlo rnhi : arm_reg) : arm_program :=
 Ltac synth_i64_carry_pair_proof_poly carry_lemma :=
   intros astate lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi
          Hdd Hdnh Hdmh HR0 HR1 HR2 HR3;
-  unfold rule_i64_add, rule_i64_sub;
+  unfold rule_i64_add, rule_i64_sub, Gen.rule_i64_add, Gen.rule_i64_sub;
   cbn [exec_program exec_instr eval_operand2];
   rewrite flags_set_flags_set_reg;
   rewrite flag_c_update_flags_arith;
@@ -633,7 +638,8 @@ Ltac synth_i64_carry_pair_proof_poly carry_lemma :=
 Ltac synth_i64_bitwise_pair_proof_poly lo_lemma hi_lemma :=
   intros astate lo1 hi1 lo2 hi2 rdlo rdhi rnlo rnhi rmlo rmhi
          Hdd Hdnh Hdmh HR0 HR1 HR2 HR3;
-  unfold rule_i64_and, rule_i64_or, rule_i64_xor;
+  unfold rule_i64_and, rule_i64_or, rule_i64_xor,
+         Gen.rule_i64_and, Gen.rule_i64_or, Gen.rule_i64_xor;
   cbn [exec_program exec_instr eval_operand2];
   eexists; split;
   [ reflexivity
@@ -754,7 +760,7 @@ Theorem rule_i64_eqz_correct : forall astate lo hi rd rnlo rnhi,
       (if I64.eq (combine_i32 lo hi) I64.zero then I32.one else I32.zero).
 Proof.
   intros astate lo hi rd rnlo rnhi HR0 HR1.
-  unfold rule_i64_eqz; simpl.
+  unfold rule_i64_eqz, Gen.rule_i64_eqz; simpl.
   rewrite HR0, HR1.
   rewrite i64_setcondz_bits_spec.
   eexists. split; [reflexivity | apply get_set_reg_eq].
@@ -809,34 +815,24 @@ Qed.
     Sail-generated model lands. Documented in
     docs/design/vcr-sel-001-increment-4.md. *)
 
-Definition rule_i32_clz (rd rm : arm_reg) : arm_program := [CLZ rd rm].
-Definition rule_i32_ctz (rd rm : arm_reg) : arm_program := [RBIT rd rm; CLZ rd rd].
-Definition rule_i32_popcnt (rd rm : arm_reg) : arm_program := [POPCNT rd rm].
+Definition rule_i32_clz    := Gen.rule_i32_clz.
+Definition rule_i32_ctz    := Gen.rule_i32_ctz.
+Definition rule_i32_popcnt := Gen.rule_i32_popcnt.
 
 (** The binary I64SetCond comparison rules — 1:1 with the Rust table.
     Condition mapping is the hand-written arms' (and Compilation.v's):
     lt_u -> Cond_CC (LO), gt_u -> Cond_HI, le_u -> Cond_LS,
     ge_u -> Cond_CS (HS). *)
-Definition rule_i64_eq (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_EQ].
-Definition rule_i64_ne (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_NE].
-Definition rule_i64_lt_s (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_LT].
-Definition rule_i64_lt_u (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_CC].
-Definition rule_i64_gt_s (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_GT].
-Definition rule_i64_gt_u (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_HI].
-Definition rule_i64_le_s (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_LE].
-Definition rule_i64_le_u (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_LS].
-Definition rule_i64_ge_s (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_GE].
-Definition rule_i64_ge_u (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
-  [I64SetCond rd rnlo rnhi rmlo rmhi Cond_CS].
+Definition rule_i64_eq   := Gen.rule_i64_eq.
+Definition rule_i64_ne   := Gen.rule_i64_ne.
+Definition rule_i64_lt_s := Gen.rule_i64_lt_s.
+Definition rule_i64_lt_u := Gen.rule_i64_lt_u.
+Definition rule_i64_gt_s := Gen.rule_i64_gt_s.
+Definition rule_i64_gt_u := Gen.rule_i64_gt_u.
+Definition rule_i64_le_s := Gen.rule_i64_le_s.
+Definition rule_i64_le_u := Gen.rule_i64_le_u.
+Definition rule_i64_ge_s := Gen.rule_i64_ge_s.
+Definition rule_i64_ge_u := Gen.rule_i64_ge_u.
 
 (** ** Increment-4 discharge tactics.
 
@@ -853,7 +849,8 @@ Definition rule_i64_ge_u (rd rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
 
 Ltac synth_unop_proof_poly :=
   intros wstate astate v stack' rd rm Hstack HR0 Hwasm;
-  unfold rule_i32_clz, rule_i32_popcnt;
+  unfold rule_i32_clz, rule_i32_popcnt,
+         Gen.rule_i32_clz, Gen.rule_i32_popcnt;
   unfold exec_program, exec_instr;
   simpl;
   rewrite HR0;
@@ -865,7 +862,11 @@ Ltac synth_i64_setcond_proof_poly :=
   intros astate lo1 hi1 lo2 hi2 rd rnlo rnhi rmlo rmhi HR0 HR1 HR2 HR3;
   unfold rule_i64_eq, rule_i64_ne, rule_i64_lt_s, rule_i64_lt_u,
          rule_i64_gt_s, rule_i64_gt_u, rule_i64_le_s, rule_i64_le_u,
-         rule_i64_ge_s, rule_i64_ge_u;
+         rule_i64_ge_s, rule_i64_ge_u,
+         Gen.rule_i64_eq, Gen.rule_i64_ne, Gen.rule_i64_lt_s,
+         Gen.rule_i64_lt_u, Gen.rule_i64_gt_s, Gen.rule_i64_gt_u,
+         Gen.rule_i64_le_s, Gen.rule_i64_le_u, Gen.rule_i64_ge_s,
+         Gen.rule_i64_ge_u;
   simpl;
   rewrite HR0, HR1, HR2, HR3;
   rewrite i64_setcond_bits_spec; simpl;
@@ -900,7 +901,7 @@ Theorem rule_i32_ctz_correct : forall wstate astate v stack' rd rm,
     get_reg astate' rd = I32.ctz v.
 Proof.
   intros wstate astate v stack' rd rm Hstack HR0 Hwasm.
-  unfold rule_i32_ctz.
+  unfold rule_i32_ctz, Gen.rule_i32_ctz.
   set (s1 := set_reg astate rd (I32.rbit (get_reg astate rm))).
   set (s2 := set_reg s1 rd (I32.clz (get_reg s1 rd))).
   exists s2. split.
