@@ -166,14 +166,16 @@ claims:
         path: scripts/repro/vcr_ver_001_gate.md
 
   # VCR-VER-002 (#166): trap-preservation gate over ordeal 0.9's trap module.
-  # in-progress, not implemented: div/rem wired mandatorily into the validator;
-  # the other partial-op classes are gated at the unit level pending the
-  # exec-model trap flag (documented follow-on in the roadmap entry).
+  # in-progress, not implemented. LIVE (derived-ARM-trap-term) classes now:
+  # i32 div/rem, i64 div/rem (#756, field-derived), unreachable, i32
+  # load/store (all widths), call_indirect, i32.trunc_f32_s/u, i32.trunc_f64_s/u
+  # (#756, D-register guard). i64.trunc_f64 has no shipped lowering (selector
+  # declines it) — its classifier is unit-gated only.
   # Phase B (ordeal 0.9.1, ordeal#59/TR-020): float→int trunc trap class
   # covered — trunc_op/trap_trunc wrapper + #709 boundary-table eval gate.
   - id: SYNTH-VCR-VER-002-STATUS
     doc: artifacts/verified-codegen-roadmap.yaml
-    text: "Trap-preservation VC catches dropped WASM traps (div/rem, memory OOB, call_indirect, unreachable, float→int trunc); live-validator wiring in progress"
+    text: "Trap-preservation VC catches dropped WASM traps (i32+i64 div/rem, memory OOB, call_indirect, unreachable, float→int trunc); live-validator wiring in progress"
     evidence:
       - kind: yaml-field
         path: artifacts/verified-codegen-roadmap.yaml

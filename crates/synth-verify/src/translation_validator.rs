@@ -157,6 +157,13 @@ impl TranslationValidator {
                 | WasmOp::I32DivU
                 | WasmOp::I32RemS
                 | WasmOp::I32RemU
+                // i64 div/rem (#756): field-derived trap-condition VC (the
+                // pseudo-op carries the guard as an `elide_*` boolean; the
+                // 64-bit quotient is not modeled, so no value clause).
+                | WasmOp::I64DivS
+                | WasmOp::I64DivU
+                | WasmOp::I64RemS
+                | WasmOp::I64RemU
                 | WasmOp::Unreachable
                 | WasmOp::I32Load { .. }
                 | WasmOp::I32Load8S { .. }
@@ -168,6 +175,12 @@ impl TranslationValidator {
                 | WasmOp::I32Store16 { .. }
                 | WasmOp::I32TruncF32S
                 | WasmOp::I32TruncF32U
+                // f64→i32 trunc (#756): D-register domain guard, condition-only
+                // VC. NOT `I64TruncF64S/U`: the selector loud-declines those
+                // (no i64 register-pair lowering on 32-bit ARM), so there is no
+                // shipped guard to validate — a gate entry would be dead.
+                | WasmOp::I32TruncF64S
+                | WasmOp::I32TruncF64U
         )
     }
 
@@ -330,22 +343,36 @@ impl TranslationValidator {
     /// | class | VC | operand convention |
     /// |---|---|---|
     /// | i32 div/rem | full ([`crate::trap::prove_trap_equivalence`]: trap AND guarded value) | dividend R0, divisor R1, result R0 |
+    /// | i64 div/rem | trap-condition only (field-derived; 64-bit quotient not modeled) | divisor R2:R3 (`rmlo`/`rmhi`), guards from the pseudo-op's `elide_*` fields |
     /// | `unreachable` | trap-condition only | none |
     /// | i32 load/store (all widths) | trap-condition only (no memory-contents model) | address R0 (+ store value R1), linear-memory size R10 |
     /// | `i32.trunc_f32_s/u` | trap-condition only (no float→int value model) | operand S0, result R0 |
+    /// | `i32.trunc_f64_s/u` | trap-condition only (no float→int value model) | operand D0, bound scratch D1, result R0 |
     ///
     /// `call_indirect` goes through
     /// [`Self::verify_call_indirect_trap_preservation`] (it needs module
     /// facts as the spec side).
     ///
+    /// # i64 div/rem trust boundary (like `call_indirect`)
+    ///
+    /// ARM32 has no 64-bit divide instruction: the shipped lowering emits an
+    /// `ArmOp::I64Div{S,U}`/`I64Rem{S,U}` PSEUDO-OP whose result registers the
+    /// exec-model leaves symbolic (no `bvsdiv` term) and whose trap guards are
+    /// carried as `elide_zero_guard`/`elide_overflow_guard` boolean FIELDS.
+    /// The gate certifies the SELECTOR's guard-elision decision: the ARM trap
+    /// term is CONSTRUCTED from those fields (a set `elide_*` deletes the
+    /// corresponding clause), so a lowering that elides a guard whose fact was
+    /// not discharged is reported `Invalid`. The encoder's expansion of the
+    /// pseudo-op into `ORRS`/`BNE`/`UDF`/library-call bytes is separately
+    /// execution-gated (the i64 div/rem CI oracles).
+    ///
     /// # Held out, honestly
     ///
-    /// - **i64 div/rem** — needs 64-bit operand terms + the register-pair ARM
-    ///   value model; still gated at the unit level
-    ///   (`tests/trap_preservation.rs`) and by the CI execution oracles.
-    /// - **`i32.trunc_f64_s/u`** — the guard drives f64 (D-register)
-    ///   compares, which the 32-bit VFP register model does not carry yet;
-    ///   unit-gated (`trap_trunc` classifier) + the m4f CI execution oracle.
+    /// - **`i64.trunc_f64_s/u`** — the selector loud-declines it (i64 register
+    ///   pairs on 32-bit ARM are unsupported), so there is NO shipped lowering
+    ///   to derive an ARM trap term from. The trap CLASSIFIER for these ops
+    ///   (`trap_trunc(F64, I64, …)`, incl. the item-4 2^63/-2^63/2^64
+    ///   boundaries) is unit-gated in `tests/trap_preservation.rs`.
     pub fn verify_trap_preservation(
         &self,
         wasm_op: &WasmOp,
@@ -354,6 +381,9 @@ impl TranslationValidator {
         match wasm_op {
             WasmOp::I32DivS | WasmOp::I32DivU | WasmOp::I32RemS | WasmOp::I32RemU => {
                 self.verify_div_rem_trap_preservation(wasm_op, arm_ops)
+            }
+            WasmOp::I64DivS | WasmOp::I64DivU | WasmOp::I64RemS | WasmOp::I64RemU => {
+                self.verify_i64_div_rem_trap_preservation(wasm_op, arm_ops)
             }
             WasmOp::Unreachable => {
                 let (_state, arm_trap) = self.derive_arm_state(arm_ops, &[], None)?;
@@ -385,9 +415,14 @@ impl TranslationValidator {
                 let signed = matches!(wasm_op, WasmOp::I32TruncF32S);
                 self.verify_trunc_f32_trap_preservation(arm_ops, signed)
             }
+            WasmOp::I32TruncF64S | WasmOp::I32TruncF64U => {
+                let signed = matches!(wasm_op, WasmOp::I32TruncF64S);
+                self.verify_trunc_f64_trap_preservation(arm_ops, signed)
+            }
             other => Err(VerificationError::UnsupportedOperation(format!(
                 "trap-preservation gate does not cover {other:?} \
-                 (i64 div/rem and trunc_f64 are unit-gated — see method docs)"
+                 (i64.trunc_f64 has no shipped lowering — the selector declines \
+                 it; its classifier is unit-gated — see method docs)"
             ))),
         }
     }
@@ -532,6 +567,157 @@ impl TranslationValidator {
         let wasm_trap = crate::trap::trap_trunc(
             &bits,
             crate::trap::FpFmt::F32,
+            crate::trap::IntTarget::I32,
+            signed,
+        );
+
+        Ok(Self::condition_verdict(&wasm_trap, &arm_trap))
+    }
+
+    /// i64 div/rem trap preservation (VCR-VER-002, #756): field-derived
+    /// trap-condition-only VC. ARM32 has no 64-bit divide, so the shipped
+    /// lowering emits a single `ArmOp::I64Div{S,U}`/`I64Rem{S,U}` pseudo-op
+    /// whose 64-bit quotient the exec-model leaves symbolic (no `bvsdiv`
+    /// term — the full value VC is not well-posed) and whose trap guards are
+    /// carried as `elide_*` boolean FIELDS. The WASM spec side is ordeal's
+    /// 64-bit `trap_div` over symbolic divisor bits (`rmlo:rmhi` = R2:R3); the
+    /// ARM side is CONSTRUCTED from the pseudo-op's fields — a set `elide_*`
+    /// deletes the corresponding clause — so a lowering that elides a guard
+    /// (÷0 for all four, INT64_MIN/-1 overflow for `div_s`) whose fact was not
+    /// discharged derives a weaker trap term and is reported `Invalid`.
+    pub fn verify_i64_div_rem_trap_preservation(
+        &self,
+        wasm_op: &WasmOp,
+        arm_ops: &[ArmOp],
+    ) -> Result<ValidationResult, VerificationError> {
+        let Some(div_op) = crate::trap::div_op(wasm_op) else {
+            return Err(VerificationError::UnsupportedOperation(format!(
+                "i64 trap-preservation gate applies to div/rem only, got {wasm_op:?}"
+            )));
+        };
+        if !matches!(
+            wasm_op,
+            WasmOp::I64DivS | WasmOp::I64DivU | WasmOp::I64RemS | WasmOp::I64RemU
+        ) {
+            return Err(VerificationError::UnsupportedOperation(format!(
+                "i64 trap-preservation gate supports i64 div/rem only, got {wasm_op:?}"
+            )));
+        }
+
+        // The shipped lowering is a single pseudo-op; find it in the sequence
+        // (the selector emits exactly one, possibly amid dead ops).
+        let (elide_zero, elide_overflow) =
+            Self::i64_div_rem_guard_fields(arm_ops).ok_or_else(|| {
+                VerificationError::UnsupportedOperation(format!(
+                    "i64 trap gate needs an I64Div/I64Rem pseudo-op in the sequence, \
+                     got {arm_ops:?}"
+                ))
+            })?;
+
+        // WASM spec side: full 64-bit trap condition (÷0 ∨, for div_s only,
+        // INT64_MIN/-1 overflow). The dividend/divisor symbols name the
+        // register pairs the pseudo-op reads (rnlo:rnhi = R0:R1 dividend,
+        // rmlo:rmhi = R2:R3 divisor).
+        let dividend = BV::new_const("input_dividend_i64", 64);
+        let divisor = BV::new_const("input_divisor_i64", 64);
+        let wasm_trap = crate::trap::trap_div(div_op, &dividend, &divisor);
+
+        // ARM side: reconstruct the SAME 64-bit trap term but with each clause
+        // CONDITIONALLY present per the pseudo-op's elision fields. A dropped
+        // guard => a strictly weaker term => the equivalence VC is Sat.
+        let arm_trap =
+            Self::i64_arm_trap_from_fields(div_op, &dividend, &divisor, elide_zero, elide_overflow);
+
+        Ok(Self::condition_verdict(&wasm_trap, &arm_trap))
+    }
+
+    /// Locate the i64 div/rem pseudo-op in a sequence and read its guard-elision
+    /// fields as `(elide_zero, elide_overflow)`. `div_u`/`rem_s`/`rem_u` have no
+    /// overflow guard, so their `elide_overflow` is reported `false`
+    /// (the clause is not part of their WASM trap condition anyway).
+    fn i64_div_rem_guard_fields(arm_ops: &[ArmOp]) -> Option<(bool, bool)> {
+        arm_ops.iter().find_map(|op| match op {
+            ArmOp::I64DivS {
+                elide_zero_guard,
+                elide_overflow_guard,
+                ..
+            } => Some((*elide_zero_guard, *elide_overflow_guard)),
+            ArmOp::I64DivU {
+                elide_zero_guard, ..
+            }
+            | ArmOp::I64RemS {
+                elide_zero_guard, ..
+            }
+            | ArmOp::I64RemU {
+                elide_zero_guard, ..
+            } => Some((*elide_zero_guard, false)),
+            _ => None,
+        })
+    }
+
+    /// Build the ARM-side i64 trap term from the guard-elision fields: start
+    /// from the full WASM trap condition and DELETE each clause the pseudo-op
+    /// elides. The ÷0 clause is `divisor == 0`; the overflow clause (`div_s`
+    /// only) is `dividend == INT64_MIN ∧ divisor == -1`.
+    fn i64_arm_trap_from_fields(
+        div_op: crate::trap::DivOp,
+        dividend: &BV,
+        divisor: &BV,
+        elide_zero: bool,
+        elide_overflow: bool,
+    ) -> Bool {
+        let zero = BV::from_u64(0, 64);
+        let div_by_zero = divisor.eq(&zero);
+
+        // The ÷0 clause is present iff not elided.
+        let mut clauses: Vec<Bool> = Vec::new();
+        if !elide_zero {
+            clauses.push(div_by_zero);
+        }
+
+        // The overflow clause is only part of div_s's WASM condition; for the
+        // other three it is not in `trap_div` at all, so never add it.
+        if matches!(div_op, crate::trap::DivOp::DivS) && !elide_overflow {
+            let int_min = BV::from_i64(i64::MIN, 64);
+            let neg_one = BV::from_i64(-1, 64);
+            let overflow = Bool::and(&[&dividend.eq(&int_min), &divisor.eq(&neg_one)]);
+            clauses.push(overflow);
+        }
+
+        if clauses.is_empty() {
+            Bool::from_bool(false)
+        } else {
+            let refs: Vec<&Bool> = clauses.iter().collect();
+            Bool::or(&refs)
+        }
+    }
+
+    /// `i32.trunc_f64_s/u` trap preservation (VCR-VER-002, #166 / #709 / #756):
+    /// trap-condition-only VC (synth's QF_BV model carries no float→int value
+    /// function). The WASM side is ordeal's bit-pattern trunc classifier over
+    /// the f64 operand (`NaN ∨ ±∞ ∨ out-of-range`); the ARM side is DERIVED
+    /// from the emitted DOUBLE-precision domain guard (`F64Const` bound +
+    /// ordered `VCMP.F64` compare + `Cmp`/branch/`Udf`), with the ordered f64
+    /// compares given real bit-pattern semantics in the executor. Operand
+    /// convention: f64 operand = D0 (a 64-bit BV), bound scratch = D1.
+    pub fn verify_trunc_f64_trap_preservation(
+        &self,
+        arm_ops: &[ArmOp],
+        signed: bool,
+    ) -> Result<ValidationResult, VerificationError> {
+        use synth_synthesis::rules::VfpReg;
+        let bits = BV::new_const("input_0", 64);
+
+        let mut state = ArmState::new_symbolic();
+        state.set_vfp_reg(&VfpReg::D0, bits.clone());
+        self.arm_encoder
+            .encode_sequence_br(arm_ops, &mut state)
+            .map_err(VerificationError::UnsupportedOperation)?;
+        let arm_trap = state.may_trap.clone();
+
+        let wasm_trap = crate::trap::trap_trunc(
+            &bits,
+            crate::trap::FpFmt::F64,
             crate::trap::IntTarget::I32,
             signed,
         );
@@ -1465,6 +1651,366 @@ mod tests {
                 matches!(result, ValidationResult::Invalid { .. }),
                 "upper-only trunc guard must be Invalid, got {result:?}"
             );
+        });
+    }
+
+    // --- i32.trunc_f64_s/u (LIVE, #709/#756 class, D-register guard) ---
+
+    /// The SHIPPED f64 trunc domain-guard shape (instruction_selector.rs
+    /// I32TruncF64S/U, lines 3158-3220): per bound, F64Const scratch into D1 ;
+    /// ordered VCMP.F64 into R0 ; CMP R0,#0 ; BNE +0 (in-range skips) ; UDF —
+    /// then the VCVT. Operand in D0, bound scratch D1. Upper bound uses F64Lt,
+    /// lower uses F64Gt (STRICT — both false on NaN, so NaN traps at the first
+    /// guard). Bounds are the exact selector constants.
+    fn shipped_trunc_f64_guard(signed: bool) -> Vec<ArmOp> {
+        use synth_synthesis::rules::VfpReg;
+        let (hi, lo) = if signed {
+            (2147483648.0_f64, -2147483649.0_f64) // 2^31, -(2^31)-1
+        } else {
+            (4294967296.0_f64, -1.0_f64) // 2^32, -1.0
+        };
+        let mut ops = Vec::new();
+        let guard = |ops: &mut Vec<ArmOp>, bound: f64, upper: bool| {
+            ops.push(ArmOp::F64Const {
+                dd: VfpReg::D1,
+                value: bound,
+            });
+            let cmp = if upper {
+                ArmOp::F64Lt {
+                    rd: Reg::R0,
+                    dn: VfpReg::D0,
+                    dm: VfpReg::D1,
+                }
+            } else {
+                ArmOp::F64Gt {
+                    rd: Reg::R0,
+                    dn: VfpReg::D0,
+                    dm: VfpReg::D1,
+                }
+            };
+            ops.push(cmp);
+            ops.push(ArmOp::Cmp {
+                rn: Reg::R0,
+                op2: Operand2::Imm(0),
+            });
+            ops.push(ArmOp::BCondOffset {
+                cond: Condition::NE,
+                offset: 0,
+            });
+            ops.push(ArmOp::Udf { imm: 0 });
+        };
+        guard(&mut ops, hi, true); // x < hi (also traps NaN)
+        guard(&mut ops, lo, false); // x > lo
+        if signed {
+            ops.push(ArmOp::I32TruncF64S {
+                rd: Reg::R0,
+                dm: VfpReg::D0,
+            });
+        } else {
+            ops.push(ArmOp::I32TruncF64U {
+                rd: Reg::R0,
+                dm: VfpReg::D0,
+            });
+        }
+        ops
+    }
+
+    #[test]
+    fn trunc_f64_s_domain_guard_preserves_the_trap() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_trap_preservation(&WasmOp::I32TruncF64S, &shipped_trunc_f64_guard(true))
+                .unwrap();
+            assert_eq!(
+                result,
+                ValidationResult::Verified,
+                "GREEN: correct f64→i32_s domain guard must be Verified (Unsat)"
+            );
+        });
+    }
+
+    #[test]
+    fn trunc_f64_u_domain_guard_preserves_the_trap() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let result = validator
+                .verify_trap_preservation(&WasmOp::I32TruncF64U, &shipped_trunc_f64_guard(false))
+                .unwrap();
+            assert_eq!(
+                result,
+                ValidationResult::Verified,
+                "GREEN: correct f64→i32_u domain guard must be Verified (Unsat)"
+            );
+        });
+    }
+
+    /// RED-FIRST for the f64 #709 class: the bare saturating VCVT (guards
+    /// stripped) never traps — rejected with a counterexample (Sat).
+    #[test]
+    fn trunc_f64_without_domain_guard_is_rejected() {
+        use synth_synthesis::rules::VfpReg;
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let arm_ops = [ArmOp::I32TruncF64S {
+                rd: Reg::R0,
+                dm: VfpReg::D0,
+            }];
+            let result = validator
+                .verify_trap_preservation(&WasmOp::I32TruncF64S, &arm_ops)
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "RED: guard-stripped f64 trunc must be Invalid (Sat), got {result:?}"
+            );
+        });
+    }
+
+    /// RED-FIRST: half an f64 domain guard (upper bound only) drops the
+    /// lower-bound (NaN-negative-overflow) trap — must be caught.
+    #[test]
+    fn trunc_f64_with_only_upper_guard_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let mut arm_ops = shipped_trunc_f64_guard(true);
+            // Strip the second (lower-bound) guard: 5 ops per guard block.
+            arm_ops.drain(5..10);
+            let result = validator
+                .verify_trap_preservation(&WasmOp::I32TruncF64S, &arm_ops)
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "RED: upper-only f64 trunc guard must be Invalid (Sat), got {result:?}"
+            );
+        });
+    }
+
+    // --- i64 div/rem (LIVE at the pseudo-op guard-field level, #756) ---
+
+    /// The SHIPPED i64 div/rem pseudo-op (instruction_selector.rs 5556-5604):
+    /// register pairs R0:R1 (dividend) / R2:R3 (divisor), result R0:R1, with
+    /// both guard-elision fields `false` (full guards). `elide_zero`/
+    /// `elide_overflow` override the fields to model a dropped guard.
+    fn shipped_i64_div_rem(op: &WasmOp, elide_zero: bool, elide_overflow: bool) -> Vec<ArmOp> {
+        let arm = match op {
+            WasmOp::I64DivS => ArmOp::I64DivS {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+                elide_zero_guard: elide_zero,
+                elide_overflow_guard: elide_overflow,
+            },
+            WasmOp::I64DivU => ArmOp::I64DivU {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+                elide_zero_guard: elide_zero,
+            },
+            WasmOp::I64RemS => ArmOp::I64RemS {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+                elide_zero_guard: elide_zero,
+            },
+            WasmOp::I64RemU => ArmOp::I64RemU {
+                rdlo: Reg::R0,
+                rdhi: Reg::R1,
+                rnlo: Reg::R0,
+                rnhi: Reg::R1,
+                rmlo: Reg::R2,
+                rmhi: Reg::R3,
+                elide_zero_guard: elide_zero,
+            },
+            _ => unreachable!("shipped_i64_div_rem: not an i64 div/rem op"),
+        };
+        vec![arm]
+    }
+
+    #[test]
+    fn i64_div_rem_all_four_full_guards_preserve_the_trap() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            for op in [
+                WasmOp::I64DivU,
+                WasmOp::I64DivS,
+                WasmOp::I64RemU,
+                WasmOp::I64RemS,
+            ] {
+                let arm_ops = shipped_i64_div_rem(&op, false, false);
+                let result = validator.verify_trap_preservation(&op, &arm_ops).unwrap();
+                assert_eq!(
+                    result,
+                    ValidationResult::Verified,
+                    "GREEN: {op:?} with full guards must be Verified (Unsat)"
+                );
+            }
+        });
+    }
+
+    /// RED-FIRST: dropping the ÷0 guard (elide_zero_guard = true) on ANY of the
+    /// four i64 div/rem ops must be caught — the shipped fields say the guard
+    /// was elided without a discharged divisor-nonzero fact.
+    #[test]
+    fn i64_div_rem_dropped_zero_guard_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            for op in [
+                WasmOp::I64DivU,
+                WasmOp::I64DivS,
+                WasmOp::I64RemU,
+                WasmOp::I64RemS,
+            ] {
+                let arm_ops = shipped_i64_div_rem(&op, true, false);
+                let result = validator.verify_trap_preservation(&op, &arm_ops).unwrap();
+                assert!(
+                    matches!(result, ValidationResult::Invalid { .. }),
+                    "RED: {op:?} with the ÷0 guard dropped must be Invalid (Sat), got {result:?}"
+                );
+            }
+        });
+    }
+
+    /// RED-FIRST: dropping ONLY the INT64_MIN/-1 overflow guard on div_s (÷0
+    /// still present) is a partial #633-class drop — must be caught.
+    #[test]
+    fn i64_div_s_dropped_overflow_guard_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let arm_ops = shipped_i64_div_rem(&WasmOp::I64DivS, false, true);
+            let result = validator
+                .verify_trap_preservation(&WasmOp::I64DivS, &arm_ops)
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "RED: i64.div_s with the overflow guard dropped must be Invalid (Sat), got {result:?}"
+            );
+        });
+    }
+
+    /// RED-FIRST: dropping BOTH div_s guards is the fully-unguarded shape.
+    #[test]
+    fn i64_div_s_dropped_both_guards_is_rejected() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let arm_ops = shipped_i64_div_rem(&WasmOp::I64DivS, true, true);
+            let result = validator
+                .verify_trap_preservation(&WasmOp::I64DivS, &arm_ops)
+                .unwrap();
+            assert!(
+                matches!(result, ValidationResult::Invalid { .. }),
+                "RED: i64.div_s with both guards dropped must be Invalid (Sat), got {result:?}"
+            );
+        });
+    }
+
+    /// NON-VACUITY control for the div_s overflow clause: the OVERFLOW-only
+    /// drop and the correct full guard must give OPPOSITE verdicts. Proves the
+    /// gate discriminates on the overflow field, not just ÷0.
+    #[test]
+    fn i64_div_s_overflow_field_is_load_bearing() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let full = validator
+                .verify_trap_preservation(
+                    &WasmOp::I64DivS,
+                    &shipped_i64_div_rem(&WasmOp::I64DivS, false, false),
+                )
+                .unwrap();
+            let overflow_dropped = validator
+                .verify_trap_preservation(
+                    &WasmOp::I64DivS,
+                    &shipped_i64_div_rem(&WasmOp::I64DivS, false, true),
+                )
+                .unwrap();
+            assert_eq!(full, ValidationResult::Verified);
+            assert!(matches!(overflow_dropped, ValidationResult::Invalid { .. }));
+            assert_ne!(
+                full, overflow_dropped,
+                "non-vacuity: the overflow-guard field must change the verdict"
+            );
+        });
+    }
+
+    /// NON-VACUITY dump (run with `--nocapture`): prints the raw
+    /// Preserved/Dropped verdict for the shipped-vs-dropped-guard shapes of the
+    /// two newly-live classes, so the gate's discrimination is visible, not
+    /// merely asserted. A gate that printed the SAME verdict on both rows would
+    /// be vacuous.
+    #[test]
+    fn dump_756_non_vacuity_verdicts() {
+        with_verification_context(|| {
+            let validator = TranslationValidator::new();
+            let raw = |r: &ValidationResult| match r {
+                ValidationResult::Verified => "Verified/Unsat (trap PRESERVED)",
+                ValidationResult::Invalid { .. } => "Invalid/Sat  (trap DROPPED — caught)",
+                ValidationResult::Unknown { .. } => "Unknown",
+            };
+            println!("\n=== #756 live trap-preservation non-vacuity ===");
+            for (op, oflow_field) in [
+                (WasmOp::I64DivU, false),
+                (WasmOp::I64DivS, true),
+                (WasmOp::I64RemU, false),
+                (WasmOp::I64RemS, false),
+            ] {
+                let green = validator
+                    .verify_trap_preservation(&op, &shipped_i64_div_rem(&op, false, false))
+                    .unwrap();
+                let red = validator
+                    .verify_trap_preservation(&op, &shipped_i64_div_rem(&op, true, false))
+                    .unwrap();
+                println!(
+                    "  {op:?}: full-guards -> {} | drop-÷0 -> {}",
+                    raw(&green),
+                    raw(&red)
+                );
+                assert_ne!(
+                    green, red,
+                    "{op:?}: green and red must differ (non-vacuous)"
+                );
+                if oflow_field {
+                    let red_o = validator
+                        .verify_trap_preservation(&op, &shipped_i64_div_rem(&op, false, true))
+                        .unwrap();
+                    println!("  {op:?}: drop-overflow -> {}", raw(&red_o));
+                    assert_ne!(green, red_o);
+                }
+            }
+            for (op, sgn) in [(WasmOp::I32TruncF64S, true), (WasmOp::I32TruncF64U, false)] {
+                let green = validator
+                    .verify_trap_preservation(&op, &shipped_trunc_f64_guard(sgn))
+                    .unwrap();
+                let bare = if sgn {
+                    vec![ArmOp::I32TruncF64S {
+                        rd: Reg::R0,
+                        dm: synth_synthesis::rules::VfpReg::D0,
+                    }]
+                } else {
+                    vec![ArmOp::I32TruncF64U {
+                        rd: Reg::R0,
+                        dm: synth_synthesis::rules::VfpReg::D0,
+                    }]
+                };
+                let red = validator.verify_trap_preservation(&op, &bare).unwrap();
+                println!(
+                    "  {op:?}: domain-guard -> {} | bare-VCVT -> {}",
+                    raw(&green),
+                    raw(&red)
+                );
+                assert_ne!(
+                    green, red,
+                    "{op:?}: green and red must differ (non-vacuous)"
+                );
+            }
+            println!("=== all rows discriminate: gate is non-vacuous ===\n");
         });
     }
 

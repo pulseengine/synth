@@ -2259,6 +2259,53 @@ enum F32CmpKind {
     Ge,
 }
 
+/// IEEE 754 double-precision NaN test over the raw bit pattern:
+/// exponent all-ones (bits 62..52) with a non-zero fraction (bits 51..0).
+/// The 64-bit twin of [`f32_is_nan`], for the #709/#756 f64→i32 trunc guards.
+fn f64_is_nan(x: &BV) -> Bool {
+    let exp_ones = x.extract(62, 52).eq(BV::from_u64(0x7FF, 11));
+    let frac_nonzero = x.extract(51, 0).eq(BV::from_u64(0, 52)).not();
+    Bool::and(&[&exp_ones, &frac_nonzero])
+}
+
+/// Ordered `a < b` over IEEE 754 double-precision BIT PATTERNS, assuming
+/// neither operand is NaN (the callers conjoin the NaN exclusion). The 64-bit
+/// twin of [`f32_ordered_lt`]: sign bit 63, magnitude bits 62..0; `+0.0 == -0.0`
+/// (neither is less).
+fn f64_ordered_lt(a: &BV, b: &BV) -> Bool {
+    let a_neg = a.extract(63, 63).eq(BV::from_u64(1, 1));
+    let b_neg = b.extract(63, 63).eq(BV::from_u64(1, 1));
+    let a_mag = a.extract(62, 0);
+    let b_mag = b.extract(62, 0);
+    let zero63 = BV::from_u64(0, 63);
+    let both_zero = Bool::and(&[&a_mag.eq(&zero63), &b_mag.eq(&zero63)]);
+    // (neg, neg): larger magnitude is smaller; (neg, pos): a < b unless both
+    // are zeros; (pos, neg): never; (pos, pos): magnitude order.
+    let neg_neg = b_mag.bvult(&a_mag);
+    let neg_pos = both_zero.not();
+    let pos_pos = a_mag.bvult(&b_mag);
+    bool_ite(
+        &a_neg,
+        &bool_ite(&b_neg, &neg_neg, &neg_pos),
+        &bool_ite(&b_neg, &Bool::from_bool(false), &pos_pos),
+    )
+}
+
+/// The three ordered VFP.F64 comparison results the f64 trunc guards use, as
+/// total functions over the operands' bit patterns (result is 0 on any NaN —
+/// the unordered case — exactly the ARM `VCMP.F64`+`VMRS`+`IT` materialization
+/// the `F64Lt`/`F64Gt`/`F64Ge` pseudo-ops stand for). The 64-bit twin of
+/// [`f32_cmp_result`].
+fn f64_cmp_result(kind: F32CmpKind, a: &BV, b: &BV) -> Bool {
+    let ordered = Bool::and(&[&f64_is_nan(a).not(), &f64_is_nan(b).not()]);
+    let rel = match kind {
+        F32CmpKind::Lt => f64_ordered_lt(a, b),
+        F32CmpKind::Gt => f64_ordered_lt(b, a),
+        F32CmpKind::Ge => f64_ordered_lt(a, b).not(),
+    };
+    Bool::and(&[&ordered, &rel])
+}
+
 impl ArmSemantics {
     /// Branch-taking guarded symbolic execution of an ARM sequence,
     /// deriving `state.may_trap` from the emitted guard structure
@@ -2561,6 +2608,31 @@ impl ArmSemantics {
                 state.set_reg(rd, r);
                 Ok(())
             }
+            // Ordered VFP.F64 compares (the #756 f64→i32 trunc guards): real
+            // bit-pattern semantics over the 64-bit D-register operands — 1 iff
+            // the ordered relation holds, 0 on NaN. encode_op models these as
+            // uninterpreted symbols, which cannot drive a trap derivation.
+            ArmOp::F64Lt { rd, dn, dm } => {
+                let a = state.get_vfp_reg(dn).clone();
+                let b = state.get_vfp_reg(dm).clone();
+                let r = self.bool_to_bv32(&f64_cmp_result(F32CmpKind::Lt, &a, &b));
+                state.set_reg(rd, r);
+                Ok(())
+            }
+            ArmOp::F64Gt { rd, dn, dm } => {
+                let a = state.get_vfp_reg(dn).clone();
+                let b = state.get_vfp_reg(dm).clone();
+                let r = self.bool_to_bv32(&f64_cmp_result(F32CmpKind::Gt, &a, &b));
+                state.set_reg(rd, r);
+                Ok(())
+            }
+            ArmOp::F64Ge { rd, dn, dm } => {
+                let a = state.get_vfp_reg(dn).clone();
+                let b = state.get_vfp_reg(dm).clone();
+                let r = self.bool_to_bv32(&f64_cmp_result(F32CmpKind::Ge, &a, &b));
+                state.set_reg(rd, r);
+                Ok(())
+            }
             // Register/flag-only value ops the covered lowerings use:
             // delegate to the existing encode_op semantics.
             ArmOp::Cmp { .. }
@@ -2580,6 +2652,15 @@ impl ArmSemantics {
             | ArmOp::F32Const { .. }
             | ArmOp::I32TruncF32S { .. }
             | ArmOp::I32TruncF32U { .. }
+            // f64 trunc guards (#756): F64Const sets the D-reg to the real
+            // 64-bit float bit pattern (load-bearing for the derived compare);
+            // the saturating VCVT pseudo-ops write only the RESULT register,
+            // which the trap derivation ignores.
+            | ArmOp::F64Const { .. }
+            | ArmOp::I32TruncF64S { .. }
+            | ArmOp::I32TruncF64U { .. }
+            | ArmOp::I64TruncF64S { .. }
+            | ArmOp::I64TruncF64U { .. }
             // Ldr/Str: the value model treats loads as fresh symbols and
             // stores as no-ops (no memory-contents model) — fine for a trap
             // derivation, where only the guard's flags/registers matter.
