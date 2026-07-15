@@ -89,7 +89,7 @@ cd coq && make proofs
 
 ### Proof Status
 
-See `coq/STATUS.md` for the complete coverage matrix. Current: 474 Qed / 5 Admitted
+See `coq/STATUS.md` for the complete coverage matrix. Current: 476 Qed / 5 Admitted
 (+2 `admit.` tactics) across `coq/Synth/`. The 41 selector-DSL rule theorems
 (`VcrSelRules.v`) are stated directly about the GENERATED model (VCR-ISA-001
 #667: `rule_X := Gen.rule_X`, single source `VcrSelRulesGenerated.v` emitted

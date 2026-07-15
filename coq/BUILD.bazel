@@ -116,6 +116,34 @@ rocq_library(
     deps = [":base", ":common", ":wasm_values", ":wasm_instructions"],
 )
 
+# VCR-WASM-001 (#242, Track B): WasmCert-Coq source-semantics anchor.
+# WasmCertReference.v transcribes WasmCert-Coq's i32.add rule (= CompCert
+# Int.add) into synth's I32 primitives with line-level provenance;
+# WasmCertBridge.v proves exec_wasm_instr I32Add refines that reference.
+# Bounded first increment — 1 op, 1 real-Qed refinement lemma (the WASM-side
+# analogue of SailArmBridge.v). Transcription to be replaced by a real
+# external dep — see file headers.
+rocq_library(
+    name = "wasm_cert_reference",
+    srcs = ["Synth/WASM/WasmCertReference.v"],
+    include_path = "Synth",
+    deps = [":base", ":common"],
+)
+
+rocq_library(
+    name = "wasm_cert_bridge",
+    srcs = ["Synth/WASM/WasmCertBridge.v"],
+    include_path = "Synth",
+    deps = [
+        ":base",
+        ":common",
+        ":wasm_values",
+        ":wasm_instructions",
+        ":wasm_semantics",
+        ":wasm_cert_reference",
+    ],
+)
+
 # ─── Compilation ──────────────────────────────────────────────────────────────
 # Bridges ARM and WASM: imports ArmInstructions + WasmSemantics (not ArmSemantics)
 
@@ -304,6 +332,7 @@ rocq_proof_test(
         ":extraction",
         ":arm_refinement",
         ":sail_arm_bridge",
+        ":wasm_cert_bridge",
         ":vcr_sel_pilot",
         ":vcr_sel_rules",
         ":vcr_sel_rules_generated",

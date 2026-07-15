@@ -1,6 +1,6 @@
 # Rocq Proof Suite — Honest Status
 
-**Last Updated: 2026-07-15 (recount: 474 Qed / 5 Admitted, +2 admit., crude
+**Last Updated: 2026-07-15 (recount: 476 Qed / 5 Admitted, +2 admit., crude
 `grep "Qed\."` over `coq/Synth/**/*.v` — same method as prior recounts; the
 -40 vs the prior 512 are the retired VCR-ISA-001 #667 cross-check lemmas of
 `VcrSelRulesGenCheck.v`: `VcrSelRules.v` now DEFINES every `rule_X` as the
@@ -167,7 +167,7 @@ and predates the VcrSelRules (42), VcrSelPilot (7) and SailArmBridge (92) Qed;
 see the per-file breakdown below for current per-file counts. The T3 row and
 the headline total are re-derived by the claim gate.
 
-**Total: 474 Qed / 5 Admitted (+2 admit.) across all files** (recount 2026-07-15, CI-gated via `claims.yaml`)
+**Total: 476 Qed / 5 Admitted (+2 admit.) across all files** (recount 2026-07-15, CI-gated via `claims.yaml`)
 
 v0.10.0 PR 1: +2 T1 Qed (i64_add_correct, i64_sub_correct) and +9
 infrastructure Qed (combine_i32_unsigned, carry_split_add,
@@ -444,7 +444,7 @@ Recount 2026-07-10 (`grep -oE 'Qed\.'` / `'Admitted\.'` per file):
 | WasmValues.v | 2 | 0 | Infra |
 | VcrSelPilot.v | 7 | 0 | T1 (register-polymorphic; VCR-SEL-001 go/abandon measurement) |
 | VcrSelRules.v | 42 | 0 | T1 (register-polymorphic; the WIRED VCR-SEL-001 increment-1+2+3+4 rule table — 40 rule theorems 1:1 with `coq/vcr_sel_rules.manifest`, coverage-gated by `//coq:vcr_sel_rules_coverage`, + 2 mod-32 helper lemmas #683. VCR-ISA-001 #667 increment 2: every `rule_X` is DEFINED as the GENERATED `Gen.rule_X` of `VcrSelRulesGenerated.v` — emitted from the shipped `sel_dsl::RULES` — so the theorems are stated directly about the shipped sequences; a table change regenerates `Gen` and breaks the matching Qed. The former `VcrSelRulesGenCheck.v` 40-lemma `reflexivity` gate is retired as vacuous/subsumed) |
-| **Total** | **474** | **5** | (+2 `admit.`) |
+| **Total** | **476** | **5** | (+2 `admit.`) |
 
 ## VCR-SEL-001 increments 1 (2026-07-07) + 2 + 3 + 4 (2026-07-08): VcrSelRules.v
 
