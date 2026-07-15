@@ -82,9 +82,16 @@
   ;; i64-pair reading of R0:R1 would be a silent wrong-argument miscompile.
   (func (export "bad_dparam") (param f64 i32) (result i32)
     local.get 1)
-  ;; call to an f64-RETURNING callee: the result arrives in D0, which the call
-  ;; lowering does not marshal — the callee itself compiles (D0-homed return),
-  ;; the CALLER must decline.
-  (func $dret (result f64) f64.const 2.5)
-  (func (export "bad_dret_call") (param i32)
-    local.get 0 call $dret f64.store))
+
+  ;; ---- GI-FPU-002 phase 3 (#369): f64 RESULT marshalled out of D0 -----------
+  ;; The callee does real double-precision arithmetic (writes D0 and scratch),
+  ;; so a caller that read the result from R0:R1 — or failed to spill its own
+  ;; live double around the bl — diverges at the VALUE level.
+  (func $dret (result f64)
+    (f64.add (f64.load (i32.const 8)) (f64.const 2.5)))
+  (func (export "dretcall") (param i32)
+    local.get 0
+    (f64.load (i32.const 0))        ;; live f64 (D-register) across the call
+    call $dret                      ;; f64-returning callee: result in D0
+    f64.add
+    f64.store))

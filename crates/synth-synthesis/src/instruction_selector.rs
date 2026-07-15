@@ -11668,7 +11668,8 @@ impl InstructionSelector {
                             || float_arg_layout
                                 .iter()
                                 .any(|(_, r)| vfp_d_index(*r).is_some());
-                        if fpu.is_none() || (needs_double && !matches!(fpu, Some(FPUPrecision::Double)))
+                        if fpu.is_none()
+                            || (needs_double && !matches!(fpu, Some(FPUPrecision::Double)))
                         {
                             return Err(synth_core::Error::synthesis(format!(
                                 "GI-FPU-002 phase 3: call to func_{func_idx} has {} \
@@ -17311,11 +17312,7 @@ mod tests {
             Vec::new(),
         );
         let r = selector.select_with_stack(
-            &[
-                WasmOp::F32Const(1.5),
-                WasmOp::I64Const(7),
-                WasmOp::Call(0),
-            ],
+            &[WasmOp::F32Const(1.5), WasmOp::I64Const(7), WasmOp::Call(0)],
             0,
         );
         assert!(

@@ -176,7 +176,8 @@ def main():
         if ok:
             _, _, syms = load(out)
             leaked = [s for s in
-                      ("dconst", "dadd", "dlt", "dpromote", "dxcall")
+                      ("dconst", "dadd", "dlt", "dpromote", "dxcall",
+                       "dretcall")
                       if s in syms]
             if leaked:
                 sys.exit(f"FAIL: f64 functions {leaked} must be REJECTED on "
@@ -291,8 +292,28 @@ def main():
                 print(f"[dxcall] (0x{a:016x},0x{b32:08x}) -> 0x{got:016x} OK "
                       f"(f64 live across bl)")
 
+    # ---- GI-FPU-002 phase 3 (#369): f64 RESULT marshalled out of D0 ---------
+    # dretcall(addr): mem[addr] = mem[0] + dret() where dret() = mem[8] + 2.5
+    # computes in D0 — a caller reading R0:R1, or failing to preserve its live
+    # double around the bl, diverges at the value level.
+    if need("dretcall"):
+        for a, b in PAIRS:
+            uc = run(text, base, syms["dretcall"], mem0=a, mem8=b,
+                     r0=RESULT_ADDR)
+            got = struct.unpack("<Q", bytes(
+                uc.mem_read(MEMBASE + RESULT_ADDR, 8)))[0]
+            set_wasm_mem(a, b)
+            want = wasm_store_result("dretcall", RESULT_ADDR)
+            checked += 1
+            if not f64_bits_eq(got, want):
+                fail(f"dretcall(0x{a:016x}, 0x{b:016x}) -> 0x{got:016x} "
+                     f"!= wasmtime 0x{want:016x}")
+            else:
+                print(f"[dretcall] (0x{a:016x},0x{b:016x}) -> 0x{got:016x} OK "
+                      f"(D0 result marshalled)")
+
     # ---- honest declines on m7dp: absent from the symtab ---------------------
-    for fn in ("bad_dparam", "bad_dret_call"):
+    for fn in ("bad_dparam",):
         checked += 1
         if fn in syms:
             fail(f"{fn} COMPILED — an f64 ABI boundary this increment does "
@@ -303,9 +324,9 @@ def main():
     if fails:
         sys.exit(f"\nFAIL: {fails}/{checked} f64 #369 results diverged")
     print(f"\nGREEN: {checked}/{checked} f64 #369 results bit-exact vs wasmtime "
-          f"(const/promote/arith/compare/load/store + f64-across-call on "
-          f"cortex-m7dp; m4f + m3 honest-reject + f64-ABI loud-decline "
-          f"confirmed).")
+          f"(const/promote/arith/compare/load/store + f64-across-call + "
+          f"phase-3 D0-result call marshalling on cortex-m7dp; m4f + m3 "
+          f"honest-reject + f64-param loud-decline confirmed).")
 
 
 if __name__ == "__main__":

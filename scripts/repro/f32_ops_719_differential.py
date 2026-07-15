@@ -332,22 +332,54 @@ def main():
                 print(f"[xhome] (0x{xb:08x},0x{b:08x}) -> 0x{got:08x} OK "
                       f"(param home across bl)")
 
-    # ---- #719 phase 2: float-signature callees must DECLINE (skip), never
-    # miscompile: their symbols must be ABSENT from the symtab.
-    for fn in ("bad_ret_f32_call", "bad_f32_arg_call"):
-        checked += 1
-        if fn in syms:
-            nonlocal_fail(f"{fn} COMPILED -- a float-signature call boundary "
-                          f"must decline loudly (S0/D0 not marshalled)")
-        else:
-            print(f"[{fn}] absent from symtab OK (loud decline)")
+    # ---- GI-FPU-002 phase 3 (#369): the f32 CALL BOUNDARY is marshalled -----
+    # Every callee does real VFP arithmetic (reads its S-register args, writes
+    # S0), so a caller that passed an argument in a core register or read the
+    # result from R0 diverges at the VALUE level. S0/S1 poisoned where they are
+    # not argument registers; NaN-aware compare (real f32 adds).
+    #  call_ret(a)      = bits(retf() + f32(a))          — result out of S0
+    #  call_args(a,b)   = bits(scale(f32(a), f32(b)))    — args into S0/S1
+    #  call_mixed(n,xb) = bits(addn(f32(xb), n))         — int arg skips S-pool
+    #  call_swap(a,b)   = cross-swapped arg sources      — two-phase staging
+    #  call_live(a,b)   = bits(f32(a) + scale(f32(b),2)) — live f32 across call
+    two_arg_rows = ((0x3FC00000, 0x40000000), (0x80000000, 0x7F800000),
+                    (0xC2F60000, 0x00000001), (0x7F7FFFFF, 0x7F7FFFFF),
+                    (0x42F60000, 0xBFC00000))
+    if need("call_ret"):
+        for b in EDGE_BITS:
+            uc = run(text, base, syms["call_ret"], r0=b, s0=0xDEADBEEF)
+            got = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+            want = exp["call_ret"](store, b) & 0xFFFFFFFF
+            checked += 1
+            if not f32_bits_eq(got, want):
+                nonlocal_fail(f"call_ret(0x{b:08x}) -> 0x{got:08x} "
+                              f"!= wasmtime 0x{want:08x}")
+            else:
+                print(f"[call_ret] 0x{b:08x} -> 0x{got:08x} OK (S0 result)")
+    for fn in ("call_args", "call_mixed", "call_swap", "call_live"):
+        if not need(fn):
+            continue
+        for a, b in two_arg_rows:
+            args = (a & 0x7FFFFFFF, b) if fn == "call_mixed" else (a, b)
+            uc = run(text, base, syms[fn], r0=args[0], r1=args[1],
+                     s0=0xDEADBEEF, s1=0xBADC0DE)
+            got = uc.reg_read(UC_ARM_REG_R0) & 0xFFFFFFFF
+            want = exp[fn](store, *args) & 0xFFFFFFFF
+            checked += 1
+            if not f32_bits_eq(got, want):
+                nonlocal_fail(f"{fn}(0x{args[0]:08x},0x{args[1]:08x}) -> "
+                              f"0x{got:08x} != wasmtime 0x{want:08x}")
+            else:
+                print(f"[{fn}] (0x{args[0]:08x},0x{args[1]:08x}) -> "
+                      f"0x{got:08x} OK (marshalled boundary)")
 
     if fails:
         sys.exit(f"\nFAIL: {fails}/{checked} f32 #719 results diverged")
     print(f"\nGREEN: {checked}/{checked} f32 #719 results bit-exact vs wasmtime "
           f"(abs/neg/copysign/store/local.set/tee + mixed AAPCS-VFP params + "
-          f"phase-2 f32-across-call spill/reload; m3 honest-reject + "
-          f"float-signature-callee loud-decline confirmed).")
+          f"f32-across-call spill/reload + #369 phase-3 marshalled call "
+          f"boundary (S0 results, S-pool args, mixed, cross-swap staging); "
+          f"m3 honest-reject confirmed).")
 
 
 if __name__ == "__main__":
