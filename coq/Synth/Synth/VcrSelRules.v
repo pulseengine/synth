@@ -177,6 +177,16 @@ Definition rule_i32_le_u := Gen.rule_i32_le_u.
 Definition rule_i32_ge_s := Gen.rule_i32_ge_s.
 Definition rule_i32_ge_u := Gen.rule_i32_ge_u.
 
+(** i32.eqz — the unary compare-with-zero shape: the Rust rule emits
+    [Cmp {rn, Imm 0}; SetCond {rd, EQ}]; per the Compilation.v convention the
+    [SetCond] pseudo-op is modeled as [MOV rd #0; MOVEQ rd #1] over the flags
+    CMP latched. No aliasing side conditions: the flags transfer is through
+    NZCV, not a register, so the theorem holds for EVERY rd/rn assignment.
+    The immediate is modeled as [I32.zero] (definitionally [I32.repr 0]) to
+    match the fixed-register ancestor [i32_eqz_correct] (CorrectnessI32.v) and
+    reuse its [z_flag_sub_eq] flag lemma verbatim. *)
+Definition rule_i32_eqz  := Gen.rule_i32_eqz.
+
 (** ** The discharge tactic — verbatim [synth_binop_proof] (Tactics.v) modulo
     the lowering-unfold target, as measured by the pilot. *)
 Ltac synth_binop_proof_poly :=
@@ -577,6 +587,30 @@ Theorem rule_i32_ge_u_correct : forall wstate astate v1 v2 stack' rd rn rm,
     exec_program (rule_i32_ge_u rd rn rm) astate = Some astate' /\
     get_reg astate' rd = (if I32.geu v1 v2 then I32.one else I32.zero).
 Proof. synth_cmp_binop_proof_poly flags_geu. Qed.
+
+(** ** i32.eqz theorem — quantified over ARBITRARY rd rn (no side conditions:
+    CMP latches NZCV before rd is written, so every rd/rn aliasing is
+    admitted). The register-generalized form of the fixed-register ancestor
+    [i32_eqz_correct] (CorrectnessI32.v, [synth_cmp_unop_proof z_flag_sub_eq]),
+    with the two register binders replacing R0. *)
+Theorem rule_i32_eqz_correct : forall wstate astate v stack' rd rn,
+  wstate.(stack) = VI32 v :: stack' ->
+  get_reg astate rn = v ->
+  exec_wasm_instr I32Eqz wstate =
+    Some (mkWasmState
+            (VI32 (if I32.eq v I32.zero then I32.one else I32.zero) :: stack')
+            wstate.(locals) wstate.(globals) wstate.(memory)) ->
+  exists astate',
+    exec_program (rule_i32_eqz rd rn) astate = Some astate' /\
+    get_reg astate' rd = (if I32.eq v I32.zero then I32.one else I32.zero).
+Proof.
+  intros wstate astate v stack' rd rn Hstack HR0 Hwasm.
+  unfold rule_i32_eqz, Gen.rule_i32_eqz; simpl.
+  rewrite HR0; simpl.
+  rewrite z_flag_sub_eq.
+  destruct (I32.eq v I32.zero);
+  (eexists; split; [reflexivity | apply get_set_reg_eq]).
+Qed.
 
 (** ** Increment 3: the i64 register-pair rule lowerings — 1:1 with
     sel_dsl::RULES / sel_dsl::generated. An i64 value is a (lo, hi)

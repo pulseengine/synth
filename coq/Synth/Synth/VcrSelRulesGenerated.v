@@ -92,6 +92,9 @@ Definition rule_i32_ge_s (rd rn rm : arm_reg) : arm_program :=
 Definition rule_i32_ge_u (rd rn rm : arm_reg) : arm_program :=
   [CMP rn (Reg rm); MOV rd (Imm I32.zero); MOVHS rd (Imm I32.one)].
 
+Definition rule_i32_eqz (rd rn : arm_reg) : arm_program :=
+  [CMP rn (Imm I32.zero); MOV rd (Imm I32.zero); MOVEQ rd (Imm I32.one)].
+
 Definition rule_i64_add (rdlo rdhi rnlo rnhi rmlo rmhi : arm_reg) : arm_program :=
   [ADDS rdlo rnlo (Reg rmlo); ADC rdhi rnhi (Reg rmhi)].
 
