@@ -203,12 +203,13 @@ fn shadow_stack_size_without_region_refuses_739() {
     );
 }
 
-/// i64 accesses with a static-region memarg offset are not yet relocated —
-/// they must DECLINE loudly (function loud-skips), never bake. Pre-fix this
-/// shape silently miscompiled exactly like the sub-word case.
+/// #746 (the #739 residual): i64 accesses with a static-region memarg offset
+/// get the #744 relocation treatment. Pre-#746 this exact module DECLINED
+/// loudly ("#739: i64.load ... not yet relocated") and nothing was emitted —
+/// now the i64 arm relocates `__synth_wasm_data + 0x100008` and compiles.
 #[test]
-fn i64_static_offset_declines_loudly_739() {
-    let dir = std::env::temp_dir().join("mem739_i64_test");
+fn i64_static_offset_relocates_746() {
+    let dir = std::env::temp_dir().join("mem746_i64_test");
     std::fs::create_dir_all(&dir).unwrap();
     let wat = dir.join("i64_above_sp.wat");
     std::fs::write(
@@ -222,6 +223,7 @@ fn i64_static_offset_declines_loudly_739() {
     i32.wrap_i64))"#,
     )
     .unwrap();
+    let obj = dir.join("i64_above_sp.o");
     let out = Command::new(synth())
         .args([
             "compile",
@@ -232,17 +234,58 @@ fn i64_static_offset_declines_loudly_739() {
             "--all-exports",
             "--relocatable",
             "-o",
-            dir.join("i64_above_sp.o").to_str().unwrap(),
+            obj.to_str().unwrap(),
         ])
         .output()
         .expect("run synth");
     assert!(
-        !out.status.success(),
-        "single-function module with an i64 static-region access must not emit"
+        out.status.success(),
+        "i64 static-region access must compile (relocated, #746): {}",
+        String::from_utf8_lossy(&out.stderr)
     );
-    let stderr = String::from_utf8_lossy(&out.stderr);
+    let addends = wasm_data_addends(obj.to_str().unwrap());
     assert!(
-        stderr.contains("#739") && stderr.contains("declining"),
-        "decline must be loud and name #739: {stderr}"
+        addends.contains(&1_048_584),
+        "i64 static must relocate as __synth_wasm_data + 0x100008, got {addends:?}"
+    );
+    assert!(
+        !has_baked_pair_in_window(obj.to_str().unwrap(), SP_INIT, LINMEM),
+        "un-relocated baked static-region MOVW/MOVT pair in the i64 object"
+    );
+}
+
+/// #746 end-to-end shrink: the i64 wide + narrow static-region accesses of
+/// the differential fixture relocate AND down-shift under
+/// `--shadow-stack-size` — BSS statics 0x100010/0x100018 become
+/// `budget + 16 / + 24`, the reservation is the shrunk one, and no baked
+/// MOVW/MOVT static-region pair survives. RED on v0.42.0: the compile itself
+/// fails (all 7 functions loud-decline, nothing to emit).
+#[test]
+fn wide_static_relocates_and_downshifts_746() {
+    let out = compile(
+        "mem746_wide_static.wat",
+        &["--shadow-stack-size", "2048"],
+        "/tmp/mem746_shrunk_test.o",
+    );
+    assert!(
+        out.status.success(),
+        "must compile: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let addends = wasm_data_addends("/tmp/mem746_shrunk_test.o");
+    for want in [BUDGET + 16, BUDGET + 24] {
+        assert!(
+            addends.contains(&want),
+            "above-SP i64 static must down-shift to {want}, got addends {addends:?}"
+        );
+    }
+    let bss = bss_size("/tmp/mem746_shrunk_test.o");
+    assert!(
+        (BUDGET as u64..=(BUDGET + 4096) as u64).contains(&bss),
+        ".bss must be the shrunk reservation, got {bss}"
+    );
+    assert!(
+        !has_baked_pair_in_window("/tmp/mem746_shrunk_test.o", BUDGET, LINMEM),
+        "un-relocated baked static-region MOVW/MOVT pair survived the shrink"
     );
 }
