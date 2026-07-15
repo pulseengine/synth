@@ -29,16 +29,16 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-PROOF-COUNT-README
     doc: README.md
-    text: "473 Qed / 5 Admitted"
+    text: "474 Qed / 5 Admitted"
     evidence:
       - kind: count-eq                       # ALL THREE README spots must agree —
-        pattern: '473 Qed / 5 Admitted'      # a verbatim check alone greens if one
+        pattern: '474 Qed / 5 Admitted'      # a verbatim check alone greens if one
         glob: ['README.md']                  # of them drifts while another matches
         expect: 3
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 473
+        expect: 474
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -50,12 +50,12 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-CLAUDE-MD
     doc: CLAUDE.md
-    text: "473 Qed / 5 Admitted"
+    text: "474 Qed / 5 Admitted"
     evidence:
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 473
+        expect: 474
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -63,16 +63,16 @@ claims:
 
   - id: SYNTH-PROOF-COUNT-STATUS-MD
     doc: coq/STATUS.md
-    text: "473 Qed / 5 Admitted"
+    text: "474 Qed / 5 Admitted"
     evidence:
       - kind: count-eq                       # headline + Total line must both agree
-        pattern: '473 Qed / 5 Admitted'
+        pattern: '474 Qed / 5 Admitted'
         glob: ['coq/STATUS.md']
         expect: 2
       - kind: count-eq
         pattern: 'Qed\.'
         glob: ['coq/Synth/**/*.v']
-        expect: 473
+        expect: 474
       - kind: count-eq
         pattern: 'Admitted\.'
         glob: ['coq/Synth/**/*.v']
@@ -216,16 +216,16 @@ claims:
   # ---------------------------------------------------------------------------
   - id: SYNTH-SEL-DSL-RULES
     doc: README.md
-    text: "40 rules / 40 Qed theorems"
+    text: "41 rules / 41 Qed theorems"
     evidence:
       - kind: count-eq                       # rules in the manifest
         pattern: '^rule_'
         glob: ['coq/vcr_sel_rules.manifest']
-        expect: 40
+        expect: 41
       - kind: count-eq                       # 1:1 Qed theorems in VcrSelRules.v
         pattern: '^(?:Theorem|Lemma) rule_\w+_correct'
         glob: ['coq/Synth/Synth/VcrSelRules.v']
-        expect: 40
+        expect: 41
       - kind: count-max                      # the rule table carries no admits
         pattern: 'Admitted\.'
         glob: ['coq/Synth/Synth/VcrSelRules.v']
@@ -233,14 +233,14 @@ claims:
 
   - id: SYNTH-SEL-DSL-COVERAGE-STATUS-MD
     doc: coq/STATUS.md
-    text: "**40 (26%)**"                     # DSL-served column total, per-op-family table (#667)
+    text: "**41 (26%)**"                     # DSL-served column total, per-op-family table (#667)
     evidence:
       - kind: count-eq
         pattern: '^rule_'
         glob: ['coq/vcr_sel_rules.manifest']
-        expect: 40
+        expect: 41
       - kind: verbatim
-        text: "**40 Qed / 0 Admitted**"
+        text: "**41 Qed / 0 Admitted**"
 
   - id: SYNTH-SEL-DSL-PILOT
     doc: README.md

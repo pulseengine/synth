@@ -275,6 +275,9 @@ pub enum TemplateOp {
     AsrReg { rd: RegVar, rn: RegVar, rm: RegVar },
     /// `ArmOp::Cmp { rn, op2: Reg(rm) }` — flags only, no register written
     CmpReg { rn: RegVar, rm: RegVar },
+    /// `ArmOp::Cmp { rn, op2: Imm(imm) }` — flags only, no register written
+    /// (the `i32.eqz` compare-with-zero shape)
+    CmpImm { rn: RegVar, imm: u32 },
     /// `ArmOp::SetCond { rd, cond }` — rd = if cond over current NZCV {1} else {0}
     SetCond { rd: RegVar, cond: CondCode },
     /// `ArmOp::Adds { rd, rn, op2: Reg(rm) }` — ADD setting flags (C = carry-out)
@@ -708,6 +711,27 @@ pub const RULES: &[SelRule] = &[
         delegation: Delegation::SelectWithStack,
         doc: "`i32.ge_u`: rd = if rn >= rm (unsigned) {1} else {0}",
     },
+    // i32.eqz — the unary compare-with-zero shape: CMP rn, #0; SetCond rd, EQ.
+    // Same tier as the i32 comparisons (CMP latches NZCV before SetCond writes
+    // rd, so NO aliasing side conditions), and the same holdout story:
+    // select_default's I32Eqz arm is a *blind* bare-Cmp that never
+    // materializes the 0/1 result (production-unreachable — select_with_stack
+    // owns eqz), so this rule is delegated in select_with_stack ONLY.
+    SelRule {
+        name: "rule_i32_eqz",
+        op: WasmOp::I32Eqz,
+        params: &[Rd, Rn],
+        side_conditions: &[],
+        seq: &[
+            TemplateOp::CmpImm { rn: Rn, imm: 0 },
+            TemplateOp::SetCond {
+                rd: Rd,
+                cond: CondCode::Eq,
+            },
+        ],
+        delegation: Delegation::SelectWithStack,
+        doc: "`i32.eqz`: rd = if rn == 0 {1} else {0}",
+    },
     // ---- increment 3: the i64 register-pair family. An i64 value lives in
     // a (lo, hi) register pair; each binary rule is parameterized over SIX
     // registers and emits the two-instruction pair shape. All carry the
@@ -1070,6 +1094,21 @@ pub fn i32_cmp_rule(
     })
 }
 
+/// Dispatch `i32.eqz` (unary compare-with-zero) to its generated Rocq-proved
+/// rule. Same contract as [`i32_cmp_rule`]: `None` for any other op so the
+/// caller's hand-written arm keeps ownership; no side conditions, so infallible
+/// where it fires.
+pub fn i32_eqz_rule(
+    op: &WasmOp,
+    rd: crate::rules::Reg,
+    rn: crate::rules::Reg,
+) -> Option<Vec<crate::rules::ArmOp>> {
+    Some(match op {
+        WasmOp::I32Eqz => generated::rule_i32_eqz(rd, rn),
+        _ => return None,
+    })
+}
+
 /// Dispatch an i32 register-shift/rotate op to its generated Rocq-proved rule
 /// (increment 2). Same contract as [`i32_cmp_rule`].
 pub fn i32_shift_rule(
@@ -1292,6 +1331,14 @@ fn template_expr(t: &TemplateOp, indent: usize) -> String {
                 rm.rust_name()
             )
         }
+        TemplateOp::CmpImm { rn, imm } => {
+            let ind = " ".repeat(indent);
+            let fld = " ".repeat(indent + 4);
+            format!(
+                "ArmOp::Cmp {{\n{fld}{},\n{fld}op2: Operand2::Imm({imm}),\n{ind}}}",
+                field("rn", rn)
+            )
+        }
         TemplateOp::SetCond { rd, cond } => {
             let ind = " ".repeat(indent);
             let fld = " ".repeat(indent + 4);
@@ -1478,6 +1525,17 @@ fn coq_instrs(t: &TemplateOp) -> Vec<String> {
             vec![format!("ASR_reg {} {} {}", r(rd), r(rn), r(rm))]
         }
         TemplateOp::CmpReg { rn, rm } => vec![format!("CMP {} (Reg {})", r(rn), r(rm))],
+        // The compare-with-zero shape models the immediate as [I32.zero]
+        // (definitionally [I32.repr 0]) to match the flat model's I32Eqz
+        // lowering and the [z_flag_sub_eq] flag lemma verbatim.
+        TemplateOp::CmpImm { rn, imm } => {
+            let operand = if imm == 0 {
+                "I32.zero".to_string()
+            } else {
+                format!("(I32.repr {imm})")
+            };
+            vec![format!("CMP {} (Imm {operand})", r(rn))]
+        }
         TemplateOp::SetCond { rd, cond } => vec![
             format!("MOV {} (Imm I32.zero)", r(rd)),
             format!("{} {} (Imm I32.one)", cond.coq_movcc(), r(rd)),

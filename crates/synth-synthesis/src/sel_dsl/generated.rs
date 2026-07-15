@@ -326,6 +326,22 @@ pub fn rule_i32_ge_u(rd: Reg, rn: Reg, rm: Reg) -> Vec<ArmOp> {
     ]
 }
 
+/// `i32.eqz`: rd = if rn == 0 {1} else {0}
+///
+/// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i32_eqz_correct` (Qed).
+pub fn rule_i32_eqz(rd: Reg, rn: Reg) -> Vec<ArmOp> {
+    vec![
+        ArmOp::Cmp {
+            rn,
+            op2: Operand2::Imm(0),
+        },
+        ArmOp::SetCond {
+            rd,
+            cond: Condition::EQ,
+        },
+    ]
+}
+
 /// `i64.add`: (rd_hi:rd_lo) = (rn_hi:rn_lo) + (rm_hi:rm_lo), carry via ADDS+ADC
 ///
 /// Rocq obligation: `Synth.Synth.VcrSelRules.rule_i64_add_correct` (Qed).

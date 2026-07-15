@@ -24,6 +24,7 @@ rule_i32_le_s
 rule_i32_le_u
 rule_i32_ge_s
 rule_i32_ge_u
+rule_i32_eqz
 rule_i64_add
 rule_i64_sub
 rule_i64_and

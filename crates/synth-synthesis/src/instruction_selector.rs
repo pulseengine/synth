@@ -14360,22 +14360,43 @@ impl InstructionSelector {
                             idx,
                         )?
                     };
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::Cmp {
-                            rn: a,
-                            op2: Operand2::Imm(0),
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
-                    instructions.push(ArmInstruction {
-                        op: ArmOp::SetCond {
-                            rd: dst,
-                            cond: Condition::EQ,
-                        },
-                        source_line: Some(idx),
-                    });
-                    cf.add_instruction();
+                    // VCR-SEL-001 (#242): behind SYNTH_SEL_DSL (default ON,
+                    // opt out SYNTH_NO_SEL_DSL) the CMP+SetCond pair comes from
+                    // the generated Rocq-proved rule — byte-identical to the
+                    // hand-written emission below (mirror-pinned). Same holdout
+                    // story as the i32 comparisons: select_with_stack owns the
+                    // materializing lowering, so the rule is wired here only.
+                    let dsl_ops = if self.sel_dsl {
+                        crate::sel_dsl::i32_eqz_rule(op, dst, a)
+                    } else {
+                        None
+                    };
+                    if let Some(rule_ops) = dsl_ops {
+                        for rule_op in rule_ops {
+                            instructions.push(ArmInstruction {
+                                op: rule_op,
+                                source_line: Some(idx),
+                            });
+                            cf.add_instruction();
+                        }
+                    } else {
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::Cmp {
+                                rn: a,
+                                op2: Operand2::Imm(0),
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                        instructions.push(ArmInstruction {
+                            op: ArmOp::SetCond {
+                                rd: dst,
+                                cond: Condition::EQ,
+                            },
+                            source_line: Some(idx),
+                        });
+                        cf.add_instruction();
+                    }
                     stack.push(StackVal::i32(dst));
                 }
 
@@ -16203,6 +16224,12 @@ mod tests {
             if rule.name.starts_with("rule_i64_") {
                 continue;
             }
+            // i32.eqz is the sole UNARY compare-with-zero rule (CmpImm +
+            // SetCond); it needs a single-operand probe and a CmpImm window,
+            // pinned separately below.
+            if rule.name == "rule_i32_eqz" {
+                continue;
+            }
             probed += 1;
             let ops = vec![WasmOp::LocalGet(0), WasmOp::LocalGet(1), rule.op.clone()];
 
@@ -16348,6 +16375,60 @@ mod tests {
         assert_eq!(
             probed, 17,
             "unexpected select_with_stack-delegated rule count"
+        );
+
+        // i32.eqz — the unary compare-with-zero rule, probed with a single
+        // operand. OFF vs ON full-sequence equality, plus the CmpImm+SetCond
+        // window RMW-vacuity check for the registers the selector chose.
+        let eqz_ops = vec![WasmOp::LocalGet(0), WasmOp::I32Eqz];
+        let mut hw = InstructionSelector::new(vec![]);
+        hw.set_sel_dsl(false);
+        let eqz_baseline: Vec<ArmOp> = hw
+            .select_with_stack(&eqz_ops, 1)
+            .expect("i32.eqz hand-written arm failed")
+            .into_iter()
+            .map(|i| i.op)
+            .collect();
+        let mut dsl = InstructionSelector::new(vec![]);
+        dsl.set_sel_dsl(true);
+        let eqz_generated: Vec<ArmOp> = dsl
+            .select_with_stack(&eqz_ops, 1)
+            .expect("i32.eqz generated rule failed")
+            .into_iter()
+            .map(|i| i.op)
+            .collect();
+        assert_eq!(
+            eqz_baseline, eqz_generated,
+            "rule_i32_eqz: SYNTH_SEL_DSL=1 diverges from the hand-written \
+             select_with_stack arm"
+        );
+        let i = eqz_baseline
+            .iter()
+            .position(|o| {
+                matches!(
+                    o,
+                    ArmOp::Cmp {
+                        op2: Operand2::Imm(_),
+                        ..
+                    }
+                )
+            })
+            .expect("rule_i32_eqz: no CMP #imm in probe output");
+        let rn = match &eqz_baseline[i] {
+            ArmOp::Cmp { rn, .. } => *rn,
+            _ => unreachable!(),
+        };
+        let rd = match &eqz_baseline[i + 1] {
+            ArmOp::SetCond { rd, .. } => *rd,
+            other => panic!("rule_i32_eqz: no SetCond after CMP: {other:?}"),
+        };
+        let eqz_rule = crate::sel_dsl::i32_eqz_rule(&WasmOp::I32Eqz, rd, rn)
+            .expect("rule_i32_eqz: dispatch missing");
+        assert_eq!(
+            eqz_baseline[i..i + 2].to_vec(),
+            eqz_rule,
+            "rule_i32_eqz: the hand-written emission window does not equal the \
+             generated rule's output for the same registers"
         );
     }
 
